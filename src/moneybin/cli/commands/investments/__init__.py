@@ -148,10 +148,13 @@ def investments_add(
                 created_by="cli",
             )
 
-    payload = {"investment_transaction_ids": ids}
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: render_or_json derives the tier from the
+        # typed payload's Annotated metadata, mirroring the MCP tool.
         render_or_json(
-            build_envelope(data=payload, sensitivity="low"),
+            build_envelope(
+                data=InvestmentRecordPayload(investment_transaction_ids=ids)
+            ),
             output,
             cli_actor="investments_add",
         )

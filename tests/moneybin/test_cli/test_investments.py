@@ -201,6 +201,34 @@ class TestSecuritiesAddAndBuy:
         assert rows[0][4] == Decimal("4.95")
 
     @pytest.mark.unit
+    def test_securities_add_json_output_reports_record_id_class(
+        self, runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same typed-payload requirement as investments_add: the success
+        # payload must route through InvestmentSecuritySetPayload, not a bare
+        # dict, so the privacy audit trail records the real data class.
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "securities",
+                "add",
+                "--name",
+                "Apple Inc.",
+                "--type",
+                "equity",
+                "--ticker",
+                "AAPL",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["classes_returned"] == ["record_id"]
+
+    @pytest.mark.unit
     def test_add_json_output_reports_txn_id(
         self, runner: CliRunner, db: Database
     ) -> None:
@@ -233,6 +261,46 @@ class TestSecuritiesAddAndBuy:
         ids = data["data"]["investment_transaction_ids"]
         assert len(ids) == 1
         assert ids[0]
+
+    @pytest.mark.unit
+    def test_add_json_output_reports_record_id_class(
+        self, runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The success payload must route through the typed
+        # InvestmentRecordPayload dataclass (not a bare dict), so the privacy
+        # audit trail records the real data class instead of
+        # classes_returned=[] — same bug class already fixed once in this PR
+        # for investments_lots_select.
+        _add_security(runner, name="Apple Inc.", type_="equity", ticker="AAPL")
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "add",
+                "--account",
+                "acct_brokerage",
+                "--security",
+                "AAPL",
+                "--type",
+                "buy",
+                "--date",
+                "2024-01-15",
+                "--quantity",
+                "10",
+                "--price",
+                "150.00",
+                "--amount",
+                "-1500.00",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # InvestmentRecordPayload also carries an `error_details` field
+        # (AGGREGATE tier) alongside `investment_transaction_ids` (RECORD_ID).
+        assert captured["classes_returned"] == ["aggregate", "record_id"]
 
     @pytest.mark.unit
     def test_add_reinvest_reports_both_rows(
@@ -705,6 +773,34 @@ class TestSecuritiesListAndSet:
             [security_id],
         ).fetchone()
         assert row == ("Vanguard Total Stock Market", "VTSAX", "average")
+
+    @pytest.mark.unit
+    def test_set_json_output_reports_record_id_class(
+        self, runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same typed-payload requirement as investments_add: the success
+        # payload must route through InvestmentSecuritySetPayload, not a bare
+        # dict, so the privacy audit trail records the real data class.
+        security_id = _add_security(
+            runner, name="Apple Inc.", type_="equity", ticker="AAPL"
+        )
+        captured: dict[str, object] = {}
+        monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
+        result = runner.invoke(
+            app,
+            [
+                "investments",
+                "securities",
+                "set",
+                security_id,
+                "--method",
+                "fifo",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["classes_returned"] == ["record_id"]
 
     @pytest.mark.unit
     def test_set_no_fields_exits_2(self, runner: CliRunner, db: Database) -> None:

@@ -115,10 +115,11 @@ def investments_securities_add(
                 currency_code=currency,
                 actor="cli",
             )
-    payload = {"security_id": security_id}
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: render_or_json derives the tier from the
+        # typed payload's Annotated metadata, mirroring the MCP tool.
         render_or_json(
-            build_envelope(data=payload, sensitivity="low"),
+            build_envelope(data=InvestmentSecuritySetPayload(security_id=security_id)),
             output,
             cli_actor="investments_securities_add",
         )
@@ -191,10 +192,11 @@ def investments_securities_set(
                 currency_code=currency,
                 actor="cli",
             )
-    payload = {"security_id": security_id}
     if output == OutputFormat.JSON:
+        # No explicit sensitivity: render_or_json derives the tier from the
+        # typed payload's Annotated metadata, mirroring the MCP tool.
         render_or_json(
-            build_envelope(data=payload, sensitivity="low"),
+            build_envelope(data=InvestmentSecuritySetPayload(security_id=security_id)),
             output,
             cli_actor="investments_securities_set",
         )
