@@ -608,6 +608,52 @@ def test_oversold_emits_zero_basis_incomplete_slice_without_raising() -> None:
     assert lots[0].remaining_quantity == D("0")
 
 
+def test_same_day_same_bucket_disposals_break_ties_by_transaction_id() -> None:
+    # Two same-day sells (same _SAME_DAY_TYPE_ORDER bucket) draw from a lot
+    # with too little quantity for both. The tie-break falls back to
+    # investment_transaction_id string order: "sell_a" processes before
+    # "sell_b" and gets its full request; "sell_b" is left oversold for the
+    # remainder. Reordering the input list must not change the outcome.
+    lot_buy = _event(
+        "b1",
+        event_type="buy",
+        trade_date=date(2024, 1, 1),
+        quantity=D("5"),
+        amount=D("-500.00"),
+    )
+    sell_a = _event(
+        "sell_a",
+        event_type="sell",
+        trade_date=date(2024, 6, 1),
+        quantity=D("-3"),
+        amount=D("300.00"),
+    )
+    sell_b = _event(
+        "sell_b",
+        event_type="sell",
+        trade_date=date(2024, 6, 1),
+        quantity=D("-3"),
+        amount=D("300.00"),
+    )
+    for events in ([lot_buy, sell_a, sell_b], [lot_buy, sell_b, sell_a]):
+        _, gains = _run(events)
+
+        a_gains = [g for g in gains if g.disposal_txn_id == "sell_a"]
+        assert len(a_gains) == 1
+        assert a_gains[0].quantity == D("3")
+        assert a_gains[0].basis_incomplete is False
+
+        b_gains = [g for g in gains if g.disposal_txn_id == "sell_b"]
+        assert len(b_gains) == 2
+        b_matched = [g for g in b_gains if not g.basis_incomplete]
+        b_unmatched = [g for g in b_gains if g.basis_incomplete]
+        assert len(b_matched) == 1
+        assert b_matched[0].quantity == D("2")
+        assert len(b_unmatched) == 1
+        assert b_unmatched[0].quantity == D("1")
+        assert b_unmatched[0].cost_basis == D("0.00")
+
+
 def test_penny_conservation_three_way_prorata_split() -> None:
     # 3 lots of 1 unit each, sold together for 100.00.
     # Naive per-slice rounding (33.33 * 3 = 99.99) would lose a cent;
