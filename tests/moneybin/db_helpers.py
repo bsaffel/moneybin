@@ -214,9 +214,114 @@ SELECT CAST(NULL AS VARCHAR) AS source_type,
 WHERE FALSE;
 """
 
+# core.dim_securities — SQLMesh-managed view in production. Unlike the
+# dim_categories/dim_merchants stubs (which are empty `WHERE FALSE` shape-only
+# views because production builds them with joins/seeds), dim_securities.sql is
+# a *pure passthrough* of app.securities — so the faithful stub is that same
+# passthrough. This lets reads (`InvestmentService.list_securities`, the CLI's
+# `securities list`) reflect real `securities add`/`set` writes without a
+# per-test inline view override. app.securities always exists here: every
+# caller of create_core_dim_stub_views opens a real Database (init_schemas).
+CORE_DIM_SECURITIES_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.dim_securities AS
+SELECT security_id, name, security_type, ticker, exchange, cusip, isin, figi,
+       coingecko_id, is_cash_equivalent, currency_code
+FROM app.securities;
+"""
+
+# core.fct_investment_transactions — SQLMesh FULL-kind table in production.
+# Column shape mirrors fct_investment_transactions.sql's final SELECT.
+CORE_FCT_INVESTMENT_TRANSACTIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_investment_transactions (
+    investment_transaction_id VARCHAR,
+    account_id VARCHAR,
+    security_id VARCHAR,
+    trade_date DATE,
+    settlement_date DATE,
+    original_acquisition_date DATE,
+    type VARCHAR,
+    subtype VARCHAR,
+    event_group_id VARCHAR,
+    quantity DECIMAL(28, 10),
+    price DECIMAL(28, 10),
+    amount DECIMAL(18, 2),
+    fees DECIMAL(18, 2),
+    currency_code VARCHAR,
+    source_type VARCHAR,
+    source_origin VARCHAR,
+    description VARCHAR,
+    updated_at TIMESTAMP
+);
+"""
+
+# core.fct_investment_lots — SQLMesh Python FULL-kind table in production.
+# Column shape mirrors fct_investment_lots.py's `columns={...}` block.
+CORE_FCT_INVESTMENT_LOTS_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_investment_lots (
+    lot_id VARCHAR,
+    account_id VARCHAR,
+    security_id VARCHAR,
+    acquisition_date DATE,
+    acquisition_type VARCHAR,
+    original_quantity DECIMAL(28, 10),
+    remaining_quantity DECIMAL(28, 10),
+    cost_basis_total DECIMAL(18, 2),
+    cost_basis_remaining DECIMAL(18, 2),
+    cost_basis_method VARCHAR,
+    currency_code VARCHAR,
+    is_open BOOLEAN,
+    source_transaction_id VARCHAR,
+    basis_incomplete BOOLEAN,
+    updated_at TIMESTAMP
+);
+"""
+
+# core.fct_realized_gains — SQLMesh Python FULL-kind table in production.
+# Column shape mirrors fct_realized_gains.py's `columns={...}` block.
+CORE_FCT_REALIZED_GAINS_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_realized_gains (
+    realized_gain_id VARCHAR,
+    account_id VARCHAR,
+    security_id VARCHAR,
+    disposal_txn_id VARCHAR,
+    lot_id VARCHAR,
+    quantity DECIMAL(28, 10),
+    acquisition_date DATE,
+    disposal_date DATE,
+    proceeds DECIMAL(18, 2),
+    cost_basis DECIMAL(18, 2),
+    gain_loss DECIMAL(18, 2),
+    term VARCHAR,
+    cost_basis_method VARCHAR,
+    basis_incomplete BOOLEAN,
+    currency_code VARCHAR,
+    updated_at TIMESTAMP
+);
+"""
+
+# core.dim_holdings — SQLMesh-managed view in production (aggregates open
+# lots per account/security). Column shape mirrors dim_holdings.sql's
+# final SELECT; stubbed standalone (not derived from fct_investment_lots)
+# to match the dim_categories/dim_merchants stub convention.
+CORE_DIM_HOLDINGS_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.dim_holdings AS
+SELECT CAST(NULL AS VARCHAR) AS account_id,
+       CAST(NULL AS VARCHAR) AS security_id,
+       CAST(NULL AS DECIMAL(28, 10)) AS quantity,
+       CAST(NULL AS DECIMAL(18, 2)) AS cost_basis,
+       CAST(NULL AS DECIMAL(28, 10)) AS average_cost,
+       CAST(NULL AS VARCHAR) AS currency_code,
+       CAST(NULL AS TIMESTAMP) AS updated_at
+WHERE FALSE;
+"""
+# NB: quantity/cost_basis/average_cost types above mirror dim_holdings.sql's
+# explicit casts (DECIMAL(28,10)/(18,2)/(28,10)) — average_cost is DECIMAL,
+# NOT DOUBLE (DuckDB's decimal `/` promotes to DOUBLE unless the whole
+# division is cast back). database.md: no FLOAT for financial quantities.
+
 
 def create_core_dim_stub_views(db: Database) -> None:
-    """Materialize the dim_categories, dim_merchants, and bridge_category_source_map stub views.
+    """Materialize core.* SQLMesh-managed view/table stubs for testing.
 
     Production builds these via SQLMesh; tests stub them so anything
     inspecting the catalog (schema-catalog tests, classification
@@ -225,6 +330,11 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_DIM_CATEGORIES_STUB_DDL)
     db.execute(CORE_DIM_MERCHANTS_STUB_DDL)
     db.execute(CORE_BRIDGE_CATEGORY_SOURCE_MAP_STUB_DDL)
+    db.execute(CORE_DIM_SECURITIES_STUB_DDL)
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    db.execute(CORE_FCT_INVESTMENT_LOTS_DDL)
+    db.execute(CORE_FCT_REALIZED_GAINS_DDL)
+    db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
 
 
 def create_core_tables(db: Database) -> None:

@@ -231,9 +231,11 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |                                     Workflows defined in asset-tracking.md.
 |                                     Contributes to reports networth alongside accounts.
 |
-+-- investments                    -- (future spec) Brokerage/crypto holdings, lots, cost basis
-|                                     Workflows defined in investments-data-model.md.
-|                                     Contributes to reports networth via holdings valuation.
++-- investments                    -- Investment ledger, positions, tax lots, realized gains, and
+|                                     the manually-maintained securities catalog. Defined in
+|                                     investments-data-model.md (Pillars A+B, implemented).
+|                                     Cost basis only in v1; market value / net-worth integration
+|                                     await price feeds (Pillars C/D, planned).
 |   +-- add                        -- Record an investment event (buy/sell/dividend/transfer/...)
 |   +-- list                       -- List ledger events
 |   +-- holdings                   -- Current positions (cost basis; market value when price feeds land)

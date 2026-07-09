@@ -1,0 +1,30 @@
+scenario: investments-1099b-reconciliation
+description: >
+  The headline M1J.1 correctness gate. A hand-labeled full-tax-year ledger for
+  one security-rich account exercising the whole taxonomy: multiple buys, a sell
+  splitting across SHORT and LONG term AND across multiple FIFO lots, a
+  reinvested dividend (paired acquisition + income rows sharing an
+  event_group_id, the acquisition opening a lot), a 2:1 split, a return of
+  capital (pro-rata basis reduction), and exactly one oversold disposal (the
+  unmatched slice realizes at zero basis with basis_incomplete = TRUE). Raw rows
+  are seeded directly and the real transform derives the 1099-B grain. Every
+  expected per-lot realized gain, per-term total, and the income-aggregation
+  double-count check are hand-derived to the cent BEFORE running the pipeline
+  (no observe-and-paste); real-broker 1099-B data replaces the fixture at the
+  milestone tie-out later.
+
+setup:
+  persona: basic
+  seed: 42
+  years: 1
+
+# Pipeline steps are driven by the pytest entry
+# (test_investments_1099b_reconciliation.py) rather than the YAML runner: the
+# investment ledger is seeded directly into raw.manual_investment_transactions
+# (load_fixtures only handles csv/ofx cash transactions), then the transform is
+# run in-process. Mirrors networth-correctness.
+pipeline: []
+
+gates:
+  required_assertions: all
+  required_expectations: all

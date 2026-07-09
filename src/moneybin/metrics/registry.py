@@ -378,6 +378,23 @@ MERCHANT_LINK_OUTCOMES_TOTAL = Counter(
     ["outcome"],
 )
 
+# ── Investments ──────────────────────────────────────────────────────────────
+
+INVESTMENT_EVENTS_RECORDED_TOTAL = Counter(
+    "moneybin_investment_events_recorded_total",
+    "Investment ledger rows written to raw.manual_investment_transactions, by "
+    "taxonomy type. A reinvest increments twice (acquisition + income leg).",
+    labelnames=("type",),
+)
+
+SECURITY_RESOLUTION_OUTCOMES_TOTAL = Counter(
+    "moneybin_security_resolution_outcomes_total",
+    "Security-reference resolution outcomes by winning rung: cusip | isin | "
+    "ticker | name (resolved), or unresolved | ambiguous (raised).",
+    labelnames=("rung",),
+)
+
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 
 MCP_TOOL_CALLS_TOTAL = Counter(

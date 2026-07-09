@@ -243,3 +243,22 @@ class TestAccountsSetExtended:
         result = await accounts_set(account_id="ACC001", clear_fields=["display_name"])
         parsed = result.to_dict()
         assert parsed["data"]["display_name"] is None
+
+    @pytest.mark.unit
+    async def test_default_cost_basis_method_round_trips(self, mcp_db: Path) -> None:
+        """default_cost_basis_method param round-trips through the payload."""
+        result = await accounts_set(
+            account_id="ACC001", default_cost_basis_method="hifo"
+        )
+        parsed = result.to_dict()
+        assert parsed["data"]["default_cost_basis_method"] == "hifo"
+
+    @pytest.mark.unit
+    async def test_clear_default_cost_basis_method(self, mcp_db: Path) -> None:
+        """default_cost_basis_method is in _CLEARABLE_FIELDS; clearing it returns NULL."""
+        await accounts_set(account_id="ACC001", default_cost_basis_method="fifo")
+        result = await accounts_set(
+            account_id="ACC001", clear_fields=["default_cost_basis_method"]
+        )
+        parsed = result.to_dict()
+        assert parsed["data"]["default_cost_basis_method"] is None

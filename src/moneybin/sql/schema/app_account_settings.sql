@@ -12,5 +12,6 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     credit_limit         DECIMAL(18, 2),                           -- User-asserted credit limit on credit cards / lines (drives utilization metrics)
     archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from reports.net_worth
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to reports.net_worth (independent toggle, but archive cascades to FALSE)
+    default_cost_basis_method VARCHAR CHECK (default_cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')), -- Per-account cost-basis default (investments-data-model.md); NULL falls back to global FIFO
     updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
 );

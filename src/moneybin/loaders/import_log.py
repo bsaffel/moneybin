@@ -19,6 +19,7 @@ from typing import Literal
 from moneybin.database import Database
 from moneybin.tables import (
     IMPORT_LOG,
+    MANUAL_INVESTMENT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
@@ -51,7 +52,11 @@ REVERT_TABLES: dict[str, list[TableRef]] = {
     "feather": _TABULAR_RAW_TABLES,
     "pipe": _TABULAR_RAW_TABLES,
     "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES, OFX_INSTITUTIONS],
-    "manual": [MANUAL_TRANSACTIONS],
+    # Manual cash entries and manual investment events share source_type
+    # "manual" but write to different raw tables; revert is keyed on import_id
+    # and each batch's rows live in exactly one table, so listing both is safe
+    # (a cash-only batch deletes 0 investment rows and vice versa).
+    "manual": [MANUAL_TRANSACTIONS, MANUAL_INVESTMENT_TRANSACTIONS],
     # Phase 2a: PDF imports can land in either pdf_seeds (Phase 1 fallback) or
     # tabular_transactions + tabular_accounts (deterministic path). All three
     # are listed so revert clears whichever tables the import wrote to. The

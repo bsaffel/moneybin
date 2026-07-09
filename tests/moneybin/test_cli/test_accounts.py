@@ -527,6 +527,54 @@ class TestAccountsSet:
         mock_service.settings_update.assert_called_once()
 
     @pytest.mark.unit
+    def test_set_default_cost_basis_method_persists(self, runner: CliRunner) -> None:
+        from unittest.mock import MagicMock, patch
+
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.settings_update.return_value = (
+                MagicMock(default_cost_basis_method="fifo"),
+                [],
+            )
+            result = runner.invoke(
+                app,
+                ["accounts", "set", "acct_a", "--default-cost-basis-method", "fifo"],
+            )
+        assert result.exit_code == 0, result.stderr
+        call_kwargs = mock_service.settings_update.call_args.kwargs
+        assert call_kwargs.get("default_cost_basis_method") == "fifo"
+
+    @pytest.mark.unit
+    def test_set_clear_default_cost_basis_method(self, runner: CliRunner) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from moneybin.services.account_service import CLEAR
+
+        with (
+            patch("moneybin.cli.commands.accounts.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.AccountService"
+            ) as mock_service_class,
+        ):
+            mock_service = mock_service_class.return_value
+            mock_service.settings_update.return_value = (
+                MagicMock(default_cost_basis_method=None),
+                [],
+            )
+            result = runner.invoke(
+                app,
+                ["accounts", "set", "acct_a", "--clear-default-cost-basis-method"],
+            )
+        assert result.exit_code == 0, result.stderr
+        call_kwargs = mock_service.settings_update.call_args.kwargs
+        assert call_kwargs.get("default_cost_basis_method") is CLEAR
+
+    @pytest.mark.unit
     def test_set_unknown_holder_category_non_tty_exits_2(
         self, runner: CliRunner
     ) -> None:

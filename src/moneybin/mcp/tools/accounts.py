@@ -134,6 +134,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "iso_currency_code",
     "credit_limit",
     "display_name",
+    "default_cost_basis_method",
 })
 
 
@@ -147,6 +148,7 @@ def accounts_set(
     iso_currency_code: str | None = None,
     credit_limit: float | None = None,
     display_name: str | None = None,
+    default_cost_basis_method: str | None = None,
     include_in_net_worth: bool | None = None,
     is_archived: bool | None = None,
     clear_fields: list[str] | None = None,
@@ -163,6 +165,10 @@ def accounts_set(
 
     Behavioral fields:
       ``display_name`` — text override for the account's resolved name.
+      ``default_cost_basis_method`` — per-account cost-basis default for
+        investment disposals: one of ``"fifo"``, ``"hifo"``, ``"specific"``,
+        ``"average"``. ``None`` falls back to the global FIFO default. An
+        unrecognized value raises ``mutation_invalid_input`` before the write.
       ``include_in_net_worth`` — toggle inclusion in net-worth aggregates.
       ``is_archived`` — archive / unarchive flag.
 
@@ -170,8 +176,9 @@ def accounts_set(
     back to NULL, include its name in ``clear_fields``. Valid clearable names:
     ``"official_name"``, ``"last_four"``, ``"account_subtype"``,
     ``"holder_category"``, ``"iso_currency_code"``, ``"credit_limit"``,
-    ``"display_name"``. Booleans (``include_in_net_worth``, ``is_archived``) are
-    not clearable — pass the explicit value.
+    ``"display_name"``, ``"default_cost_basis_method"``. Booleans
+    (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
+    explicit value.
 
     Archive cascade: ``is_archived=True`` also sets ``include_in_net_worth=False``
     atomically in the same write. Unarchiving (``is_archived=False``) does NOT
@@ -193,6 +200,7 @@ def accounts_set(
         if credit_limit is not None
         else None,
         "display_name": display_name,
+        "default_cost_basis_method": default_cost_basis_method,
         "include_in_net_worth": include_in_net_worth,
         # MCP param `is_archived` → service kwarg `archived`.
         "archived": is_archived,
@@ -221,6 +229,7 @@ def accounts_set(
         holder_category=d.get("holder_category"),  # type: ignore[arg-type]
         iso_currency_code=d.get("iso_currency_code"),  # type: ignore[arg-type]
         credit_limit=d.get("credit_limit"),  # type: ignore[arg-type]
+        default_cost_basis_method=d.get("default_cost_basis_method"),  # type: ignore[arg-type]
         include_in_net_worth=bool(d["include_in_net_worth"]),
         archived=bool(d["archived"]),
         warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
@@ -545,7 +554,9 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         accounts_set,
         "accounts_set",
         "Partial update of an account's settings. Behavioral fields: "
-        "display_name, include_in_net_worth, is_archived. Structural fields: "
+        "display_name, default_cost_basis_method (fifo/hifo/specific/average; "
+        "invalid values raise mutation_invalid_input), include_in_net_worth, "
+        "is_archived. Structural fields: "
         "official_name, last_four, account_subtype, holder_category, "
         "iso_currency_code, credit_limit. Pass None to leave a field "
         "unchanged; include a text field's name in clear_fields to clear it "

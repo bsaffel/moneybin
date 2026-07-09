@@ -29,7 +29,7 @@ mcp = FastMCP(
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
         Top-level domains:
-        - accounts, transactions (query/correct/annotate/match/categorize), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
+        - accounts, transactions (query/correct/annotate/match/categorize), investments (ledger, holdings, lots, realized gains, securities catalog), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
         - categories, merchants (taxonomy reference data)
         - system (status, audit), import, sync (Plaid-mediated), gsheet (Google Sheets live sync), refresh (rebuild derived tables), sql (read-only escape hatch)
 
@@ -194,6 +194,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.gsheet import register_gsheet_tools
     from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
+    from moneybin.mcp.tools.investments import register_investments_tools
     from moneybin.mcp.tools.merchants import register_merchants_tools
     from moneybin.mcp.tools.privacy import register_privacy_tools
     from moneybin.mcp.tools.refresh import register_refresh_tools
@@ -224,6 +225,7 @@ def register_core_tools() -> None:
     register_system_tools(mcp)
     register_reports_tools(mcp)
     register_accounts_tools(mcp)
+    register_investments_tools(mcp)
     register_transactions_tools(mcp)
     register_transactions_categorize_tools(mcp)
     register_transactions_categorize_assist_tools(mcp)

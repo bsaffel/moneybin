@@ -466,6 +466,111 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "core.dim_securities": [
+        Example(
+            question="Look up a security by ticker (substitute YOUR_TICKER)",
+            sql="""
+                SELECT security_id, name, security_type, exchange, currency_code
+                FROM core.dim_securities
+                WHERE ticker = 'YOUR_TICKER'
+            """,
+        ),
+        Example(
+            question="Full securities catalog, grouped by instrument type",
+            sql="""
+                SELECT security_type, security_id, name, ticker
+                FROM core.dim_securities
+                ORDER BY security_type, name
+            """,
+        ),
+    ],
+    "core.fct_investment_transactions": [
+        Example(
+            question="Investment transactions for one account within a date range "
+            "(substitute YOUR_ACCOUNT_ID and the real dates)",
+            sql="""
+                SELECT trade_date, type, subtype, security_id, quantity, price, amount
+                FROM core.fct_investment_transactions
+                WHERE account_id = 'YOUR_ACCOUNT_ID'
+                  AND trade_date BETWEEN DATE '2024-01-01' AND DATE '2024-12-31'
+                ORDER BY trade_date DESC
+            """,
+        ),
+        Example(
+            question="Dividend and interest income received, by security",
+            sql="""
+                SELECT security_id, SUM(amount) AS total_income
+                FROM core.fct_investment_transactions
+                WHERE type IN ('dividend', 'interest')
+                GROUP BY security_id
+                ORDER BY total_income DESC
+            """,
+        ),
+    ],
+    "core.fct_investment_lots": [
+        Example(
+            question="Open tax lots for one account and security "
+            "(substitute YOUR_ACCOUNT_ID and YOUR_SECURITY_ID)",
+            sql="""
+                SELECT lot_id, acquisition_date, remaining_quantity, cost_basis_remaining
+                FROM core.fct_investment_lots
+                WHERE account_id = 'YOUR_ACCOUNT_ID'
+                  AND security_id = 'YOUR_SECURITY_ID'
+                  AND is_open
+                ORDER BY acquisition_date
+            """,
+        ),
+        Example(
+            question="Total remaining cost basis across all open lots in an account "
+            "(substitute YOUR_ACCOUNT_ID)",
+            sql="""
+                SELECT SUM(cost_basis_remaining) AS total_basis
+                FROM core.fct_investment_lots
+                WHERE account_id = 'YOUR_ACCOUNT_ID' AND is_open
+            """,
+        ),
+    ],
+    "core.fct_realized_gains": [
+        Example(
+            question="Realized gains/losses by term (short vs. long) for the current year",
+            sql="""
+                SELECT term, SUM(gain_loss) AS total_gain_loss
+                FROM core.fct_realized_gains
+                WHERE YEAR(disposal_date) = YEAR(CURRENT_DATE)
+                GROUP BY term
+            """,
+        ),
+        Example(
+            question="Realized gains for one security, most recent disposals first "
+            "(substitute YOUR_SECURITY_ID)",
+            sql="""
+                SELECT disposal_date, quantity, proceeds, cost_basis, gain_loss, term
+                FROM core.fct_realized_gains
+                WHERE security_id = 'YOUR_SECURITY_ID'
+                ORDER BY disposal_date DESC
+            """,
+        ),
+    ],
+    "core.dim_holdings": [
+        Example(
+            question="Current holdings across all accounts",
+            sql="""
+                SELECT account_id, security_id, quantity, cost_basis, average_cost
+                FROM core.dim_holdings
+                ORDER BY account_id, security_id
+            """,
+        ),
+        Example(
+            question="Holdings for one account with average cost per unit "
+            "(substitute YOUR_ACCOUNT_ID)",
+            sql="""
+                SELECT security_id, quantity, cost_basis, average_cost, currency_code
+                FROM core.dim_holdings
+                WHERE account_id = 'YOUR_ACCOUNT_ID'
+                ORDER BY cost_basis DESC
+            """,
+        ),
+    ],
 }
 
 _BEYOND_NOTE = (

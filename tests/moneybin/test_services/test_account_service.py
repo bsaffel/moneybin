@@ -362,6 +362,41 @@ class TestAccountServiceMutators:
         assert len(warnings) == 1
         assert warnings[0]["field"] == "holder_category"
 
+    @pytest.mark.unit
+    def test_settings_update_default_cost_basis_method_persists(
+        self, test_db: Database
+    ) -> None:
+        svc = AccountService(test_db)
+        updated, warnings = svc.settings_update(
+            "acct_a", actor="cli", default_cost_basis_method="hifo"
+        )
+        assert updated.default_cost_basis_method == "hifo"
+        assert warnings == []
+        loaded = svc._load_settings("acct_a")
+        assert loaded is not None
+        assert loaded.default_cost_basis_method == "hifo"
+
+    @pytest.mark.unit
+    def test_settings_update_default_cost_basis_method_clear_sentinel(
+        self, test_db: Database
+    ) -> None:
+        svc = AccountService(test_db)
+        svc.settings_update("acct_a", actor="cli", default_cost_basis_method="fifo")
+        updated, _ = svc.settings_update(
+            "acct_a", actor="cli", default_cost_basis_method=CLEAR
+        )
+        assert updated.default_cost_basis_method is None
+
+    @pytest.mark.unit
+    def test_settings_update_invalid_default_cost_basis_method_raises_before_db(
+        self, test_db: Database
+    ) -> None:
+        svc = AccountService(test_db)
+        with pytest.raises(UserError, match="Invalid cost-basis method"):
+            svc.settings_update("acct_a", actor="cli", default_cost_basis_method="lifo")
+        # Rejected before the DB write: no settings row was ever created.
+        assert svc._load_settings("acct_a") is None
+
 
 class TestSettingsUpdateExtended:
     """Tests for the Group 13 settings_update extension.

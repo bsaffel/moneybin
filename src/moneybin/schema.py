@@ -93,6 +93,9 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "raw_gsheet_seeds.sql",
     "raw_pdf_seeds.sql",
     "app_pdf_formats.sql",
+    "app_securities.sql",
+    "raw_manual_investment_transactions.sql",
+    "app_lot_selections.sql",
 ]
 
 

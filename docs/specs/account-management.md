@@ -36,7 +36,7 @@ Related specs and docs:
    - **MCP:** write always succeeds; response envelope includes a `warnings: [...]` array with field, message, and suggestion. The agent decides whether to retry.
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_type + …last_four(account_id)`) → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`.
-9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). Archiving cascades `--exclude` atomically; unarchiving does NOT auto-restore include. See [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags.
+9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). Archiving cascades `--exclude` atomically; unarchiving does NOT auto-restore include. See [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags. (`--default-cost-basis-method` added by [`investments-data-model.md`](investments-data-model.md).)
 10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) plus three read tools (`accounts`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources. The MCP-side boolean parameter for archive is `is_archived` (Pythonic prefix preferred for agent-facing names); the response data emits `archived` (the underlying dataclass field).
 11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     credit_limit         DECIMAL(18, 2),                           -- User-asserted credit limit on credit cards / lines (drives utilization metrics)
     archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from agg_net_worth
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to agg_net_worth (independent toggle, but archive cascades to FALSE)
+    default_cost_basis_method VARCHAR CHECK (default_cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')), -- Per-account cost-basis default (added by investments-data-model.md); NULL falls back to global FIFO
     updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
 );
 ```
@@ -78,6 +79,14 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
 | `credit_limit` | non-negative `DECIMAL(18,2)` |
 
 Service-layer validation rather than SQL CHECK keeps the table forgiving of historical rows if Plaid sync ever back-fills with looser data.
+
+**`default_cost_basis_method`** is the one exception — added by
+[`investments-data-model.md`](investments-data-model.md), it is a closed
+four-value vocabulary (`fifo`, `hifo`, `specific`, `average`) enforced with a
+SQL `CHECK` constraint rather than service-layer validation, since an
+elected-but-unimplemented method would silently miscompute cost basis (see
+that spec's Cost-Basis Engine section). `NULL` falls back to the global FIFO
+default.
 
 **Open question — Plaid precedence (deferred to `sync-plaid.md`):** When Plaid sync ships and starts populating `official_name` / `last_four` / `account_subtype` / `holder_category` / `iso_currency_code` automatically, what happens if the user has already written a value? Options: (i) Plaid wins on resync, (ii) user wins, (iii) per-field "user_modified" tracking. For v1 (no Plaid yet) this doesn't matter. The table shape is forward-compatible with all three; pick one when `sync-plaid.md` is designed.
 
@@ -133,6 +142,7 @@ moneybin accounts set <account_id>
     [--holder-category personal|business|joint]
     [--currency USD]
     [--credit-limit AMOUNT]
+    [--default-cost-basis-method fifo|hifo|specific|average]
     [--clear-display-name]
     [--clear-official-name]
     [--clear-last-four]
@@ -140,6 +150,7 @@ moneybin accounts set <account_id>
     [--clear-holder-category]
     [--clear-currency]
     [--clear-credit-limit]
+    [--clear-default-cost-basis-method]
     [--yes]
 ```
 - At least one field flag required (else exit `2` with usage error).
@@ -152,6 +163,7 @@ moneybin accounts set <account_id>
   Proceed anyway? [y/N]:
   ```
   `--yes` skips the prompt and writes. Non-TTY contexts (scripts, CI) without `--yes` exit `2` with the warning text — forces explicit intent.
+- **`--default-cost-basis-method`** (added by [`investments-data-model.md`](investments-data-model.md)): per-account default cost-basis method (`fifo`, `hifo`, `specific`, `average`); an invalid value is rejected before any write (SQL `CHECK`, not soft-validated). `NULL` (the default, or after `--clear-default-cost-basis-method`) falls back to global FIFO. A per-security override on the security catalog (`moneybin investments securities set --method`) takes precedence over this account default; see that spec's Cost-Basis Engine section.
 
 ## MCP Interface
 
@@ -169,7 +181,7 @@ Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix)
 
 | Tool | Params | Returns |
 |---|---|---|
-| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`. Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived=True` cascades `include_in_net_worth=False` atomically; unarchive does NOT auto-restore include. | updated settings row + optional `warnings: [...]`; data includes `cascaded_include_in_net_worth: false` when `is_archived=True` was the cause. Response data emits `archived` (not `is_archived`) as the field name. |
+| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`, `default_cost_basis_method` (added by [`investments-data-model.md`](investments-data-model.md); `fifo`/`hifo`/`specific`/`average`). Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived=True` cascades `include_in_net_worth=False` atomically; unarchive does NOT auto-restore include. | updated settings row + optional `warnings: [...]`; data includes `cascaded_include_in_net_worth: false` when `is_archived=True` was the cause. Response data emits `archived` (not `is_archived`) as the field name. |
 
 ### Soft-validation in MCP
 

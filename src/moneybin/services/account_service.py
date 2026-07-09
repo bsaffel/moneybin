@@ -15,6 +15,7 @@ from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
 from typing import Any, cast
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import (
@@ -124,6 +125,16 @@ PLAID_CANONICAL_HOLDER_CATEGORIES: frozenset[str] = frozenset({
     "joint",
 })
 
+# Closed vocabulary (unlike the open Plaid-parity sets above) — mirrors the
+# app.account_settings.default_cost_basis_method CHECK constraint (V034).
+# Hard-validated in settings_update(); the DB CHECK is the backstop.
+COST_BASIS_METHODS: frozenset[str] = frozenset({
+    "fifo",
+    "hifo",
+    "specific",
+    "average",
+})
+
 
 def is_canonical_subtype(value: str) -> bool:
     """Whether the value matches Plaid's documented subtype list (case-insensitive)."""
@@ -177,6 +188,7 @@ class AccountSettings:
     credit_limit: Decimal | None = None
     archived: bool = False
     include_in_net_worth: bool = True
+    default_cost_basis_method: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict for JSON / envelope transport."""
@@ -191,6 +203,7 @@ class AccountSettings:
             "credit_limit": self.credit_limit,
             "archived": self.archived,
             "include_in_net_worth": self.include_in_net_worth,
+            "default_cost_basis_method": self.default_cost_basis_method,
         }
 
     def __post_init__(self) -> None:
@@ -353,7 +366,8 @@ class AccountService:
             f"""
             SELECT account_id, display_name, official_name, last_four,
                    account_subtype, holder_category, iso_currency_code,
-                   credit_limit, archived, include_in_net_worth
+                   credit_limit, archived, include_in_net_worth,
+                   default_cost_basis_method
             FROM {ACCOUNT_SETTINGS.full_name}
             WHERE account_id = ?
             """,
@@ -372,6 +386,7 @@ class AccountService:
             credit_limit=row[7],
             archived=row[8],
             include_in_net_worth=row[9],
+            default_cost_basis_method=row[10],
         )
 
     def list_accounts(
@@ -609,6 +624,7 @@ class AccountService:
         iso_currency_code: str | None | object = None,
         credit_limit: Decimal | None | object = None,
         display_name: str | None | object = None,
+        default_cost_basis_method: str | None | object = None,
         include_in_net_worth: bool | None = None,
         archived: bool | None = None,
     ) -> tuple[AccountSettings, list[dict[str, str]]]:
@@ -624,6 +640,12 @@ class AccountService:
         contribute to net worth. ``archived=False`` does NOT auto-restore
         ``include_in_net_worth`` — matches the prior ``unarchive()`` contract;
         callers re-enable inclusion explicitly when intended.
+
+        ``default_cost_basis_method`` is hard-validated (unlike the soft
+        ``account_subtype`` / ``holder_category`` warnings): a non-CLEAR,
+        non-None value outside :data:`COST_BASIS_METHODS` raises ``UserError``
+        (code ``mutation_invalid_input``) before the DB write. The column's
+        ``CHECK`` constraint is the backstop, not the primary contract.
         """
         self._assert_account_exists(account_id)
         current = self._load_or_default(account_id)
@@ -651,6 +673,7 @@ class AccountService:
         _resolve("iso_currency_code", iso_currency_code)
         _resolve("credit_limit", credit_limit)
         _resolve("display_name", display_name)
+        _resolve("default_cost_basis_method", default_cost_basis_method)
         # Non-null booleans: pass-through when set, no CLEAR semantics.
         if include_in_net_worth is not None:
             diff["include_in_net_worth"] = include_in_net_worth
@@ -672,6 +695,18 @@ class AccountService:
                 "suggestion": suggest_holder_category(holder) or "",
             })
 
+        # Hard validation (not a soft warning): default_cost_basis_method is a
+        # closed vocabulary. Raise before the DB write; the CHECK constraint
+        # is the backstop, not the primary contract.
+        method = diff.get("default_cost_basis_method")
+        if isinstance(method, str) and method not in COST_BASIS_METHODS:
+            valid = ", ".join(sorted(COST_BASIS_METHODS))
+            raise UserError(
+                f"Invalid cost-basis method: {method!r}. Valid methods: {valid}.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint=f"Valid methods: {valid}.",
+            )
+
         # No fields to change → no write. Under Invariant 10 a repo call would
         # bump updated_at and emit an `account_settings.set` audit row for a
         # mutation that changed nothing — misleading forensic evidence. Return
@@ -691,6 +726,7 @@ class AccountService:
             credit_limit=updated.credit_limit,
             archived=updated.archived,
             include_in_net_worth=updated.include_in_net_worth,
+            default_cost_basis_method=updated.default_cost_basis_method,
             actor=actor,
         )
         logger.info(

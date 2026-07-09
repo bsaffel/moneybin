@@ -153,7 +153,6 @@ class TestStubCommands:
             ["sync", "schedule", "set"],
             ["sync", "schedule", "show"],
             ["sync", "schedule", "remove"],
-            ["accounts", "investments", "show"],
             ["budget", "set", "Food", "500"],
             ["budget", "delete", "Food"],
             ["export", "run"],

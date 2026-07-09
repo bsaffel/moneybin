@@ -26,6 +26,7 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "credit_limit",
     "archived",
     "include_in_net_worth",
+    "default_cost_basis_method",
     "updated_at",
 )
 
@@ -56,6 +57,7 @@ class AccountSettingsRepo(BaseRepo):
         credit_limit: Decimal | None,
         archived: bool,
         include_in_net_worth: bool,
+        default_cost_basis_method: str | None,
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
@@ -74,8 +76,9 @@ class AccountSettingsRepo(BaseRepo):
                 INSERT INTO {ACCOUNT_SETTINGS.full_name} (
                     account_id, display_name, official_name, last_four,
                     account_subtype, holder_category, iso_currency_code,
-                    credit_limit, archived, include_in_net_worth
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    credit_limit, archived, include_in_net_worth,
+                    default_cost_basis_method
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (account_id) DO UPDATE SET
                     display_name         = excluded.display_name,
                     official_name        = excluded.official_name,
@@ -86,6 +89,7 @@ class AccountSettingsRepo(BaseRepo):
                     credit_limit         = excluded.credit_limit,
                     archived             = excluded.archived,
                     include_in_net_worth = excluded.include_in_net_worth,
+                    default_cost_basis_method = excluded.default_cost_basis_method,
                     updated_at           = NOW()
                 """,  # noqa: S608  # TableRef + parameterized values
                 [
@@ -99,6 +103,7 @@ class AccountSettingsRepo(BaseRepo):
                     credit_limit,
                     archived,
                     include_in_net_worth,
+                    default_cost_basis_method,
                 ],
             )
             after = self._fetch_row(account_id)

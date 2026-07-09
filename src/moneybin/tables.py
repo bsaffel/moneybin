@@ -94,6 +94,21 @@ TRANSACTION_ID_ALIASES = TableRef("app", "transaction_id_aliases")
 MERCHANT_LINKS = TableRef("app", "merchant_links")
 MERCHANT_LINK_DECISIONS = TableRef("app", "merchant_link_decisions")
 
+# -- Investments tables (M1J) --
+# The five core models are audience="interface": their SQLMesh models +
+# schema-catalog examples have landed (INTERFACE_TABLES is a live contract:
+# the table must exist in the catalog DB and carry query examples).
+SECURITIES = TableRef("app", "securities")
+LOT_SELECTIONS = TableRef("app", "lot_selections")
+MANUAL_INVESTMENT_TRANSACTIONS = TableRef("raw", "manual_investment_transactions")
+DIM_SECURITIES = TableRef("core", "dim_securities", audience="interface")
+FCT_INVESTMENT_TRANSACTIONS = TableRef(
+    "core", "fct_investment_transactions", audience="interface"
+)
+FCT_INVESTMENT_LOTS = TableRef("core", "fct_investment_lots", audience="interface")
+FCT_REALIZED_GAINS = TableRef("core", "fct_realized_gains", audience="interface")
+DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
+
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 SEED_CATEGORY_SOURCE_MAP = TableRef("seeds", "category_source_map")

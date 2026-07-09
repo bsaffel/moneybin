@@ -61,6 +61,12 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 - **Account management** — `moneybin accounts list / get / resolve / set` with Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). One unified `set` covers display name, include-in-net-worth, and archive state. Reversible account merging via bridge model. -> [CLI reference](guides/cli-reference.md)
 - **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports networth / networth-history` with period-over-period change. Daily carry-forward of authoritative observations from OFX, Plaid sync balances, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
 
+## Investments
+
+- **Securities catalog** — `moneybin investments securities add / set / list` maintains a manual catalog (equity, ETF, mutual fund, bond, crypto, cash, other) keyed on a stable id, with ticker, CUSIP, ISIN, FIGI, and CoinGecko-id as optional attributes. -> [CLI reference](guides/cli-reference.md)
+- **Investment ledger** — `moneybin investments add` records buys, sells, reinvested dividends, interest, capital-gain distributions, transfers, splits, fees, and return of capital by hand; `investments list` reviews recorded events. -> [CLI reference](guides/cli-reference.md)
+- **Cost basis, tax lots, and realized gain/loss** — Four cost-basis methods — FIFO (default), HIFO, specific identification, and average cost (funds/ETFs) — all compute over the same derived lot ledger. `investments holdings` shows current quantity and cost basis per position (market value and unrealized gain arrive with a future price-feed pillar); `investments gains` reports realized short-/long-term gain/loss — the 1099-B surface, checked against a hand-labeled full-tax-year fixture; `investments lots select` overrides which lots a sale draws from for tax-loss harvesting. The default method is set per-account (`accounts set --default-cost-basis-method`) or per-security (`investments securities set --method`). -> [CLI reference](guides/cli-reference.md)
+
 ## Reports
 
 Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
@@ -124,7 +130,7 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 
 - **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit. Planned, not shipped.
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
-- **Investment tracking** — Holdings, FIFO lots, cost basis, 1099-B reconciliation. Planned (core, not a package).
+- **Investment price feeds and net-worth integration** — Market-valued holdings and unrealized gain/loss (needs a price feed) and folding investment positions into net worth. The ledger, tax lots, four-method cost basis, and realized gain/loss (1099-B surface) already shipped — see [Investments](#investments) above. Planned (core, not a package).
 - **Multi-currency** — FX gain/loss and non-USD accounts. Planned.
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
 - **Hosted tier** — Same code, hosted. Planned.

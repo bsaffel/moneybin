@@ -120,6 +120,13 @@ not-yet-built.
 | 57| Show recent merchant-link decisions (all statuses) | `merchants_links_history` *(`limit=50`)* | `merchants links history` *(`--limit`, `--output json`)* | — | live |
 | 58| Harvest pending merchant-link proposals from existing categorization facts | `merchants_links_run` *(returns `data.bound` + `data.conflicts`)* | `merchants links run` *(`--output json`; returns `data.bound` + `data.conflicts`)* | — | live |
 | 59| Upgrade AI-guessed transactions to confident provider-native (Plaid) categories | `transactions_categorize_improve_ai` | `transactions categorize improve-ai` | — | live |
+| 60| Record one or more investment ledger events (buy/sell/dividend/transfer/split/...) | `investments_record` *(`events=[{account, type, date, security?, quantity?, price?, amount?, fees?, subtype?, acquired?, basis?, event_group_id?, currency?, description?}, ...]`; a `reinvest` event writes an acquisition + income row pair sharing one `event_group_id`)* | `investments add` *(`--account`, `--type`, `--date`, `--security`, `--quantity`, `--price`, `--amount`, `--fees`, `--subtype`, `--acquired`, `--basis`, `--event-group`, `--currency`)* | — | live |
+| 61| List investment ledger events filtered by account/security/type/date | `investments` *(`account?`, `security?`, `type_filter?`, `from_date?`, `to_date?`)* | `investments list` *(`--account`, `--security`, `--type`, `--from`, `--to`)* | — | live |
+| 62| View current investment positions (quantity, cost basis, average cost) | `investments_holdings` *(`account?`)* | `investments holdings` *(`--account`)* | — | live |
+| 63| View tax lots with remaining quantity and basis | `investments_lots` *(`account?`, `security?`, `open_only=true`)* | `investments lots list` *(`--account`, `--security`, `--open/--all`)* | — | live |
+| 64| Override which lots a disposal draws from (specific identification) | `investments_lots_select` *(`disposal_txn_id`, `selections=[{lot_id, quantity}, ...]`; empty list reverts to FIFO)* | `investments lots select <disposal_txn_id> --lot ID:QTY [--lot ...]` / `--clear` | — | live |
+| 65| View realized gain/loss (the 1099-B surface) | `investments_gains` *(`account?`, `security?`, `from_date?`, `to_date?`, `term?`)* | `investments gains` *(`--account`, `--security`, `--from`, `--to`, `--term`)* | — | live |
+| 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -174,7 +181,14 @@ Row 53 added 2026-06-16 with the review-promotion PR (M1S.5c):
 `review` (MCP) and `moneybin review` (CLI) replace `transactions_review` /
 `moneybin transactions review` as the domain-neutral orientation sweep. Payload gains
 `account_links_pending` so one call covers all three queues. Old names kept as
-deprecated aliases for one minor release; descriptions start with "DEPRECATED:".)*
+deprecated aliases for one minor release; descriptions start with "DEPRECATED:".
+Rows 59–65 added 2026-07-04 with the investments-data-model PR (M1J.1 foundation
+child, Pillars A+B): five `investments_*` read tools and three write tools
+(`investments_record`, `investments_securities_set`, `investments_lots_select`)
+register alongside the top-level `investments` CLI group. Sensitivity is derived
+per tool from payload field classification rather than declared statically —
+`high` for the ledger/holdings/lots/gains tools (cost basis and proceeds are
+`BALANCE`-classified), `low` for the securities catalog (reference data only).)*
 
 ## Exemption categories
 

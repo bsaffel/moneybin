@@ -138,6 +138,140 @@ class TestOFXImportPipeline:
         assert count > 0, f"Expected rows after OFX import, got {count}"
 
 
+class TestInvestmentsPipeline:
+    """Workflow 3a: securities add -> buy/sell -> transform -> lots select -> gains.
+
+    Investments are import-first for the *account* (OFX mints a real
+    account_id) but ledger-first for the *transactions* (record_event, not
+    file import) — this exercises both halves through the real CLI/subprocess
+    boundary, closing the zero-E2E-coverage gap for the whole investments
+    surface (testing.md: "Every CLI command must have an E2E subprocess
+    test").
+    """
+
+    def test_investments_lifecycle(
+        self, _mutating_profile_template: Path, e2e_home: Path
+    ) -> None:
+        env = make_workflow_env_fast(
+            e2e_home, "wf-investments", _mutating_profile_template
+        )
+
+        # Investment accounts still resolve through core.dim_accounts, which
+        # is SQLMesh-managed — mint one via the existing OFX fixture.
+        fixture = FIXTURES_DIR / "sample_statement.qfx"
+        run_cli(
+            "import", "files", str(fixture), "--no-refresh", env=env
+        ).assert_success()
+        run_cli("transform", "apply", env=env, timeout=180).assert_success()
+
+        result = run_cli("accounts", "list", "--output", "json", env=env)
+        result.assert_success()
+        account_id = json.loads(result.stdout)["data"]["rows"][0]["account_id"]
+
+        # Add a security, a buy, and a sell.
+        result = run_cli(
+            "investments",
+            "securities",
+            "add",
+            "--name",
+            "Apple Inc.",
+            "--type",
+            "equity",
+            "--ticker",
+            "AAPL",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        security_id = json.loads(result.stdout)["data"]["security_id"]
+
+        run_cli(
+            "investments",
+            "securities",
+            "set",
+            security_id,
+            "--method",
+            "fifo",
+            env=env,
+        ).assert_success()
+
+        result = run_cli(
+            "investments",
+            "add",
+            "--account",
+            account_id,
+            "--security",
+            "AAPL",
+            "--type",
+            "buy",
+            "--date",
+            "2024-01-15",
+            "--quantity",
+            "10",
+            "--price",
+            "150.00",
+            "--amount",
+            "-1500.00",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+
+        result = run_cli(
+            "investments",
+            "add",
+            "--account",
+            account_id,
+            "--security",
+            "AAPL",
+            "--type",
+            "sell",
+            "--date",
+            "2024-06-15",
+            "--quantity",
+            "-4",
+            "--price",
+            "200.00",
+            "--amount",
+            "800.00",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        sell_txn_id = json.loads(result.stdout)["data"]["investment_transaction_ids"][0]
+
+        # Materialize core.fct_investment_lots / fct_realized_gains.
+        run_cli("transform", "apply", env=env, timeout=180).assert_success()
+
+        result = run_cli("investments", "lots", "list", "--output", "json", env=env)
+        result.assert_success()
+        lot_id = json.loads(result.stdout)["data"]["rows"][0]["lot_id"]
+
+        # Specific-ID override, then confirm the read paths still boot clean.
+        result = run_cli(
+            "investments",
+            "lots",
+            "select",
+            sell_txn_id,
+            "--lot",
+            f"{lot_id}:4",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+
+        run_cli("investments", "gains", "--output", "json", env=env).assert_success()
+        run_cli("investments", "holdings", "--output", "json", env=env).assert_success()
+        run_cli("investments", "list", "--output", "json", env=env).assert_success()
+        run_cli(
+            "investments", "securities", "list", "--output", "json", env=env
+        ).assert_success()
+
+
 _PDF_FIXTURE_DIR = (
     Path(__file__).parent.parent
     / "moneybin"

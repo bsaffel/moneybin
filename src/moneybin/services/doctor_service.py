@@ -30,10 +30,12 @@ from moneybin.tables import (
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    LOT_SELECTIONS,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
     PDF_FORMATS,
     PROPOSED_RULES,
+    SECURITIES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -210,10 +212,11 @@ class DoctorService:
         ``category_overrides``, ``gsheet_connections``, ``user_merchants``,
         ``categorization_rules``, ``proposed_rules``, ``transaction_categories``,
         ``account_settings``, ``balance_assertions``, ``budgets``, plus the edge
-        writers ``tabular_formats``, ``match_decisions``, ``imports``, and the
+        writers ``tabular_formats``, ``match_decisions``, ``imports``, the
         account-identity tables ``account_links``, ``account_link_decisions``,
-        ``transaction_id_aliases``); later repository PRs append one coverage call
-        per newly-wrapped table plus that table's FK/orphan specifics.
+        ``transaction_id_aliases``, and the investments tables ``securities``,
+        ``lot_selections``); later repository PRs append one coverage call per
+        newly-wrapped table plus that table's FK/orphan specifics.
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
@@ -280,6 +283,17 @@ class DoctorService:
             self._run_app_audit_coverage(
                 TRANSACTION_ID_ALIASES,
                 "old_transaction_id",
+                updated_col="created_at",
+                full=full,
+            ),
+            self._run_app_audit_coverage(SECURITIES, "security_id", full=full),
+            # lot_selections.set audits the whole disposal as ONE collection-shaped
+            # row (LotSelectionsRepo), not one row per (investment_transaction_id,
+            # lot_id) — key on investment_transaction_id alone to match, and use
+            # created_at (rows are DELETE+INSERT replaced, never updated in place).
+            self._run_app_audit_coverage(
+                LOT_SELECTIONS,
+                "investment_transaction_id",
                 updated_col="created_at",
                 full=full,
             ),

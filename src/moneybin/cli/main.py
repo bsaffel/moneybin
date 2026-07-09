@@ -24,6 +24,7 @@ from .commands import (
     db,
     gsheet,
     import_cmd,
+    investments,
     logs,
     mcp,
     merchants,
@@ -151,6 +152,11 @@ app.command(
 )(review.review_command)
 app.add_typer(transactions.app, name="transactions")
 app.add_typer(assets.app, name="assets")
+app.add_typer(
+    investments.app,
+    name="investments",
+    help="Investment ledger, positions, lots, gains, and securities catalog",
+)
 app.add_typer(categories.app, name="categories")
 app.add_typer(merchants.app, name="merchants")
 app.add_typer(
