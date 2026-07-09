@@ -1122,6 +1122,10 @@ class TestSelectLots:
                     'short', 'fifo', false, 'USD')
             """  # noqa: S608  # test fixture insert, static SQL
         )
+        db.conn.execute(
+            "UPDATE core.fct_investment_lots SET remaining_quantity = 0 "
+            "WHERE lot_id = 'lot_a'"  # noqa: S608  # test fixture update, static SQL
+        )
         with pytest.raises(UserError, match="position|lot"):
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
 
@@ -1154,6 +1158,38 @@ class TestSelectLots:
                     4, '2024-01-10', '2024-04-01', 400.00, 333.33, 66.67,
                     'short', 'fifo', false, 'USD')
             """  # noqa: S608  # test fixture insert, static SQL
+        )
+        db.conn.execute(
+            "UPDATE core.fct_investment_lots SET remaining_quantity = 2 "
+            "WHERE lot_id = 'lot_a'"  # noqa: S608  # test fixture update, static SQL
+        )
+        with pytest.raises(UserError, match="position|lot"):
+            db_service(db).select_lots("sell_1", [("lot_a", Decimal("3"))], actor="cli")
+        # The 2 units still available are a valid selection.
+        db_service(db).select_lots("sell_1", [("lot_a", Decimal("2"))], actor="cli")
+
+    def test_lot_consumed_by_earlier_transfer_out_rejected(self, db: Database) -> None:
+        # `transfer_out` consumes lots but realizes no gain, so it never writes
+        # a `core.fct_realized_gains` row (cost_basis.py:449-450). A check that
+        # only sums `fct_realized_gains` to find earlier consumption is blind
+        # to an earlier transfer_out's draw-down, so a selection could exceed
+        # what's actually left and silently fall back to FIFO at replay time —
+        # same failure mode as an earlier sell, just invisible to that table.
+        # lot_a (original_quantity=6) was reduced to remaining_quantity=2 by an
+        # earlier transfer_out (2024-04-01, before sell_1's 2024-06-15).
+        _seed_disposal_and_lots(db)  # sell_1 trades 2024-06-15, lot_a qty=6
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_transactions
+                (investment_transaction_id, account_id, security_id, trade_date,
+                 type, quantity)
+            VALUES ('transfer_out_earlier', 'acct_brokerage', 'sec_1',
+                    '2024-04-01', 'transfer_out', -4)
+            """  # noqa: S608  # test fixture insert, static SQL
+        )
+        db.conn.execute(
+            "UPDATE core.fct_investment_lots SET remaining_quantity = 2 "
+            "WHERE lot_id = 'lot_a'"  # noqa: S608  # test fixture update, static SQL
         )
         with pytest.raises(UserError, match="position|lot"):
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("3"))], actor="cli")

@@ -1389,20 +1389,35 @@ class InvestmentService:
 
         A lot is valid only if it exists in ``core.fct_investment_lots``,
         belongs to the disposal's ``(account_id, security_id)``, was acquired
-        on or before ``disposal_date``, AND has enough quantity left after
-        subtracting whatever earlier disposals (by ``core.fct_realized_gains``)
-        already drew from it. All four are load-bearing: the engine's
-        chronological replay (``compute_lots_and_gains``) mutates each lot's
-        ``remaining_quantity`` in place as it consumes disposals in trade-date
-        order, so a lot from another position, one acquired after this
-        disposal, or one already exhausted (fully or partially) by an earlier
-        disposal isn't available for the full requested quantity in
+        on or before ``disposal_date``, AND has enough quantity available as of
+        this disposal's position in the replay. All four are load-bearing: the
+        engine's chronological replay (``compute_lots_and_gains``) mutates each
+        lot's ``remaining_quantity`` in place as it consumes disposals in
+        trade-date order, so a lot from another position, one acquired after
+        this disposal, or one already exhausted (fully or partially) by an
+        earlier disposal isn't available for the full requested quantity in
         ``_consumption_plan``'s ``by_lot_id`` at replay time — the selection
         (or its unavailable remainder) is silently dropped to a FIFO fallback,
         producing a wrong 1099-B with no error. Same-day acquisitions ARE
         valid: ``_SAME_DAY_TYPE_ORDER`` processes acquisitions before disposals
-        on a shared trade date; the "earlier disposal" comparison excludes this
-        disposal's own already-materialized realized-gain rows.
+        on a shared trade date.
+
+        Availability is derived from ``l.remaining_quantity`` — the lot's
+        *current* leftover after every disposal recorded against it, sell or
+        ``transfer_out`` alike — rather than from ``original_quantity`` minus a
+        sum over ``core.fct_realized_gains``. ``transfer_out`` consumes lots
+        but realizes no gain (``cost_basis.py``'s ``_consume``), so it never
+        writes a ``fct_realized_gains`` row; a check built only from that table
+        is blind to an earlier ``transfer_out``'s draw-down. Starting from
+        ``remaining_quantity`` bakes in every disposal type's consumption, then
+        adds back whatever this disposal itself (or any disposal NOT strictly
+        earlier — a later date, or a tie broken by ``investment_transaction_id``)
+        drew via ``fct_realized_gains``, since only sells are addressable that
+        way. A later ``transfer_out``'s consumption can't be added back the
+        same way and stays folded into ``remaining_quantity``'s reduction —
+        conservative by construction (can only under-state availability, never
+        over-state it), so the check fails closed toward a clean rejection
+        rather than a silent bad selection.
         """
         for lot_id, qty in selections:
             if qty <= 0:
@@ -1414,19 +1429,18 @@ class InvestmentService:
         lot_ids = list(requested)
         placeholders = ", ".join("?" * len(lot_ids))
         rows = self._db.execute(
-            f"SELECT l.lot_id, l.original_quantity, "  # noqa: S608  # TableRef constant
+            f"SELECT l.lot_id, l.remaining_quantity, "  # noqa: S608  # TableRef constant
             "COALESCE(SUM(g.quantity), 0) "
             f"FROM {FCT_INVESTMENT_LOTS.full_name} l "
             f"LEFT JOIN {FCT_REALIZED_GAINS.full_name} g "
-            "ON g.lot_id = l.lot_id AND g.disposal_txn_id != ? "
-            "AND (g.disposal_date < ? "
-            "OR (g.disposal_date = ? AND g.disposal_txn_id < ?)) "
+            "ON g.lot_id = l.lot_id "
+            "AND (g.disposal_date > ? "
+            "OR (g.disposal_date = ? AND g.disposal_txn_id >= ?)) "
             f"WHERE l.lot_id IN ({placeholders}) "
             "AND l.account_id = ? AND l.security_id = ? "
             "AND l.acquisition_date <= ? "
-            "GROUP BY l.lot_id, l.original_quantity",
+            "GROUP BY l.lot_id, l.remaining_quantity",
             [
-                disposal_txn_id,
                 disposal_date,
                 disposal_date,
                 disposal_txn_id,
@@ -1436,7 +1450,7 @@ class InvestmentService:
                 disposal_date,
             ],
         ).fetchall()
-        available = {str(r[0]): Decimal(str(r[1])) - Decimal(str(r[2])) for r in rows}
+        available = {str(r[0]): Decimal(str(r[1])) + Decimal(str(r[2])) for r in rows}
         problems = [
             lot_id
             for lot_id in lot_ids
