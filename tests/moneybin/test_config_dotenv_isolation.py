@@ -36,12 +36,14 @@ import pytest
 from moneybin.config import MoneyBinSettings
 
 
-def _load_root_conftest() -> ModuleType:
-    """Load the repo-root ``conftest.py`` as a module, by path.
+@pytest.fixture(scope="module")
+def root_conftest() -> ModuleType:
+    """The repo-root ``conftest.py``, loaded once by path for this module.
 
     It is not importable as ``conftest`` from here — ``tests/conftest.py``
     shadows that name under pytest's prepend import mode — so load it explicitly
-    from the repo root (three levels up from this file).
+    from the repo root (three levels up from this file). Module scope avoids
+    re-executing the module body once per parametrize case.
     """
     root = Path(__file__).resolve().parents[2]
     spec = importlib.util.spec_from_file_location(
@@ -114,7 +116,7 @@ def test_fastmcp_settings_construction_does_not_read_cwd_dotenv(
     ],
 )
 def test_pytest_ignore_collect_skips_dotenv_files(
-    name: str, expected: bool | None
+    root_conftest: ModuleType, name: str, expected: bool | None
 ) -> None:
     """``pytest_ignore_collect`` ignores ``.env`` / ``.env.*`` and nothing else.
 
@@ -125,6 +127,4 @@ def test_pytest_ignore_collect_skips_dotenv_files(
     the hook directly locks the predicate, so a regression (e.g. tightening to
     ``== ".env"``, which would stop ignoring ``.env.dev``) fails here, in CI.
     """
-    conftest = _load_root_conftest()
-
-    assert conftest.pytest_ignore_collect(Path(name)) is expected
+    assert root_conftest.pytest_ignore_collect(Path(name)) is expected
