@@ -305,6 +305,13 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **`moneybin sync pull` no longer stuck-fails on a fully-materialized
+  database.** Migration V032 issued `ALTER TABLE seeds.categories`, but on a
+  database whose SQLMesh virtual layer is materialized that relation is a view —
+  DuckDB rejects the ALTER, leaving the migration stuck and blocking every DB
+  open. V032 now only rebuilds `app.user_categories`; the seed table's `class`
+  column is owned by SQLMesh and derived by `refresh_views()`, so an upgraded
+  database recovers automatically on the next run. (#306)
 - **`import_preview` surfaces header detection and row-count reconciliation.**
   Silent header-eating (a real data row mistaken for a header) was invisible in
   the preview envelope. The envelope now carries `has_header`, `skip_rows`, and
