@@ -113,9 +113,14 @@ reach the ledger, everything downstream is existing machinery.
     Investments-specific Plaid error codes map to actionable guidance (below).
 11. **No PII or financial data in logs.** Record counts, institution names,
     and masked identifiers only — no tickers-with-quantities, no amounts.
-12. **Registration.** New raw/app DDL registered in
-    `src/moneybin/sql/schema/schema.py`; `app.*` tables and the additive core
-    columns delivered via `database-migration.md`'s dual-path pattern.
+12. **Registration.** Provider-owned raw DDL lands in
+    `src/moneybin/extractors/plaid/schema/` where `src/moneybin/schema.py`
+    **auto-discovers** it by glob over `_PROVIDER_SCHEMA_DIRS` (no manual
+    registration — that is the "provider owns its schema dir" invariant);
+    cross-cutting `app.security_link*` DDL is added to
+    `_NON_PROVIDER_SCHEMA_FILES` in the same module. `app.*` tables and the
+    additive core columns are delivered via `database-migration.md`'s dual-path
+    pattern.
 13. **Opening-lot bootstrap.** A position held before Plaid's ≤24-month
     transaction window has no acquiring transaction; on first sync, the
     holdings snapshot's unexplained quantity is seeded into the ledger as
@@ -278,26 +283,26 @@ CREATE TABLE IF NOT EXISTS raw.plaid_securities (
 /* Investment ledger events from Plaid investments/transactions/get; one record per transaction per sync payload */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     investment_transaction_id VARCHAR NOT NULL, -- Plaid investment_transaction_id; stable unique identifier
-    account_id VARCHAR NOT NULL,              -- Plaid account_id; foreign key to raw.plaid_accounts
-    security_id VARCHAR,                      -- Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)
-    transaction_date DATE NOT NULL,           -- Plaid date; POSTING date ("typically the settlement date" per Plaid docs) — NOT the trade date; staging derives trade_date
-    transaction_datetime TIMESTAMP,           -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
-    transaction_name VARCHAR,                 -- Plaid name; broker's description of the event
-    quantity DECIMAL(28, 10),                 -- Plaid quantity; already signed per ledger convention (+ acquire, − dispose)
-    amount DECIMAL(18, 2) NOT NULL,           -- Plaid amount; CAUTION: positive = cash out (opposite of ledger convention); flip happens in staging
-    price DECIMAL(28, 10),                    -- Per-unit price
-    fees DECIMAL(18, 2),                      -- Fee/commission component
-    iso_currency_code VARCHAR,                -- ISO 4217; mutually exclusive with unofficial_currency_code
-    unofficial_currency_code VARCHAR,         -- Non-ISO (crypto) currency
-    investment_transaction_type VARCHAR,      -- Plaid type (6-value: buy, sell, cash, fee, transfer, cancel)
-    investment_transaction_subtype VARCHAR,   -- Plaid subtype (48-value); preserved to core as provider_subtype
-    source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}
-    source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
+    account_id VARCHAR NOT NULL,                -- Plaid account_id; foreign key to raw.plaid_accounts
+    security_id VARCHAR,                        -- Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)
+    transaction_date DATE NOT NULL,             -- Plaid date; POSTING date ("typically the settlement date" per Plaid docs) — NOT the trade date; staging derives trade_date
+    transaction_datetime TIMESTAMP,             -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
+    transaction_name VARCHAR,                   -- Plaid name; broker's description of the event
+    quantity DECIMAL(28, 10),                   -- Plaid quantity; already signed per ledger convention (+ acquire, − dispose)
+    amount DECIMAL(18, 2) NOT NULL,             -- Plaid amount; CAUTION: positive = cash out (opposite of ledger convention); flip happens in staging
+    price DECIMAL(28, 10),                      -- Per-unit price
+    fees DECIMAL(18, 2),                        -- Fee/commission component
+    iso_currency_code VARCHAR,                  -- ISO 4217; mutually exclusive with unofficial_currency_code
+    unofficial_currency_code VARCHAR,           -- Non-ISO (crypto) currency
+    investment_transaction_type VARCHAR,        -- Plaid type (6-value: buy, sell, cash, fee, transfer, cancel)
+    investment_transaction_subtype VARCHAR,     -- Plaid subtype (48-value); preserved to core as provider_subtype
+    source_file VARCHAR NOT NULL,               -- Logical identifier: sync_{job_id}
+    source_type VARCHAR NOT NULL                -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,           -- Plaid item_id; part of the PK
-    extracted_at TIMESTAMP                    -- When the server fetched this data from Plaid
+    source_origin VARCHAR NOT NULL,             -- Plaid item_id; part of the PK
+    extracted_at TIMESTAMP                      -- When the server fetched this data from Plaid
         DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+    loaded_at TIMESTAMP                         -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (investment_transaction_id, source_origin)
 );
@@ -476,9 +481,17 @@ and wrongly route it to review. So both sides are first **normalized to a
 canonical MIC** through a small seeded MIC↔common-name registry (a `seeds`
 table, ~the few dozen exchanges a personal portfolio touches, extensible — the
 one shape a surveyed field of shipped brokerage-sync implementations settled on;
-most don't model exchange at all, and the lone one that normalizes does it
-exactly this way: normalize inputs to a MIC up front against a static registry,
-never fuzzy-match names at read time). Comparison rules on the normalized value:
+most don't model exchange at all, and the lone one that normalizes uses the same
+static-registry approach, never fuzzy name matching). One deliberate divergence
+from that reference implementation: it normalizes to a MIC **at write time**,
+storing a canonical MIC column on the security; this spec normalizes **at
+resolver compare-time** and leaves `app.securities.exchange` free-text.
+Functionally equivalent for the resolver (same registry, no fuzzy matching), and
+compare-time avoids forcing a normalized value onto every user-authored row —
+at the cost of not exposing a queryable canonical exchange. Promoting exchange
+to a stored normalized MIC column on `app.securities` is a clean future
+refinement if a queryable canonical exchange is wanted; the resolver contract is
+unchanged either way. Comparison rules on the normalized value:
 - both normalize to the **same MIC** → agreement → auto-bind;
 - both **absent** (bare catalog ticker vs Plaid security with no MIC) → no
   exchange signal → auto-bind on the unique ticker (the common manual case);
@@ -863,12 +876,12 @@ transactions), which also seed the golden files.
 | `src/moneybin/loaders/plaid_investments_loader.py` | `PlaidInvestmentsLoader`: JSON arrays → the four raw tables |
 | `src/moneybin/services/security_resolver.py` | `SecurityResolver` adopt-or-mint ladder |
 | `src/moneybin/repositories/security_links_repo.py` | Binding + decision writes (Invariant 10; audit-emitting); merge-accept also migrates `app.lot_selections` |
-| `src/moneybin/sql/schema/raw_plaid_securities.sql` | DDL |
-| `src/moneybin/sql/schema/raw_plaid_investment_transactions.sql` | DDL |
-| `src/moneybin/sql/schema/raw_plaid_investment_holdings.sql` | DDL |
-| `src/moneybin/sql/schema/raw_plaid_investment_holding_lots.sql` | DDL (per-lot `tax_lots[]` — basis/acquisition source for bootstrap) |
-| `src/moneybin/sql/schema/app_security_links.sql` | DDL |
-| `src/moneybin/sql/schema/app_security_link_decisions.sql` | DDL |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_securities.sql` | DDL — provider-owned raw, in the Plaid extractor's schema dir (auto-discovered) |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_transactions.sql` | DDL — provider-owned raw |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql` | DDL — provider-owned raw |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holding_lots.sql` | DDL — provider-owned raw (per-lot `tax_lots[]` — basis/acquisition source for bootstrap) |
+| `src/moneybin/sql/schema/app_security_links.sql` | DDL — cross-cutting `app.*`, registered in `_NON_PROVIDER_SCHEMA_FILES` |
+| `src/moneybin/sql/schema/app_security_link_decisions.sql` | DDL — cross-cutting `app.*` |
 | `sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
 | `sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
 | `sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
@@ -886,7 +899,7 @@ transactions), which also seed the golden files.
 | `sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
 | `sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
-| `src/moneybin/sql/schema/schema.py` | Register new DDL files |
+| `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | Review sweep (CLI `review` / MCP) | Add `security_links_pending` count |
@@ -941,9 +954,11 @@ contract above is its specification.
   contradiction. Both sides normalize to a canonical MIC through a small seeded
   registry before comparison, and an unnormalizable value is treated as absent
   (not a contradiction) so an incomplete seed never manufactures review noise.
-  This is the shape the one surveyed implementation that solves exchange
-  identity uses (normalize inputs to a MIC up front against a static registry;
-  most tools don't model exchange at all) — and it resolves the precision/recall
+  This applies the static-registry approach of the one surveyed implementation
+  that solves exchange identity (which normalizes at write time into a stored
+  MIC column; we normalize at compare-time — equivalent for the resolver, see
+  the ladder's exchange-agreement note; most tools don't model exchange at all)
+  — and it resolves the precision/recall
   tension the review surfaced across two rounds: strong ids (CUSIP/ISIN) bypass
   exchange, both-absent binds on the unique ticker, only a genuine cross-listing
   contradiction falls to review.
