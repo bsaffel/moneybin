@@ -9,6 +9,7 @@ Documentation: https://github.com/jseutter/ofxparse
 
 import hashlib
 import html
+import json
 import logging
 from collections import defaultdict
 from datetime import datetime
@@ -64,8 +65,18 @@ _FITID_COLLISION_MARKER = "#"
 
 
 def _fitid_content_signature(row: dict[str, Any]) -> str:
-    """Pipe-delimited signature of the fields that make a transaction distinct."""
-    return "|".join(str(row[field]) for field in _FITID_SIGNATURE_FIELDS)
+    """Unambiguous signature of the fields that make a transaction distinct.
+
+    JSON-encodes the field values rather than joining on a delimiter: a
+    free-text ``payee``/``memo`` that itself contains the delimiter would
+    otherwise let two genuinely distinct transactions serialize identically
+    (``payee="A|B",memo="C"`` vs ``payee="A",memo="B|C"``), making the collision
+    check treat them as one and drop a row — the very bug this repairs.
+    """
+    return json.dumps(
+        [str(row[field]) for field in _FITID_SIGNATURE_FIELDS],
+        separators=(",", ":"),
+    )
 
 
 def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
@@ -91,6 +102,18 @@ def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
     deliberate: a suffixed id can never equal a plain FITID, so the worst case is
     a missed cross-file dedup (a visible duplicate surfaced for review) — never a
     silent false merge, which is the data-loss failure mode this repairs.
+
+    Scope is one file per call — also deliberate, and the boundary where this is
+    provably sound. Within a single export a bank lists each transaction once, so
+    two same-FITID rows there are genuinely distinct and safe to split. *Across*
+    files a second same-FITID row is ambiguous: it may be a distinct transaction,
+    or the same one re-exported with drifted ``payee``/``memo`` (e.g.
+    pending→posted). Disambiguating that by content would turn a re-export into a
+    duplicate — the opposite failure — and content alone can't tell the two
+    apart. Cross-file same-FITID collisions are therefore intentionally not
+    repaired here (rare in practice: the observed pattern, a foreign purchase and
+    its same-day fee, always co-occurs in one export); a fuller solution needs a
+    stronger signal and is tracked as a follow-up.
 
     Mutates ``transactions`` in place; returns the number of rows rewritten.
     """

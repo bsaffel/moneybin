@@ -513,6 +513,22 @@ class TestDisambiguateCollidingFitids:
         assert first != second
         assert all(str(r["source_transaction_id"]).startswith("F1#") for r in rows)
 
+    def test_delimiter_in_free_text_does_not_collapse_distinct_rows(self) -> None:
+        """A delimiter inside payee/memo must not make two distinct rows look alike.
+
+        ``payee="A|B",memo="C"`` and ``payee="A",memo="B|C"`` are different
+        transactions; a bare pipe-join would serialize both identically and drop
+        one. The signature must keep them distinct so both get suffixed.
+        """
+        rows = [
+            _txn_row(source_transaction_id="F", payee="A|B", memo="C"),
+            _txn_row(source_transaction_id="F", payee="A", memo="B|C"),
+        ]
+        rewritten = _disambiguate_colliding_fitids(rows)
+
+        assert rewritten == 2
+        assert rows[0]["source_transaction_id"] != rows[1]["source_transaction_id"]
+
     def test_identical_content_same_fitid_left_to_collapse(self) -> None:
         """A genuine in-file duplicate keeps one id so raw dedup still collapses it."""
         rows = [
