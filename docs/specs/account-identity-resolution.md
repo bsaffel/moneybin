@@ -1,9 +1,11 @@
 # Cross-Source Account Identity Resolution
 
-> Last updated: 2026-06-17
-> Status: implemented (architecture + M1S.1–.6); capture + bind-first
-> corrections in progress (M1S.7–.9 — cross-source linking does not yet fire in
-> the wild; see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation))
+> Last updated: 2026-07-09
+> Status: implemented (architecture M1S.1–.6 + the capture/bind-first
+> corrections M1S.7–.9, all shipped — see [§Decision 8](#decision-8--capture-mutable-labels-and-the-exporter-axis-m1s7-live-test-reconciliation));
+> the full-scale live re-validation this spec was written to unblock (5-account
+> / 279-row WF persona, [§Testing](#testing)) has not yet been re-run — tracked
+> as follow-up enrichment, not a capability gap
 > Address: M1S (Ingestion Core)
 > Type: Feature
 > Owns: the canonical-account-identity contract (`core.dim_accounts.account_id`

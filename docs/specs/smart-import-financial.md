@@ -23,7 +23,7 @@ This spec closes the gap. It does **not** unify the raw schema — `raw.ofx_*` l
 - `archived/ofx-import.md` — the spec this replaces; historical reference only.
 - `smart-import-tabular.md` §"Import batches", §"`ingest_dataframe()`", §"Account matching" — the patterns this spec adopts for OFX.
 - `matching-overview.md` — defines `source_type` taxonomy and cross-source dedup; OFX already participates but reverting and import-batch identity were missing.
-- `.claude/rules/identifiers.md` — FITID is the canonical Priority-1 source-provided ID example. The current extractor stores it as `source_transaction_id` correctly.
+- `.claude/rules/identifiers.md` — FITID is the canonical Priority-1 source-provided ID example. The extractor stores it as `source_transaction_id` verbatim, except when an institution reuses one FITID for distinct transactions, where a content-hash suffix (`<FITID>#<hash>`) disambiguates the colliding rows (see that rule's "Source-Provided IDs → Exception").
 - `.claude/rules/data-extraction.md` — parameter design rule that makes the current `institution_name` override non-conformant; this spec corrects it.
 - `database-migration.md` — schema migration system used to add the new columns to `raw.ofx_*`.
 
@@ -46,7 +46,7 @@ OFX files carry four entity types in one document (institutions, accounts, balan
 9. All raw writes go through `Database.ingest_dataframe()` — the encrypted single write path. The bespoke `OFXLoader.load_data()` is removed.
 10. The `--institution` parameter follows override-when-missing semantics: consulted only when steps 1–3 of the resolution chain yield nothing. If the file provides institution metadata, the file wins and the flag is logged as ignored.
 11. OFX imports emit Prometheus metrics for batch counts, durations, and row counts, paralleling the tabular metrics in `metrics/registry.py`.
-12. Extracted data preserves the existing `source_transaction_id` semantics (FITID), and the matching engine continues to use it for cross-source dedup against tabular and Plaid.
+12. Extracted data preserves the existing `source_transaction_id` semantics (FITID), and the matching engine continues to use it for cross-source dedup against tabular and Plaid. Exception: when an institution reuses one FITID for distinct transactions, the stored id is `<FITID>#<hash>` for the colliding rows so both survive (see `.claude/rules/identifiers.md` → "Source-Provided IDs → Exception").
 13. Scenario test coverage exists for: single-account, multi-account, QBO from Intuit, QBO from a bank, re-import idempotency, missing-institution-metadata fallback, and cross-source dedup against tabular.
 14. The synthetic data generator emits OFX *and* QBO variants for scenario fixtures.
 15. The CLI and MCP `import_files` surfaces (renamed from `import_file` singular; see `smart-import-transform.md`) gain no new flags beyond `--institution`. Detection, resolution, and the import-log lifecycle happen automatically.

@@ -56,11 +56,10 @@ def _recreate_pre_v032_state(db: Database) -> None:
     `ALTER TABLE ... DROP COLUMN` is allowed (unlike V030's case where the
     new column preceded a PK-indexed column).
 
-    `seeds.categories.class` needs no DROP here: `_ensure_seed_tables_exist`
-    bootstraps the table in frozen V014's original shape (`plaid_detailed`,
-    no `class`) rather than the post-V032 shape, so the table is already in
-    its pre-V032 state — the test only seeds representative rows (one per
-    class-rule prefix) to exercise the prefix-derived backfill in migrate().
+    `seeds.categories` is intentionally not touched: V032 no longer mutates the
+    SQLMesh-owned seed table (an `ALTER TABLE` there breaks on the virtual-layer
+    view — see `test_v032_tolerates_seeds_categories_as_view`), so there is
+    nothing to reverse for it here.
     """
     db.execute("DROP TABLE IF EXISTS app.category_source_map")
     db.execute("ALTER TABLE app.user_categories DROP COLUMN class")
@@ -74,23 +73,6 @@ def _recreate_pre_v032_state(db: Database) -> None:
         "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP), "
         "('u_c3d4e5f6a1b2', 'Gifts', 'Given', '', false, "
         "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-    )
-    db.execute(
-        "INSERT INTO seeds.categories "
-        "(category_id, category, subcategory, description) VALUES "
-        "('INC-TST', 'Income', 'Test', ''), "
-        "('TRN-TST', 'Transfer', 'Test', ''), "
-        "('LNP-TST', 'Loan Payments', 'Test', ''), "
-        "('FND-TST', 'Food & Drink', 'Test', '')"
-    )
-
-
-def _seed_category_classes(db: Database) -> dict[str, str]:
-    return dict(
-        db.execute(
-            "SELECT category_id, class FROM seeds.categories "
-            "WHERE category_id LIKE '%-TST' ORDER BY category_id"
-        ).fetchall()
     )
 
 
@@ -120,13 +102,33 @@ def test_v032_creates_bridge_and_class(db: Database) -> None:
     }
     assert _BRIDGE_COLUMNS <= cols
 
-    # seeds.categories.class backfilled by category_id prefix (BLOCK B rule).
-    assert _seed_category_classes(db) == {
-        "INC-TST": "income",
-        "TRN-TST": "transfer",
-        "LNP-TST": "debt",
-        "FND-TST": "expense",
-    }
+
+def test_v032_tolerates_seeds_categories_as_view(db: Database) -> None:
+    """V032 must not fail when seeds.categories is a SQLMesh view, not a table.
+
+    On a database where SQLMesh has materialized its virtual layer,
+    ``seeds.categories`` is a VIEW over a physical snapshot table. A migration
+    that issues ``ALTER TABLE seeds.categories`` against it raises DuckDB's
+    ``Can only modify view with ALTER VIEW statement`` — the stuck-migration
+    failure seen on a fully-materialized production database. ``class`` on the
+    seed data is owned by SQLMesh + ``refresh_views`` (which derives it when
+    absent), so the migration must leave the SQLMesh-owned seed table alone.
+    """
+    _recreate_pre_v032_state(db)
+    # Re-present seeds.categories the way a fully-materialized SQLMesh DB does:
+    # a view in the queryable schema over a physical snapshot table.
+    db.execute("CREATE TABLE seeds.categories__phys AS SELECT * FROM seeds.categories")
+    db.execute("DROP TABLE seeds.categories")
+    db.execute("CREATE VIEW seeds.categories AS SELECT * FROM seeds.categories__phys")
+
+    run_migration(db, migrate)  # must not raise on the view
+
+    # The real migration work still lands on the mutable app table.
+    _, is_nullable = column_info(db, "app", "user_categories", "class")
+    assert is_nullable is False
+    assert _table_exists(db, "app", "category_source_map")
+    # The SQLMesh-owned seed table is left untouched — not the migration's job.
+    assert not column_exists(db, "seeds", "categories", "class")
 
 
 def test_v032_is_idempotent(db: Database) -> None:
@@ -149,12 +151,6 @@ def test_v032_is_idempotent(db: Database) -> None:
         for row in db.execute("PRAGMA table_info('app.category_source_map')").fetchall()
     }
     assert _BRIDGE_COLUMNS <= cols
-    assert _seed_category_classes(db) == {
-        "INC-TST": "income",
-        "TRN-TST": "transfer",
-        "LNP-TST": "debt",
-        "FND-TST": "expense",
-    }
 
 
 def test_v032_idempotent_on_fresh_install(db: Database) -> None:
@@ -166,7 +162,6 @@ def test_v032_idempotent_on_fresh_install(db: Database) -> None:
     assert _table_exists(db, "app", "category_source_map")
     _, is_nullable = column_info(db, "app", "user_categories", "class")
     assert is_nullable is False
-    assert column_exists(db, "seeds", "categories", "class")
 
 
 def test_v032_class_check_constraint_enforced(db: Database) -> None:

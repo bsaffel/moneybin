@@ -134,8 +134,9 @@ Related specs:
     per-security → per-account → global FIFO. Average cost validates to fund/ETF types;
     `fifo`/`hifo`/`specific` are unrestricted.
 13. **Specific-ID overrides in `app.lot_selections`** — core `app.*` state (cost basis
-    is core, not the `us_tax` package; see the overview's open-question on reconciling
-    `extension-contracts.md`).
+    is core, not the `us_tax` package; resolves the `extension-contracts.md`
+    inconsistency the overview's open questions section flagged — see
+    [`investments-overview.md`](investments-overview.md#open-questions)).
 14. **Mirror, don't enforce.** v1 reproduces the broker's reported method; it does not
     enforce IRS election lock-in or wash-sale rules.
 15. **Currency column** on ledger, lots, gains, and holdings now; no FX conversion
@@ -304,10 +305,13 @@ Columns:
 ### SQLMesh model: `core.fct_investment_lots` (TABLE, derived)
 
 Each acquisition opens a lot; disposals consume open lots per the resolved method.
-Likely a **Python SQLMesh model** — the consumption logic (FIFO cursor, average-cost
-running aggregate, specific-ID override lookup) is awkward in pure SQL (see Open
-Questions). Lot identity is a content hash so it is stable across rebuilds and
-referenceable by `app.lot_selections`.
+Implemented as a **Python SQLMesh model** (Key Decision 13) — the consumption logic
+(FIFO cursor, average-cost running pool, specific-ID override lookup) is awkward in
+pure SQL. The pure engine lives in `moneybin.investments.cost_basis`
+(`compute_lots_and_gains`), fed by `moneybin.investments.sqlmesh_loader`; the
+`sqlmesh/models/core/fct_investment_lots.py` model itself is a thin wrapper that
+runs the engine and types the output. Lot identity is a content hash so it is
+stable across rebuilds and referenceable by `app.lot_selections`.
 
 ```
 Columns:
@@ -425,6 +429,16 @@ disposal. Selected lots are consumed in the specified quantities; any unselected
 remainder falls back to FIFO. This unlocks tax-loss harvesting and ST/LT control.
 Shares the FIFO consumption machinery — it is an override on consumption order, not a
 separate engine.
+
+> **Known gap (v1).** `select_lots` (the service method backing both
+> `investments lots select` and `investments_lots_select`) does not verify
+> that the disposal's resolved cost-basis method is `specific` before
+> accepting the write — a selection saved against a FIFO/HIFO/average-elected
+> position is silently ignored at the next `sqlmesh run`, since
+> `_consumption_plan` only reads `app.lot_selections` under `specific`.
+> Tracked as a follow-up: reject the write when the resolved method isn't
+> `specific`, pointing the caller at `investments securities set --method
+> specific` (or the account default).
 
 ### Method: Average cost
 
@@ -839,10 +853,13 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - Scenario tests under `tests/scenarios/` (run via `make test-scenarios`) with a
   persona holding a mix of FIFO stocks and an average-cost fund, verifying
   `fct_investment_lots`, `fct_realized_gains`, and `dim_holdings` against ground truth.
-- A **1099-B reconciliation scenario**: a hand-labeled fixture from a real broker
-  1099-B for a full tax year (buys, sells, reinvested dividends, and any broker
-  adjustments present in the fixture), with expected realized gains per term that
-  the engine must match exactly. This is the headline M1J test.
+- A **1099-B reconciliation scenario**: a hand-labeled full-tax-year ledger
+  exercising the whole taxonomy (multiple buys, a sell splitting across ST/LT and
+  across multiple FIFO lots, a reinvested dividend, a split, a return of capital,
+  and an oversold disposal), with every expected per-lot gain and per-term total
+  hand-derived to the cent before the pipeline runs. This is the headline M1J
+  test; a real-broker 1099-B replaces the fixture at the milestone tie-out (still
+  open — see `investments-overview.md`).
 
 ### Tier 3 — Integration
 
@@ -884,27 +901,37 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `sqlmesh/models/core/dim_securities.sql` — securities VIEW
 - `sqlmesh/models/prep/stg_manual__investment_transactions.sql` — staging VIEW (per-provider naming convention)
 - `sqlmesh/models/core/fct_investment_transactions.sql` — canonical ledger
-- `sqlmesh/models/core/fct_investment_lots.py` — derived lots (Python model; cost-basis engine)
-- `sqlmesh/models/core/fct_realized_gains.py` — derived realized gains
+- `src/moneybin/investments/cost_basis.py` — the pure cost-basis engine (FIFO/HIFO/specific/average consumption, corporate actions, oversold handling)
+- `src/moneybin/investments/sqlmesh_loader.py` — loads ledger events + method/selection resolvers from the SQLMesh `ExecutionContext` for the engine
+- `sqlmesh/models/core/fct_investment_lots.py` — thin SQLMesh wrapper running the engine; derived lots
+- `sqlmesh/models/core/fct_realized_gains.py` — thin SQLMesh wrapper; derived realized gains
 - `sqlmesh/models/core/dim_holdings.sql` — derived positions VIEW
-- `src/moneybin/sql/migrations/V034__add_investment_tables.py` — create the three new tables and apply the `app.account_settings` ALTER for existing databases (next free version at time of writing; renumber if another migration lands first)
+- `src/moneybin/sql/migrations/V034__add_investment_tables.py` — create the three new tables and apply the `app.account_settings` ALTER for existing databases
 - `src/moneybin/repositories/securities_repo.py` — `SecuritiesRepo` for `app.securities` mutation (Invariant 10: paired audit rows via `BaseRepo`)
 - `src/moneybin/repositories/lot_selections_repo.py` — `LotSelectionsRepo` for `app.lot_selections` mutation
 - `src/moneybin/services/investment_service.py` — security resolution, manual entry, method election, lot selection (composes the repos)
-- `src/moneybin/cli/commands/investments.py` — `investments` command group
+- `src/moneybin/privacy/payloads/investments.py` — response payload shapes backing the field-classification-derived sensitivity tiers (MCP Interface)
+- `src/moneybin/cli/commands/investments/` — `investments` command group (`__init__.py` for `add`/`list`/`holdings`/`gains`, `securities.py`, `lots.py`)
 - `src/moneybin/mcp/tools/investments.py` — `investments_*` tools
-- `tests/test_investment_service.py`, `tests/test_cli_investments.py`, `tests/test_cost_basis_engine.py`
-- `tests/scenarios/investments_1099b/` — the 1099-B reconciliation scenario
+- `tests/moneybin/test_services/test_investment_service.py`, `tests/moneybin/test_cli/test_investments.py`,
+  `tests/moneybin/test_investments/test_cost_basis_engine.py`, `tests/moneybin/test_investments/test_sqlmesh_loader.py`,
+  `tests/moneybin/test_investments/test_investment_models_transform.py`, `tests/moneybin/test_investments_schema.py`,
+  `tests/moneybin/test_mcp/test_investments_tools.py`, `tests/moneybin/test_migration_v034.py`,
+  `tests/moneybin/test_repositories/test_lot_selections_repo.py`, `tests/moneybin/test_repositories/test_securities_repo.py`
+- `tests/scenarios/_investments_seed.py`, `tests/scenarios/data/investments-1099b-reconciliation.yaml`,
+  `tests/scenarios/data/investments-persona.yaml`, `tests/scenarios/test_investments_1099b_reconciliation.py`,
+  `tests/scenarios/test_investments_persona_correctness.py` — the 1099-B reconciliation and persona-correctness scenarios
 
 ### Files to Modify
 
 - `src/moneybin/cli/main.py` — register the top-level `investments` group
-- `src/moneybin/cli/commands/accounts/investments.py` — **remove** the placeholder stub (relocated to the top-level group)
-- `src/moneybin/cli/commands/accounts/*` + `src/moneybin/mcp/tools/accounts*` — add `--default-cost-basis-method` flag to `accounts set` and the matching `accounts_set` parameter
+- `src/moneybin/cli/commands/accounts/investments.py` — **removed** the placeholder stub (relocated to the top-level group)
+- `src/moneybin/cli/commands/accounts/*` + `src/moneybin/mcp/tools/accounts.py` — add `--default-cost-basis-method` flag to `accounts set` and the matching `accounts_set` parameter
 - `src/moneybin/schema.py` — register the new DDL files in `_NON_PROVIDER_SCHEMA_FILES`
 - `src/moneybin/sql/schema/app_account_settings.sql` — add the `default_cost_basis_method` column for fresh installs (the migration covers existing databases)
 - `src/moneybin/repositories/account_settings_repo.py` — extend `AccountSettingsRepo.set()` and `_ACCOUNT_SETTINGS_COLUMNS` with the new column
 - `src/moneybin/tables.py` — add table constants (`DIM_SECURITIES`, `FCT_INVESTMENT_TRANSACTIONS`, `FCT_INVESTMENT_LOTS`, `FCT_REALIZED_GAINS`, `DIM_HOLDINGS`)
+- `src/moneybin/privacy/taxonomy.py` — field classifications backing the `investments_*` tools' sensitivity tiers
 - `src/moneybin/metrics/registry.py` — instrumentation for ingestion + cost-basis runs (per `observability.md`)
 - `docs/specs/account-management.md` — document the `accounts set` / `accounts_set` cost-basis-method extension + the new `app.account_settings` column
 - `docs/specs/INDEX.md`, `docs/roadmap.md` — status + milestone rows

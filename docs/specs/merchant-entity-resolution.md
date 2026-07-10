@@ -1,6 +1,6 @@
 # Merchant Entity Resolution
 
-> Last updated: 2026-06-29
+> Last updated: 2026-07-09
 > Status: implemented
 > Address: M1T (Ingestion Core)
 > Type: Feature
@@ -13,9 +13,10 @@
 > Depends on: Tier-1 (PR #283) — `merchant_entity_id` captured into
 > `raw.plaid_transactions` + `prep.stg_plaid__transactions`, backfillable via
 > `moneybin sync pull --force`.
-> Relates to: Tier-2b (`plaid-tier2b`, Plaid Personal Finance Category
-> categorizer) — Tier-2a establishes merchant *identity*; Tier-2b fills merchant
-> *category*.
+> Relates to: [`categorization-source-model.md`](categorization-source-model.md)
+> (M1U, shipped) — the Plaid Personal Finance Category categorizer once
+> codenamed "Tier-2b." Tier-2a (this spec) establishes merchant *identity*;
+> the source model fills merchant *category*.
 > Unblocks: cross-connection / cross-source merchant dedup; merchant merge
 > (future); merchant default-category learning from a stable id.
 
@@ -34,7 +35,7 @@ Merchant matching today is **purely name-based**. `match_merchants`
 (`src/moneybin/services/categorization/matcher.py`) resolves a transaction's
 merchant by `oneOf` exemplar set-membership, then `exact`/`contains`/`regex`
 pattern against the `description + "\n" + memo` text. `merchant_id` is assigned
-during categorization (`orchestrator.py:308`) and stored on
+during categorization (`orchestrator.py:412`) and stored on
 `app.transaction_categories.merchant_id`; merchants live in `app.user_merchants`,
 exposed via the `core.dim_merchants` view.
 
@@ -185,7 +186,7 @@ transaction carrying a provider `merchant_entity_id`:
   exists as forward-compatible substrate.
 
 This **subsumes** the existing exemplar accumulator for id-bearing transactions:
-the accumulator (`orchestrator.py:372`, `created_by='ai'`) still creates merchants
+the accumulator (`orchestrator.py:464`, `created_by='ai'`) still creates merchants
 for transactions **without** a provider id (OFX/CSV, or Plaid rows Plaid couldn't
 identify). Rungs run first and set `merchant_id`, gating the accumulator off for
 id-bearing rows — the two paths cover disjoint inputs, no duplication.
@@ -302,10 +303,10 @@ merchant entity — Plaid hands a merchant only `merchant_entity_id` +
 `merchant_name`. So a category-less Plaid merchant is not a gap we introduce.
 
 Tier-2a establishes merchant **identity**; merchant **category** stays the job of
-the LLM / rules / **Tier-2b** (which consumes the txn-level PFC
-`category_detailed`/`confidence`). Our merchant default-category remains a
-*learned* optimization, set over time by user/accumulator/Tier-2b — never
-required at mint.
+the LLM / rules / **[Tier-2b](categorization-source-model.md)** (shipped as M1U,
+which consumes the txn-level PFC `category_detailed`/`confidence`). Our merchant
+default-category remains a *learned* optimization, set over time by
+user/accumulator/Tier-2b — never required at mint.
 
 ## Privacy
 
@@ -334,7 +335,10 @@ the `ACCOUNT_LINK_*` family:
   {adopted, auto_bound, proposed, minted}`) — one increment per resolved
   transaction, so the ladder's behavior is observable.
 - Add an `entity_id` outcome label to the existing
-  `CATEGORIZE_MATCH_OUTCOME_TOTAL` for rung-1 hits.
+  `CATEGORIZE_MATCH_OUTCOME_TOTAL` for rungs that finalize a merchant id
+  (adopted / auto_bound / minted — rungs 1, 2, 4). Rung 3 (`proposed`) is
+  excluded: categorization still proceeds via the name match, not the entity
+  id, while the binding awaits review.
 
 ## Testing
 
@@ -376,11 +380,13 @@ the `ACCOUNT_LINK_*` family:
 - Merchant *merge* (re-pointing one merchant's links onto another) — the substrate
   ships here; the merge surface is a later increment.
 - Stable-id merchant default-category learning + Tier-2b PFC categorization keyed
-  off a durable merchant.
+  off a durable merchant — the latter shipped as M1U
+  ([`categorization-source-model.md`](categorization-source-model.md)).
 
 ## Out of scope
 
-- Merchant *category* assignment from Plaid (Tier-2b, `personal_finance_category`).
+- Merchant *category* assignment from Plaid (Tier-2b, `personal_finance_category`;
+  shipped separately as M1U, [`categorization-source-model.md`](categorization-source-model.md)).
 - A merchant *merge* surface (substrate only here).
 - Multi-pattern / automated-discovery merchant evolution beyond id-based identity
   (the broader `merchant-entity-resolution` planned vision; this increment is its

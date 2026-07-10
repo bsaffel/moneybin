@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-06-10 -->
+<!-- Last reviewed: 2026-07-09 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -98,11 +98,11 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **Job to be done:** One queryable warehouse holding cash + investments together. FIFO lot tracking. Numbers that tie to the 1099-B at year-end.
 
-**Why MoneyBin will fit:** Investment tracking is a deep commitment — holdings, FIFO lots, realized/unrealized gain/loss, short-term vs long-term classification, market prices. This work won't ship until cost-basis output ties to a real-world 1099-B end-to-end; partial investment support is a worse outcome than none.
+**Why MoneyBin will fit:** The core ledger is built and working: a manually-maintained securities catalog, an investment transaction ledger (buys, sells, reinvested dividends, interest, capital-gain distributions, transfers, splits, fees, return of capital), four cost-basis methods (FIFO, HIFO, specific identification, average cost), derived tax lots, and realized short-/long-term gain/loss reporting — the 1099-B surface. That math has been checked against a hand-labeled, full-tax-year fixture, not yet against a real broker's 1099-B — that reconciliation is the one gate left before this persona can trust the numbers at tax time, and partial trust is a worse outcome than none.
 
-Broker coverage will track bank-direct sync parity for investment holdings — when that lands, the brokerages it covers are the brokerages MoneyBin covers. Manual lot entry and CSV import will fill the gaps. Real estate, private equity, and illiquid assets stay manual.
+Automated broker sync isn't built yet, so entry is manual today via `investments add` (CSV import will fill remaining gaps once it ships). When broker sync lands, it'll cover whatever brokers the sync framework supports — not a separate promise. Real estate, private equity, and illiquid assets stay manual.
 
-**What's still rough:** No investment surface today beyond cash accounts. No tax-loss-harvesting tooling, no IRR/TWR performance views, no 1099-B reconciliation workflow yet. **Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) in the meantime.**
+**What's still rough:** No real-broker 1099-B tie-out yet — the cost-basis engine has only been proven against a synthetic fixture. No market pricing, so `investments holdings` shows quantity and cost basis but not current market value or unrealized gain/loss, and investment positions don't yet fold into net-worth reports. No automated broker sync for holdings — entry is manual today. Lot selection for a disposal can be overridden by hand (`investments lots select`), but there's no automated tax-loss-harvesting workflow, and no IRR/TWR performance views. **Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) in the meantime** — and track progress on the [roadmap](roadmap.md) (M1J).
 
 ### The non-USD user
 

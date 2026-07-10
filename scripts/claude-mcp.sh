@@ -47,5 +47,14 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 1
 fi
 
+# gh stores its token in the macOS keychain, which Claude Code's sandbox can't
+# reach. Resolve it here (outside the sandbox) and pass it in as an env var so
+# `gh` works inside the session. Mirrors the interactive `claude()` zsh wrapper,
+# but lives in the launcher so it applies however this script is invoked.
+if [[ -z "${GH_TOKEN:-}" ]]; then
+  token=$(gh auth token 2>/dev/null || true)
+  [[ -n "$token" ]] && export GH_TOKEN="$token"
+fi
+
 echo "🚀 Launching Claude Code with MoneyBin MCP ($config_path)"
 exec claude --strict-mcp-config --mcp-config "$config_path"
