@@ -15,6 +15,7 @@ from moneybin.extractors.ofx import OFXExtractor, OFXProviderConfig
 from moneybin.extractors.ofx.extractor import (
     OFXTransactionSchema,
     _decode_text_field,  # pyright: ignore[reportPrivateUsage]
+    _disambiguate_colliding_fitids,  # pyright: ignore[reportPrivateUsage]
     extract_ofx_file,
 )
 
@@ -436,3 +437,149 @@ class TestExtractorPopulatesBatchColumns:
         first = institutions.row(0, named=True)
         # The fixture has <ORG>SAMPLE BANK</ORG>
         assert first["organization"] == "SAMPLE BANK"
+
+
+def _txn_row(
+    *,
+    source_transaction_id: str,
+    account_id: str = "4387",
+    transaction_type: str = "DEBIT",
+    date_posted: str = "2025-11-19",
+    amount: str = "-13.12",
+    payee: str = "MERCHANT",
+    memo: str | None = None,
+    check_number: str | None = None,
+) -> dict[str, object]:
+    """Minimal transaction row carrying the fields the FITID-collision repair reads."""
+    return {
+        "source_transaction_id": source_transaction_id,
+        "account_id": account_id,
+        "transaction_type": transaction_type,
+        "date_posted": date_posted,
+        "amount": Decimal(amount),
+        "payee": payee,
+        "memo": memo,
+        "check_number": check_number,
+    }
+
+
+@pytest.mark.unit
+def test_extract_disambiguates_shared_fitid_within_file(
+    extractor_config: OFXProviderConfig,
+) -> None:
+    """Two distinct transactions sharing one FITID must both survive extraction.
+
+    Reproduces F1: Chase stamps a foreign purchase (-13.12) and its
+    foreign-transaction-fee (-0.39) with one shared FITID on the same day. The
+    raw PK and every dedup layer key on ``(source_transaction_id, account_id)``,
+    so without repair one of the two distinct transactions is silently dropped.
+    """
+    fixture = FIXTURES_DIR / "ofx" / "duplicate_fitid_sample.ofx"
+    extractor = OFXExtractor(extractor_config)
+    results = extractor.extract_from_file(
+        fixture, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
+
+    txns = results["transactions"]
+    # All three rows survive as distinct records (two share the raw FITID).
+    assert len(txns) == 3
+    ids = txns["source_transaction_id"].to_list()
+    assert len(set(ids)) == 3, f"ids collided: {ids}"
+
+    # The two repaired rows both derive from the shared FITID; the unique row is
+    # left untouched (source-provided id stored as-is).
+    shared = sorted(i for i in ids if i.startswith("SHAREDFITID999"))
+    assert len(shared) == 2
+    assert "UNIQUEFITID001" in ids
+
+    # Neither amount is lost — the -13.12 purchase survives alongside the fee.
+    amounts = set(txns["amount"].to_list())
+    assert Decimal("-13.12") in amounts
+    assert Decimal("-0.39") in amounts
+
+
+class TestDisambiguateCollidingFitids:
+    """Content-based repair of non-unique OFX FITIDs within a single file."""
+
+    def test_differing_content_same_fitid_gets_distinct_ids(self) -> None:
+        rows = [
+            _txn_row(source_transaction_id="F1", amount="-13.12", payee="PURCHASE"),
+            _txn_row(source_transaction_id="F1", amount="-0.39", payee="FEE"),
+        ]
+        rewritten = _disambiguate_colliding_fitids(rows)
+
+        assert rewritten == 2
+        first, second = (r["source_transaction_id"] for r in rows)
+        assert first != second
+        assert all(str(r["source_transaction_id"]).startswith("F1#") for r in rows)
+
+    def test_delimiter_in_free_text_does_not_collapse_distinct_rows(self) -> None:
+        """A delimiter inside payee/memo must not make two distinct rows look alike.
+
+        ``payee="A|B",memo="C"`` and ``payee="A",memo="B|C"`` are different
+        transactions; a bare pipe-join would serialize both identically and drop
+        one. The signature must keep them distinct so both get suffixed.
+        """
+        rows = [
+            _txn_row(source_transaction_id="F", payee="A|B", memo="C"),
+            _txn_row(source_transaction_id="F", payee="A", memo="B|C"),
+        ]
+        rewritten = _disambiguate_colliding_fitids(rows)
+
+        assert rewritten == 2
+        assert rows[0]["source_transaction_id"] != rows[1]["source_transaction_id"]
+
+    def test_identical_content_same_fitid_left_to_collapse(self) -> None:
+        """A genuine in-file duplicate keeps one id so raw dedup still collapses it."""
+        rows = [
+            _txn_row(source_transaction_id="F1", amount="-5.00", payee="X"),
+            _txn_row(source_transaction_id="F1", amount="-5.00", payee="X"),
+        ]
+        rewritten = _disambiguate_colliding_fitids(rows)
+
+        assert rewritten == 0
+        assert all(r["source_transaction_id"] == "F1" for r in rows)
+
+    def test_distinct_fitids_are_untouched(self) -> None:
+        rows = [
+            _txn_row(source_transaction_id="A", amount="-1.00"),
+            _txn_row(source_transaction_id="B", amount="-2.00"),
+        ]
+        rewritten = _disambiguate_colliding_fitids(rows)
+
+        assert rewritten == 0
+        assert [r["source_transaction_id"] for r in rows] == ["A", "B"]
+
+    def test_suffix_is_deterministic_across_runs(self) -> None:
+        """Same content → same suffix, so re-importing the file stays idempotent."""
+        run_a = [
+            _txn_row(source_transaction_id="F", amount="-1.00", payee="P"),
+            _txn_row(source_transaction_id="F", amount="-2.00", payee="Q"),
+        ]
+        run_b = [
+            _txn_row(source_transaction_id="F", amount="-1.00", payee="P"),
+            _txn_row(source_transaction_id="F", amount="-2.00", payee="Q"),
+        ]
+        _disambiguate_colliding_fitids(run_a)
+        _disambiguate_colliding_fitids(run_b)
+
+        assert [r["source_transaction_id"] for r in run_a] == [
+            r["source_transaction_id"] for r in run_b
+        ]
+
+    def test_same_fitid_different_accounts_untouched(self) -> None:
+        """Cross-account FITID reuse (F11) is not an in-account collision.
+
+        ``account_id`` is part of the key at every layer, so the same short
+        FITID in two different accounts is already distinct — repairing it would
+        be wrong. This is the boundary between F1 (in-account data loss, fixed
+        here) and F11 (cross-account matching noise, handled elsewhere).
+        """
+        rows = [
+            _txn_row(source_transaction_id="123", account_id="acctA", amount="-1.00"),
+            _txn_row(source_transaction_id="123", account_id="acctB", amount="-2.00"),
+        ]
+        rewritten = _disambiguate_colliding_fitids(rows)
+
+        assert rewritten == 0
+        assert all(r["source_transaction_id"] == "123" for r in rows)
