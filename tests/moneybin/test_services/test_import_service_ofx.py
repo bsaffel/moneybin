@@ -67,6 +67,51 @@ class TestImportOFXBatchLifecycle:
         assert Decimal("-0.39") in amounts
         assert Decimal("-42.00") in amounts
 
+    def test_forced_reimport_over_legacy_row_does_not_self_heal(
+        self, db: Database
+    ) -> None:
+        """Characterizes the documented recovery limitation (see CHANGELOG #304).
+
+        A file imported *before* the FITID-collision fix leaves one plain
+        ``SHAREDFITID999`` row in raw (the surviving half of the dropped pair).
+        Re-importing the file post-fix emits two content-suffixed rows with new
+        primary keys; because the OFX write path upserts by PK
+        (``on_conflict="upsert"``), it inserts them and leaves the stale plain
+        row untouched — so the surviving transaction would be double-counted.
+        This is why recovering already-affected data requires ``import revert``
+        first, not a bare re-import. If forced re-import is ever made
+        replace-by-file (self-healing), flip this test to assert the plain row
+        is gone.
+        """
+        fixture = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
+
+        # Simulate a pre-fix import: one plain-FITID row already in raw.
+        db.execute(
+            """
+            INSERT INTO raw.ofx_transactions
+                (source_transaction_id, account_id, transaction_type,
+                 date_posted, amount, payee, source_file, source_type)
+            VALUES ('SHAREDFITID999', '4387', 'DEBIT', TIMESTAMP '2025-11-19',
+                    -0.39, 'FOREIGN TRANSACTION FEE', ?, 'ofx')
+            """,
+            [str(fixture.resolve())],
+        )
+
+        ImportService(db).import_file(fixture, refresh=False)
+
+        # The stale plain row is NOT replaced by the suffixed rows (no self-heal).
+        stale = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_transactions "
+            "WHERE source_transaction_id = 'SHAREDFITID999'"
+        ).fetchone()
+        assert stale is not None and stale[0] == 1
+        # The two content-suffixed rows land alongside it.
+        suffixed = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_transactions "
+            "WHERE source_transaction_id LIKE 'SHAREDFITID999#%'"
+        ).fetchone()
+        assert suffixed is not None and suffixed[0] == 2
+
     def test_reverting_ofx_batch_deletes_rows(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
         if not fixture.exists():

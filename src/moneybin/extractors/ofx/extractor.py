@@ -75,8 +75,9 @@ def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
     primary key and every dedup layer on ``(source_transaction_id, account_id)``.
     Some institutions violate this — Chase stamps a foreign purchase and its
     foreign-transaction fee (two distinct transactions posted the same day) with
-    one shared FITID. Left unrepaired, the raw ``INSERT OR IGNORE`` and the
-    ``stg_ofx__transactions`` dedup window silently drop one of the two.
+    one shared FITID. Left unrepaired, the raw write path (``on_conflict="upsert"``
+    → ``INSERT OR REPLACE``, keyed on that primary key) and the
+    ``stg_ofx__transactions`` dedup window each keep only one of the two.
 
     For each ``(account_id, source_transaction_id)`` group whose members differ
     in content, append a deterministic content-hash suffix to *every* member's
@@ -106,9 +107,8 @@ def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
             # untouched and let the raw PK / staging window collapse it.
             continue
         for row in rows:
-            digest = hashlib.sha256(_fitid_content_signature(row).encode()).hexdigest()[
-                :8
-            ]
+            signature = _fitid_content_signature(row)
+            digest = hashlib.sha256(signature.encode()).hexdigest()[:8]
             row["source_transaction_id"] = (
                 f"{row['source_transaction_id']}{_FITID_COLLISION_MARKER}{digest}"
             )

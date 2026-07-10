@@ -305,6 +305,17 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **OFX imports no longer silently drop transactions that share a duplicate
+  FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
+  distinct same-day transactions — a foreign purchase and its
+  foreign-transaction fee. Because the raw primary key and the OFX dedup window
+  both key on `(source_transaction_id, account_id)`, one of the two was silently
+  dropped from the ledger. The extractor now disambiguates colliding FITIDs by
+  content so both survive. New imports are correct going forward; to recover data
+  **already** affected, revert the affected import (`moneybin import revert <id>`)
+  and re-import the file — a plain re-import is not sufficient, because the
+  forced-reimport write path upserts by primary key and leaves the stale pre-fix
+  row in place. (#304)
 - **SQLMesh state migrations now survive a dependency version bump.** After a
   SQLMesh upgrade, the in-process state migration wrote its bookkeeping to a
   throwaway in-memory catalog that vanished at process exit, so every subsequent
