@@ -562,7 +562,13 @@ provider-identifier resolution rung all exist because of this validation.
 > truncated UUID4 minted at entry/staging time": staging-synthesized group ids
 > are **content hashes**, not UUIDs — a UUID minted inside a staging view
 > would churn on every SQLMesh rebuild. Manual entry keeps its minted UUID
-> (persisted in raw, so determinism is unaffected).
+> (persisted in raw, so determinism is unaffected). Finally, the Taxonomy
+> mapping table below is **one subtype short**: `stock distribution`
+> (`InvestmentTransactionSubtype.STOCK_DISTRIBUTION`, verified in the Plaid
+> Python SDK 2026-07-10) is a real security-bearing inflow the "48 subtypes,
+> no residue" count missed. It maps to `transfer_in` (opens a lot; the child
+> spec adds the row and a general "unlisted security-bearing subtype → review,
+> never silent `other`" guard). Additive — no existing row changes.
 
 ### Taxonomy mapping (Plaid type/subtype → ours)
 

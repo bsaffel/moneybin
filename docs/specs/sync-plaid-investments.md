@@ -150,7 +150,7 @@ existing `accounts` / `transactions` / `balances` / `removed_transactions`:
       "account_id": "eJbKw3...",
       "security_id": "kqzLDp...",
       "date": "2026-07-06",
-      "order_datetime": "2026-07-05T14:30:00Z",
+      "transaction_datetime": "2026-07-05T14:30:00Z",
       "name": "BUY AAPL",
       "quantity": 10.0,
       "amount": 2145.50,
@@ -248,7 +248,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     account_id VARCHAR NOT NULL,              -- Plaid account_id; foreign key to raw.plaid_accounts
     security_id VARCHAR,                      -- Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)
     transaction_date DATE NOT NULL,           -- Plaid date; POSTING date ("typically the settlement date" per Plaid docs) — NOT the trade date; staging derives trade_date
-    order_datetime TIMESTAMP,                 -- Plaid order_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
+    transaction_datetime TIMESTAMP,                 -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
     transaction_name VARCHAR,                 -- Plaid name; broker's description of the event
     quantity DECIMAL(28, 10),                 -- Plaid quantity; already signed per ledger convention (+ acquire, − dispose)
     amount DECIMAL(18, 2) NOT NULL,           -- Plaid amount; CAUTION: positive = cash out (opposite of ledger convention); flip happens in staging
@@ -389,7 +389,7 @@ are materialized into core. Ladder, per incoming raw security:
 | Rung | Condition | Action | Visibility |
 |---|---|---|---|
 | 1 | provider ref already in `security_links` (`accepted`) | **adopt** that `security_id` | silent — near-certain |
-| 2 | unbound; strong identifier matches exactly one catalog entry (CUSIP/ISIN if present → ticker+exchange, per the foundation's resolution chain incl. the `BRK.B`-first / suffix-strip-second rule). The exchange signal is the captured `market_identifier_code`: a **contradicting** exchange on both sides disqualifies the match (falls to rung 3); absence on either side does not block an otherwise-unique exact-ticker match — else every Plaid security whose ticker already exists as a manual catalog entry (typically saved without an exchange) would provisional-mint a duplicate, and Plaid sells would stop consuming the manual lots until review | **auto-bind** (`decided_by='auto'`) | silent, reversible |
+| 2 | unbound; strong identifier matches exactly one catalog entry (CUSIP/ISIN if present → ticker+exchange, per the foundation's resolution chain incl. the `BRK.B`-first / suffix-strip-second rule). Exchange signal is the captured `market_identifier_code`, and silent auto-bind requires **exchange agreement**: both sides carry an exchange and it is *equal*, **or** both sides omit it (the common manual-entry case — a bare `AAPL` catalog row against a Plaid `AAPL` with no MIC — genuinely low-ambiguity). A **contradicting** exchange, or an exchange present on exactly one side (Plaid reports a MIC the catalog row lacks, or vice versa), leaves the match unconfirmable → **falls to rung 3** rather than silently binding to a possibly-wrong `security_id` | **auto-bind** (`decided_by='auto'`) | silent, reversible |
 | 3 | unbound; name-fuzzy match to one-or-more candidates (no contradicting strong identifier — Guard 2) | **provisional-mint + propose merge**: mint into `app.securities` (`created_by='plaid'`) and bind — then file a pending `security_link_decisions` row proposing a **merge** of the minted security into the best fuzzy candidate | **surfaced** for review |
 | 4 | no candidate | **mint** into `app.securities` (`created_by='plaid'`, defensive type mapping below) + bind | silent; visible via `created_by` |
 
@@ -451,8 +451,10 @@ The heaviest view in this spec. In order:
 2. **Exclude** lifecycle rows: `cancel` (any subtype), `cash/pending credit`,
    `cash/pending debit`, `transfer/request`. (`cancel_transaction_id` is a
    deprecated dead field — never build on it.)
-3. **Map taxonomy** (restated verbatim from `investments-data-model.md`
-   § Plaid Investments Readiness; implemented as an explicit `CASE` over
+3. **Map taxonomy** (restated from `investments-data-model.md`
+   § Plaid Investments Readiness — with one addition, `stock distribution`,
+   that the foundation's "48 subtypes, no residue" enumeration missed;
+   see the foundation amendment. Implemented as an explicit `CASE` over
    `(investment_transaction_type, investment_transaction_subtype)`):
 
    | Plaid (type/subtype) | → `type` | → `subtype` / notes |
@@ -462,6 +464,7 @@ The heaviest view in this spec. In order:
    | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
    | sell/{sell, sell short} | `sell` | |
    | sell/distribution | `transfer_out` | in-kind outflow from tax-advantaged account |
+   | transfer/stock distribution | `transfer_in` | in-kind **inflow** of shares (stock dividend / distribution) — opens a lot carrying supplied basis, or a `basis_incomplete` lot when none is given. **Must not fall to `other`**: `other` is not an acquisition type, so the engine would skip it and the shares would never enter holdings |
    | cash-or-fee/{account, legal, management, transfer, trust, fund, miscellaneous} fee, margin expense | `fee` | |
    | cash-or-fee/{tax, tax withheld, non-resident tax} | `fee` | subtype `tax_withheld` |
    | cash-or-fee/{dividend, qualified dividend, non-qualified dividend} | `dividend` | subtype `qualified`/`non_qualified` |
@@ -475,15 +478,28 @@ The heaviest view in this spec. In order:
    | transfer/{merger, spin off, trade} | decomposed leg pairs | staging synthesizes legs; `event_group_id` links |
    | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
 
-4. **Map dates:** `trade_date = COALESCE(order_datetime::DATE,
+   **Unlisted-subtype guard.** Plaid may add subtype enum values over time.
+   A subtype with no explicit branch defaults to `other` **only when it is
+   cash-only or non-position-affecting**; any **security-bearing** row
+   (`security_id` present, nonzero `quantity`) that hits no branch is routed
+   to a review state (a `security_link_decisions`-style pending row or a
+   staging reject surfaced by `system doctor`), never silently mapped to
+   `other` — because `other` is not an acquisition/disposal type, so the
+   engine skips it and the shares would vanish from holdings. This is the
+   generalized form of the `stock distribution` fix.
+
+4. **Map dates:** `trade_date = COALESCE(transaction_datetime::DATE,
    transaction_date)`; `settlement_date = transaction_date`. Plaid's `date`
-   is the **posting date** ("typically the settlement date" per the API
-   reference — verified 2026-07-10), not the trade date; `order_datetime`
-   (trade initiation, returned by select institutions) is preferred when
-   present. Where only the posting date exists it proxies the trade date —
-   a buy or sell near the one-year holding boundary can misclassify ST/LT by
-   the settlement lag. Named limitation; the real-broker 1099-B tie-out (the
-   M1J close gate) is the corrective that catches it on affected accounts.
+   is the **posting date** ("typically the settlement date"), not the trade
+   date; `transaction_datetime` (trade-initiation timestamp, returned by
+   select institutions) is preferred when present. Field names and semantics
+   verified against the Plaid Python SDK's generated `InvestmentTransaction`
+   model (`date`, `transaction_datetime`) — the authoritative OpenAPI-derived
+   source, 2026-07-10. Where only the posting date exists it proxies the trade
+   date — a buy or sell near the one-year holding boundary can misclassify
+   ST/LT by the settlement lag. Named limitation; the real-broker 1099-B
+   tie-out (the M1J close gate) is the corrective that catches it on affected
+   accounts.
 5. **Flip sign, normalize fee inclusion:** `-1 * amount AS amount` (Plaid
    positive = cash out → ledger negative = cash out); `quantity` passes
    through unflipped. The ledger contract requires `amount` fee-**inclusive**
@@ -588,14 +604,14 @@ data still loads.
 | Test area | What's tested |
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
-| `SecurityResolver` | Each ladder rung: adopt existing binding; auto-bind on ticker+exchange; fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
+| `SecurityResolver` | Each ladder rung: adopt existing binding; auto-bind on exchange agreement (both-equal **and** both-absent bind; one-sided-exchange **and** contradicting-exchange fall to rung 3); fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
 
 ### SQL tests (no server required)
 
 | Test area | What's tested |
 |---|---|
-| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `order_datetime`, falls back to posting date; lifecycle exclusion; provider string passthrough; canonical id resolution; deterministic `event_group_id` (identical across two rebuilds). |
+| `stg_plaid__investment_transactions` | Sign flip (`2145.50` → `-2145.50`; quantity untouched); fee-convention handling per the validated branch (+ drift-guard fires on a row reconciling under neither); `trade_date` prefers `transaction_datetime`, falls back to posting date; lifecycle exclusion; provider string passthrough; canonical id resolution; deterministic `event_group_id` (identical across two rebuilds). |
 | `stg_plaid__securities` / `__investment_holdings` | Currency `COALESCE`; MIC → `exchange`; defensive type mapping; both-id resolution on holdings. |
 | Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. |
 | Reinvest pairing | Golden fixture (captured from Sandbox): reinvest pair shares one `event_group_id`; unpairable row degrades to NULL group with lot/income effects intact. |
