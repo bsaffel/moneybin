@@ -1181,7 +1181,9 @@ flows become necessary.
 ```python
 def import_preview(file_path: str) -> PreviewResult:
     # Returns: headers, sample_rows, detected_format, delimiter, encoding,
-    #          sheet_names (Excel), row_count_estimate
+    #          sheet_names (Excel), row_count_estimate, has_header, skip_rows,
+    #          rows_in_file (row-count reconciliation), header_row_looks_like_data
+    #          (structural red flag — forces confidence to low)
 ```
 
 ### `import_history` — list past imports

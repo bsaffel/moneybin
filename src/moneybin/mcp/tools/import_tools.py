@@ -499,7 +499,13 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
 
     Tabular files: runs the first 3 stages of the tabular pipeline (detect,
     read, map) and returns format info, column mapping, sample values, and
-    confidence.
+    confidence. ``has_header``/``skip_rows``/``rows_in_file`` let you
+    reconcile row accounting (``rows_in_file == skip_rows + (1 if has_header
+    else 0) + rows_read + rows_skipped_trailing``); ``header_row_looks_like_data``
+    flags a row consumed as the header that also parses as a transaction — a
+    likely misdetection. Any structural red flag forces ``confidence`` to
+    ``low`` regardless of column-name/content score, so a suspicious layout
+    routes to the confirm gate instead of being self-accepted.
 
     PDF files: runs the deterministic extraction rung. A clean native-text
     statement returns its routing outcome (row count, confidence,
@@ -529,7 +535,10 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
         format_info = detect_format(validated)
         read_result = read_file(validated, format_info)
         mapping_result = map_columns(
-            read_result.df, t_high=bands.t_high, t_med=bands.t_med
+            read_result.df,
+            t_high=bands.t_high,
+            t_med=bands.t_med,
+            structural_red_flag=read_result.header_row_looks_like_data,
         )
     except ValueError as e:
         raise UserError(str(e), code="preview_error") from e
@@ -554,6 +563,10 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
             sample_values=mapping_result.sample_values,
             rows_read=len(read_result.df),
             rows_skipped_trailing=read_result.rows_skipped_trailing,
+            skip_rows=read_result.skip_rows,
+            has_header=read_result.has_header,
+            rows_in_file=read_result.rows_in_file,
+            header_row_looks_like_data=read_result.header_row_looks_like_data,
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps
         # medium from ImportPreviewPayload (sample_values is row-level content).

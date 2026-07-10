@@ -2,7 +2,7 @@
 
 import pytest
 
-from moneybin.extractors.confidence import Confidence, Tier, tier_for
+from moneybin.extractors.confidence import Confidence, Tier, resolve_tier, tier_for
 
 
 class TestTierFor:
@@ -29,6 +29,25 @@ class TestTierFor:
     def test_rejects_inverted_bands(self) -> None:
         with pytest.raises(ValueError, match="t_high must be >= t_med"):
             tier_for(0.5, t_high=0.5, t_med=0.7)
+
+
+class TestResolveTier:
+    """resolve_tier() — tier_for banding with a structural-red-flag override."""
+
+    def test_no_flag_matches_tier_for(self) -> None:
+        for score in (0.95, 0.80, 0.30):
+            assert resolve_tier(score, t_high=0.90, t_med=0.70) == tier_for(
+                score, t_high=0.90, t_med=0.70
+            )
+
+    def test_flag_forces_low_regardless_of_score(self) -> None:
+        assert (
+            resolve_tier(0.99, t_high=0.90, t_med=0.70, structural_red_flag=True)
+            == "low"
+        )
+
+    def test_flag_default_is_false(self) -> None:
+        assert resolve_tier(0.99, t_high=0.90, t_med=0.70) == "high"
 
 
 class TestConfidence:
