@@ -45,7 +45,7 @@ _MIGRATIONS_DIR = (
 
 # Schemas SQLMesh owns and exposes as views on a materialized database. app.* and
 # raw.* are migration-owned. See AGENTS.md "Architecture: Data Layers".
-_SQLMESH_OWNED_SCHEMAS = frozenset({"seeds", "meta", "core", "prep"})
+_SQLMESH_OWNED_SCHEMAS = frozenset({"seeds", "meta", "core", "prep", "reports"})
 
 # Top-level statement types that mutate their target relation.
 _WRITE_TYPES = (exp.Alter, exp.Drop, exp.Insert, exp.Update, exp.Delete)
@@ -58,7 +58,7 @@ _FALLBACK_RE = re.compile(
     r"DROP\s+(?:TABLE|VIEW|INDEX)|CREATE\s+INDEX|"
     r"CREATE\s+TABLE(?!\s+IF\s+NOT\s+EXISTS))\s+"
     r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
-    r"[\"']?(seeds|meta|core|prep)[\"']?\.",
+    r"[\"']?(seeds|meta|core|prep|reports)[\"']?\.",
     re.IGNORECASE,
 )
 
@@ -118,15 +118,48 @@ def violations_in_sql(sql: str) -> list[str]:
     return out
 
 
+def _static_str(node: ast.expr | None) -> str | None:
+    """A string constant, or an f-string flattened to its literal parts, else None.
+
+    f-string interpolations become a space so a static write *target* survives
+    for the regex fallback while a dynamic *value* drops out.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else " "
+            for v in node.values
+        )
+    return None
+
+
 def _execute_sql_args(py_source: str) -> list[str]:
     """SQL strings passed to ``.execute()`` / ``.executemany()`` in a .py migration.
 
-    f-strings are flattened to their literal parts (interpolations become a
-    space), so a static write target survives for the regex fallback while a
-    dynamic value drops out.
+    Resolves the common ``conn.execute(_CONST_SQL)`` pattern (e.g. V034) by
+    first mapping module-level string/f-string assignments, then substituting a
+    bare-name argument for its assigned value.
     """
+    tree = ast.parse(py_source)
+
+    consts: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets = [t for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target]
+            value = node.value
+        else:
+            continue
+        text = _static_str(value)
+        if text is not None:
+            for target in targets:
+                consts[target.id] = text
+
     out: list[str] = []
-    for node in ast.walk(ast.parse(py_source)):
+    for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -134,17 +167,11 @@ def _execute_sql_args(py_source: str) -> list[str]:
             and node.args
         ):
             arg = node.args[0]
-            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                out.append(arg.value)
-            elif isinstance(arg, ast.JoinedStr):
-                out.append(
-                    "".join(
-                        v.value
-                        if isinstance(v, ast.Constant) and isinstance(v.value, str)
-                        else " "
-                        for v in arg.values
-                    )
-                )
+            text = _static_str(arg)
+            if text is not None:
+                out.append(text)
+            elif isinstance(arg, ast.Name) and arg.id in consts:
+                out.append(consts[arg.id])
     return out
 
 
@@ -167,6 +194,9 @@ _GOLDEN: list[tuple[str, bool]] = [
     ("DROP TABLE app.foo", False),
     ("DELETE FROM meta.model_freshness WHERE x = 1", True),
     ("INSERT INTO core.dim_x VALUES (1)", True),
+    # reports is a SQLMesh view layer too (reports.net_worth, etc.)
+    ("ALTER TABLE reports.net_worth ADD COLUMN x INT", True),
+    ("SELECT amount FROM reports.net_worth", False),
     # idempotent create on a seed table is the allowed V014 bootstrap
     ("CREATE TABLE IF NOT EXISTS seeds.categories (id VARCHAR)", False),
     ("CREATE TABLE seeds.categories (id VARCHAR)", True),
@@ -206,7 +236,19 @@ def test_no_migration_writes_sqlmesh_owned_schemas() -> None:
             violations.extend(f"{path.name}: {v}" for v in violations_in_sql(sql))
 
     assert not violations, (
-        "Migrations must not write to SQLMesh-owned schemas (seeds/meta/core/prep) "
-        "— those are views on a materialized database (see this module's "
-        "docstring / PR #306):\n  • " + "\n  • ".join(violations)
+        "Migrations must not write to SQLMesh-owned schemas "
+        "(seeds/meta/core/prep/reports) — those are views on a materialized "
+        "database (see this module's docstring / PR #306):\n  • "
+        + "\n  • ".join(violations)
     )
+
+
+def test_execute_sql_args_resolves_module_constants() -> None:
+    """SQL defined as a module constant and executed by name is scanned (V034 style)."""
+    source = (
+        '_BAD_SQL = "ALTER TABLE seeds.categories ADD COLUMN x VARCHAR"\n'
+        "def migrate(conn):\n"
+        "    conn.execute(_BAD_SQL)\n"
+    )
+    extracted = _execute_sql_args(source)
+    assert any(violations_in_sql(sql) for sql in extracted), extracted
