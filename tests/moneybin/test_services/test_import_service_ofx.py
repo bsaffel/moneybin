@@ -1,5 +1,6 @@
 """Integration tests for ImportService._import_ofx via the new pipeline."""
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,33 @@ class TestImportOFXBatchLifecycle:
             + result.balances
         )
         assert latest["rows_imported"] == expected_total
+
+    def test_shared_fitid_rows_all_survive_import(self, db: Database) -> None:
+        """F1 regression: two distinct transactions sharing a FITID both land.
+
+        The fixture has a Chase-style foreign purchase (-13.12) and its
+        foreign-transaction fee (-0.39) stamped with one shared FITID, plus a
+        third unique-FITID row. Before the extractor's content-based
+        disambiguation, the raw primary key
+        ``(source_transaction_id, account_id, source_file)`` collapsed the shared
+        pair via INSERT OR IGNORE, silently dropping the $13.12 purchase. All
+        three rows must now survive in raw.
+        """
+        fixture = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
+        assert fixture.exists()
+
+        service = ImportService(db)
+        service.import_file(fixture, refresh=False)
+
+        rows = db.execute(
+            "SELECT amount FROM raw.ofx_transactions ORDER BY amount"
+        ).fetchall()
+        amounts = [r[0] for r in rows]
+        # All three transactions survive — the shared-FITID pair is not collapsed.
+        assert len(amounts) == 3
+        assert Decimal("-13.12") in amounts
+        assert Decimal("-0.39") in amounts
+        assert Decimal("-42.00") in amounts
 
     def test_reverting_ofx_batch_deletes_rows(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")

@@ -7,8 +7,10 @@ for data warehousing and analysis.
 Documentation: https://github.com/jseutter/ofxparse
 """
 
+import hashlib
 import html
 import logging
+from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -43,6 +45,75 @@ def _decode_text_field(value: str | None) -> str | None:
             return current
         current = decoded
     return current
+
+
+# Fields that distinguish two transactions the institution stamped with the same
+# FITID. Order is fixed so the derived suffix is stable across re-imports.
+_FITID_SIGNATURE_FIELDS = (
+    "transaction_type",
+    "date_posted",
+    "amount",
+    "payee",
+    "memo",
+    "check_number",
+)
+# Separates the raw FITID from the content-derived disambiguation suffix. Chosen
+# because FITIDs are alphanumeric and never contain it, so the marked id can
+# never collide with a real one.
+_FITID_COLLISION_MARKER = "#"
+
+
+def _fitid_content_signature(row: dict[str, Any]) -> str:
+    """Pipe-delimited signature of the fields that make a transaction distinct."""
+    return "|".join(str(row[field]) for field in _FITID_SIGNATURE_FIELDS)
+
+
+def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
+    """Repair non-unique OFX FITIDs within a file so distinct rows aren't lost.
+
+    The OFX spec promises FITID is unique per account, and MoneyBin keys the raw
+    primary key and every dedup layer on ``(source_transaction_id, account_id)``.
+    Some institutions violate this — Chase stamps a foreign purchase and its
+    foreign-transaction fee (two distinct transactions posted the same day) with
+    one shared FITID. Left unrepaired, the raw ``INSERT OR IGNORE`` and the
+    ``stg_ofx__transactions`` dedup window silently drop one of the two.
+
+    For each ``(account_id, source_transaction_id)`` group whose members differ
+    in content, append a deterministic content-hash suffix to *every* member's
+    ``source_transaction_id``. Members with identical content hash to the same
+    suffix (so genuine in-file duplicates still collapse); members with differing
+    content get distinct ids and both survive. The suffix is a pure function of
+    the row's own content, so re-importing the same file reproduces the same ids
+    and dedup stays idempotent.
+
+    Suffixing *all* colliding members (rather than leaving one "plain") is
+    deliberate: a suffixed id can never equal a plain FITID, so the worst case is
+    a missed cross-file dedup (a visible duplicate surfaced for review) — never a
+    silent false merge, which is the data-loss failure mode this repairs.
+
+    Mutates ``transactions`` in place; returns the number of rows rewritten.
+    """
+    by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in transactions:
+        by_key[(row["account_id"], row["source_transaction_id"])].append(row)
+
+    rewritten = 0
+    for rows in by_key.values():
+        if len(rows) < 2:
+            continue
+        if len({_fitid_content_signature(row) for row in rows}) < 2:
+            # Every member is byte-identical → a genuine duplicate; leave the id
+            # untouched and let the raw PK / staging window collapse it.
+            continue
+        for row in rows:
+            digest = hashlib.sha256(_fitid_content_signature(row).encode()).hexdigest()[
+                :8
+            ]
+            row["source_transaction_id"] = (
+                f"{row['source_transaction_id']}{_FITID_COLLISION_MARKER}{digest}"
+            )
+            rewritten += 1
+    return rewritten
 
 
 _DECIMAL_AMOUNT = pl.Decimal(precision=18, scale=2)
@@ -414,6 +485,13 @@ class OFXExtractor:
                 transactions_data.append(tx_data)
 
         if transactions_data:
+            repaired = _disambiguate_colliding_fitids(transactions_data)
+            if repaired:
+                logger.warning(
+                    f"Repaired {repaired} OFX transaction(s) sharing a non-unique "
+                    f"FITID within one file (institution reused a FITID for distinct "
+                    f"transactions); disambiguated by content to prevent dedup loss"
+                )
             return pl.DataFrame(
                 transactions_data,
                 schema_overrides=_TRANSACTIONS_AMOUNT_OVERRIDES,
