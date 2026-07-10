@@ -4,8 +4,8 @@ Migrations own ``app.*`` and ``raw.*`` (plus the ``app.schema_migrations``
 tracking table). They must never *write* a relation in a SQLMesh-owned schema
 (``seeds`` / ``meta`` / ``core`` / ``prep``), because on any database whose
 SQLMesh virtual layer is materialized those relations are **views** — and
-``ALTER`` / ``DROP`` / ``INSERT`` / ``UPDATE`` / ``DELETE`` / non-idempotent
-``CREATE`` against a view raises at apply time.
+``ALTER`` / ``DROP`` / ``INSERT`` / ``UPDATE`` / ``DELETE`` / ``MERGE`` /
+non-idempotent ``CREATE`` against a view raises at apply time.
 
 This is the exact bug V032 shipped (PR #306): ``ALTER TABLE seeds.categories``
 (plus an ``UPDATE seeds.categories``) passed every test — each ran against a
@@ -47,14 +47,16 @@ _MIGRATIONS_DIR = (
 # raw.* are migration-owned. See AGENTS.md "Architecture: Data Layers".
 _SQLMESH_OWNED_SCHEMAS = frozenset({"seeds", "meta", "core", "prep", "reports"})
 
-# Top-level statement types that mutate their target relation.
-_WRITE_TYPES = (exp.Alter, exp.Drop, exp.Insert, exp.Update, exp.Delete)
+# Top-level statement types that mutate their target relation. exp.Merge covers
+# DuckDB's MERGE INTO upsert (an INSERT/UPDATE combined) — its target is the
+# same `stmt.this` Table the other write types expose, so _owned_schema_of works.
+_WRITE_TYPES = (exp.Alter, exp.Drop, exp.Insert, exp.Update, exp.Delete, exp.Merge)
 
 # Fallback for SQL sqlglot can't parse (f-string fragments, dialect quirks): a
 # write keyword immediately targeting an owned schema. CREATE TABLE IF NOT EXISTS
 # is excluded (idempotent). Conservative — requires the keyword AND the schema.
 _FALLBACK_RE = re.compile(
-    r"\b(ALTER\s+TABLE|UPDATE|INSERT\s+INTO|DELETE\s+FROM|"
+    r"\b(ALTER\s+TABLE|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO|"
     r"DROP\s+(?:TABLE|VIEW|INDEX)|CREATE\s+INDEX|"
     r"CREATE\s+TABLE(?!\s+IF\s+NOT\s+EXISTS))\s+"
     r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
@@ -204,6 +206,17 @@ _GOLDEN: list[tuple[str, bool]] = [
     ("DROP TABLE app.foo", False),
     ("DELETE FROM meta.model_freshness WHERE x = 1", True),
     ("INSERT INTO core.dim_x VALUES (1)", True),
+    # MERGE INTO is a DuckDB upsert (INSERT+UPDATE) — a write to its target
+    (
+        "MERGE INTO core.dim_x t USING app.s s ON t.id=s.id "
+        "WHEN MATCHED THEN UPDATE SET a=s.a",
+        True,
+    ),
+    (
+        "MERGE INTO app.dim_x t USING core.s s ON t.id=s.id "
+        "WHEN MATCHED THEN UPDATE SET a=s.a",
+        False,
+    ),
     # reports is a SQLMesh view layer too (reports.net_worth, etc.)
     ("ALTER TABLE reports.net_worth ADD COLUMN x INT", True),
     ("SELECT amount FROM reports.net_worth", False),
@@ -223,6 +236,7 @@ _GOLDEN: list[tuple[str, bool]] = [
     ("SELECT plaid_detailed FROM seeds.categories", False),
     # f-string fragment (sqlglot can't parse) — regex fallback still catches it
     ("UPDATE seeds.categories SET class =  ", True),
+    ("MERGE INTO seeds.categories t USING  ", True),
     # sqlglot returns an exp.Command (not a raise) for this flattened ALTER;
     # the fallback must still fire so the write isn't silently skipped
     ("ALTER TABLE seeds.categories ADD COLUMN   ", True),
