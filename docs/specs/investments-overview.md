@@ -99,9 +99,10 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 | **C. Price feeds & valuation** | Yahoo + CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss | Yes (it *is* the feed) | `investments-price-feeds.md` *(planned)* |
 | **D. Net-worth integration** | Holdings valuation into `reports.net_worth` / `fct_balances` | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
-### Already-carved children (gated stubs)
+### Already-carved children
 
-These exist as planned specs that gate on the contracts above:
+Specs that build on the contracts above — the first has graduated from stub to
+a full spec; the rest remain planned stubs:
 
 - [`sync-plaid-investments.md`](sync-plaid-investments.md) — Plaid Investments product (holdings, securities, investment transactions). **Spec ready 2026-07-10** — the first carved child to land.
 - Investment OFX import — `<INVSTMTRS>` handling, a child of `smart-import-financial.md`.

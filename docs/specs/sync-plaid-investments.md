@@ -248,7 +248,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     account_id VARCHAR NOT NULL,              -- Plaid account_id; foreign key to raw.plaid_accounts
     security_id VARCHAR,                      -- Plaid security_id; NULL for cash-only events (deposit, withdrawal, account fee)
     transaction_date DATE NOT NULL,           -- Plaid date; POSTING date ("typically the settlement date" per Plaid docs) — NOT the trade date; staging derives trade_date
-    transaction_datetime TIMESTAMP,                 -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
+    transaction_datetime TIMESTAMP,           -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
     transaction_name VARCHAR,                 -- Plaid name; broker's description of the event
     quantity DECIMAL(28, 10),                 -- Plaid quantity; already signed per ledger convention (+ acquire, − dispose)
     amount DECIMAL(18, 2) NOT NULL,           -- Plaid amount; CAUTION: positive = cash out (opposite of ledger convention); flip happens in staging
@@ -273,11 +273,14 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
 #### `raw.plaid_investment_holdings`
 
 ```sql
-/* Broker-reported holdings snapshot; dated, mirrors raw.plaid_balances — store-don't-trust reconciliation reference, never authoritative */
+/* Broker-reported holdings, one row per (position, snapshot) — store-don't-trust reconciliation reference, never authoritative.
+   Each pull is a full snapshot keyed by source_file (the snapshot identity), NOT by date: two pulls on the same UTC day
+   are distinct snapshots, so a position dropped from the newer full snapshot is correctly absent from it (not masked by a
+   same-day survivor). Idempotent — re-loading the same job replaces its own rows. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
     account_id VARCHAR NOT NULL,              -- Plaid account_id
     security_id VARCHAR NOT NULL,             -- Plaid security_id
-    holdings_date DATE NOT NULL,              -- Snapshot date = extracted_at::DATE; Plaid holdings carry no as-of date of their own
+    holdings_date DATE,                       -- Snapshot calendar date = extracted_at::DATE; informational (Plaid holdings carry no as-of date of their own)
     institution_price DECIMAL(28, 10),        -- Broker-reported price
     institution_price_as_of DATE,             -- Date of institution_price
     institution_value DECIMAL(18, 2),         -- Broker-reported market value
@@ -287,15 +290,15 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
     unofficial_currency_code VARCHAR,         -- Non-ISO (crypto) currency
     vested_quantity DECIMAL(28, 10),          -- Vested units (equity compensation); NULL otherwise
     vested_value DECIMAL(18, 2),              -- Vested value (equity compensation); NULL otherwise
-    source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}
+    source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK)
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes dedup to the institution connection
-    extracted_at TIMESTAMP                    -- When the server fetched this data from Plaid
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes the snapshot to the institution connection
+    extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, security_id, holdings_date, source_origin)
+    PRIMARY KEY (account_id, security_id, source_file)
 );
 ```
 
@@ -389,9 +392,32 @@ are materialized into core. Ladder, per incoming raw security:
 | Rung | Condition | Action | Visibility |
 |---|---|---|---|
 | 1 | provider ref already in `security_links` (`accepted`) | **adopt** that `security_id` | silent — near-certain |
-| 2 | unbound; strong identifier matches exactly one catalog entry (CUSIP/ISIN if present → ticker+exchange, per the foundation's resolution chain incl. the `BRK.B`-first / suffix-strip-second rule). Exchange signal is the captured `market_identifier_code`, and silent auto-bind requires **exchange agreement**: both sides carry an exchange and it is *equal*, **or** both sides omit it (the common manual-entry case — a bare `AAPL` catalog row against a Plaid `AAPL` with no MIC — genuinely low-ambiguity). A **contradicting** exchange, or an exchange present on exactly one side (Plaid reports a MIC the catalog row lacks, or vice versa), leaves the match unconfirmable → **falls to rung 3** rather than silently binding to a possibly-wrong `security_id` | **auto-bind** (`decided_by='auto'`) | silent, reversible |
+| 2 | unbound; **strong identifier** matches exactly one catalog entry: CUSIP or ISIN equality (when present) auto-binds outright — exchange is irrelevant at this rung. Absent CUSIP/ISIN, an exact ticker match (foundation resolution chain, incl. the `BRK.B`-first / suffix-strip-second rule) auto-binds only with **exchange agreement on normalized MIC** (see below). A ticker match whose normalized exchanges *contradict* (both resolve to different MICs) → **falls to rung 3** rather than silently binding a possibly-wrong `security_id` | **auto-bind** (`decided_by='auto'`) | silent, reversible |
 | 3 | unbound; name-fuzzy match to one-or-more candidates (no contradicting strong identifier — Guard 2) | **provisional-mint + propose merge**: mint into `app.securities` (`created_by='plaid'`) and bind — then file a pending `security_link_decisions` row proposing a **merge** of the minted security into the best fuzzy candidate | **surfaced** for review |
 | 4 | no candidate | **mint** into `app.securities` (`created_by='plaid'`, defensive type mapping below) + bind | silent; visible via `created_by` |
+
+**Exchange agreement is on normalized MIC, never raw strings.** `app.securities.exchange`
+is free-text (its DDL example is `"NASDAQ"`), while Plaid's
+`market_identifier_code` is an ISO-10383 MIC (`"XNAS"`). Comparing the raw
+strings would read every real match as a contradiction (`'NASDAQ' != 'XNAS'`)
+and wrongly route it to review. So both sides are first **normalized to a
+canonical MIC** through a small seeded MIC↔common-name registry (a `seeds`
+table, ~the few dozen exchanges a personal portfolio touches, extensible — the
+one shape a surveyed field of shipped brokerage-sync implementations settled on;
+most don't model exchange at all, and the lone one that normalizes does it
+exactly this way: normalize inputs to a MIC up front against a static registry,
+never fuzzy-match names at read time). Comparison rules on the normalized value:
+- both normalize to the **same MIC** → agreement → auto-bind;
+- both **absent** (bare catalog ticker vs Plaid security with no MIC) → no
+  exchange signal → auto-bind on the unique ticker (the common manual case);
+- one side **unnormalizable** (a free-text exchange not in the registry) →
+  treated as *absent on that side*, **not** a contradiction → auto-bind on the
+  unique ticker rather than punishing an incomplete seed with review noise;
+- both present and normalize to **different MICs** → genuine contradiction →
+  rung 3.
+This is the whole fix for the round-4/round-5 exchange tension: the signal is
+compared in one vocabulary, so real matches agree and only true cross-listing
+ambiguity falls to review.
 
 Rung 3 mints *before* review (the account-identity precedent: mint-now,
 merge-later) because holding rows out of the ledger until review is a silent
@@ -431,8 +457,10 @@ a `dim_securities` union branch — see Key Decisions):
   `source_security_key` for audit.
 - `COALESCE(iso_currency_code, unofficial_currency_code) AS currency_code`
   (mutually exclusive by Plaid contract — lossless).
-- `market_identifier_code AS exchange` — the ISO-10383 MIC is the exchange
-  attribute the resolver's ticker+exchange rung matches on.
+- `market_identifier_code AS exchange` — Plaid delivers the exchange already as
+  an ISO-10383 MIC, so it needs no normalization here; the resolver normalizes
+  the *catalog* side (free-text `app.securities.exchange`) to a MIC through the
+  seeded registry before comparing (see the ladder's exchange-agreement rule).
 - Defensive `security_type` mapping (Plaid's type is a prose enum, not
   schema-enforced): `fixed income` → `bond`, `cash` → `cash`, `cryptocurrency`
   → `crypto`, `derivative`/`loan` → `other`, `equity`/`etf`/`mutual fund` →
@@ -492,14 +520,41 @@ The heaviest view in this spec. In order:
    transaction_date)`; `settlement_date = transaction_date`. Plaid's `date`
    is the **posting date** ("typically the settlement date"), not the trade
    date; `transaction_datetime` (trade-initiation timestamp, returned by
-   select institutions) is preferred when present. Field names and semantics
-   verified against the Plaid Python SDK's generated `InvestmentTransaction`
-   model (`date`, `transaction_datetime`) — the authoritative OpenAPI-derived
-   source, 2026-07-10. Where only the posting date exists it proxies the trade
+   select institutions) is preferred when present. Field names verified against
+   the Plaid Python SDK's generated `InvestmentTransaction` model (`date`,
+   `transaction_datetime`) 2026-07-10 — note current Plaid web docs render the
+   trade-initiation field as `datetime`; the server reads whichever the pinned
+   SDK version exposes, so implementation pins the exact wire name then, not the
+   spec. Where only the posting date exists it proxies the trade
    date — a buy or sell near the one-year holding boundary can misclassify
    ST/LT by the settlement lag. Named limitation; the real-broker 1099-B
    tie-out (the M1J close gate) is the corrective that catches it on affected
    accounts.
+
+   **No original-acquisition-date on the transaction (named limitation + the
+   differentiation lever).** Plaid's `InvestmentTransaction` carries no
+   original-acquisition-date field (SDK-confirmed 2026-07-10: its only date
+   fields are `date` and `transaction_datetime`). So a Plaid `transfer_in` —
+   including the new `stock distribution` row — sets
+   `original_acquisition_date = NULL`, and the lot's
+   `COALESCE(original_acquisition_date, trade_date)` falls back to the transfer
+   date, **resetting the holding-period clock** and potentially misclassifying
+   a long-held transferred position as short-term. Manual entry avoids this via
+   `--acquired DATE`; a transaction-only Plaid feed cannot. **This is the one
+   case the whole competitive field gets wrong**: a survey of shipped
+   brokerage-sync implementations found every one resets the acquisition date
+   on an external (ACATS) transfer-in — because the source lots aren't in their
+   database. But the per-lot acquisition date *is* available from Plaid, on the
+   **holdings** side: `Holding.tax_lots[]` (current Plaid docs also call this
+   `lot_info[]`; pin the exact name against the SDK version at implementation)
+   exposes a per-lot `acquisition_datetime`, nullable where the institution
+   doesn't provide it — and **no surveyed competitor consumes it**. Capturing
+   it (v1 deliberately does not — § raw) is therefore not mere gap-filling but
+   a concrete correctness edge over the field: harvest
+   `tax_lots[].acquisition_datetime` to backfill `original_acquisition_date` on
+   the matching `transfer_in`. Until that enhancement lands this is an
+   accepted, documented gap — same posture as the trade-date limitation above,
+   and again caught by the 1099-B tie-out on affected accounts.
 5. **Flip sign, normalize fee inclusion:** `-1 * amount AS amount` (Plaid
    positive = cash out → ledger negative = cash out); `quantity` passes
    through unflipped. The ledger contract requires `amount` fee-**inclusive**
@@ -547,7 +602,7 @@ nothing (Plaid-native ids never equal canonical ids).
 |---|---|
 | `core.dim_securities` | **None** (stays a catalog view over `app.securities`). The v1 model's `-- Future: UNION ALL resolved securities from prep.stg_plaid__securities` comment is superseded — minting puts every synced security *in* the catalog, so a union would double-count. Update the comment in place. |
 | `core.fct_investment_transactions` | Add `plaid_investment_transactions` CTE selecting from `prep.stg_plaid__investment_transactions`, `UNION ALL` with the manual staging model (the extension point foundation Requirement 7 reserved). **New nullable columns** `provider_type VARCHAR`, `provider_subtype VARCHAR` (NULL for manual rows). Plaid rows use Plaid's `investment_transaction_id` as the canonical id (source-provided, per the column contract). |
-| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `holdings_date`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each account's newest snapshot date** (`holdings_date = MAX(holdings_date)` per account/`source_origin`), never "latest row per position". Plaid holdings are full snapshots: a position absent from the newest snapshot means the broker no longer reports it, so it must show NULLs (itself a reconciliation signal against a nonzero ledger position) rather than carrying an older snapshot's row forward as if current. Column comments mark all four explicitly non-authoritative. |
+| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot*** (the `source_file` with `MAX(extracted_at)` per `source_origin`), never "latest row per position" or "latest holdings_date". Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
 | `core.fct_investment_lots` / `core.fct_realized_gains` | **No changes.** Derived from the unioned ledger; Plaid rows flow through the existing four-method engine automatically. |
 
 Data flow:
@@ -604,7 +659,7 @@ data still loads.
 | Test area | What's tested |
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
-| `SecurityResolver` | Each ladder rung: adopt existing binding; auto-bind on exchange agreement (both-equal **and** both-absent bind; one-sided-exchange **and** contradicting-exchange fall to rung 3); fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
+| `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
 
 ### SQL tests (no server required)
@@ -643,6 +698,7 @@ transactions), which also seed the golden files.
 | `sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
 | `sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view |
 | `sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
+| `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
 | `tests/fixtures/plaid_investments_sync_response.json` | Golden file (captured from Sandbox) |
 | Unit/SQL test modules | Per the testing strategy |
@@ -694,9 +750,28 @@ contract above is its specification.
   `original_description` precedent: provider fidelity that consumers can query
   without raw access. Corrects the foundation's "no core migration" note
   (additive nullable columns; no reshape).
-- **Dated holdings snapshots + labeled reconciliation columns.** History for
-  free (mirrors `raw.plaid_balances`); the broker's claim visible beside
-  ledger-derived numbers on `dim_holdings`, never blended into them.
+- **Per-snapshot holdings keying + labeled reconciliation columns.** Each pull
+  is a full snapshot keyed by `source_file` (not by date), so prior snapshots
+  survive as history *and* a full snapshot's omission of a position is
+  faithfully represented — the newest-snapshot join then shows the broker's
+  claim beside ledger-derived numbers on `dim_holdings`, NULL where the broker
+  dropped the position, never blended into the ledger figures. This matches the
+  best-in-class pattern from a survey of shipped brokerage-sync tools (dated
+  immutable snapshots); the alternative some ship — overwrite-in-place +
+  hard-delete of absent positions — forces fragile "did the broker sell it or
+  did the feed glitch?" heuristics we avoid entirely.
+- **Exchange compared as normalized MIC, never raw strings.** The catalog's
+  free-text `exchange` (`"NASDAQ"`) and Plaid's ISO-10383 MIC (`"XNAS"`) are
+  different vocabularies; a raw compare reads every real match as a
+  contradiction. Both sides normalize to a canonical MIC through a small seeded
+  registry before comparison, and an unnormalizable value is treated as absent
+  (not a contradiction) so an incomplete seed never manufactures review noise.
+  This is the shape the one surveyed implementation that solves exchange
+  identity uses (normalize inputs to a MIC up front against a static registry;
+  most tools don't model exchange at all) — and it resolves the precision/recall
+  tension the review surfaced across two rounds: strong ids (CUSIP/ISIN) bypass
+  exchange, both-absent binds on the unique ticker, only a genuine cross-listing
+  contradiction falls to review.
 - **Content-hash `event_group_id` in staging.** A minted UUID would churn on
   every SQLMesh rebuild; the content hash is stable and deterministic
   (identifiers.md pattern). Manual entry keeps its minted-at-entry UUID —
