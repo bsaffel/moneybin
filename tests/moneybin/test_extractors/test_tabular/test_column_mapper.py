@@ -201,3 +201,48 @@ class TestMappingResultScore:
         })
         result = map_columns(df)
         assert result.confidence in ("high", "medium", "low")
+
+
+class TestStructuralRedFlagDowngradesConfidence:
+    """A structural red flag forces low confidence regardless of content score.
+
+    Regression coverage: a structurally-suspicious file (e.g. the row consumed
+    as a header also parses as a transaction) must not self-accept at
+    medium/high just because its column names/content score well — the
+    propose->confirm gate must engage.
+    """
+
+    def test_structural_red_flag_forces_low_despite_high_content_score(self) -> None:
+        df = _make_df({
+            "Transaction Date": ["01/15/2026", "02/20/2026"],
+            "Amount": ["-42.50", "100.00"],
+            "Description": ["KROGER #1234", "DIRECT DEPOSIT"],
+        })
+        baseline = map_columns(df)
+        assert baseline.confidence == "high"  # sanity: would be high without the flag
+
+        result = map_columns(df, structural_red_flag=True)
+        assert result.confidence == "low"
+        assert (
+            result.score == baseline.score
+        )  # score reported honestly, only tier drops
+
+    def test_to_confidence_reflects_structural_red_flag(self) -> None:
+        df = _make_df({
+            "Transaction Date": ["01/15/2026", "02/20/2026"],
+            "Amount": ["-42.50", "100.00"],
+            "Description": ["KROGER #1234", "DIRECT DEPOSIT"],
+        })
+        result = map_columns(df, structural_red_flag=True)
+        c = result.to_confidence(t_high=0.90, t_med=0.70)
+        assert c.tier == "low"
+        assert c.tier == result.confidence
+
+    def test_no_structural_red_flag_leaves_confidence_unaffected(self) -> None:
+        df = _make_df({
+            "Transaction Date": ["01/15/2026", "02/20/2026"],
+            "Amount": ["-42.50", "100.00"],
+            "Description": ["KROGER #1234", "DIRECT DEPOSIT"],
+        })
+        result = map_columns(df, structural_red_flag=False)
+        assert result.confidence == "high"

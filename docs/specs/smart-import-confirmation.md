@@ -186,6 +186,16 @@ The seam is deliberate: a channel produces `score` from whatever signal it has, 
 agent autonomy — branches on a channel; it branches on the `Confidence` contract. This
 is what "coherent confidence story" means concretely.
 
+**Structural red flags override the tier, not the score.** A channel can also detect
+a structural signal outside content-matching — the tabular channel's
+`header_row_looks_like_data` (the row consumed as the header also parses as a
+transaction, from either auto-detection or an explicit `skip_rows` override) is the
+first instance. `MappingResult.structural_red_flag=True` forces `tier="low"`
+regardless of `score`, while `score` is still reported honestly for diagnostics. This
+keeps `score` meaning "how well did content matching go" and `tier` meaning "should
+this self-accept" — a structural red flag answers the second question directly
+without corrupting the first.
+
 ## Architecture
 
 The reason the three channels diverged is duplicated gate logic:
