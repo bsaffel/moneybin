@@ -1,8 +1,8 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-07-03
+> Last updated: 2026-07-09
 > Status: Implemented — M1V (Ingestion Core). Feature spec.
-> Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the parked Plaid Tier-2b categorizer (`feat/plaid-pfc-categorizer`).
+> Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
 
@@ -137,11 +137,13 @@ fall-through, not data loss.
 
 ## Reverse-lookup contract
 
-The `core.bridge_category_source_map` view **is** the contract the parked
-Tier-2b categorizer consumes. Given a transaction's `(source_type, detailed,
-primary)`, it returns exactly one `category_id` (detailed preferred, else
-primary) or nothing. No Python resolver ships in this PR — the categorizer
-adds one when it has a caller.
+The `core.bridge_category_source_map` view **is** the contract the
+provider-native categorizer consumes. Given a transaction's `(source_type,
+detailed, primary)`, it returns exactly one `category_id` (detailed
+preferred, else primary) or nothing. No Python resolver ships in this PR —
+M1U's `apply_plaid_categories`
+(`src/moneybin/services/categorization/orchestrator.py`) is that resolver;
+see [`categorization-source-model.md`](categorization-source-model.md).
 
 ## Verified-taxonomy reconciliation (curation)
 
@@ -168,7 +170,12 @@ verbatim. Rules:
 - **Coverage gap (29 codes):** the detailed codes still unmapped after the
   re-derivation (of 104 total) are recorded as an axis-2 follow-up; unmapped
   codes fall through. A coverage query (source codes with no row) is **deferred
-  to Tier-2b** — see "Deferred to Tier-2b" below.
+  to Tier-2b** — see "Deferred to Tier-2b" below. Resolved: the axis-2 pass
+  ([`category-taxonomy-audit.md`](category-taxonomy-audit.md), M1W) triaged
+  all 29 — added 6 as genuinely-distinct finer categories, rolled 23 up to
+  their primary under a documented orphan/roll-up allowlist — and shipped the
+  coverage query as an enumerated test
+  (`tests/moneybin/test_seeds/test_category_source_map_seed.py::test_coverage_report_matches_intentional_rollups`).
 
 The row-by-row curation table is produced in the implementation plan.
 
@@ -205,9 +212,10 @@ Per the app-code-touches-metrics rule, the `app.category_source_map` write
 path (rows added / updated / removed) gets counters in
 `src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers — this
 lands with the override writer itself (see "Deferred to Tier-2b" below; no
-writer exists yet in this PR, so there is nothing to instrument). Likewise, a
-coverage query (source codes with no bridge row) ships as observability with
-its first consumer rather than speculatively here.
+writer exists yet, so there is nothing to instrument). The coverage query
+(source codes with no bridge row) shipped as observability with its first
+consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
+(M1W), not the categorizer.
 
 ## Scope
 
@@ -220,13 +228,18 @@ spec + `INDEX.md` + `docs/roadmap.md` + CHANGELOG updates.
 
 **Out of scope (deferred):**
 
-- The Tier-2b categorizer itself — the parked branch rebuilds
-  `apply_plaid_categories` on this view after this lands.
+- The Tier-2b categorizer itself — shipped as
+  [`categorization-source-model.md`](categorization-source-model.md) (M1U),
+  whose `apply_plaid_categories` is built on this view.
 - **Axis-2 taxonomy content**: comprehensive / accounting-aligned expansion,
   the 29-code coverage-gap backfill, an `irs_schedule_c_line` crosswalk,
   de-duplicating redundant categories (e.g. `HSG-MTG` vs `LNP-MTG` Mortgage),
   and auditing whether the finer MoneyBin subcategories should exist. Each is
   purely additive on top of this bridge; gets its own increment and design.
+  Shipped as [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
+  (M1W) — the coverage-gap backfill, mortgage-duplicate resolution, and
+  `class` reconciliation are done; the IRS Schedule C crosswalk remains
+  deferred to the `us_tax` package (M2M).
 - Map-to-null suppression of a seed mapping; `parent_id` N-level nesting;
   promoting `source_taxonomy_version` into the primary key.
 - See "Deferred to Tier-2b" immediately below for the three items pushed to
@@ -234,33 +247,39 @@ spec + `INDEX.md` + `docs/roadmap.md` + CHANGELOG updates.
 
 ### Deferred to Tier-2b
 
-Three items were deliberately pushed to the Tier-2b categorizer increment —
-each lands with the consumer that needs it, rather than speculatively here:
+Three items were deliberately pushed past this PR — each lands with the
+consumer that needs it, rather than speculatively here:
 
-1. **Coverage query** (source codes with no bridge row). Lands with Tier-2b,
-   its first real consumer.
+1. **Coverage query** (source codes with no bridge row). Landed with
+   [`category-taxonomy-audit.md`](category-taxonomy-audit.md) (M1W), not the
+   Tier-2b categorizer as originally planned — M1W's enumerated
+   coverage-report test was the first real consumer.
 2. **Typed-payload `class` exposure.** `class` is already available on
    `core.dim_categories` and on the dict-based `get_active_categories()`
    (`"class"` key, `src/moneybin/services/categorization/queries.py`). The
    typed `CategoryRow` field (`src/moneybin/privacy/payloads/categories.py`)
-   is deferred to Tier-2b, which is the first consumer that needs it on the
-   typed path.
+   is still not added — M1U's categorizer shipped without needing it on the
+   typed path, so this remains open for whichever future consumer needs it.
 3. **Write-path metrics** for `app.category_source_map`. No writer exists yet
-   in this PR — the override writer (axis-2) is what will emit these
-   counters; instrumenting an unwritten path would be speculative.
+   — an override writer still hasn't shipped; instrumenting an unwritten path
+   would be speculative.
 
 ## Coordination
 
-Lands **before** the parked `feat/plaid-pfc-categorizer` branch. That branch
-then merges `main`, picks up `core.bridge_category_source_map`, and rebuilds
-its categorizer (Task 5+) on the reverse-lookup contract instead of joining
-`plaid_detailed`. Its Tasks 1–4 (the `categorized_by` method/source split)
-are independent of this PR.
+Landed **before** the parked `feat/plaid-pfc-categorizer` branch, as planned.
+That work merged `main`, picked up `core.bridge_category_source_map`, and
+rebuilt its categorizer on the reverse-lookup contract instead of joining
+`plaid_detailed` — it shipped as
+[`categorization-source-model.md`](categorization-source-model.md) (M1U).
 
 ## Open questions
 
 - ~~Confirm the exact next migration number against `main` at
   implementation.~~ Resolved: `V032`.
-- The two-tier `ORDER BY code_level` lookup assumes the caller passes both
+- ~~The two-tier `ORDER BY code_level` lookup assumes the caller passes both
   detailed and primary; confirm the Plaid extractor surfaces both on
-  `prep`/`raw` transactions before the categorizer consumes the view.
+  `prep`/`raw` transactions before the categorizer consumes the view.~~
+  Resolved: M1U's `apply_plaid_categories` reads both
+  `category_detailed` and `plaid_category` off
+  `prep.int_transactions__merged` and QUALIFYs to one row per transaction,
+  detailed preferred.

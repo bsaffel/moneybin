@@ -1,6 +1,6 @@
 # Categorization Source Model & Plaid PFC Categorizer
 
-> Last updated: 2026-07-04
+> Last updated: 2026-07-09
 > Status: implemented
 > Address: M1U (Ingestion Core)
 > Type: Feature
@@ -30,9 +30,12 @@
 > merchant-mint precedence-independence invariant (a novel entity's merchant
 > link mints even when the accompanying categorization write is
 > precedence-blocked) was locked behind a characterization test. **Still
-> deferred** (bundled with the axis-2 category-seed audit, a separate,
-> unscheduled PR): the per-source **candidates view** (Decision 5) —
-> additive, not on the critical path (new imports categorize automatically).
+> deferred:** the per-source **candidates view** (Decision 5) — additive,
+> not on the critical path (new imports categorize automatically). The
+> axis-2 category-seed audit it was once tracked alongside has since
+> shipped on its own ([`category-taxonomy-audit.md`](category-taxonomy-audit.md),
+> M1W, PR #298), without carrying the view — Decision 5 remains deferred
+> standalone, with no PR currently scheduled.
 > Original design text is preserved below for rationale; mechanism deltas
 > are flagged inline.
 > Mirrors: the identity-MDM pattern from
@@ -295,7 +298,7 @@ starting point; the **gate at ≥ MEDIUM** is the decision.
 onto historical rows — guard-respecting, so it never touches anything at priority
 ≤ 6. Explicit action = magic stays visible; no silent churn on every run.
 
-> **Shipped (as built) 2026-07-04, PR1 of the follow-up.** Not in M1U's
+> **Shipped (as built) 2026-07-04, PR1 of the follow-up (PR #294).** Not in M1U's
 > first slice — it landed as a **separate discrete operation**, not a flag
 > on `apply_plaid_categories`: `CategorizationOrchestrator
 > .improve_ai_categories()` reuses the Decision 4 bridge-lookup and
@@ -305,8 +308,10 @@ onto historical rows — guard-respecting, so it never touches anything at prior
 > `moneybin-mcp.md`). Same confidence gate, same precedence guard (only ever
 > touches priority-7 `ai` rows, guard-respecting), same "explicit action, no
 > silent churn" posture as originally designed. The per-source candidates
-> view (Decision 5, below) remains deferred, bundled with the axis-2
-> category-seed audit.
+> view (Decision 5, below) remains deferred; the axis-2 category-seed audit
+> it was once tracked alongside has since shipped on its own
+> ([`category-taxonomy-audit.md`](category-taxonomy-audit.md), M1W, PR
+> #298) without it.
 
 **Old primary-as-text passthrough.** The existing `plaid_category → category`
 fallback text in `prep.int_transactions__unioned` is **kept** as a display
@@ -316,12 +321,15 @@ provider-native coverage is proven. Minor.
 ## Decision 5 — Per-source lineage as a derived `core` view, not mutable state
 
 > **Deferred (as built):** the `fct_transaction_category_candidates` view is
-> **not** built in M1U's first slice. With only Plaid as a provider-native
-> source today it would be thin, and the M1V bridge (the code→category
-> mapping) plus the `source_type` column on `app.transaction_categories`
-> already provide the lineage foundation. It lands in the immediate follow-up,
-> and becomes genuinely useful when a second aggregator arrives. Design
-> rationale preserved below.
+> **not** built in M1U's first slice, nor in PR1 of the follow-up (the
+> `improve-ai` pass, PR #294). With only Plaid as a provider-native source
+> today it would be thin, and the M1V bridge (the code→category mapping)
+> plus the `source_type` column on `app.transaction_categories` already
+> provide the lineage foundation. The axis-2 category-seed audit it was
+> once tracked alongside has since shipped on its own (M1W, PR #298)
+> without it, so this view remains deferred standalone, and becomes
+> genuinely useful when a second aggregator arrives. Design rationale
+> preserved below.
 
 "What did each source say?" is answered by a read-only view, **not** a new mutable
 table — because `raw` already is the per-source assertion store (each aggregator's
@@ -395,14 +403,14 @@ activated when inferences actually get uncertain.
 
 ## Build scope of this increment (M1U)
 
-**In (shipped):** Decisions 1–4 + 6 + 8 — the `source_type`/method split +
+**In (shipped, PR #292):** Decisions 1–4 + 6 + 8 — the `source_type`/method split +
 migration; the `provider_native` rename; merchant matches stamped with the `rule`
 method (the provenance-aware variant was built and reverted — see Decision 3);
 rule/merchant override of `provider_native` across runs (the `categorize_pending`
 scan re-checks `provider_native` rows); `apply_plaid_categories`
 (**bridge reverse-lookup**, confidence map + ≥MEDIUM gate, subcategory, run-order
 last) wired into `categorize_pending`; metrics + the `plaid_unmapped` coverage stat.
-**Shipped in the immediate follow-up (PR1, 2026-07-04):** the opt-in
+**Shipped in the immediate follow-up (PR1, 2026-07-04, PR #294):** the opt-in
 AI→`provider_native` upgrade pass (Decision 4), as
 `improve_ai_categories()` plus its CLI (`categorize improve-ai`) and MCP
 (`transactions_categorize_improve_ai`) surfacing; alongside two internal
@@ -410,9 +418,11 @@ refinements to `services/categorization/` — `CategorizationMatcher` as sole
 owner of the uncategorized-row read (named `UncategorizedRow` dataclass
 replacing positional tuples), and the merchant-mint precedence-independence
 invariant locked behind a characterization test.
-**Still deferred**, bundled with the axis-2 category-seed audit (seed
-mis-tag fixes + the ~29-code coverage gap, a separate, unscheduled PR):
-the derived candidates view (Decision 5) — additive, off the critical path.
+**Still deferred:** the derived candidates view (Decision 5) — additive,
+off the critical path. The axis-2 category-seed audit it was once tracked
+alongside (seed mis-tag fixes + the ~29-code coverage gap) has since
+shipped on its own as [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
+(M1W, PR #298), without carrying the view.
 **Out (designed, registered, additive):** the assertion store, the conflict-review
 queue, and merchant-scoped/richer rules (Decision 7).
 

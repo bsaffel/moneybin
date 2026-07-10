@@ -34,17 +34,18 @@ Today amounts are *implicitly* USD, inconsistently:
   bug**, not a hypothetical — M1K.1's guard closes it.
 
 The design move is the same one [`investments-data-model.md`](investments-data-model.md)
-makes: **lock the schema, stage the algorithm.** The investments spec already lands a
-`currency` column on its ledger/lots/gains/holdings now and explicitly defers
-conversion to M1K (*"currency column now, conversion later"*). So investments is
-self-contained in its own denominating currency; M1K is the layer that adds
-conversion across both cash and investments.
+makes: **lock the schema, stage the algorithm.** The investments spec (implemented,
+PR #300) lands a `currency_code` column on its ledger/lots/gains/holdings now and
+explicitly defers conversion to M1K (*"currency column now, conversion later"*) —
+already adopting this spec's canonical `currency_code` naming (see §Key Decisions).
+So investments is self-contained in its own denominating currency; M1K is the layer
+that adds conversion across both cash and investments.
 
 Related specs:
 
-- [`investments-data-model.md`](investments-data-model.md) — carries per-instrument
-  `currency` natively; defers FX conversion to this spec. **M1K.3 reuses its
-  cost-basis engine** for realized FX gain/loss.
+- [`investments-data-model.md`](investments-data-model.md) — implemented (PR #300);
+  carries per-instrument `currency_code` natively; defers FX conversion to this spec.
+  **M1K.3 reuses its cost-basis engine** for realized FX gain/loss.
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — layer
   conventions; **Invariant 8** (derivations live in SQLMesh, never snapshotted into
   `app.*`); the `ResponseEnvelope.summary.display_currency` contract.
@@ -342,7 +343,7 @@ flowchart LR
 ## Testing Strategy
 
 - **Scenario fixtures (YAML):** add a multi-currency profile (e.g. USD + EUR + GBP
-  cash, plus a foreign-denominated holding once investments exist) with ground-truth
+  cash, plus a foreign-denominated holding now that investments exist) with ground-truth
   per-currency sub-totals. Existing single-currency scenarios must be **unchanged**
   (Requirement 7: zero behavior change for single-currency profiles).
 - **Guard tests (M1K.1):** a mixed-currency profile makes summing reports segment or
@@ -379,19 +380,21 @@ realized FX gain/loss on the conversion pairs.
 4. **Realized FX gain/loss lives in a dedicated conversion-pair model, not a column on
    `fct_transactions`** — a conversion is a relationship between two
    events, and reuses the investments cost-basis engine.
-5. **Canonical currency column name = `currency_code`** *(coherence decision — flagged
-   for review).* Three names exist today: `currency_code` (`fct_transactions`),
-   `iso_currency_code` (`dim_accounts`), `currency` (investments spec, unbuilt).
-   Recommend standardizing on **`currency_code`** (it's on the central fact and is the
-   most explicit). Alignment cost is **not** small: `iso_currency_code` appears ~35× across
-   `src/` — `app.account_settings` (schema + repo), `AccountService`, the `accounts_set` MCP
-   tool **including its public agent-facing parameter name**, and the privacy taxonomy — plus
-   a free edit to the unbuilt investments-data-model spec. Renaming the MCP parameter is a
+5. **Canonical currency column name = `currency_code`** *(coherence decision — partially
+   resolved).* Three names existed when this spec was drafted: `currency_code`
+   (`fct_transactions`), `iso_currency_code` (`dim_accounts`), `currency` (investments
+   spec, then unbuilt). Investments has since shipped (PR #300) and adopted
+   **`currency_code`** directly (`investments-data-model.md` Requirement 15), resolving
+   that leg in favor of this recommendation for free, exactly as anticipated below. The
+   remaining divergence is `iso_currency_code` (`dim_accounts`). Alignment cost is **not**
+   small: `iso_currency_code` appears ~35× across `src/` — `app.account_settings` (schema
+   + repo), `AccountService`, the `accounts_set` MCP tool **including its public
+   agent-facing parameter name**, and the privacy taxonomy. Renaming the MCP parameter is a
    **public-contract change** under the design-principles deprecation protocol (ship the new
    name alongside the old for one minor release, then remove). The cost isn't disqualifying —
    `currency_code` is still the right call — but per the coherence principle, pick one and fix
    it everywhere rather than adding a fourth. **Confirm before implementing** — it touches a
-   shipped public MCP parameter and a sibling spec.
+   shipped public MCP parameter.
 
 ## Out of Scope
 

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-24 -->
+<!-- Last reviewed: 2026-07-09 -->
 # Where MoneyBin Fits
 
 Choosing a personal-finance platform is a high-switching-cost decision — your data, your categorization history, the habits you build around it. This page is the honest version: what MoneyBin is, and who should use something else.
@@ -25,7 +25,7 @@ Honest mismatches matter more than feature checklists. If any of these describe 
 - **You share a budget with a partner or household.** Use [Tiller](https://www.tiller.com/), [YNAB](https://www.ynab.com/), or [Monarch](https://www.monarchmoney.com/). MoneyBin is single-user.
 - **You want pure envelope budgeting, no AI in the loop.** Use [YNAB](https://www.ynab.com/) or [Actual Budget](https://actualbudget.org/).
 - **You want plain-text, double-entry, git-diffable books.** Use [Beancount](https://beancount.github.io/) + [Fava](https://github.com/beancount/fava) or [hledger](https://hledger.org/). MoneyBin's encrypted DuckDB file is deliberately not a plain-text ledger.
-- **You want a finished investment workflow today** (FIFO lots, realized/unrealized gain/loss, 1099-B reconciliation). Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) until MoneyBin's investment work lands.
+- **You want automated brokerage sync, market-priced holdings, or a proven real-broker tie-out.** Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) for those. MoneyBin's manual-entry investment ledger and cost-basis engine ship today (see [What Works Today](features.md#investments)); broker sync, market pricing, and a real-broker tie-out are still ahead.
 - **You need multi-currency today.** Use [Firefly III](https://www.firefly-iii.org/) or [Beancount](https://beancount.github.io/).
 - **You want a battle-tested self-host stack you can deploy this afternoon.** Use [Firefly III](https://www.firefly-iii.org/) or [Sure](https://github.com/we-promise/sure) — MoneyBin's container story is on the roadmap, not in the box.
 

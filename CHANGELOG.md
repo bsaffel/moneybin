@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-09 -->
 
 # Changelog
 
@@ -29,7 +29,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `investments_gains` / `investments_securities` read and
   `investments_record` / `investments_securities_set` /
   `investments_lots_select` write MCP tools, plus the top-level `investments`
-  CLI group (replacing the earlier `accounts investments` placeholder).
+  CLI group (replacing the earlier `accounts investments` placeholder). (#300)
 - **Plaid balance snapshots flow into net worth and balance drift.**
   Plaid sync balances now reach `core.fct_balances` → `core.fct_balances_daily`,
   so `reports networth` / `networth-history` and balance-drift detection include
@@ -337,6 +337,40 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   (previously a structurally-suspicious layout could still self-accept at
   `medium`), routing it to the propose→confirm gate instead of an agent
   auto-accepting a wrong mapping.
+- **`moneybin system doctor` / `system_doctor` no longer hangs on a populated
+  database.** Two integrity checks (the `transaction_categories` foreign-key
+  check and the orphan `app.*`-state check) re-ran a correlated subquery
+  against `core.fct_transactions` — an expensive merge/dedup/categorization
+  view — once per row instead of once overall. Once `app.transaction_categories`
+  held enough rows, a full doctor run could take over a minute (past the MCP
+  30-second call cap) instead of the roughly 2 seconds it takes now; both
+  checks are rewritten as a single anti-join. (#301)
+- **Fixed stale command references in CLI hints and docstrings.** `make
+  claude-mcp`'s remediation hints pointed at the pre-rename `mcp config
+  generate --install` instead of `mcp install`; a synthetic-data reset hint
+  pointed at a `moneybin db destroy` command that never existed instead of
+  `moneybin profile delete`; and `DoctorSettings` docstrings referenced
+  `moneybin doctor` instead of `moneybin system doctor`. (#291)
+- **Sync credentials no longer collide across profiles.** Every profile now
+  gets its own opaque profile id, and Plaid-broker keychain/token storage is
+  scoped to it — previously every profile shared one token slot, so
+  authenticating in one profile could affect another. Profiles created before
+  this change get an id automatically on their next sync. (#279)
+- **`moneybin sync pull` now advances the broker's sync cursor after every
+  successful load.** The sync client never acknowledged a completed pull, so
+  the broker's per-institution cursor never advanced and every `sync pull`
+  re-fetched the same window from Plaid instead of only what's new —
+  client-side dedup masked this as wasted work rather than duplicate data. The
+  client now acks the broker once the pulled data is durable; a failed ack is
+  best-effort and doesn't fail the pull. (#262)
+- **A timed-out MCP write call could reset a different, healthy write's
+  database connection.** When `tool_timeout_seconds` was configured below the
+  database write-lock wait, a call that timed out before acquiring the lock
+  could trigger a global connection reset that interrupted an unrelated,
+  still-running write instead of only its own. The reset now targets only the
+  timed-out call's own connection, and `MCPConfig` rejects a
+  `tool_timeout_seconds` below the write-lock wait outright so the unsafe
+  configuration can no longer be set. (#244)
 - **SQLMesh state migrations now survive a dependency version bump.** After a
   SQLMesh upgrade, the in-process state migration wrote its bookkeeping to a
   throwaway in-memory catalog that vanished at process exit, so every subsequent
@@ -419,6 +453,12 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   stdio — the supported install path — is unaffected. Install docs and CLI help
   no longer present the unauthenticated HTTP path as a normal setup route.
   (#287)
+- **CVE fixes via dependency bumps.** `cryptography`, `pydantic-settings`, and
+  `python-multipart` bumped to clear 5 CVEs; `joserfc` pinned for a transitive
+  `authlib`/`fastmcp` CVE. Four starlette CVEs remain suppressed in
+  `pip-audit` — the fix requires starlette 1.x, unreachable while
+  `sqlmesh[lsp]` pins `fastapi==0.120.1` — and aren't exposed on MoneyBin's
+  stdio-only MCP transport. (#280)
 
 ### Added
 - **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.
