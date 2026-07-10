@@ -52,8 +52,12 @@ reach the ledger, everything downstream is existing machinery.
 2. **Max-capture raw.** Three new tables — `raw.plaid_securities`,
    `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings` —
    preserve Plaid's native shape faithfully, keyed for idempotent re-load
-   (`INSERT OR REPLACE`, same `source_file = sync_{job_id}` convention as the
-   cash tables). No data loss, no duplicate rows on re-sync.
+   (`INSERT OR REPLACE`). Keys follow the **shipped** cash tables — provider
+   id scoped by `source_origin`, not by `source_file` — so a later sync job
+   that re-delivers the same row **replaces** it rather than duplicating it
+   (overlapping date-range pulls are Plaid's normal investments behavior).
+   `source_file = sync_{job_id}` stays as lineage metadata recording which job
+   last wrote the row. No data loss, no duplicate rows on re-sync.
 3. **Sign faithfulness.** Plaid investment `amount` is **positive = cash out**
    — the exact opposite of the ledger convention (negative = cash out). Raw
    preserves Plaid's convention; the flip happens exclusively in
@@ -75,10 +79,14 @@ reach the ledger, everything downstream is existing machinery.
    (provider-ref → canonical `security_id` binding) +
    `app.security_link_decisions` (fuzzy-match review queue) — with a
    `SecurityResolver` running adopt-or-mint before transforms: adopt bound →
-   auto-bind strong identifier → propose fuzzy for review → mint into
-   `app.securities` with `created_by = 'plaid'`. `core.dim_securities`
-   **remains a catalog view** (the merchant precedent); the foundation model's
-   "Future: UNION ALL from staging" comment is superseded by this spec.
+   auto-bind strong identifier → **provisional-mint + propose merge** on a
+   fuzzy match → mint into `app.securities` with `created_by = 'plaid'`.
+   Every rung ends with an accepted binding, so **every security-bearing row
+   reaches the ledger on the sync that delivered it** — the cost-basis engine
+   skips NULL-`security_id` events, so a held-out-pending-review row would
+   silently understate lots and gains. `core.dim_securities` **remains a
+   catalog view** (the merchant precedent); the foundation model's "Future:
+   UNION ALL from staging" comment is superseded by this spec.
 7. **Holdings are store-don't-trust.** Broker-reported holdings land as dated
    snapshots (mirroring `raw.plaid_balances`) and surface as clearly-labeled,
    non-authoritative `provider_reported_*` reconciliation columns on
@@ -224,7 +232,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_securities (
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (security_id, source_file)
+    PRIMARY KEY (security_id, source_origin)
 );
 ```
 
@@ -254,7 +262,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (investment_transaction_id, source_file)
+    PRIMARY KEY (investment_transaction_id, source_origin)
 );
 ```
 
@@ -354,11 +362,18 @@ reversed_at            TIMESTAMP,
 reversed_by            TEXT
 ```
 
-Decision resolution semantics (accept binds + auto-rejects siblings; reject
-records the declined pairing and routes to mint; undo reverses) follow
-`merchant_link_decisions` Decision 6 verbatim. Pending decisions surface
-through the domain-neutral `review` sweep as `security_links_pending`,
-mirroring `merchant_links_pending`.
+Decision resolution follows `merchant_link_decisions` Decision 6 in shape,
+with **merge semantics** (the provisional security already exists by the time
+the decision is reviewed — see ladder rung 3): **accept** rebinds the provider
+ref's `security_links` row to `candidate_security_id` and deletes the
+provisional `created_by='plaid'` catalog row through the repo (audited,
+undoable per Invariant 10/11); core rebuilds deterministically, so lots and
+gains re-key onto the surviving security on the next transform. **Reject**
+keeps the minted security — the reviewer is asserting it genuinely is a
+distinct instrument — and records the declined pairing so the resolver never
+re-proposes it. **Undo** reverses. Sibling decisions for the same ref
+auto-reject on accept. Pending decisions surface through the domain-neutral
+`review` sweep as `security_links_pending`, mirroring `merchant_links_pending`.
 
 ### `SecurityResolver` — adopt-or-mint ladder
 
@@ -371,8 +386,17 @@ are materialized into core. Ladder, per incoming raw security:
 |---|---|---|---|
 | 1 | provider ref already in `security_links` (`accepted`) | **adopt** that `security_id` | silent — near-certain |
 | 2 | unbound; strong identifier matches exactly one catalog entry (CUSIP/ISIN if present → ticker+exchange, per the foundation's resolution chain incl. the `BRK.B`-first / suffix-strip-second rule) | **auto-bind** (`decided_by='auto'`) | silent, reversible |
-| 3 | unbound; name-fuzzy match to one-or-more candidates (no contradicting strong identifier — Guard 2) | **propose** best candidate as a pending `security_link_decisions` row; do not bind, do not mint | **surfaced** for review |
+| 3 | unbound; name-fuzzy match to one-or-more candidates (no contradicting strong identifier — Guard 2) | **provisional-mint + propose merge**: mint into `app.securities` (`created_by='plaid'`) and bind — then file a pending `security_link_decisions` row proposing a **merge** of the minted security into the best fuzzy candidate | **surfaced** for review |
 | 4 | no candidate | **mint** into `app.securities` (`created_by='plaid'`, defensive type mapping below) + bind | silent; visible via `created_by` |
+
+Rung 3 mints *before* review (the account-identity precedent: mint-now,
+merge-later) because holding rows out of the ledger until review is a silent
+correctness bug — the cost-basis engine skips events with NULL `security_id`,
+so a pending-review buy/sell would load into core yet never open or consume a
+lot, understating holdings and gains with no visible signal. The cost is a
+possible temporary duplicate security (minted + fuzzy candidate) — visible in
+the review queue, cheap to merge, and exactly the never-auto-merge-on-fuzzy
+posture the account and merchant ladders already take.
 
 **Attribute refresh:** on subsequent syncs the resolver may update catalog
 rows it minted (`created_by='plaid'`) with fresher name/ticker/type from
@@ -414,7 +438,10 @@ The heaviest view in this spec. In order:
 
 1. **Resolve** canonical `security_id` via `security_links` (NULL passthrough
    for cash-only events) and canonical `account_id` via `app.account_links`
-   (same accepted/source_native join as `stg_plaid__balances`).
+   (same accepted/source_native join as `stg_plaid__balances`). Because the
+   resolver binds on every rung (adopt / auto-bind / provisional-mint / mint),
+   every security-bearing row resolves — NULL reaches core only for cash-only
+   events, which is exactly the set the cost-basis engine is designed to skip.
 2. **Exclude** lifecycle rows: `cancel` (any subtype), `cash/pending credit`,
    `cash/pending debit`, `transfer/request`. (`cancel_transaction_id` is a
    deprecated dead field — never build on it.)
@@ -533,8 +560,8 @@ data still loads.
 
 | Test area | What's tested |
 |---|---|
-| `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup (PK + `INSERT OR REPLACE`). |
-| `SecurityResolver` | Each ladder rung: adopt existing binding; auto-bind on ticker+exchange; fuzzy → pending decision (no bind, no mint); mint with `created_by='plaid'`; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
+| `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
+| `SecurityResolver` | Each ladder rung: adopt existing binding; auto-bind on ticker+exchange; fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
 
 ### SQL tests (no server required)
@@ -633,6 +660,19 @@ contract above is its specification.
 - **Taxonomy as an explicit staging `CASE`.** Versioned with the model, exact,
   and testable row-by-row; no seed-table indirection for a mapping that changes
   only when Plaid's enum does.
+- **Provisional mint on fuzzy — never hold rows out of the ledger.** The
+  cost-basis engine skips NULL-`security_id` events by design (cash-only), so
+  parking security-bearing rows behind a review gate would silently understate
+  lots/gains until the human acts. Rung 3 therefore mints immediately and turns
+  the review decision into a visible, reversible merge proposal — the
+  account-identity mint-now/merge-later precedent. (Surfaced by external
+  review on this spec's PR; the original propose-without-mint shape was a
+  correctness bug.)
+- **Raw keys scoped by `source_origin`, not `source_file`.** Matches the
+  shipped cash tables (the `sync-plaid.md` doc had drifted from the
+  implementation — corrected alongside this spec): overlapping date-range
+  pulls re-deliver the same provider rows, and origin-scoped keys make
+  re-delivery a replace instead of a duplicate that would double-count lots.
 
 ## Open questions
 
