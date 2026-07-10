@@ -48,6 +48,8 @@ Do not truncate shorter than 12 chars. If an entity could plausibly exceed 100,0
 
 Always prefer the upstream system's identifier. Store as-is — do not hash, truncate, or transform. These are stable across re-imports by definition.
 
+**Exception — collision disambiguation.** When the upstream system violates its own uniqueness guarantee (e.g. an OFX institution reusing one `<FITID>` for two distinct same-day transactions), storing both as-is silently drops one to the raw primary key / dedup window. In that narrow case the extractor appends a deterministic content-hash suffix (`<FITID>#<hash>`) to *every* colliding member so both survive; the suffix is a pure function of the row's content, so re-imports reproduce the same ids and dedup stays idempotent. This is disambiguation of a broken source id, not a switch to strategy #2 — non-colliding ids are still stored verbatim. See `moneybin/extractors/ofx/extractor.py::_disambiguate_colliding_fitids`.
+
 ## Semantic Slugs
 
 For hand-crafted reference data where readability matters more than uniqueness guarantees. Use short, mnemonic codes (`INC-SAL`, `TRN-INT`) or descriptive names (`chase_credit`, `tiller`). Uniqueness is enforced by the database (PRIMARY KEY or UNIQUE constraint), not by the generation strategy.
