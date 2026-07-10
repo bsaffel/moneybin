@@ -162,11 +162,11 @@ def _read_text(
         skip_rows, has_header = _detect_header(path, encoding, delimiter)
 
     # header_row_looks_like_data is defense-in-depth for the EXPLICIT skip_rows
-    # path only, which sets has_header=True with no safety check of its own.
-    # Auto-detection (_detect_header) never selects a data-looking row as the
-    # header, so computing it there would always be False — skip the extra read.
+    # path only (has_header is unconditionally True there — no safety check of
+    # its own). Auto-detection (_detect_header) never selects a data-looking row
+    # as the header, so computing it there would always be False — skip the read.
     header_row_looks_like_data = False
-    if explicit_skip and has_header:
+    if explicit_skip:
         header_row_looks_like_data = _row_looks_like_data_at(
             path, encoding, delimiter, skip_rows
         )
@@ -238,7 +238,13 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
             for i, line in enumerate(f):
                 if i >= 30:
                     break
-                lines.append(line.rstrip("\n\r"))
+                # lstrip a leading BOM: a utf-8-sig file opened as utf-8 keeps
+                # U+FEFF on physical line 0's first cell, which defeats
+                # detect_date_format there — so a BOM'd headerless CSV (Excel's
+                # "CSV UTF-8" export) would misread row 0 as a header and
+                # silently eat the first transaction. Only line 0 carries it;
+                # the lstrip is a no-op elsewhere.
+                lines.append(line.rstrip("\n\r").lstrip("\ufeff"))
     except OSError:
         return 0, True
 

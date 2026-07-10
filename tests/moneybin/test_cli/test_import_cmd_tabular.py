@@ -262,3 +262,31 @@ class TestPreview:
 
         assert result.exit_code == 0
         assert "Columns" in result.output
+
+    def test_preview_warns_on_header_that_looks_like_data(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Preview surfaces the misdetection warning on a red-flag layout.
+
+        A headerless Excel sheet (row 0 is a real transaction) trips
+        header_row_looks_like_data on the auto-detect path the CLI uses. The
+        warning routes through logger.warning (stderr) per cli.md, so assert it
+        via caplog rather than CliRunner's stdout capture.
+        """
+        import logging
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["2026-01-01", 42.50, "Coffee"])
+        ws.append(["2026-01-02", 10.00, "Tea"])
+        path = tmp_path / "headerless.xlsx"
+        wb.save(path)
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(app, ["preview", str(path)])
+
+        assert result.exit_code == 0
+        assert any("parses as a transaction" in r.message for r in caplog.records)

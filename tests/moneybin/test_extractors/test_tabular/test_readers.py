@@ -310,6 +310,25 @@ class TestReadResultTransparency:
         assert result.has_header is False
         assert result.rows_in_file == len(result.df) == 2
 
+    def test_bom_headerless_autodetect_keeps_row0(self, tmp_path: Path) -> None:
+        """A BOM'd headerless CSV must auto-detect as headerless on the default path.
+
+        Regression for the review finding: Excel's "CSV UTF-8" export prepends a
+        BOM. Opening as utf-8 leaves U+FEFF on physical line 0's first cell,
+        which defeated ``detect_date_format`` in ``_detect_header`` — so a
+        headerless BOM'd file (row 0 a real transaction) was misread as having a
+        header, silently eating the first transaction with NO red flag (the flag
+        isn't computed on the auto-detect path). ``_detect_header`` must strip
+        the BOM so it correctly returns headerless and keeps every row.
+        """
+        f = tmp_path / "bom_headerless.csv"
+        f.write_bytes(b"\xef\xbb\xbf2026-01-01,42.50,Coffee\n2026-01-02,10.00,Tea\n")
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8-sig")
+        result = read_file(f, info)  # no explicit skip_rows — the default path
+        assert result.has_header is False
+        assert len(result.df) == 2  # neither transaction eaten as a header
+        assert result.rows_in_file == 2
+
     def test_bom_headerless_explicit_skip_still_flags_row0(
         self, tmp_path: Path
     ) -> None:
