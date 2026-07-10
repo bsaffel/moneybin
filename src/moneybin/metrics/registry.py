@@ -72,6 +72,15 @@ OFX_IMPORT_BATCHES = Counter(
     labelnames=("status",),
 )
 
+# No label: counts raw transaction rows whose non-unique FITID was rewritten
+# with a content-hash suffix so a shared-FITID pair isn't collapsed to one row.
+# A non-zero rate flags an institution that violates OFX's per-account FITID
+# uniqueness promise (queryable in aggregate, not just log-greppable).
+OFX_FITID_COLLISION_REPAIRED_TOTAL = Counter(
+    "moneybin_ofx_fitid_collision_repaired_total",
+    "OFX transaction rows disambiguated after sharing a non-unique FITID.",
+)
+
 # Outcomes: "transactions" (routed deterministic), "seed" (Phase 1 fallback),
 # "failed" (extraction error or zero rows), "unsupported" (scanned / image-only
 # PDF with no text layer — needs a vision-capable backend, Req 5).

@@ -308,8 +308,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
-  foreign-transaction fee. Because the raw primary key and the OFX dedup window
-  both key on `(source_transaction_id, account_id)`, one of the two was silently
+  foreign-transaction fee. Because the raw primary key
+  (`(source_transaction_id, account_id, source_file)`) and the OFX dedup window
+  (keyed on `(source_transaction_id, account_id)`) both collapse the two rows —
+  they always share `source_file` within one import — one of the two was silently
   dropped from the ledger. The extractor now disambiguates colliding FITIDs by
   content so both survive. New imports are correct going forward; to recover data
   **already** affected, revert the affected import (`moneybin import revert <id>`)

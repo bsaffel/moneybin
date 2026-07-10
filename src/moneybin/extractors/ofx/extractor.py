@@ -59,8 +59,9 @@ _FITID_SIGNATURE_FIELDS = (
     "check_number",
 )
 # Separates the raw FITID from the content-derived disambiguation suffix. Chosen
-# because FITIDs are alphanumeric and never contain it, so the marked id can
-# never collide with a real one.
+# because FITIDs are observed in practice to be alphanumeric and not contain it
+# (the OFX spec does not guarantee this, but no real-world FITID we handle does),
+# so the marked id is extremely unlikely to collide with a real one.
 _FITID_COLLISION_MARKER = "#"
 
 
@@ -72,9 +73,16 @@ def _fitid_content_signature(row: dict[str, Any]) -> str:
     otherwise let two genuinely distinct transactions serialize identically
     (``payee="A|B",memo="C"`` vs ``payee="A",memo="B|C"``), making the collision
     check treat them as one and drop a row — the very bug this repairs.
+
+    Values are passed to ``json.dumps`` untouched (``default=str`` stringifies
+    only non-JSON-native types like ``Decimal``) so a genuinely absent optional
+    field stays JSON ``null`` and can never serialize identically to the literal
+    string ``"None"`` — pre-coercing every field with ``str()`` would collapse
+    that distinction and reintroduce the same drop-a-row bug in a narrower form.
     """
     return json.dumps(
-        [str(row[field]) for field in _FITID_SIGNATURE_FIELDS],
+        [row[field] for field in _FITID_SIGNATURE_FIELDS],
+        default=str,
         separators=(",", ":"),
     )
 
@@ -82,8 +90,10 @@ def _fitid_content_signature(row: dict[str, Any]) -> str:
 def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
     """Repair non-unique OFX FITIDs within a file so distinct rows aren't lost.
 
-    The OFX spec promises FITID is unique per account, and MoneyBin keys the raw
-    primary key and every dedup layer on ``(source_transaction_id, account_id)``.
+    The OFX spec promises FITID is unique per account. MoneyBin's raw primary key
+    is ``(source_transaction_id, account_id, source_file)`` and the staging dedup
+    window keys on ``(source_transaction_id, account_id)``; two colliding rows
+    always share ``source_file`` within one import, so both layers collapse them.
     Some institutions violate this — Chase stamps a foreign purchase and its
     foreign-transaction fee (two distinct transactions posted the same day) with
     one shared FITID. Left unrepaired, the raw write path (``on_conflict="upsert"``
@@ -113,7 +123,8 @@ def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
     apart. Cross-file same-FITID collisions are therefore intentionally not
     repaired here (rare in practice: the observed pattern, a foreign purchase and
     its same-day fee, always co-occurs in one export); a fuller solution needs a
-    stronger signal and is tracked as a follow-up.
+    stronger signal and is tracked as a follow-up in ``private/followups.md``
+    ("OFX cross-file FITID collision").
 
     Mutates ``transactions`` in place; returns the number of rows rewritten.
     """
@@ -131,6 +142,10 @@ def _disambiguate_colliding_fitids(transactions: list[dict[str, Any]]) -> int:
             continue
         for row in rows:
             signature = _fitid_content_signature(row)
+            # 8 hex (32 bits) rather than identifiers.md's 64-bit content-hash
+            # convention: the digest only needs to separate members of one
+            # collision group (always 2-3 rows), not be globally unique, so
+            # 32 bits is ample and keeps the suffixed id short and log-readable.
             digest = hashlib.sha256(signature.encode()).hexdigest()[:8]
             row["source_transaction_id"] = (
                 f"{row['source_transaction_id']}{_FITID_COLLISION_MARKER}{digest}"
@@ -510,6 +525,11 @@ class OFXExtractor:
         if transactions_data:
             repaired = _disambiguate_colliding_fitids(transactions_data)
             if repaired:
+                from moneybin.metrics.registry import (
+                    OFX_FITID_COLLISION_REPAIRED_TOTAL,
+                )
+
+                OFX_FITID_COLLISION_REPAIRED_TOTAL.inc(repaired)
                 logger.warning(
                     f"Repaired {repaired} OFX transaction(s) sharing a non-unique "
                     f"FITID within one file (institution reused a FITID for distinct "

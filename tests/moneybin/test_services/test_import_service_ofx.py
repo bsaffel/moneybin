@@ -48,8 +48,9 @@ class TestImportOFXBatchLifecycle:
         third unique-FITID row. Before the extractor's content-based
         disambiguation, the raw primary key
         ``(source_transaction_id, account_id, source_file)`` collapsed the shared
-        pair via INSERT OR IGNORE, silently dropping the $13.12 purchase. All
-        three rows must now survive in raw.
+        pair via the ``on_conflict="upsert"`` (``INSERT OR REPLACE``) write,
+        silently dropping the $13.12 purchase. All three rows must now survive in
+        raw.
         """
         fixture = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
         assert fixture.exists()
@@ -67,21 +68,22 @@ class TestImportOFXBatchLifecycle:
         assert Decimal("-0.39") in amounts
         assert Decimal("-42.00") in amounts
 
-    def test_forced_reimport_over_legacy_row_does_not_self_heal(
-        self, db: Database
-    ) -> None:
+    def test_reimport_over_legacy_row_does_not_self_heal(self, db: Database) -> None:
         """Characterizes the documented recovery limitation (see CHANGELOG #304).
 
         A file imported *before* the FITID-collision fix leaves one plain
-        ``SHAREDFITID999`` row in raw (the surviving half of the dropped pair).
-        Re-importing the file post-fix emits two content-suffixed rows with new
-        primary keys; because the OFX write path upserts by PK
-        (``on_conflict="upsert"``), it inserts them and leaves the stale plain
-        row untouched — so the surviving transaction would be double-counted.
-        This is why recovering already-affected data requires ``import revert``
-        first, not a bare re-import. If forced re-import is ever made
-        replace-by-file (self-healing), flip this test to assert the plain row
-        is gone.
+        ``SHAREDFITID999`` row in raw (the surviving half of the dropped pair);
+        that pre-fix state is simulated here by seeding the plain row directly,
+        so the single ``import_file`` call below proceeds without needing the
+        ``force`` gate or a prior ``raw.import_log`` row. Importing the file
+        post-fix emits two content-suffixed rows with new primary keys; because
+        the OFX write path upserts by PK (``on_conflict="upsert"``), it inserts
+        them and leaves the stale plain row untouched — so the surviving
+        transaction would be double-counted. This is why recovering
+        already-affected data requires ``import revert`` first, not a bare
+        re-import (the write path upserts by PK regardless of ``force``). If
+        re-import is ever made replace-by-file (self-healing), flip this test to
+        assert the plain row is gone.
         """
         fixture = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
 
