@@ -95,8 +95,16 @@ def violations_in_sql(sql: str) -> list[str]:
         return _fallback(sql)
 
     out: list[str] = []
+    saw_command = False
     for stmt in statements:
         if stmt is None:
+            continue
+        if isinstance(stmt, exp.Command):
+            # sqlglot couldn't model this statement (malformed / f-string-
+            # flattened) but returned a catch-all Command instead of raising —
+            # so the except-branch fallback never fired. Regex-scan it here too,
+            # or a write it can't parse (e.g. a flattened ALTER) slips through.
+            saw_command = True
             continue
         if isinstance(stmt, exp.Create):
             kind = (stmt.args.get("kind") or "").upper()
@@ -115,6 +123,8 @@ def violations_in_sql(sql: str) -> list[str]:
             schema = _owned_schema_of(stmt)
             if schema is not None:
                 out.append(_describe(stmt, schema))
+    if saw_command:
+        out.extend(_fallback(sql))
     return out
 
 
@@ -213,6 +223,10 @@ _GOLDEN: list[tuple[str, bool]] = [
     ("SELECT plaid_detailed FROM seeds.categories", False),
     # f-string fragment (sqlglot can't parse) — regex fallback still catches it
     ("UPDATE seeds.categories SET class =  ", True),
+    # sqlglot returns an exp.Command (not a raise) for this flattened ALTER;
+    # the fallback must still fire so the write isn't silently skipped
+    ("ALTER TABLE seeds.categories ADD COLUMN   ", True),
+    ("ALTER TABLE app.user_categories ADD COLUMN   ", False),
 ]
 
 
