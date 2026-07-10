@@ -305,6 +305,26 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **OFX imports no longer silently drop transactions that share a duplicate
+  FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
+  distinct same-day transactions — a foreign purchase and its
+  foreign-transaction fee. Because the raw primary key
+  (`(source_transaction_id, account_id, source_file)`) and the OFX dedup window
+  (keyed on `(source_transaction_id, account_id)`) both collapse the two rows —
+  they always share `source_file` within one import — one of the two was silently
+  dropped from the ledger. The extractor now disambiguates colliding FITIDs by
+  content so both survive. New imports are correct going forward; to recover data
+  **already** affected, revert the affected import (`moneybin import revert <id>`)
+  and re-import the file — a plain re-import is not sufficient, because the
+  forced-reimport write path upserts by primary key and leaves the stale pre-fix
+  row in place. (#304)
+- **`moneybin sync pull` no longer stuck-fails on a fully-materialized
+  database.** Migration V032 issued `ALTER TABLE seeds.categories`, but on a
+  database whose SQLMesh virtual layer is materialized that relation is a view —
+  DuckDB rejects the ALTER, leaving the migration stuck and blocking every DB
+  open. V032 now only rebuilds `app.user_categories`; the seed table's `class`
+  column is owned by SQLMesh and derived by `refresh_views()`, so an upgraded
+  database recovers automatically on the next run. (#306)
 - **`import_preview` surfaces header detection and row-count reconciliation.**
   Silent header-eating (a real data row mistaken for a header) was invisible in
   the preview envelope. The envelope now carries `has_header`, `skip_rows`, and

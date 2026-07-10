@@ -1,5 +1,6 @@
 """Integration tests for ImportService._import_ofx via the new pipeline."""
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,80 @@ class TestImportOFXBatchLifecycle:
             + result.balances
         )
         assert latest["rows_imported"] == expected_total
+
+    def test_shared_fitid_rows_all_survive_import(self, db: Database) -> None:
+        """F1 regression: two distinct transactions sharing a FITID both land.
+
+        The fixture has a Chase-style foreign purchase (-13.12) and its
+        foreign-transaction fee (-0.39) stamped with one shared FITID, plus a
+        third unique-FITID row. Before the extractor's content-based
+        disambiguation, the raw primary key
+        ``(source_transaction_id, account_id, source_file)`` collapsed the shared
+        pair via the ``on_conflict="upsert"`` (``INSERT OR REPLACE``) write,
+        silently dropping the $13.12 purchase. All three rows must now survive in
+        raw.
+        """
+        fixture = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
+        assert fixture.exists()
+
+        service = ImportService(db)
+        service.import_file(fixture, refresh=False)
+
+        rows = db.execute(
+            "SELECT amount FROM raw.ofx_transactions ORDER BY amount"
+        ).fetchall()
+        amounts = [r[0] for r in rows]
+        # All three transactions survive — the shared-FITID pair is not collapsed.
+        assert len(amounts) == 3
+        assert Decimal("-13.12") in amounts
+        assert Decimal("-0.39") in amounts
+        assert Decimal("-42.00") in amounts
+
+    def test_reimport_over_legacy_row_does_not_self_heal(self, db: Database) -> None:
+        """Characterizes the documented recovery limitation (see CHANGELOG #304).
+
+        A file imported *before* the FITID-collision fix leaves one plain
+        ``SHAREDFITID999`` row in raw (the surviving half of the dropped pair);
+        that pre-fix state is simulated here by seeding the plain row directly,
+        so the single ``import_file`` call below proceeds without needing the
+        ``force`` gate or a prior ``raw.import_log`` row. Importing the file
+        post-fix emits two content-suffixed rows with new primary keys; because
+        the OFX write path upserts by PK (``on_conflict="upsert"``), it inserts
+        them and leaves the stale plain row untouched — so the surviving
+        transaction would be double-counted. This is why recovering
+        already-affected data requires ``import revert`` first, not a bare
+        re-import (the write path upserts by PK regardless of ``force``). If
+        re-import is ever made replace-by-file (self-healing), flip this test to
+        assert the plain row is gone.
+        """
+        fixture = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
+
+        # Simulate a pre-fix import: one plain-FITID row already in raw.
+        db.execute(
+            """
+            INSERT INTO raw.ofx_transactions
+                (source_transaction_id, account_id, transaction_type,
+                 date_posted, amount, payee, source_file, source_type)
+            VALUES ('SHAREDFITID999', '4387', 'DEBIT', TIMESTAMP '2025-11-19',
+                    -0.39, 'FOREIGN TRANSACTION FEE', ?, 'ofx')
+            """,
+            [str(fixture.resolve())],
+        )
+
+        ImportService(db).import_file(fixture, refresh=False)
+
+        # The stale plain row is NOT replaced by the suffixed rows (no self-heal).
+        stale = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_transactions "
+            "WHERE source_transaction_id = 'SHAREDFITID999'"
+        ).fetchone()
+        assert stale is not None and stale[0] == 1
+        # The two content-suffixed rows land alongside it.
+        suffixed = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_transactions "
+            "WHERE source_transaction_id LIKE 'SHAREDFITID999#%'"
+        ).fetchone()
+        assert suffixed is not None and suffixed[0] == 2
 
     def test_reverting_ofx_batch_deletes_rows(self, db: Database) -> None:
         fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
