@@ -316,6 +316,18 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   and re-import the file — a plain re-import is not sufficient, because the
   forced-reimport write path upserts by primary key and leaves the stale pre-fix
   row in place. (#304)
+- **`import_preview` surfaces header detection and row-count reconciliation.**
+  Silent header-eating (a real data row mistaken for a header) was invisible in
+  the preview envelope. The envelope now carries `has_header`, `skip_rows`, and
+  `rows_in_file` (the reader's reconciled row accounting: `skip_rows + header +
+  rows_read + rows_skipped_trailing`), plus `header_row_looks_like_data` — a
+  flag when the row consumed as the header also parses as a transaction (raised
+  for an explicit `skip_rows` that eats a data row, and for a headerless Excel
+  sheet whose first row is a real transaction). When a red flag is present on an
+  auto-detected (unknown) layout, detection `confidence` drops to `low`
+  (previously a structurally-suspicious layout could still self-accept at
+  `medium`), routing it to the propose→confirm gate instead of an agent
+  auto-accepting a wrong mapping.
 - **SQLMesh state migrations now survive a dependency version bump.** After a
   SQLMesh upgrade, the in-process state migration wrote its bookkeeping to a
   throwaway in-memory catalog that vanished at process exit, so every subsequent

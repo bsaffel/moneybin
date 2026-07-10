@@ -1177,7 +1177,11 @@ class ImportService:
             settings = get_settings()
             bands = settings.import_.confidence
             mapping_result = map_columns(
-                df, overrides=overrides, t_high=bands.t_high, t_med=bands.t_med
+                df,
+                overrides=overrides,
+                t_high=bands.t_high,
+                t_med=bands.t_med,
+                structural_red_flag=read_result.header_row_looks_like_data,
             )
             confidence = mapping_result.to_confidence(
                 t_high=bands.t_high, t_med=bands.t_med

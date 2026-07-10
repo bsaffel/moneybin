@@ -36,6 +36,28 @@ def tier_for(score: float, *, t_high: float, t_med: float) -> Tier:
     return "low"
 
 
+def resolve_tier(
+    score: float, *, t_high: float, t_med: float, structural_red_flag: bool = False
+) -> Tier:
+    """Band a score into a tier, but force ``low`` on a structural red flag.
+
+    The single place the structural-override rule lives, so ``map_columns``
+    (which stores the tier) and ``MappingResult.to_confidence`` (which recomputes
+    it) can never disagree. A structural red flag (e.g. the consumed header row
+    parses as a transaction) means the mapping is untrustworthy regardless of
+    how well content matching scored — route it to the confirm gate.
+
+    Args:
+        score: Normalized confidence in [0, 1].
+        t_high: Lower bound of the `high` band (inclusive).
+        t_med: Lower bound of the `medium` band (inclusive).
+        structural_red_flag: When True, return `low` regardless of score.
+    """
+    if structural_red_flag:
+        return "low"
+    return tier_for(score, t_high=t_high, t_med=t_med)
+
+
 @dataclass(frozen=True)
 class Confidence:
     """Cross-channel confidence value.
