@@ -230,7 +230,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_securities (
     source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    source_origin VARCHAR,                    -- Plaid item_id; scopes dedup to the institution connection
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes dedup to the institution connection; part of the PK
     extracted_at TIMESTAMP                    -- When the server fetched this data from Plaid (metadata.synced_at)
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    source_origin VARCHAR,                    -- Plaid item_id
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; part of the PK
     extracted_at TIMESTAMP                    -- When the server fetched this data from Plaid
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
@@ -638,6 +638,7 @@ transactions), which also seed the golden files.
 | `sqlmesh/models/core/fct_investment_transactions.sql` | Plaid CTE + `UNION ALL`; `provider_type`/`provider_subtype` columns |
 | `sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
 | `sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
+| `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/sql/schema/schema.py` | Register new DDL files |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
