@@ -90,17 +90,28 @@ class MappingResult:
     missing_required: tuple[str, ...] = ()
     """Required destination fields that could not be resolved at all."""
 
+    structural_red_flag: bool = False
+    """True when a structural signal outside content-matching (e.g. the
+    consumed header row itself parses as a transaction) makes the mapping
+    untrustworthy regardless of `score`. Forces the `low` tier so the
+    propose->confirm gate engages instead of an agent self-accepting."""
+
     def to_confidence(self, *, t_high: float, t_med: float) -> "Confidence":
         """Return the channel-agnostic Confidence view of this result.
 
         `t_high` / `t_med` typically come from `ImportSettings.confidence`;
         passing them here lets callers respect runtime-tuned thresholds.
         """
-        from moneybin.extractors.confidence import Confidence, tier_for
+        from moneybin.extractors.confidence import Confidence, resolve_tier
 
         return Confidence(
             score=self.score,
-            tier=tier_for(self.score, t_high=t_high, t_med=t_med),
+            tier=resolve_tier(
+                self.score,
+                t_high=t_high,
+                t_med=t_med,
+                structural_red_flag=self.structural_red_flag,
+            ),
             flagged=tuple(self.flagged_fields),
             missing_required=self.missing_required,
         )
@@ -112,6 +123,7 @@ def map_columns(
     overrides: dict[str, str] | None = None,
     t_high: float = 0.90,
     t_med: float = 0.70,
+    structural_red_flag: bool = False,
 ) -> MappingResult:
     """Map source columns to destination fields.
 
@@ -123,6 +135,11 @@ def map_columns(
             so the displayed tier agrees with the runtime-tuned bands the
             confirm primitive uses. Defaults match ``ConfidenceBands`` defaults.
         t_med: Medium-confidence threshold (same notes as ``t_high``).
+        structural_red_flag: A structural signal from Stage 2 (e.g.
+            ``ReadResult.header_row_looks_like_data``) outside content-matching
+            that makes the mapping untrustworthy regardless of score. Forces
+            the ``low`` tier so the propose->confirm gate engages instead of
+            an agent self-accepting.
 
     Returns:
         MappingResult with mapping, confidence, and metadata.
@@ -197,9 +214,11 @@ def map_columns(
     # Confidence tier
     unmapped = [c for c in df.columns if c not in claimed]
     score, missing_required = _score_mapping(mapping, flagged, date_format)
-    from moneybin.extractors.confidence import tier_for
+    from moneybin.extractors.confidence import resolve_tier
 
-    confidence = tier_for(score, t_high=t_high, t_med=t_med)
+    confidence = resolve_tier(
+        score, t_high=t_high, t_med=t_med, structural_red_flag=structural_red_flag
+    )
 
     # Convert None → "" for the public sample_values (callers don't need nulls).
     sample_values: dict[str, list[str]] = {
@@ -219,6 +238,7 @@ def map_columns(
         sample_values=sample_values,
         score=score,
         missing_required=missing_required,
+        structural_red_flag=structural_red_flag,
     )
 
 

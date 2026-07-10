@@ -1173,6 +1173,22 @@ def import_preview(
         typer.echo(f"Rows: {len(df):,}")
         if read_result.rows_skipped_trailing:
             typer.echo(f"Trailing rows skipped: {read_result.rows_skipped_trailing}")
+        typer.echo(f"Header row detected: {read_result.has_header}")
+        typer.echo(
+            f"Row reconciliation: {read_result.rows_in_file:,} in file = "
+            f"{read_result.skip_rows:,} skipped + "
+            f"{1 if read_result.has_header else 0} header + "
+            f"{len(df):,} read + "
+            f"{read_result.rows_skipped_trailing:,} trailing"
+        )
+        if read_result.header_row_looks_like_data:
+            # A warning (diagnostic) → stderr via logger, not stdout, per
+            # cli.md; the ⚠️ icon is reserved for logger.warning messages.
+            logger.warning(
+                "⚠️  The row consumed as the header also parses as a transaction "
+                "(date + amount) — this may be a headerless file misread as having "
+                "a header. Re-run with a corrected --format or check the source file."
+            )
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
         if matched_format:
@@ -1190,7 +1206,11 @@ def import_preview(
 
             bands = get_settings().import_.confidence
             mapping_result = map_columns(
-                df, overrides=overrides, t_high=bands.t_high, t_med=bands.t_med
+                df,
+                overrides=overrides,
+                t_high=bands.t_high,
+                t_med=bands.t_med,
+                structural_red_flag=read_result.header_row_looks_like_data,
             )
             typer.echo(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
             for field, col in mapping_result.field_mapping.items():

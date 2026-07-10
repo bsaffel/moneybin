@@ -40,6 +40,35 @@ class ReadResult:
     rows_skipped_trailing: int = 0
     row_count_warning: bool = False
     sheet_used: str | None = None
+    has_header: bool = True
+    """Whether a header row was consumed. False for a detected-headerless file
+    and for schema-typed formats (parquet/feather) where column names are
+    metadata, not a consumed row."""
+    header_row_looks_like_data: bool = False
+    """True when the row consumed as the header also parses as a transaction
+    record (date + amount) — a red flag that a real data row may have been
+    eaten as a header via an explicit skip_rows (CSV) or the always-on header
+    assumption (Excel). CSV auto-detection is its own safety net (it never
+    picks a data-looking row as the header), so this stays False there."""
+
+    @property
+    def rows_in_file(self) -> int:
+        """Reconciled source-row accounting derived from the reader's fields.
+
+        Sums preamble skipped + header (0/1) + rows loaded + trailing rows
+        dropped. Equals the file's physical row count in the common case, but
+        is derived from the reader's own accounting — NOT an independent
+        physical line count. It can undercount the raw file where the parser
+        coalesced rows the reader never saw as separate (repeated-header dedup
+        in paginated exports, quoted fields containing embedded newlines). Use
+        it to reconcile the reader's accounting, not as a data-loss oracle.
+        """
+        return (
+            self.skip_rows
+            + (1 if self.has_header else 0)
+            + len(self.df)
+            + self.rows_skipped_trailing
+        )
 
 
 def read_file(
@@ -127,9 +156,20 @@ def _read_text(
 
     # Explicit skip_rows implies a header at that row; auto-detection both
     # locates the header and decides whether the file has one at all.
+    explicit_skip = skip_rows is not None
     has_header = True
     if skip_rows is None:
         skip_rows, has_header = _detect_header(path, encoding, delimiter)
+
+    # header_row_looks_like_data is defense-in-depth for the EXPLICIT skip_rows
+    # path only (has_header is unconditionally True there — no safety check of
+    # its own). Auto-detection (_detect_header) never selects a data-looking row
+    # as the header, so computing it there would always be False — skip the read.
+    header_row_looks_like_data = False
+    if explicit_skip:
+        header_row_looks_like_data = _row_looks_like_data_at(
+            path, encoding, delimiter, skip_rows
+        )
 
     df = pl.read_csv(
         path,
@@ -155,6 +195,8 @@ def _read_text(
         df=df,
         skip_rows=skip_rows,
         rows_skipped_trailing=rows_removed,
+        has_header=has_header,
+        header_row_looks_like_data=header_row_looks_like_data,
     )
 
 
@@ -196,7 +238,13 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
             for i, line in enumerate(f):
                 if i >= 30:
                     break
-                lines.append(line.rstrip("\n\r"))
+                # lstrip a leading BOM: a utf-8-sig file opened as utf-8 keeps
+                # U+FEFF on physical line 0's first cell, which defeats
+                # detect_date_format there — so a BOM'd headerless CSV (Excel's
+                # "CSV UTF-8" export) would misread row 0 as a header and
+                # silently eat the first transaction. Only line 0 carries it;
+                # the lstrip is a no-op elsewhere.
+                lines.append(line.rstrip("\n\r").lstrip("\ufeff"))
     except OSError:
         return 0, True
 
@@ -229,6 +277,49 @@ def _detect_header(path: Path, encoding: str, delimiter: str) -> tuple[int, bool
             return i, False
 
     return 0, True
+
+
+def _row_looks_like_data_at(
+    path: Path, encoding: str, delimiter: str, row_index: int
+) -> bool:
+    """Return True if the physical row at ``row_index`` parses as a transaction.
+
+    Defense-in-depth check on the row an explicit ``skip_rows`` override is
+    about to consume as a header — that path sets ``has_header=True`` with no
+    safety check of its own (unlike auto-detection). A row that both is treated
+    as a header AND parses as a data record is a red flag: a real transaction
+    may be about to be silently dropped.
+
+    Args:
+        path: File path.
+        encoding: File encoding.
+        delimiter: Column delimiter.
+        row_index: Zero-based physical line index to check.
+
+    Returns:
+        True when the row at ``row_index`` parses as a transaction record.
+    """
+    enc = encoding if encoding != "utf-8-sig" else "utf-8"
+    try:
+        with open(path, encoding=enc, errors="replace") as f:  # noqa: PTH123 — standard file open
+            for i, line in enumerate(f):
+                if i == row_index:
+                    # lstrip a leading BOM: a utf-8-sig file is opened as utf-8
+                    # here (polars-compatible), so on physical line 0 the BOM
+                    # survives as U+FEFF on cell 0 and would defeat date
+                    # detection — masking exactly the row-0-is-data case this
+                    # guards. .strip()/.strip('"') don't remove it (not
+                    # whitespace, sits outside the quotes).
+                    parts = line.rstrip("\n\r").lstrip("\ufeff").split(delimiter)
+                    non_empty = [
+                        p.strip().strip('"').strip("'") for p in parts if p.strip()
+                    ]
+                    return _looks_like_data_row(non_empty) if non_empty else False
+                if i > row_index:
+                    break
+    except OSError:
+        return False
+    return False
 
 
 def _looks_like_data_row(cells: list[str]) -> bool:
@@ -398,7 +489,20 @@ def _read_excel(
         df = df.slice(skip_rows)
         actual_skip = skip_rows
 
-    return ReadResult(df=df, skip_rows=actual_skip, sheet_used=sheet_used)
+    # pl.read_excel always consumes the sheet's first row as the header (no
+    # headerless detection exists for Excel), so has_header stays True. That
+    # unconditional assumption is exactly the unguarded case
+    # header_row_looks_like_data protects: if the consumed header (the column
+    # names) itself parses as a transaction, a real row-0 record was eaten.
+    header_row_looks_like_data = _looks_like_data_row([
+        str(c) for c in df.columns if str(c).strip()
+    ])
+    return ReadResult(
+        df=df,
+        skip_rows=actual_skip,
+        sheet_used=sheet_used,
+        header_row_looks_like_data=header_row_looks_like_data,
+    )
 
 
 def _read_parquet(path: Path) -> ReadResult:
@@ -411,7 +515,9 @@ def _read_parquet(path: Path) -> ReadResult:
         ReadResult with the parsed DataFrame.
     """
     df = pl.read_parquet(path)
-    return ReadResult(df=df)
+    # Columnar formats carry column names in schema metadata — no data row is
+    # consumed as a header, so has_header=False keeps rows_in_file == len(df).
+    return ReadResult(df=df, has_header=False)
 
 
 def _read_feather(path: Path) -> ReadResult:
@@ -424,4 +530,5 @@ def _read_feather(path: Path) -> ReadResult:
         ReadResult with the parsed DataFrame.
     """
     df = pl.read_ipc(path)
-    return ReadResult(df=df)
+    # Schema-typed like parquet — column names are metadata, not a header row.
+    return ReadResult(df=df, has_header=False)

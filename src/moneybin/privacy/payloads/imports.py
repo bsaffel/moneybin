@@ -117,6 +117,10 @@ class ImportPreviewPayload:
     sample_values: Annotated[dict[str, Any], DataClass.DESCRIPTION]
     rows_read: Annotated[int, DataClass.AGGREGATE]
     rows_skipped_trailing: Annotated[int, DataClass.AGGREGATE]
+    skip_rows: Annotated[int, DataClass.AGGREGATE]
+    has_header: Annotated[bool, DataClass.AGGREGATE]
+    rows_in_file: Annotated[int, DataClass.AGGREGATE]
+    header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
 
 
 # ---------------------------------------------------------------------------

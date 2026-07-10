@@ -770,6 +770,55 @@ class TestImportFilesPdfBridge:
         assert not any("mapping={" in a for a in result.actions)
 
 
+class TestImportPreviewTabular:
+    """import_preview surfaces header/reconciliation transparency for tabular files.
+
+    Regression coverage for the silent-header-eating AX gap: the preview
+    envelope gave no signal that a row had been consumed as a header, or that
+    row counts didn't reconcile.
+    """
+
+    async def test_preview_surfaces_header_and_reconciliation_fields(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        csv_file = tmp_path / "statements" / "basic.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.write_text("Date,Amount,Description\n2026-01-01,42.50,Coffee\n")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        result = await import_preview(file_path=str(csv_file))
+
+        from moneybin.privacy.payloads.imports import ImportPreviewPayload
+
+        data = result.data
+        assert isinstance(data, ImportPreviewPayload)
+        assert data.has_header is True
+        assert data.skip_rows == 0
+        assert data.rows_in_file == 2  # 1 header + 1 data row
+        assert data.header_row_looks_like_data is False
+
+    async def test_preview_flags_headerless_csv(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        csv_file = tmp_path / "statements" / "wf.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.write_text(
+            '"04/16/2026","150.00","*","","RECURRING TRANSFER FROM ACME"\n'
+            '"04/15/2026","-150.00","*","","RECURRING TRANSFER TO ACME"\n'
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        result = await import_preview(file_path=str(csv_file))
+
+        from moneybin.privacy.payloads.imports import ImportPreviewPayload
+
+        data = result.data
+        assert isinstance(data, ImportPreviewPayload)
+        assert data.has_header is False
+        assert data.skip_rows == 0
+        assert data.rows_in_file == 2
+
+
 class TestImportPreviewPdf:
     """import_preview dispatches .pdf to the deterministic rung / bridge."""
 
