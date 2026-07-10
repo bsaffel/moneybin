@@ -1,4 +1,4 @@
-"""V032: add app.category_source_map, app.user_categories.class, and seeds.categories.class.
+"""V032: add app.category_source_map and app.user_categories.class.
 
 DuckDB rejects both `ADD COLUMN ... NOT NULL` (`Adding columns with
 constraints not yet supported`) and `ADD CONSTRAINT CHECK` (`No support for
@@ -14,30 +14,26 @@ the migration runner's single transaction — no interim COMMIT is needed
 because there's no longer a separate ALTER ... SET NOT NULL step that must
 follow a durable backfill.
 
-`seeds.categories` needs the same `class` column so `refresh_views()` (called
-right after migrations, on every ``Database`` open) can build
-``core.dim_categories`` without a BinderException. V014 unconditionally
-`CREATE TABLE IF NOT EXISTS seeds.categories` with the pre-``class`` shape
-earlier in the migration chain (every install runs it, fresh or upgrade), so
-by the time V032 runs the table always exists and needs the column added.
-Rows are backfilled by the same category_id-prefix rule the seed CSV uses
-(``INC``/``TRN``/``LNP``/else) rather than a blanket default, since these are
-reference rows a real user may already be relying on — not user data with no
-inferable class. `seeds.categories` is SQLMesh-owned reference data with no
-NOT NULL requirement in the model, so it stays nullable here.
+`seeds.categories` is intentionally NOT touched here. It is a SQLMesh SEED
+model: on a fully-materialized database it is exposed as a *view* over the
+physical snapshot, and `ALTER TABLE seeds.categories` raises `Can only modify
+view with ALTER VIEW statement`. The `class` column on the seed data is owned
+by SQLMesh (the model declares it) and by `refresh_views()`, which derives
+`class` from the `category_id` prefix on the fly whenever the column is absent
+(see `moneybin.seeds._has_column`). `core.dim_categories` resolves `class`
+either way, so a migration mutating SQLMesh-owned reference data would only
+duplicate that pattern — and break on the view.
 """
 
 from __future__ import annotations
 
 import logging
 
-from moneybin.sql.category_class import CATEGORY_CLASS_FROM_ID_CASE_SQL
-
 logger = logging.getLogger(__name__)
 
 
 def migrate(conn: object) -> None:
-    """Create app.category_source_map; add class to user_categories + seeds.categories. Idempotent."""
+    """Create app.category_source_map; add class to app.user_categories. Idempotent."""
     logger.debug("V032: creating app.category_source_map")
     conn.execute(  # type: ignore[union-attr]
         """
@@ -102,22 +98,3 @@ def migrate(conn: object) -> None:
     conn.execute(  # type: ignore[union-attr]
         "COMMENT ON COLUMN app.user_categories.class IS 'Accounting class: income | expense | transfer | debt'"
     )
-
-    seed_cols: list[str] = [
-        r[0]
-        for r in conn.execute(  # type: ignore[union-attr]
-            "SELECT column_name FROM duckdb_columns() "
-            "WHERE schema_name = 'seeds' AND table_name = 'categories'"
-        ).fetchall()
-    ]
-    if seed_cols and "class" not in seed_cols:
-        logger.debug("V032: adding class column to seeds.categories")
-        conn.execute(  # type: ignore[union-attr]
-            "ALTER TABLE seeds.categories ADD COLUMN class VARCHAR"
-        )
-        conn.execute(  # type: ignore[union-attr]
-            f"UPDATE seeds.categories SET class = {CATEGORY_CLASS_FROM_ID_CASE_SQL}"  # noqa: S608  # category_class module constant, not user input
-        )
-        conn.execute(  # type: ignore[union-attr]
-            "COMMENT ON COLUMN seeds.categories.class IS 'Accounting class: income | expense | transfer | debt'"
-        )
