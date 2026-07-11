@@ -554,3 +554,10 @@ SECURITY_LINK_OUTCOMES_TOTAL = Counter(
     "SecurityResolver ladder outcomes per resolved security",
     ["result"],
 )
+
+SECURITY_LINK_DECISION_OUTCOMES_TOTAL = Counter(
+    "moneybin_security_link_decision_outcomes_total",
+    "Outcomes of security-link merge review decisions via SecurityLinksService.",
+    # outcome: accepted | rejected
+    ["outcome"],
+)
