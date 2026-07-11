@@ -30,6 +30,7 @@ from moneybin.tables import (
     MERCHANTS,
     SEED_CATEGORIES,
     SEED_CATEGORY_SOURCE_MAP,
+    SEED_EXCHANGE_MIC_MAP,
     USER_CATEGORIES,
     USER_MERCHANTS,
 )
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 _SEED_MODELS: list[str] = [
     SEED_CATEGORIES.full_name,
     SEED_CATEGORY_SOURCE_MAP.full_name,
+    SEED_EXCHANGE_MIC_MAP.full_name,
 ]
 
 
