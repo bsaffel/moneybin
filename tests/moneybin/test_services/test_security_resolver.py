@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
+from moneybin.metrics.registry import SECURITY_LINK_REVIEW_PENDING
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
@@ -278,6 +279,27 @@ def test_fuzzy_name_mints_provisionally_and_proposes(db: Database) -> None:
     pending = SecurityLinkDecisionsRepo(db).list_pending()
     assert pending[0]["candidate_security_id"] == sid
     assert pending[0]["match_reason"] == "fuzzy_name"
+
+
+def test_resolve_all_refreshes_review_pending_gauge(db: Database) -> None:
+    """A proposed tie must update SECURITY_LINK_REVIEW_PENDING, not just the DB row.
+
+    Regression guard for the "gauge that lies" failure mode: a fuzzy-name tie
+    files a pending decision but the resolver used to never touch the gauge,
+    so it would read 0 until the first accept/reject cleared the queue.
+    """
+    _catalog(db, "Vanguard Total Stock Market ETF", security_type="etf")
+    _raw_security(
+        db,
+        "sec_1",
+        security_name="Vanguard Total Stock Mkt ETF",
+        security_type="etf",
+    )
+
+    SecurityResolver(db).resolve_all()
+
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SECURITY_LINK_REVIEW_PENDING._value.get() == 1  # type: ignore[reportPrivateUsage] — testing prometheus internals
 
 
 def test_no_candidate_mints_and_binds(db: Database) -> None:

@@ -26,6 +26,7 @@ column (``user``/``auto``). The caller supplies both.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -55,6 +56,30 @@ logger = logging.getLogger(__name__)
 _SelectionSet = dict[str, list[tuple[str, Decimal]]]
 
 
+@dataclass(frozen=True)
+class PendingSecurityLinkCandidate:
+    """One candidate merge-survivor proposal within a pending-review group."""
+
+    decision_id: str
+    candidate_security_id: str
+    candidate_ticker: str | None
+    candidate_name: str | None
+    confidence: float | None
+    match_reason: str | None
+
+
+@dataclass(frozen=True)
+class PendingSecurityLinkGroup:
+    """One provider ref awaiting review + its candidate merge-survivor proposals."""
+
+    ref_kind: str
+    ref_value: str
+    source_type: str
+    provider_ticker: str | None
+    provider_name: str | None
+    candidates: tuple[PendingSecurityLinkCandidate, ...]
+
+
 class SecurityLinksService:
     """Accept/reject security merge proposals; count pending for review."""
 
@@ -79,9 +104,67 @@ class SecurityLinksService:
         """Pending, non-reversed decisions ordered ``ref_value, decision_id``."""
         return self._decisions.list_pending()
 
+    def pending(self) -> list[PendingSecurityLinkGroup]:
+        """Pending decisions grouped by provider ref, candidates enriched with ticker/name.
+
+        ``list_pending()`` rows carry only ``candidate_security_id`` — a bare
+        id tells the reviewer nothing about whether the merge is right, so
+        each candidate is enriched here with the catalog's ticker/name via a
+        lookup against ``app.securities``. Grouped by ``(ref_kind, ref_value)``:
+        the resolver files one decision per tied candidate for the same
+        provider ref (an identifier tie), so a group — not the raw decision
+        row — is the review unit, mirroring
+        ``MerchantLinksService.pending()``. Read-only — no audit emitted.
+        """
+        rows = self._decisions.list_pending()
+        if not rows:
+            return []
+
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            key = (row["ref_kind"], row["ref_value"])
+            groups.setdefault(key, []).append(row)
+
+        result: list[PendingSecurityLinkGroup] = []
+        for (ref_kind, ref_value), decisions in groups.items():
+            first = decisions[0]
+            candidates: list[PendingSecurityLinkCandidate] = []
+            for d in decisions:
+                ticker, name = self._security_display(d["candidate_security_id"])
+                candidates.append(
+                    PendingSecurityLinkCandidate(
+                        decision_id=d["decision_id"],
+                        candidate_security_id=d["candidate_security_id"],
+                        candidate_ticker=ticker,
+                        candidate_name=name,
+                        confidence=d["confidence_score"],
+                        match_reason=d.get("match_reason"),
+                    )
+                )
+            result.append(
+                PendingSecurityLinkGroup(
+                    ref_kind=ref_kind,
+                    ref_value=ref_value,
+                    source_type=first["source_type"],
+                    provider_ticker=first.get("provider_ticker"),
+                    provider_name=first.get("provider_name"),
+                    candidates=tuple(candidates),
+                )
+            )
+        return result
+
     def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only."""
         return self._decisions.history(limit=limit)
+
+    def _security_display(self, security_id: str) -> tuple[str | None, str | None]:
+        """(ticker, name) for ``security_id`` from ``app.securities``; ``(None, None)`` if absent."""
+        row = self._db.execute(
+            f"SELECT ticker, name FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE security_id = ? LIMIT 1",
+            [security_id],
+        ).fetchone()
+        return (row[0], row[1]) if row is not None else (None, None)
 
     # ------------------------------------------------------------------
     # Mutations
@@ -119,6 +202,13 @@ class SecurityLinksService:
             raise
         SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome="rejected").inc()
         logger.info(f"security merge rejected: decision={decision_id}")
+
+        # Rejecting changed the pending count — refresh the gauge.
+        from moneybin.services.security_resolver import (  # noqa: PLC0415
+            refresh_security_link_pending_gauge,
+        )
+
+        refresh_security_link_pending_gauge(self._db)
 
     def accept_merge(self, decision_id: str, *, decided_by: str = "user") -> None:
         """Merge the provisional security into the decision's candidate, atomically.
@@ -247,6 +337,14 @@ class SecurityLinksService:
             f"provisional={provisional} survivor={survivor} "
             f"disposals_remapped={len(plan)}"
         )
+
+        # Accepting changed the pending count (the named decision plus its
+        # auto-rejected siblings) — refresh the gauge.
+        from moneybin.services.security_resolver import (  # noqa: PLC0415
+            refresh_security_link_pending_gauge,
+        )
+
+        refresh_security_link_pending_gauge(self._db)
 
     # ------------------------------------------------------------------
     # Internal helpers

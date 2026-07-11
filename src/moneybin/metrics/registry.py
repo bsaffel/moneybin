@@ -561,3 +561,8 @@ SECURITY_LINK_DECISION_OUTCOMES_TOTAL = Counter(
     # outcome: accepted | rejected
     ["outcome"],
 )
+
+SECURITY_LINK_REVIEW_PENDING = Gauge(
+    "moneybin_security_link_review_pending",
+    "Current count of pending security_link_decisions.",
+)

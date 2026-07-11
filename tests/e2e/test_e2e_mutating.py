@@ -1516,6 +1516,73 @@ class TestMerchantLinksMutating:
         assert "Traceback (most recent call last)" not in result.stderr
 
 
+class TestSecurityLinksMutating:
+    """E2E smoke tests for `investments securities links set`.
+
+    No `run` subcommand exists for security links (proposals come from
+    `SecurityResolver` during `sync pull`, not a CLI-invoked harvest), so
+    this mirrors only the `set` half of `TestMerchantLinksMutating`. Deep
+    accept/reject behavior is covered at the unit tier
+    (test_security_links_service.py); these smoke the wiring, exit codes,
+    and mutual-exclusion guard the way the `merchants links` e2e tests do.
+    """
+
+    def test_investments_securities_links_set_not_found(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`investments securities links set <nonexistent_id> --reject` fails not-found, no traceback.
+
+        No pending decisions exist on a fresh profile — the service raises
+        UserError(MUTATION_NOT_FOUND) which handle_cli_errors converts to exit 1.
+        ``--reject`` avoids needing a real candidate security.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "slinks-set-nf", _mutating_profile_template
+        )
+        result = run_cli(
+            "investments",
+            "securities",
+            "links",
+            "set",
+            "nonexistent-decision-id",
+            "--reject",
+            env=env,
+        )
+        assert result.exit_code != 0
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_investments_securities_links_set_missing_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`investments securities links set <id>` without --accept or --reject exits 2."""
+        env = make_workflow_env_fast(
+            tmp_path, "slinks-set-usage", _mutating_profile_template
+        )
+        result = run_cli("investments", "securities", "links", "set", "any-id", env=env)
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_investments_securities_links_set_mutual_exclusion_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`investments securities links set <id> --accept --reject` exits 2 (mutually exclusive)."""
+        env = make_workflow_env_fast(
+            tmp_path, "slinks-set-mutex", _mutating_profile_template
+        )
+        result = run_cli(
+            "investments",
+            "securities",
+            "links",
+            "set",
+            "any-id",
+            "--accept",
+            "--reject",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+
 class TestPrivacyConsent:
     """Consent ledger CLI commands (grant / revoke / revoke-all)."""
 

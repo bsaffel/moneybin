@@ -21,6 +21,7 @@ import pytest
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.investments.cost_basis import compute_lot_id
+from moneybin.metrics.registry import SECURITY_LINK_REVIEW_PENDING
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
@@ -558,6 +559,47 @@ def test_accept_raises_when_ref_is_already_bound_to_the_candidate(
     assert SecurityLinkDecisionsRepo(db).count_pending() == 1
 
 
+# ---------------------------------------------------------------- gauge
+
+
+def test_accept_refreshes_the_review_pending_gauge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Regression guard: a stale gauge is worse than no gauge (Task 10 review finding).
+
+    Before accept, the gauge reflects the one pending decision seeded by
+    ``merge_setup``; after accept it must drop to 0 — not stay pinned at
+    whatever value the last refresh (or no refresh at all) left behind.
+    """
+    SECURITY_LINK_REVIEW_PENDING.set(0)  # isolate from other tests' last value
+
+    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SECURITY_LINK_REVIEW_PENDING._value.get() == 0  # type: ignore[reportPrivateUsage] — testing prometheus internals
+
+
+def test_reject_refreshes_the_review_pending_gauge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Reject must also refresh the gauge — a sibling stays pending, so the count is 1, not 0."""
+    other = _mint(db, name="Vanguard Total Market Index", created_by="user")
+    sibling = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=other,
+        actor="system",
+    )
+    assert sibling.target_id is not None
+    SECURITY_LINK_REVIEW_PENDING.set(0)  # isolate from other tests' last value
+
+    SecurityLinksService(db).reject_merge(merge_setup["decision_id"])
+
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SECURITY_LINK_REVIEW_PENDING._value.get() == 1  # type: ignore[reportPrivateUsage] — testing prometheus internals
+
+
 # ---------------------------------------------------------------- reject
 
 
@@ -678,3 +720,100 @@ def test_read_methods_delegate_to_the_decisions_repo(
     pending = service.list_pending()
     assert [row["decision_id"] for row in pending] == [merge_setup["decision_id"]]
     assert len(service.history(limit=10)) == 1
+
+
+def test_pending_enriches_candidate_with_ticker_and_name(db: Database) -> None:
+    """The reviewer must see the candidate's identity, not a bare id (Task 12 finding).
+
+    ``list_pending()`` rows carry only ``candidate_security_id`` — ``pending()``
+    must join against ``app.securities`` so the CLI can show what the merge
+    candidate actually IS.
+    """
+    survivor = (
+        SecuritiesRepo(db)
+        .upsert(
+            security_id=None,
+            name="Vanguard Total Stock Market ETF",
+            security_type="etf",
+            ticker="VTI",
+            created_by="user",
+            actor="cli",
+        )
+        .target_id
+    )
+    assert survivor is not None
+    provisional = _mint(db, name="Vanguard Total Stock Mkt ETF", created_by="plaid")
+    SecurityLinksRepo(db).insert(
+        security_id=provisional,
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        decided_by="auto",
+        actor="system",
+    )
+    SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        provider_ticker="VTI",
+        provider_name="Vanguard Total Stock Mkt ETF",
+        candidate_security_id=survivor,
+        confidence_score=0.5,
+        match_reason="fuzzy_name",
+        actor="system",
+    )
+
+    groups = SecurityLinksService(db).pending()
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.ref_kind == _REF_KIND
+    assert group.ref_value == _REF_VALUE
+    assert group.provider_ticker == "VTI"
+    assert len(group.candidates) == 1
+    candidate = group.candidates[0]
+    assert candidate.candidate_security_id == survivor
+    assert candidate.candidate_ticker == "VTI"
+    assert candidate.candidate_name == "Vanguard Total Stock Market ETF"
+    assert candidate.match_reason == "fuzzy_name"
+
+
+def test_pending_groups_tied_candidates_for_the_same_ref(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Sibling decisions for one ref (an identifier tie) form ONE group, not two."""
+    other = _mint(db, name="Vanguard Total Market Index", created_by="user")
+    sibling = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=other,
+        actor="system",
+    )
+    assert sibling.target_id is not None
+
+    groups = SecurityLinksService(db).pending()
+
+    assert len(groups) == 1
+    decision_ids = {c.decision_id for c in groups[0].candidates}
+    assert decision_ids == {merge_setup["decision_id"], sibling.target_id}
+
+
+def test_pending_candidate_with_deleted_security_has_no_ticker_or_name(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A candidate whose catalog row is gone degrades to (None, None), never raises."""
+    db.execute(
+        "DELETE FROM app.securities WHERE security_id = ?", [merge_setup["survivor"]]
+    )
+
+    groups = SecurityLinksService(db).pending()
+
+    candidate = groups[0].candidates[0]
+    assert candidate.candidate_security_id == merge_setup["survivor"]
+    assert candidate.candidate_ticker is None
+    assert candidate.candidate_name is None
+
+
+def test_pending_empty_when_no_decisions(db: Database) -> None:
+    assert SecurityLinksService(db).pending() == []

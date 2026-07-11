@@ -77,6 +77,7 @@ class ReviewStatusPayload:
     categorize_pending: Annotated[int, DataClass.AGGREGATE]
     account_links_pending: Annotated[int, DataClass.AGGREGATE]
     merchant_links_pending: Annotated[int, DataClass.AGGREGATE]
+    security_links_pending: Annotated[int, DataClass.AGGREGATE]
     total: Annotated[int, DataClass.AGGREGATE]
 
 

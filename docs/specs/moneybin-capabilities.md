@@ -113,7 +113,7 @@ not-yet-built.
 | 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `target_account_id: str\|null` — no default; null = standalone-reject)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
 | 51| Show recent account-link decisions (all statuses) | `accounts_links_history` *(`limit=50`)* | `accounts links history` *(`--limit`, `--output json`)* | — | live |
 | 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
-| 53| "What needs my attention?" — pending counts across all four review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, merchant_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
+| 53| "What needs my attention?" — pending counts across all five review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, merchant_links_pending, security_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
 | 54| Confirm account identity at import time (which account is this file?) | `import_confirm` *(`account_bindings={source_key: account_id\|"new"}` ratifies an `account_confirmation`; `account_metadata` captures display_name/subtype/last_four/currency for `"new"` accounts; interactive-human imports gate on weak candidates, agents load + queue; a single-account file with no account identity also returns `account_confirmation` — a 1-entry no-candidate proposal — for both human and agent callers)* | `import confirm <file> --account-binding source_key=ACCOUNT_ID\|new [--account-meta source_key:field=value]` | — | live |
 | 55| List pending merchant-link decisions grouped by provider entity id | `merchants_links_pending` | `merchants links pending` *(`--output json`)* | — | live |
 | 56| Accept (bind) or reject one pending merchant-link decision | `merchants_links_set` *(`decision_id`, `target_merchant_id: str\|null` — no default; null = reject)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next categorization pass) | — | live |
@@ -127,6 +127,9 @@ not-yet-built.
 | 64| Override which lots a disposal draws from (specific identification) | `investments_lots_select` *(`disposal_txn_id`, `selections=[{lot_id, quantity}, ...]`; empty list reverts to FIFO)* | `investments lots select <disposal_txn_id> --lot ID:QTY [--lot ...]` / `--clear` | — | live |
 | 65| View realized gain/loss (the 1099-B surface) | `investments_gains` *(`account?`, `security?`, `from_date?`, `to_date?`, `term?`)* | `investments gains` *(`--account`, `--security`, `--from`, `--to`, `--term`)* | — | live |
 | 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
+| 67| List pending security-link merge decisions grouped by provider ref | — *(no MCP tool yet — see note below)* | `investments securities links pending` *(`--output json`)* | — | pending-build (MCP) |
+| 68| Accept (merge) or reject one pending security-link merge decision | — *(no MCP tool yet)* | `investments securities links set <decision_id> --accept` (merge) / `--reject` (keep as distinct instrument) | — | pending-build (MCP) |
+| 69| Show recent security-link decisions (all statuses) | — *(no MCP tool yet)* | `investments securities links history` *(`--limit`, `--output json`)* | — | pending-build (MCP) |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -188,7 +191,18 @@ child, Pillars A+B): five `investments_*` read tools and three write tools
 register alongside the top-level `investments` CLI group. Sensitivity is derived
 per tool from payload field classification rather than declared statically —
 `high` for the ledger/holdings/lots/gains tools (cost basis and proceeds are
-`BALANCE`-classified), `low` for the securities catalog (reference data only).)*
+`BALANCE`-classified), `low` for the securities catalog (reference data only).
+Row 53 updated 2026-07-11 with the security-link review-surface PR (M1G.4
+Task 12): `review`'s payload gains `security_links_pending`, covering a fifth
+queue alongside matches/categorize/account-links/merchant-links.
+Rows 67–69 added 2026-07-11 with the same PR: `investments securities links
+{pending,set,history}` CLI commands wired over `SecurityLinksService` (Task
+10), grouped by provider ref the same way `merchants links pending` groups by
+provider entity id, with candidates enriched with the catalog's ticker/name
+(a bare `candidate_security_id` tells the reviewer nothing about the merge).
+No MCP tools registered yet for this queue — `investments_securities_links_*`
+mirroring `merchants_links_*` is a natural follow-up; marked pending-build
+(MCP) rather than a permanent CLI-only exemption.)*
 
 ## Exemption categories
 

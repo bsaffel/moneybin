@@ -35,6 +35,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusPayload,
     SystemStatusReader,
     SystemStatusSchemaDrift,
+    SystemStatusSecurityLinksInfo,
     SystemStatusTransactionsInfo,
     SystemStatusTransformsInfo,
     SystemStatusWriter,
@@ -267,6 +268,7 @@ def _locked_status_envelope(
             matches=SystemStatusMatchesInfo(pending_review=0),
             account_links=SystemStatusAccountLinksInfo(pending_review=0),
             merchant_links=SystemStatusMerchantLinksInfo(pending_review=0),
+            security_links=SystemStatusSecurityLinksInfo(pending_review=0),
             categorization=SystemStatusCategorizationInfo(uncategorized=0),
             transforms=SystemStatusTransformsInfo(pending=False, last_apply_at=None),
             schema_drift=None,
@@ -373,6 +375,9 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
             ),
             merchant_links=SystemStatusMerchantLinksInfo(
                 pending_review=status.merchant_links_pending
+            ),
+            security_links=SystemStatusSecurityLinksInfo(
+                pending_review=status.security_links_pending
             ),
             categorization=SystemStatusCategorizationInfo(
                 uncategorized=status.categorize_pending

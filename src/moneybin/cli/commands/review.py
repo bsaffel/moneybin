@@ -1,10 +1,11 @@
 """Top-level `moneybin review` command — domain-neutral orientation sweep.
 
-Aggregates pending counts from all four review queues:
+Aggregates pending counts from all five review queues:
   - Matches (transaction dedup / transfer pairs)
   - Uncategorized transactions
   - Account-link decisions
   - Merchant-link decisions
+  - Security-link decisions
 
 Use `moneybin review --status` to see counts; interactive walk is
 stubbed pending the v2 review-loop UX.
@@ -30,7 +31,7 @@ def review_command(
     type_: str = typer.Option(
         "all",
         "--type",
-        help="all | matches | categorize | account-links | merchant-links",
+        help="all | matches | categorize | account-links | merchant-links | security-links",
     ),
     status: bool = typer.Option(
         False, "--status", help="Show queue counts only, no interactive loop"
@@ -48,7 +49,7 @@ def review_command(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Walk all pending review queues: matches, uncategorized, account-links, and merchant-links.
+    """Walk all pending review queues: matches, uncategorized, account-links, merchant-links, and security-links.
 
     One sweep answers "what needs my attention?" across all review domains.
     Use --status for counts only; --type to filter to a specific queue.

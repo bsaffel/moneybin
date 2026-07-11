@@ -39,7 +39,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 from moneybin.privacy.taxonomy import DataClass
 
@@ -53,6 +53,8 @@ from moneybin.privacy.taxonomy import DataClass
 # rather than repeating it.)
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from moneybin.services.investment_service import (
         EventRow,
         EventsResult,
@@ -64,6 +66,9 @@ if TYPE_CHECKING:
         RealizedGainRow,
         SecuritiesResult,
         SecurityRow,
+    )
+    from moneybin.services.security_links_service import (
+        PendingSecurityLinkGroup,
     )
 
 # ---------------------------------------------------------------------------
@@ -400,3 +405,138 @@ class InvestmentLotsSelectPayload:
 
     disposal_txn_id: Annotated[str, DataClass.RECORD_ID]
     selections: list[InvestmentLotSelectionEntry]
+
+
+# ---------------------------------------------------------------------------
+# investments_securities_links_pending / _history (M1G.4 Task 12)
+#
+# Field classifications mirror the name-based CLASSIFICATION registry already
+# shipped for app.security_link_decisions (privacy/taxonomy.py, Task 7):
+# ref_kind/source_type/status/decided_by -> TXN_TYPE, ref_value/decision_id/
+# candidate_security_id -> RECORD_ID, confidence_score -> AGGREGATE,
+# match_reason -> USER_NOTE, decided_at -> TIMESTAMP_OBSERVABILITY.
+# candidate_ticker/candidate_name/provider_ticker/provider_name mirror
+# app.securities.ticker/.name (TXN_TYPE), same as InvestmentSecurityRow above.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityLinkCandidateRow:
+    """One candidate merge-survivor proposal in a pending-review group."""
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    candidate_security_id: Annotated[str, DataClass.RECORD_ID]
+    candidate_ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    candidate_name: Annotated[str | None, DataClass.TXN_TYPE]
+    confidence: Annotated[float | None, DataClass.AGGREGATE]
+    match_reason: Annotated[str | None, DataClass.USER_NOTE]
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityLinkPendingGroup:
+    """One provider ref awaiting review + its candidate merge-survivor proposals."""
+
+    ref_kind: Annotated[str, DataClass.TXN_TYPE]
+    ref_value: Annotated[str, DataClass.RECORD_ID]
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    provider_ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    provider_name: Annotated[str | None, DataClass.TXN_TYPE]
+    candidates: list[SecurityLinkCandidateRow]
+
+    @classmethod
+    def from_domain(cls, g: PendingSecurityLinkGroup) -> SecurityLinkPendingGroup:
+        """Map a service ``PendingSecurityLinkGroup`` into the payload group."""
+        return cls(
+            ref_kind=g.ref_kind,
+            ref_value=g.ref_value,
+            source_type=g.source_type,
+            provider_ticker=g.provider_ticker,
+            provider_name=g.provider_name,
+            candidates=[
+                SecurityLinkCandidateRow(
+                    decision_id=c.decision_id,
+                    candidate_security_id=c.candidate_security_id,
+                    candidate_ticker=c.candidate_ticker,
+                    candidate_name=c.candidate_name,
+                    confidence=c.confidence,
+                    match_reason=c.match_reason,
+                )
+                for c in g.candidates
+            ],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityLinksPendingPayload:
+    """Payload for ``investments securities links pending`` — pending queue grouped by provider ref."""
+
+    groups: list[SecurityLinkPendingGroup]
+    n_pending: Annotated[int, DataClass.AGGREGATE]
+
+    @classmethod
+    def from_service(
+        cls,
+        groups: Iterable[PendingSecurityLinkGroup],
+        n_pending: int,
+    ) -> SecurityLinksPendingPayload:
+        """Build the pending payload from ``SecurityLinksService.pending()`` output."""
+        return cls(
+            groups=[SecurityLinkPendingGroup.from_domain(g) for g in groups],
+            n_pending=n_pending,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityLinkHistoryRow:
+    """One past security-link decision (``investments securities links history`` result)."""
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    ref_kind: Annotated[str, DataClass.TXN_TYPE]
+    ref_value: Annotated[str, DataClass.RECORD_ID]
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    provider_ticker: Annotated[str | None, DataClass.TXN_TYPE]
+    provider_name: Annotated[str | None, DataClass.TXN_TYPE]
+    candidate_security_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    decided_by: Annotated[str, DataClass.TXN_TYPE]
+    decided_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    confidence: Annotated[float | None, DataClass.AGGREGATE]
+    match_reason: Annotated[str | None, DataClass.USER_NOTE]
+
+    @classmethod
+    def from_decision_row(cls, r: dict[str, Any]) -> SecurityLinkHistoryRow:
+        """Map a decoded ``security_link_decisions`` row into the history payload."""
+        return cls(
+            decision_id=r["decision_id"],
+            ref_kind=r["ref_kind"],
+            ref_value=r["ref_value"],
+            source_type=r["source_type"],
+            provider_ticker=r.get("provider_ticker"),
+            provider_name=r.get("provider_name"),
+            candidate_security_id=r["candidate_security_id"],
+            status=r["status"],
+            decided_by=r["decided_by"],
+            decided_at=str(r["decided_at"])
+            if r.get("decided_at") is not None
+            else None,
+            confidence=(
+                float(r["confidence_score"])
+                if r.get("confidence_score") is not None
+                else None
+            ),
+            match_reason=r.get("match_reason"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SecurityLinksHistoryPayload:
+    """Payload for ``investments securities links history`` — decision log, newest first."""
+
+    decisions: list[SecurityLinkHistoryRow]
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[dict[str, Any]]) -> SecurityLinksHistoryPayload:
+        """Build the history payload from ``SecurityLinksService.history()`` rows."""
+        return cls(
+            decisions=[SecurityLinkHistoryRow.from_decision_row(r) for r in rows]
+        )

@@ -745,12 +745,12 @@ Primary transaction read tool. Returns full transaction records with curation me
 
 ### `review`
 
-Orientation tool: pending counts across **all four** review queues (matches + categorize + account-links + merchant-links).
+Orientation tool: pending counts across **all five** review queues (matches + categorize + account-links + merchant-links + security-links).
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, `accounts_links_pending` for account-link decisions, and `merchants_links_pending` for merchant-link decisions.
-- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService, MerchantLinksService).status()`
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, security_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, `accounts_links_pending` for account-link decisions, and `merchants_links_pending` for merchant-link decisions. The security-links queue (M1G.4 Task 12) has no MCP drill-down tool yet — use the `moneybin investments securities links {pending,set,history}` CLI.
+- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService, MerchantLinksService, SecurityLinksService).status()`
 - **CLI:** `moneybin review`
 
 ### `transactions_review` *(deprecated — removed after one minor release)*
@@ -1356,8 +1356,8 @@ Data status dashboard — what data exists, how fresh it is, what's pending acti
 
 - **Sensitivity:** `low` — counts and dates only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{accounts, transactions, categorization, imports, matching, budgets}` where each section has relevant counts and dates. E.g., `transactions: {total: 4230, date_range: "2024-01 to 2026-04", last_import: "2026-04-15"}`, `categorization: {categorized: 3890, uncategorized: 340, percent: 92}`, `matching: {pending_review: 5}`. This is the tool version of the `moneybin://status` resource with richer detail.
-- **Service:** `OverviewService.status() -> SystemStatus`
+- **Behavior:** Returns `{accounts: {count}, transactions: {count, date_range, last_import_at}, matches: {pending_review}, account_links: {pending_review}, merchant_links: {pending_review}, security_links: {pending_review}, categorization: {uncategorized}, transforms: {pending, last_apply_at}, schema_drift: {tables[], remediation} | null, gsheet: {total_connections, by_status, needs_attention[]}, database_connections: {writers[], readers[]}}`. `security_links` was added M1G.4 Task 12 (2026-07-11), covering the fifth review queue alongside `system status`/`review`. Degrades to a zero-filled envelope with `summary.degraded=true` when a writer holds the database lock — `database_connections` still names the holder in that case (see `DatabaseLockError` recovery). This is the tool version of the `moneybin://status` resource with richer detail.
+- **Service:** `SystemService.status() -> SystemStatus`
 - **CLI:** `moneybin system status`
 
 ### `system_doctor`

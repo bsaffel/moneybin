@@ -39,7 +39,10 @@ from typing import Any
 import duckdb
 
 from moneybin.database import Database
-from moneybin.metrics.registry import SECURITY_LINK_OUTCOMES_TOTAL
+from moneybin.metrics.registry import (
+    SECURITY_LINK_OUTCOMES_TOTAL,
+    SECURITY_LINK_REVIEW_PENDING,
+)
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
@@ -70,6 +73,21 @@ _PLAID_TYPE_MAP = {
 }
 
 _PLACEHOLDER_NAME = "(Plaid security)"
+
+
+def refresh_security_link_pending_gauge(db: Database) -> None:
+    """Set SECURITY_LINK_REVIEW_PENDING from the live pending-decision count.
+
+    Called at the two sites that change the count: ``resolve_all`` (files new
+    pending proposals) and ``SecurityLinksService.accept_merge`` /
+    ``reject_merge`` (accept/reject clears them) — mirrors
+    ``account_resolver.refresh_account_link_pending_gauge``. Unlike the
+    account/merchant precedent, the review unit here is the raw decision row,
+    not a grouped provisional/entity id — ``SecurityLinksService.count_pending``
+    delegates straight to ``SecurityLinkDecisionsRepo.count_pending``, so the
+    gauge mirrors that same query for consistency.
+    """
+    SECURITY_LINK_REVIEW_PENDING.set(SecurityLinkDecisionsRepo(db).count_pending())
 
 
 def _norm(value: str | None) -> str | None:
@@ -191,6 +209,7 @@ class SecurityResolver:
             counts[outcome] = counts.get(outcome, 0) + 1
             SECURITY_LINK_OUTCOMES_TOTAL.labels(result=outcome).inc()
         logger.info(f"Security resolution outcomes: {counts}")
+        refresh_security_link_pending_gauge(self._db)
         return counts
 
     # ------------------------------- ladder -------------------------------
