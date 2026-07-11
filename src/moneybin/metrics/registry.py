@@ -438,6 +438,12 @@ SYNTHETIC_RESET_TOTAL = Counter(
     ["persona"],
 )
 
+DEMO_RUN_TOTAL = Counter(
+    "moneybin_demo_run_total",
+    "Total `moneybin demo` preset runs performed",
+    ["persona"],
+)
+
 # ── Database ──────────────────────────────────────────────────────────────────
 
 DB_QUERY_DURATION_SECONDS = Histogram(
