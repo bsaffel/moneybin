@@ -23,14 +23,18 @@ Write-target resolution and its limit: the target relation is resolved when it
 is an inline literal, a module constant (``conn.execute(_CREATE_SQL)``, e.g.
 V034), a ``for <var> in (<string literals>)`` loop variable interpolated into an
 f-string (V012's ``DROP TABLE IF EXISTS {table}`` over a literal tuple), or a
-local literal assignment. Two loop idioms present elsewhere in the ladder are
-NOT resolved and would blank their target: ``for k, v in {dict}.items()`` (V003,
-keys are all ``raw.*`` today) and ``for a, b in <name>`` where the name is a
-built/mutated list (V014's ``list(_BACKFILLS)`` + conditional append, all
-``app.*`` today). Extending the binder to those is tracked as follow-up work; a
-target computed at true *runtime* — a function argument, a name read from
-``duckdb_indexes()`` / ``duckdb_tables()`` — can't be resolved statically at all.
-The regex fallback still covers the common static-target / dynamic-*value* shape. SQL is read only from ``.execute()``
+local literal assignment. Three binder gaps are known and NOT resolved (each
+would blank the target); all are unexploited by the current ladder and tracked
+as one follow-up: (1) ``for k, v in {dict}.items()`` (V003, keys all ``raw.*``);
+(2) ``for a, b in <name>`` where the name is a built/mutated list (V014's
+``list(_BACKFILLS)`` + conditional append, all ``app.*``); (3) a resolvable
+binding applied through an *intermediate local* — ``sql = f"... {table}";
+execute(sql)`` — where the f-string is flattened (interpolation blanked) at
+assignment time, before the loop/name binding is applied (only a *direct*
+``execute(f"... {table}")`` resolves today). A target computed at true *runtime*
+— a function argument, a name read from ``duckdb_indexes()`` /
+``duckdb_tables()`` — can't be resolved statically at all. The regex fallback
+still covers the common static-target / dynamic-*value* shape. SQL is read only from ``.execute()``
 arguments, so a docstring or comment mentioning ``ALTER TABLE seeds.x`` never
 triggers a false positive.
 """
