@@ -21,7 +21,7 @@ from moneybin.services.demo_service import (
 
 
 @pytest.fixture(autouse=True)
-def _restore_profile_state() -> Generator[None, None, None]:
+def _restore_profile_state() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
     """DemoService.run switches the process-wide active profile; restore it."""
     from moneybin import config
 

@@ -1,5 +1,7 @@
 """Tests for the cross-cutting user-error classifier."""
 
+from collections.abc import Generator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -141,20 +143,20 @@ def test_classify_database_lock_error() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_active_profile():
+def _clean_active_profile() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
     """Reset the process-wide active profile so DB-not-init guidance is deterministic."""
     from moneybin import config
 
-    original = config._current_profile
-    config._current_profile = None
+    original = config._current_profile  # pyright: ignore[reportPrivateUsage]
+    config._current_profile = None  # pyright: ignore[reportPrivateUsage]
     try:
         yield
     finally:
-        config._current_profile = original
+        config._current_profile = original  # pyright: ignore[reportPrivateUsage]
 
 
 def test_db_not_initialized_unregistered_points_at_profile_create(
-    tmp_path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from moneybin.config import set_current_profile
     from moneybin.database import DatabaseNotInitializedError
@@ -168,7 +170,9 @@ def test_db_not_initialized_unregistered_points_at_profile_create(
     assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
 
 
-def test_db_not_initialized_registered_points_at_db_init(tmp_path, monkeypatch) -> None:
+def test_db_not_initialized_registered_points_at_db_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from unittest.mock import patch as _patch
 
     from moneybin.config import set_current_profile
