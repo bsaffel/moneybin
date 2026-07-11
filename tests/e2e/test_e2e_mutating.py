@@ -1554,3 +1554,32 @@ class TestPrivacyConsent:
             "privacy", "grant", "ml-categorization", "--yes", env=env
         ).assert_success()
         run_cli("privacy", "revoke-all", "--yes", env=env).assert_success()
+
+
+class TestDemo:
+    """`moneybin demo` — the evaluator preset (real full pipeline)."""
+
+    def test_demo_end_to_end_json(self, tmp_path: Path) -> None:
+        """Demo builds a populated, doctor-clean demo profile and reports net worth."""
+        env = base_env(tmp_path, "demo")
+        env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(tmp_path / "inbox-root")
+        result = run_cli(
+            "demo",
+            "--yes",
+            "--seed",
+            "42",
+            "--years",
+            "1",
+            "--output",
+            "json",
+            env=env,
+            timeout=300,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Traceback" not in result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["profile"] == "demo"
+        assert payload["transaction_count"] > 0
+        assert payload["account_count"] > 0
+        # The whole point of demo: it ends clean.
+        assert payload["doctor_failing"] == 0, payload["doctor_failing_names"]
