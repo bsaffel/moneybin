@@ -831,6 +831,17 @@ _CREDIT_CARD_MARKERS: tuple[str, ...] = (
 )
 
 
+def credit_card_markers(doc: PdfDocument) -> tuple[str, ...]:
+    """The card-statement disclosures *doc* contains, in _CREDIT_CARD_MARKERS order.
+
+    Returns the matched markers rather than a bare bool so the confirm gate can
+    show the user what the inference was based on — an inversion the user cannot
+    see the evidence for is exactly the kind of magic this codebase refuses.
+    """
+    haystack = "\n".join(doc.text_lines).lower()
+    return tuple(m for m in _CREDIT_CARD_MARKERS if m in haystack)
+
+
 def _looks_like_credit_card_statement(doc: PdfDocument) -> bool:
     """True when the document carries a credit-card statement's disclosures.
 
@@ -848,11 +859,7 @@ def _looks_like_credit_card_statement(doc: PdfDocument) -> bool:
     is the safe direction — an unnecessary escalation is visible and recoverable,
     a silently inverted ledger is neither.
     """
-    return any(
-        marker in line.lower()
-        for line in doc.text_lines
-        for marker in _CREDIT_CARD_MARKERS
-    )
+    return bool(credit_card_markers(doc))
 
 
 def _has_any_negative_amount(table: PdfTable, amount_col_indices: list[int]) -> bool:
