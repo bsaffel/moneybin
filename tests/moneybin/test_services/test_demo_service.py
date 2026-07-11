@@ -389,6 +389,36 @@ def test_registers_a_bare_db_init_demo_directory(
 
 
 @pytest.mark.integration
+def test_refuses_an_unregistered_demo_directory_holding_real_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # The data-safety guard must not depend on `ProfileService.create()` raising.
+    # `create()` now completes an unregistered bare directory in place, so demo can
+    # no longer infer "this profile already existed" from ProfileExistsError — it
+    # asks the filesystem instead. Regress that inference and this profile — a hand
+    # `db init --profile demo` (database + real securities, no config.yaml) — is
+    # silently rebuilt, destroying the user's data.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.database import get_database
+    from moneybin.services.profile_service import ProfileService
+
+    profiles = ProfileService()
+    _make_demo_profile(generator_made=False)
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO app.securities (security_id, name, security_type) "
+            "VALUES (?, ?, ?)",
+            ["sec_1", "Vanguard S&P 500 ETF", "etf"],
+        )
+    (profiles._profile_dir(DEMO_PROFILE) / "config.yaml").unlink()  # pyright: ignore[reportPrivateUsage]
+    assert profiles.is_registered(DEMO_PROFILE) is False
+
+    _mock_pipeline(mocker)
+    with pytest.raises(DemoProfileNotOursError):
+        DemoService().run(persona="basic", seed=42, reset_confirmed=True)
+
+
+@pytest.mark.integration
 def test_recovers_from_partially_generated_demo_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:

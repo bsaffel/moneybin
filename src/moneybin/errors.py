@@ -128,13 +128,12 @@ def classify_user_error(exc: BaseException) -> UserError | None:
 
             profiles = ProfileService()
             profile = get_current_profile(auto_resolve=False)
-            # Only send them to `profile create` when nothing is in its way: it
-            # refuses on the bare directory alone, so for a directory that exists
-            # but was never registered, that advice is a dead end. `db init` does
-            # work there, so fall back to it.
-            suggest_create = not profiles.is_registered(
-                profile
-            ) and not profiles.exists(profile)
+            # Registration, not the directory, decides the verb. `profile create`
+            # completes an unregistered directory in place (config, database, and
+            # inbox), so it is the right advice whether or not one is already there.
+            # A *registered* profile has finished setup and is only missing its
+            # database — that is `db init`'s job, and `profile create` would refuse.
+            suggest_create = not profiles.is_registered(profile)
         except Exception:  # noqa: BLE001 — fall back to the db-init message
             suggest_create = False
         if suggest_create:

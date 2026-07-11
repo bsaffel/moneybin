@@ -261,22 +261,153 @@ class TestMCPInstall:
         payload = _json.loads(expected.read_text())
         assert "mcpServers" in payload
 
-    def test_install_chatgpt_desktop_prints_instructions(self) -> None:
-        """chatgpt-desktop emits the snippet plus Connector setup steps."""
-        result = runner.invoke(app, ["install", "--client", "chatgpt-desktop"])
-        assert result.exit_code == 0
-        assert "mcpServers" in result.output
-        assert "Connectors" in result.output
-        assert "Command:" in result.output
-        assert "Arguments:" in result.output
+    def test_install_chatgpt_desktop_writes_the_shared_codex_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ChatGPT Desktop hosts Codex, and Codex reads ~/.codex/config.toml.
 
-    def test_install_chatgpt_desktop_print_implicit(self) -> None:
-        """chatgpt-desktop has no programmatic install — --print is implicit (no error)."""
+        Per OpenAI's docs: "The ChatGPT desktop app, Codex CLI, and IDE extension
+        support MCP servers and share MCP configuration for the same Codex host",
+        and the desktop app's Settings → MCP servers → Add server offers STDIO. So
+        this client takes a real local install — the same TOML `--client codex`
+        writes — and must not be refused.
+        """
+        target = tmp_path / "config.toml"
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp._get_client_config_path",
+            lambda client: target,  # type: ignore[reportUnknownLambdaType]
+        )
+        result = runner.invoke(
+            app, ["install", "--client", "chatgpt-desktop", "--profile", "alice", "-y"]
+        )
+        assert result.exit_code == 0
+        assert target.exists()
+
+        import tomllib
+
+        entry = tomllib.loads(target.read_text())["mcp_servers"]["MoneyBin (alice)"]
+        assert Path(entry["command"]).name == "uv"
+        assert entry["startup_timeout_sec"] == 30
+
+    def test_chatgpt_desktop_config_path_is_the_codex_one(self) -> None:
+        """Same Codex host, same file — installing for one covers the other."""
+        from moneybin.cli.commands.mcp import (
+            _CLIENT_CONFIG_PATHS,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        assert _CLIENT_CONFIG_PATHS["chatgpt-desktop"] == _CLIENT_CONFIG_PATHS["codex"]
+
+    def test_install_chatgpt_desktop_emits_toml_not_json(self) -> None:
+        """It's a Codex-shaped config, so it must not print the mcpServers JSON."""
         result = runner.invoke(
             app, ["install", "--client", "chatgpt-desktop", "--print"]
         )
         assert result.exit_code == 0
-        assert "Connectors" in result.output
+        assert "[mcp_servers." in result.stdout
+        assert "mcpServers" not in result.stdout
+
+    def test_install_chatgpt_desktop_says_web_cannot_reach_a_local_server(self) -> None:
+        """The desktop app can; ChatGPT web cannot. Don't let the user conflate them.
+
+        "ChatGPT web doesn't read local Codex configuration files" — so a user who
+        installs this and then asks chatgpt.com about their finances will find
+        nothing there, and needs to know that up front rather than debug it.
+        """
+        result = runner.invoke(
+            app, ["install", "--client", "chatgpt-desktop", "--print"]
+        )
+        assert "web" in result.stderr.lower()
+        assert "restart" in result.stderr.lower()
+
+
+class TestMCPInstallSnippetHardening:
+    """The generated snippet must survive the launch context clients actually use."""
+
+    def test_snippet_uses_the_absolute_uv_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GUI-launched macOS clients don't inherit the shell PATH, so `uv` must be absolute."""
+
+        def fake_which(_cmd: str) -> str | None:
+            return "/opt/homebrew/bin/uv"
+
+        monkeypatch.setattr("shutil.which", fake_which)
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+        assert result.exit_code == 0
+        assert "/opt/homebrew/bin/uv" in result.output
+
+    def test_snippet_falls_back_to_bare_uv_when_not_resolvable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If `uv` isn't on our own PATH there's nothing to resolve — emit it bare."""
+
+        def fake_which(_cmd: str) -> str | None:
+            return None
+
+        monkeypatch.setattr("shutil.which", fake_which)
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+        assert result.exit_code == 0
+        assert '"command": "uv"' in result.output
+
+    def test_codex_snippet_sets_a_startup_timeout(self) -> None:
+        """Uvx cold start runs 3-15s; Codex's default startup timeout is 10s."""
+        result = runner.invoke(app, ["install", "--client", "codex", "--print"])
+        assert result.exit_code == 0
+        assert "startup_timeout_sec" in result.output
+
+    def test_gemini_cli_snippet_never_enables_trust(self) -> None:
+        """`trust: true` bypasses ALL tool-call confirmations — never for a finance server."""
+        result = runner.invoke(app, ["install", "--client", "gemini-cli", "--print"])
+        assert result.exit_code == 0
+        assert '"trust"' not in result.output
+
+    def test_gemini_cli_install_explains_the_trust_setting(self) -> None:
+        """Explain the setting we deliberately left off, so it isn't cargo-culted on."""
+        result = runner.invoke(app, ["install", "--client", "gemini-cli", "--print"])
+        assert "trust" in result.stderr.lower()
+        assert "confirmation" in result.stderr.lower()
+
+    def test_windsurf_install_warns_that_moneybin_exceeds_the_tool_cap(self) -> None:
+        """Cascade holds 100 tools; MoneyBin ships 102 and hides none.
+
+        Windsurf gives no signal when it drops the overflow — it just behaves as
+        though MoneyBin can't do things it can. The guide says so, but the person
+        running the install never reads the guide, so the install has to say it too.
+        """
+        result = runner.invoke(app, ["install", "--client", "windsurf", "--print"])
+        assert result.exit_code == 0
+        assert "100" in result.stderr
+        assert "102" in result.stderr
+        assert "disable" in result.stderr.lower()
+
+    def test_non_windsurf_installs_do_not_carry_the_tool_cap_warning(self) -> None:
+        """The cap is Cascade's alone — don't alarm every other client's user."""
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+        assert "102" not in result.stderr
+
+    @pytest.mark.parametrize(
+        "client", ["claude-desktop", "cursor", "windsurf", "gemini-cli", "claude-code"]
+    )
+    def test_print_emits_only_the_config_bytes_on_stdout(self, client: str) -> None:
+        """`--print` promises "the exact bytes the command would write".
+
+        Advisory text (the Gemini trust note, the Claude Code launch hint, the
+        auto-load warning) belongs on stderr. Mixed into stdout it breaks the
+        documented contract and anything the user pipes it through — this test parses
+        stdout as JSON, which is exactly what `mcp install --print | jq` does.
+        """
+        import json as _json
+
+        result = runner.invoke(app, ["install", "--client", client, "--print"])
+        assert result.exit_code == 0
+        parsed = _json.loads(result.stdout)  # raises if a note leaked onto stdout
+        assert "mcpServers" in parsed
 
     def test_old_config_generate_command_removed(self) -> None:
         """The old `mcp config generate` command no longer exists."""
@@ -301,10 +432,11 @@ class TestMCPConfigPath:
             in result.output
         )
 
-    def test_path_chatgpt_desktop_exits_one(self) -> None:
-        """chatgpt-desktop has no JSON config file — exit 1, no output."""
+    def test_path_chatgpt_desktop_is_the_codex_config(self) -> None:
+        """chatgpt-desktop shares the Codex host's config file, so it resolves a path."""
         result = runner.invoke(app, ["config", "path", "--client", "chatgpt-desktop"])
-        assert result.exit_code == 1
+        assert result.exit_code == 0
+        assert result.stdout.strip().endswith(".codex/config.toml")
 
     def test_path_unknown_client_exits_two(self) -> None:
         """Unknown client → usage error (exit 2)."""
@@ -348,7 +480,10 @@ class TestMCPInstallCodex:
         )
         assert result.exit_code == 0
         assert "[mcp_servers." in result.output
-        assert 'command = "uv"' in result.output
+        # `uv` is emitted as the absolute path we resolved (bare `uv` only when it
+        # isn't on PATH) — GUI-launched clients don't inherit the shell PATH.
+        assert 'command = "' in result.output
+        assert "uv" in result.output
         assert "args = [" in result.output
         # No mcpServers JSON header — codex output is TOML, not JSON.
         assert "mcpServers" not in result.output
@@ -381,8 +516,10 @@ class TestMCPInstallCodex:
         assert "mcp_servers" in parsed
         assert "MoneyBin (alice)" in parsed["mcp_servers"]
         entry = parsed["mcp_servers"]["MoneyBin (alice)"]
-        assert entry["command"] == "uv"
+        assert Path(entry["command"]).name == "uv"
         assert "moneybin" in entry["args"]
+        # Cold `uv run` outruns Codex's 10s default on first launch.
+        assert entry["startup_timeout_sec"] == 30
         # Concurrency guardrail must fire on per-invocation client installs.
         assert "auto-loads" in result.output
 
@@ -489,7 +626,7 @@ class TestMCPInstallVSCode:
         assert "servers" in payload
         entry = next(iter(payload["servers"].values()))
         assert entry["type"] == "stdio"
-        assert entry["command"] == "uv"
+        assert Path(entry["command"]).name == "uv"
 
     def test_install_vscode_outside_repo_errors(
         self, monkeypatch: pytest.MonkeyPatch

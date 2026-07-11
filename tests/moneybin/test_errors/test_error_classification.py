@@ -170,18 +170,40 @@ def test_db_not_initialized_unregistered_points_at_profile_create(
     assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
 
 
-def test_db_not_initialized_bare_directory_does_not_point_at_profile_create(
+def test_db_not_initialized_bare_directory_points_at_profile_create(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A directory that exists but was never registered: `profile create` refuses on
-    # the directory alone, so pointing there would dead-end the user. `db init`
-    # works, so that is what the message must say.
+    # A directory that exists but was never registered. This used to be steered at
+    # `db init` because `profile create` refused on the bare directory — a dead end
+    # dressed up as advice: `db init` would build a database into a profile that
+    # `profile list` still hides and that has no inbox. `create()` now completes the
+    # directory in place, so the guidance names the verb that actually finishes setup.
     from moneybin.config import set_current_profile
     from moneybin.database import DatabaseNotInitializedError
 
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     (tmp_path / "profiles" / "bare").mkdir(parents=True)  # no config.yaml, no db
     set_current_profile("bare")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" in result.message
+
+
+def test_db_not_initialized_registered_profile_points_at_db_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fully registered profile whose database is missing (deleted, or never
+    # init'd). Setup is done; only the database is absent — so `db init` is the
+    # right verb, and `profile create` would (correctly) refuse.
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    with patch.object(ProfileService, "_init_database"):  # no keychain in unit tests
+        ProfileService().create("registered")
+    set_current_profile("registered")
 
     result = classify_user_error(DatabaseNotInitializedError("missing"))
     assert result is not None
