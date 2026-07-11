@@ -27,7 +27,7 @@ def _load(db: Database, sync_data: SyncDataResponse, job_id: str = "job-inv-1"):
 def test_loads_all_three_arrays(db: Database, sync_data: SyncDataResponse) -> None:
     result = _load(db, sync_data)
     assert result.securities_loaded == 3
-    assert result.investment_transactions_loaded == 3
+    assert result.investment_transactions_loaded == 4
     assert result.holdings_loaded == 3
     assert result.holding_lots_loaded == 2
 
@@ -113,7 +113,7 @@ def test_same_payload_reload_is_idempotent(
     _load(db, sync_data)
     for table, expected in [
         ("raw.plaid_securities", 3),
-        ("raw.plaid_investment_transactions", 3),
+        ("raw.plaid_investment_transactions", 4),
         ("raw.plaid_investment_holdings", 3),
         ("raw.plaid_investment_holding_lots", 2),
     ]:
@@ -129,7 +129,7 @@ def test_new_job_replaces_transactional_and_retains_snapshots(
     txn = db.execute(
         "SELECT COUNT(*), MAX(source_file) FROM raw.plaid_investment_transactions"
     ).fetchone()
-    assert txn == (3, "sync_job-inv-2")  # re-delivery replaced, lineage updated
+    assert txn == (4, "sync_job-inv-2")  # re-delivery replaced, lineage updated
     snap = db.execute(
         "SELECT COUNT(DISTINCT source_file), COUNT(*) FROM raw.plaid_investment_holdings"
     ).fetchone()
@@ -183,7 +183,77 @@ def test_drift_guard_counts_unreconcilable_rows(
     name = "moneybin_investment_amount_drift_rows_total"
     before = REGISTRY.get_sample_value(name) or 0.0
     _load(db, sync_data)
-    assert (REGISTRY.get_sample_value(name) or 0.0) - before == 1.0  # itx_drift_1 only
+    # itx_drift_1 only; itx_large_qty_1 reconciles within the scaled tolerance
+    # (see test_large_quantity_price_rounding_does_not_count_as_drift below).
+    assert (REGISTRY.get_sample_value(name) or 0.0) - before == 1.0
+
+
+def test_large_quantity_price_rounding_does_not_count_as_drift(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """Coarse-precision price rounding at scale must not false-positive as drift.
+
+    itx_large_qty_1: quantity=10000, price=214.55 (2dp) -> gross =
+    |10000 * 214.55| = 2,145,500.00. A price rounded to 2dp can hide up to
+    $0.005/share of true price, i.e. up to $50.00 of true gross at this
+    quantity. amount=2,145,530.00 sits $30.00 off gross -- outside the old
+    flat $0.01 tolerance, inside the scaled tolerance
+    (0.01 + 10000 * 0.01 / 2 = $50.01). A flat-cent tolerance would
+    false-positive this row; the scaled tolerance must not.
+    """
+    only_large_qty = sync_data.model_copy(deep=True)
+    only_large_qty.investment_transactions = [
+        txn
+        for txn in only_large_qty.investment_transactions
+        if txn.investment_transaction_id == "itx_large_qty_1"
+    ]
+    name = "moneybin_investment_amount_drift_rows_total"
+    before = REGISTRY.get_sample_value(name) or 0.0
+    _load(db, only_large_qty, job_id="job-large-qty")
+    assert (REGISTRY.get_sample_value(name) or 0.0) - before == 0.0
+
+
+def test_zero_quantity_buy_reaches_reconciliation_and_counts_drift(
+    db: Database,
+) -> None:
+    """quantity=Decimal('0') is falsy but not None -- the guard must not skip it.
+
+    The pre-fix guard (`if not txn.quantity`) silently exempted zero-quantity
+    buy/sell rows from reconciliation, since `Decimal("0")` is falsy. The
+    fixed guard checks `is None` explicitly, so a zero-quantity buy now
+    reaches reconciliation -- and a nonzero amount against zero quantity
+    reconciles against nothing, so it must count as drift.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [],
+        "investment_transactions": [
+            {
+                "investment_transaction_id": "itx_zero_qty_1",
+                "account_id": "acc_1",
+                "provider_item_id": "item_1",
+                "security_id": "sec_aapl",
+                "date": "2026-07-03",
+                "quantity": "0",
+                "amount": "50.00",
+                "price": "10.00",
+                "fees": "0",
+                "type": "buy",
+                "subtype": "buy",
+            }
+        ],
+        "metadata": {
+            "job_id": "j-zero-qty",
+            "synced_at": "2026-07-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+    name = "moneybin_investment_amount_drift_rows_total"
+    before = REGISTRY.get_sample_value(name) or 0.0
+    _load(db, SyncDataResponse.model_validate(payload), job_id="j-zero-qty")
+    assert (REGISTRY.get_sample_value(name) or 0.0) - before == 1.0
 
 
 def test_empty_arrays_load_cleanly(db: Database) -> None:

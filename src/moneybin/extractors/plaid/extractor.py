@@ -622,9 +622,10 @@ class PlaidExtractor:
             gross = abs(txn.quantity * txn.price)
             exponent = txn.price.as_tuple().exponent
             if not isinstance(exponent, int):
-                # Non-int exponent means a special value (NaN/Inf); cannot
-                # occur for a validated wire Decimal, but pyright strict
-                # requires the narrowing.
+                # Non-int exponent means a non-finite Decimal (NaN/Inf).
+                # SyncInvestmentTransaction.price has no allow_inf_nan=False,
+                # so a malformed payload could reach here; skip it from
+                # drift-checking only -- the row itself still loads.
                 continue
             ulp = Decimal(1).scaleb(exponent)
             tolerance = Decimal("0.01") + abs(txn.quantity) * ulp / 2

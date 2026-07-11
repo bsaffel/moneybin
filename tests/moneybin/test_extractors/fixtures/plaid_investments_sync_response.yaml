@@ -64,6 +64,23 @@ investment_transactions:
     iso_currency_code: USD
     type: buy
     subtype: buy
+  - investment_transaction_id: itx_large_qty_1
+    account_id: acc_1
+    provider_item_id: item_1
+    security_id: sec_aapl
+    date: "2026-07-07"
+    name: BUY AAPL (large)
+    quantity: "10000"
+    # gross = |10000 * 214.55| = 2,145,500.00; price is 2dp, so rounding can
+    # hide up to $0.005/share -> up to $50.00 of true gross at this quantity.
+    # amount is $30.00 off gross: outside the old flat $0.01 tolerance, inside
+    # the scaled tolerance (0.01 + 10000 * 0.01 / 2 = $50.01) -> not drift.
+    amount: "2145530.00"
+    price: "214.55"
+    fees: "0"
+    iso_currency_code: USD
+    type: buy
+    subtype: buy
 investment_holdings:
   - account_id: acc_1
     provider_item_id: item_1
