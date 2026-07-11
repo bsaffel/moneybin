@@ -81,6 +81,18 @@ arbitrary target removes the attack surface instead of chasing it. A
 differently-named synthetic sandbox is what `moneybin synthetic generate` is
 for.
 
+The guard itself survives as defense-in-depth — a user can still hand-create a
+profile *named* `demo` and put real data in it — but it is now built the other
+way round. `has_non_synthetic_data` enumerates the **closed** set of tables the
+generator writes (`GENERATOR_WRITTEN_TABLES`; `SyntheticWriter` is the only
+producer, so that set is ours to keep exact) and reads the live DuckDB catalog
+for everything else: any `raw.*` table outside that set is real data by default.
+The old shape enumerated the open set — the tables that *might* hold real data —
+which fails **open**, silently leaving each newly-added import source invisible
+to the guard until someone remembers to list it. That is precisely how
+`raw.pdf_seeds` and `raw.manual_investment_transactions` slipped past it. The
+inverted guard protects a new import source from the day it lands.
+
 The persona still chooses the *data shape* (`basic`/`family`/`freelancer`); it
 lands in the `demo` profile rather than the `alice`/`bob`/`charlie` profiles the
 test suite uses, so the evaluator sandbox never collides with test fixtures.
@@ -142,12 +154,19 @@ follow-up (filed), not part of this feature. `DemoService` calls the clean
    database. The *persisted* default switch is deferred to step 7.
 3. **If it already existed** → guard, then **rebuild the database from
    scratch** (`_rebuild_database`: delete the DB file, `init_db` a fresh one):
-   - Holds real (non-synthetic) data, **or** holds data with no
+   - Holds real (non-synthetic) data, **or** holds transactions with no
      `synthetic.ground_truth` marker → **refuse** (`DemoProfileNotOursError`).
      Rebuilding destroys the file, so we only ever do it to a profile we can
      prove the generator made and that holds nothing real.
-   - Empty shell (e.g. a prior run failed before generating) → proceed.
-   - Otherwise → require `reset_confirmed`, then rebuild.
+   - Holds transactions → require `reset_confirmed`, then rebuild.
+   - Holds **no transactions** → rebuild unprompted. There is nothing the user
+     could lose. This covers both an empty shell and a run that died part-way
+     through generating: `SyntheticWriter` creates `synthetic.ground_truth`
+     *before* it writes transactions, so a partial run leaves the marker with no
+     data behind it. Gating on the marker rather than on the transactions would
+     dead-end such a profile — the CLI's `profile_has_data` check sees no
+     transactions, so it never prompts, so `reset_confirmed` is never set, so the
+     run could never proceed.
 4. **Generate** → `GeneratorEngine(persona, seed, years).generate()` →
    `SyntheticWriter(db).write(...)`.
 5. **Refresh** → `refresh(db, steps=["match", "transform", "categorize"])`. The
@@ -159,7 +178,10 @@ follow-up (filed), not part of this feature. `DemoService` calls the clean
    `NetworthService(db).current()`.
 7. **Activate** → `set_default_profile(DEMO_PROFILE)`, only after a fully
    successful run, so a refused or failed run never silently switches the
-   user's default profile.
+   user's default profile. The displaced profile is returned as
+   `DemoResult.previous_default` and the CLI prints both the switch and the way
+   back (`moneybin profile switch <previous>`) — repointing every later command
+   at `demo` is real, and magic stays visible.
 
 **Why rebuild instead of deleting the generated rows?** Surgically un-writing a
 demo run means (a) deleting derived state (`app.match_decisions`,

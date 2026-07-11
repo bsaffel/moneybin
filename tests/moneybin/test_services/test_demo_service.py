@@ -17,6 +17,7 @@ import pytest
 from moneybin.services.demo_service import (
     DEMO_PROFILE,
     DemoProfileNotOursError,
+    DemoRefreshFailedError,
     DemoResult,
     DemoService,
 )
@@ -255,5 +256,29 @@ def test_raises_on_refresh_error(
             applied=False, duration_seconds=0.0, categorization_error="boom"
         ),
     )
-    with pytest.raises(RuntimeError, match="Demo refresh failed"):
+    # A UserError subclass, not a bare RuntimeError: `refresh()` reports these as
+    # returned errors (an anticipated condition), and an unclassified exception
+    # would reach the CLI as a traceback with no JSON envelope.
+    with pytest.raises(DemoRefreshFailedError, match="Demo refresh failed"):
         DemoService().run(persona="basic", seed=42)
+
+    # A failed run must NOT have switched the user's persisted default profile.
+    from moneybin.utils.user_config import get_default_profile
+
+    assert get_default_profile() != DEMO_PROFILE
+
+
+@pytest.mark.integration
+def test_refresh_failure_is_a_classified_user_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What the CLI actually does with it: classify_user_error() must recognise it,
+    # so handle_cli_errors() prints a clean message and exits 1 rather than
+    # re-raising an unclassified exception as a traceback.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.errors import UserError, classify_user_error
+
+    err = DemoRefreshFailedError("categorize crashed")
+
+    assert isinstance(err, UserError)
+    assert classify_user_error(err) is not None

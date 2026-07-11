@@ -7,23 +7,38 @@ duplicating the DELETE statements.
 
 import logging
 
+from sqlglot import exp
+
 from moneybin.database import Database
 from moneybin.tables import (
     BALANCE_ASSERTIONS,
     GROUND_TRUTH,
-    GSHEET_SEEDS,
-    MANUAL_TRANSACTIONS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_TRANSACTIONS,
-    PLAID_ACCOUNTS,
-    PLAID_BALANCES,
-    PLAID_TRANSACTIONS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
 )
 
 logger = logging.getLogger(__name__)
+
+# The complete, closed set of `raw.*` tables the generator writes, and the
+# predicate identifying the rows it wrote. `SyntheticWriter` is the only producer,
+# so this set is ours to keep exact — unlike the open-ended set of tables that
+# might hold *real* data, which grows with every new import source.
+GENERATOR_WRITTEN_TABLES: tuple[str, ...] = (
+    OFX_TRANSACTIONS.full_name,
+    OFX_ACCOUNTS.full_name,
+    OFX_BALANCES.full_name,
+    TABULAR_TRANSACTIONS.full_name,
+    TABULAR_ACCOUNTS.full_name,
+)
+_SYNTHETIC_ROWS = "source_file LIKE 'synthetic://%'"
+
+# Relies on `source_file` being NOT NULL in every table above (it is, in all five).
+# If that constraint is ever relaxed, this negation starts evaluating to NULL —
+# not TRUE — for those rows, and they go invisible to the real-data guard below.
+_NON_SYNTHETIC_ROWS = f"NOT ({_SYNTHETIC_ROWS})"
 
 # Tables to scope-delete during reset (allowlist from TableRef constants).
 #
@@ -34,12 +49,16 @@ logger = logging.getLogger(__name__)
 # the profile's database from scratch, which leaves no orphaned derived rows.
 RESET_DELETIONS: dict[str, str] = {
     GROUND_TRUTH.full_name: "WHERE TRUE",
-    OFX_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    OFX_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    OFX_BALANCES.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    TABULAR_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    TABULAR_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
+    **dict.fromkeys(GENERATOR_WRITTEN_TABLES, f"WHERE {_SYNTHETIC_ROWS}"),
 }
+
+
+def _quote(schema: str, name: str) -> str:
+    """Double-quote a catalog-sourced identifier pair for interpolation into SQL."""
+    return (
+        f"{exp.to_identifier(schema, quoted=True).sql('duckdb')}."
+        f"{exp.to_identifier(name, quoted=True).sql('duckdb')}"
+    )
 
 
 def has_synthetic_ground_truth(db: Database) -> bool:
@@ -59,36 +78,47 @@ def has_synthetic_ground_truth(db: Database) -> bool:
         return False
 
 
+def _real_row_checks(db: Database) -> list[tuple[str, str]]:
+    """Build the (quoted table, WHERE clause) checks that detect real user data.
+
+    Inverted deliberately. Enumerating the tables that *might* hold real data goes
+    stale the moment a new import source lands — and it fails OPEN, silently
+    leaving the new table's rows invisible to the guard (exactly how `pdf_seeds`
+    and `manual_investment_transactions` slipped past it). So instead we enumerate
+    the closed set the generator writes and read the live catalog for everything
+    else: an unrecognized `raw.*` table is real data by default, and a new import
+    source is guarded from the day it is added.
+    """
+    rows = db.execute(
+        "SELECT schema_name, table_name FROM duckdb_tables() WHERE schema_name = ?",
+        [OFX_TRANSACTIONS.schema],
+    ).fetchall()
+
+    checks = [
+        (
+            _quote(schema, name),
+            f"WHERE {_NON_SYNTHETIC_ROWS}"
+            if f"{schema}.{name}" in GENERATOR_WRITTEN_TABLES
+            else "",
+        )
+        for schema, name in rows
+    ]
+    # User-authored balances live outside `raw` and the generator never writes them.
+    checks.append((_quote(BALANCE_ASSERTIONS.schema, BALANCE_ASSERTIONS.name), ""))
+    return checks
+
+
 def has_non_synthetic_data(db: Database) -> bool:
     """True if the profile holds any financial state the generator did NOT create.
 
-    The generator only ever writes OFX/tabular rows (transactions, accounts,
-    balances) tagged ``source_file LIKE 'synthetic://%'``, plus
-    ``synthetic.ground_truth``. Real state therefore appears as non-``synthetic://``
-    rows in those tables, or as ANY row in a table the generator never touches
-    (Plaid, manual entry, user balance assertions). Any such row means this is a
-    real financial profile — the demo preset must refuse to seed it, regardless
-    of whether the ``synthetic.ground_truth`` marker table exists, and regardless
-    of whether the real data is transactions or balances/accounts alone.
+    Any such row means this is a real financial profile — the demo preset must
+    refuse to seed it, regardless of whether the ``synthetic.ground_truth`` marker
+    table exists, and regardless of whether the real data is transactions or
+    balances/accounts alone.
     """
-    # (table, extra WHERE). Generator-written tables → real := non-`synthetic://`
-    # rows; tables the generator never writes → any row is real.
-    real_row_checks = (
-        (OFX_TRANSACTIONS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
-        (TABULAR_TRANSACTIONS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
-        (OFX_BALANCES.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
-        (OFX_ACCOUNTS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
-        (TABULAR_ACCOUNTS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
-        (PLAID_TRANSACTIONS.full_name, ""),
-        (PLAID_BALANCES.full_name, ""),
-        (PLAID_ACCOUNTS.full_name, ""),
-        (MANUAL_TRANSACTIONS.full_name, ""),
-        (GSHEET_SEEDS.full_name, ""),
-        (BALANCE_ASSERTIONS.full_name, ""),
-    )
-    for table, where in real_row_checks:
+    for table, where in _real_row_checks(db):
         try:
-            row = db.execute(f"SELECT 1 FROM {table} {where} LIMIT 1").fetchone()  # noqa: S608  # allowlisted TableRef names + literal WHERE clauses
+            row = db.execute(f"SELECT 1 FROM {table} {where} LIMIT 1").fetchone()  # noqa: S608  # catalog-sourced, double-quoted identifiers + literal WHERE clauses
         except Exception:  # noqa: BLE001,S112 — table may not exist in a fresh/partial DB
             continue
         if row:

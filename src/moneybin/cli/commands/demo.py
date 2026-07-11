@@ -89,6 +89,7 @@ def demo_command(
                         "net_worth": str(result.net_worth),
                         "total_assets": str(result.total_assets),
                         "total_liabilities": str(result.total_liabilities),
+                        "previous_default_profile": result.previous_default,
                     },
                     sensitivity="low",
                 ),
@@ -115,6 +116,18 @@ def demo_command(
                         f"({', '.join(result.doctor_failing_names)})",
                         err=True,
                     )
+                # Demo repoints every later command at itself. Say so, and name the
+                # way back — a silent default switch is magic that must stay visible.
+                switch_back = (
+                    f" Switch back with: moneybin profile switch "
+                    f"{result.previous_default}"
+                    if result.previous_default
+                    else ""
+                )
+                typer.echo(
+                    f"⚙️  Default profile is now {result.profile!r}.{switch_back}",
+                    err=True,
+                )
                 typer.echo(_NEXT_STEPS, err=True)
 
         # A demo that boots dirty is a real signal, not a warning to swallow.

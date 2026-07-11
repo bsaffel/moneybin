@@ -91,7 +91,8 @@ Default: every operation is MCP-exposed. CLI-only status requires a justified ex
    - **Database lifecycle:** `db_init`, `db_lock`, `db_ps`, `db_kill`, `db_shell`, `db_ui`, `db_migrate_apply`, `db_migrate_status`, `db_backup`, `db_restore`, `db_info`, `db_query` (raw SQL access; agent path is `sql_query`). Note: `db_query`, `db_shell`, and `db_ui` emit an operator-bypass banner (stderr) and include it in their `--help` text warning that no privacy middleware applies — account numbers and other CRITICAL-tier fields are NOT masked. The MCP `sql_query` tool is the privacy-safe agent path for ad-hoc SQL.
    - **Server lifecycle:** `mcp_serve`, `mcp_install`, `mcp_config_path`, `mcp_list_tools`, `mcp_list_prompts` (operator introspection of the local MCP surface).
    - **Profile + identity:** `profile_*`.
-   - **Developer tooling:** `logs`, `stats`, `synthetic_generate`, `synthetic_reset`, `transform_seed`, `transform_restate`, `demo`.
+   - **Developer tooling:** `logs`, `stats`, `synthetic_generate`, `synthetic_reset`, `transform_seed`, `transform_restate`.
+   - **Bootstrapping:** `demo` — CLI-only for the same reason as `profile_*` (it creates and activates a profile, so it must run *before* an MCP session can exist), but its audience is the external evaluator, not the developer.
 
 What is NOT a valid CLI-only justification:
 - "Long-running" — MCP supports progress notifications.

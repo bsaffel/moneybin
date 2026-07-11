@@ -30,6 +30,7 @@ def _fake_result(**overrides: Any) -> DemoResult:
         net_worth=Decimal("12345.67"),
         total_assets=Decimal("20000.00"),
         total_liabilities=Decimal("7654.33"),
+        previous_default="personal",
     )
     return dataclasses.replace(base, **overrides)
 
@@ -97,3 +98,24 @@ def test_demo_declining_rebuild_aborts(mocker: Any) -> None:
     result = runner.invoke(app, ["demo"], input="n\n")  # decline the prompt
     assert result.exit_code != 0
     svc.run.assert_not_called()
+
+
+@pytest.mark.unit
+def test_demo_first_run_needs_no_yes_and_no_prompt(mocker: Any) -> None:
+    # The most common real path: a first `moneybin demo` with no --yes and nothing
+    # to overwrite. There is nothing to lose, so no prompt fires and the run goes
+    # straight through with reset_confirmed=False.
+    svc = _patch_service(mocker, _fake_result())  # profile_has_data() -> False
+    result = runner.invoke(app, ["demo"])
+    assert result.exit_code == 0, result.output
+    assert svc.run.call_args.kwargs["reset_confirmed"] is False
+
+
+@pytest.mark.unit
+def test_demo_announces_the_default_profile_switch(mocker: Any) -> None:
+    # Demo repoints every later command at itself; that must not happen silently.
+    _patch_service(mocker, _fake_result(previous_default="personal"))
+    result = runner.invoke(app, ["demo", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Default profile is now 'demo'" in result.output
+    assert "moneybin profile switch personal" in result.output

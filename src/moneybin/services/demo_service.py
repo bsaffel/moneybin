@@ -45,6 +45,9 @@ class DemoResult:
     net_worth: Decimal
     total_assets: Decimal
     total_liabilities: Decimal
+    # The default profile demo displaced, so the CLI can name the way back.
+    # None when no default was set (or it was already `demo`).
+    previous_default: str | None
 
 
 class DemoProfileNotOursError(UserError):
@@ -62,6 +65,28 @@ class DemoProfileNotOursError(UserError):
             hint=(
                 f"💡 Back up anything you need, then "
                 f"'moneybin profile delete {DEMO_PROFILE}' and re-run 'moneybin demo'."
+            ),
+        )
+
+
+class DemoRefreshFailedError(UserError):
+    """A step of the refresh cascade failed while building the demo profile.
+
+    `refresh()` reports match/transform/categorize crashes as returned errors, not
+    exceptions — an anticipated runtime condition, not a programmer error. Demo's
+    whole premise is a clean, categorized pipeline, so it can't continue; surface
+    it as a `UserError` so the CLI prints a clean message (and still emits a JSON
+    envelope) instead of an unclassified traceback.
+    """
+
+    def __init__(self, detail: str) -> None:
+        """Build a user-facing failure naming the profile to rebuild."""
+        super().__init__(
+            f"Demo refresh failed: {detail}",
+            code=error_codes.REFRESH_MODEL_FAILED,
+            hint=(
+                f"💡 Re-run 'moneybin demo --yes' to rebuild the "
+                f"{DEMO_PROFILE!r} profile from scratch."
             ),
         )
 
@@ -179,7 +204,7 @@ class DemoService:
         from moneybin.services.refresh import refresh
         from moneybin.synthetic.engine import GeneratorEngine
         from moneybin.synthetic.writer import SyntheticWriter
-        from moneybin.utils.user_config import set_default_profile
+        from moneybin.utils.user_config import get_default_profile, set_default_profile
 
         # 1. Ensure the demo profile exists (with an inbox).
         existed = False
@@ -217,7 +242,7 @@ class DemoService:
                 or refresh_result.categorization_error
             )
             if refresh_error:
-                raise RuntimeError(f"Demo refresh failed: {refresh_error}")
+                raise DemoRefreshFailedError(str(refresh_error))
 
             # 6. Doctor + the one obvious answer.
             report = DoctorService(db).run_all()
@@ -225,7 +250,11 @@ class DemoService:
             snapshot = NetworthService(db).current()
 
         # 7. Only now — a complete, successful run — make demo the persisted
-        #    default so the next command lands on it.
+        #    default so the next command lands on it. Report the profile we
+        #    displaced: silently repointing every later command at `demo` is
+        #    exactly the kind of magic that has to stay visible, and the caller
+        #    needs the displaced name to offer a way back.
+        previous_default = get_default_profile()
         set_default_profile(DEMO_PROFILE)
 
         DEMO_RUN_TOTAL.labels(persona=persona).inc()
@@ -241,4 +270,7 @@ class DemoService:
             net_worth=snapshot.net_worth,
             total_assets=snapshot.total_assets,
             total_liabilities=snapshot.total_liabilities,
+            previous_default=(
+                previous_default if previous_default != DEMO_PROFILE else None
+            ),
         )

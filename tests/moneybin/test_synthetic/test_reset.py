@@ -4,6 +4,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.synthetic.reset import (
+    GENERATOR_WRITTEN_TABLES,
     RESET_DELETIONS,
     has_non_synthetic_data,
     reset_synthetic_rows,
@@ -124,3 +125,71 @@ def test_has_non_synthetic_data_detects_gsheet_seeds(db: Database) -> None:
         ["c1", "sheet1", 0, 1, "h1", "{}", "imp1"],
     )
     assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_pdf_seeds(db: Database) -> None:
+    # A PDF import is real data even though the table carries a `source_file`
+    # column — the generator never writes it, so any row counts.
+    db.execute(
+        "INSERT INTO raw.pdf_seeds "
+        "(alias, row_hash, data, source_file, import_id) VALUES (?, ?, ?, ?, ?)",
+        ["statements", "pdf_h1", "{}", "statement.pdf", "imp1"],
+    )
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_manual_investment_transactions(
+    db: Database,
+) -> None:
+    db.execute(
+        "INSERT INTO raw.manual_investment_transactions "
+        "(source_transaction_id, import_id, account_id, type, trade_date, created_by) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ["manual_abc123", "imp1", "acct", "buy", "2025-01-01", "cli"],
+    )
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_guards_raw_tables_it_has_never_heard_of(
+    db: Database,
+) -> None:
+    # The structural guarantee. The guard reads the live catalog and treats any
+    # raw table outside the generator's own closed write-set as real data, so a
+    # NEW import source is protected the day it lands — nobody has to remember to
+    # add it here. `pdf_seeds` and `manual_investment_transactions` were both
+    # missed exactly because the old guard enumerated the opposite (open) set.
+    db.execute("CREATE TABLE raw.some_future_import_source (id VARCHAR)")
+    db.execute("INSERT INTO raw.some_future_import_source VALUES ('r1')")
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.integration
+def test_generator_output_is_invisible_to_the_real_data_guard(db: Database) -> None:
+    # The inverse of the guarantee above, driven through the real writer. Every
+    # table the generator writes must read as synthetic — if it ever starts
+    # writing a raw table outside GENERATOR_WRITTEN_TABLES, the guard would call
+    # demo's own output "real data" and refuse to rebuild the demo profile.
+    from moneybin.synthetic.engine import GeneratorEngine
+    from moneybin.synthetic.writer import SyntheticWriter
+
+    generated = GeneratorEngine("basic", seed=42, years=1).generate()
+    SyntheticWriter(db).write(generated)
+
+    assert has_non_synthetic_data(db) is False
+
+
+@pytest.mark.unit
+def test_generator_written_tables_forbid_null_source_file(db: Database) -> None:
+    # The `NOT (source_file LIKE 'synthetic://%')` predicate reads NULL — not TRUE —
+    # for a NULL source_file, which would hide a real row from the guard. NOT NULL
+    # on these tables is what makes that unreachable; assert it stays that way.
+    rows = db.execute(
+        "SELECT table_name FROM information_schema.columns "
+        "WHERE table_schema = 'raw' AND column_name = 'source_file' "
+        "AND is_nullable = 'YES'"
+    ).fetchall()
+    nullable = {f"raw.{r[0]}" for r in rows}
+    assert nullable.isdisjoint(GENERATOR_WRITTEN_TABLES)
