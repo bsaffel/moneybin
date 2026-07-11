@@ -33,8 +33,11 @@ execute(sql)`` — where the f-string is flattened (interpolation blanked) at
 assignment time, before the loop/name binding is applied (only a *direct*
 ``execute(f"... {table}")`` resolves today). A target computed at true *runtime*
 — a function argument, a name read from ``duckdb_indexes()`` /
-``duckdb_tables()`` — can't be resolved statically at all. The regex fallback
-still covers the common static-target / dynamic-*value* shape. SQL is read only from ``.execute()``
+``duckdb_tables()`` — can't be resolved statically at all. For any of these, the
+regex fallback is the backstop: on SQL sqlglot can't parse it flags a write
+keyword co-occurring with an owned schema in the write-target clause — a
+conservative over-approximation (a loud false-positive on a legit write, never a
+silent miss). SQL is read only from ``.execute()``
 arguments, so a docstring or comment mentioning ``ALTER TABLE seeds.x`` never
 triggers a false positive.
 """
@@ -76,20 +79,31 @@ _SQLMESH_OWNED_SCHEMAS = frozenset({
 # same `stmt.this` Table the other write types expose, so _owned_schema_of works.
 _WRITE_TYPES = (exp.Alter, exp.Drop, exp.Insert, exp.Update, exp.Delete, exp.Merge)
 
-# Fallback for SQL sqlglot can't parse (f-string fragments, dialect quirks): a
-# write keyword immediately targeting an owned schema. CREATE TABLE IF NOT EXISTS
-# is excluded (idempotent). Conservative — requires the keyword AND the schema.
-# The owned-schema alternation is derived from the frozenset above so the two
-# can't drift apart.
+# Fallback for SQL sqlglot can't model (flattened f-string fragments, dialect
+# quirks). Deliberately conservative-broad: a fragment that carries any write
+# keyword AND names an owned schema is flagged. This over-approximates — an
+# unparseable write to app.* that only *reads* an owned schema would
+# false-positive — but the fallback only ever sees unparseable SQL, and an
+# over-flag is a loud test failure, never a silent miss (the guard's whole
+# point). Enumerating each write form's exact shape instead (ALTER <t>,
+# CREATE INDEX ... ON <t>, ...) is what let flattened CREATE INDEX and
+# CREATE OR REPLACE TABLE slip past — a keyword+schema co-occurrence test has no
+# such per-form blind spot. The owned-schema alternation derives from the
+# frozenset so the two can't drift.
 _OWNED_SCHEMA_ALT = "|".join(sorted(_SQLMESH_OWNED_SCHEMAS))
-_FALLBACK_RE = re.compile(
-    r"\b(ALTER\s+TABLE|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO|"
-    r"TRUNCATE(?:\s+TABLE)?|DROP\s+(?:TABLE|VIEW|INDEX|SCHEMA)|CREATE\s+INDEX|"
-    r"CREATE\s+OR\s+REPLACE\s+TABLE|CREATE\s+TABLE(?!\s+IF\s+NOT\s+EXISTS))\s+"
-    r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
-    rf"[\"']?({_OWNED_SCHEMA_ALT})[\"']?\.",
+_WRITE_KEYWORD_RE = re.compile(
+    r"\b(?:ALTER|UPDATE|INSERT|DELETE|MERGE|TRUNCATE|DROP|CREATE|COPY|REPLACE|UPSERT)\b",
     re.IGNORECASE,
 )
+_OWNED_REF_RE = re.compile(rf"\b({_OWNED_SCHEMA_ALT})\s*\.", re.IGNORECASE)
+# A read-clause boundary: an owned ref *after* the first FROM / JOIN / USING is a
+# read source, not a write target — e.g. V014's flattened
+# `UPDATE {app} ... FROM core.dim_categories`. Only the region before it (the
+# write-target clause) is scanned. DELETE FROM is the one write whose target
+# follows FROM, so its leading `DELETE FROM` is consumed before the boundary
+# search (COPY's target precedes its FROM, so it needs no special case).
+_READ_BOUNDARY_RE = re.compile(r"\b(?:FROM|JOIN|USING)\b", re.IGNORECASE)
+_DELETE_FROM_RE = re.compile(r"^\s*DELETE\s+FROM\b", re.IGNORECASE)
 
 
 def _owned_schema_of(stmt: _Node) -> str | None:
@@ -114,11 +128,18 @@ def _describe(stmt: _Node, schema: str) -> str:
 
 
 def _fallback(sql: str) -> list[str]:
-    # finditer (not search): a multi-statement file that falls back can hold more
-    # than one owned-schema write; report every distinct one, not just the first.
+    # Only fires on sqlglot-unparseable SQL. Flag an owned-schema reference that
+    # co-occurs with a write keyword and sits in the write-target region (before
+    # the first read-clause boundary); report each distinct owned schema named.
+    if not _WRITE_KEYWORD_RE.search(sql):
+        return []
+    delete_from = _DELETE_FROM_RE.match(sql)
+    start = delete_from.end() if delete_from is not None else 0
+    boundary = _READ_BOUNDARY_RE.search(sql, start)
+    head = sql[: boundary.start()] if boundary is not None else sql
     out: list[str] = []
-    for match in _FALLBACK_RE.finditer(sql):
-        desc = f"{match.group(1).upper().split()[0]} {match.group(2)}.* (dynamic SQL)"
+    for match in _OWNED_REF_RE.finditer(head):
+        desc = f"write near {match.group(1).lower()}.* (dynamic SQL)"
         if desc not in out:
             out.append(desc)
     return out
@@ -374,6 +395,17 @@ _GOLDEN: list[tuple[str, bool]] = [
     # the fallback must still fire so the write isn't silently skipped
     ("ALTER TABLE seeds.categories ADD COLUMN   ", True),
     ("ALTER TABLE app.user_categories ADD COLUMN   ", False),
+    # flattened CREATE INDEX names its schema after ON, not after the keyword —
+    # the co-occurrence fallback catches it where a per-form regex could not
+    ("CREATE INDEX idx ON seeds.  ", True),
+    ("CREATE INDEX idx ON app.  ", False),
+    # a write keyword with NO owned-schema reference in unparseable SQL is a no-op
+    ("UPDATE app.foo SET x =  ", False),
+    # DELETE FROM's target follows FROM — still the write target, still flagged
+    ("DELETE FROM seeds.x WHERE id =  ", True),
+    # an app write that only READS an owned schema after FROM is not a violation
+    # (V014's flattened `UPDATE {app} ... FROM core.dim_categories` shape)
+    ("UPDATE app.x SET c = dc.y FROM core.dim_categories dc WHERE  ", False),
 ]
 
 
