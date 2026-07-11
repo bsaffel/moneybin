@@ -36,6 +36,13 @@ from moneybin.metrics.registry import (
 from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.refresh import refresh as _refresh
+from moneybin.services.security_resolver import SecurityResolver
+from moneybin.tables import (
+    ACCOUNT_LINKS,
+    FCT_INVESTMENT_TRANSACTIONS,
+    MANUAL_INVESTMENT_TRANSACTIONS,
+    PLAID_INVESTMENT_TRANSACTIONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +56,9 @@ _ERROR_GUIDANCE: dict[str, str] = {
     "INSTITUTION_DOWN": "{institution} is down for maintenance. Try again later.",
     "RATE_LIMIT_EXCEEDED": "Rate limit reached. Sync will resume on the next scheduled run.",
     "PRODUCTS_NOT_READY": "{institution} is still processing initial data. Try again in a few minutes.",
+    "PRODUCT_NOT_READY": "{institution} is still processing investment data. Try again in a few minutes.",
+    "PRODUCTS_NOT_SUPPORTED": "{institution} doesn't provide investment data through Plaid. Cash accounts still sync normally.",
+    "INVALID_PRODUCT": "{institution} was linked before investment access — run `moneybin sync link` to re-consent.",
 }
 
 
@@ -150,6 +160,25 @@ class SyncService:
                 self._resolve_accounts(sync_data)
             except Exception as e:  # noqa: BLE001  # best-effort post-load metadata
                 logger.warning(f"Account resolution failed after pull: {e}")
+            # Security identity resolution — best-effort like account resolution
+            # above: raw rows stay durable, and any ref this run couldn't bind
+            # self-heals next sync via the staging COALESCE fallback (or shows
+            # up in the review queue). A failure here must not flip this pull's
+            # success accounting.
+            resolution: dict[str, int] = {}
+            try:
+                if sync_data.securities:
+                    resolution = SecurityResolver(self.db, actor="system").resolve_all()
+            except Exception as e:  # noqa: BLE001  # best-effort post-load resolution
+                logger.warning(f"Security resolution failed after pull: {e}")
+            overlap = self._investment_source_overlap()
+            if overlap:
+                logger.warning(
+                    f"{len(overlap)} account(s) carry BOTH manual and Plaid "
+                    "investment rows; lots and gains will double-count until one "
+                    "source is chosen per account (investment dedup is a future "
+                    "matching child)"
+                )
             for inst in sync_data.metadata.institutions:
                 if inst.status == "failed" and inst.error_code:
                     SYNC_INSTITUTION_ERRORS_TOTAL.labels(
@@ -161,7 +190,13 @@ class SyncService:
             accounts_loaded=load_result.accounts_loaded,
             balances_loaded=load_result.balances_loaded,
             transactions_removed=removed_count,
+            securities_loaded=load_result.securities_loaded,
+            investment_transactions_loaded=load_result.investment_transactions_loaded,
+            holdings_loaded=load_result.holdings_loaded,
+            holding_lots_loaded=load_result.holding_lots_loaded,
             institutions=sync_data.metadata.institutions,
+            investment_source_overlap_accounts=overlap,
+            security_resolution=resolution,
         )
         # Removals are a state change too: a pure-removal sync deletes from
         # raw.plaid_transactions and the deletion must propagate through
@@ -172,12 +207,18 @@ class SyncService:
             + load_result.accounts_loaded
             + load_result.balances_loaded
             + removed_count
+            + load_result.securities_loaded
+            + load_result.investment_transactions_loaded
+            + load_result.holdings_loaded
+            + load_result.holding_lots_loaded
         )
         if refresh and rows_changed > 0:
             refresh_result = _refresh(self.db)
             result.transforms_applied = refresh_result.applied
             result.transforms_duration_seconds = refresh_result.duration_seconds
             result.transforms_error = refresh_result.error
+            if not refresh_result.error:
+                result.opening_bootstrap_rows = self._count_bootstrap_rows()
         return result
 
     def _resolve_accounts(self, sync_data: SyncDataResponse) -> None:
@@ -220,6 +261,43 @@ class SyncService:
                 )
             )
             ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
+
+    def _investment_source_overlap(self) -> list[str]:
+        """Canonical account ids carrying BOTH manual and Plaid investment rows.
+
+        Manual rows store canonical account ids; raw Plaid rows store
+        provider-native ids — the join resolves the Plaid side through
+        ``app.account_links`` first (falling back to the raw id when no link
+        exists yet), since a raw-to-raw join would never match.
+        """
+        try:
+            rows = self.db.execute(
+                f"""
+                SELECT DISTINCT COALESCE(al.account_id, p.account_id) AS account_id
+                FROM {PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
+                LEFT JOIN {ACCOUNT_LINKS.full_name} AS al
+                  ON al.status = 'accepted' AND al.ref_kind = 'source_native'
+                  AND al.source_type = 'plaid' AND al.source_origin = p.source_origin
+                  AND al.ref_value = p.account_id
+                JOIN {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
+                  ON m.account_id = COALESCE(al.account_id, p.account_id)
+                ORDER BY account_id
+                """  # noqa: S608  # TableRef constants
+            ).fetchall()
+        except Exception:  # noqa: BLE001 — tables may not exist on fresh DBs
+            return []
+        return [str(r[0]) for r in rows]
+
+    def _count_bootstrap_rows(self) -> int:
+        """Count synthetic opening-lot bootstrap rows (spec: counted in the sync envelope)."""
+        try:
+            row = self.db.execute(
+                f"SELECT COUNT(*) FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE subtype = 'opening_bootstrap'"
+            ).fetchone()
+        except Exception:  # noqa: BLE001 — core view absent before first transform
+            return 0
+        return int(row[0]) if row else 0
 
     # ------------------------------ Link ------------------------------
 

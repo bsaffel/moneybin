@@ -28,6 +28,13 @@ FIXTURE = (
     / "plaid_sync_response.yaml"
 )
 
+INVESTMENTS_FIXTURE = (
+    Path(__file__).parent.parent
+    / "test_extractors"
+    / "fixtures"
+    / "plaid_investments_sync_response.yaml"
+)
+
 
 @pytest.fixture
 def sync_data() -> SyncDataResponse:
@@ -49,6 +56,24 @@ def mock_client(sync_data: SyncDataResponse) -> MagicMock:
         transaction_count=3,
     )
     client.get_data.return_value = sync_data
+    return client
+
+
+@pytest.fixture
+def investments_sync_data() -> SyncDataResponse:
+    with INVESTMENTS_FIXTURE.open() as f:
+        return SyncDataResponse.model_validate(yaml.safe_load(f))
+
+
+@pytest.fixture
+def mock_investments_client(investments_sync_data: SyncDataResponse) -> MagicMock:
+    client = MagicMock()
+    client.trigger_sync.return_value = SyncTriggerResponse(
+        job_id=investments_sync_data.metadata.job_id,
+        status="completed",
+        transaction_count=0,
+    )
+    client.get_data.return_value = investments_sync_data
     return client
 
 
@@ -179,6 +204,66 @@ def test_pull_with_force_passes_reset_cursor(
         provider_item_id=None,
         reset_cursor=True,
     )
+
+
+def test_pull_loads_investments_and_resolves_securities(
+    db: Database,
+    loader: PlaidExtractor,
+    mock_investments_client: MagicMock,
+) -> None:
+    """A pull that carries investment arrays loads them and resolves securities.
+
+    Resolution is a distinct, reviewable stage (R12) — its per-outcome counts
+    must appear in the envelope, not just a bindings side effect.
+    """
+    service = SyncService(client=mock_investments_client, db=db, loader=loader)
+    result = service.pull(refresh=False)
+
+    # Counts from the Task 4 loader (plaid_investments_sync_response.yaml):
+    # 3 distinct provider-scoped securities, 4 investment transactions, 3
+    # holdings — established independently by test_plaid_investments_loader.py.
+    assert result.securities_loaded == 3
+    assert result.investment_transactions_loaded == 4
+    assert result.holdings_loaded == 3
+    bindings = db.execute(
+        "SELECT COUNT(*) FROM app.security_links WHERE status = 'accepted'"
+    ).fetchone()
+    assert bindings is not None and bindings[0] >= 2  # resolver ran post-load
+    # Stage-one (identity) outcomes are first-class in the envelope (R12).
+    # SecurityResolver._load_raw_securities() SELECTs DISTINCT over the
+    # identity-bearing columns (security_id, ticker, name, ...) and never
+    # selects provider_item_id — so the fixture's two "sec_dup" rows (same
+    # security_id/ticker/name, different provider_item_id, per
+    # test_colliding_provider_ids_stay_distinct in the loader tests) collapse
+    # to ONE candidate for identity resolution, even though both raw rows
+    # persist distinctly in raw.plaid_securities. 3 raw rows -> 2 resolver
+    # candidates (sec_aapl, sec_dup).
+    assert sum(result.security_resolution.values()) == 2
+
+
+def test_pull_flags_manual_plaid_overlap(
+    db: Database,
+    loader: PlaidExtractor,
+    mock_investments_client: MagicMock,
+) -> None:
+    """An account carrying both manual and Plaid investment rows is flagged.
+
+    The fixture's raw Plaid investment transactions use account_id='acc_1'
+    directly (no account_links row exists — the investments fixture ships no
+    `accounts`), so a manual row on the SAME account_id overlaps via the
+    COALESCE fallback rather than a resolved canonical link.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ["manual_test1", "imp_test1", "acc_1", "buy", "2026-07-01", "cli"],
+    )
+    service = SyncService(client=mock_investments_client, db=db, loader=loader)
+    result = service.pull(refresh=False)
+    assert result.investment_source_overlap_accounts == ["acc_1"]
 
 
 def test_link_new_institution_auto_pulls(

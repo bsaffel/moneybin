@@ -278,6 +278,9 @@ class PullResult(BaseModel):
     transforms_applied: bool = False
     transforms_duration_seconds: float | None = None
     transforms_error: str | None = None
+    opening_bootstrap_rows: int = 0
+    investment_source_overlap_accounts: list[str] = Field(default_factory=list)
+    security_resolution: dict[str, int] = Field(default_factory=dict)
 
 
 class LinkResult(BaseModel):

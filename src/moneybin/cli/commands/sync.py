@@ -353,6 +353,51 @@ def sync_pull(
         )
         if result.transactions_removed:
             typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
+        investments_total = (
+            result.securities_loaded
+            + result.investment_transactions_loaded
+            + result.holdings_loaded
+        )
+        if investments_total:
+            typer.echo(
+                f"   Investments: {result.securities_loaded} securities, "
+                f"{result.investment_transactions_loaded} transactions, "
+                f"{result.holdings_loaded} holdings."
+            )
+        if result.opening_bootstrap_rows:
+            typer.echo(
+                f"   Seeded {result.opening_bootstrap_rows} opening lot(s) "
+                "for pre-window positions."
+            )
+        if result.investment_source_overlap_accounts:
+            typer.echo(
+                f"   ⚠️  {len(result.investment_source_overlap_accounts)} account(s) "
+                "have both manual and Plaid investment history — pick one source "
+                "per account (see `moneybin doctor`)."
+            )
+        # Resolution is a reported stage (spec § SecurityResolver): render every
+        # nonzero outcome, and name the review command whenever any identity is
+        # awaiting a decision. `proposed` (filed this run) and `pending` (still
+        # open from a prior run) both mean "awaiting review" to the user; the
+        # JSON envelope keeps them distinct for agents.
+        res = result.security_resolution
+        awaiting = res.get("proposed", 0) + res.get("pending", 0)
+        parts = [
+            f"{res[key]} {label}"
+            for key, label in (
+                ("adopted", "adopted"),
+                ("auto_bound", "auto-bound"),
+                ("minted", "new"),
+            )
+            if res.get(key)
+        ]
+        if awaiting:
+            parts.append(f"{awaiting} awaiting identity review")
+        if parts:
+            line = f"   Securities: {', '.join(parts)}."
+            if awaiting:
+                line += " Review: `moneybin investments securities links pending`."
+            typer.echo(line)
         if result.transforms_error:
             # Mirror import_cmd.py: route the warning to stderr via the
             # project logger so text-mode users see a human-readable hint.
