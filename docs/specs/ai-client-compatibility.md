@@ -140,6 +140,17 @@ Stale guidance found during the review; all are routine fixes:
    100-active-tool cap (102 registered; extended-namespace tools are hidden by
    default). Now informational only — Windsurf is T2, so this no longer gates a
    T1 headroom policy; still worth knowing for any capped client.
+6. **The same ChatGPT-is-local misconception lives in two more checked-in
+   docs** — correct alongside item 2 (or in the doc-polish pass that owns them):
+   `docs/features.md`'s "MCP install across nine clients" list includes
+   **ChatGPT Desktop** as a local `mcp install` target, and
+   `docs/specs/user-facing-doc-polish.md` item 17 claims **ChatGPT Desktop has
+   local-stdio support today** with a Desktop-vs-web/mobile split. Both are
+   wrong: **all ChatGPT surfaces (web, desktop, mobile) are remote-only** — no
+   stdio, no per-surface split (verified against OpenAI Developer Mode / Apps
+   SDK docs, July 2026: "ChatGPT only accepts remote HTTPS MCP servers — no
+   stdio"). The support matrix collapsing web/desktop/mobile into one
+   remote-only T3 row is therefore correct, not an omission.
 
 ## Packaging ladder (what we ship, in order)
 
@@ -183,9 +194,10 @@ M3B executes.
 The existing M3D row stands ("identity via Auth0/OIDC, MoneyBin-owned
 authorization/consent"). This review sharpens the shape:
 
-- **Spec floor:** OAuth 2.1 + PKCE, RFC 9728 protected-resource metadata,
-  RFC 8414 AS metadata, RFC 8707 resource indicators. **DCR is a SHOULD** with
-  ~4% real-world AS support; **CIMD** (spec 2025-11-25) is the practical
+- **Spec floor:** OAuth 2.1 + PKCE, RFC 9728 protected-resource metadata (PRM),
+  RFC 8414 AS metadata, RFC 8707 resource indicators. **Dynamic Client
+  Registration (DCR) is a SHOULD** with ~4% real-world AS support; the **Client
+  ID Metadata Document (CIMD)** approach (spec 2025-11-25) is the practical
   alternative both Claude and ChatGPT prefer. Track the 2026-07-28 spec
   release's six auth-hardening SEPs.
 - **Provider decision (one-way door).** Two viable paths: (a) **Auth0 via
@@ -212,20 +224,21 @@ The only channels that reach ordinary consumer users. All require a **human
 review** workflow, so per the 2026-07-11 founder directive M3O is **gated on
 the first public release being validated** — no officially-reviewed public
 listing before the product is tested — *and* on M3D (authenticated remote) plus
-organizational
-prerequisites. Sequenced last, deliberately.
+organizational prerequisites. Sequenced last, deliberately.
 
 - **Claude Connectors Directory:** submission requires a **Team/Enterprise
   claude.ai org** (owner-submitted), HTTPS remote server (streamable HTTP or
   SSE), OAuth 2.0 for authenticated services, per-tool title + annotations
   (✅ already shipped), privacy policy (instant rejection if missing), human
   review with self-test attestation.
-- **Local one-click via MCPB directory submission:** the `.mcpb` *file* ships to
+- **Local one-click via `.mcpb` directory submission:** the `.mcpb` *file* ships to
   testers at rung 2 now, but *submitting* it to the Connectors Directory
   (manifest ≥0.2 with privacy policy) is itself a human-review step — so it
   belongs to this first-public-release-gated increment, not to rung 2.
-- **ChatGPT App Directory:** Apps SDK submission (Python/FastMCP is a blessed
-  SDK), manual review, privacy policy + verified website + screenshots;
+- **ChatGPT App Directory:** Apps SDK submission (OpenAI's current "apps in
+  ChatGPT" construct, which superseded the deprecated 2023 "plugins";
+  Python/FastMCP is a blessed SDK), manual review, privacy policy + verified
+  website + screenshots;
   regional exclusions (EEA/CH/UK at launch) may affect reach.
 - Prerequisite to name in roadmap: the submitting org account is a dedicated
   MoneyBin organization (decided — see Decisions); acquiring/holding it is a
@@ -290,8 +303,8 @@ Deferred with a named trigger (deliberately not pre-resolved):
 
 - **ChatGPT read-vs-write plan tiering** (was OQ2) — verify at M3D execution;
   vendor docs conflict and may change by then. Gates nothing now.
-- **Which org account submits to the directories** (was OQ4) — decided at M3O: a
-  dedicated MoneyBin organization account (cleaner than personal for a public
+- **Which org account submits to the directories** (was OQ4) — resolved at M3O;
+  provisionally a dedicated MoneyBin organization account (cleaner than personal for a public
   listing). Holding the org account is a real prerequisite, named not costed.
 - **`.mcpb` clean-machine cold-start budget** (was OQ5) — an M3B spike acceptance
   test; measure on a machine with no uv preinstalled, don't opine.
