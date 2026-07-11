@@ -37,7 +37,7 @@ class SecurityLinksRepo(BaseRepo):
     table_ref: ClassVar[TableRef] = SECURITY_LINKS
     pk_columns: ClassVar[tuple[str, ...]] = ("link_id",)
 
-    def _fetch(self, link_id: str) -> dict[str, Any] | None:
+    def _fetch_row(self, link_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
             SECURITY_LINKS, _SECURITY_LINKS_COLUMNS, "link_id", link_id
         )
@@ -117,7 +117,7 @@ class SecurityLinksRepo(BaseRepo):
                     decided_by,
                 ],
             )
-            after = self._fetch(resolved_id)
+            after = self._fetch_row(resolved_id)
             return self._emit_audit(
                 action="security_link.insert",
                 target=(*self._audit_target, resolved_id),
@@ -127,36 +127,55 @@ class SecurityLinksRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
-    def rebind(
+    def repoint(
         self,
         *,
         link_id: str,
         new_security_id: str,
+        decided_by: str,
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
-        """Re-point an accepted binding at the merge survivor (audited in place).
+        """Re-point an accepted link onto a different canonical security_id (merge primitive).
 
-        Rebinding preserves the ref's decided_at/decided_by history — the merge
-        changes WHICH canonical security owns the ref, not the binding decision.
+        Reverses the existing row, inserts a new accepted row for ``new_security_id``,
+        and emits a paired audit for the old row's reversal. Raises ``ValueError`` when
+        ``link_id`` is not found, already points to ``new_security_id``, or is not accepted.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(self._fetch(link_id), "link_id", link_id)
-            if before.get("status") != "accepted":
+            before = self._require(self._fetch_row(link_id), "link_id", link_id)
+            if before["security_id"] == new_security_id:
                 raise ValueError(
-                    f"security_links.rebind: link {link_id} is not accepted"
+                    f"security_links repoint: link {link_id!r} already points to {new_security_id!r}"
+                )
+            if before["status"] != "accepted":
+                raise ValueError(
+                    f"security_links repoint: link {link_id!r} status={before['status']!r}; need accepted"
                 )
             self._db.execute(
-                f"UPDATE {SECURITY_LINKS.full_name} SET security_id = ? WHERE link_id = ?",  # noqa: S608  # TableRef + parameterized values
-                [new_security_id, link_id],
+                f"UPDATE {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                "SET reversed_at = CURRENT_TIMESTAMP, reversed_by = ?, status = 'reversed' WHERE link_id = ?",
+                [decided_by, link_id],
             )
-            after = self._fetch(link_id)
+            after_reversal = self._fetch_row(link_id)
+            self.insert(
+                link_id=uuid.uuid4().hex[:12],
+                security_id=new_security_id,
+                ref_kind=before["ref_kind"],
+                ref_value=before["ref_value"],
+                source_type=before["source_type"],
+                decided_by=decided_by,
+                actor=actor,
+                status="accepted",
+                parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+            )
             return self._emit_audit(
-                action="security_link.rebind",
+                action="security_link.repoint",
                 target=(*self._audit_target, link_id),
                 before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after),
+                after=self._serialize_for_audit(after_reversal),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
@@ -177,7 +196,7 @@ class SecurityLinksRepo(BaseRepo):
         reversal's audit trail (``reversed_at``/``reversed_by``).
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(self._fetch(link_id), "link_id", link_id)
+            before = self._require(self._fetch_row(link_id), "link_id", link_id)
             if before["status"] == "reversed":
                 raise ValueError(f"security_links: link {link_id} already reversed")
             self._db.execute(
@@ -189,7 +208,7 @@ class SecurityLinksRepo(BaseRepo):
                 """,  # noqa: S608  # TableRef + parameterized values
                 [reversed_by, link_id],
             )
-            after = self._fetch(link_id)
+            after = self._fetch_row(link_id)
             return self._emit_audit(
                 action="security_link.reverse",
                 target=(*self._audit_target, link_id),
