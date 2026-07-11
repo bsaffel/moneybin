@@ -77,18 +77,26 @@ def has_synthetic_ground_truth(db: Database) -> bool:
         return False
 
 
-# The only tables a freshly-created profile has rows in — migration bookkeeping,
-# not user data. Locked by `test_has_any_user_content_is_false_for_a_fresh_database`
-# and, against a REAL `init_db`, `test_rebuilds_an_empty_pre_existing_demo_profile`.
-_INIT_POPULATED_TABLES = frozenset({"app.schema_migrations", "app.versions"})
-
-# Everything a demo/synthetic run puts in `app` itself — bookkeeping above plus the
-# seed priorities the transform writes. A rebuild regenerates these, so they are not
-# the user's to lose. Verified across all three personas through the real pipeline by
-# `test_demo_pipeline_output_is_invisible_to_the_real_data_guard`; that test fails
-# loudly if the pipeline ever starts writing another `app` table, which would
-# otherwise make the guard refuse to rebuild demo's own profile.
-_DEMO_WRITTEN_APP_TABLES = _INIT_POPULATED_TABLES | {"app.seed_source_priority"}
+# Platform state, never the user's financial data. A rebuild recreates every one of
+# these, so none is the user's to lose:
+#   - schema_migrations / versions — migration bookkeeping, written by `init_db`.
+#   - seed_source_priority — reference data the transform seeds.
+#   - metrics — operational telemetry. EVERY CLI process that opened a write
+#     connection flushes it at exit (`observability.py`: atexit → flush_metrics), so
+#     a demo profile has rows here the moment the first `moneybin demo` returns.
+#
+# Getting this set wrong in the *other* direction is the live hazard: the guard reads
+# any `app.*` table outside it as the user's, so a missing entry here makes demo
+# refuse to rebuild its OWN profile. `app.metrics` did exactly that — and no
+# in-process test could see it, because `atexit` never fires there. The regression
+# guard is `test_demo_rerun_after_a_real_cli_run`, which runs `moneybin demo` twice
+# as a real subprocess.
+_NON_USER_TABLES = frozenset({
+    "app.schema_migrations",
+    "app.versions",
+    "app.seed_source_priority",
+    "app.metrics",
+})
 
 
 def _real_row_checks(db: Database) -> list[tuple[str, str]]:
@@ -101,10 +109,10 @@ def _real_row_checks(db: Database) -> list[tuple[str, str]]:
     `app.securities` each slipped past it in turn.
 
     So enumerate the closed sets *we* write — the generator's raw tables, and the
-    `app` tables demo's own pipeline produces — and read the live catalog for
-    everything else. Any other `raw.*` or `app.*` table is real user data by
-    default: `app.securities`, `app.budgets`, and `app.user_categories` are all
-    user-authored with no transaction behind them, and the list only grows.
+    platform tables in `_NON_USER_TABLES` — and read the live catalog for everything
+    else. Any other `raw.*` or `app.*` table is real user data by default:
+    `app.securities`, `app.budgets`, and `app.user_categories` are all user-authored
+    with no transaction behind them, and the list only grows.
     """
     rows = db.execute(
         "SELECT schema_name, table_name FROM duckdb_tables() "
@@ -114,8 +122,8 @@ def _real_row_checks(db: Database) -> list[tuple[str, str]]:
     checks: list[tuple[str, str]] = []
     for schema, name in rows:
         qualified = f"{schema}.{name}"
-        if qualified in _DEMO_WRITTEN_APP_TABLES:
-            continue  # ours; the rebuild regenerates it
+        if qualified in _NON_USER_TABLES:
+            continue  # platform state; the rebuild recreates it
         where = (
             f"WHERE {_NON_SYNTHETIC_ROWS}"
             if qualified in GENERATOR_WRITTEN_TABLES
@@ -126,25 +134,25 @@ def _real_row_checks(db: Database) -> list[tuple[str, str]]:
 
 
 def has_any_user_content(db: Database) -> bool:
-    """True if this database holds ANY row a freshly-created profile would not.
+    """True if this database holds ANY row that isn't ours or the platform's.
 
     For a database we CANNOT attribute to the generator, there is no such thing as
     a safe table: `app.securities`, `app.budgets`, and `app.user_categories` are
     all real, user-authored state reachable with no transaction behind them, and
-    the list grows. So rather than enumerate them, refuse on any row at all
-    outside migration bookkeeping.
+    the list grows. So rather than enumerate them, refuse on any row at all outside
+    `_NON_USER_TABLES`.
 
-    Being maximally conservative is free here precisely because this is the
-    not-ours path. Demo's own re-run path is generator-made and goes through
-    `has_non_synthetic_data` instead, so nothing this function does can
-    false-positive the happy path or `synthetic reset`.
+    Being maximally conservative is nearly free here: this is the not-ours path, so
+    over-refusing only ever declines to destroy someone else's profile. It must
+    still ignore platform tables, though — a `db init` profile that has run any CLI
+    command already carries an `app.metrics` snapshot.
     """
     rows = db.execute(
         "SELECT schema_name, table_name FROM duckdb_tables() "
         "WHERE schema_name IN ('app', 'raw')"
     ).fetchall()
     for schema, name in rows:
-        if f"{schema}.{name}" in _INIT_POPULATED_TABLES:
+        if f"{schema}.{name}" in _NON_USER_TABLES:
             continue
         try:
             found = db.execute(

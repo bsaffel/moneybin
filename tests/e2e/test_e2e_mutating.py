@@ -1584,3 +1584,38 @@ class TestDemo:
         assert payload["account_count"] > 0
         # The whole point of demo: it ends clean.
         assert payload["doctor_failing"] == 0, payload["doctor_failing_names"]
+
+    def test_demo_rerun_after_a_real_cli_run(self, tmp_path: Path) -> None:
+        """A second `moneybin demo` rebuilds the profile the first one left behind.
+
+        This has to be a real subprocess, twice. Every CLI process that opened a
+        write connection flushes operational metrics to `app.metrics` at exit via
+        `atexit` — which no in-process test can trigger. The real-data guard reads
+        any unrecognized `app.*` table as the user's, so our own telemetry looked
+        like user data and made the demo profile unrebuildable. Only a real second
+        invocation proves it doesn't.
+        """
+        env = base_env(tmp_path, "demo")
+        env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(tmp_path / "inbox-root")
+        first = run_cli(
+            "demo", "--yes", "--seed", "42", "--years", "1", env=env, timeout=300
+        )
+        assert first.exit_code == 0, first.output
+
+        second = run_cli(
+            "demo",
+            "--yes",
+            "--seed",
+            "7",
+            "--years",
+            "1",
+            "--output",
+            "json",
+            env=env,
+            timeout=300,
+        )
+        assert second.exit_code == 0, second.output
+        assert "Traceback" not in second.stderr
+        payload = json.loads(second.stdout)["data"]
+        assert payload["transaction_count"] > 0
+        assert payload["doctor_failing"] == 0, payload["doctor_failing_names"]

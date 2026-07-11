@@ -90,12 +90,22 @@ safe without being brittle:
   only what *we* produced is safe to destroy. `has_non_synthetic_data` enumerates
   the two **closed** sets we write — the generator's raw tables
   (`GENERATOR_WRITTEN_TABLES`; `SyntheticWriter` is the only producer) and the
-  `app` tables demo's own pipeline produces (`_DEMO_WRITTEN_APP_TABLES`) — and
-  reads the live DuckDB catalog for everything else. Any other `raw.*` or `app.*`
-  table is real data by default. The `app` half matters because demo makes itself
-  the default profile, so a user *will* accumulate real state there:
-  `app.securities`, `app.budgets`, and `app.user_categories` are all user-authored
-  with no transaction behind them, and the demo pipeline can't regenerate them.
+  platform tables (`_NON_USER_TABLES`: migration bookkeeping, the transform's seed
+  priorities, and `app.metrics`) — and reads the live DuckDB catalog for everything
+  else. Any other `raw.*` or `app.*` table is real data by default. The `app` half
+  matters because demo makes itself the default profile, so a user *will* accumulate
+  real state there: `app.securities`, `app.budgets`, and `app.user_categories` are
+  all user-authored with no transaction behind them, and the demo pipeline can't
+  regenerate them.
+
+  `_NON_USER_TABLES` is the half that has to be *exhaustive*, and it is the one with
+  teeth: the guard reads any `app.*` table missing from it as the user's, so an
+  omission makes demo refuse to rebuild its **own** profile. `app.metrics` did
+  exactly that — every CLI process flushes a metrics snapshot at exit
+  (`atexit` → `flush_metrics`), so the second `moneybin demo` saw our own telemetry
+  and declined. No in-process test could catch it, because `atexit` never fires
+  there; the regression guard is `test_demo_rerun_after_a_real_cli_run`, which runs
+  the command twice as a real subprocess.
 - **Not generator-made** → someone else's profile that merely happens to be named
   `demo`. Here `has_any_user_content` refuses on *any* row in *any* `app.*` /
   `raw.*` table beyond migration bookkeeping (`app.schema_migrations`,
