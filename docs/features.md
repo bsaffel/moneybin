@@ -100,6 +100,7 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 
 ## CLI
 
+- **`moneybin demo` — try it with no real data** — One command sets up an isolated `demo` profile with synthetic data, runs the full pipeline to a clean `system doctor`, and shows net worth plus next steps. `--persona basic|family|freelancer` picks the data shape; re-running resets and regenerates. The fastest way to see what MoneyBin does before connecting anything real.
 - **Typer v2 taxonomy** — Path-prefix-verb-suffix naming; entity groups (`accounts`, `transactions`), reference-data groups (`categories`, `merchants`), `reports` for cross-domain rollups, `system` for orientation. -> [CLI reference](guides/cli-reference.md)
 - **`--output json` parity with MCP** — Every read command exposes `--output json` and returns the same `{status, summary, data, actions, error?, next_cursor?}` envelope as the corresponding MCP tool, redacted by the same middleware. Agents driving the shell are first-class. -> [CLI reference](guides/cli-reference.md)
 - **Structured error envelopes** — Runtime errors emit a machine-readable envelope to stdout when `--output json` is active.

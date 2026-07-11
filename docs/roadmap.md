@@ -133,7 +133,7 @@ Now that the engine and the analysis layer are complete and self-testable, make 
 
 | Address | Area | Status | Notes |
 |---|---|---|---|
-| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. Demo preset + wizard are first-public-release items (see above). Demo preset designed: [`demo-preset.md`](specs/demo-preset.md) (🚧 in-progress). |
+| **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. Demo preset + wizard are first-public-release items (see above). Demo preset shipped: [`demo-preset.md`](specs/demo-preset.md) (✅ `moneybin demo`). |
 | **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. The PyPI half is a first-public-release item; brew + `.mcpb` follow later. |
 | **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains; **built on M3L**. Same UI at `moneybin ui` (local) and the hosted tier. |
 | **M3D** | Remote / HTTP MCP transport + auth | 🗓️ | Unlocks ChatGPT web + mobile; identity via Auth0/OIDC, MoneyBin-owned authorization/consent. |
