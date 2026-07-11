@@ -176,6 +176,7 @@ existing `accounts` / `transactions` / `balances` / `removed_transactions`:
     {
       "investment_transaction_id": "vNzRqk...",
       "account_id": "eJbKw3...",
+      "provider_item_id": "item_9Bd...",
       "security_id": "kqzLDp...",
       "date": "2026-07-06",
       "transaction_datetime": "2026-07-05T14:30:00Z",
@@ -193,6 +194,7 @@ existing `accounts` / `transactions` / `balances` / `removed_transactions`:
   "investment_holdings": [
     {
       "account_id": "eJbKw3...",
+      "provider_item_id": "item_9Bd...",
       "security_id": "kqzLDp...",
       "institution_price": 214.55,
       "institution_price_as_of": "2026-07-08",
@@ -241,15 +243,19 @@ whose securities returned zero in-window transactions. The client stamps each
 item's value onto that item's `raw.plaid_investment_holdings` rows, matched by
 `source_origin` (= `provider_item_id`) (§ that table).
 
-**Securities carry item scope.** Plaid returns `securities` as a top-level
-array on each *item's* response, not per account — and the same real security
-can appear under multiple items with different provider `security_id`s. Since
-the server calls Plaid per item, it stamps each security with the
-`provider_item_id` it came from. That id lands as `source_origin` on
-`raw.plaid_securities` (part of its PK), so an unscoped multi-item pull keeps
-each item's securities distinct and the resolver binds under the right
-connection. Without it, top-level securities would have no scope and the
-`NOT NULL` PK column would have nothing to fill.
+**Every investment object carries item scope.** The server calls Plaid **per
+item**, so it stamps each `securities`, `investment_transactions`, and
+`investment_holdings` object with the `provider_item_id` it came from (nested
+`tax_lots` inherit their parent holding's). That id lands as `source_origin` on
+every raw Plaid table. This is what makes an **unscoped multi-item pull**
+correct: the wire objects are otherwise flat (`account_id`/`security_id` only),
+so without a per-row item id the client could not tell which item a holding
+belongs to — it could not populate the `source_origin` PK column, could not stamp
+that item's `transactions_window_start`, and two items sharing a provider-local
+`(account_id, security_id)` would be indistinguishable and collide. With it,
+each item's securities/transactions/holdings stay distinct, the resolver binds
+under the right connection, and the opening-lot bootstrap classifies each item's
+lots against **that item's** window.
 
 ### No removals or cancels in v1 (documented limitation)
 

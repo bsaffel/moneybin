@@ -586,7 +586,7 @@ provider-identifier resolution rung all exist because of this validation.
 > `buy to cover` / `sell short` are re-routed out of `buy`/`sell` to `other`
 > (with a `system doctor` surface): the long-lot engine can't model short
 > positions, so mapping them to `buy`/`sell` would fabricate a long lot or an
-> oversold phantom gain. This *does* change the two rows above — the sole such
+> oversold phantom gain. This *does* change two rows in the table below — the sole such
 > change, made because the original mapping was a latent correctness bug, not a
 > reshape. Short/margin accounting stays future work.
 
