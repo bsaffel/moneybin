@@ -85,7 +85,7 @@ _OWNED_SCHEMA_ALT = "|".join(sorted(_SQLMESH_OWNED_SCHEMAS))
 _FALLBACK_RE = re.compile(
     r"\b(ALTER\s+TABLE|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO|"
     r"TRUNCATE(?:\s+TABLE)?|DROP\s+(?:TABLE|VIEW|INDEX|SCHEMA)|CREATE\s+INDEX|"
-    r"CREATE\s+TABLE(?!\s+IF\s+NOT\s+EXISTS))\s+"
+    r"CREATE\s+OR\s+REPLACE\s+TABLE|CREATE\s+TABLE(?!\s+IF\s+NOT\s+EXISTS))\s+"
     r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
     rf"[\"']?({_OWNED_SCHEMA_ALT})[\"']?\.",
     re.IGNORECASE,
@@ -358,6 +358,11 @@ _GOLDEN: list[tuple[str, bool]] = [
     ("CREATE OR REPLACE VIEW core.dim_categories AS SELECT 1 AS x", False),
     ("CREATE VIEW IF NOT EXISTS core.x AS SELECT 1 AS x", False),
     ("CREATE VIEW core.x AS SELECT 1 AS x", True),
+    # CREATE OR REPLACE TABLE overwrites (non-idempotent) — flagged on owned, both
+    # via the AST path and, for a flattened f-string target, the regex fallback
+    ("CREATE OR REPLACE TABLE core.dim_x AS SELECT 1 AS a", True),
+    ("CREATE OR REPLACE TABLE app.x AS SELECT 1 AS a", False),
+    ("CREATE OR REPLACE TABLE seeds.  AS SELECT 1", True),
     # writes to app.* that merely READ a SQLMesh-owned relation are fine
     ("INSERT INTO app.x SELECT id FROM seeds.y", False),
     ("CREATE TABLE app.x AS SELECT id FROM core.y", False),
