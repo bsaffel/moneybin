@@ -20,6 +20,12 @@ ABSENT — no signal — never a match and never a contradiction. And a weaker
 signal never overrides a stronger one that says "different instrument": a
 ticker+exchange agreement is discarded outright when the CUSIP or ISIN
 contradicts.
+
+The same corollary is why a lossy normalization never auto-binds: stripping a
+ticker suffix turns HEI.A into HEI, manufacturing a UNIQUE hit out of two
+genuinely different instruments — which is worse than a tie, because tie-refusal
+never engages. Only an EXACT ticker binds silently; a stripped one is always a
+proposal (see _suffix_strip_match).
 """
 
 from __future__ import annotations
@@ -146,9 +152,10 @@ class SecurityResolver:
         catalog = self._load_catalog()
         pending = self._load_pending()
         rejected = self._load_rejected()
+        minted: set[str] = set()
         counts: dict[str, int] = {}
         for raw in rows:
-            outcome = self._resolve_one(raw, catalog, pending, rejected)
+            outcome = self._resolve_one(raw, catalog, pending, rejected, minted)
             counts[outcome] = counts.get(outcome, 0) + 1
             SECURITY_LINK_OUTCOMES_TOTAL.labels(result=outcome).inc()
         logger.info(f"Security resolution outcomes: {counts}")
@@ -162,6 +169,7 @@ class SecurityResolver:
         catalog: list[_CatalogEntry],
         pending: set[tuple[str, str]],
         rejected: set[tuple[str, str, str]],
+        minted: set[str],
     ) -> str:
         refs = self._refs_for(raw)
 
@@ -199,14 +207,17 @@ class SecurityResolver:
         proposals = [
             (candidate, match.reason or "identifier_tie")
             for candidate in match.flagged
-            if (primary[0], primary[1], candidate.security_id) not in rejected
+            if self._offerable(candidate, primary, rejected, minted)
         ]
         if not proposals:
-            fuzzy = self._fuzzy_candidate(raw, catalog, rejected, primary)
-            if fuzzy is not None:
-                proposals = [(fuzzy, "fuzzy_name")]
+            proposals = [
+                (candidate, "fuzzy_name")
+                for candidate in self._fuzzy_candidates(
+                    raw, catalog, rejected, primary, minted
+                )
+            ]
 
-        minted_id = self._mint(raw, catalog)
+        minted_id = self._mint(raw, catalog, minted)
         self._bind_refs(refs, minted_id)
         if not proposals:
             return "minted"
@@ -231,11 +242,20 @@ class SecurityResolver:
         """Rung 2: bind on an unambiguous identifier, or flag for review.
 
         CUSIP equality binds outright (exchange irrelevant); else ISIN; else a
-        UNIQUE ticker match (exact-first, suffix-strip second — BRK.B is a real
-        ticker, so an exact hit always wins over a stripped one) with exchange
-        agreement on the normalized MIC: same MIC binds, either side
-        absent/unnormalizable binds, both present and different flags the
-        candidate (``exchange_contradiction``).
+        UNIQUE **exact** ticker match with exchange agreement on the normalized
+        MIC: same MIC binds, either side absent/unnormalizable binds, both
+        present and different flags the candidate (``exchange_contradiction``).
+
+        Only an EXACT ticker auto-binds. A hit found by stripping a suffix
+        (``VOD.L`` -> ``VOD``) is a weak inference and is always flagged
+        (``ticker_suffix_strip``), never bound: the strip cannot tell an exchange
+        suffix from a share-class (``HEI.A``) or preferred-series (``BAC-PL``)
+        suffix, those list on the SAME exchange as the stem (so MIC agreement
+        confirms rather than discriminates), and Plaid's CUSIP/ISIN are
+        license-gated — NULL in practice — so no stronger signal is left to catch
+        the error. Binding one would fuse two instruments' tax lots irreversibly.
+        The cost of flagging is bounded: the user confirms ``VOD.L`` -> ``VOD``
+        once, and rung 1 adopts the binding silently on every later sync.
 
         Two refusals, both absolute:
 
@@ -271,13 +291,10 @@ class SecurityResolver:
         if not ticker:
             return _Match()
         hits = [c for c in catalog if _norm(c.ticker) == ticker]
-        if not hits and ("." in ticker or "-" in ticker):
-            stripped = ticker.replace("-", ".").split(".")[0]
-            hits = [c for c in catalog if _norm(c.ticker) == stripped]
         if len(hits) > 1:
             return _Match(flagged=tuple(hits), reason="identifier_tie")
         if not hits:
-            return _Match()  # no ticker signal — the fuzzy rung decides
+            return self._suffix_strip_match(raw, ticker, catalog)
         candidate = hits[0]
         if self._contradicts(raw, candidate):
             return _Match()  # a strong id already said "different instrument"
@@ -286,6 +303,28 @@ class SecurityResolver:
         if catalog_mic and provider_mic and catalog_mic != provider_mic:
             return _Match(flagged=(candidate,), reason="exchange_contradiction")
         return _Match(bindable=candidate)  # same MIC, or either side absent
+
+    def _suffix_strip_match(
+        self, raw: _RawSecurity, ticker: str, catalog: list[_CatalogEntry]
+    ) -> _Match:
+        """Catalog entries matching the provider ticker's stem — flagged, never bound.
+
+        EVERY stem hit surfaces: a strip that lands on more than one entry is as
+        ambiguous as any other tie, and the resolver never picks. A candidate a
+        strong identifier contradicts is discarded outright (Guard 2) — a stripped
+        ticker cannot outvote a CUSIP/ISIN that says "different instrument".
+        """
+        if "." not in ticker and "-" not in ticker:
+            return _Match()  # no suffix to strip — the fuzzy rung decides
+        stem = ticker.replace("-", ".").split(".")[0]
+        hits = tuple(
+            c
+            for c in catalog
+            if _norm(c.ticker) == stem and not self._contradicts(raw, c)
+        )
+        if not hits:
+            return _Match()
+        return _Match(flagged=hits, reason="ticker_suffix_strip")
 
     def _contradicts(self, raw: _RawSecurity, candidate: _CatalogEntry) -> bool:
         """True when a strong identifier proves these are DIFFERENT instruments.
@@ -302,45 +341,74 @@ class SecurityResolver:
                 return True
         return False
 
-    def _fuzzy_candidate(
+    def _offerable(
+        self,
+        candidate: _CatalogEntry,
+        primary: tuple[str, str],
+        rejected: set[tuple[str, str, str]],
+        minted: set[str],
+    ) -> bool:
+        """May this candidate be OFFERED to the reviewer as the merge survivor?
+
+        Two disqualifiers. A pairing the user already rejected is never
+        re-proposed. And a security minted earlier in THIS batch is not a
+        reviewable survivor — it is itself an unreviewed provisional row, so
+        offering it would ask the human to merge into something pending review.
+        (It remains a valid rung-2 auto-bind target: in-batch dedup on an exact
+        identifier is intended.)
+        """
+        if candidate.security_id in minted:
+            return False
+        return (primary[0], primary[1], candidate.security_id) not in rejected
+
+    def _fuzzy_candidates(
         self,
         raw: _RawSecurity,
         catalog: list[_CatalogEntry],
         rejected: set[tuple[str, str, str]],
         primary: tuple[str, str],
-    ) -> _CatalogEntry | None:
-        """Closest catalog name above the cutoff, or None. Proposal only — never binds."""
-        if not raw.name:
-            return None
-        by_name: dict[str, _CatalogEntry] = {}
+        minted: set[str],
+    ) -> tuple[_CatalogEntry, ...]:
+        """Every catalog entry whose name matches above the cutoff. Proposals, never binds.
+
+        Names are grouped, NOT deduplicated: two catalog rows sharing one name are
+        a catalog duplicate, and both must reach the reviewer. Keeping only the
+        first would hide the other and make which one is shown depend on the
+        `security_id` sort — a pick on ambiguity, in the one surface that must
+        refuse to pick.
+        """
+        target = _norm(raw.name)
+        if target is None:
+            return ()
+        by_name: dict[str, list[_CatalogEntry]] = {}
         for entry in catalog:
             name = _norm(entry.name)
             if name is not None:
-                by_name.setdefault(name, entry)
-        target = _norm(raw.name)
-        if target is None:
-            return None
+                by_name.setdefault(name, []).append(entry)
         matches = difflib.get_close_matches(
             target, list(by_name), n=3, cutoff=_FUZZY_CUTOFF
         )
-        for match in matches:
-            candidate = by_name[match]
+        return tuple(
+            candidate
+            for match in matches
+            for candidate in by_name[match]
             # Guard 2: a contradicting strong identifier disqualifies — a name
             # that reads alike cannot outvote a CUSIP/ISIN that differs.
-            if self._contradicts(raw, candidate):
-                continue
-            if (primary[0], primary[1], candidate.security_id) in rejected:
-                continue
-            return candidate
-        return None
+            if not self._contradicts(raw, candidate)
+            and self._offerable(candidate, primary, rejected, minted)
+        )
 
     # ------------------------------- writes -------------------------------
 
-    def _mint(self, raw: _RawSecurity, catalog: list[_CatalogEntry]) -> str:
+    def _mint(
+        self, raw: _RawSecurity, catalog: list[_CatalogEntry], minted: set[str]
+    ) -> str:
         """Mint a provider-provenance catalog row and add it to the in-batch catalog.
 
         The new entry joins ``catalog`` so a later row in the same batch carrying
         the same CUSIP/ISIN/ticker adopts it (rung 2) instead of minting a twin.
+        It also joins ``minted``, which bars it from being OFFERED as a merge
+        survivor to a later row (see ``_offerable``).
         """
         name = (
             (raw.name or "").strip() or (raw.ticker or "").strip() or _PLACEHOLDER_NAME
@@ -361,6 +429,7 @@ class SecurityResolver:
         minted_id = event.target_id
         if minted_id is None:  # pragma: no cover — upsert always stamps target_id
             raise RuntimeError("securities.upsert returned no target_id")
+        minted.add(minted_id)
         catalog.append(
             _CatalogEntry(
                 security_id=minted_id,

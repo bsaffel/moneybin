@@ -423,8 +423,13 @@ def test_churned_plaid_id_adopts_via_institution_ref(db: Database) -> None:
     assert {r[2] for r in _bindings(db)} == {minted}
 
 
-def test_ticker_exchange_suffix_strips_to_catalog_match(db: Database) -> None:
-    """A provider ticker carrying an exchange suffix (VOD.L) matches catalog VOD."""
+def test_ticker_exchange_suffix_proposes_never_auto_binds(db: Database) -> None:
+    """A stripped ticker (VOD.L -> VOD) is a PROPOSAL, never a silent bind.
+
+    The strip cannot distinguish an exchange suffix from a share-class or
+    preferred-series one, so it must not manufacture a unique auto-bind. The user
+    confirms VOD.L -> VOD once; rung 1 adopts it silently on every later sync.
+    """
     _seed_mic_registry(db)
     sid = _catalog(db, "Vodafone Group PLC", ticker="VOD", exchange="LSE")
     _raw_security(
@@ -434,8 +439,177 @@ def test_ticker_exchange_suffix_strips_to_catalog_match(db: Database) -> None:
         ticker_symbol="VOD.L",
         market_identifier_code="XLON",
     )
-    assert SecurityResolver(db).resolve_all() == {"auto_bound": 1}
-    assert _bindings(db)[0][2] == sid
+    assert SecurityResolver(db).resolve_all() == {"proposed": 1}
+    pending = SecurityLinkDecisionsRepo(db).list_pending()
+    assert [p["candidate_security_id"] for p in pending] == [sid]
+    assert pending[0]["match_reason"] == "ticker_suffix_strip"
+    assert _bindings(db)[0][2] != sid  # bound to the provisional mint, not VOD
+
+
+@pytest.mark.parametrize(
+    ("catalog_ticker", "provider_ticker", "catalog_name", "provider_name"),
+    [
+        # share class: HEI.A is a DIFFERENT instrument from HEI, same exchange
+        ("HEI", "HEI.A", "HEICO Corp", "HEICO Corp Class A"),
+        # preferred series: BAC-PL is a preferred, not the common stock
+        ("BAC", "BAC-PL", "Bank of America Corp", "Bank of America Pfd Ser L"),
+    ],
+)
+def test_share_class_and_preferred_suffixes_never_fuse_into_the_stem(
+    db: Database,
+    catalog_ticker: str,
+    provider_ticker: str,
+    catalog_name: str,
+    provider_name: str,
+) -> None:
+    """The silent-merge vector: a suffixed ticker must never auto-bind to its stem.
+
+    Both list on the SAME exchange (so MIC agreement confirms rather than
+    discriminates) and Plaid's CUSIP/ISIN are license-gated — NULL here, as in
+    practice — so no other guard can catch it. Fusing these fuses their tax lots.
+    """
+    _seed_mic_registry(db)
+    stem = _catalog(db, catalog_name, ticker=catalog_ticker, exchange="NASDAQ")
+    _raw_security(
+        db,
+        "sec_1",
+        security_name=provider_name,
+        ticker_symbol=provider_ticker,
+        market_identifier_code="XNAS",
+        cusip=None,
+        isin=None,
+    )
+    assert SecurityResolver(db).resolve_all() == {"proposed": 1}
+    pending = SecurityLinkDecisionsRepo(db).list_pending()
+    assert [p["candidate_security_id"] for p in pending] == [stem]
+    assert pending[0]["match_reason"] == "ticker_suffix_strip"
+    assert _bindings(db)[0][2] != stem
+    rows = db.execute("SELECT COUNT(*) FROM app.securities").fetchone()
+    assert rows is not None and rows[0] == 2  # stem + provisional mint, unfused
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (("HEI", "HEICO Corp"), ("HEI.A", "HEICO Corp Class A")),
+        (("HEI.A", "HEICO Corp Class A"), ("HEI", "HEICO Corp")),  # ids swapped
+    ],
+)
+def test_stem_and_share_class_in_one_batch_mint_separately(
+    db: Database, first: tuple[str, str], second: tuple[str, str]
+) -> None:
+    """No catalog, one batch delivering both: two securities, whatever the id order.
+
+    The outcome must not depend on Plaid's arbitrary security_id sort — the batch
+    is processed ORDER BY security_id, so both orderings are exercised.
+    """
+    _seed_mic_registry(db)
+    for security_id, (ticker, name) in (("sec_1", first), ("sec_2", second)):
+        _raw_security(
+            db,
+            security_id,
+            security_name=name,
+            ticker_symbol=ticker,
+            market_identifier_code="XNAS",
+        )
+    assert SecurityResolver(db).resolve_all() == {"minted": 2}
+    rows = db.execute(
+        "SELECT COUNT(DISTINCT security_id) FROM app.securities"
+    ).fetchone()
+    assert rows is not None and rows[0] == 2
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert len({r[2] for r in _bindings(db)}) == 2  # each ref on its own security
+
+
+def test_suffix_strip_tie_surfaces_every_stem_candidate(db: Database) -> None:
+    """A strip landing on two stem entries is a tie — surface both, pick neither."""
+    _seed_mic_registry(db)
+    sids = {
+        _catalog(db, f"HEICO Corp ({i})", ticker="HEI", exchange="NASDAQ")
+        for i in range(2)
+    }
+    _raw_security(
+        db,
+        "sec_1",
+        security_name="HEICO Corp Class A",
+        ticker_symbol="HEI.A",
+        market_identifier_code="XNAS",
+    )
+    assert SecurityResolver(db).resolve_all() == {"proposed": 1}
+    pending = SecurityLinkDecisionsRepo(db).list_pending()
+    assert {p["candidate_security_id"] for p in pending} == sids
+    assert {p["match_reason"] for p in pending} == {"ticker_suffix_strip"}
+    assert _bindings(db)[0][2] not in sids
+
+
+def test_contradicting_cusip_disqualifies_suffix_strip_proposal(db: Database) -> None:
+    """Guard 2 holds on the stripped rung: a differing CUSIP is never even proposed."""
+    _seed_mic_registry(db)
+    _catalog(db, "HEICO Corp", ticker="HEI", exchange="NASDAQ", cusip="422806109")
+    _raw_security(
+        db,
+        "sec_1",
+        security_name="HEICO Corp Class A",
+        ticker_symbol="HEI.A",
+        market_identifier_code="XNAS",
+        cusip="422806208",
+    )
+    assert SecurityResolver(db).resolve_all() == {"minted": 1}
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+
+
+def test_fuzzy_name_tie_surfaces_every_duplicate_never_picks_by_id_order(
+    db: Database,
+) -> None:
+    """Two catalog rows sharing a name: BOTH surface — never one chosen by uuid sort."""
+    sids = {
+        _catalog(db, "Vanguard Total Stock Market ETF", security_type="etf")
+        for _ in range(2)
+    }
+    _raw_security(
+        db,
+        "sec_1",
+        security_name="Vanguard Total Stock Mkt ETF",
+        security_type="etf",
+    )
+    assert SecurityResolver(db).resolve_all() == {"proposed": 1}
+    pending = SecurityLinkDecisionsRepo(db).list_pending()
+    assert {p["candidate_security_id"] for p in pending} == sids
+    assert {p["match_reason"] for p in pending} == {"fuzzy_name"}
+
+
+def test_in_batch_mint_is_never_offered_as_a_merge_candidate(db: Database) -> None:
+    """A later row is never asked to merge into an earlier row's unreviewed mint.
+
+    Catalog holds two AAPL duplicates; two provider AAPL rows arrive. Each refuses
+    the 2-way tie and mints. The second row must still see a TWO-way tie — its
+    decisions may name only the user's catalog rows, never row 1's provisional.
+    """
+    _seed_mic_registry(db)
+    sids = {
+        _catalog(db, f"Apple Inc. ({i})", ticker="AAPL", exchange="NASDAQ")
+        for i in range(2)
+    }
+    for security_id in ("sec_1", "sec_2"):
+        _raw_security(
+            db,
+            security_id,
+            security_name="Apple Inc.",
+            ticker_symbol="AAPL",
+            market_identifier_code="XNAS",
+        )
+    assert SecurityResolver(db).resolve_all() == {"proposed": 2}
+    pending = SecurityLinkDecisionsRepo(db).list_pending()
+    assert len(pending) == 4  # two rows x two real candidates — not 2 + 3
+    assert {p["candidate_security_id"] for p in pending} == sids
+    provisional = {
+        r[0]
+        for r in db.execute(
+            "SELECT security_id FROM app.securities WHERE created_by = 'plaid'"
+        ).fetchall()
+    }
+    assert len(provisional) == 2
+    assert provisional.isdisjoint({p["candidate_security_id"] for p in pending})
 
 
 def test_exact_ticker_wins_over_suffix_strip(db: Database) -> None:
