@@ -777,22 +777,33 @@ ACATS transfer):
   (`original_purchase_datetime` < the earliest in-window transaction date) —
   definitionally the lots no in-window transaction represents — **oldest
   first**. Each drawn slice opens one `transfer_in` carrying that lot's
-  `cost_basis` (→ `amount`) and `original_purchase_datetime` (→
-  `original_acquisition_date`): correct basis *and* holding-period start, the
-  differentiation edge. Two reconciliation edges, both visible:
+  `original_purchase_datetime` (→ `original_acquisition_date`) and a basis
+  **proportional to the drawn quantity**: a fully-drawn lot carries its full
+  `cost_basis` (→ `amount`); a partially-drawn lot (the overshoot tail below)
+  carries `cost_basis × drawn_qty / lot_qty`, so `amount` never claims more
+  basis than the quantity it opens. Correct basis *and* holding-period start —
+  the differentiation edge. Two reconciliation edges, both visible:
   - **Lots undershoot `G`** (pre-window lots sum to less than the gap — NULL
     `original_purchase_datetime` lots, or the broker reports no lot for part of
     the position): the unexplained residual opens as a single `basis_incomplete`
     row (`amount = NULL`, snapshot-date fallback), flagged.
   - **Lots overshoot `G`** (pre-window lots sum to more than the gap — e.g. an
     in-window partial sale already consumed part of a pre-window lot): allocation
-    stops at `G`; the surplus is **not** emitted, and `system doctor` surfaces
-    the mismatch rather than the pipeline silently inflating quantity.
+    stops at `G`, the boundary lot drawn only partially with its basis prorated
+    (above); the surplus is **not** emitted, and `system doctor` surfaces the
+    mismatch rather than the pipeline silently inflating quantity.
 - **Position-level fallback (empty `tax_lots[]`).** When the institution
-  provides no lot detail, one opening `transfer_in` for the whole gap `G`, basis
-  from `Holding.cost_basis` when present (→ `amount`), else `amount = NULL` so it
-  opens `basis_incomplete` (the step-5 rule). Acquisition date unknown → `NULL`,
-  lot falls back to the snapshot date and is flagged.
+  provides no lot detail, one opening `transfer_in` for the whole gap `G`.
+  `Holding.cost_basis` is the *whole-position* basis, so it maps to `amount`
+  **only when `G` equals the full held quantity** — no in-window transaction
+  touches this position, so the entire basis belongs to the opened gap. When
+  in-window transactions already explain part of the position (`G <` held
+  quantity), `Holding.cost_basis` covers shares the ledger has *already*
+  basis-accounted; using it for `G` would double-count basis, so the row opens
+  `basis_incomplete` (`amount = NULL`) instead — position-level data can't
+  isolate the gap's share of the basis. `Holding.cost_basis` absent →
+  `basis_incomplete` as well (the step-5 rule). Acquisition date unknown →
+  `NULL`, lot falls back to the snapshot date and is flagged.
 
 **Determinism & idempotence.** The synthetic rows carry a content-hash
 `investment_transaction_id` over `(account_id, security_id, lot_index,
