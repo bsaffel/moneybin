@@ -121,8 +121,27 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     if isinstance(exc, UserError):
         return exc
     if isinstance(exc, DatabaseNotInitializedError):
+        registered = True
+        try:  # deferred imports avoid an errors<->services import cycle
+            from moneybin.config import get_current_profile
+            from moneybin.services.profile_service import ProfileService
+
+            registered = ProfileService().is_registered(
+                get_current_profile(auto_resolve=False)
+            )
+        except Exception:  # noqa: BLE001 — fall back to the db-init message
+            registered = True
+        if registered:
+            message = (
+                "Database not found. Run 'moneybin db init' to initialize it first."
+            )
+        else:
+            message = (
+                "Profile not set up. Run 'moneybin profile create <name> "
+                "--init-inbox' to create the profile (config, database, and inbox)."
+            )
         return UserError(
-            "Database not found. Run 'moneybin db init' to initialize it first.",
+            message,
             code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
         )
     if isinstance(exc, DatabaseLockError):

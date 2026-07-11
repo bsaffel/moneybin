@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from moneybin import error_codes
 from moneybin.database import DatabaseKeyError
 from moneybin.errors import UserError, classify_user_error
@@ -136,3 +138,48 @@ def test_classify_database_lock_error() -> None:
     result = classify_user_error(err)
     assert result is not None
     assert result.code == error_codes.INFRA_DATABASE_LOCKED
+
+
+@pytest.fixture(autouse=True)
+def _clean_active_profile():
+    """Reset the process-wide active profile so DB-not-init guidance is deterministic."""
+    from moneybin import config
+
+    original = config._current_profile
+    config._current_profile = None
+    try:
+        yield
+    finally:
+        config._current_profile = original
+
+
+def test_db_not_initialized_unregistered_points_at_profile_create(
+    tmp_path, monkeypatch
+) -> None:
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    set_current_profile("ghost")  # active profile, but no config.yaml under tmp_path
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" in result.message
+    assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
+
+
+def test_db_not_initialized_registered_points_at_db_init(tmp_path, monkeypatch) -> None:
+    from unittest.mock import patch as _patch
+
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    with _patch.object(ProfileService, "_init_database"):
+        ProfileService().create("real")  # registered: config.yaml written
+    set_current_profile("real")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "db init" in result.message.lower()

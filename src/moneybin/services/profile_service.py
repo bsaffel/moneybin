@@ -100,6 +100,18 @@ class ProfileService:
             raise ValueError(f"Invalid profile name: {name!r}")
         return profile_dir
 
+    def is_registered(self, name: str) -> bool:
+        """True if the profile was set up (has a config.yaml), not just db-init'd.
+
+        Distinguishes a fully-registered profile from a bare directory a manual
+        `db init` may have left behind — the two need different onboarding
+        guidance.
+        """
+        try:
+            return (self._profile_dir(name) / "config.yaml").exists()
+        except ValueError:
+            return False
+
     def create(self, name: str, *, init_inbox: bool = False) -> Path:
         """Create a new profile with directory structure and config.
 
