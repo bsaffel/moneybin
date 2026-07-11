@@ -32,11 +32,13 @@ _RECIPE: dict[str, Any] = {
 def _make_doc(
     text_lines: list[str] | None = None,
     tables: list[PdfTable] | None = None,
+    page_count: int = 1,
 ) -> PdfDocument:
     return PdfDocument(
         source_file="stmt.pdf",
         text_lines=text_lines or [],
         tables=tables or [],
+        page_count=page_count,
     )
 
 
@@ -188,6 +190,24 @@ def test_page_count_derives_from_max_table_page() -> None:
     assert fp["page_bucket"] == "4+"
 
 
+def test_page_count_derives_from_the_document_when_there_are_no_tables() -> None:
+    """An unruled multi-page statement must not bucket as a 1-pager.
+
+    `max(table.page)` is the only page signal a ruled document has, but an unruled
+    one has no tables at all — so that signal reports 1 for every real statement
+    and pinned `page_bucket` to "1" across the whole class, erasing the coarse
+    volume-class differentiation the bucket exists to provide. `PdfDocument` now
+    carries the extractor's own page count for exactly this case.
+    """
+    doc = _make_doc(
+        text_lines=["Chase Statement", "Date  Description  Amount"],
+        tables=[],
+        page_count=4,
+    )
+    fp = compute_fingerprint(doc)
+    assert fp["page_bucket"] == "4+"
+
+
 # ---------------------------------------------------------------------------
 # Unit: _page_bucket
 # ---------------------------------------------------------------------------
@@ -258,3 +278,53 @@ def test_match_format_uses_repo_get_by_fingerprint(db: Database) -> None:
 
     mock_repo.get_by_fingerprint.assert_called_once_with(fp)
     assert result is None
+
+
+def test_fingerprint_headers_populated_for_unruled_statement() -> None:
+    """An unruled statement must still fingerprint on its real column headers.
+
+    `_unique_table_headers` bailed out on `not doc.tables` before consulting the
+    transaction-table selector, so every whitespace-aligned statement (i.e. every
+    real one) fingerprinted as `headers: []`. Two different institutions would
+    then collide on the same degenerate fingerprint and replay each other's saved
+    recipe against the wrong layout.
+    """
+    doc = PdfDocument(
+        source_file="chase.pdf",
+        tables=[],
+        text_lines=[
+            "Chase Bank",
+            "Date         Description          Amount",
+            "01/02/2024   COFFEE SHOP          -4.50",
+        ],
+    )
+
+    fp = compute_fingerprint(doc)
+
+    assert fp["headers"] == ["Date", "Description", "Amount"]
+
+
+def test_fingerprint_headers_populated_for_unruled_debit_credit_statement() -> None:
+    r"""The split-column layout must fingerprint on its headers too, not on `[]`.
+
+    An unruled debit/credit statement reconstructs as no table at all — `\s{2,}`
+    collapses the one blank side, so its rows split narrower than its header and
+    the width-matching reconstructor rejects them. Both table selectors therefore
+    return None, and the header list fell back to `[]` for exactly the layout most
+    real bank statements use — putting every institution's checking statement on
+    one colliding fingerprint.
+    """
+    doc = PdfDocument(
+        source_file="wf.pdf",
+        tables=[],
+        text_lines=[
+            "Wells Fargo",
+            "Date         Description     Withdrawals   Deposits",
+            "01/02/2024   COFFEE SHOP     4.50",
+            "01/05/2024   PAYROLL                       2,000.00",
+        ],
+    )
+
+    fp = compute_fingerprint(doc)
+
+    assert fp["headers"] == ["Date", "Description", "Withdrawals", "Deposits"]

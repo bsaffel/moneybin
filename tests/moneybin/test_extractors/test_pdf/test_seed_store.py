@@ -145,3 +145,61 @@ def test_infer_type_branches(samples: list[str], expected: str) -> None:
     )
 
     assert _infer_type(samples) == expected
+
+
+@pytest.mark.integration
+def test_rows_from_different_documents_sharing_an_alias_all_survive(
+    db: Database,
+) -> None:
+    """Two different statements under one alias must not eat each other's rows.
+
+    The alias is derived from the filename stem, so `2024-01/chase.pdf` and
+    `2024-02/chase.pdf` both resolve to alias `chase`. The row hash keyed only
+    on (alias, page, row_index, content), so a recurring charge that lands at
+    the same row index in two different months — an identical NETFLIX line —
+    hashed identically across the two statements and the second was silently
+    dropped by on_conflict='ignore'. Real rows, gone, with no error.
+    """
+    january = PdfDocument(
+        source_file="chase.pdf",
+        tables=[
+            PdfTable(
+                page=1,
+                header=["Date", "Description", "Amount"],
+                rows=[
+                    ["2024-01-02", "COFFEE", "-4.50"],
+                    ["2024-01-15", "NETFLIX", "-9.99"],
+                ],
+            )
+        ],
+    )
+    february = PdfDocument(
+        source_file="chase.pdf",
+        tables=[
+            PdfTable(
+                page=1,
+                header=["Date", "Description", "Amount"],
+                rows=[
+                    ["2024-02-03", "GROCERY", "-73.21"],
+                    # Same position (page 1, row 1) and identical content to the
+                    # January NETFLIX row would be a different real charge.
+                    ["2024-01-15", "NETFLIX", "-9.99"],
+                ],
+            )
+        ],
+    )
+
+    write_pdf_seed(db, january, alias="chase", import_id="imp-jan")
+    _extracted, inserted = write_pdf_seed(
+        db, february, alias="chase", import_id="imp-feb"
+    )
+
+    assert inserted == 2, (
+        "February's rows were swallowed by January's — a row identical in "
+        "content and position across two distinct statements must survive"
+    )
+    total = db.execute(
+        "SELECT COUNT(*) FROM raw.pdf_seeds WHERE alias = 'chase'"
+    ).fetchone()
+    assert total is not None
+    assert total[0] == 4

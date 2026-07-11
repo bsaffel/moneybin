@@ -326,6 +326,62 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **PDF statements with no ruled table no longer import zero transactions.**
+  Recipe derivation picked its transaction table from `pdfplumber`'s table
+  detection, which only fires on *drawn ruling lines* — while the recipe
+  executor reads the document's text lines. Real bank statements are typeset
+  with whitespace-aligned columns and no rules, so derivation went blind on
+  exactly the input the executor consumes: a real Chase statement with a clean
+  `ACCOUNT ACTIVITY` section extracted **0 transactions** — its rows either
+  landed in an opaque seed table or, for a statement with no ruled content
+  anywhere, failed outright with "No tables extracted from PDF". Derivation now
+  falls back to reconstructing the table from text lines using the same column
+  splitter the recipe executes with. Statements already imported as seeds will
+  import correctly on re-import. (#313)
+- **Credit-card statements no longer import their charges as income.** The PDF
+  importer assumes "negative = expense" for every single-amount-column layout —
+  the deposit-account convention — and its only safeguard was "does this
+  statement contain a negative amount?" A card statement carries the opposite
+  convention (charges positive, payments negative), and almost always has a
+  payment or refund row, so it sailed through that check and every charge was
+  booked as **income**. Reconciliation could not catch it: it sums the raw signed
+  amounts, which tie out to the balance change with the signs exactly backwards.
+  The importer now reads the statement's own disclosures (minimum payment, credit
+  limit, APR) instead of guessing at its arithmetic, and hands a card statement to
+  the AI agent rather than importing it under the wrong convention. Signs cannot
+  be inferred from the amounts alone — a checking statement and a card statement
+  have identical sign distributions. This also closes the same hole on the
+  saved-format replay path, which ran before derivation and skipped the guard
+  entirely. (#313)
+- **CSV/Excel imports no longer silently drop legitimately identical rows.**
+  Transaction ids for sources without a native id are content hashes, so two
+  genuinely distinct same-day purchases with the same amount and description
+  (two $5.00 coffees at one shop) hashed identically and the staging dedup
+  dropped one — real transactions, gone, with no error. The second and later
+  rows of identical content now carry an occurrence suffix, matching the scheme
+  PDF transaction ids already used. Ids of rows that were never colliding are
+  unchanged, so **re-importing an affected file recovers the dropped rows** and
+  leaves everything else alone. (#313)
+- **PDF statements sharing a filename no longer eat each other's rows.** Seed
+  rows were keyed on `(alias, page, row index, content)`, and the alias is just
+  the filename stem — so `2024-01/chase.pdf` and `2024-02/chase.pdf` collided,
+  and a recurring charge landing at the same row index in both months (an
+  identical subscription line) was silently discarded from the second statement.
+  The row key now includes the document's content identity. This re-keys existing
+  `raw.pdf_seeds` rows: revert an affected PDF import (`moneybin import revert
+  <id>`) before re-importing it, or the statement is seeded twice. (#313)
+- **A PDF the importer can't parse now reaches the AI agent instead of being
+  buried.** Every recipe-derivation failure reported the same reason
+  (`no_transaction_table`), which is excluded from agent escalation on the
+  grounds that the document isn't a statement at all. So a document that *was* a
+  statement and merely defeated the parser was silently filed away as
+  unparseable rather than handed to the AI agent that could read it — including
+  the single most common bank layout (separate "Withdrawals" and "Deposits"
+  columns), which the deterministic parser defers by design. Those now escalate.
+  Genuinely non-transactional PDFs (a brokerage positions statement) are routed
+  to the seed store as before, and so are statements in a number locale the
+  importer cannot replay — escalating those would send your statement to an AI
+  provider for a result it provably cannot use. (#313)
 - **`mcp install --client chatgpt-desktop` no longer sends users down a path that
   does not exist.** It printed a local/stdio config snippet and told the user to
   "choose the local/stdio option" in ChatGPT's Connectors UI, calling that "the

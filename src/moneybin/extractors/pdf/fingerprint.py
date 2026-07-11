@@ -75,20 +75,25 @@ def _detect_issuer(doc: PdfDocument) -> str:
 def _unique_table_headers(doc: PdfDocument) -> list[str]:
     """Return the unique column headers of the transaction table in original order.
 
-    Scoped to the **transaction-shaped** table that ``derive_recipe`` will
-    use — NOT just "the largest table" — so the fingerprint and the recipe
-    always agree on which table to characterise. Picking by row count alone
-    breaks recipe reuse on multi-table PDFs: an Amex statement with a
-    larger rewards-summary grid, or an investment statement with a large
-    positions table, would fingerprint the wrong table and either (a) flip
-    the fingerprint as the incidental large table changes month-to-month,
-    so replay never fires, or (b) keep the same fingerprint while the
-    real transaction layout actually changes, so replay returns the wrong
-    recipe.
+    Scoped to the **transaction table** — NOT just "the largest table" — so the
+    fingerprint and the recipe always agree on which table to characterise.
+    Picking by row count alone breaks recipe reuse on multi-table PDFs: an Amex
+    statement with a larger rewards-summary grid, or an investment statement with
+    a large positions table, would fingerprint the wrong table and either (a) flip
+    the fingerprint as the incidental large table changes month-to-month, so
+    replay never fires, or (b) keep the same fingerprint while the real
+    transaction layout actually changes, so replay returns the wrong recipe.
 
-    Falls back to "largest table" if no transaction-shaped table is
-    detectable — Phase 2a routing routes to seed in that case anyway, so
-    fingerprint stability matters less.
+    ``transaction_headers`` finds that table however it is visible — ruled,
+    reconstructed from text, or (for an unruled debit/credit layout) only as raw
+    text lines. Consulting it BEFORE giving up on an empty ``doc.tables`` is what
+    keeps unruled statements — that is, every real one, since none draw ruling
+    lines — off a degenerate ``headers: []`` fingerprint that two different
+    institutions would collide on and replay each other's recipe against.
+
+    Falls back to "largest table" only when the document is not a statement at
+    all — routing seeds it in that case anyway, so fingerprint stability matters
+    much less.
 
     Order matters: ``execute_recipe`` zips PDF cells positionally against
     ``recipe.fields``, so two layouts with the same column names in a
@@ -98,21 +103,16 @@ def _unique_table_headers(doc: PdfDocument) -> list[str]:
     using an ordered set built from a dict — Python dicts preserve
     insertion order since 3.7.
     """
+    # Deferred import to break a potential cycle and keep fingerprint leaf-leaf
+    # even as auto_derive evolves.
+    from moneybin.extractors.pdf.auto_derive import transaction_headers
+
+    headers = transaction_headers(doc)
+    if headers is not None:
+        return list(dict.fromkeys(headers))
     if not doc.tables:
         return []
-    # Defer the import to break a potential cycle and to keep fingerprint
-    # leaf-leaf even when auto_derive evolves.
-    from moneybin.extractors.pdf.auto_derive import (
-        _select_transaction_table,  # pyright: ignore[reportPrivateUsage]
-    )
-
-    txn_table = _select_transaction_table(doc)
-    target = (
-        txn_table
-        if txn_table is not None
-        else max(doc.tables, key=lambda t: len(t.rows))
-    )
-    return list(dict.fromkeys(target.header))
+    return list(dict.fromkeys(max(doc.tables, key=lambda t: len(t.rows)).header))
 
 
 # The complete, closed set of page-count buckets ``_page_bucket`` can emit, in
@@ -140,7 +140,12 @@ def compute_fingerprint(doc: PdfDocument) -> dict[str, Any]:
     It is suitable for direct insertion into ``app.pdf_formats.layout_fingerprint``
     and for passing to ``PdfFormatsRepo.get_by_fingerprint``.
     """
-    page_count = max(t.page for t in doc.tables) if doc.tables else 1
+    # Both signals are lower bounds on the real page count, so take the larger.
+    # max(table.page) alone reports 1 page for every unruled statement (they have
+    # no tables at all), pinning page_bucket to "1"; doc.page_count alone would
+    # trust a hand-built IR that never set it.
+    highest_table_page = max((t.page for t in doc.tables), default=1)
+    page_count = max(doc.page_count, highest_table_page)
     return {
         "issuer": _detect_issuer(doc),
         "headers": _unique_table_headers(doc),

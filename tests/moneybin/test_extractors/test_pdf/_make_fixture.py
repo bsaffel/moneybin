@@ -114,6 +114,47 @@ for i, (date, desc, amount) in enumerate(chase_rows):
 c3.save()
 print(f"wrote {out_chase}")  # noqa: T201  # one-shot generator script
 
+# ── chase_checking_unruled.pdf ────────────────────────────────────────────────
+# The SAME statement as chase_checking_simple.pdf, but with NO ruling lines —
+# columns are whitespace-aligned, which is how real bank statements are actually
+# typeset. pdfplumber's extract_tables() finds nothing here (it keys on ruling
+# lines), so doc.tables is empty and only doc.text_lines carries the rows.
+#
+# This fixture exists because every other fixture in this file deliberately
+# draws ruling lines "so pdfplumber's extract_tables() finds them" — which made
+# the suite structurally incapable of catching F10, where a real Chase statement
+# extracted 0 transactions. Recipe derivation must work from text_lines alone.
+out_unruled = fixtures / "chase_checking_unruled.pdf"
+c6 = canvas.Canvas(str(out_unruled), pagesize=letter)
+c6.setFont("Courier", 10)
+
+c6.drawString(72, 740, "Chase Bank")
+c6.drawString(72, 724, "Account Number: 1234")
+c6.drawString(72, 708, "Statement Period: 01/01/2024 to 01/31/2024")
+c6.drawString(72, 692, "Beginning Balance: $1000.00")
+c6.drawString(72, 676, "Ending Balance: $1126.29")
+c6.drawString(72, 652, "ACCOUNT ACTIVITY")
+
+# Same rows and same reconciliation as chase_checking_simple.pdf:
+# -4.50 + 2000.00 + -73.21 + -150.00 + -1646.00 = 126.29 = 1126.29 - 1000.00 ✓
+unruled_rows = [
+    ("Date", "Description", "Amount"),
+    ("01/02/2024", "COFFEE SHOP", "-4.50"),
+    ("01/05/2024", "PAYROLL DEPOSIT", "2000.00"),
+    ("01/09/2024", "GROCERY MART", "-73.21"),
+    ("01/15/2024", "UTILITIES PAYMENT", "-150.00"),
+    ("01/22/2024", "REFUND", "-1646.00"),
+]
+unruled_y = 632
+for date, desc, amount in unruled_rows:
+    c6.drawString(72, unruled_y, date)
+    c6.drawString(168, unruled_y, desc)
+    c6.drawString(360, unruled_y, amount)
+    unruled_y -= 16
+
+c6.save()
+print(f"wrote {out_unruled}")  # noqa: T201  # one-shot generator script
+
 # ── amex_credit_simple.pdf ────────────────────────────────────────────────────
 # Credit card statement, negative_is_expense convention (charges are negative
 # row amounts). Balance anchors capture unsigned digits — r"([\d,]+\.\d{2})"

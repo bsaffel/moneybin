@@ -189,17 +189,26 @@ class BatchImportResult:
 
 
 # Routing reasons where Phase 2b escalates `import_preview` to the bridge.
-# The deterministic rung produced *something* but couldn't finalize it — the
-# driving agent has a chance to crack the layout where the deterministic path
-# couldn't. ``no_transaction_table``, ``no_rows``, and ``unsupported_number_format``
-# are deliberately NOT in this set: the document isn't transaction-shaped (so
-# bridge would be off-target) or has no extractable content (so a text-bridge
-# has nothing to read).
+# The deterministic rung found a transaction table but couldn't finalize it —
+# the driving agent has a chance to crack the layout where the deterministic
+# path couldn't.
+#
+# ``no_transaction_table``, ``no_rows``, and ``unsupported_number_format`` stay
+# out of this set: the document isn't transaction-shaped (so the bridge would be
+# off-target — a brokerage positions statement belongs in a seed) or has no
+# extractable content (so a text-bridge has nothing to read).
+#
+# ``transaction_table_underivable`` is the case those three used to swallow:
+# routing once reported *every* derivation failure as ``no_transaction_table``,
+# so a statement that WAS transaction-shaped and merely defeated derivation was
+# silently buried in an opaque seed instead of reaching the agent that could
+# read it. Routing now separates the two (see `_Reason` in routing.py).
 _BRIDGE_ELIGIBLE_REASONS: frozenset[str] = frozenset({
     "low_confidence",
     "replay_reconciliation_failed",
     "reconciliation_failed",
     "metadata_incomplete",
+    "transaction_table_underivable",
 })
 
 
@@ -220,7 +229,10 @@ class PdfPreviewResult:
 
     decision_reason: str
     """Routing reason (``passed`` on success; ``no_transaction_table`` /
-    ``no_rows`` / ``unsupported_number_format`` on non-escalating fallbacks)."""
+    ``no_rows`` / ``unsupported_number_format`` on non-escalating fallbacks).
+
+    A transaction-shaped document that defeated derivation reports
+    ``transaction_table_underivable`` and escalates instead of landing here."""
 
     confidence: float
     row_count: int

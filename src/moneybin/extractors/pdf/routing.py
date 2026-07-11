@@ -34,7 +34,11 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from moneybin.database import Database
-from moneybin.extractors.pdf.auto_derive import derive_recipe
+from moneybin.extractors.pdf.auto_derive import (
+    derivation_failure_reason,
+    derive_recipe,
+    recipe_polarity_fits,
+)
 from moneybin.extractors.pdf.column_names import (
     AMOUNT_NAME_RE as _AMOUNT_NAME_RE,
 )
@@ -72,7 +76,8 @@ logger = logging.getLogger(__name__)
 _Reason = Literal[
     "passed",
     "low_confidence",
-    "no_transaction_table",
+    "no_transaction_table",  # not a transaction document at all (e.g. positions statement)
+    "transaction_table_underivable",  # IS transaction-shaped; derivation failed — Phase 2b bridge
     "reconciliation_failed",  # auto-derived recipe failed reconciliation
     "replay_reconciliation_failed",  # saved recipe stopped reconciling — Phase 2b bridge
     "metadata_incomplete",  # opening or closing balance not captured
@@ -309,6 +314,21 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             # for every future import.
             saved_format = None
 
+    if recipe is not None and not recipe_polarity_fits(recipe, doc):
+        # The fingerprint matched but the sign convention doesn't fit this
+        # document — see recipe_polarity_fits. Fall through to auto-derive, whose
+        # own all-positive guard routes the document to seed / the bridge instead
+        # of importing every charge with its sign inverted.
+        logger.warning(
+            f"Saved recipe {saved_format.name!r} is negative_is_expense but this "
+            f"document has no negative amounts — refusing to replay"
+            if saved_format is not None
+            else "Refusing to replay a sign-mismatched recipe"
+        )
+        recipe = None
+        is_replay = False
+        saved_format = None
+
     if recipe is None:
         # Auto-derive: metadata not yet captured; derive_recipe accepts an
         # empty StatementMetadata (documented as forward-compatible unused).
@@ -321,6 +341,12 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         )
         recipe = derive_recipe(doc, empty_meta)
         if recipe is None:
+            # derive_recipe collapses every failure into None, and reporting them
+            # all as "no_transaction_table" (excluded from bridge escalation)
+            # buried real statements in an opaque seed. Ask why it failed so the
+            # three outcomes route differently — not a statement (seed), a locale
+            # the executor can't replay (seed; the bridge provably can't help),
+            # or a statement the deterministic rung couldn't crack (bridge).
             return RouteDecision(
                 outcome="seed",
                 recipe=None,
@@ -333,7 +359,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                     closing_balance=None,
                 ),
                 confidence=0.0,
-                reason="no_transaction_table",
+                reason=derivation_failure_reason(doc),
                 # matched_format_name stays None: early return before saved_format lookup
                 fp=fp,
             )
