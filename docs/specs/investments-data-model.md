@@ -563,6 +563,27 @@ contracts: the `subtype`/`event_group_id` columns, `deposit`/`withdrawal`
 types, the `'cash'` security type + `is_cash_equivalent`, and the
 provider-identifier resolution rung all exist because of this validation.
 
+> **Amended 2026-07-10** (child spec design): "no `core` migration" holds for
+> reshapes but not additions — [`sync-plaid-investments.md`](sync-plaid-investments.md)
+> adds nullable `provider_type`/`provider_subtype` columns to
+> `core.fct_investment_transactions` (provider-fidelity promotion, the
+> `original_description` precedent) and non-authoritative `provider_reported_*`
+> reconciliation columns to `core.dim_holdings`. Additive column migrations
+> only; no rename/retype. The child also supersedes the `dim_securities`
+> "Future: UNION ALL from staging" comment — its resolver mints synced
+> securities into `app.securities` (merchant precedent), so the dim stays a
+> catalog view. One refinement to Requirement 5's "`event_group_id` …
+> truncated UUID4 minted at entry/staging time": staging-synthesized group ids
+> are **content hashes**, not UUIDs — a UUID minted inside a staging view
+> would churn on every SQLMesh rebuild. Manual entry keeps its minted UUID
+> (persisted in raw, so determinism is unaffected). Finally, the Taxonomy
+> mapping table below is **one subtype short**: `stock distribution`
+> (`InvestmentTransactionSubtype.STOCK_DISTRIBUTION`, verified in the Plaid
+> Python SDK 2026-07-10) is a real security-bearing inflow the "48 subtypes,
+> no residue" count missed. It maps to `transfer_in` (opens a lot; the child
+> spec adds the row and a general "unlisted security-bearing subtype → review,
+> never silent `other`" guard). Additive — no existing row changes.
+
 ### Taxonomy mapping (Plaid type/subtype → ours)
 
 Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
