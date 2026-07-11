@@ -25,7 +25,9 @@ from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services.mutation_context import operation
 from moneybin.services.security_links_service import SecurityLinksService
+from moneybin.services.undo_service import UndoService
 
 _REF_VALUE = "sec_1"
 _REF_KIND = "plaid_security_id"
@@ -198,6 +200,76 @@ def test_accept_migrates_lot_selection(
     )
     assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
         (new_lot, Decimal("5"))
+    ]
+
+
+def test_accept_merge_is_fully_undoable(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The real path: a merge that migrated a lot selection undoes as one unit.
+
+    Wraps ``accept_merge`` in ``operation()`` — exactly what the future CLI/MCP
+    seam does — so every child write shares one operation_id, then reverses it
+    through ``UndoService`` the way an agent would. Proves the whole cascade
+    (decision, links, lot selection, catalog row) is undoable together, not
+    just that each repo's ``undo_event`` works in isolation.
+    """
+    provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+
+    # Sanity: the merge actually applied before we undo it.
+    new_lot = compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_buy")
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (new_lot, Decimal("5"))
+    ]
+
+    UndoService(db).undo(op, actor="cli")
+
+    assert _security_exists(db, provisional)
+    assert _accepted_binding(db) == provisional
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None and decision["status"] == "pending"
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (old_lot, Decimal("5"))
+    ]
+
+
+def test_accept_sums_quantities_when_selections_collapse_onto_one_lot(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Two selections that re-hash onto the SAME post-merge lot_id sum, not crash.
+
+    Reachable if a future opening-lot bootstrap mints a ``source_transaction_id``
+    that collides across securities in the same account+date (Task 15 forward
+    risk): the survivor already holds a lot at the exact ``(account_id,
+    acquisition_date, source_transaction_id)`` triple the provisional's lot
+    remaps onto. Writing both as separate rows would violate the
+    ``(investment_transaction_id, lot_id)`` primary key.
+    """
+    provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
+    prov_lot = _add_lot(db, security_id=provisional, source_transaction_id="itx_dup")
+    surv_lot = _add_lot(db, security_id=survivor, source_transaction_id="itx_dup")
+    assert compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_dup") == surv_lot
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(prov_lot, Decimal("3")), (surv_lot, Decimal("4"))],
+        actor="cli",
+    )
+
+    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (surv_lot, Decimal("7"))
     ]
 
 
@@ -412,6 +484,41 @@ def test_accept_raises_when_ref_is_unbound(
     with pytest.raises(UserError, match="No accepted binding"):
         SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
 
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+def test_accept_raises_when_provisional_is_user_authored(db: Database) -> None:
+    """Pre-write guard: refuses before the first write, not just at the last.
+
+    ``SecuritiesRepo.delete`` also enforces "never delete a user-authored
+    row", but only at step 7 of the cascade (after four writes already ran).
+    This check moves the refusal ahead of the first write.
+    """
+    _create_core_tables(db)
+    survivor = _mint(db, name="Vanguard Total Stock Market ETF", created_by="user")
+    user_bound = _mint(db, name="My Custom Security", created_by="user")
+    SecurityLinksRepo(db).insert(
+        security_id=user_bound,
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        decided_by="user",
+        actor="cli",
+    )
+    decision = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=survivor,
+        actor="system",
+    )
+    assert decision.target_id is not None
+
+    with pytest.raises(UserError, match="user-authored"):
+        SecurityLinksService(db).accept_merge(decision.target_id)
+
+    assert _accepted_binding(db, ref_value=_REF_VALUE) == user_bound
+    assert _security_exists(db, user_bound)
     assert SecurityLinkDecisionsRepo(db).count_pending() == 1
 
 

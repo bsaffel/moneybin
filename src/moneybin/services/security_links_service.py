@@ -148,6 +148,12 @@ class SecurityLinksService:
           (MUTATION_CONSTRAINT_VIOLATION).
         - The ref is already bound to the candidate — nothing to merge
           (MUTATION_CONSTRAINT_VIOLATION).
+        - The bound security is user-authored (``created_by='user'``) —
+          user-authored catalog rows are never merged away
+          (MUTATION_CONSTRAINT_VIOLATION). Not reachable via
+          ``SecurityResolver`` today (it only proposes plaid-minted
+          provisionals), but ``SecuritiesRepo.delete`` enforces this too, so
+          the merge must never depend on reaching that check.
         - The candidate security no longer exists (MUTATION_NOT_FOUND) — it must
           not become the ref's new binding.
         - A lot selection cannot be remapped, or ``core`` is not materialized and
@@ -172,6 +178,17 @@ class SecurityLinksService:
                 raise UserError(
                     f"The ref in decision {decision_id!r} is already bound to the "
                     "candidate security; there is nothing to merge.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
+            if self._security_created_by(provisional) != "plaid":
+                # SecuritiesRepo.delete enforces the same rule at the LAST
+                # write of the cascade (step 7); this pre-write check moves
+                # the refusal ahead of the first write, per "Plan (and
+                # validate) BEFORE the first write" below.
+                raise UserError(
+                    f"The security bound to decision {decision_id!r} is "
+                    "user-authored; user-authored securities are never merged "
+                    "away.",
                     code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                 )
             if not self._security_exists(survivor):
@@ -259,6 +276,15 @@ class SecurityLinksService:
         ).fetchone()
         return row is not None
 
+    def _security_created_by(self, security_id: str) -> str | None:
+        """``created_by`` for ``security_id``, or ``None`` if it doesn't exist."""
+        row = self._db.execute(
+            f"SELECT created_by FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE security_id = ? LIMIT 1",
+            [security_id],
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
     def _plan_lot_selections(self, provisional: str, survivor: str) -> _SelectionSet:
         """Compute the post-merge selection set for every disposal on the provisional.
 
@@ -272,6 +298,15 @@ class SecurityLinksService:
           third security) -> **unremappable**: after the merge the disposal draws
           from the survivor's pool, which that lot will never join, so the
           engine would silently drop the election and fall back to FIFO. Block.
+
+        Two selections on the same disposal can re-hash onto the SAME
+        ``new_lot_id`` — e.g. the survivor already holds a lot at the exact
+        ``(account_id, acquisition_date, source_transaction_id)`` a
+        provisional lot remaps onto. Post-merge those genuinely ARE one lot,
+        so their quantities are summed rather than written as two rows: a
+        duplicate ``lot_id`` for one disposal would violate
+        ``lot_selections``'s ``(investment_transaction_id, lot_id)`` primary
+        key.
 
         Returns the full replacement set per touched disposal (unchanged disposals
         omitted) — ``set_for_disposal`` is a whole-set replace, so a partial set
@@ -307,7 +342,7 @@ class SecurityLinksService:
             ) from None
 
         before: _SelectionSet = {}
-        after: _SelectionSet = {}
+        after_quantities: dict[str, dict[str, Decimal]] = {}
         unremappable = 0
         for row in rows:
             disposal_id = str(row[0])
@@ -321,7 +356,8 @@ class SecurityLinksService:
             else:
                 unremappable += 1
                 continue
-            after.setdefault(disposal_id, []).append((new_lot_id, quantity))
+            totals = after_quantities.setdefault(disposal_id, {})
+            totals[new_lot_id] = totals.get(new_lot_id, Decimal("0")) + quantity
 
         if unremappable:
             raise UserError(
@@ -331,6 +367,10 @@ class SecurityLinksService:
                 "sale to FIFO. Clear or correct those selections, then retry.",
                 code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
             )
+        after: _SelectionSet = {
+            disposal_id: sorted(totals.items())
+            for disposal_id, totals in after_quantities.items()
+        }
         return {
             disposal_id: selections
             for disposal_id, selections in after.items()
@@ -338,6 +378,16 @@ class SecurityLinksService:
         }
 
     def _lot_selection_count(self) -> int:
+        """Whole-table count, deliberately over-broad.
+
+        Used only as the "any selections exist at all" fallback when ``core``
+        is absent (see the ``CatalogException`` handler above): with no
+        ``core.fct_investment_lots``/``fct_investment_transactions``, there is
+        no way to tell whether a given selection belongs to the disposal
+        being merged, so this blocks a merge even when every selection is on
+        an unrelated security. That's the safe direction — remappability
+        genuinely can't be verified without ``core`` — not a bug to narrow.
+        """
         row = self._db.execute(
             f"SELECT COUNT(*) FROM {LOT_SELECTIONS.full_name}"  # noqa: S608  # TableRef constant
         ).fetchone()
