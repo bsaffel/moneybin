@@ -582,7 +582,13 @@ provider-identifier resolution rung all exist because of this validation.
 > Python SDK 2026-07-10) is a real security-bearing inflow the "48 subtypes,
 > no residue" count missed. It maps to `transfer_in` (opens a lot; the child
 > spec adds the row and a general "unlisted security-bearing subtype → review,
-> never silent `other`" guard). Additive — no existing row changes.
+> never silent `other`" guard). Additive — no existing row changes. Separately,
+> `buy to cover` / `sell short` are re-routed out of `buy`/`sell` to `other`
+> (with a `system doctor` surface): the long-lot engine can't model short
+> positions, so mapping them to `buy`/`sell` would fabricate a long lot or an
+> oversold phantom gain. This *does* change the two rows above — the sole such
+> change, made because the original mapping was a latent correctness bug, not a
+> reshape. Short/margin accounting stays future work.
 
 ### Taxonomy mapping (Plaid type/subtype → ours)
 
@@ -591,10 +597,11 @@ Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
 
 | Plaid (type/subtype) | → type | → subtype / notes |
 |---|---|---|
-| buy/{buy, buy to cover, contribution} | `buy` | shorts collapse (out of scope) |
+| buy/{buy, contribution} | `buy` | |
 | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source; the paired Plaid income row maps to its income type, linked by `event_group_id` in staging |
 | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
-| sell/{sell, sell short} | `sell` | |
+| sell/sell | `sell` | |
+| buy/buy to cover, sell/sell short | `other` | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids |
 | sell/distribution | `transfer_out` | in-kind outflow from tax-advantaged account |
 | cash-or-fee/{account, legal, management, transfer, trust, fund, miscellaneous} fee, margin expense | `fee` | |
 | cash-or-fee/{tax, tax withheld, non-resident tax} | `fee` | subtype `tax_withheld` |

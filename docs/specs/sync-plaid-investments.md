@@ -625,7 +625,7 @@ The heaviest view in this spec. In order:
    | buy/{buy, contribution} | `buy` | |
    | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source (`dividend`/`interest`/`capital_gain`); the paired Plaid income row maps to its own income type, linked by `event_group_id` |
    | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
-   | sell/{sell} | `sell` | |
+   | sell/sell | `sell` | |
    | buy/buy to cover, sell/sell short | `other` | **short-position legs.** The engine models only long lots, so mapping these to `buy`/`sell` would open a spurious long lot / realize an oversold phantom gain. Routed to `other` (recorded, kept out of the lot engine) until short accounting is modeled (margin/short is future work); `system doctor` surfaces the unmodeled short activity. This is a *deliberate* route to `other`, not the accidental security-bearing default the guard below forbids |
    | sell/distribution | `transfer_out` | in-kind outflow from tax-advantaged account |
    | transfer/stock distribution | `transfer_in` | in-kind **inflow** of shares (stock dividend / distribution) — opens a lot carrying supplied basis, or a `basis_incomplete` lot when none is given. **Must not fall to `other`**: `other` is not an acquisition type, so the engine would skip it and the shares would never enter holdings |
@@ -996,6 +996,7 @@ data still loads.
 | Test area | What's tested |
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
+| `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
 | `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
 
@@ -1056,7 +1057,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
-| `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), and engine-derived held lots diverging from the `tax_lots` snapshot |
+| `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), engine-derived held lots diverging from the `tax_lots` snapshot, and **short-leg activity** (`buy to cover`/`sell short` mapped to `other`) surfaced as unmodeled |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | Review sweep (CLI `review` / MCP) | Add `security_links_pending` count |
 
