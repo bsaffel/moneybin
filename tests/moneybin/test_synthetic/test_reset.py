@@ -3,7 +3,11 @@
 import pytest
 
 from moneybin.database import Database
-from moneybin.synthetic.reset import RESET_DELETIONS, reset_synthetic_rows
+from moneybin.synthetic.reset import (
+    RESET_DELETIONS,
+    has_non_synthetic_data,
+    reset_synthetic_rows,
+)
 
 _INSERT = (
     "INSERT INTO raw.tabular_transactions "
@@ -50,3 +54,42 @@ def test_reset_deletions_allowlist_is_synthetic_scoped() -> None:
         if table.endswith("ground_truth"):
             continue
         assert "synthetic://" in where, f"{table} deletion is not synthetic-scoped"
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_ignores_synthetic_rows(db: Database) -> None:
+    db.execute(
+        _INSERT,
+        [
+            "s1",
+            "acct",
+            "2025-01-01",
+            "10.00",
+            "synthetic://basic/42/csv",
+            "csv",
+            "syn",
+            "imp1",
+        ],
+    )
+    assert has_non_synthetic_data(db) is False
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_real_tabular(db: Database) -> None:
+    db.execute(
+        _INSERT,
+        ["r1", "acct", "2025-01-01", "10.00", "user-upload.csv", "csv", "user", "imp1"],
+    )
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_plaid(db: Database) -> None:
+    # Plaid rows are never generator-created — any row means real data.
+    db.execute(
+        "INSERT INTO raw.plaid_transactions "
+        "(transaction_id, account_id, transaction_date, amount, source_file, source_origin) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        ["p1", "acct", "2025-01-01", "10.00", "sync_1", "item1"],
+    )
+    assert has_non_synthetic_data(db) is True

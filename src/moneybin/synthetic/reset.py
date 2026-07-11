@@ -10,9 +10,11 @@ import logging
 from moneybin.database import Database
 from moneybin.tables import (
     GROUND_TRUTH,
+    MANUAL_TRANSACTIONS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_TRANSACTIONS,
+    PLAID_TRANSACTIONS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
 )
@@ -45,6 +47,34 @@ def has_synthetic_ground_truth(db: Database) -> bool:
         return bool(row and row[0])
     except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
         return False
+
+
+def has_non_synthetic_data(db: Database) -> bool:
+    """True if the profile holds any transaction the generator did NOT create.
+
+    The generator only ever writes OFX/tabular rows tagged
+    ``source_file LIKE 'synthetic://%'``. Real data therefore appears as
+    non-``synthetic://`` rows in those tables, or as ANY row in the Plaid or
+    manual raw tables (which the generator never touches). Any such row means
+    this is a real financial profile — the demo preset must refuse to seed it,
+    regardless of whether the ``synthetic.ground_truth`` marker table exists.
+    """
+    # (table, extra WHERE) — non-synthetic := non-`synthetic://` OFX/tabular
+    # rows, or ANY Plaid/manual row (the generator never writes those tables).
+    real_row_checks = (
+        (OFX_TRANSACTIONS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
+        (TABULAR_TRANSACTIONS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
+        (PLAID_TRANSACTIONS.full_name, ""),
+        (MANUAL_TRANSACTIONS.full_name, ""),
+    )
+    for table, where in real_row_checks:
+        try:
+            row = db.execute(f"SELECT 1 FROM {table} {where} LIMIT 1").fetchone()  # noqa: S608  # allowlisted TableRef names + literal WHERE clauses
+        except Exception:  # noqa: BLE001,S112 — table may not exist in a fresh/partial DB
+            continue
+        if row:
+            return True
+    return False
 
 
 def reset_synthetic_rows(db: Database) -> None:

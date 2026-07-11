@@ -144,3 +144,38 @@ def test_profile_has_data(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Non
             ["t1", "acct", "2025-01-01", "10.00", "user.csv", "csv", "user", "imp1"],
         )
     assert svc.profile_has_data("demo") is True
+
+
+@pytest.mark.integration
+def test_refuses_real_import_in_ground_truth_profile(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A demo profile (synthetic.ground_truth present) that later received a real
+    # import must still be refused — reset_synthetic_rows would leave the real
+    # rows and generate synthetic data on top of them otherwise.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker)  # would succeed if the guard didn't fire first
+
+    from moneybin.config import set_current_profile
+    from moneybin.database import get_database
+    from moneybin.services.profile_service import ProfileService
+
+    ProfileService().create("demo", init_inbox=False)
+    set_current_profile("demo")
+    with get_database(read_only=False) as db:
+        # Mark the profile as generator-created …
+        db.execute("CREATE SCHEMA IF NOT EXISTS synthetic")
+        db.execute("CREATE TABLE IF NOT EXISTS synthetic.ground_truth (id VARCHAR)")
+        # … but sneak in a real (non-synthetic) import.
+        db.execute(
+            "INSERT INTO raw.tabular_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "source_file, source_type, source_origin, import_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ["real1", "acct", "2025-01-01", "10.00", "user.csv", "csv", "user", "imp1"],
+        )
+
+    with pytest.raises(ProfileHasNonSyntheticDataError):
+        DemoService().run(
+            persona="basic", profile="demo", seed=42, reset_confirmed=True
+        )

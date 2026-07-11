@@ -109,6 +109,7 @@ class DemoService:
         from moneybin.services.refresh import refresh
         from moneybin.synthetic.engine import GeneratorEngine
         from moneybin.synthetic.reset import (
+            has_non_synthetic_data,
             has_synthetic_ground_truth,
             reset_synthetic_rows,
         )
@@ -128,7 +129,15 @@ class DemoService:
         set_default_profile(profile)
 
         with get_database(read_only=False) as db:
-            # 3. Reset generator data, or refuse a profile holding real data.
+            # 3a. Refuse any profile holding real (non-synthetic) data — from
+            #     ANY source (OFX/tabular non-`synthetic://` rows, Plaid, manual)
+            #     and regardless of the `synthetic.ground_truth` marker. This is
+            #     the demo-isolation guard: never seed synthetic rows onto real
+            #     financial data.
+            if has_non_synthetic_data(db):
+                raise ProfileHasNonSyntheticDataError(profile)
+
+            # 3b. Only synthetic data (or empty) remains — safe to regenerate.
             if has_synthetic_ground_truth(db):
                 if not reset_confirmed and _count_transactions(db) > 0:
                     # The CLI confirms before calling with reset_confirmed=True;
@@ -137,8 +146,6 @@ class DemoService:
                         f"Profile {profile!r} already has data; reset not confirmed."
                     )
                 reset_synthetic_rows(db)
-            elif _count_transactions(db) > 0:
-                raise ProfileHasNonSyntheticDataError(profile)
 
             # 4. Generate persona data.
             result = GeneratorEngine(persona, seed=seed, years=years).generate()
