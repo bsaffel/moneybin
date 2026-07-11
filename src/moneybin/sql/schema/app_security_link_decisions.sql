@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS app.security_link_decisions (
     match_reason VARCHAR,                      -- e.g. fuzzy_name
     decided_at TIMESTAMP NOT NULL,             -- when this decision row last changed state
     reversed_at TIMESTAMP,                     -- when reversed; NULL otherwise
-    reversed_by VARCHAR,                       -- who reversed; NULL otherwise
+    reversed_by VARCHAR                        -- who reversed; NULL otherwise
+        CHECK (reversed_by IS NULL OR reversed_by IN ('auto', 'user')),
     PRIMARY KEY (decision_id)
 );
