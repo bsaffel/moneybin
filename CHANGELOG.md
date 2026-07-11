@@ -325,6 +325,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   open. V032 now only rebuilds `app.user_categories`; the seed table's `class`
   column is owned by SQLMesh and derived by `refresh_views()`, so an upgraded
   database recovers automatically on the next run. (#306)
+- **A second migration (V012) no longer stuck-fails on a fully-materialized
+  database.** V012 ran `DROP TABLE IF EXISTS` over `seeds.merchants_global/us/ca` —
+  former SQLMesh seed models that are views on a materialized database, where
+  `DROP TABLE` on a view raises `CatalogException` (the same class as the V032 fix
+  above). V012 now drops only the migration-owned `app.merchant_overrides` and
+  leaves the seed relations to SQLMesh. A static test (`test_migration_schema_ownership`)
+  now scans every migration and fails CI on any migration that writes a
+  SQLMesh-owned schema. (#309)
 - **`import_preview` surfaces header detection and row-count reconciliation.**
   Silent header-eating (a real data row mistaken for a header) was invisible in
   the preview envelope. The envelope now carries `has_header`, `skip_rows`, and
