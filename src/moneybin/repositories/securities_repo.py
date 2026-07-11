@@ -1,11 +1,18 @@
-"""Audited writes to ``app.securities`` (manually-maintained security catalog).
+"""Audited writes to ``app.securities`` (security catalog with provenance).
 
 Per ``docs/specs/app-integrity-invariant.md`` (Invariant 10), every mutation of
 this table flows through a ``*Repo`` that pairs the write with an
 ``app.audit_log`` row inside the same DuckDB transaction. A future service
-layer composes this instead of raw SQL; partial-field editing (updating only
-some columns of an existing security) is a service-layer concern, not this
-repo's — ``upsert`` always writes the full row.
+layer composes this instead of raw SQL.
+
+``created_by`` (``'user'`` or ``'plaid'``) distinguishes user-authored catalog
+rows from provider-minted ones. ``upsert`` always writes the full row and sets
+``created_by`` on INSERT only — never on the ``ON CONFLICT`` update, so
+provenance is immutable after mint. ``refresh_provider_attributes`` is the one
+deliberate partial-field update: it refreshes name/type/ticker on a
+``created_by='plaid'`` row only, a no-op (returns ``None``) on any other row.
+``delete`` removes a ``created_by='plaid'`` row only (the merge-accept path);
+user-authored rows are never deletable through this repo.
 """
 
 from __future__ import annotations
@@ -30,13 +37,14 @@ _SECURITIES_COLUMNS = (
     "is_cash_equivalent",
     "cost_basis_method",
     "currency_code",
+    "created_by",
     "created_at",
     "updated_at",
 )
 
 
 class SecuritiesRepo(BaseRepo):
-    """Audited upsert over ``app.securities`` (manually-maintained security catalog)."""
+    """Audited mint/refresh/delete over ``app.securities`` (security catalog)."""
 
     repository = "securities"
 
@@ -63,6 +71,7 @@ class SecuritiesRepo(BaseRepo):
         is_cash_equivalent: bool | None = None,
         cost_basis_method: str | None = None,
         currency_code: str = "USD",
+        created_by: str = "user",
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
@@ -77,6 +86,11 @@ class SecuritiesRepo(BaseRepo):
         ``updated_at`` in the ``DO UPDATE`` clause: DuckDB parses
         ``CURRENT_TIMESTAMP`` as an identifier in that position, not a call.
 
+        ``created_by`` (default ``"user"``) sets provenance on INSERT only —
+        deliberately absent from the ``DO UPDATE SET`` list, so a conflicting
+        upsert (e.g. the resolver re-touching a row) can never flip an
+        existing row's provenance. Provenance is immutable after mint.
+
         Returns the :class:`AuditEvent`; the resulting ``security_id`` (minted
         or caller-supplied) is its ``target_id`` — coherent with the sibling
         mint-on-insert repos (e.g. ``UserMerchantsRepo.insert``).
@@ -89,8 +103,8 @@ class SecuritiesRepo(BaseRepo):
                 INSERT INTO {SECURITIES.full_name} (
                     security_id, name, security_type, ticker, exchange,
                     cusip, isin, figi, coingecko_id, is_cash_equivalent,
-                    cost_basis_method, currency_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cost_basis_method, currency_code, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (security_id) DO UPDATE SET
                     name               = excluded.name,
                     security_type      = excluded.security_type,
@@ -118,6 +132,7 @@ class SecuritiesRepo(BaseRepo):
                     is_cash_equivalent,
                     cost_basis_method,
                     currency_code,
+                    created_by,
                 ],
             )
             after = self._fetch_row(resolved_id)
@@ -126,6 +141,85 @@ class SecuritiesRepo(BaseRepo):
                 target=(*self._audit_target, resolved_id),
                 before=self._serialize_for_audit(before),
                 after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def refresh_provider_attributes(
+        self,
+        security_id: str,
+        *,
+        name: str,
+        security_type: str,
+        ticker: str | None,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Update provider-refreshable attributes on a plaid-minted row.
+
+        Only ``name``/``security_type``/``ticker`` are refreshable — every
+        other column (exchange, cusip, isin, figi, coingecko_id,
+        is_cash_equivalent, cost_basis_method, currency_code, created_by) is
+        left untouched by the ``UPDATE``'s explicit column list.
+
+        Returns ``None`` (no write, no audit) for user-authored or missing
+        rows — the resolver's "never touch created_by='user'" rule is
+        enforced HERE.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(security_id)
+            if before is None or before.get("created_by") != "plaid":
+                return None
+            self._db.execute(
+                f"""
+                UPDATE {SECURITIES.full_name}
+                SET name = ?, security_type = ?, ticker = ?, updated_at = NOW()
+                WHERE security_id = ?
+                """,  # noqa: S608  # TableRef + parameterized values
+                [name, security_type, ticker, security_id],
+            )
+            after = self._fetch_row(security_id)
+            return self._emit_audit(
+                action="securities.refresh",
+                target=(*self._audit_target, security_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def delete(
+        self,
+        security_id: str,
+        *,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Delete a provider-minted catalog row (merge-accept path only).
+
+        Raises ``ValueError`` for a ``created_by='user'`` row — user-authored
+        catalog entries are never deletable through this path.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(security_id), "security_id", security_id
+            )
+            if before.get("created_by") != "plaid":
+                raise ValueError(
+                    f"securities.delete: {security_id} is user-authored; only "
+                    "provider-minted (created_by='plaid') rows are deletable"
+                )
+            self._db.execute(
+                f"DELETE FROM {SECURITIES.full_name} WHERE security_id = ?",  # noqa: S608  # TableRef + parameterized value
+                [security_id],
+            )
+            return self._emit_audit(
+                action="securities.delete",
+                target=(*self._audit_target, security_id),
+                before=self._serialize_for_audit(before),
+                after=None,
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
