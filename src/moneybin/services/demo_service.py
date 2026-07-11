@@ -202,8 +202,12 @@ class DemoService:
         # create and fully schema-initialize an empty database (only `read_only=True`
         # raises `DatabaseNotInitializedError`), so we'd guard a database we had just
         # made and then throw that whole init away in `_rebuild_database`.
+        #
+        # And read it read-only: a write open runs pending schema migrations, which
+        # would migrate a real, schema-stale profile that merely happens to be named
+        # `demo` *before* the guard below gets to refuse it. The guard only reads.
         if get_settings().database.path.exists():
-            with get_database(read_only=False) as db:
+            with get_database(read_only=True) as db:
                 generator_made = has_synthetic_ground_truth(db)
                 has_transactions = _count_transactions(db) > 0
 

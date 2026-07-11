@@ -98,6 +98,19 @@ def main_callback(
     stash_cli_flags(profile_name, verbose)
     setup_observability(stream="cli", verbose=verbose, profile=None)
 
+    # `demo` always targets the dedicated `demo` profile, so a --profile alongside it
+    # would be silently discarded. Reject it rather than accept-and-ignore: quietly
+    # doing something other than what the flag says is exactly the invisible magic
+    # `design-principles.md` rules out. (An ambient MONEYBIN_PROFILE is not an
+    # instruction about *this* command, so it stays tolerated and overridden.)
+    if ctx.invoked_subcommand == "demo" and profile_name:
+        raise typer.BadParameter(
+            "'demo' always targets the dedicated 'demo' profile and cannot be pointed "
+            "at another one. Drop --profile, or use 'moneybin synthetic generate' for "
+            "a differently-named synthetic sandbox.",
+            param_hint="--profile",
+        )
+
     # Set the active profile name eagerly when one is explicit. This only
     # validates the name format and updates module state — no dir check,
     # no I/O — so it's safe for `--help` and bare-group invocations.

@@ -315,6 +315,16 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **Net worth no longer drops accounts with older statements.**
+  `core.fct_balances_daily` built each account's date spine only as far as *that
+  account's* last balance observation, so on any later date the account simply
+  vanished — and `reports.net_worth` sums the accounts present on a date. An account
+  whose statement landed a week before another's therefore contributed nothing to
+  the current net worth: a checking account with one January statement was absent
+  from a December total. Every account is now carried forward to the newest known
+  date, so net worth reflects each account's last known balance. Accounts that are
+  genuinely gone are excluded by archiving them (`include_in_net_worth` / `archived`,
+  already honored), not by silently ageing out. (#310)
 - **First-run guidance points an unset-up profile at `profile create`.** When the
   active profile has never been set up at all, the "Database not found" message
   now recommends `moneybin profile create <name> --init-inbox` (which scaffolds

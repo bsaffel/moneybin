@@ -84,6 +84,17 @@ def test_demo_rejects_unknown_persona(mocker: Any) -> None:
 
 
 @pytest.mark.unit
+def test_demo_rejects_the_global_profile_flag(mocker: Any) -> None:
+    # The global -p/--profile was parsed and applied, then silently discarded by
+    # demo (which always targets `demo`). Accept-and-ignore is invisible magic —
+    # say no instead.
+    svc = _patch_service(mocker, _fake_result())
+    result = runner.invoke(app, ["--profile", "my-real-money", "demo", "--yes"])
+    assert result.exit_code == 2  # usage error
+    svc.run.assert_not_called()
+
+
+@pytest.mark.unit
 def test_demo_has_no_profile_flag(mocker: Any) -> None:
     # demo always targets the dedicated `demo` profile — it must not be
     # pointable at an arbitrary (possibly real) profile.

@@ -52,12 +52,30 @@ def seed_merchant_catalog(db: Database, result: GenerationResult) -> int:
         ).fetchall()
     }
 
+    # A pattern that two catalogs claim cannot be resolved by a `contains` rule: the
+    # shipped data has `AMZN MKTP` in shopping, education AND gifts, and `freelancer`
+    # loads two of them. Letting the first seed win would silently file Amazon Books
+    # purchases under Shopping *while still counting them categorized* — a wrong
+    # answer dressed up as a right one. Leave them uncategorized instead; that is
+    # honest, and it is what the descriptions actually support.
+    categories_per_pattern: dict[str, set[str]] = {}
+    for merchant in result.merchant_seeds:
+        categories_per_pattern.setdefault(merchant.pattern, set()).add(
+            merchant.synthetic_category
+        )
+    ambiguous = {p for p, cats in categories_per_pattern.items() if len(cats) > 1}
+    if ambiguous:
+        logger.warning(
+            f"Skipping {len(ambiguous)} merchant pattern(s) claimed by more than one "
+            f"category: {', '.join(sorted(ambiguous))}"
+        )
+
     repo = UserMerchantsRepo(db)
     category_ids: dict[str, str | None] = {}
     written = 0
 
     for merchant in result.merchant_seeds:
-        if merchant.pattern in existing:
+        if merchant.pattern in existing or merchant.pattern in ambiguous:
             continue
 
         synthetic_category = merchant.synthetic_category

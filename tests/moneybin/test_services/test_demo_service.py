@@ -209,6 +209,34 @@ def test_rebuild_requires_confirmation(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("persona", ["basic", "family", "freelancer"])
+def test_demo_net_worth_covers_every_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
+) -> None:
+    # Demo's one headline answer. It used to print "Net worth: 0.00": every account
+    # is carried in `core.fct_balances_daily` only to its OWN last observation, so on
+    # the latest date — the one `NetworthService.current()` reports — accounts with
+    # older statements had already dropped out. The OFX accounts carry a single
+    # opening-day balance, so they vanished entirely, and `basic`'s remaining account
+    # happened to sit at zero.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.database import get_database
+
+    result = DemoService().run(persona=persona, seed=42, years=1)
+
+    assert result.net_worth != Decimal("0")
+
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT account_count FROM reports.net_worth "
+            "ORDER BY balance_date DESC LIMIT 1"
+        ).fetchone()
+        assert row is not None
+        # Every generated account contributes on the latest date — none aged out.
+        assert row[0] == result.account_count
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("persona", ["basic", "family", "freelancer"])
 def test_demo_ships_a_categorized_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
 ) -> None:
