@@ -210,8 +210,18 @@ class SecurityLinksService:
 
         refresh_security_link_pending_gauge(self._db)
 
-    def accept_merge(self, decision_id: str, *, decided_by: str = "user") -> None:
+    def accept_merge(
+        self, decision_id: str, *, into: str, decided_by: str = "user"
+    ) -> None:
         """Merge the provisional security into the decision's candidate, atomically.
+
+        ``into`` is a confirming safety check (mirrors
+        :class:`~moneybin.services.merchant_links_service.MerchantLinksService.set`):
+        it must equal the decision's own ``candidate_security_id``, so the
+        caller cannot accidentally merge into a different security than the
+        one it reviewed — this matters most on a tied group, where the
+        resolver files one decision per candidate and a wrong pick both
+        merges into the wrong security AND auto-rejects the right one.
 
         In ONE transaction:
 
@@ -234,6 +244,8 @@ class SecurityLinksService:
         Raises ``UserError`` when:
         - ``decision_id`` is unknown (MUTATION_NOT_FOUND) or not ``pending``
           (MUTATION_CONSTRAINT_VIOLATION) — a decision never decides twice.
+        - ``into`` does not match the decision's ``candidate_security_id``
+          (MUTATION_INVALID_INPUT) — pass the decision's own candidate id.
         - The ref has no accepted binding to merge away
           (MUTATION_CONSTRAINT_VIOLATION).
         - The ref is already bound to the candidate — nothing to merge
@@ -252,6 +264,13 @@ class SecurityLinksService:
         self._db.begin()
         try:
             decision = self._require_pending(decision_id)
+            if into != decision["candidate_security_id"]:
+                raise UserError(
+                    "into does not match the candidate named in decision "
+                    f"{decision_id!r}; pass the decision's own "
+                    "candidate_security_id as a confirming safety check.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
             survivor = str(decision["candidate_security_id"])
             provisional = self._links.lookup(
                 ref_kind=decision["ref_kind"],

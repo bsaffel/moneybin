@@ -48,16 +48,15 @@ async def test_review_data_shape(mcp_db: object) -> None:
 
 @pytest.mark.unit
 async def test_review_actions_mention_drill_down_queues(mcp_db: object) -> None:
-    """actions[] guides the agent to all four MCP-drillable queues, each with a drill-down tool.
+    """actions[] guides the agent to all five MCP-drillable queues, each with a drill-down tool.
 
-    Four review queues have dedicated drill-down tools:
+    All five review queues have dedicated drill-down tools:
     - transactions_matches_pending for the matches queue
     - transactions_categorize_pending for the categorize queue
     - accounts_links_pending for the account-links queue
     - merchants_links_pending for the merchant-links queue (added in M1T)
-
-    The fifth queue (security-links) has no MCP drill-down tool yet — see
-    test_review_actions_mention_security_links_cli_path below.
+    - investments_securities_links_pending for the security-links queue
+      (added M1G.4)
     """
     parsed = (await review()).to_dict()
     actions_text = " ".join(parsed["actions"])
@@ -65,14 +64,7 @@ async def test_review_actions_mention_drill_down_queues(mcp_db: object) -> None:
     assert "transactions_categorize_pending" in actions_text
     assert "accounts_links_pending" in actions_text
     assert "merchants_links_pending" in actions_text
-
-
-@pytest.mark.unit
-async def test_review_actions_mention_security_links_cli_path(mcp_db: object) -> None:
-    """actions[] points the agent at the CLI for the security-links queue (no MCP tool yet)."""
-    parsed = (await review()).to_dict()
-    actions_text = " ".join(parsed["actions"])
-    assert "investments securities links pending" in actions_text
+    assert "investments_securities_links_pending" in actions_text
 
 
 @pytest.mark.unit

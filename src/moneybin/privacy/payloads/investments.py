@@ -487,6 +487,14 @@ class SecurityLinksPendingPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class SecurityLinksSetPayload:
+    """Payload for ``investments_securities_links_set`` — confirmation of the decision applied."""
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]  # "accepted" or "rejected"
+
+
+@dataclass(frozen=True, slots=True)
 class SecurityLinkHistoryRow:
     """One past security-link decision (``investments securities links history`` result)."""
 

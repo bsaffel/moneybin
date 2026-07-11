@@ -150,7 +150,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             "Use transactions_matches_pending to fetch the matches queue",
             "Use accounts_links_pending to fetch the account-links queue",
             "Use merchants_links_pending to fetch the merchant-links queue",
-            "Use `moneybin investments securities links pending` (CLI) to fetch the security-links queue",
+            "Use investments_securities_links_pending to fetch the security-links queue",
         ],
     )
 
@@ -170,8 +170,9 @@ def review() -> ResponseEnvelope[ReviewStatusPayload]:
     decide each group with ``accounts_links_set``.
     For merchant links, fetch the queue via ``merchants_links_pending`` and
     decide each group with ``merchants_links_set``.
-    For security links, use the `moneybin investments securities links
-    {pending,set,history}` CLI — no MCP tool is registered for this queue yet.
+    For security links, fetch the queue via
+    ``investments_securities_links_pending`` and decide each group with
+    ``investments_securities_links_set``.
     """
     return _build_review_envelope()
 

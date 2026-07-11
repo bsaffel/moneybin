@@ -727,6 +727,44 @@ Set (or clear) the full specific-identification lot selection for a disposal (Sh
 
 ---
 
+## 5d. `investments_securities_links_*` — Security-identity merge review workflow (M1G.4)
+
+**Service class:** `SecurityLinksService`
+
+These three tools implement the security-identity review surface: the agent-facing peer to the `investments securities links` CLI (Task 12), mirroring `merchants_links_*` (§5b). `SecurityResolver` refuses to auto-merge two securities when their identity is ambiguous (an identifier tie, a stripped ticker, a cross-exchange contradiction, a fuzzy name match) — it files one pending decision per candidate instead. A wrong accept re-points every provider ref and tax lot onto the wrong security, so `investments_securities_links_set` carries a confirming safety check (`into` must equal the decision's own `candidate_security_id`) that `merchants_links_set`'s `target_merchant_id` guard also carries — this is transport parity, not agent self-accept: the agent relays a human decision, and the resolver's refusal to infer silently is untouched.
+
+> **Note:** An undo variant (`investments_securities_links_undo`) remains deliberately out of scope, deferred to the M1L audit-undo consumer, same as `merchants_links_undo` / `accounts_links_undo`.
+
+### `investments_securities_links_pending`
+
+- **Sensitivity:** derived from payload fields — `ref_value`/`decision_id`/`candidate_security_id` are `RECORD_ID`; `provider_ticker`/`provider_name`/`candidate_ticker`/`candidate_name` are `TXN_TYPE`; `match_reason` is `USER_NOTE`; `confidence` is `AGGREGATE`.
+- **Unique parameters:** None.
+- **Behavior:** Returns all provider refs (`plaid_security_id` or `institution_security_id`) with pending merge-survivor candidates, grouped by ref. Each group carries BOTH sides of the proposed merge — `provider_ticker`/`provider_name` (what's being merged) alongside each candidate's `candidate_ticker`/`candidate_name` (what it would merge into) — and each candidate carries `match_reason` (`identifier_tie`, `exchange_contradiction`, `fuzzy_name`, ...), the field that conveys how risky accepting is. Use `investments_securities_links_set` to decide each group.
+- **Service:** `SecurityLinksService(db, actor="mcp").pending()` + `.count_pending()`
+- **CLI:** `moneybin investments securities links pending`
+- **read_only:** true
+
+### `investments_securities_links_set`
+
+- **Sensitivity:** `low` — returns `decision_id` (RECORD_ID) and `status` (TXN_TYPE) only.
+- **Parameters:** `decision_id: str`, `into: str | None`
+- **Behavior:** Accepts (merges) or rejects one pending security merge decision. `into` must equal the decision's own `candidate_security_id` — a confirming safety check; raises `MUTATION_INVALID_INPUT` on mismatch, same shape as `merchants_links_set`'s `target_merchant_id` guard — → MERGE (re-points every accepted provider ref and tax lot from the provisional security onto the survivor in one transaction; auto-rejects sibling candidates for the same ref). `into = null` → REJECT (marks only this decision rejected; sibling candidates for the same provider ref remain pending — unlike `merchants_links_set`'s reject-all, rejecting one security candidate does not answer whether another candidate is the correct match).
+- **Mutation surface:** writes `app.security_link_decisions` + `app.security_links` + `app.lot_selections` + `app.securities` (deletes the merged-away provisional row on accept); revert via `app.audit_log` (no undo tool; deferred to M1L).
+- **Service:** `SecurityLinksService(db, actor="mcp").accept_merge(decision_id, into=..., decided_by="user")` / `.reject_merge(decision_id, decided_by="user")`
+- **CLI:** `moneybin investments securities links set <decision_id> --accept --into <candidate_security_id>` / `--reject`
+- **read_only:** false
+
+### `investments_securities_links_history`
+
+- **Sensitivity:** derived from payload fields (same classification as `_pending`, plus `decided_at` as `TIMESTAMP_OBSERVABILITY`).
+- **Parameters:** `limit: int = 50`
+- **Behavior:** Returns all security-link decisions (any status), newest first. Filter by `limit`.
+- **Service:** `SecurityLinksService(db, actor="mcp").history(limit=limit)`
+- **CLI:** `moneybin investments securities links history`
+- **read_only:** true
+
+---
+
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
 
 **Service class:** `TransactionService` (search, correct, annotate), `MatchService` (matches sub-domain)
@@ -749,7 +787,7 @@ Orientation tool: pending counts across **all five** review queues (matches + ca
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, security_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, `accounts_links_pending` for account-link decisions, and `merchants_links_pending` for merchant-link decisions. The security-links queue (M1G.4 Task 12) has no MCP drill-down tool yet — use the `moneybin investments securities links {pending,set,history}` CLI.
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, security_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, `accounts_links_pending` for account-link decisions, `merchants_links_pending` for merchant-link decisions, and `investments_securities_links_pending` for security-link decisions (see §5d).
 - **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService, MerchantLinksService, SecurityLinksService).status()`
 - **CLI:** `moneybin review`
 
@@ -1348,7 +1386,7 @@ Query recent privacy-log events.
 
 ## 12. `system_*`, `reports_*`, `refresh_run` — Data status, reports projections, and the refresh umbrella
 
-**Service class:** `OverviewService`
+**Service class:** `SystemService`
 
 ### `system_status`
 

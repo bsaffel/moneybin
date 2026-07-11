@@ -138,7 +138,9 @@ def merge_setup(db: Database) -> dict[str, str]:
 def test_accept_rebinds_deletes_and_accepts(
     db: Database, merge_setup: dict[str, str]
 ) -> None:
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     assert _accepted_binding(db) == merge_setup["survivor"]
     assert not _security_exists(db, merge_setup["provisional"])
@@ -163,7 +165,9 @@ def test_accept_repoints_every_accepted_ref(
         actor="system",
     )
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     assert _accepted_binding(db) == merge_setup["survivor"]
     assert (
@@ -194,7 +198,9 @@ def test_accept_migrates_lot_selection(
         actor="cli",
     )
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     new_lot = compute_lot_id(
         "acc_1", merge_setup["survivor"], date(2024, 3, 1), "itx_buy"
@@ -225,7 +231,9 @@ def test_accept_merge_is_fully_undoable(
     )
 
     with operation() as op:
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     # Sanity: the merge actually applied before we undo it.
     new_lot = compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_buy")
@@ -267,7 +275,9 @@ def test_accept_sums_quantities_when_selections_collapse_onto_one_lot(
         actor="cli",
     )
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
         (surv_lot, Decimal("7"))
@@ -294,7 +304,9 @@ def test_accept_preserves_untouched_selections_in_a_migrated_disposal(
         actor="cli",
     )
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     remapped = compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_buy")
     assert sorted(LotSelectionsRepo(db).list_for_disposal("itx_sell")) == sorted([
@@ -325,7 +337,9 @@ def test_accept_auto_rejects_sibling_decisions(
     )
     assert unrelated.target_id is not None
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     repo = SecurityLinkDecisionsRepo(db)
     sibling_row = repo.fetch_by_id(sibling.target_id)
@@ -348,7 +362,9 @@ def test_accept_audit_chain_shares_one_parent(
         actor="cli",
     )
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     parent = db.execute(
         """
@@ -388,7 +404,9 @@ def test_unremappable_selection_blocks_merge(
     )
 
     with pytest.raises(UserError, match="cannot be deterministically remapped"):
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     # Nothing changed: binding still on the provisional, decision still pending,
     # provisional catalog row intact, selection untouched.
@@ -418,7 +436,9 @@ def test_selection_on_a_third_securitys_lot_blocks_merge(
     )
 
     with pytest.raises(UserError, match="cannot be deterministically remapped"):
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     assert _accepted_binding(db) == merge_setup["provisional"]
     assert SecurityLinkDecisionsRepo(db).count_pending() == 1
@@ -437,7 +457,9 @@ def test_accept_blocks_when_core_absent_and_selections_exist(
     )
 
     with pytest.raises(UserError, match="not been materialized"):
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     assert _accepted_binding(db) == merge_setup["provisional"]
     assert SecurityLinkDecisionsRepo(db).count_pending() == 1
@@ -449,7 +471,9 @@ def test_accept_proceeds_when_core_absent_and_no_selections(
     db.execute("DROP TABLE core.fct_investment_lots")
     db.execute("DROP TABLE core.fct_investment_transactions")
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     assert _accepted_binding(db) == merge_setup["survivor"]
     assert not _security_exists(db, merge_setup["provisional"])
@@ -460,15 +484,36 @@ def test_accept_proceeds_when_core_absent_and_no_selections(
 
 def test_accept_twice_raises(db: Database, merge_setup: dict[str, str]) -> None:
     service = SecurityLinksService(db)
-    service.accept_merge(merge_setup["decision_id"])
+    service.accept_merge(merge_setup["decision_id"], into=merge_setup["survivor"])
 
     with pytest.raises(UserError, match="not pending"):
-        service.accept_merge(merge_setup["decision_id"])
+        service.accept_merge(merge_setup["decision_id"], into=merge_setup["survivor"])
+
+
+def test_accept_wrong_into_raises(db: Database, merge_setup: dict[str, str]) -> None:
+    """``into`` != the decision's candidate_security_id -> UserError.
+
+    The confirming safety check: passing a security id that is not the
+    decision's own candidate must raise MUTATION_INVALID_INPUT before any
+    other validation, mirroring
+    ``MerchantLinksService.set``'s ``target_merchant_id`` guard. Matters most
+    on a tied group, where accepting the wrong decision_id both merges into
+    the wrong security AND auto-rejects the right one.
+    """
+    other = _mint(db, name="Some Other Fund", created_by="user")
+
+    with pytest.raises(UserError, match="does not match"):
+        SecurityLinksService(db).accept_merge(merge_setup["decision_id"], into=other)
+
+    # Rolled back: still pending, provisional binding untouched.
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert _security_exists(db, merge_setup["provisional"])
 
 
 def test_accept_unknown_decision_raises(db: Database) -> None:
     with pytest.raises(UserError, match="No security-link decision"):
-        SecurityLinksService(db).accept_merge("deadbeef0000")
+        SecurityLinksService(db).accept_merge("deadbeef0000", into="sec000000000")
 
 
 def test_accept_raises_when_ref_is_unbound(
@@ -483,7 +528,9 @@ def test_accept_raises_when_ref_is_unbound(
     )
 
     with pytest.raises(UserError, match="No accepted binding"):
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     assert SecurityLinkDecisionsRepo(db).count_pending() == 1
 
@@ -516,7 +563,7 @@ def test_accept_raises_when_provisional_is_user_authored(db: Database) -> None:
     assert decision.target_id is not None
 
     with pytest.raises(UserError, match="user-authored"):
-        SecurityLinksService(db).accept_merge(decision.target_id)
+        SecurityLinksService(db).accept_merge(decision.target_id, into=survivor)
 
     assert _accepted_binding(db, ref_value=_REF_VALUE) == user_bound
     assert _security_exists(db, user_bound)
@@ -532,7 +579,9 @@ def test_accept_raises_when_candidate_is_missing(
     )
 
     with pytest.raises(UserError, match="No security found"):
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     assert _accepted_binding(db) == merge_setup["provisional"]
     assert SecurityLinkDecisionsRepo(db).count_pending() == 1
@@ -554,7 +603,9 @@ def test_accept_raises_when_ref_is_already_bound_to_the_candidate(
     )
 
     with pytest.raises(UserError, match="already bound"):
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     assert SecurityLinkDecisionsRepo(db).count_pending() == 1
 
@@ -573,7 +624,9 @@ def test_accept_refreshes_the_review_pending_gauge(
     """
     SECURITY_LINK_REVIEW_PENDING.set(0)  # isolate from other tests' last value
 
-    SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
 
     assert SecurityLinkDecisionsRepo(db).count_pending() == 0
     assert SECURITY_LINK_REVIEW_PENDING._value.get() == 0  # type: ignore[reportPrivateUsage] — testing prometheus internals
@@ -691,7 +744,9 @@ def test_accept_rolls_back_entirely_on_any_write_failure(
     monkeypatch.setattr(repo_cls, method, _fail)
 
     with pytest.raises(RuntimeError, match="injected failure"):
-        SecurityLinksService(db).accept_merge(merge_setup["decision_id"])
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
 
     repo = SecurityLinkDecisionsRepo(db)
     assert _accepted_binding(db) == provisional

@@ -8,15 +8,20 @@ quantity, proceeds, gain/loss) and resolve to ``high``; ``investments_securities
 carries only TXN_TYPE/CURRENCY/RECORD_ID fields and resolves to ``low``.
 
 Read tools:   investments, investments_holdings, investments_lots,
-              investments_gains, investments_securities
+              investments_gains, investments_securities,
+              investments_securities_links_pending,
+              investments_securities_links_history
 Write tools:  investments_record, investments_securities_set,
-              investments_lots_select
+              investments_lots_select, investments_securities_links_set
 
 All tools delegate to InvestmentService — no business logic here. Free-text
 account/security references resolve inside the service (Guard 2,
 identifiers.md); ambiguous or unresolved references raise a UserError-family
 exception that the ``@mcp_tool`` decorator converts to the standard error
-envelope.
+envelope. The investments_securities_links_* review tools delegate to
+SecurityLinksService instead — the agent-facing peer to the
+`investments securities links` CLI (mirrors merchants_links_* /
+accounts_links_*).
 """
 
 from __future__ import annotations
@@ -42,9 +47,13 @@ from moneybin.privacy.payloads.investments import (
     InvestmentRecordPayload,
     InvestmentSecuritiesPayload,
     InvestmentSecuritySetPayload,
+    SecurityLinksHistoryPayload,
+    SecurityLinksPendingPayload,
+    SecurityLinksSetPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.investment_service import InvestmentService
+from moneybin.services.security_links_service import SecurityLinksService
 
 
 def _parse_date(value: str | None) -> _date | None:
@@ -484,6 +493,118 @@ def investments_lots_select(
     )
 
 
+# ─── Review tools (security links) ─────────────────────────────────────────
+
+
+@mcp_tool(domain="links")
+def investments_securities_links_pending() -> ResponseEnvelope[
+    SecurityLinksPendingPayload
+]:
+    """List pending security merge decisions, grouped by provider ref.
+
+    Returns the review queue of provider refs (a Plaid `plaid_security_id`
+    or `institution_security_id`) with candidate merge-survivor proposals.
+    Each group's header carries BOTH sides of the proposed merge —
+    `provider_ticker`/`provider_name` (what's being merged) alongside each
+    candidate's `candidate_ticker`/`candidate_name` (what it would merge
+    into) — this matters most for a `fuzzy_name` proposal, where name
+    similarity is the entire basis. Each candidate also carries
+    `match_reason` (`identifier_tie`, `exchange_contradiction`,
+    `fuzzy_name`, ...): the field that conveys HOW risky accepting is — an
+    `identifier_tie` is a much safer accept than an
+    `exchange_contradiction`, which signals the two instruments are
+    probably NOT the same.
+
+    Decide each group via investments_securities_links_set.
+    """
+    with get_database(read_only=True) as db:
+        svc = SecurityLinksService(db, actor="mcp")
+        groups = svc.pending()
+        n_pending = svc.count_pending()
+    payload = SecurityLinksPendingPayload.from_service(groups, n_pending)
+    return build_envelope(
+        data=payload,
+        total_count=n_pending,
+        actions=[
+            "Use investments_securities_links_set to merge (pass "
+            "candidate_security_id as into) or reject (pass null) each decision",
+        ],
+    )
+
+
+@mcp_tool(domain="links", read_only=False, idempotent=False)
+def investments_securities_links_set(
+    decision_id: str,
+    into: str | None,
+) -> ResponseEnvelope[SecurityLinksSetPayload]:
+    """Accept (merge) or reject one pending security merge decision.
+
+    Mutates app.security_link_decisions (sets status) and, on accept,
+    re-points every accepted provider ref and tax lot from the provisional
+    security onto `into` in one transaction.
+
+    `into` MUST be passed explicitly — there is no default:
+    - Pass the decision's own `candidate_security_id` to MERGE. `into` is a
+      confirming safety check: it must equal the decision's own candidate,
+      not just be A valid security id — on a tied group the resolver files
+      one decision per candidate, so this stops a mistyped or stale
+      decision_id from merging into the wrong security (and auto-rejecting
+      the right one). Mismatches raise mutation_invalid_input.
+    - Pass null to REJECT — keeps the provisional security as its own
+      distinct instrument. Only THIS decision is rejected; sibling
+      candidates for the same provider ref remain pending (rejecting one
+      candidate answers only that pairing, not whether another candidate is
+      the correct match).
+
+    Mutation surface: writes app.security_link_decisions + app.security_links
+    + app.lot_selections + app.securities (deletes the merged-away
+    provisional row on accept). Revert is via the audit log in
+    app.audit_log (no undo tool yet; undo is deferred to the M1L
+    audit-undo consumer). Find pending decisions with
+    investments_securities_links_pending.
+
+    Args:
+        decision_id: The decision id to act on (from
+            investments_securities_links_pending).
+        into: The candidate_security_id to merge into (must equal the
+            decision's own candidate_security_id), or null to reject.
+    """
+    with get_database(read_only=False) as db:
+        svc = SecurityLinksService(db, actor="mcp")
+        if into:
+            svc.accept_merge(decision_id, into=into, decided_by="user")
+        else:
+            svc.reject_merge(decision_id, decided_by="user")
+    status = "accepted" if into else "rejected"
+    return build_envelope(
+        data=SecurityLinksSetPayload(decision_id=decision_id, status=status),
+        actions=[
+            "Use investments_securities_links_pending to review remaining "
+            "pending decisions",
+        ],
+    )
+
+
+@mcp_tool(domain="links")
+def investments_securities_links_history(
+    limit: int = 50,
+) -> ResponseEnvelope[SecurityLinksHistoryPayload]:
+    """Recent security-link decisions (all statuses), newest first.
+
+    Args:
+        limit: Maximum rows (default 50).
+    """
+    with get_database(read_only=True) as db:
+        rows = SecurityLinksService(db, actor="mcp").history(limit=limit)
+    payload = SecurityLinksHistoryPayload.from_rows(rows)
+    return build_envelope(
+        data=payload,
+        actions=[
+            "Use investments_securities_links_pending for the active review queue"
+        ],
+    )
+
+
 # ─── Registration ──────────────────────────────────────────────────────────
 
 
@@ -571,4 +692,41 @@ def register_investments_tools(mcp: FastMCP) -> None:
         "prior selection; selections=[] clears all overrides and reverts to "
         "FIFO. Writes app.lot_selections; no revert tool (call again to "
         "undo).",
+    )
+    register(
+        mcp,
+        investments_securities_links_pending,
+        "investments_securities_links_pending",
+        "List pending security merge decisions grouped by provider ref "
+        "(plaid_security_id or institution_security_id). Returns the review "
+        "queue with BOTH sides of each proposed merge: provider_ticker/"
+        "provider_name alongside each candidate's candidate_ticker/"
+        "candidate_name, plus match_reason (identifier_tie, "
+        "exchange_contradiction, fuzzy_name, ...) — the field that conveys "
+        "how risky accepting is. Use investments_securities_links_set to "
+        "merge or reject each decision.",
+    )
+    register(
+        mcp,
+        investments_securities_links_set,
+        "investments_securities_links_set",
+        "Accept (merge) or reject one pending security merge decision. "
+        "Pass into = the decision's own candidate_security_id to MERGE — a "
+        "confirming safety check (into must equal the decision's candidate, "
+        "not just be A valid security id; mismatches raise "
+        "mutation_invalid_input). Pass null to REJECT — only this decision "
+        "is rejected; sibling candidates for the same provider ref remain "
+        "pending. into has no default: pass it explicitly to avoid "
+        "accidental rejection. Writes app.security_link_decisions + "
+        "app.security_links + app.lot_selections + app.securities; revert "
+        "via app.audit_log (no undo tool yet). Discover pending decisions "
+        "with investments_securities_links_pending.",
+    )
+    register(
+        mcp,
+        investments_securities_links_history,
+        "investments_securities_links_history",
+        "Recent security-link decisions (all statuses), newest first. "
+        "Read-only. Filter by limit. Use investments_securities_links_pending "
+        "for the active review queue.",
     )

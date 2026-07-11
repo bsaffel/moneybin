@@ -127,9 +127,9 @@ not-yet-built.
 | 64| Override which lots a disposal draws from (specific identification) | `investments_lots_select` *(`disposal_txn_id`, `selections=[{lot_id, quantity}, ...]`; empty list reverts to FIFO)* | `investments lots select <disposal_txn_id> --lot ID:QTY [--lot ...]` / `--clear` | — | live |
 | 65| View realized gain/loss (the 1099-B surface) | `investments_gains` *(`account?`, `security?`, `from_date?`, `to_date?`, `term?`)* | `investments gains` *(`--account`, `--security`, `--from`, `--to`, `--term`)* | — | live |
 | 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
-| 67| List pending security-link merge decisions grouped by provider ref | — *(no MCP tool yet — see note below)* | `investments securities links pending` *(`--output json`)* | — | pending-build (MCP) |
-| 68| Accept (merge) or reject one pending security-link merge decision | — *(no MCP tool yet)* | `investments securities links set <decision_id> --accept` (merge) / `--reject` (keep as distinct instrument) | — | pending-build (MCP) |
-| 69| Show recent security-link decisions (all statuses) | — *(no MCP tool yet)* | `investments securities links history` *(`--limit`, `--output json`)* | — | pending-build (MCP) |
+| 67| List pending security-link merge decisions grouped by provider ref | `investments_securities_links_pending` | `investments securities links pending` *(`--output json`)* | — | live |
+| 68| Accept (merge) or reject one pending security-link merge decision | `investments_securities_links_set` *(`decision_id`, `into: str\|null` — no default; `into` must equal the decision's own `candidate_security_id`, a confirming safety check; null = reject)* | `investments securities links set <decision_id> --accept --into <candidate_security_id>` (merge) / `--reject` (keep as distinct instrument) | — | live |
+| 69| Show recent security-link decisions (all statuses) | `investments_securities_links_history` *(`limit=50`)* | `investments securities links history` *(`--limit`, `--output json`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -200,9 +200,18 @@ Rows 67–69 added 2026-07-11 with the same PR: `investments securities links
 10), grouped by provider ref the same way `merchants links pending` groups by
 provider entity id, with candidates enriched with the catalog's ticker/name
 (a bare `candidate_security_id` tells the reviewer nothing about the merge).
-No MCP tools registered yet for this queue — `investments_securities_links_*`
-mirroring `merchants_links_*` is a natural follow-up; marked pending-build
-(MCP) rather than a permanent CLI-only exemption.)*
+Rows 67–69 updated 2026-07-11 with the follow-up review-surface fix wave:
+`investments_securities_links_{pending,set,history}` MCP tools ship,
+mirroring `merchants_links_*` (§5b/§5d of `moneybin-mcp.md`); `review`'s
+`actions[]` now routes the agent to the MCP tool instead of the CLI. The
+CLI's `pending` text output also gained a `Reason` column (`match_reason`)
+and both provider fields (`provider_ticker` AND `provider_name`) in the
+group header — previously only `history` showed the reason, and the group
+header showed ticker OR name, never both; `set --accept` now requires
+`--into <candidate_security_id>` (MCP: `into`) as a confirming safety check,
+mirroring `merchants_links_set`'s `target_merchant_id` guard — a tied group
+files one decision per candidate, so an unconfirmed accept could merge into
+the wrong security and auto-reject the right one.)*
 
 ## Exemption categories
 

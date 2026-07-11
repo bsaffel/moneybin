@@ -1582,6 +1582,23 @@ class TestSecurityLinksMutating:
         assert result.exit_code == 2
         assert "Traceback (most recent call last)" not in result.stderr
 
+    def test_investments_securities_links_set_accept_without_into_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`... set <id> --accept` without `--into` exits 2 — no default merge target.
+
+        The confirming safety check (--into must name the decision's own
+        candidate_security_id) is required, not optional, on accept.
+        """
+        env = make_workflow_env_fast(
+            tmp_path, "slinks-set-no-into", _mutating_profile_template
+        )
+        result = run_cli(
+            "investments", "securities", "links", "set", "any-id", "--accept", env=env
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
 
 class TestPrivacyConsent:
     """Consent ledger CLI commands (grant / revoke / revoke-all)."""

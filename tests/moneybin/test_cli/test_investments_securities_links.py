@@ -119,6 +119,45 @@ class TestSecurityLinksPending:
     @patch(
         "moneybin.services.security_links_service.SecurityLinksService.count_pending"
     )
+    def test_pending_shows_both_sides_of_the_merge_and_the_reason(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """Both provider fields AND match_reason must reach the reviewer.
+
+        Regression guard for the review-surface finding: a tied
+        identifier_tie and a risky exchange_contradiction rendered
+        identically because Reason was only shown in `history`, not
+        `pending` — and provider_name was hidden entirely behind
+        provider_ticker. Both must now be visible BEFORE the decision.
+        """
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        group = _make_pending_group(
+            ref_value="sec_1",
+            decision_id="dec001",
+            provider_ticker="VTI",
+            provider_name="Vanguard Total Stock Mkt ETF",
+            candidate_id="sec001aabbcc",
+            candidate_ticker="VTI",
+            candidate_name="Vanguard Total Stock Market ETF",
+        )
+        mock_pending.return_value = [group]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending"])
+        assert result.exit_code == 0
+        # The provider's own name (not just ticker) must be visible.
+        assert "Vanguard Total Stock Mkt ETF" in result.output
+        # The candidate's match_reason must be visible before the decision.
+        assert "fuzzy_name" in result.output
+
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.pending")
+    @patch(
+        "moneybin.services.security_links_service.SecurityLinksService.count_pending"
+    )
     def test_pending_json_output_shape(
         self,
         mock_count: MagicMock,
@@ -165,12 +204,16 @@ class TestSecurityLinksSet:
         mock_accept: MagicMock,
         mock_get_db: MagicMock,
     ) -> None:
-        """--accept calls accept_merge with decided_by='user'."""
+        """--accept --into calls accept_merge with into= and decided_by='user'."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
 
-        result = runner.invoke(app, ["set", "dec001", "--accept"])
+        result = runner.invoke(
+            app, ["set", "dec001", "--accept", "--into", "sec001aabbcc"]
+        )
         assert result.exit_code == 0
-        mock_accept.assert_called_once_with("dec001", decided_by="user")
+        mock_accept.assert_called_once_with(
+            "dec001", into="sec001aabbcc", decided_by="user"
+        )
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.reject_merge")
@@ -193,8 +236,51 @@ class TestSecurityLinksSet:
 
     def test_set_rejects_both_flags(self) -> None:
         """--accept and --reject are mutually exclusive → exit 2."""
-        result = runner.invoke(app, ["set", "dec001", "--accept", "--reject"])
+        result = runner.invoke(
+            app, ["set", "dec001", "--accept", "--reject", "--into", "sec001aabbcc"]
+        )
         assert result.exit_code == 2
+
+    def test_set_accept_without_into_exits_2(self) -> None:
+        """--accept without --into exits 2 — no default merge target."""
+        result = runner.invoke(app, ["set", "dec001", "--accept"])
+        assert result.exit_code == 2
+
+    def test_set_reject_with_into_exits_2(self) -> None:
+        """--into is only meaningful with --accept — passing it with --reject exits 2."""
+        result = runner.invoke(
+            app, ["set", "dec001", "--reject", "--into", "sec001aabbcc"]
+        )
+        assert result.exit_code == 2
+
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.accept_merge")
+    def test_set_accept_wrong_into_surfaces_user_error(
+        self,
+        mock_accept: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """A mismatched --into surfaces the service's UserError, not a crash.
+
+        The CLI passes --into straight through; the confirming-safety-check
+        itself is the service's responsibility (covered in
+        test_security_links_service.py), this just proves the CLI doesn't
+        swallow or short-circuit it.
+        """
+        from moneybin.errors import UserError
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_accept.side_effect = UserError(
+            "into does not match the candidate named in decision 'dec001'; "
+            "pass the decision's own candidate_security_id as a confirming "
+            "safety check.",
+            code="mutation_invalid_input",
+        )
+
+        result = runner.invoke(
+            app, ["set", "dec001", "--accept", "--into", "wrongid00000"]
+        )
+        assert result.exit_code == 1
 
 
 # ---------------------------------------------------------------------------
