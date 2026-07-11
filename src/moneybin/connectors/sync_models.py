@@ -171,6 +171,8 @@ class SyncInvestmentTransaction(BaseModel):
 class SyncHoldingTaxLot(BaseModel):
     """One HoldingTaxLot entry inside SyncHolding.tax_lots[]."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     institution_lot_id: str | None = None
     original_purchase_datetime: datetime | None = None
     quantity: Decimal | None = None
@@ -182,6 +184,8 @@ class SyncHoldingTaxLot(BaseModel):
 
 class SyncHolding(BaseModel):
     """One holdings-snapshot position in GET /sync/data response."""
+
+    model_config = ConfigDict(populate_by_name=True)
 
     account_id: str
     provider_item_id: str
