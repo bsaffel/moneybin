@@ -53,12 +53,17 @@ reach the ledger, everything downstream is existing machinery.
    `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings`, and
    `raw.plaid_investment_holding_lots` (the per-lot `tax_lots[]` detail) —
    preserve Plaid's native shape faithfully, keyed for idempotent re-load
-   (`INSERT OR REPLACE`). Keys follow the **shipped** cash tables — provider
-   id scoped by `source_origin`, not by `source_file` — so a later sync job
-   that re-delivers the same row **replaces** it rather than duplicating it
-   (overlapping date-range pulls are Plaid's normal investments behavior).
-   `source_file = sync_{job_id}` stays as lineage metadata recording which job
-   last wrote the row. No data loss, no duplicate rows on re-sync.
+   (`INSERT OR REPLACE`). The **transactional** pair (`raw.plaid_securities`,
+   `raw.plaid_investment_transactions`) keys like the shipped cash tables —
+   provider id scoped by `source_origin`, **not** by `source_file` — so a later
+   sync job that re-delivers the same row **replaces** it rather than
+   duplicating it (overlapping date-range pulls are Plaid's normal investments
+   behavior), with `source_file = sync_{job_id}` kept only as lineage. The
+   **snapshot** pair (`raw.plaid_investment_holdings`,
+   `raw.plaid_investment_holding_lots`) instead makes `source_file` *part of the
+   PK*: each sync writes a distinct point-in-time snapshot that is deliberately
+   retained, not replaced (see the snapshot-identity note under those tables).
+   No data loss, no duplicate rows on re-sync.
 3. **Sign faithfulness.** Plaid investment `amount` is **positive = cash out**
    — the exact opposite of the ledger convention (negative = cash out). Raw
    preserves Plaid's convention; the flip happens exclusively in
@@ -307,7 +312,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     transaction_datetime TIMESTAMP,             -- Plaid transaction_datetime; trade-initiation timestamp (select institutions only); preferred trade-date source
     transaction_name VARCHAR,                   -- Plaid name; broker's description of the event
     quantity DECIMAL(28, 10),                   -- Plaid quantity; already signed per ledger convention (+ acquire, − dispose)
-    amount DECIMAL(18, 2) NOT NULL,             -- Plaid amount; CAUTION: positive = cash out (opposite of ledger convention); flip happens in staging
+    amount DECIMAL(18, 2) NOT NULL,             -- Plaid amount (required field → NOT NULL faithful); CAUTION: positive = cash out (opposite of ledger); staging flips sign and maps basis-unknown transfers (amount 0) to a NULL ledger amount
     price DECIMAL(28, 10),                      -- Per-unit price
     fees DECIMAL(18, 2),                        -- Fee/commission component
     iso_currency_code VARCHAR,                  -- ISO 4217; mutually exclusive with unofficial_currency_code
@@ -387,7 +392,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holding_lots (
     institution_lot_id VARCHAR,               -- Broker's lot identifier; NULL where the institution does not provide one
     original_purchase_datetime TIMESTAMP,     -- HoldingTaxLot.original_purchase_datetime; acquisition timestamp, NULL where absent
     quantity DECIMAL(28, 10),                 -- Units in this lot
-    purchase_price DECIMAL(18, 6),            -- Per-unit acquisition price for this lot
+    purchase_price DECIMAL(28, 10),           -- Per-unit acquisition price for this lot (matches the schema-wide price precision)
     cost_basis DECIMAL(18, 2),                -- Broker-reported total cost basis of this lot (Plaid documents it fee-inclusive)
     current_value DECIMAL(18, 2),             -- Broker-reported current market value of this lot
     position_type VARCHAR,                    -- HoldingTaxLotPositionType (e.g. 'long' / 'short')
@@ -617,7 +622,7 @@ The heaviest view in this spec. In order:
    | cash/withdrawal | `withdrawal` | NULL security |
    | transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign |
    | transfer/split | `split` | **quantity must be converted to a multiplier** — see the split-normalization note below; a raw passthrough corrupts every lot |
-   | transfer/{merger, spin off, trade} | decomposed leg pairs | staging synthesizes legs; `event_group_id` links |
+   | transfer/{merger, spin off, trade} | decomposed leg pairs | Plaid delivers each leg as its own row; `event_group_id` **links** them (same mechanism as reinvest pairs, below) — staging never fabricates a leg |
    | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
 
    **Unlisted-subtype guard.** Plaid may add subtype enum values over time.
@@ -707,8 +712,10 @@ The heaviest view in this spec. In order:
    **Basis-unknown transfers map to `amount = NULL`, never `0`.** The
    cost-basis engine flags an acquisition `basis_incomplete` on exactly one
    condition — `event.amount is None` (`cost_basis.py`). A `transfer_in` /
-   `stock distribution` for which Plaid supplies no cost (its `amount` is
-   absent or zero) **and** no per-lot basis is recoverable from
+   `stock distribution` that Plaid reports with **`amount = 0`** — an in-kind
+   share movement with no cash consideration (Plaid's `amount` is a *required*
+   field, never absent, so the raw column is faithfully `NOT NULL`) — **and**
+   with no per-lot basis recoverable from
    `Holding.tax_lots[]` (§ Opening-lot bootstrap) must therefore emit
    `amount = NULL`, not the literal `-1 * 0 = 0` — otherwise it opens a
    *false* zero-basis lot that looks complete, and a later sale realizes a
@@ -804,6 +811,17 @@ ACATS transfer):
   isolate the gap's share of the basis. `Holding.cost_basis` absent →
   `basis_incomplete` as well (the step-5 rule). Acquisition date unknown →
   `NULL`, lot falls back to the snapshot date and is flagged.
+
+**In-window splits route to review.** The gap is measured against the *current*
+(post-split) holdings snapshot, but a synthetic opening `transfer_in` is dated
+*before* the window — so the engine re-applies any in-window `split` multiplier
+to it, double-scaling the opened quantity (open 200 post-split shares and a
+later in-window 2:1 split lifts them to 400). Reconstructing the pre-split
+opening quantity in staging would duplicate the engine's event-ordered split
+handling and is error-prone, so v1 does **not** auto-bootstrap a position whose
+security has an in-window `split`: that `(account, security)` is routed to
+`system doctor` review instead of synthesizing a row. A documented, visible v1
+limitation — like the cancel/removal boundary above — not silent corruption.
 
 **Determinism & idempotence.** The synthetic rows carry a content-hash
 `investment_transaction_id` over `(account_id, security_id, lot_index,
