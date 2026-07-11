@@ -255,6 +255,11 @@ class PlaidExtractor:
         extracted_at = sync_data.metadata.synced_at
         loaded_at = datetime.now(UTC)
         item_by_account = self.build_account_to_item_map(sync_data)
+        window_by_item = {
+            inst.provider_item_id: inst.transactions_window_start
+            for inst in sync_data.metadata.institutions
+        }
+        self._validate_holdings_windows(sync_data.investment_holdings, window_by_item)
 
         accounts_loaded = self._load_accounts(
             sync_data.accounts,
@@ -283,10 +288,6 @@ class PlaidExtractor:
         investment_transactions_loaded = self._load_investment_transactions(
             sync_data.investment_transactions, source_file, extracted_at, loaded_at
         )
-        window_by_item = {
-            inst.provider_item_id: inst.transactions_window_start
-            for inst in sync_data.metadata.institutions
-        }
         holdings_loaded, holding_lots_loaded = self._load_investment_holdings(
             sync_data.investment_holdings,
             window_by_item,
@@ -303,6 +304,25 @@ class PlaidExtractor:
             holdings_loaded=holdings_loaded,
             holding_lots_loaded=holding_lots_loaded,
         )
+
+    def _validate_holdings_windows(
+        self,
+        holdings: list[SyncHolding],
+        window_by_item: dict[str, date | None],
+    ) -> None:
+        """Raise before any table is ingested if a holdings item lacks its window.
+
+        Called at the top of load(), before the first ingest, so a bad
+        payload fails all-or-nothing — no partial raw write and no inflated
+        records-loaded counter from tables ingested ahead of holdings.
+        """
+        for holding in holdings:
+            if window_by_item.get(holding.provider_item_id) is None:
+                raise ValueError(
+                    "metadata institution result for item "
+                    f"{holding.provider_item_id} is missing transactions_window_start; "
+                    "the opening-lot bootstrap cannot classify lots without it"
+                )
 
     def build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
         """Map each account_id to its provider_item_id (its ``source_origin``).
@@ -525,13 +545,9 @@ class PlaidExtractor:
         holding_rows: list[dict[str, object]] = []
         lot_rows: list[dict[str, object]] = []
         for holding in holdings:
-            window_start = window_by_item.get(holding.provider_item_id)
-            if window_start is None:
-                raise ValueError(
-                    "metadata institution result for item "
-                    f"{holding.provider_item_id} is missing transactions_window_start; "
-                    "the opening-lot bootstrap cannot classify lots without it"
-                )
+            # _validate_holdings_windows() already confirmed every item here
+            # has a window before load() ingested anything.
+            window_start = window_by_item[holding.provider_item_id]
             holding_rows.append({
                 **holding.model_dump(exclude={"provider_item_id", "tax_lots"}),
                 "holdings_date": extracted_at.date(),
@@ -582,15 +598,36 @@ class PlaidExtractor:
         GOLDEN-GATED: Sandbox goldens settle whether Plaid amount is
         fee-inclusive; until then the staging flip assumes inclusive and this
         guard makes violations visible (log + metric, never a load failure).
+
+        Per-row tolerance is a cent plus half the unit-in-last-place of
+        Plaid's reported `price`, scaled by `quantity` — the largest
+        rounding error the wire price's own precision can hide. A price
+        rounded to 2dp on a 10,000-share position can hide up to ~$50 of
+        true gross; an absolute-cent tolerance would flag that row as
+        drifted even though the reconciliation is sound. Whoever settles
+        the fee-convention question from Sandbox goldens should read this
+        as "reconciles within reported-price rounding," not "reconciles
+        exactly."
+
+        `INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL` counts drift OCCURRENCES per
+        load() call, not distinct drifted rows — replaying the same job
+        re-counts the same row every time.
         """
-        tolerance = Decimal("0.01")
         drifted = 0
         for txn in transactions:
             if txn.investment_transaction_type not in ("buy", "sell"):
                 continue
-            if not txn.quantity or txn.price is None:
+            if txn.quantity is None or txn.price is None:
                 continue
             gross = abs(txn.quantity * txn.price)
+            exponent = txn.price.as_tuple().exponent
+            if not isinstance(exponent, int):
+                # Non-int exponent means a special value (NaN/Inf); cannot
+                # occur for a validated wire Decimal, but pyright strict
+                # requires the narrowing.
+                continue
+            ulp = Decimal(1).scaleb(exponent)
+            tolerance = Decimal("0.01") + abs(txn.quantity) * ulp / 2
             fees = txn.fees or Decimal("0")
             amount = abs(txn.amount)
             candidates = (gross, gross + fees, gross - fees)

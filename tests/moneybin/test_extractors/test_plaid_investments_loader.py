@@ -1,5 +1,6 @@
 """PlaidExtractor investment loading: counts, scoping, snapshots, drift."""
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,80 @@ def test_loads_all_three_arrays(db: Database, sync_data: SyncDataResponse) -> No
     assert result.holding_lots_loaded == 2
 
 
+def test_investment_transaction_payload_values_preserved_verbatim(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """amount/quantity/price land unaltered — no sign flip, no all-NULL column.
+
+    A `-1 *` on amount, or a typo'd schema key silently producing an
+    all-NULL column, would still pass a counts-only assertion. These are
+    exact fixture values, not derived from the code under test.
+    """
+    _load(db, sync_data)
+    buy = db.execute(
+        """
+        SELECT amount, quantity, price
+        FROM raw.plaid_investment_transactions
+        WHERE investment_transaction_id = 'itx_buy_1'
+        """
+    ).fetchone()
+    # Plaid-positive amount (cash out) stored positive — verbatim, not negated.
+    assert buy == (Decimal("2145.50"), Decimal("10.0"), Decimal("214.55"))
+
+    cash = db.execute(
+        """
+        SELECT amount, quantity, price
+        FROM raw.plaid_investment_transactions
+        WHERE investment_transaction_id = 'itx_cash_1'
+        """
+    ).fetchone()
+    # Plaid-negative amount (cash in) stored negative — verbatim, not negated.
+    assert cash == (Decimal("-500.00"), None, None)
+
+
+def test_holdings_and_lots_payload_values_preserved(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """cost_basis and lot fields land unaltered — an all-NULL column fails this."""
+    _load(db, sync_data)
+    holding = db.execute(
+        """
+        SELECT cost_basis, quantity
+        FROM raw.plaid_investment_holdings
+        WHERE account_id = 'acc_1' AND security_id = 'sec_aapl'
+        """
+    ).fetchone()
+    assert holding == (Decimal("1980.00"), Decimal("10.0"))
+
+    lot_with_institution_id = db.execute(
+        """
+        SELECT institution_lot_id, quantity, purchase_price, cost_basis
+        FROM raw.plaid_investment_holding_lots
+        WHERE account_id = 'acc_1' AND security_id = 'sec_aapl' AND lot_index = 0
+        """
+    ).fetchone()
+    assert lot_with_institution_id == (
+        "lot_7f",
+        Decimal("6.0"),
+        Decimal("121.00"),
+        Decimal("726.00"),
+    )
+
+    lot_without_institution_id = db.execute(
+        """
+        SELECT institution_lot_id, quantity, cost_basis, position_type
+        FROM raw.plaid_investment_holding_lots
+        WHERE account_id = 'acc_1' AND security_id = 'sec_aapl' AND lot_index = 1
+        """
+    ).fetchone()
+    assert lot_without_institution_id == (
+        None,
+        Decimal("4.0"),
+        Decimal("1254.00"),
+        "long",
+    )
+
+
 def test_same_payload_reload_is_idempotent(
     db: Database, sync_data: SyncDataResponse
 ) -> None:
@@ -59,6 +134,11 @@ def test_new_job_replaces_transactional_and_retains_snapshots(
         "SELECT COUNT(DISTINCT source_file), COUNT(*) FROM raw.plaid_investment_holdings"
     ).fetchone()
     assert snap == (2, 6)  # both snapshots retained
+    lots_snap = db.execute(
+        "SELECT COUNT(DISTINCT source_file), COUNT(*) "
+        "FROM raw.plaid_investment_holding_lots"
+    ).fetchone()
+    assert lots_snap == (2, 4)  # both snapshots retained (2 lots/snapshot)
 
 
 def test_window_start_stamped_per_item(
@@ -120,4 +200,6 @@ def test_empty_arrays_load_cleanly(db: Database) -> None:
     }
     result = _load(db, SyncDataResponse.model_validate(payload), job_id="j0")
     assert result.securities_loaded == 0
+    assert result.investment_transactions_loaded == 0
     assert result.holdings_loaded == 0
+    assert result.holding_lots_loaded == 0
