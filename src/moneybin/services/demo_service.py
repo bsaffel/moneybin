@@ -265,10 +265,7 @@ class DemoService:
         from moneybin.metrics.registry import DEMO_RUN_TOTAL
         from moneybin.services.doctor_service import DoctorService
         from moneybin.services.networth_service import NetworthService
-        from moneybin.services.profile_service import (
-            ProfileExistsError,
-            ProfileService,
-        )
+        from moneybin.services.profile_service import ProfileService
         from moneybin.services.refresh import refresh
         from moneybin.synthetic.engine import GeneratorEngine
         from moneybin.synthetic.merchant_seed import seed_merchant_catalog
@@ -276,13 +273,18 @@ class DemoService:
         from moneybin.utils.user_config import get_default_profile, set_default_profile
 
         # 1. Ensure the demo profile exists (with an inbox).
+        #
+        #    Ask the filesystem whether it already existed — never infer it from a
+        #    `create()` exception. `create()` completes an *unregistered* directory
+        #    in place (a bare `moneybin db init --profile demo` leaves one), so it
+        #    does not raise for every pre-existing directory. The data-safety guard
+        #    in step 3 must run for every one of them, registered or not: rebuilding
+        #    destroys the database file.
         profiles = ProfileService()
-        existed = False
-        try:
+        existed = profiles.exists(DEMO_PROFILE)
+        if not existed:
             profiles.create(DEMO_PROFILE, init_inbox=True)
             logger.info(f"⚙️  Created demo profile {DEMO_PROFILE!r}")
-        except ProfileExistsError:
-            existed = True
 
         # 2. Point the process at it so we open the right database. The PERSISTED
         #    default switch happens only after a fully successful run (step 9).
@@ -291,11 +293,10 @@ class DemoService:
         # 3. An existing demo profile must be provably ours before we rebuild it.
         if existed:
             self._guard_and_rebuild(reset_confirmed=reset_confirmed)
-            # `create()` raises ProfileExistsError off the directory alone, so a
-            # bare `moneybin db init --profile demo` (directory + database, no
-            # config.yaml) lands here unregistered: `profile list` would hide it and
-            # it would have no inbox. Finish the setup we promised — only now that
-            # the guard has cleared, so we never scaffold a profile we then refuse.
+            # A bare `db init --profile demo` (directory + database, no config.yaml)
+            # lands here unregistered: `profile list` would hide it and it would
+            # have no inbox. Finish the setup we promised — only now that the guard
+            # has cleared, so we never scaffold a profile we then refuse.
             profiles.ensure_registered(DEMO_PROFILE, init_inbox=True)
 
         with get_database(read_only=False) as db:

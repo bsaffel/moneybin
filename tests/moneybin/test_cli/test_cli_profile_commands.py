@@ -51,6 +51,42 @@ class TestProfileCreate:
         result = runner.invoke(app, ["create", "alice"])
         assert result.exit_code == 1
 
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_says_completed_when_it_adopts_an_existing_directory(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Adopting a directory that may already hold a database is not "Created".
+
+        `create()` completes an unregistered directory in place, so the command can
+        land on a `db init`'d profile holding real data. Reporting that as a fresh
+        create would hide the adoption — the user needs to know which of the two
+        happened to their data.
+        """
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = True  # bare, unregistered directory
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        assert "Completed setup" in caplog.text
+        assert "Created profile" not in caplog.text
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_says_created_for_a_fresh_profile(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = False
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        assert "Created profile" in caplog.text
+
 
 class TestProfileList:
     """Tests for 'profile list' command."""

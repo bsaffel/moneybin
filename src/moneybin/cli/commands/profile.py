@@ -56,9 +56,17 @@ def profile_create(
             else False
         )
     svc = ProfileService()
+    # A directory with no config.yaml is completed in place rather than refused, and
+    # it may already hold a `db init`'d database. Say which of the two happened —
+    # "Created" would hide the adoption from the person whose data is in there.
+    adopting = svc.exists(name)
     try:
         profile_dir = svc.create(name, init_inbox=init_inbox)
-        logger.info(f"✅ Created profile {normalized} at {profile_dir}")
+        if adopting:
+            logger.info(f"✅ Completed setup for profile {normalized} at {profile_dir}")
+            logger.info("Existing database left untouched.")
+        else:
+            logger.info(f"✅ Created profile {normalized} at {profile_dir}")
         if init_inbox:
             logger.info(
                 f"Import inbox ready at ~/Documents/MoneyBin/{normalized}/inbox/"
