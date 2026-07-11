@@ -118,6 +118,11 @@ def test_refuses_non_synthetic_profile(
             persona="basic", profile="demo", seed=42, reset_confirmed=True
         )
 
+    # A refused run must NOT have switched the user's persisted default profile.
+    from moneybin.utils.user_config import get_default_profile
+
+    assert get_default_profile() != "demo"
+
 
 @pytest.mark.integration
 def test_profile_has_data(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:

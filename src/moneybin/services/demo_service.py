@@ -123,19 +123,22 @@ class DemoService:
         except ProfileExistsError:
             pass
 
-        # 2. Activate it (process + persisted default) so the next command runs
-        #    against the demo data with no extra step.
+        # 2. Set the process-level active profile so we open the right DB. The
+        #    PERSISTED default switch waits until the safety guard passes below —
+        #    a refused run must not silently change the user's default profile.
         set_current_profile(profile)
-        set_default_profile(profile)
 
         with get_database(read_only=False) as db:
             # 3a. Refuse any profile holding real (non-synthetic) data — from
-            #     ANY source (OFX/tabular non-`synthetic://` rows, Plaid, manual)
-            #     and regardless of the `synthetic.ground_truth` marker. This is
-            #     the demo-isolation guard: never seed synthetic rows onto real
-            #     financial data.
+            #     ANY source (OFX/tabular non-`synthetic://` rows, Plaid, manual,
+            #     gsheet, balances/accounts, balance assertions) and regardless of
+            #     the `synthetic.ground_truth` marker. This is the demo-isolation
+            #     guard: never seed synthetic rows onto real financial data.
             if has_non_synthetic_data(db):
                 raise ProfileHasNonSyntheticDataError(profile)
+
+            # Guard passed — now safe to make demo the persisted default.
+            set_default_profile(profile)
 
             # 3b. Only synthetic data (or empty) remains — safe to regenerate.
             if has_synthetic_ground_truth(db):

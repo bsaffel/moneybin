@@ -94,9 +94,9 @@ def demo_command(
                     f"{result.transaction_count} transactions).",
                     err=True,
                 )
-            # The one obvious answer (stdout — it's the data the user asked for).
-            nw = result.net_worth
-            typer.echo(f"Net worth: {'-' if nw < 0 else ''}${abs(nw):,.2f}")
+            # The one obvious answer (stdout). Bare Decimal matches the sibling
+            # `reports networth` command's convention (coherence).
+            typer.echo(f"Net worth: {result.net_worth}")
             if not quiet:
                 if result.doctor_failing == 0:
                     typer.echo("✅ system doctor clean", err=True)

@@ -11,7 +11,9 @@ from moneybin.database import Database
 from moneybin.tables import (
     BALANCE_ASSERTIONS,
     GROUND_TRUTH,
+    GSHEET_SEEDS,
     MANUAL_TRANSACTIONS,
+    MATCH_DECISIONS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_TRANSACTIONS,
@@ -20,12 +22,20 @@ from moneybin.tables import (
     PLAID_TRANSACTIONS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
+    TRANSACTION_CATEGORIES,
 )
 
 logger = logging.getLogger(__name__)
 
 # Tables to scope-delete during reset (allowlist from TableRef constants).
+# Raw generator tables are scoped to `synthetic://` rows; the derived app-state
+# tables and ground_truth are cleared wholesale — safe because callers gate on
+# has_non_synthetic_data() first, so the profile holds ONLY generator data.
+# Clearing match_decisions / transaction_categories prevents orphaned app rows
+# (→ doctor FK invariant failures) when a re-run changes the synthetic ids.
 RESET_DELETIONS: dict[str, str] = {
+    MATCH_DECISIONS.full_name: "WHERE TRUE",
+    TRANSACTION_CATEGORIES.full_name: "WHERE TRUE",
     GROUND_TRUTH.full_name: "WHERE TRUE",
     OFX_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
     OFX_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
@@ -76,6 +86,7 @@ def has_non_synthetic_data(db: Database) -> bool:
         (PLAID_BALANCES.full_name, ""),
         (PLAID_ACCOUNTS.full_name, ""),
         (MANUAL_TRANSACTIONS.full_name, ""),
+        (GSHEET_SEEDS.full_name, ""),
         (BALANCE_ASSERTIONS.full_name, ""),
     )
     for table, where in real_row_checks:

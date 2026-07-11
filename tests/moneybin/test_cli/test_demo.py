@@ -46,7 +46,7 @@ def test_demo_runs_and_prints_networth(mocker: Any) -> None:
     svc = _patch_service(mocker, _fake_result())
     result = runner.invoke(app, ["demo", "--yes"])
     assert result.exit_code == 0, result.output
-    assert "12,345.67" in result.output
+    assert "12345.67" in result.output
     svc.run.assert_called_once()
 
 

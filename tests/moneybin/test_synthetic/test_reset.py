@@ -48,12 +48,16 @@ def test_reset_synthetic_rows_deletes_only_synthetic(db: Database) -> None:
 
 @pytest.mark.unit
 def test_reset_deletions_allowlist_is_synthetic_scoped() -> None:
-    # Every non-ground_truth deletion is scoped to synthetic:// source files, so
-    # the helper can never touch a real user import.
+    # Raw source tables (source_file-bearing) must be synthetic-scoped so a real
+    # import can never be touched. Synthetic-owned tables (ground_truth + derived
+    # app-state) are cleared wholesale — safe only because callers gate on
+    # has_non_synthetic_data() first (profile holds ONLY generator data).
+    wholesale_ok = ("ground_truth", "match_decisions", "transaction_categories")
     for table, where in RESET_DELETIONS.items():
-        if table.endswith("ground_truth"):
-            continue
-        assert "synthetic://" in where, f"{table} deletion is not synthetic-scoped"
+        if table.endswith(wholesale_ok):
+            assert where == "WHERE TRUE", f"{table} should be wholesale-cleared"
+        else:
+            assert "synthetic://" in where, f"{table} deletion is not synthetic-scoped"
 
 
 @pytest.mark.unit
@@ -102,5 +106,17 @@ def test_has_non_synthetic_data_detects_balance_only_state(db: Database) -> None
         "INSERT INTO app.balance_assertions (account_id, assertion_date, balance) "
         "VALUES (?, ?, ?)",
         ["acct", "2025-01-01", "100.00"],
+    )
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_gsheet_seeds(db: Database) -> None:
+    # Live gsheet-sourced rows land in raw.gsheet_seeds (never generator-written).
+    db.execute(
+        "INSERT INTO raw.gsheet_seeds "
+        "(connection_id, spreadsheet_id, sheet_gid, row_number, row_hash, data, import_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ["c1", "sheet1", 0, 1, "h1", "{}", "imp1"],
     )
     assert has_non_synthetic_data(db) is True
