@@ -5,8 +5,8 @@ tracking table). They must never *write* a relation in a SQLMesh-owned schema
 (``seeds`` / ``meta`` / ``core`` / ``prep`` / ``reports`` / ``analytics``),
 because on any database whose SQLMesh virtual layer is materialized those
 relations are **views** — and ``ALTER`` / ``DROP`` / ``INSERT`` / ``UPDATE`` /
-``DELETE`` / ``MERGE`` / non-idempotent ``CREATE`` against a view raises at
-apply time.
+``DELETE`` / ``MERGE`` / ``COPY … FROM`` / non-idempotent ``CREATE`` against a
+view raises at apply time.
 
 This is the exact bug V032 shipped (PR #306): ``ALTER TABLE seeds.categories``
 (plus an ``UPDATE seeds.categories``) passed every test — each ran against a
@@ -140,6 +140,15 @@ def violations_in_sql(sql: str) -> list[str]:
             schema = _owned_schema_of(stmt)
             if schema is not None:
                 out.append(_describe(stmt, schema))
+        elif isinstance(stmt, exp.Copy):
+            # COPY <tbl> FROM <file> imports into the table (kind=True = a write);
+            # COPY <tbl> TO <file> exports (kind=False = a read). Only FROM writes.
+            # Direction follows the target, so the regex fallback can't tell them
+            # apart — COPY is handled on the AST path only.
+            if bool(stmt.args.get("kind")):
+                schema = _owned_schema_of(stmt)
+                if schema is not None:
+                    out.append(_describe(stmt, schema))
         elif isinstance(stmt, _WRITE_TYPES):
             schema = _owned_schema_of(stmt)
             if schema is not None:
@@ -300,6 +309,10 @@ _GOLDEN: list[tuple[str, bool]] = [
         "WHEN MATCHED THEN UPDATE SET a=s.a",
         False,
     ),
+    # COPY ... FROM imports (writes the target); COPY ... TO exports (reads it)
+    ("COPY core.dim_x FROM 'f.csv'", True),
+    ("COPY core.dim_x TO 'f.csv'", False),
+    ("COPY app.x FROM 'f.csv'", False),
     # reports is a SQLMesh view layer too (reports.net_worth, etc.)
     ("ALTER TABLE reports.net_worth ADD COLUMN x INT", True),
     ("SELECT amount FROM reports.net_worth", False),
