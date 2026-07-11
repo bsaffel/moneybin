@@ -134,18 +134,20 @@ class DemoService:
         with get_database(read_only=False) as db:
             generator_made = has_synthetic_ground_truth(db)
             has_real_data = has_non_synthetic_data(db)
-            has_any = _count_transactions(db) > 0
+            has_transactions = _count_transactions(db) > 0
 
-            if has_real_data or (has_any and not generator_made):
+            if has_real_data or (has_transactions and not generator_made):
                 # Real data, or data we can't attribute to the generator.
                 raise DemoProfileNotOursError
 
-            if not generator_made and not has_any:
-                # Empty shell (e.g. a previous run failed before generating).
-                # Nothing to rebuild; generate straight into it.
-                return
-
-            if not reset_confirmed:
+            # Only transactions are worth confirming away. A profile with none —
+            # an empty shell, or a run that died part-way through generating and
+            # left just the `synthetic.ground_truth` marker — has nothing to lose,
+            # so rebuild it unprompted. Gating this on the marker instead would
+            # strand a half-generated profile: the CLI's `profile_has_data` check
+            # sees no transactions, so it never prompts, so `reset_confirmed` is
+            # never set, so the run could never proceed.
+            if has_transactions and not reset_confirmed:
                 # The CLI confirms before calling; defense in depth for the
                 # service contract.
                 raise RuntimeError(

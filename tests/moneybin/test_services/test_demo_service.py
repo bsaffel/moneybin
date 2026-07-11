@@ -77,8 +77,18 @@ def _mock_pipeline(mocker: Any, *, net_worth: str = "100.00", failing: int = 0) 
     )
 
 
-def _make_demo_profile(*, generator_made: bool, real_data: bool = False) -> None:
-    """Create a `demo` profile, optionally marked generator-made / holding real data."""
+def _make_demo_profile(
+    *,
+    generator_made: bool,
+    real_data: bool = False,
+    synthetic_transactions: bool = True,
+) -> None:
+    """Create a `demo` profile, optionally marked generator-made / holding real data.
+
+    `generator_made=True, synthetic_transactions=False` reproduces a run that died
+    after `SyntheticWriter` created `synthetic.ground_truth` but before any
+    transactions landed — the writer creates that table first.
+    """
     from moneybin.config import set_current_profile
     from moneybin.database import get_database
     from moneybin.services.profile_service import ProfileService
@@ -89,19 +99,20 @@ def _make_demo_profile(*, generator_made: bool, real_data: bool = False) -> None
         if generator_made:
             db.execute("CREATE SCHEMA IF NOT EXISTS synthetic")
             db.execute("CREATE TABLE IF NOT EXISTS synthetic.ground_truth (id VARCHAR)")
-            db.execute(
-                _INSERT_TXN,
-                [
-                    "s1",
-                    "acct",
-                    "2025-01-01",
-                    "10.00",
-                    "synthetic://basic/42/csv",
-                    "csv",
-                    "syn",
-                    "imp1",
-                ],
-            )
+            if synthetic_transactions:
+                db.execute(
+                    _INSERT_TXN,
+                    [
+                        "s1",
+                        "acct",
+                        "2025-01-01",
+                        "10.00",
+                        "synthetic://basic/42/csv",
+                        "csv",
+                        "syn",
+                        "imp1",
+                    ],
+                )
         if real_data:
             db.execute(
                 _INSERT_TXN,
@@ -193,6 +204,26 @@ def test_rebuild_requires_confirmation(
 
     with pytest.raises(RuntimeError, match="reset not confirmed"):
         DemoService().run(persona="basic", seed=42, reset_confirmed=False)
+
+
+@pytest.mark.integration
+def test_recovers_from_partially_generated_demo_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A run that died part-way through generating leaves the `synthetic.ground_truth`
+    # marker but no transactions. There is nothing the user could lose, and the CLI
+    # never prompts (`profile_has_data` sees no transactions) — so demanding a
+    # confirmation here would strand the user with no way to re-run `moneybin demo`.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=True, synthetic_transactions=False)
+    _mock_pipeline(mocker)
+
+    assert DemoService().profile_has_data() is False
+
+    result = DemoService().run(persona="basic", seed=42, reset_confirmed=False)
+
+    assert result.profile == DEMO_PROFILE
+    assert result.transaction_count == 5
 
 
 @pytest.mark.integration
