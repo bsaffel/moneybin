@@ -288,6 +288,29 @@ def test_refuses_demo_profile_holding_only_securities(
 
 
 @pytest.mark.integration
+def test_rebuilds_a_demo_directory_with_no_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A profile directory that exists with no database file at all — an interrupted
+    # create, or a hand-made dir. There is nothing to guard and nothing to lose, so
+    # demo builds it. (The guard checks the db path directly: a write-mode open
+    # would silently create the database rather than raise.)
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.config import get_settings
+
+    _make_demo_profile(generator_made=False)
+    db_path = get_settings().database.path
+    db_path.unlink()
+    assert not db_path.exists()
+
+    _mock_pipeline(mocker)
+    result = DemoService().run(persona="basic", seed=42, reset_confirmed=False)
+
+    assert result.transaction_count == 5
+    assert db_path.exists()
+
+
+@pytest.mark.integration
 def test_registers_a_bare_db_init_demo_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:

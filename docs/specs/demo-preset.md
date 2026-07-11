@@ -285,21 +285,27 @@ A new `DEMO_RUN_TOTAL` counter labeled by `persona`, in
 
 ## Batched fix (ships in the same PR, standalone bugfix — no spec of its own)
 
-First-run onboarding guidance is misleading for one path: when a profile
-directory exists **without** a `config.yaml` (e.g. a manual delete/recreate),
-`moneybin db init` creates a working encrypted DB but leaves the profile
-**unregistered** — absent from `moneybin profile list`, no inbox scaffolding.
-The "Database not found" guidance (`errors.py`, `database.py`,
-`cli/commands/db.py`) always points at `db init`, even when the correct
-canonical setup is `moneybin profile create <name> --init-inbox`.
+First-run onboarding guidance is misleading for one path: for a profile that was
+never set up, the "Database not found" guidance (`errors.py`, `database.py`,
+`cli/commands/db.py`) points at `db init` — which creates a working encrypted DB
+but leaves the profile **unregistered**: absent from `moneybin profile list`, no
+inbox scaffolding. The canonical setup is `moneybin profile create <name>
+--init-inbox`.
 
 **Fix (honest guidance, not a semantics change):** where the guidance is
-generated, detect whether the active profile is *registered* (has a
-`config.yaml`). Unregistered → point at `profile create <name> --init-inbox`;
-registered-but-DB-missing → keep the `db init` guidance. `db init`'s behavior
-is unchanged. `moneybin demo` itself uses `ProfileService.create`, so it does
-not hit this bug — this is an independent first-run-surface correctness fix,
-kept in its own commit.
+generated, point at `profile create <name> --init-inbox` only when the profile is
+both unregistered (no `config.yaml`) **and** has no directory yet. Otherwise keep
+the `db init` guidance. The directory check is the load-bearing half:
+`ProfileService.create` refuses on the bare directory alone
+(`mkdir(exist_ok=False)` → `ProfileExistsError`), so for a directory that exists
+but was never registered — a manual `db init`, a hand `mkdir`, a partial delete —
+recommending `profile create` would dead-end the user on a second refusal, while
+`db init` does work there. Repairing that directory properly (so `profile create`
+completes it instead of refusing) is tracked as follow-up work; it changes what
+`ProfileExistsError` means across every caller. `db init`'s behavior is unchanged.
+`moneybin demo` itself uses `ProfileService.create` (plus `ensure_registered`), so
+it does not hit this bug — this is an independent first-run-surface correctness
+fix, kept in its own commit.
 
 ## Testing
 

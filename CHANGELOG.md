@@ -314,11 +314,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
-- **First-run guidance points an unregistered profile at `profile create`.**
-  When a profile directory exists without a `config.yaml`, the "Database not
-  found" message now recommends `moneybin profile create <name> --init-inbox`
-  (which scaffolds config, database, and inbox) instead of `db init`, which
-  would leave the profile unregistered. (#310)
+- **First-run guidance points an unset-up profile at `profile create`.** When the
+  active profile has never been set up at all, the "Database not found" message
+  now recommends `moneybin profile create <name> --init-inbox` (which scaffolds
+  config, database, and inbox) instead of `db init`, which would leave the profile
+  unregistered — absent from `moneybin profile list`, with no inbox. If the
+  profile *directory* already exists, the message still points at `db init`:
+  `profile create` refuses on the directory alone, so recommending it there would
+  dead-end the user. (#310)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
