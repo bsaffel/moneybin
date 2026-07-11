@@ -4,9 +4,9 @@ Migrations own ``app.*`` and ``raw.*`` (plus the ``app.schema_migrations``
 tracking table). They must never *write* a relation in a SQLMesh-owned schema
 (``seeds`` / ``meta`` / ``core`` / ``prep`` / ``reports`` / ``analytics``),
 because on any database whose SQLMesh virtual layer is materialized those
-relations are **views** — and ``ALTER`` / ``DROP`` / ``INSERT`` / ``UPDATE`` /
-``DELETE`` / ``MERGE`` / ``COPY … FROM`` / non-idempotent ``CREATE`` against a
-view raises at apply time.
+relations are **views** — and ``ALTER`` / ``DROP`` / ``TRUNCATE`` / ``INSERT`` /
+``UPDATE`` / ``DELETE`` / ``MERGE`` / ``COPY … FROM`` / non-idempotent ``CREATE``
+against a view raises at apply time.
 
 This is the exact bug V032 shipped (PR #306): ``ALTER TABLE seeds.categories``
 (plus an ``UPDATE seeds.categories``) passed every test — each ran against a
@@ -76,7 +76,7 @@ _WRITE_TYPES = (exp.Alter, exp.Drop, exp.Insert, exp.Update, exp.Delete, exp.Mer
 _OWNED_SCHEMA_ALT = "|".join(sorted(_SQLMESH_OWNED_SCHEMAS))
 _FALLBACK_RE = re.compile(
     r"\b(ALTER\s+TABLE|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO|"
-    r"DROP\s+(?:TABLE|VIEW|INDEX)|CREATE\s+INDEX|"
+    r"TRUNCATE(?:\s+TABLE)?|DROP\s+(?:TABLE|VIEW|INDEX|SCHEMA)|CREATE\s+INDEX|"
     r"CREATE\s+TABLE(?!\s+IF\s+NOT\s+EXISTS))\s+"
     r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
     rf"[\"']?({_OWNED_SCHEMA_ALT})[\"']?\.",
@@ -102,10 +102,14 @@ def _describe(stmt: _Node, schema: str) -> str:
 
 
 def _fallback(sql: str) -> list[str]:
-    match = _FALLBACK_RE.search(sql)
-    if match is None:
-        return []
-    return [f"{match.group(1).upper().split()[0]} {match.group(2)}.* (dynamic SQL)"]
+    # finditer (not search): a multi-statement file that falls back can hold more
+    # than one owned-schema write; report every distinct one, not just the first.
+    out: list[str] = []
+    for match in _FALLBACK_RE.finditer(sql):
+        desc = f"{match.group(1).upper().split()[0]} {match.group(2)}.* (dynamic SQL)"
+        if desc not in out:
+            out.append(desc)
+    return out
 
 
 def violations_in_sql(sql: str) -> list[str]:
@@ -149,6 +153,14 @@ def violations_in_sql(sql: str) -> list[str]:
                 schema = _owned_schema_of(stmt)
                 if schema is not None:
                     out.append(_describe(stmt, schema))
+        elif isinstance(stmt, exp.TruncateTable):
+            # TRUNCATE empties its target (a write). sqlglot puts the target in
+            # `.expressions`, not `.this`, and TRUNCATE has no read clause — so the
+            # sole Table in the statement is the write target.
+            target = stmt.find(exp.Table)
+            db = (target.db or "").lower() if target is not None else ""
+            if db in _SQLMESH_OWNED_SCHEMAS and target is not None:
+                out.append(f"TRUNCATE {db}.{target.name}")
         elif isinstance(stmt, _WRITE_TYPES):
             schema = _owned_schema_of(stmt)
             if schema is not None:
@@ -313,6 +325,14 @@ _GOLDEN: list[tuple[str, bool]] = [
     ("COPY core.dim_x FROM 'f.csv'", True),
     ("COPY core.dim_x TO 'f.csv'", False),
     ("COPY app.x FROM 'f.csv'", False),
+    # TRUNCATE empties the target (a write); target lives in .expressions
+    ("TRUNCATE core.dim_x", True),
+    ("TRUNCATE TABLE seeds.categories", True),
+    ("TRUNCATE app.x", False),
+    # DROP SCHEMA on an owned namespace is a destructive write; app.* is fine
+    ("DROP SCHEMA seeds CASCADE", True),
+    ("DROP SCHEMA IF EXISTS meta", True),
+    ("DROP SCHEMA app", False),
     # reports is a SQLMesh view layer too (reports.net_worth, etc.)
     ("ALTER TABLE reports.net_worth ADD COLUMN x INT", True),
     ("SELECT amount FROM reports.net_worth", False),
