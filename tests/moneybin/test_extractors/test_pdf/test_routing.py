@@ -927,6 +927,32 @@ def test_card_recipe_replays_onto_a_card_document() -> None:
     assert recipe_polarity_fits(card_recipe, card_doc) is True
 
 
+def test_a_human_ratified_sign_outranks_the_marker_heuristic() -> None:
+    """`sign_ratified` short-circuits the guard — in BOTH directions.
+
+    The guard reads the document's text; ``sign_ratified`` means a human already
+    read it and disagreed. Both refusals it would otherwise raise are exactly the
+    ones that make an override unreplayable: a ``negative_is_expense`` recipe on a
+    marker-bearing document (the false-positive card the user corrected), and a
+    ``negative_is_income`` recipe on a document with no markers (a genuine card
+    that prints none of the five disclosures).
+    """
+    bank_recipe = _recipe(sign_convention="negative_is_expense")
+    card_recipe = _recipe(sign_convention="negative_is_income")
+    card_doc = _card_statement_doc(opening="0.00", closing="100.00")
+    checking_doc = _checking_statement_doc()
+
+    # Both are refused while the convention is only an inference…
+    assert recipe_polarity_fits(bank_recipe, card_doc) is False
+    assert recipe_polarity_fits(card_recipe, checking_doc) is False
+
+    # …and both replay once a human has asserted them.
+    ratified_bank = bank_recipe.model_copy(update={"sign_ratified": True})
+    ratified_card = card_recipe.model_copy(update={"sign_ratified": True})
+    assert recipe_polarity_fits(ratified_bank, card_doc) is True
+    assert recipe_polarity_fits(ratified_card, checking_doc) is True
+
+
 def test_route_decision_carries_card_markers(db: Database) -> None:
     """The confirm gate shows the user which disclosures drove the inversion."""
     doc = _card_statement_doc(opening="0.00", closing="100.00")

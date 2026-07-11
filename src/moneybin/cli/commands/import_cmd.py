@@ -58,6 +58,16 @@ app.add_typer(import_inbox.app, name="inbox", help="Drain the watched import inb
 app.add_typer(import_labels.app, name="labels", help="Manage labels on imports")
 logger = logging.getLogger(__name__)
 
+# Shown whenever a saved --sign override replays onto a new statement. The
+# override disarms the credit-card detector for that format on every future
+# import, so the decision is restated at the moment it acts — one message, one
+# definition, both the single-file and batch paths echo it.
+_SIGN_OVERRIDE_REPLAYED_NOTE = (
+    "⚠️  Sign convention taken from your saved --sign override for this "
+    "statement format — the credit-card detector was not consulted. Re-run "
+    "with --sign to change it."
+)
+
 
 def _parse_kv(
     values: list[str] | None, *, flag: str, fmt: str
@@ -407,6 +417,8 @@ def import_files_command(
                             "with --sign to override.",
                             err=True,
                         )
+                    if result.sign_override_replayed:
+                        typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
                     files_list = [
                         {
                             "path": str(file_paths[0]),
@@ -418,6 +430,7 @@ def import_files_command(
                             # the structured signal regardless of single vs
                             # multi-file invocation.
                             "sign_correction_suggested": result.sign_correction_suggested,
+                            "sign_override_replayed": result.sign_override_replayed,
                         }
                     ]
                     data = {
@@ -445,6 +458,8 @@ def import_files_command(
                             "override.",
                             err=True,
                         )
+                    if any(r.sign_override_replayed for r in batch.per_file):
+                        typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
                     files_list = [
                         {
                             "path": r.path,
@@ -458,6 +473,7 @@ def import_files_command(
                             # path already warns to stderr; this closes the
                             # gap for scripted callers.
                             "sign_correction_suggested": r.sign_correction_suggested,
+                            "sign_override_replayed": r.sign_override_replayed,
                             **({"error": r.error} if r.error else {}),
                             **(
                                 {"confirmation_payload": r.confirmation_payload}

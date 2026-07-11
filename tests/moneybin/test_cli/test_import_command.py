@@ -167,6 +167,41 @@ def test_import_files_single_no_knobs_surfaces_sign_correction_warning(
     assert "Sign convention may be inverted" in result.output
 
 
+def test_import_file_surfaces_ratified_sign_replay_note(csv_path: Path) -> None:
+    """A replayed `--sign` override must be visible, not silent.
+
+    The override disarms the card-marker guard for this format on every future
+    statement. That is a durable decision acting without re-asking, so the import
+    says so — the user's condition for having a durable override at all.
+    """
+
+    def fake_run_import(**kwargs: Any) -> ImportResult:
+        return ImportResult(
+            file_path=str(kwargs["file_path"]),
+            file_type="pdf",
+            sign_override_replayed=True,
+        )
+
+    with (
+        patch(
+            "moneybin.cli.utils.handle_cli_errors",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.database.get_database",
+            _fake_db_ctx,
+        ),
+        patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=fake_run_import,
+        ),
+    ):
+        result = runner.invoke(app, ["files", str(csv_path)], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "saved --sign override" in result.output
+
+
 def test_import_file_no_sign_warning_when_not_suggested(csv_path: Path) -> None:
     """When sign_correction_suggested=False, no warning is printed."""
 

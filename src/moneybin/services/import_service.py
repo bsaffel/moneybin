@@ -73,6 +73,10 @@ class ImportResult:
     core_tables_rebuilt: bool = False
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_override_replayed: bool = False
+    """True when this PDF replayed a saved recipe whose sign convention a human set
+    with `sign=` — the card-marker detector is bypassed for that format, so the
+    replay is surfaced rather than applied silently."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
     pdf_format_name: str | None = None
@@ -154,6 +158,9 @@ class PerFileResult:
     error: str | None = None
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_override_replayed: bool = False
+    """Mirrors ``ImportResult.sign_override_replayed`` for batch imports — a saved
+    `sign=` override replayed onto this file, bypassing the card-marker detector."""
 
     confirmation_payload: dict[str, object] | None = None
     """Populated only when status == 'confirmation_required': detector proposal
@@ -2237,8 +2244,17 @@ class ImportService:
                     code="invalid_sign_convention",
                 )
             PDF_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
+            # sign_ratified marks the convention as a human assertion, so the
+            # replay guard defers to it on every future statement of this format
+            # (auto_derive.recipe_polarity_fits). Without it the override is
+            # persisted but unreplayable: the guard refuses the corrected recipe
+            # on the same card markers that caused the false positive, derivation
+            # re-runs, and the gate raises again next month, and every month after.
             return dataclasses.replace(
-                decision, recipe=recipe.model_copy(update={"sign_convention": sign})
+                decision,
+                recipe=recipe.model_copy(
+                    update={"sign_convention": sign, "sign_ratified": True}
+                ),
             )
 
         is_auto_derived = decision.matched_format_name is None
@@ -2247,6 +2263,12 @@ class ImportService:
 
         if confirm:
             PDF_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+            # Deliberately NOT sign_ratified. `confirm` ratifies "this IS a card",
+            # and the resulting negative_is_income recipe already replays cleanly —
+            # the marker check re-confirms it on every real card statement. Setting
+            # the flag here would buy nothing and would disarm the guard in the
+            # direction that actually costs: a checking statement sharing this
+            # format's fingerprint would import every paycheck as an expense.
             return decision
 
         PDF_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
@@ -2387,6 +2409,20 @@ class ImportService:
         # gate's whole purpose. Raises before begin_import: nothing loads, and no
         # import_log row is stranded in "importing".
         decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
+
+        # A saved `sign=` override just replayed: the polarity guard stood down for
+        # this document (auto_derive.recipe_polarity_fits short-circuits on
+        # sign_ratified), so the load runs on a human decision the detector may
+        # still disagree with. Surface it — an override that acts invisibly on
+        # every future statement is the magic this codebase refuses. Only on a
+        # REPLAY (matched_format_name set): on first contact the user typed `sign=`
+        # in this very invocation and needs no reminder.
+        if (
+            decision.recipe is not None
+            and decision.recipe.sign_ratified
+            and decision.matched_format_name is not None
+        ):
+            result.sign_override_replayed = True
 
         # Committing to a write — open the import_log row now.
         import_id = import_log.begin_import(
@@ -3172,6 +3208,7 @@ class ImportService:
                         rows_loaded=rows_loaded,
                         import_id=r.import_id,
                         sign_correction_suggested=r.sign_correction_suggested,
+                        sign_override_replayed=r.sign_override_replayed,
                     )
                 )
                 any_succeeded = True

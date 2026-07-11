@@ -599,7 +599,28 @@ def recipe_polarity_fits(recipe: Recipe, doc: PdfDocument) -> bool:
     document with no card disclosures is refused for exactly the same reason a
     ``negative_is_expense`` (bank) recipe is refused on a card: replay skips
     derivation entirely, so the derivation-time guards never run.
+
+    ``sign_ratified`` is the one thing that outranks all of it — see below.
     """
+    if recipe.sign_ratified:
+        # A human overrode the detector with an explicit `sign=` for this format.
+        # The marker scan is a text heuristic; a human's assertion about their own
+        # statement beats it. Deferring is not optional: the override exists to
+        # correct a FALSE POSITIVE, and a false positive is by definition a
+        # document carrying card markers — so the guard below would refuse the
+        # corrected recipe on the very evidence the human just overruled, forcing
+        # the same override every month. (The mirror case is the same: a user who
+        # declares `negative_is_income` on a card that prints none of the five
+        # disclosures would be refused by the marker check.)
+        #
+        # Residual risk, accepted: the decision is keyed on the layout fingerprint
+        # (issuer + column headers + page count), so a genuine card statement that
+        # fingerprints identically to the overridden format inherits the human's
+        # convention. That is the cost of a durable override, and the reason the
+        # replay is surfaced to the user (ImportResult.sign_override_replayed)
+        # rather than applied silently.
+        return True
+
     markers = credit_card_markers(doc)
 
     if recipe.sign_convention == "negative_is_income":

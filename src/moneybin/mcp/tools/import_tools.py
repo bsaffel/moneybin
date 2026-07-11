@@ -328,6 +328,7 @@ def import_files(
                         rows_loaded=one.rows_loaded,
                         import_id=one.import_id,
                         sign_correction_suggested=one.sign_correction_suggested,
+                        sign_override_replayed=one.sign_override_replayed,
                     )
                 ],
                 transforms_applied=transforms_applied,
@@ -352,6 +353,7 @@ def import_files(
             import_id=r.import_id,
             error=r.error,
             sign_correction_suggested=r.sign_correction_suggested,
+            sign_override_replayed=r.sign_override_replayed,
             confirmation_payload=r.confirmation_payload,
         )
         for r in batch.per_file
@@ -421,6 +423,14 @@ def import_files(
             "--sign negative_is_income` (or another SignConventionType "
             "value) to override. MCP import_files does not accept a "
             "sign parameter today."
+        )
+    if any(r.sign_override_replayed for r in batch.per_file):
+        actions.append(
+            "One or more statements took their sign convention from a saved "
+            "`--sign` override on that statement format — the credit-card "
+            "detector was not consulted, so amounts follow the human's earlier "
+            "decision. Tell the user; change it by re-running via CLI with "
+            "`moneybin import files <path> --sign <SignConventionType>`."
         )
     if not batch.transforms_applied and batch.imported_count > 0:
         actions.append("Run refresh_run when ready to refresh derived tables")

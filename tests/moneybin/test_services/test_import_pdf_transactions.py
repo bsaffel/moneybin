@@ -858,6 +858,86 @@ def test_sign_override_shape_mismatch_names_the_shape_the_recipe_extracts(
 
 
 @pytest.mark.integration
+def test_sign_override_replays_without_asking_again(
+    db: Database, tmp_path: Path
+) -> None:
+    """A `sign=` override must survive into every future statement of the format.
+
+    The override's whole purpose is recovering from a false-positive card
+    detection — and a false positive is, by construction, a document that CARRIES
+    card markers. Without ``sign_ratified`` on the recipe, the polarity guard
+    disowns the saved recipe on the next statement (a ``negative_is_expense``
+    recipe replayed onto a marker-bearing document), derivation re-runs,
+    re-proposes the inversion, and the gate raises again — forever. The user would
+    have to re-override every month and the saved format would be dead weight.
+    """
+    svc = ImportService(db)
+
+    first = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+    # First contact: the user typed `sign=` themselves — nothing to re-surface.
+    assert first.sign_override_replayed is False
+
+    # Next month, same layout, no flags. The saved override must replay.
+    second = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"), refresh=False
+    )
+
+    assert second.transactions == 2
+    # Both statements loaded as printed — the override held on the replay.
+    assert _amounts(db) == [
+        Decimal("-50.00"),
+        Decimal("-50.00"),
+        Decimal("150.00"),
+        Decimal("150.00"),
+    ]
+    # A durable override that acts invisibly is exactly the magic this codebase
+    # refuses: the replay bypasses the detector, so the user is told it happened.
+    assert second.sign_override_replayed is True
+
+
+@pytest.mark.integration
+def test_confirm_does_not_ratify_the_sign_convention(
+    db: Database, tmp_path: Path
+) -> None:
+    """`confirm=True` agrees with the detector; it must NOT disarm the polarity guard.
+
+    Ratifying "yes, this IS a card" needs no guard bypass — the marker check
+    re-confirms that recipe on every replay of a real card. Setting
+    ``sign_ratified`` here would instead strip the protection in the dangerous
+    direction: a checking statement sharing this fingerprint (same issuer, same
+    columns, same page count) would silently import every paycheck as an expense.
+    """
+    import json as _json
+
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+
+    row = db.execute("SELECT extraction_recipe FROM app.pdf_formats").fetchone()
+    assert row is not None
+    stored = _json.loads(row[0])
+    assert stored["sign_convention"] == "negative_is_income"
+    assert stored["sign_ratified"] is False
+
+    # The card's fingerprint-identical twin: the guard must still refuse to replay
+    # the card recipe onto it, so its rows land as printed.
+    result = svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+
+    assert result.sign_override_replayed is False
+    assert _amounts(db) == [
+        Decimal("-150.00"),  # card: +150.00 charge, inverted on confirm
+        Decimal("-50.00"),  # checking: as printed, NOT inverted
+        Decimal("50.00"),  # card: -50.00 payment, inverted on confirm
+        Decimal("150.00"),  # checking: as printed, NOT inverted
+    ]
+
+
+@pytest.mark.integration
 def test_sign_gate_metric_records_all_three_outcomes(
     db: Database, tmp_path: Path
 ) -> None:
