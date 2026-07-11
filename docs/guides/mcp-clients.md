@@ -29,8 +29,9 @@ The supported `--client` values are:
 - `vscode`
 - `gemini-cli`
 - `codex` (CLI, Desktop app, IDE extension — all share `~/.codex/config.toml`)
+- `chatgpt-desktop` (the ChatGPT desktop app hosts Codex and shares that same file — installing for either covers both)
 
-`chatgpt-desktop` is a **reserved id that refuses to install** — ChatGPT can only reach a remote MCP server, and MoneyBin's is local. See [ChatGPT](#chatgpt--not-supported-yet).
+ChatGPT on the **web** is the one surface that cannot reach a local MoneyBin; it needs remote MCP (M3D). See [ChatGPT desktop app](#chatgpt-desktop-app).
 
 If `--client` is omitted, `claude-desktop` is the default. To look up the install path the command would write to (without writing), use:
 
@@ -207,19 +208,22 @@ moneybin mcp install --client codex -y
 
 As an alternative install path, OpenAI also documents `codex mcp add` for managing servers from the CLI. The block `moneybin mcp install --client codex` writes is equivalent.
 
-### ChatGPT — not supported yet
+### ChatGPT desktop app
 
-**You cannot connect MoneyBin to ChatGPT today.** Every ChatGPT surface — web, desktop, and mobile — connects only to a **remote** MCP server reachable over HTTPS. None of them can spawn a local server on your machine, and there is no local/stdio connector option to select in the Connectors UI. MoneyBin's server is local stdio only.
+The ChatGPT desktop app **hosts Codex**, and shares its MCP configuration: per OpenAI's docs, "The ChatGPT desktop app, Codex CLI, and IDE extension support MCP servers and share MCP configuration for the same Codex host." So it takes an ordinary local stdio server — the same `~/.codex/config.toml` entry the Codex CLI uses.
 
 ```bash
-moneybin mcp install --client chatgpt-desktop   # refuses, and explains why
+moneybin mcp install --client chatgpt-desktop -y
 ```
 
-The command exits non-zero and points you at a client that does speak local MCP. The `chatgpt-desktop` client id stays reserved for when this becomes real.
+- **Config file:** `~/.codex/config.toml` — **the same file as `--client codex`.** Installing for either one covers the ChatGPT desktop app, the Codex CLI, and the Codex IDE extension. There is no need to run both.
+- **Format:** TOML, under `[mcp_servers.<name>]`, carrying `startup_timeout_sec` (see Codex below).
+- **Restart required:** Yes. In ChatGPT, the server appears under **Settings → MCP servers**; select **Restart** there to pick it up. You can also add it through that UI by hand (Add server → choose **STDIO** → paste the command).
+- **Server lifecycle:** One server per app instance; the shared config also means every `codex` shell invocation auto-loads MoneyBin — see [Concurrency](#concurrency-which-clients-share-a-server).
 
-**What would change this:** authenticated remote MCP transport, tracked as **M3D** on the [roadmap](../roadmap.md). That is the whole gap — it needs a public HTTPS endpoint and an auth model, not a config tweak.
-
-**Do not** reach for `moneybin mcp serve --transport streamable-http --insecure` as a workaround. It has no authentication whatsoever — anyone who can reach the port can read and write your finances — and ChatGPT's cloud cannot reach a port on your laptop anyway, so it doesn't even solve the problem. See [Transport](#transport).
+> **ChatGPT on the web cannot see this.** "ChatGPT web doesn't read local Codex configuration files" — it reaches MCP only through *remote* connectors over HTTPS, and MoneyBin's server is local. Connecting chatgpt.com (or mobile) needs authenticated remote transport, tracked as **M3D** on the [roadmap](../roadmap.md).
+>
+> **Do not** reach for `moneybin mcp serve --transport streamable-http --insecure` to bridge that gap. It has no authentication at all — anyone who can reach the port can read and write your finances — and ChatGPT's cloud can't reach a port on your laptop anyway. See [Transport](#transport).
 
 ## Concurrency: which clients share a server
 
@@ -227,7 +231,7 @@ MoneyBin stores each profile's data in a single-writer DuckDB file, but each Mon
 
 | Pattern | Clients | Behavior |
 |---|---|---|
-| App-shared connection | Claude Desktop, Cursor, VS Code, Windsurf | One server process per app instance, spawned at launch and reused across all chats. |
+| App-shared connection | Claude Desktop, ChatGPT desktop app, Cursor, VS Code, Windsurf | One server process per app instance, spawned at launch and reused across all chats. |
 | Per-invocation | Claude Code (via `make claude-mcp`), Codex CLI, Gemini CLI | One server process per CLI invocation. Each new shell session spawns a fresh server; servers coexist on the same profile and contend only when operations need conflicting locks — concurrent writes, or a write racing a long-running read. |
 
 Different *profiles* never collide — each has its own DB and lock — so `MoneyBin (alice)` and `MoneyBin (bob)` can coexist in the same client without issue. Write contention only ever arises between concurrent sessions on the **same** profile.
@@ -301,6 +305,7 @@ Every MoneyBin tool emits the four MCP protocol annotations (`readOnlyHint`, `de
 | VS Code Copilot Chat | Honored | Version-dependent |
 | Gemini CLI | Not surfaced in prompt | Not surfaced in prompt |
 | Codex (CLI / Desktop / IDE) | Approval dialog uniform | Approval dialog uniform |
+| ChatGPT desktop app | Approval dialog uniform (Codex host) | Approval dialog uniform (Codex host) |
 
 Where the client doesn't render a distinct destructive-tool confirmation, treat every tool-call approval as "yes, run this." MoneyBin's tool descriptions name the mutation surface explicitly — read them before approving.
 

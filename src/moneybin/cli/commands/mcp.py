@@ -41,8 +41,15 @@ _VALID_TRANSPORTS: tuple[str, ...] = get_args(TransportType)
 # MCP client config file locations for clients that auto-load from a fixed path.
 # claude-code uses a per-profile path resolved at runtime (see _client_install_path).
 # vscode uses a workspace-local path (.vscode/mcp.json) resolved at runtime.
-# chatgpt-desktop has no config file and never will while our server is stdio —
-# every ChatGPT surface is remote-only, so `mcp install` refuses for it outright.
+_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+
+# The ChatGPT desktop app hosts Codex, and shares its MCP configuration: per
+# OpenAI's docs, "The ChatGPT desktop app, Codex CLI, and IDE extension support MCP
+# servers and share MCP configuration for the same Codex host" — one
+# `~/.codex/config.toml`, stdio servers included (Settings → MCP servers → Add
+# server → STDIO). So chatgpt-desktop is a real local install that happens to land
+# in Codex's file, NOT a separate config format. ChatGPT *web* is the surface that
+# genuinely cannot reach a local server; it doesn't read this file at all.
 _CLIENT_CONFIG_PATHS: dict[str, Path] = {
     "claude-desktop": Path.home()
     / "Library"
@@ -52,19 +59,21 @@ _CLIENT_CONFIG_PATHS: dict[str, Path] = {
     "cursor": Path.home() / ".cursor" / "mcp.json",
     "windsurf": Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
     "gemini-cli": Path.home() / ".gemini" / "settings.json",
-    "codex": Path.home() / ".codex" / "config.toml",
+    "codex": _CODEX_CONFIG_PATH,
+    "chatgpt-desktop": _CODEX_CONFIG_PATH,
 }
+
+# Clients whose config is the Codex TOML (`[mcp_servers.<name>]`), not JSON.
+_CODEX_HOSTED_CLIENTS: tuple[str, ...] = ("codex", "chatgpt-desktop")
 
 # Clients that don't write to a fixed path. Listed for help text and validation.
 _PROFILE_SCOPED_CLIENTS: tuple[str, ...] = ("claude-code",)
 _WORKSPACE_SCOPED_CLIENTS: tuple[str, ...] = ("vscode",)
-_NO_INSTALL_CLIENTS: tuple[str, ...] = ("chatgpt-desktop",)
 
 _SUPPORTED_CLIENTS: tuple[str, ...] = (
     *_CLIENT_CONFIG_PATHS,
     *_PROFILE_SCOPED_CLIENTS,
     *_WORKSPACE_SCOPED_CLIENTS,
-    *_NO_INSTALL_CLIENTS,
 )
 
 _DEFAULT_CLIENT = "claude-desktop"
@@ -122,8 +131,8 @@ def mcp_config_path(
     """Print the install path of an MCP client's config file.
 
     Used by `make claude-mcp` to locate the per-profile Claude Code config.
-    Exits non-zero with no output for clients that don't have a JSON config
-    file (e.g. chatgpt-desktop).
+    Exits non-zero with no output for clients that resolve no path (e.g. `vscode`
+    outside a repo checkout).
 
     Profile resolution is non-interactive: if no profile is set and `--profile`
     is not given, this exits with a clear error instead of starting the
@@ -207,9 +216,10 @@ def mcp_install(
     --print to emit the snippet to stdout without writing — useful for
     inspection or for merging into a shared config by hand.
 
-    chatgpt-desktop refuses with exit 1: every ChatGPT surface reaches only a
-    remote MCP server over HTTPS, and MoneyBin's is local stdio, so there is no
-    config to write and no connector to point at. Remote transport is M3D.
+    chatgpt-desktop writes the same ~/.codex/config.toml as codex: the ChatGPT
+    desktop app hosts Codex and shares its MCP configuration, so one entry serves
+    the desktop app, the Codex CLI, and the IDE extension. ChatGPT on the web can
+    NOT see it — reaching that needs a remote MCP server (M3D).
 
     Args:
         client: Target MCP client identifier.
@@ -230,6 +240,9 @@ def mcp_install(
         # Codex (CLI / Desktop app / IDE extension all share ~/.codex/config.toml)
         moneybin mcp install --client codex --yes
 
+        # ChatGPT desktop app (same Codex-hosted config as above)
+        moneybin mcp install --client chatgpt-desktop --yes
+
         # Workspace-local .vscode/mcp.json
         moneybin mcp install --client vscode --yes
 
@@ -242,11 +255,6 @@ def mcp_install(
         supported = ", ".join(_SUPPORTED_CLIENTS)
         logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
         raise typer.Exit(2)  # usage error — matches `mcp config path` convention
-
-    # Refuse before building anything: there is no snippet a ChatGPT surface can
-    # consume, and printing one is what misled users.
-    if client in _NO_INSTALL_CLIENTS:
-        _refuse_remote_only_client(client)
 
     resolved_profile = profile or get_current_profile()
 
@@ -359,7 +367,7 @@ def _build_snippet(
         vscode_entry = {"type": "stdio", **server_entry}
         snippet: dict[str, Any] = {"servers": {entry_name: vscode_entry}}
         return snippet, json.dumps(snippet, indent=2)
-    if client == "codex":
+    if client in _CODEX_HOSTED_CLIENTS:
         codex_entry = {
             **server_entry,
             "startup_timeout_sec": _CODEX_STARTUP_TIMEOUT_SEC,
@@ -460,7 +468,7 @@ def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
 def _get_client_config_path(client: str) -> Path:
     """Return the fixed-path config file for clients in `_CLIENT_CONFIG_PATHS`.
 
-    Profile-scoped (`claude-code`) and no-install (`chatgpt-desktop`) clients are
+    Profile-scoped (`claude-code`) and workspace-scoped (`vscode`) clients are
     handled inline in `mcp_install` and never reach this helper.
     """
     if client not in _CLIENT_CONFIG_PATHS:
@@ -472,7 +480,14 @@ def _get_client_config_path(client: str) -> Path:
 
 # Per-invocation CLI clients: every shell command spawns a fresh server.
 # Surface this so users understand the "always-on" install semantics.
-_PER_INVOCATION_CLIENTS: frozenset[str] = frozenset({"codex", "gemini-cli"})
+# chatgpt-desktop is included because it writes the *shared* Codex config — so
+# installing "for ChatGPT" also makes every `codex` shell invocation auto-load
+# MoneyBin, which is exactly the surprise this warning exists to prevent.
+_PER_INVOCATION_CLIENTS: frozenset[str] = frozenset({
+    "codex",
+    "chatgpt-desktop",
+    "gemini-cli",
+})
 
 
 def _maybe_warn_auto_load(client: str, profile: str) -> None:
@@ -489,8 +504,8 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
     if client not in _PER_INVOCATION_CLIENTS:
         return
     surface = (
-        "the Codex CLI, Desktop app, and IDE extension"
-        if client == "codex"
+        "the Codex CLI, Desktop app, IDE extension, and ChatGPT desktop app"
+        if client in _CODEX_HOSTED_CLIENTS
         else "every `gemini` invocation"
     )
     typer.echo("", err=True)
@@ -527,34 +542,6 @@ def _print_claude_code_launch_hint(config_path: Path) -> None:
     )
 
 
-def _refuse_remote_only_client(client: str) -> None:
-    """Refuse to install for a client that can only reach a REMOTE MCP server.
-
-    Every ChatGPT surface — web, desktop, and mobile — connects over HTTPS to a
-    public MCP endpoint; none of them can spawn a local stdio server. We used to
-    print a stdio snippet and walk the user through selecting a "local/stdio
-    option" in the Connectors UI that does not exist, then call that the supported
-    path. The client id stays reserved so this refusal keeps working (and so the
-    id is ready when M3D lands remote transport + auth).
-
-    Never raise `--insecure` HTTP as the workaround: it would put an
-    unauthenticated listener holding the user's finances on the network, and no
-    ChatGPT surface can reach a localhost port anyway.
-    """
-    local_clients = ", ".join(
-        c for c in _SUPPORTED_CLIENTS if c not in _NO_INSTALL_CLIENTS
-    )
-    logger.error(
-        f"❌ '{client}' cannot connect to a local MCP server, so there is nothing "
-        "to install. Every ChatGPT surface (web, desktop, mobile) connects only to "
-        "a remote MCP server over HTTPS — there is no local/stdio connector option "
-        "to choose. MoneyBin's server is stdio-only today; remote transport with "
-        "authentication is tracked as M3D on the roadmap. To use MoneyBin with an "
-        f"AI client now, install for one that speaks local MCP: {local_clients}."
-    )
-    raise typer.Exit(1)
-
-
 def _resolve_uv_command() -> str:
     """Absolute path to `uv`, falling back to the bare name.
 
@@ -582,6 +569,18 @@ def _print_client_notes(client: str) -> None:
             "confirmations. MoneyBin deliberately does not set it — the surface "
             "includes write tools (import, categorize, delete), and those should ask "
             "before they act. Add it yourself only if you accept that.",
+            err=True,
+        )
+    if client == "chatgpt-desktop":
+        typer.echo("", err=True)
+        typer.echo(
+            "Note: this writes ~/.codex/config.toml — the ChatGPT desktop app hosts "
+            "Codex and shares its MCP configuration, so this same entry also serves "
+            "the Codex CLI and IDE extension (installing for `codex` is equivalent). "
+            "In ChatGPT, the server appears under Settings → MCP servers; select "
+            "Restart there to pick it up. ChatGPT on the WEB cannot see it — it "
+            "does not read local Codex config, and reaching it needs a remote MCP "
+            "server (M3D).",
             err=True,
         )
     if client == "windsurf":

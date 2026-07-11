@@ -382,14 +382,17 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   to the seed store as before, and so are statements in a number locale the
   importer cannot replay — escalating those would send your statement to an AI
   provider for a result it provably cannot use. (#313)
-- **`mcp install --client chatgpt-desktop` no longer sends users down a path that
-  does not exist.** It printed a local/stdio config snippet and told the user to
-  "choose the local/stdio option" in ChatGPT's Connectors UI, calling that "the
-  supported, authenticated path". No such option exists: every ChatGPT surface (web,
-  desktop, mobile) connects only to a *remote* MCP server over HTTPS, and MoneyBin's
-  is local stdio. The command now refuses with a non-zero exit, explains why, and
-  names the clients that do work. Authenticated remote transport is tracked as M3D.
-  The `chatgpt-desktop` id stays reserved. (#315)
+- **`mcp install --client chatgpt-desktop` now actually installs.** It printed a
+  config snippet and told the user to "choose the local/stdio option" in ChatGPT's
+  Connectors UI, calling that "the supported, authenticated path" — but it wrote
+  nothing, so following the instructions got you nowhere. The ChatGPT desktop app
+  **hosts Codex and shares its MCP configuration** ("The ChatGPT desktop app, Codex
+  CLI, and IDE extension support MCP servers and share MCP configuration for the
+  same Codex host"), so the command now writes the real `~/.codex/config.toml`
+  entry — the same one `--client codex` writes, meaning one install serves the
+  ChatGPT desktop app, the Codex CLI, and the IDE extension. It also names the
+  restart step (ChatGPT → Settings → MCP servers → Restart) and warns that ChatGPT
+  on the **web** cannot see a local server at all: that needs remote MCP (M3D). (#315)
 - **MCP install snippets now pin the absolute `uv` path.** macOS clients launched
   from the GUI (Claude Desktop, Cursor) do not inherit the shell's `PATH`, so a bare
   `uv` in the generated config resolved to nothing and the server failed to start —
