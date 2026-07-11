@@ -146,8 +146,10 @@ Stale guidance found during the review; all are routine fixes:
 workflow?** Self-serve channels (rungs 1–4, plus the Homebrew tap) are
 **tester-distribution-eligible now** — they put MoneyBin in testers' hands with
 no external gatekeeper. The human-reviewed app directories (rung 7) are **held
-until v0.1 testing is complete** (founder directive 2026-07-11): no
-officially-reviewed public listing ships before the product is validated.
+until the first public release is validated** (founder directive 2026-07-11 —
+"v0.1 testing complete"; `docs/roadmap.md` calls this pre-v1 bar "the first
+public release"): no officially-reviewed public listing ships before the product
+is tested.
 Shipping the `.mcpb` *file* to testers (rung 2) is self-serve and fine now;
 *submitting* that `.mcpb` to the Connectors Directory is the human-review step,
 so it lives at rung 7's gate, not rung 2's.
@@ -160,7 +162,7 @@ so it lives at rung 7's gate, not rung 2's.
 | 4 | **Official MCP Registry publish** (`server.json`, `pypi` registryType, namespace via GitHub OIDC or DNS) → aggregators (Smithery, Glama) pick it up; **install deep-link badges** (Cursor, VS Code) in README | discovery everywhere | none (self-serve namespace verification, like PyPI) | M3B — **tester-eligible** |
 | 5 | **Docker image**; Docker MCP Catalog when demand justifies (Gateway is invite-only — catalog listing alone is fine) | self-host crowd; Docker Desktop users | catalog submission is reviewed → treat as gated | M3B (later) / gated |
 | 6 | **Hosted remote MCP + OAuth** | claude.ai, ChatGPT, Cowork remote, mobile | n/a (our own infra) | **M3D** |
-| 7 | **Directory listings** (Claude Connectors Directory; ChatGPT App Directory; `.mcpb` directory submission) | ordinary consumer users | **human review** | **M3O — gated on v0.1 testing complete** |
+| 7 | **Directory listings** (Claude Connectors Directory; ChatGPT App Directory; `.mcpb` directory submission) | ordinary consumer users | **human review** | **M3O — gated on the first public release** |
 
 Existing strengths this plan builds on (do not regress): per-tool
 `readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint` annotations
@@ -208,8 +210,9 @@ authorization/consent"). This review sharpens the shape:
 
 The only channels that reach ordinary consumer users. All require a **human
 review** workflow, so per the 2026-07-11 founder directive M3O is **gated on
-v0.1 testing being complete** — no officially-reviewed public listing before the
-product is validated — *and* on M3D (authenticated remote) plus organizational
+the first public release being validated** ("v0.1 testing complete" in the
+directive) — no officially-reviewed public listing before the product is
+tested — *and* on M3D (authenticated remote) plus organizational
 prerequisites. Sequenced last, deliberately.
 
 - **Claude Connectors Directory:** submission requires a **Team/Enterprise
@@ -220,7 +223,7 @@ prerequisites. Sequenced last, deliberately.
 - **Local one-click via MCPB directory submission:** the `.mcpb` *file* ships to
   testers at rung 2 now, but *submitting* it to the Connectors Directory
   (manifest ≥0.2 with privacy policy) is itself a human-review step — so it
-  belongs to this v0.1-gated increment, not to rung 2.
+  belongs to this first-public-release-gated increment, not to rung 2.
 - **ChatGPT App Directory:** Apps SDK submission (Python/FastMCP is a blessed
   SDK), manual review, privacy policy + verified website + screenshots;
   regional exclusions (EEA/CH/UK at launch) may affect reach.
@@ -257,11 +260,14 @@ posture they lack.
 - The first-run wizard / in-product onboarding (M3A, M3N — already specced).
 - MCP Apps interactive UI (M3M — paused on upstream host rendering).
 - Homebrew formula (already in M3B, unchanged by this review).
-- REST API surface (future, `surface-design.md` §REST).
+- REST API surface (future, `.claude/rules/surface-design.md` §REST).
 
 ## Decisions (resolved 2026-07-11)
 
-The initial review's open questions are resolved. Content decisions:
+The initial review's open questions are resolved by the **founder directive of
+2026-07-11** — a momentum review plus three calls (Antigravity → T1; ship the
+Claude Code distribution plugin; gate officially-reviewed distribution on the
+first public release). Content decisions:
 
 - **Antigravity → T1** (was OQ3). It is Google's first-party agent surface — the
   peer to Codex and Claude Code — supports stdio MCP, and its CLI succeeds the
