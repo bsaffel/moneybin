@@ -20,14 +20,24 @@ def test_get_version_matches_distribution_metadata() -> None:
     assert get_version() == importlib.metadata.version("moneybin")
 
 
-def test_version_flag_does_not_touch_the_database(
+def test_version_preempts_subcommand_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--version must be side-effect free (cli.md Help Surface Contract)."""
+    """`--version stats` must print and exit before `stats` runs.
 
-    def _boom(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("--version must not open a database")
+    Guards the ``raise typer.Exit()`` in ``_version_callback``: without it,
+    Typer's eager-option handling would print the version and then fall
+    through to execute the subcommand in full (cli.md Help Surface
+    Contract). A bare ``--version`` invocation can't detect this — with no
+    subcommand, ``main_callback``'s body never runs regardless of whether
+    the eager exit fires, so the guard has to be exercised through a real
+    subcommand that would otherwise touch the database.
+    """
 
-    monkeypatch.setattr("moneybin.database.get_database", _boom)
-    result = runner.invoke(app, ["--version"])
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("stats subcommand must not run when --version is set")
+
+    monkeypatch.setattr("moneybin.cli.commands.stats.get_database", _boom)
+    result = runner.invoke(app, ["--version", "stats"])
     assert result.exit_code == 0
+    assert get_version() in result.stdout
