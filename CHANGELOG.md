@@ -311,11 +311,22 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   executor reads the document's text lines. Real bank statements are typeset
   with whitespace-aligned columns and no rules, so derivation went blind on
   exactly the input the executor consumes: a real Chase statement with a clean
-  `ACCOUNT ACTIVITY` section extracted **0 transactions** and its rows landed in
-  an opaque seed table instead of the ledger. Derivation now falls back to
-  reconstructing the table from text lines using the same column splitter the
-  recipe executes with. Statements already imported as seeds will import
-  correctly on re-import.
+  `ACCOUNT ACTIVITY` section extracted **0 transactions** — its rows either
+  landed in an opaque seed table or, for a statement with no ruled content
+  anywhere, failed outright with "No tables extracted from PDF". Derivation now
+  falls back to reconstructing the table from text lines using the same column
+  splitter the recipe executes with. Statements already imported as seeds will
+  import correctly on re-import. (#313)
+- **A saved statement format no longer replays onto a statement whose signs run
+  the other way.** Recipe replay happens before derivation, so it skipped the
+  guard that stops a "negative = expense" recipe being applied to an all-positive
+  document. A credit-card statement that matched a checking statement's saved
+  format — same bank, same columns, same page count — would import every charge
+  as **income**, and reconciliation could not catch it: the balance delta equals
+  the sum of the positive amounts, so the numbers tie out with every sign
+  backwards. Replay now re-checks that the recipe's sign convention fits the
+  document, and hands the statement to derivation (and on to the AI agent) when
+  it doesn't. (#313)
 - **CSV/Excel imports no longer silently drop legitimately identical rows.**
   Transaction ids for sources without a native id are content hashes, so two
   genuinely distinct same-day purchases with the same amount and description
@@ -324,7 +335,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   rows of identical content now carry an occurrence suffix, matching the scheme
   PDF transaction ids already used. Ids of rows that were never colliding are
   unchanged, so **re-importing an affected file recovers the dropped rows** and
-  leaves everything else alone.
+  leaves everything else alone. (#313)
 - **PDF statements sharing a filename no longer eat each other's rows.** Seed
   rows were keyed on `(alias, page, row index, content)`, and the alias is just
   the filename stem — so `2024-01/chase.pdf` and `2024-02/chase.pdf` collided,
@@ -332,7 +343,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   identical subscription line) was silently discarded from the second statement.
   The row key now includes the document's content identity. This re-keys existing
   `raw.pdf_seeds` rows: revert an affected PDF import (`moneybin import revert
-  <id>`) before re-importing it, or the statement is seeded twice.
+  <id>`) before re-importing it, or the statement is seeded twice. (#313)
 - **A PDF the importer can't parse now reaches the AI agent instead of being
   buried.** Every recipe-derivation failure reported the same reason
   (`no_transaction_table`), which is excluded from agent escalation on the
@@ -344,7 +355,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   Genuinely non-transactional PDFs (a brokerage positions statement) are routed
   to the seed store as before, and so are statements in a number locale the
   importer cannot replay — escalating those would send your statement to an AI
-  provider for a result it provably cannot use.
+  provider for a result it provably cannot use. (#313)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its

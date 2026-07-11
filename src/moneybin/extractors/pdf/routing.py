@@ -34,7 +34,11 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from moneybin.database import Database
-from moneybin.extractors.pdf.auto_derive import derivation_failure_reason, derive_recipe
+from moneybin.extractors.pdf.auto_derive import (
+    derivation_failure_reason,
+    derive_recipe,
+    recipe_polarity_fits,
+)
 from moneybin.extractors.pdf.column_names import (
     AMOUNT_NAME_RE as _AMOUNT_NAME_RE,
 )
@@ -309,6 +313,21 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             # skip save_new", which would leave the broken recipe in place
             # for every future import.
             saved_format = None
+
+    if recipe is not None and not recipe_polarity_fits(recipe, doc):
+        # The fingerprint matched but the sign convention doesn't fit this
+        # document — see recipe_polarity_fits. Fall through to auto-derive, whose
+        # own all-positive guard routes the document to seed / the bridge instead
+        # of importing every charge with its sign inverted.
+        logger.warning(
+            f"Saved recipe {saved_format.name!r} is negative_is_expense but this "
+            f"document has no negative amounts — refusing to replay"
+            if saved_format is not None
+            else "Refusing to replay a sign-mismatched recipe"
+        )
+        recipe = None
+        is_replay = False
+        saved_format = None
 
     if recipe is None:
         # Auto-derive: metadata not yet captured; derive_recipe accepts an

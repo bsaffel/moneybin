@@ -495,13 +495,20 @@ def _text_transaction_candidate(
     an unordered bag of cells (see ``_money_tokens``). Returning a ``PdfTable``
     would invite exactly that misuse, which is why this returns a plain pair.
 
-    The scan stops at the table's end sentinel rather than running to the end of
-    the document, so a later date-led section (a "Daily Balance Summary") can't
-    fold its rows into the sample. It deliberately does NOT require rows to be
-    *contiguous* with the header the way ``_synthesize_tables_from_text`` does: a
-    wrapped description line or a page footer ends a contiguous run early, and a
-    run that comes back empty reports the document as no-transaction-table —
-    seeding the very statements this rung exists to escalate.
+    Two bounds keep a later date-led section (a "Daily Balance Summary") from
+    folding its rows into the sample: the scan stops at the table's end sentinel,
+    and — since a document might carry no sentinel at all — after ``_SAMPLE_SIZE``
+    rows, which is every row the only consumer reads. The header, the other
+    consumer, doesn't depend on the rows.
+
+    It deliberately does NOT require rows to be *contiguous* with the header the
+    way ``_synthesize_tables_from_text`` does: a wrapped description line or a
+    page footer ends a contiguous run early, and a run that comes back empty
+    reports the document as no-transaction-table — seeding the very statements
+    this rung exists to escalate. The residue is a document with no sentinel AND
+    fewer than ``_SAMPLE_SIZE`` transaction rows, where a trailing dated section
+    can still reach the sample; it shares the document's locale, so it cannot
+    change the answer.
     """
     lines = [line.strip() for line in doc.text_lines]
     cells_per_line = [_re.split(_ROW_SPLIT, line) if line else [] for line in lines]
@@ -510,7 +517,7 @@ def _text_transaction_candidate(
             continue
         rows: list[list[str]] = []
         for offset in range(idx + 1, len(cells_per_line)):
-            if _opens_end_anchor(lines[offset]):
+            if _opens_end_anchor(lines[offset]) or len(rows) == _SAMPLE_SIZE:
                 break
             row = cells_per_line[offset]
             if row and _ANY_DATE_RE.match(row[0]):
@@ -556,6 +563,36 @@ def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
     if not candidates:
         return None
     return max(candidates, key=lambda t: len(t.rows))
+
+
+def recipe_polarity_fits(recipe: Recipe, doc: PdfDocument) -> bool:
+    """False when replaying *recipe* onto *doc* would invert the sign of every row.
+
+    ``derive_recipe`` refuses to author a ``negative_is_expense`` recipe for a
+    document whose sampled rows hold no negative amount: the convention is
+    ambiguous there, and a credit-card layout (positive = expense) would import
+    every charge as income. Reconciliation does not catch it — a statement whose
+    balance delta equals the sum of its positive amounts reconciles cleanly with
+    the signs exactly backwards.
+
+    Routing replays a saved recipe **before** it ever calls ``derive_recipe``, so
+    that guard is skipped on the replay path entirely. This re-applies it there.
+    Until unruled statements became derivable they never authored a saved format
+    and never matched one, so the gap was unreachable; now a checking statement's
+    saved recipe can fingerprint-match a same-issuer credit-card statement with
+    the same columns and page count, and replay would write its charges as income.
+    """
+    if recipe.sign_convention != "negative_is_expense":
+        return True
+    table = _select_transaction_table(doc)
+    if table is None:
+        # No table to judge against — leave the decision to the executor and the
+        # reconciliation gate rather than blocking a replay on missing evidence.
+        return True
+    _, amount_cols = _classify_sign_convention(table.header)
+    if not amount_cols:
+        return True
+    return _has_any_negative_amount(table, amount_cols)
 
 
 def transaction_headers(doc: PdfDocument) -> list[str] | None:
@@ -666,11 +703,31 @@ def _detect_number_format(
     samples: list[str] = []
     for row in table.rows[:_SAMPLE_SIZE]:
         for idx in amount_col_indices:
-            cell = row[idx].strip().lstrip("$").strip()
+            cell = _strip_currency(row[idx])
             if cell and cell not in ("", "-"):
                 samples.append(cell)
 
     return _number_format_from_samples(samples)
+
+
+# Currency symbols that can sit on either side of an amount. Stripping only "$"
+# left the symbol attached on every non-US statement, so no sample matched either
+# number pattern, the locale came back unknown, and the document escalated to the
+# bridge — which is precisely the egress a detected "european" was meant to
+# prevent. The locale probe cares about the separators, never the currency.
+_CURRENCY_CHARS = "$€£¥₹"
+
+
+def _strip_currency(cell: str) -> str:
+    """Strip whitespace and any currency symbol from an amount cell.
+
+    Removes the symbol wherever it sits rather than trimming the ends: a negative
+    amount writes the sign outside the symbol (``-€4,50``), so an end-trim would
+    stop at the ``-`` and leave the ``€`` in place. A currency symbol never
+    carries meaning inside a number, so dropping every occurrence is safe.
+    """
+    stripped = cell.translate({ord(sym): None for sym in _CURRENCY_CHARS})
+    return stripped.strip()
 
 
 def _number_format_from_samples(
@@ -706,7 +763,7 @@ def _money_tokens(rows: list[list[str]]) -> list[str]:
     samples: list[str] = []
     for row in rows[:_SAMPLE_SIZE]:
         for cell in row:
-            token = cell.strip().lstrip("$").strip()
+            token = _strip_currency(cell)
             if _matches_us(token) or _matches_european(token):
                 samples.append(token)
     return samples
@@ -715,17 +772,24 @@ def _money_tokens(rows: list[list[str]]) -> list[str]:
 def _number_format_anywhere(doc: PdfDocument) -> Literal["us", "european"] | None:
     """The document's number locale, read from whatever the table is visible as.
 
-    Probes the LOOSE table when one reconstructs, and falls back to the raw-text
-    candidate when none does — the unruled debit/credit case. Skipping that
-    fallback leaves exactly those statements unprobed, so a European
-    ``Withdrawals | Deposits`` statement escalates to the bridge, egresses the
-    user's statement text to an agent, and is then rejected outright by
-    ``execute_recipe`` (which raises on any ``number_format != "us"``). That is
-    the precise harm the reason split exists to prevent.
+    Walks the same three rungs as ``transaction_headers``, in the same order, and
+    for the same reason: the locale must be read off the table ``derive_recipe``
+    actually gave up on. Probing the *loose* table first would, on a document with
+    more than one transaction-shaped table, read whichever is largest — so a small
+    US ledger that failed derivation for an unrelated reason (ambiguous dates, the
+    all-positive guard) alongside a bigger non-US sub-table would report
+    ``unsupported_number_format`` and be seeded, when it should have reached the
+    bridge.
+
+    The text rung is load-bearing for the unruled debit/credit case, which
+    reconstructs as no table at all. Skipping it leaves exactly those statements
+    unprobed, so a European ``Withdrawals | Deposits`` statement escalates,
+    egresses the user's text to an agent, and is then rejected outright by
+    ``execute_recipe`` (which raises on any ``number_format != "us"``).
     """
-    table = _select_loose_transaction_table(doc)
-    if table is not None:
-        return _detect_number_format(table, _amount_like_columns(table.header))
+    for table in (_select_transaction_table(doc), _select_loose_transaction_table(doc)):
+        if table is not None:
+            return _detect_number_format(table, _amount_like_columns(table.header))
 
     candidate = _text_transaction_candidate(doc)
     if candidate is None:

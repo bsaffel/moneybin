@@ -687,6 +687,122 @@ def test_unruled_european_debit_credit_statement_is_not_bridge_eligible(
     assert decision.reason == "unsupported_number_format"
 
 
+def test_replay_refuses_a_recipe_whose_sign_convention_does_not_fit(
+    db: Database,
+) -> None:
+    """A negative_is_expense recipe must not replay onto an all-positive document.
+
+    `derive_recipe` refuses to author such a recipe (its own comment: "route to
+    seed rather than auto-derive a recipe that silently corrupts signs on every
+    future replay") — but routing replays a saved recipe BEFORE it ever calls
+    `derive_recipe`, so that guard was skipped on the replay path.
+
+    Reconciliation does not catch it: this statement's balance delta (+200) equals
+    the sum of its positive amounts, so the replayed recipe reconciles cleanly with
+    every sign backwards and imports two card charges as income.
+
+    Unreachable until now — unruled statements didn't derive, so they never saved a
+    format and never matched one. Now a Chase checking statement's saved recipe
+    fingerprint-matches a Chase card statement with the same columns and page count.
+    """
+    _save_chase_format(db)  # negative_is_expense, Chase / Date,Description,Amount / 1pg
+
+    all_positive = [
+        ["01/15/2024", "Coffee Shop", "50.00"],
+        ["01/20/2024", "Grocery Mart", "150.00"],
+    ]
+    doc = _make_doc(
+        text_lines=[
+            "Chase Bank Statement",
+            "Account Number: 1234",
+            "Statement Period: 01/01/2024",
+            "To: 01/31/2024",
+            "Beginning Balance: $1000.00",
+            "Ending Balance: $1200.00",
+            _ROW_REGION_START,
+            "01/15/2024  Coffee Shop  50.00",
+            "01/20/2024  Grocery Mart  150.00",
+            _ROW_REGION_END,
+        ],
+        tables=[_standard_table(all_positive)],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.recipe is None
+    # The saved format is disowned, not merely bypassed — a populated
+    # matched_format_name tells the service "this was a replay, skip save_new".
+    assert decision.matched_format_name is None
+
+
+def test_euro_symbol_statement_is_recognised_as_non_us(db: Database) -> None:
+    """A € amount must read as European, not as an unknown locale.
+
+    The probe stripped only `$`, so every cell on a €-denominated statement matched
+    neither number pattern, the locale came back unknown, and the document fell
+    through to `transaction_table_underivable` — escalating to the bridge for a
+    recipe `execute_recipe` rejects outright. Detecting the locale is what holds it
+    back from that pointless egress.
+    """
+    doc = PdfDocument(
+        source_file="euro.pdf",
+        tables=[
+            PdfTable(
+                page=1,
+                header=["Date", "Description", "Withdrawals", "Deposits"],
+                rows=[
+                    ["01/02/2024", "COFFEE SHOP", "-€4,50", ""],
+                    ["01/05/2024", "PAYROLL", "", "€2.000,00"],
+                ],
+            )
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "unsupported_number_format"
+
+
+def test_locale_is_probed_on_the_table_derivation_actually_failed_on(
+    db: Database,
+) -> None:
+    """On a multi-table document, the locale probe must not read the wrong table.
+
+    Probing the *loose* table first picks whichever transaction-shaped table is
+    largest — not necessarily the one `derive_recipe` gave up on. Here the main
+    ledger is a small US table that fails derivation on the all-positive sign guard,
+    beside a larger European debit/credit sub-table. Reading the larger one reports
+    `unsupported_number_format` and seeds the statement, when the US ledger the
+    deriver actually choked on is exactly what the bridge exists to read.
+    """
+    us_ledger_all_positive = PdfTable(
+        page=1,
+        header=["Date", "Description", "Amount"],
+        rows=[
+            ["01/15/2024", "Coffee Shop", "50.00"],
+            ["01/20/2024", "Grocery Mart", "150.00"],
+        ],
+    )
+    larger_european_sub_table = PdfTable(
+        page=1,
+        header=["Date", "Description", "Withdrawals", "Deposits"],
+        rows=[
+            ["01/02/2024", "FEE A", "1,50", ""],
+            ["01/03/2024", "FEE B", "2,50", ""],
+            ["01/04/2024", "FEE C", "3,50", ""],
+            ["01/05/2024", "FEE D", "4,50", ""],
+            ["01/06/2024", "FEE E", "5,50", ""],
+        ],
+    )
+    doc = _make_doc(tables=[us_ledger_all_positive, larger_european_sub_table])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.reason == "transaction_table_underivable"
+
+
 def test_unruled_us_debit_credit_statement_still_escalates(db: Database) -> None:
     """The locale fallback must not over-correct: a US unruled split layout escalates.
 
