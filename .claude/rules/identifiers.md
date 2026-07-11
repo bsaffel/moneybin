@@ -61,6 +61,13 @@ silently corrupts the ledger:
   members of a colliding group — `base|0`, `base|1` — violates this: the lone
   row's id would change the moment a twin showed up, orphaning it so two
   transactions import as three. Don't do that either.)
+- **Order-invariant across a colliding group.** `occurrence` is assigned in file
+  order, but that does not make the *result* order-dependent: N rows sharing a
+  content key always produce exactly the id set `{base, base|1, … base|N-1}`,
+  determined by N alone. A re-export that lists a new identical twin *above* the
+  original therefore still yields both ids — it only swaps which physical row
+  carries which, and rows identical in every hashed field are interchangeable by
+  construction. Reordering can neither drop a transaction nor double one.
 
 Both content-hash transaction-id sites implement exactly this — keep them
 identical:

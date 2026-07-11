@@ -736,6 +736,69 @@ def test_replay_refuses_a_recipe_whose_sign_convention_does_not_fit(
     assert decision.matched_format_name is None
 
 
+def _card_statement_doc(opening: str = "0.00", closing: str = "100.00") -> PdfDocument:
+    """A credit-card statement: charges positive, one payment negative.
+
+    Sign-wise this is indistinguishable from a checking statement — `[+150, -50]`
+    against `[-50, +150]`. Only the disclosures say which it is.
+    """
+    return _make_doc(
+        text_lines=[
+            "Chase Bank Statement",
+            "Account Number: 1234",
+            "Statement Period: 01/01/2024",
+            "To: 01/31/2024",
+            "Minimum Payment Due: $25.00",
+            f"Beginning Balance: ${opening}",
+            f"Ending Balance: ${closing}",
+            _ROW_REGION_START,
+            "01/15/2024  Coffee Shop  150.00",
+            "01/20/2024  Payment Thank You  -50.00",
+            _ROW_REGION_END,
+        ],
+        tables=[
+            _standard_table([
+                ["01/15/2024", "Coffee Shop", "150.00"],
+                ["01/20/2024", "Payment Thank You", "-50.00"],
+            ])
+        ],
+    )
+
+
+def test_card_statement_with_a_payment_row_is_not_auto_derived(db: Database) -> None:
+    """One payment row must not be taken as proof the document spends negative.
+
+    `_classify_sign_convention` returns `negative_is_expense` for EVERY
+    single-amount layout — it cannot express the card convention — so the only
+    thing standing between a card statement and an inverted ledger was
+    `_has_any_negative_amount`. A real card statement almost always carries a
+    payment or refund, which satisfies that check, so the guard waved through
+    exactly the documents it was meant to stop.
+
+    Reconciliation cannot catch it either: it sums the raw signed amounts
+    (150 - 50 = 100) against the balance delta (+100), so the statement ties out
+    with every charge booked as income and the payment booked as an expense.
+
+    Declining to derive routes it to the bridge, which can read the statement.
+    """
+    decision = route_pdf_import(_card_statement_doc(), db)
+
+    assert decision.outcome == "seed"
+    assert decision.recipe is None
+    assert decision.reason == "transaction_table_underivable"  # bridge-eligible
+
+
+def test_card_statement_does_not_replay_a_checking_recipe(db: Database) -> None:
+    """The replay gate must apply the card check, not just the any-negative one."""
+    _save_chase_format(db)  # negative_is_expense, Chase / Date,Description,Amount / 1pg
+
+    decision = route_pdf_import(_card_statement_doc(), db)
+
+    assert decision.outcome == "seed"
+    assert decision.recipe is None
+    assert decision.matched_format_name is None
+
+
 def test_euro_symbol_statement_is_recognised_as_non_us(db: Database) -> None:
     """A € amount must read as European, not as an unknown locale.
 

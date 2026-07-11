@@ -327,16 +327,21 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   falls back to reconstructing the table from text lines using the same column
   splitter the recipe executes with. Statements already imported as seeds will
   import correctly on re-import. (#313)
-- **A saved statement format no longer replays onto a statement whose signs run
-  the other way.** Recipe replay happens before derivation, so it skipped the
-  guard that stops a "negative = expense" recipe being applied to an all-positive
-  document. A credit-card statement that matched a checking statement's saved
-  format — same bank, same columns, same page count — would import every charge
-  as **income**, and reconciliation could not catch it: the balance delta equals
-  the sum of the positive amounts, so the numbers tie out with every sign
-  backwards. Replay now re-checks that the recipe's sign convention fits the
-  document, and hands the statement to derivation (and on to the AI agent) when
-  it doesn't. (#313)
+- **Credit-card statements no longer import their charges as income.** The PDF
+  importer assumes "negative = expense" for every single-amount-column layout —
+  the deposit-account convention — and its only safeguard was "does this
+  statement contain a negative amount?" A card statement carries the opposite
+  convention (charges positive, payments negative), and almost always has a
+  payment or refund row, so it sailed through that check and every charge was
+  booked as **income**. Reconciliation could not catch it: it sums the raw signed
+  amounts, which tie out to the balance change with the signs exactly backwards.
+  The importer now reads the statement's own disclosures (minimum payment, credit
+  limit, APR) instead of guessing at its arithmetic, and hands a card statement to
+  the AI agent rather than importing it under the wrong convention. Signs cannot
+  be inferred from the amounts alone — a checking statement and a card statement
+  have identical sign distributions. This also closes the same hole on the
+  saved-format replay path, which ran before derivation and skipped the guard
+  entirely. (#313)
 - **CSV/Excel imports no longer silently drop legitimately identical rows.**
   Transaction ids for sources without a native id are content hashes, so two
   genuinely distinct same-day purchases with the same amount and description

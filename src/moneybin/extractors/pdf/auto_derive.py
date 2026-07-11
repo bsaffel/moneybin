@@ -233,16 +233,25 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
     if number_fmt != "us":
         return None
 
-    # Sign-convention sanity check: auto_derive defaults single-amount
-    # layouts to negative_is_expense, but credit-card statements use the
-    # opposite convention (positive = expense, negative = payment). When
-    # the sampled rows contain no negative amounts the convention is
-    # ambiguous — reconciliation can still pass on a flat (zero-delta)
-    # month and the import would write positive expenses as income.
-    # Route to seed rather than auto-derive a recipe that silently
-    # corrupts signs on every future replay.
-    if sign == "negative_is_expense" and not _has_any_negative_amount(
-        table, amount_cols
+    # Sign-convention sanity check: auto_derive defaults single-amount layouts to
+    # negative_is_expense, but credit-card statements use the opposite convention
+    # (positive = expense, negative = payment). Two independent tells, because
+    # neither catches the other's case:
+    #
+    # - The document names itself a card statement. This is the load-bearing one:
+    #   a card statement with even one payment row has negative amounts, so the
+    #   amounts alone can never rule it out (see _looks_like_credit_card_statement).
+    # - No negative amounts at all. Catches a card statement that carries none of
+    #   the disclosures — the convention is ambiguous, and reconciliation still
+    #   passes on a flat (zero-delta) month while the import writes expenses as
+    #   income.
+    #
+    # Decline rather than guess: derivation failing routes the statement to the
+    # bridge, which can read it. A recipe with the sign convention backwards
+    # corrupts every row, on this import and on every future replay.
+    if sign == "negative_is_expense" and (
+        _looks_like_credit_card_statement(doc)
+        or not _has_any_negative_amount(table, amount_cols)
     ):
         return None
 
@@ -576,14 +585,21 @@ def recipe_polarity_fits(recipe: Recipe, doc: PdfDocument) -> bool:
     the signs exactly backwards.
 
     Routing replays a saved recipe **before** it ever calls ``derive_recipe``, so
-    that guard is skipped on the replay path entirely. This re-applies it there.
+    those guards are skipped on the replay path entirely. This re-applies them.
     Until unruled statements became derivable they never authored a saved format
     and never matched one, so the gap was unreachable; now a checking statement's
     saved recipe can fingerprint-match a same-issuer credit-card statement with
     the same columns and page count, and replay would write its charges as income.
+
+    Note the card check does the real work: a card statement with even one payment
+    row holds a negative amount, so ``_has_any_negative_amount`` alone would accept
+    it. That is the whole hazard — a payment row is not evidence the document
+    spends in the negative direction.
     """
     if recipe.sign_convention != "negative_is_expense":
         return True
+    if _looks_like_credit_card_statement(doc):
+        return False
     table = _select_transaction_table(doc)
     if table is None:
         # No table to judge against — leave the decision to the executor and the
@@ -796,6 +812,47 @@ def _number_format_anywhere(doc: PdfDocument) -> Literal["us", "european"] | Non
         return None
     _, rows = candidate
     return _number_format_from_samples(_money_tokens(rows))
+
+
+# Disclosures that appear on a credit-card statement and essentially never on a
+# deposit-account statement. US card issuers are required to print the payment and
+# APR disclosures, so this is high-recall as well as high-precision.
+#
+# Matched case-insensitively against the document's text lines. A false positive
+# costs an unnecessary escalation to the bridge (the statement is still captured);
+# a false negative silently inverts the sign of every row. The asymmetry is the
+# whole reason this list is scanned rather than the amounts.
+_CREDIT_CARD_MARKERS: tuple[str, ...] = (
+    "minimum payment",
+    "credit limit",
+    "available credit",
+    "payment due date",
+    "annual percentage rate",
+)
+
+
+def _looks_like_credit_card_statement(doc: PdfDocument) -> bool:
+    """True when the document carries a credit-card statement's disclosures.
+
+    The deterministic rung cannot infer the sign convention from the amounts. A
+    checking statement (``-50`` groceries, ``+150`` paycheck) and a card statement
+    (``+150`` charges, ``-50`` payment) have *identical* sign distributions — the
+    information simply is not in the numbers. ``_classify_sign_convention``
+    nonetheless hands back ``negative_is_expense`` for every single-amount layout,
+    so without this check a card statement's charges import as **income** and its
+    payment as an expense, and reconciliation ties out because it sums the raw
+    signed amounts either way.
+
+    So read the document instead of guessing at its arithmetic, and when it names
+    itself a card statement, decline to derive: the bridge can read it. Declining
+    is the safe direction — an unnecessary escalation is visible and recoverable,
+    a silently inverted ledger is neither.
+    """
+    return any(
+        marker in line.lower()
+        for line in doc.text_lines
+        for marker in _CREDIT_CARD_MARKERS
+    )
 
 
 def _has_any_negative_amount(table: PdfTable, amount_col_indices: list[int]) -> bool:
