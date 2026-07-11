@@ -80,9 +80,9 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 102** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
 | ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension |
-| ChatGPT web + mobile (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-permission tiering ambiguous — re-verify at M3D |
+| ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
 | Cowork remote sessions | remote MCP via connectors | claude.ai connectors | **T3** | Same M3D unlock |
-| Claude Connectors Directory / ChatGPT App Directory | hosted remote + review | vendor submission portals | **T3 (M3O)** | Both require org accounts + human review; see M3O |
+| Claude Connectors Directory / ChatGPT Apps SDK (→ "Plugins") | hosted remote + review | vendor submission portals | **T3 (M3O)** | Both require org accounts + human review; see M3O |
 | Gemini Code Assist | MCP in Private Preview | account-team request | **✗** | Revisit: GA announcement |
 | Consumer Gemini app | no custom MCP (3 built-in Spark connectors) | — | **✗** | Revisit: Google opens Spark/MCP to third parties |
 | Raycast | community extension-mediated | community `mcp-config.json` | **✗** | Revisit: first-party built-in MCP client ships |
@@ -178,7 +178,7 @@ so it lives at rung 7's gate, not rung 2's.
 | 4 | **Official MCP Registry publish** (`server.json`, `pypi` registryType, namespace via GitHub OIDC or DNS) → aggregators (Smithery, Glama) pick it up; **install deep-link badges** (Cursor, VS Code) in README | discovery everywhere | none (self-serve namespace verification, like PyPI) | M3B — **tester-eligible** |
 | 5 | **Docker image**; Docker MCP Catalog when demand justifies (Gateway is invite-only — catalog listing alone is fine) | self-host crowd; Docker Desktop users | catalog submission is reviewed → treat as gated | M3B (later) / gated |
 | 6 | **Hosted remote MCP + OAuth** | claude.ai, ChatGPT web/mobile, Cowork remote, mobile | n/a (our own infra) | **M3D** |
-| 7 | **Directory listings** (Claude Connectors Directory; ChatGPT App Directory; `.mcpb` directory submission) | ordinary consumer users | **human review** | **M3O — gated on the first public release** |
+| 7 | **Directory listings** (Claude Connectors Directory; ChatGPT Apps SDK → "Plugins"; `.mcpb` directory submission) | ordinary consumer users | **human review** | **M3O — gated on the first public release** |
 
 Existing strengths this plan builds on (do not regress): per-tool
 `readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint` annotations
@@ -233,15 +233,18 @@ organizational prerequisites. Sequenced last, deliberately.
 
 - **Claude Connectors Directory:** submission requires a **Team/Enterprise
   claude.ai org** (owner-submitted), HTTPS remote server (streamable HTTP or
-  SSE), OAuth 2.0 for authenticated services, per-tool title + annotations
-  (✅ already shipped), privacy policy (instant rejection if missing), human
+  SSE), OAuth 2.0 for authenticated services, per-tool annotations
+  (✅ shipped — readOnly/destructive/idempotent/openWorld hints; per-tool `title`
+  not yet wired), privacy policy (instant rejection if missing), human
   review with self-test attestation.
 - **Local one-click via `.mcpb` directory submission:** the `.mcpb` *file* ships to
   testers at rung 2 now, but *submitting* it to the Connectors Directory
   (manifest ≥0.2 with privacy policy) is itself a human-review step — so it
   belongs to this first-public-release-gated increment, not to rung 2.
-- **ChatGPT App Directory:** Apps SDK submission (Python/FastMCP is a blessed
-  SDK), manual review, privacy policy + verified website + screenshots;
+- **ChatGPT (Apps SDK → "Plugins"):** developers submit via the **Apps SDK**
+  (Python/FastMCP is a blessed SDK); end users install and browse it as a
+  **"Plugin" in ChatGPT Work**. Manual review, privacy policy + verified website
+  + screenshots;
   regional exclusions (EEA/CH/UK at launch) may affect reach.
 - Prerequisite to name in roadmap: the submitting org account is a dedicated
   MoneyBin organization (decided — see Decisions); acquiring/holding it is a
