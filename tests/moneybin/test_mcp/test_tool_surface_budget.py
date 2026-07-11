@@ -13,17 +13,13 @@ import asyncio
 
 import pytest
 
-# Cascade (Windsurf): "Cascade has a limit of 100 total tools that it has access to
-# at any given time." Verified 2026-07-11 against the Windsurf MCP docs. It is a
-# ceiling on ACTIVE tools across ALL of the user's servers — so MoneyBin's share of
-# the budget is smaller still: anyone running a second MCP server alongside us has
-# less than this to spend.
-WINDSURF_ACTIVE_TOOL_CAP = 100
+from moneybin.mcp.surface import VISIBLE_TOOL_COUNT, WINDSURF_ACTIVE_TOOL_CAP
 
-# The count a client sees at connect. Bump deliberately, not reflexively: read
-# `docs/guides/mcp-clients.md` → Windsurf before you do, and if this pushes further
-# past the cap, say so in the PR.
-EXPECTED_VISIBLE_TOOLS = 102
+# The declared counts live in `moneybin.mcp.surface` because `mcp install` cites them
+# in its Windsurf warning and cannot afford to boot the server to compute them. This
+# module is what keeps that declaration honest against the live registry — bump it
+# deliberately, not reflexively: read `docs/guides/mcp-clients.md` → Windsurf first,
+# and if the change pushes us further past the cap, say so in the PR.
 
 
 def _visible_tool_names() -> set[str]:
@@ -37,10 +33,10 @@ def _visible_tool_names() -> set[str]:
 @pytest.mark.integration
 def test_visible_tool_count_is_pinned() -> None:
     visible = _visible_tool_names()
-    assert len(visible) == EXPECTED_VISIBLE_TOOLS, (
+    assert len(visible) == VISIBLE_TOOL_COUNT, (
         f"The client-visible MCP tool surface changed to {len(visible)} "
-        f"(expected {EXPECTED_VISIBLE_TOOLS}). This is a public-contract change: "
-        "update EXPECTED_VISIBLE_TOOLS, and re-check the Windsurf section of "
+        f"(expected {VISIBLE_TOOL_COUNT}). This is a public-contract change: "
+        "update VISIBLE_TOOL_COUNT, and re-check the Windsurf section of "
         "docs/guides/mcp-clients.md — we are already over Cascade's "
         f"{WINDSURF_ACTIVE_TOOL_CAP}-tool ceiling."
     )
@@ -70,7 +66,7 @@ def test_windsurf_overflow_is_documented() -> None:
     """
     from pathlib import Path
 
-    overflow = EXPECTED_VISIBLE_TOOLS - WINDSURF_ACTIVE_TOOL_CAP
+    overflow = VISIBLE_TOOL_COUNT - WINDSURF_ACTIVE_TOOL_CAP
     assert overflow > 0, (
         "MoneyBin now fits inside Cascade's tool ceiling — delete this test and the "
         "Windsurf overflow warning in docs/guides/mcp-clients.md."

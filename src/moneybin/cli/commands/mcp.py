@@ -584,6 +584,30 @@ def _print_client_notes(client: str) -> None:
             "before they act. Add it yourself only if you accept that.",
             err=True,
         )
+    if client == "windsurf":
+        # Windsurf silently drops whatever doesn't fit, so a user who never opens
+        # the guide would just find MoneyBin unable to do things it can do. The
+        # counts come from moneybin.mcp.surface (plain constants, no FastMCP import
+        # — resolving them live would make `mcp install` boot the server), and a
+        # test asserts them against the live registry so they can't go stale.
+        from moneybin.mcp.surface import (  # noqa: PLC0415 — keep it off the CLI cold-start path
+            VISIBLE_TOOL_COUNT,
+            WINDSURF_ACTIVE_TOOL_CAP,
+        )
+
+        overflow = VISIBLE_TOOL_COUNT - WINDSURF_ACTIVE_TOOL_CAP
+        typer.echo("", err=True)
+        typer.echo(
+            f"⚠️  Windsurf (Cascade) holds at most {WINDSURF_ACTIVE_TOOL_CAP} tools "
+            f"at a time, across ALL your MCP servers. MoneyBin registers "
+            f"{VISIBLE_TOOL_COUNT} and hides none, so this install alone is "
+            f"{overflow} over the ceiling — and Windsurf gives no warning when it "
+            "drops the overflow; it simply acts as though MoneyBin cannot do things "
+            "it can. Open Settings → MCP Servers and disable the tools you don't "
+            "need (turning off a namespace you don't use, e.g. investments_* or "
+            "tax_*, is the quickest way down). See docs/guides/mcp-clients.md.",
+            err=True,
+        )
 
 
 def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
