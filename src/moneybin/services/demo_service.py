@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from moneybin import error_codes
+from moneybin.errors import UserError
+
 if TYPE_CHECKING:
     from moneybin.database import Database
 
@@ -36,8 +39,19 @@ class DemoResult:
     total_liabilities: Decimal
 
 
-class ProfileHasNonSyntheticDataError(Exception):
+class ProfileHasNonSyntheticDataError(UserError):
     """Target profile holds data the generator did not create — refuse to reset."""
+
+    def __init__(self, profile: str) -> None:
+        """Build a user-facing refusal message naming the offending profile."""
+        super().__init__(
+            f"Profile {profile!r} holds non-synthetic data; refusing to reset.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+            hint=(
+                f"💡 Use a different --profile, or "
+                f"'moneybin profile delete {profile}' first."
+            ),
+        )
 
 
 def _count_transactions(db: "Database") -> int:
@@ -132,9 +146,7 @@ class DemoService:
                     )
                 reset_synthetic_rows(db)
             elif _count_transactions(db) > 0:
-                raise ProfileHasNonSyntheticDataError(
-                    f"Profile {profile!r} holds non-synthetic data; refusing to reset."
-                )
+                raise ProfileHasNonSyntheticDataError(profile)
 
             # 4. Generate persona data.
             result = GeneratorEngine(persona, seed=seed, years=years).generate()

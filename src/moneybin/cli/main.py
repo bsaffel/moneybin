@@ -22,6 +22,7 @@ from .commands import (
     assets,
     categories,
     db,
+    demo,
     gsheet,
     import_cmd,
     investments,
@@ -107,9 +108,9 @@ def main_callback(
             raise typer.BadParameter(str(e)) from e
 
     # Profile commands are recovery tools (`profile create` legitimately runs
-    # against a profile that doesn't yet exist) and synthetic commands manage
-    # their own profile lifecycle — both skip the lazy dir-check + wizard.
-    if ctx.invoked_subcommand in ("profile", "synthetic"):
+    # against a profile that doesn't yet exist), and synthetic + demo commands
+    # manage their own profile lifecycle — all skip the lazy dir-check + wizard.
+    if ctx.invoked_subcommand in ("profile", "synthetic", "demo"):
         return
 
     register_profile_resolver(resolve_profile)
@@ -121,6 +122,10 @@ app.add_typer(
     name="profile",
     help="Manage user profiles (create, list, switch, delete, show, set)",
 )
+app.command(
+    name="demo",
+    help="Set up a demo profile with synthetic data and a first answer",
+)(demo.demo_command)
 app.add_typer(
     import_cmd.app,
     name="import",

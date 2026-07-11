@@ -99,6 +99,13 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- show [name]                -- Resolved settings (defaults to active)
 |   +-- set <key> <value>          -- Set config value
 |
++-- demo                           -- Set up a demo profile with synthetic data + a first answer (leaf)
+|     [--persona basic|family|freelancer]  Data shape (default: basic)
+|     [--profile NAME]             Target profile (default: demo)
+|     [--seed N] [--years N]
+|     [--yes]                      Auto-accept the reset if the demo profile exists
+|     [--output json] [--quiet]
+|
 +-- import
 |   +-- files <paths...>           -- Smart import with full pipeline (accepts one or more paths)
 |   |     [--validate]               Parse and validate only
@@ -473,13 +480,13 @@ Pipeline:       refresh (post-load orchestration: match -> transform -> categori
 Mutation:       budget (target management; the vs-actual `reports budget` read command is de-registered pending the reports.budget view)
 Operational:    logs, stats
 Ad-hoc query:   sql (privacy-safe SQL; raw operator access is db query/shell/ui)
-Infrastructure: profile, db, mcp, transform
+Infrastructure: profile, demo (evaluator onboarding), db, mcp, transform
 Extensibility:  extension, packages (planned, extension-contracts.md); plus dynamic per-package subgroups via entry-points
 ```
 
 ### Top-level command count
 
-In-tree groups (20): `profile`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `sql`, `export`, `mcp`, `db`, `logs`.
+In-tree groups (21): `profile`, `demo`, `import`, `sync`, `accounts`, `reports`, `transactions`, `categories`, `merchants`, `privacy`, `budget`, `system`, `refresh`, `transform`, `synthetic`, `stats`, `sql`, `export`, `mcp`, `db`, `logs`.
 
 Planned operator groups (2, pending [`extension-contracts.md`](extension-contracts.md)): `extension`, `packages`.
 
