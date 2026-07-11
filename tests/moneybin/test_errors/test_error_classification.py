@@ -170,6 +170,25 @@ def test_db_not_initialized_unregistered_points_at_profile_create(
     assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
 
 
+def test_db_not_initialized_bare_directory_does_not_point_at_profile_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A directory that exists but was never registered: `profile create` refuses on
+    # the directory alone, so pointing there would dead-end the user. `db init`
+    # works, so that is what the message must say.
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "bare").mkdir(parents=True)  # no config.yaml, no db
+    set_current_profile("bare")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" not in result.message
+    assert "db init" in result.message.lower()
+
+
 def test_db_not_initialized_registered_points_at_db_init(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

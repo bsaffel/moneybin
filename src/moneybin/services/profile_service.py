@@ -100,6 +100,17 @@ class ProfileService:
             raise ValueError(f"Invalid profile name: {name!r}")
         return profile_dir
 
+    def exists(self, name: str) -> bool:
+        """True if the profile directory exists at all — registered or not.
+
+        `create()` refuses on the bare directory, so callers offering recovery
+        advice need this to know whether `profile create` is even open to them.
+        """
+        try:
+            return self._profile_dir(name).exists()
+        except ValueError:
+            return False
+
     def is_registered(self, name: str) -> bool:
         """True if the profile was set up (has a config.yaml), not just db-init'd.
 
