@@ -19,7 +19,7 @@ This spec covers pillar B from the [transaction-matching umbrella](matching-over
 
 - [matching-overview.md](matching-overview.md) — umbrella vision, scope, build order
 - [matching-same-record-dedup.md](matching-same-record-dedup.md) — pillars A+C, defines the matching engine, `app.match_decisions`, review CLI
-- [fct_transactions.sql](../../sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no transfer detection)
+- [fct_transactions.sql](../../src/moneybin/sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no transfer detection)
 - [categorization-overview.md](categorization-overview.md) — independent axis; matching does not gate categorization
 
 ## Design Principles

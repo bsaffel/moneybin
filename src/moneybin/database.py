@@ -1168,8 +1168,7 @@ def sqlmesh_context(
 
     Args:
         db: Open Database instance whose connection SQLMesh will borrow.
-        sqlmesh_root: Path to the src/moneybin/sqlmesh/ directory. Defaults to the
-            project's ``src/moneybin/sqlmesh/`` directory.
+        sqlmesh_root: Root path for SQLMesh models; defaults to ``SQLMESH_ROOT``.
 
     Yields:
         A ``sqlmesh.Context`` connected to the encrypted database.
