@@ -208,6 +208,70 @@ def test_rebuild_requires_confirmation(
 
 
 @pytest.mark.integration
+def test_rebuilds_an_empty_pre_existing_demo_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A real `init_db` seeds app.schema_migrations / app.versions. The not-ours
+    # guard counts ANY row as user content, so those two MUST be excluded — else
+    # `moneybin demo` would refuse to build on an empty, freshly-created `demo`
+    # profile. The unit test for that exclusion runs against the test fixture,
+    # which seeds nothing; only a real profile-create proves the exclusion list.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=False)  # real init, no data
+    _mock_pipeline(mocker)
+
+    result = DemoService().run(persona="basic", seed=42, reset_confirmed=False)
+
+    assert result.transaction_count == 5
+
+
+@pytest.mark.integration
+def test_refuses_demo_profile_holding_only_securities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # app.securities is user-authored and needs no transaction behind it. A profile
+    # named `demo` holding only a real securities catalog must not be destroyed.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=False)
+    _mock_pipeline(mocker)
+
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO app.securities (security_id, name, security_type) "
+            "VALUES (?, ?, ?)",
+            ["sec_1", "Vanguard S&P 500 ETF", "etf"],
+        )
+
+    with pytest.raises(DemoProfileNotOursError):
+        DemoService().run(persona="basic", seed=42, reset_confirmed=True)
+
+
+@pytest.mark.integration
+def test_registers_a_bare_db_init_demo_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # `moneybin db init --profile demo` leaves a directory + database but no
+    # config.yaml, and `ProfileService.create` raises ProfileExistsError off the
+    # directory alone. Demo must finish that registration, or it reports success
+    # for a profile `profile list` hides and that has no inbox.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.services.profile_service import ProfileService
+
+    profiles = ProfileService()
+    _make_demo_profile(generator_made=False)
+    (profiles._profile_dir(DEMO_PROFILE) / "config.yaml").unlink()  # pyright: ignore[reportPrivateUsage]
+    assert profiles.is_registered(DEMO_PROFILE) is False
+
+    _mock_pipeline(mocker)
+    DemoService().run(persona="basic", seed=42, reset_confirmed=True)
+
+    assert profiles.is_registered(DEMO_PROFILE) is True
+    assert DEMO_PROFILE in [p["name"] for p in profiles.list()]
+
+
+@pytest.mark.integration
 def test_recovers_from_partially_generated_demo_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:

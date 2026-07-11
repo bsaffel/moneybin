@@ -6,6 +6,7 @@ from moneybin.database import Database
 from moneybin.synthetic.reset import (
     GENERATOR_WRITTEN_TABLES,
     RESET_DELETIONS,
+    has_any_user_content,
     has_non_synthetic_data,
     reset_synthetic_rows,
 )
@@ -179,6 +180,42 @@ def test_generator_output_is_invisible_to_the_real_data_guard(db: Database) -> N
     SyntheticWriter(db).write(generated)
 
     assert has_non_synthetic_data(db) is False
+
+
+@pytest.mark.unit
+def test_has_any_user_content_is_false_for_a_fresh_database(db: Database) -> None:
+    # The invariant the not-ours guard rests on: a freshly-initialized profile has
+    # no user content, so ANY row is the user's. If `init_db` ever starts seeding a
+    # table, this fails and _INIT_POPULATED_TABLES must be updated deliberately —
+    # otherwise `moneybin demo` would refuse to build on a bare `db init` profile.
+    assert has_any_user_content(db) is False
+
+
+@pytest.mark.unit
+def test_has_any_user_content_detects_securities(db: Database) -> None:
+    # app.securities is user-authored and needs no transaction behind it — the gap
+    # that `has_non_synthetic_data`'s raw-only scan could never see.
+    db.execute(
+        "INSERT INTO app.securities (security_id, name, security_type) "
+        "VALUES (?, ?, ?)",
+        ["sec_1", "Vanguard S&P 500 ETF", "etf"],
+    )
+    assert has_any_user_content(db) is True
+
+
+@pytest.mark.unit
+def test_has_any_user_content_detects_app_tables_with_no_raw_rows(
+    db: Database,
+) -> None:
+    # The structural point: budgets are user-authored state with no raw row behind
+    # them. Enumerating the app tables that count would go stale exactly the way
+    # the raw allowlist did, so the not-ours guard counts any row at all.
+    db.execute(
+        "INSERT INTO app.budgets (budget_id, category, monthly_amount, start_month) "
+        "VALUES (?, ?, ?, ?)",
+        ["bud_1", "Dining", "500.00", "2025-01"],
+    )
+    assert has_any_user_content(db) is True
 
 
 @pytest.mark.unit

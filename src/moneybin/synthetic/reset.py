@@ -108,6 +108,44 @@ def _real_row_checks(db: Database) -> list[tuple[str, str]]:
     return checks
 
 
+# The only tables a freshly-created profile has rows in — migration bookkeeping,
+# not user data. Locked by `test_a_fresh_profile_holds_no_user_content`, which
+# fails loudly if `init_db` ever starts populating something else.
+_INIT_POPULATED_TABLES = frozenset({"app.schema_migrations", "app.versions"})
+
+
+def has_any_user_content(db: Database) -> bool:
+    """True if this database holds ANY row a freshly-created profile would not.
+
+    For a database we CANNOT attribute to the generator, there is no such thing as
+    a safe table: `app.securities`, `app.budgets`, and `app.user_categories` are
+    all real, user-authored state reachable with no transaction behind them, and
+    the list grows. So rather than enumerate them, refuse on any row at all
+    outside migration bookkeeping.
+
+    Being maximally conservative is free here precisely because this is the
+    not-ours path. Demo's own re-run path is generator-made and goes through
+    `has_non_synthetic_data` instead, so nothing this function does can
+    false-positive the happy path or `synthetic reset`.
+    """
+    rows = db.execute(
+        "SELECT schema_name, table_name FROM duckdb_tables() "
+        "WHERE schema_name IN ('app', 'raw')"
+    ).fetchall()
+    for schema, name in rows:
+        if f"{schema}.{name}" in _INIT_POPULATED_TABLES:
+            continue
+        try:
+            found = db.execute(
+                f"SELECT 1 FROM {_quote(schema, name)} LIMIT 1"  # noqa: S608  # catalog-sourced, double-quoted identifier
+            ).fetchone()
+        except Exception:  # noqa: BLE001,S112 — table may not exist in a partial DB
+            continue
+        if found:
+            return True
+    return False
+
+
 def has_non_synthetic_data(db: Database) -> bool:
     """True if the profile holds any financial state the generator did NOT create.
 
