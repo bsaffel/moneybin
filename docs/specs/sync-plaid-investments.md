@@ -714,14 +714,18 @@ The heaviest view in this spec. In order:
    condition — `event.amount is None` (`cost_basis.py`). A `transfer_in` /
    `stock distribution` that Plaid reports with **`amount = 0`** — an in-kind
    share movement with no cash consideration (Plaid's `amount` is a *required*
-   field, never absent, so the raw column is faithfully `NOT NULL`) — **and**
-   with no per-lot basis recoverable from
-   `Holding.tax_lots[]` (§ Opening-lot bootstrap) must therefore emit
-   `amount = NULL`, not the literal `-1 * 0 = 0` — otherwise it opens a
-   *false* zero-basis lot that looks complete, and a later sale realizes a
-   fully-taxed phantom gain with no `basis_incomplete` warning. Where
-   `tax_lots[]` *does* carry a per-lot `cost_basis`, staging uses it and the
-   lot opens complete. This is the acquisition-side twin of the foundation's
+   field, never absent, so the raw column is faithfully `NOT NULL`) — must
+   therefore emit `amount = NULL`, not the literal `-1 * 0 = 0` — otherwise it
+   opens a *false* zero-basis lot that looks complete, and a later sale realizes
+   a fully-taxed phantom gain with no `basis_incomplete` warning. Staging does
+   **not** borrow a basis from `Holding.tax_lots[]` for this in-window transfer
+   row: the snapshot's lots describe the *whole current position*, and Plaid
+   exposes no link from a lot to the transaction that created it, so pinning a
+   lot's `cost_basis` onto a specific transfer would attribute unrelated basis
+   the engine then treats as authoritative. Per-lot basis from `tax_lots[]` is
+   consumed **only** by the opening-lot bootstrap (§ below), which reconciles it
+   against the position-level pre-window quantity gap — never against an
+   individual transaction. This is the acquisition-side twin of the foundation's
    oversold-disposal rule.
 6. **Preserve provider strings:** `investment_transaction_type AS
    provider_type`, `investment_transaction_subtype AS provider_subtype`.
@@ -781,9 +785,12 @@ ACATS transfer):
   held), so bootstrap must **not** emit one row per lot. Instead, when
   `raw.plaid_investment_holding_lots` carries lots, staging draws `G` down
   against the lots acquired **before the window start**
-  (`original_purchase_datetime` < the earliest in-window transaction date) —
-  definitionally the lots no in-window transaction represents — **oldest
-  first**. Each drawn slice opens one `transfer_in` carrying that lot's
+  (`original_purchase_datetime` < the sync's *requested* transaction-window
+  start — the date-range query's start boundary, **not** the first returned
+  transaction's date, which is NULL for the common long-held position that had
+  no in-window activity and would wrongly starve every lot to the residual
+  path) — definitionally the lots no in-window transaction represents —
+  **oldest first**. Each drawn slice opens one `transfer_in` carrying that lot's
   `original_purchase_datetime` (→ `original_acquisition_date`) and a basis
   **proportional to the drawn quantity**: a fully-drawn lot carries its full
   `cost_basis` (→ `amount`); a partially-drawn lot (the overshoot tail below)
