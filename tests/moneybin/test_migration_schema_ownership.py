@@ -2,10 +2,11 @@
 
 Migrations own ``app.*`` and ``raw.*`` (plus the ``app.schema_migrations``
 tracking table). They must never *write* a relation in a SQLMesh-owned schema
-(``seeds`` / ``meta`` / ``core`` / ``prep``), because on any database whose
-SQLMesh virtual layer is materialized those relations are **views** — and
-``ALTER`` / ``DROP`` / ``INSERT`` / ``UPDATE`` / ``DELETE`` / ``MERGE`` /
-non-idempotent ``CREATE`` against a view raises at apply time.
+(``seeds`` / ``meta`` / ``core`` / ``prep`` / ``reports`` / ``analytics``),
+because on any database whose SQLMesh virtual layer is materialized those
+relations are **views** — and ``ALTER`` / ``DROP`` / ``INSERT`` / ``UPDATE`` /
+``DELETE`` / ``MERGE`` / non-idempotent ``CREATE`` against a view raises at
+apply time.
 
 This is the exact bug V032 shipped (PR #306): ``ALTER TABLE seeds.categories``
 (plus an ``UPDATE seeds.categories``) passed every test — each ran against a
@@ -18,16 +19,22 @@ statically inspects each migration's SQL and fails if any writes a SQLMesh-owned
 relation. ``CREATE TABLE ... IF NOT EXISTS`` is allowed — it is an idempotent
 no-op on a view (V014's legitimate seed-table bootstrap). ``SELECT`` is a read.
 
-Limitation: SQL assembled dynamically at runtime (f-strings interpolating a
-*table name*, string concatenation) can't be fully resolved statically; the
-common shape — a static write target with a dynamic *value* — is covered by the
-regex fallback. SQL is read only from ``.execute()`` arguments, so a docstring
-or comment mentioning ``ALTER TABLE seeds.x`` never triggers a false positive.
+Write-target resolution and its limit: the target relation is resolved when it
+is an inline literal, a module constant (``conn.execute(_CREATE_SQL)``, e.g.
+V034), a ``for <var> in (<string literals>)`` loop variable interpolated into an
+f-string (V012's ``DROP TABLE IF EXISTS {table}`` over a literal tuple), or a
+local literal assignment. A target computed at *runtime* — a function argument,
+a name read from ``duckdb_indexes()`` / ``duckdb_tables()`` — can't be resolved
+statically and is not scanned; the regex fallback still covers the common
+static-target / dynamic-*value* shape. SQL is read only from ``.execute()``
+arguments, so a docstring or comment mentioning ``ALTER TABLE seeds.x`` never
+triggers a false positive.
 """
 
 from __future__ import annotations
 
 import ast
+import itertools
 import re
 from pathlib import Path
 
@@ -44,8 +51,17 @@ _MIGRATIONS_DIR = (
 )
 
 # Schemas SQLMesh owns and exposes as views on a materialized database. app.* and
-# raw.* are migration-owned. See AGENTS.md "Architecture: Data Layers".
-_SQLMESH_OWNED_SCHEMAS = frozenset({"seeds", "meta", "core", "prep", "reports"})
+# raw.* are migration-owned. `analytics` ships starter user models and is
+# explicitly "never touched by migrations" (analytics_schema.sql header,
+# migrations/README.md). See AGENTS.md "Architecture: Data Layers".
+_SQLMESH_OWNED_SCHEMAS = frozenset({
+    "seeds",
+    "meta",
+    "core",
+    "prep",
+    "reports",
+    "analytics",
+})
 
 # Top-level statement types that mutate their target relation. exp.Merge covers
 # DuckDB's MERGE INTO upsert (an INSERT/UPDATE combined) — its target is the
@@ -55,12 +71,15 @@ _WRITE_TYPES = (exp.Alter, exp.Drop, exp.Insert, exp.Update, exp.Delete, exp.Mer
 # Fallback for SQL sqlglot can't parse (f-string fragments, dialect quirks): a
 # write keyword immediately targeting an owned schema. CREATE TABLE IF NOT EXISTS
 # is excluded (idempotent). Conservative — requires the keyword AND the schema.
+# The owned-schema alternation is derived from the frozenset above so the two
+# can't drift apart.
+_OWNED_SCHEMA_ALT = "|".join(sorted(_SQLMESH_OWNED_SCHEMAS))
 _FALLBACK_RE = re.compile(
     r"\b(ALTER\s+TABLE|UPDATE|INSERT\s+INTO|DELETE\s+FROM|MERGE\s+INTO|"
     r"DROP\s+(?:TABLE|VIEW|INDEX)|CREATE\s+INDEX|"
     r"CREATE\s+TABLE(?!\s+IF\s+NOT\s+EXISTS))\s+"
     r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?"
-    r"[\"']?(seeds|meta|core|prep|reports)[\"']?\.",
+    rf"[\"']?({_OWNED_SCHEMA_ALT})[\"']?\.",
     re.IGNORECASE,
 )
 
@@ -130,45 +149,114 @@ def violations_in_sql(sql: str) -> list[str]:
     return out
 
 
-def _static_str(node: ast.expr | None) -> str | None:
-    """A string constant, or an f-string flattened to its literal parts, else None.
+def _flatten_joinedstr(node: ast.JoinedStr, subst: dict[str, str]) -> str:
+    """Flatten an f-string to text, resolving interpolations against ``subst``.
 
-    f-string interpolations become a space so a static write *target* survives
-    for the regex fallback while a dynamic *value* drops out.
+    Literal parts stay verbatim; a ``{name}`` interpolation becomes ``subst[name]``
+    when known, else a single space — so a resolved (or blanked) write *target*
+    reaches the scanner while a dynamic *value* drops out.
     """
+    parts: list[str] = []
+    for v in node.values:
+        if isinstance(v, ast.Constant) and isinstance(v.value, str):
+            parts.append(v.value)
+        elif (
+            isinstance(v, ast.FormattedValue)
+            and isinstance(v.value, ast.Name)
+            and v.value.id in subst
+        ):
+            parts.append(subst[v.value.id])
+        else:
+            parts.append(" ")
+    return "".join(parts)
+
+
+def _static_str(node: ast.expr | None) -> str | None:
+    """A string constant, or an f-string with every interpolation blanked, else None."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if isinstance(node, ast.JoinedStr):
-        return "".join(
-            v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else " "
-            for v in node.values
-        )
+        return _flatten_joinedstr(node, {})
     return None
+
+
+def _string_bindings(tree: ast.AST) -> dict[str, list[str]]:
+    """Map each name to the static string value(s) it can hold in a migration.
+
+    Three sources, walked across the whole module (so intra-function locals count,
+    not just module globals): literal/f-string assignments (``sql = "..."``),
+    annotated assignments, and ``for <name> in (<string literals>)`` loop targets
+    (the V012 ``for table in ("app.x", "seeds.y", ...)`` shape). Values accumulate
+    per name so a loop over a literal tuple contributes every element.
+    """
+    bindings: dict[str, list[str]] = {}
+
+    def add(name: str, value: str) -> None:
+        vals = bindings.setdefault(name, [])
+        if value not in vals:
+            vals.append(value)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            text = _static_str(node.value)
+            if text is not None:
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        add(target.id, text)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            text = _static_str(node.value)
+            if text is not None:
+                add(node.target.id, text)
+        elif (
+            isinstance(node, ast.For)
+            and isinstance(node.target, ast.Name)
+            and isinstance(node.iter, (ast.Tuple, ast.List, ast.Set))
+        ):
+            for elt in node.iter.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    add(node.target.id, elt.value)
+    return bindings
+
+
+def _expand_execute_arg(arg: ast.expr, bindings: dict[str, list[str]]) -> list[str]:
+    """Concrete SQL string(s) an ``.execute()`` argument can take.
+
+    Resolves names and f-string interpolations against ``bindings`` so a non-inline
+    write *target* still reaches the scanner. An f-string interpolating a bound name
+    expands to one string per value (cross-product across distinct bound names).
+    """
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return [arg.value]
+    if isinstance(arg, ast.Name):
+        return list(bindings.get(arg.id, []))
+    if isinstance(arg, ast.JoinedStr):
+        names = sorted({
+            v.value.id
+            for v in arg.values
+            if isinstance(v, ast.FormattedValue)
+            and isinstance(v.value, ast.Name)
+            and v.value.id in bindings
+        })
+        if not names:
+            return [_flatten_joinedstr(arg, {})]
+        return [
+            _flatten_joinedstr(arg, dict(zip(names, combo, strict=True)))
+            for combo in itertools.product(*(bindings[n] for n in names))
+        ]
+    return []
 
 
 def _execute_sql_args(py_source: str) -> list[str]:
     """SQL strings passed to ``.execute()`` / ``.executemany()`` in a .py migration.
 
-    Resolves the common ``conn.execute(_CONST_SQL)`` pattern (e.g. V034) by
-    first mapping module-level string/f-string assignments, then substituting a
-    bare-name argument for its assigned value.
+    Resolves ``conn.execute(_CONST_SQL)`` (module constant, e.g. V034) and
+    loop-variable / local-literal write targets interpolated into an f-string
+    (V012's ``DROP TABLE IF EXISTS {table}`` over a literal tuple) via
+    ``_string_bindings``. A target computed at runtime stays unresolved — see the
+    module docstring's limitation note.
     """
     tree = ast.parse(py_source)
-
-    consts: dict[str, str] = {}
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets = [t for t in node.targets if isinstance(t, ast.Name)]
-            value = node.value
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            targets = [node.target]
-            value = node.value
-        else:
-            continue
-        text = _static_str(value)
-        if text is not None:
-            for target in targets:
-                consts[target.id] = text
+    bindings = _string_bindings(tree)
 
     out: list[str] = []
     for node in ast.walk(tree):
@@ -178,12 +266,7 @@ def _execute_sql_args(py_source: str) -> list[str]:
             and node.func.attr in ("execute", "executemany")
             and node.args
         ):
-            arg = node.args[0]
-            text = _static_str(arg)
-            if text is not None:
-                out.append(text)
-            elif isinstance(arg, ast.Name) and arg.id in consts:
-                out.append(consts[arg.id])
+            out.extend(_expand_execute_arg(node.args[0], bindings))
     return out
 
 
@@ -265,8 +348,8 @@ def test_no_migration_writes_sqlmesh_owned_schemas() -> None:
 
     assert not violations, (
         "Migrations must not write to SQLMesh-owned schemas "
-        "(seeds/meta/core/prep/reports) — those are views on a materialized "
-        "database (see this module's docstring / PR #306):\n  • "
+        f"({'/'.join(sorted(_SQLMESH_OWNED_SCHEMAS))}) — those are views on a "
+        "materialized database (see this module's docstring / PR #306):\n  • "
         + "\n  • ".join(violations)
     )
 
@@ -280,3 +363,20 @@ def test_execute_sql_args_resolves_module_constants() -> None:
     )
     extracted = _execute_sql_args(source)
     assert any(violations_in_sql(sql) for sql in extracted), extracted
+
+
+def test_execute_sql_args_resolves_loop_variable_targets() -> None:
+    """A `for <var> in (<literals>)` write target in an f-string is scanned (V012 style).
+
+    The write target is the loop variable, invisible to constant resolution — this
+    is the exact shape that let V012's `DROP TABLE IF EXISTS seeds.merchants_*`
+    slip past the guard until the loop-literal resolver was added.
+    """
+    source = (
+        "def migrate(conn):\n"
+        '    for table in ("app.merchant_overrides", "seeds.merchants_global"):\n'
+        '        conn.execute(f"DROP TABLE IF EXISTS {table}")\n'
+    )
+    flagged = [sql for sql in _execute_sql_args(source) if violations_in_sql(sql)]
+    # Exactly the seeds.* element is a violation; the app.* element is not.
+    assert flagged == ["DROP TABLE IF EXISTS seeds.merchants_global"], flagged

@@ -1,9 +1,13 @@
-"""Tests for V012: drop app.merchant_overrides and seeds.merchants_*.
+"""Tests for V012: drop app.merchant_overrides and rewrite legacy 'seed' rows.
 
-V012 retires the seed merchant catalog by dropping `app.merchant_overrides`
-and any leftover `seeds.merchants_global/us/ca` tables. Fresh installs never
-see these tables because `schema.py` and `sqlmesh/models/seeds/` no longer
-declare them; existing installs get the drops on the next migration run.
+V012 retires the seed merchant catalog. It drops the migration-owned
+`app.merchant_overrides` table and rewrites historical
+`categorized_by='seed'` rows to `'rule'`. It intentionally does NOT drop the
+`seeds.merchants_global/us/ca` tables: those were SQLMesh SEED models, so on a
+materialized database they are *views*, and `DROP TABLE IF EXISTS` on a view
+raises `CatalogException` (the V032 / PR #306 bug class). SQLMesh owns their
+teardown. `test_v012_tolerates_seeds_merchants_as_views` is the regression
+guard for that crash.
 
 See `docs/specs/categorization-cold-start.md` amendment 2026-05-15.
 """
@@ -27,14 +31,12 @@ def _table_exists(db: Database, schema: str, table: str) -> bool:
     return row is not None
 
 
-def _recreate_retired_tables(db: Database) -> None:
-    """Reverse the V012 end-state — recreate the dropped tables.
+def _create_merchant_overrides(db: Database) -> None:
+    """Recreate the retired app.merchant_overrides in its pre-retirement shape.
 
-    On a fresh DB `init_schemas` no longer creates these, so to exercise the
-    migration we put them back in their pre-retirement shape (the same DDL
-    the deleted schema files and SQLMesh seed models produced).
+    On a fresh DB `init_schemas` no longer creates it, so to exercise the drop we
+    put it back (the same DDL the deleted schema file produced).
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS app.merchant_overrides (
@@ -46,66 +48,69 @@ def _recreate_retired_tables(db: Database) -> None:
         )
         """
     )
-    merchant_seed_ddl = """(
-            merchant_id VARCHAR PRIMARY KEY,
-            raw_pattern VARCHAR,
-            match_type VARCHAR,
-            canonical_name VARCHAR,
-            category VARCHAR,
-            subcategory VARCHAR,
-            country VARCHAR
-        )"""
-    for table in ("merchants_global", "merchants_us", "merchants_ca"):
-        db.execute(
-            f"CREATE TABLE IF NOT EXISTS seeds.{table} {merchant_seed_ddl}"  # noqa: S608  # allowlisted literals, not user input
-        )
+
+
+def _create_seed_merchants_view(db: Database, table: str) -> None:
+    """Create seeds.<table> as a VIEW — the shape it has on a materialized DB.
+
+    SQLMesh exposes SEED models as views over a physical snapshot. This
+    reproduces that so the test proves V012 no longer trips over it (a plain
+    `DROP TABLE IF EXISTS` on a view raises CatalogException).
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
+    db.execute(f"CREATE TABLE IF NOT EXISTS seeds.{table}__phys (merchant_id VARCHAR)")  # noqa: S608  # allowlisted literal
+    db.execute(f"CREATE VIEW seeds.{table} AS SELECT * FROM seeds.{table}__phys")  # noqa: S608  # allowlisted literal
 
 
 class TestV012Migration:
-    """V012 migration: drop retired seed-merchant tables. Idempotent."""
+    """V012 migration: drop app.merchant_overrides, leave seeds.* to SQLMesh."""
 
     def test_v012_drops_merchant_overrides_when_present(self, db: Database) -> None:
         """app.merchant_overrides must be removed after migration."""
-        _recreate_retired_tables(db)
+        _create_merchant_overrides(db)
         assert _table_exists(db, "app", "merchant_overrides")
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
         assert not _table_exists(db, "app", "merchant_overrides")
 
-    def test_v012_drops_seed_merchant_tables_when_present(self, db: Database) -> None:
-        """All three seeds.merchants_* tables must be removed after migration."""
-        _recreate_retired_tables(db)
-        for table in ("merchants_global", "merchants_us", "merchants_ca"):
-            assert _table_exists(db, "seeds", table), f"setup failed for seeds.{table}"
+    def test_v012_tolerates_seeds_merchants_as_views(self, db: Database) -> None:
+        """When seeds.merchants_* are views (materialized DB), V012 must not crash.
 
-        migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
-
+        Regression for the V032-class bug: the shipped V012 ran
+        `DROP TABLE IF EXISTS seeds.merchants_global` over what is a *view* on a
+        materialized database, which raises CatalogException. V012 now leaves the
+        seed relations to SQLMesh, so the views survive untouched and only
+        app.merchant_overrides is dropped.
+        """
+        _create_merchant_overrides(db)
         for table in ("merchants_global", "merchants_us", "merchants_ca"):
-            assert not _table_exists(db, "seeds", table)
+            _create_seed_merchants_view(db, table)
+
+        migrate(db._conn)  # pyright: ignore[reportPrivateUsage]  # must not raise
+
+        assert not _table_exists(db, "app", "merchant_overrides")
+        for table in ("merchants_global", "merchants_us", "merchants_ca"):
+            assert _table_exists(db, "seeds", table), (
+                f"V012 must leave the SQLMesh-owned seeds.{table} view untouched"
+            )
 
     def test_v012_idempotent_on_fresh_install(self, db: Database) -> None:
-        """On a fresh DB where the retired tables never existed, migrate() is a no-op."""
-        for table in (
-            "merchant_overrides",
-            # The fresh `db` fixture has no `seeds.merchants_*` either.
-        ):
-            assert not _table_exists(db, "app", table)
+        """On a fresh DB where the retired table never existed, migrate() is a no-op."""
+        assert not _table_exists(db, "app", "merchant_overrides")
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
         assert not _table_exists(db, "app", "merchant_overrides")
 
     def test_v012_idempotent_on_second_run(self, db: Database) -> None:
-        """Second migrate() leaves the same end-state — all retired tables gone."""
-        _recreate_retired_tables(db)
+        """Second migrate() leaves the same end-state — app.merchant_overrides gone."""
+        _create_merchant_overrides(db)
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
 
         assert not _table_exists(db, "app", "merchant_overrides")
-        for table in ("merchants_global", "merchants_us", "merchants_ca"):
-            assert not _table_exists(db, "seeds", table)
 
     def test_v012_rewrites_legacy_seed_categorizations(self, db: Database) -> None:
         """Historical `categorized_by='seed'` rows must be rewritten to 'rule'.

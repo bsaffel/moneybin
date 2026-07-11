@@ -1,10 +1,19 @@
-"""Drop the retired app.merchant_overrides table and seed merchant schema.
+"""Drop the retired app.merchant_overrides table and rewrite legacy 'seed' rows.
 
 MoneyBin no longer ships a curated seed merchant catalog. The
-``seeds.merchants_global/us/ca`` tables and the ``app.merchant_overrides``
-table that paired with them are removed. All merchants now live in
-``app.user_merchants`` (created by user, LLM-assist, auto-rule, plaid, or
-migration).
+``app.merchant_overrides`` table (migration-owned) is dropped here. All
+merchants now live in ``app.user_merchants`` (created by user, LLM-assist,
+auto-rule, plaid, or migration).
+
+The paired ``seeds.merchants_global/us/ca`` tables were SQLMesh SEED models,
+so on a fully-materialized database they are exposed as *views* over the
+physical snapshot — and ``DROP TABLE IF EXISTS seeds.merchants_global`` raises
+``Existing object … is of type View, trying to drop type Table`` (``IF EXISTS``
+suppresses "doesn't exist," not the type mismatch). This migration therefore
+does NOT drop them: SQLMesh owns their teardown and removes the views on the
+next ``plan`` once the models are gone from the project (they already are). This
+is the same SQLMesh-owned-schema rule V032 (PR #306) had to learn — migrations
+never write ``seeds`` / ``core`` / ``prep`` / etc.
 
 Also rewrites any historical ``app.transaction_categories.categorized_by =
 'seed'`` rows to ``'rule'``. The ``'seed'`` value was removed from the
@@ -16,10 +25,8 @@ silently fails because ``priority <= NULL`` evaluates to NULL. Mapping to
 anyway (the auto-fan-out path always wrote ``categorized_by='rule'``
 regardless of whether the merchant was user- or seed-created).
 
-Idempotent: ``DROP TABLE IF EXISTS`` is a no-op when the table is absent;
-the ``CREATE SCHEMA IF NOT EXISTS seeds`` guards against running before
-``refresh_views`` has created the schema on a fresh install. The UPDATE
-no-ops when no ``'seed'`` rows exist.
+Idempotent: ``DROP TABLE IF EXISTS`` is a no-op when the table is absent, and
+the UPDATE no-ops when no ``'seed'`` rows exist.
 """
 
 import logging
@@ -28,21 +35,9 @@ logger = logging.getLogger(__name__)
 
 
 def migrate(conn: object) -> None:
-    """Drop app.merchant_overrides + seeds.merchants_* and rewrite legacy 'seed' rows."""
-    # Defensive: on a fresh install with auto-upgrade, this migration runs
-    # before refresh_views() creates the seeds schema. CREATE SCHEMA IF NOT
-    # EXISTS makes the subsequent DROP TABLE IF EXISTS unambiguously a no-op
-    # regardless of init order.
-    conn.execute("CREATE SCHEMA IF NOT EXISTS seeds")  # type: ignore[union-attr]
-
-    for table in (
-        "app.merchant_overrides",
-        "seeds.merchants_global",
-        "seeds.merchants_us",
-        "seeds.merchants_ca",
-    ):
-        logger.info(f"Dropping {table} if present")
-        conn.execute(f"DROP TABLE IF EXISTS {table}")  # type: ignore[union-attr]  # noqa: S608  # allowlisted literals
+    """Drop app.merchant_overrides and rewrite legacy categorized_by='seed' rows."""
+    logger.debug("V012: dropping app.merchant_overrides if present")
+    conn.execute("DROP TABLE IF EXISTS app.merchant_overrides")  # type: ignore[union-attr]
 
     # Rewrite any historical 'seed' rows so the new 7-level precedence ladder
     # doesn't lock these transactions. See module docstring for rationale.
