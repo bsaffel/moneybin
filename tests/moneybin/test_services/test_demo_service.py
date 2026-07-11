@@ -8,15 +8,24 @@ real end-to-end pipeline is proven by the `moneybin demo` e2e test.
 import datetime
 from collections.abc import Generator
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from moneybin.services.demo_service import (
+    DEMO_PROFILE,
+    DemoProfileNotOursError,
     DemoResult,
     DemoService,
-    ProfileHasNonSyntheticDataError,
+)
+
+_INSERT_TXN = (
+    "INSERT INTO raw.tabular_transactions "
+    "(transaction_id, account_id, transaction_date, amount, "
+    "source_file, source_type, source_origin, import_id) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 
@@ -68,127 +77,139 @@ def _mock_pipeline(mocker: Any, *, net_worth: str = "100.00", failing: int = 0) 
     )
 
 
+def _make_demo_profile(*, generator_made: bool, real_data: bool = False) -> None:
+    """Create a `demo` profile, optionally marked generator-made / holding real data."""
+    from moneybin.config import set_current_profile
+    from moneybin.database import get_database
+    from moneybin.services.profile_service import ProfileService
+
+    ProfileService().create(DEMO_PROFILE, init_inbox=False)
+    set_current_profile(DEMO_PROFILE)
+    with get_database(read_only=False) as db:
+        if generator_made:
+            db.execute("CREATE SCHEMA IF NOT EXISTS synthetic")
+            db.execute("CREATE TABLE IF NOT EXISTS synthetic.ground_truth (id VARCHAR)")
+            db.execute(
+                _INSERT_TXN,
+                [
+                    "s1",
+                    "acct",
+                    "2025-01-01",
+                    "10.00",
+                    "synthetic://basic/42/csv",
+                    "csv",
+                    "syn",
+                    "imp1",
+                ],
+            )
+        if real_data:
+            db.execute(
+                _INSERT_TXN,
+                ["r1", "acct", "2025-01-01", "10.00", "u.csv", "csv", "user", "imp2"],
+            )
+
+
 @pytest.mark.integration
-def test_run_orchestration_assembles_result(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mocker: Any
+def test_run_populates_fresh_demo_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     _mock_pipeline(mocker, net_worth="12345.67")
 
-    result = DemoService().run(persona="basic", profile="demo", seed=42)
+    result = DemoService().run(persona="basic", seed=42)
 
     assert isinstance(result, DemoResult)
-    assert result.profile == "demo"
-    assert result.persona == "basic"
-    assert result.seed == 42
+    assert result.profile == DEMO_PROFILE
     assert result.account_count == 2
     assert result.transaction_count == 5
     assert result.doctor_failing == 0
     assert result.net_worth == Decimal("12345.67")
-    # Profile was created and persisted as the active default.
+    # A fully successful run persists demo as the default profile.
     from moneybin.utils.user_config import get_default_profile
 
-    assert get_default_profile() == "demo"
+    assert get_default_profile() == DEMO_PROFILE
 
 
 @pytest.mark.integration
-def test_refuses_non_synthetic_profile(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mocker: Any
+def test_rerun_rebuilds_the_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A generator-made demo profile is rebuilt from scratch (fresh DB), so no
+    # stale synthetic rows or derived app-state survive into the new run.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=True)
+    _mock_pipeline(mocker)
+
+    DemoService().run(persona="basic", seed=42, reset_confirmed=True)
+
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        # The pre-existing synthetic row is gone — the DB was rebuilt (the
+        # generator itself is mocked, so nothing was written back).
+        assert rows is not None
+        assert rows[0] == 0
+
+
+@pytest.mark.integration
+def test_refuses_demo_profile_holding_real_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=True, real_data=True)
     _mock_pipeline(mocker)  # would succeed if the guard didn't fire first
 
-    from moneybin.config import set_current_profile
-    from moneybin.database import get_database
-    from moneybin.services.profile_service import ProfileService
-
-    ProfileService().create("demo", init_inbox=False)
-    set_current_profile("demo")
-    with get_database(read_only=False) as db:
-        db.execute(
-            "INSERT INTO raw.tabular_transactions "
-            "(transaction_id, account_id, transaction_date, amount, "
-            "source_file, source_type, source_origin, import_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ["real1", "acct", "2025-01-01", "10.00", "user.csv", "csv", "user", "imp1"],
-        )
-
-    with pytest.raises(ProfileHasNonSyntheticDataError):
-        DemoService().run(
-            persona="basic", profile="demo", seed=42, reset_confirmed=True
-        )
+    with pytest.raises(DemoProfileNotOursError):
+        DemoService().run(persona="basic", seed=42, reset_confirmed=True)
 
     # A refused run must NOT have switched the user's persisted default profile.
     from moneybin.utils.user_config import get_default_profile
 
-    assert get_default_profile() != "demo"
+    assert get_default_profile() != DEMO_PROFILE
 
 
 @pytest.mark.integration
-def test_profile_has_data(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_refuses_demo_profile_we_did_not_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A profile named `demo` holding data but with no generator marker is not
+    # ours — rebuilding would destroy data we can't prove is synthetic.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=False, real_data=True)
+    _mock_pipeline(mocker)
+
+    with pytest.raises(DemoProfileNotOursError):
+        DemoService().run(persona="basic", seed=42, reset_confirmed=True)
+
+
+@pytest.mark.integration
+def test_rebuild_requires_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _make_demo_profile(generator_made=True)
+    _mock_pipeline(mocker)
+
+    with pytest.raises(RuntimeError, match="reset not confirmed"):
+        DemoService().run(persona="basic", seed=42, reset_confirmed=False)
+
+
+@pytest.mark.integration
+def test_profile_has_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     svc = DemoService()
 
     # Nonexistent profile / missing DB → False (no exception).
-    assert svc.profile_has_data("demo") is False
+    assert svc.profile_has_data() is False
 
-    from moneybin.config import set_current_profile
-    from moneybin.database import get_database
-    from moneybin.services.profile_service import ProfileService
-
-    ProfileService().create("demo", init_inbox=False)
-    assert svc.profile_has_data("demo") is False  # created but empty
-
-    set_current_profile("demo")
-    with get_database(read_only=False) as db:
-        db.execute(
-            "INSERT INTO raw.tabular_transactions "
-            "(transaction_id, account_id, transaction_date, amount, "
-            "source_file, source_type, source_origin, import_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ["t1", "acct", "2025-01-01", "10.00", "user.csv", "csv", "user", "imp1"],
-        )
-    assert svc.profile_has_data("demo") is True
-
-
-@pytest.mark.integration
-def test_refuses_real_import_in_ground_truth_profile(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mocker: Any
-) -> None:
-    # A demo profile (synthetic.ground_truth present) that later received a real
-    # import must still be refused — reset_synthetic_rows would leave the real
-    # rows and generate synthetic data on top of them otherwise.
-    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
-    _mock_pipeline(mocker)  # would succeed if the guard didn't fire first
-
-    from moneybin.config import set_current_profile
-    from moneybin.database import get_database
-    from moneybin.services.profile_service import ProfileService
-
-    ProfileService().create("demo", init_inbox=False)
-    set_current_profile("demo")
-    with get_database(read_only=False) as db:
-        # Mark the profile as generator-created …
-        db.execute("CREATE SCHEMA IF NOT EXISTS synthetic")
-        db.execute("CREATE TABLE IF NOT EXISTS synthetic.ground_truth (id VARCHAR)")
-        # … but sneak in a real (non-synthetic) import.
-        db.execute(
-            "INSERT INTO raw.tabular_transactions "
-            "(transaction_id, account_id, transaction_date, amount, "
-            "source_file, source_type, source_origin, import_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ["real1", "acct", "2025-01-01", "10.00", "user.csv", "csv", "user", "imp1"],
-        )
-
-    with pytest.raises(ProfileHasNonSyntheticDataError):
-        DemoService().run(
-            persona="basic", profile="demo", seed=42, reset_confirmed=True
-        )
+    _make_demo_profile(generator_made=True)
+    assert svc.profile_has_data() is True
 
 
 @pytest.mark.integration
 def test_raises_on_refresh_error(
-    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mocker: Any
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:
     # A real crash in matching/transform/categorize must abort demo, not ship a
     # half-built profile. Covers the multi-field RefreshResult error check.
@@ -204,4 +225,4 @@ def test_raises_on_refresh_error(
         ),
     )
     with pytest.raises(RuntimeError, match="Demo refresh failed"):
-        DemoService().run(persona="basic", profile="demo", seed=42)
+        DemoService().run(persona="basic", seed=42)

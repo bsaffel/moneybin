@@ -65,19 +65,25 @@ siblings — re-running handles the reset case, so no `demo reset` sibling; see
 | Flag | Default | Purpose |
 |---|---|---|
 | `--persona {basic,family,freelancer}` | `basic` | Data shape to load. |
-| `--profile` | `demo` | Target profile name. |
 | `--seed` | `DEMO_DEFAULT_SEED` (a fixed constant) | Deterministic data; override for variety. |
 | `--years` | persona default | Years of history. |
-| `--yes` / `-y` | off | Auto-accept the reset confirmation (agent/script parity). |
-| `-o` / `--output {text,json}` | `text` | `json` returns the structured `DemoResult` for agents/scripts. |
+| `--yes` / `-y` | off | Auto-accept the rebuild confirmation (agent/script parity). |
+| `-o` / `--output {text,json}` | `text` | `json` emits the standard response envelope via `render_or_json`. |
 | `-q` / `--quiet` | off | Suppress status lines; never the final answer. |
 
-**Persona and profile are orthogonal.** The persona chooses the *data shape*;
-the profile is *where it lands*. `demo` passes an explicit `profile="demo"` so
-the persona → profile default map in `synthetic` is bypassed — an evaluator
-ends up with a clearly-named `demo` profile, not a mystery `bob`, and the demo
-sandbox never collides with the `alice`/`bob`/`charlie` profiles the test suite
-uses.
+**Isolation by construction — there is no `--profile`.** `demo` always targets
+the dedicated `demo` profile (`DEMO_PROFILE`). This is deliberate: an arbitrary
+`--profile` target would let `demo` be pointed at a real financial profile, and
+defending that required a guard enumerating *every* table that could hold real
+data (transactions, balances, accounts, gsheet, PDF, investments, …) — a list
+that grows with every new source and is never provably complete. Removing the
+arbitrary target removes the attack surface instead of chasing it. A
+differently-named synthetic sandbox is what `moneybin synthetic generate` is
+for.
+
+The persona still chooses the *data shape* (`basic`/`family`/`freelancer`); it
+lands in the `demo` profile rather than the `alice`/`bob`/`charlie` profiles the
+test suite uses, so the evaluator sandbox never collides with test fixtures.
 
 **Registration:** `main.py` at the **setup** workflow stage. `demo` is added to
 the wizard/dir-check exemption tuple (alongside `profile` and `synthetic`)
@@ -94,13 +100,14 @@ existing primitives and writes no new data-generation code:
 ```mermaid
 flowchart TD
     CLI["demo_command (CLI)"] --> SVC["DemoService.run"]
-    SVC --> P["ProfileService.create (ensure, init_inbox=True)"]
-    SVC --> A["activate: set_default_profile + set_current_profile"]
-    SVC --> R["reset_synthetic_rows (if data present)"]
+    SVC --> P["ProfileService.create ('demo', init_inbox=True)"]
+    SVC --> C["set_current_profile (process-level, to open the right DB)"]
+    SVC --> R["if it existed: guard → rebuild the database from scratch"]
     SVC --> G["GeneratorEngine.generate → SyntheticWriter.write"]
-    SVC --> F["refresh(db): match → transform → categorize"]
+    SVC --> F["refresh(db, steps=[match, transform, categorize])"]
     SVC --> D["DoctorService.run_all()"]
     SVC --> N["NetworthService.current()"]
+    SVC --> A["set_default_profile (only after a fully successful run)"]
     SVC --> RES["DemoResult"]
     RES --> CLI
 ```
@@ -110,13 +117,16 @@ account/transaction counts, the `doctor` outcome (`doctor_failing` count +
 `doctor_failing_names`), and the net-worth summary — everything the CLI renders
 in both `text` and `json` modes.
 
-**One extraction of existing code** (the only change to existing modules): the
-reset-deletion allowlist `_RESET_DELETIONS` and its delete loop currently live
-inside `cli/commands/synthetic.py`. They move to the `synthetic/` package
-(e.g. `synthetic/reset.py::reset_synthetic_rows(db)`) so both `synthetic reset`
-and `DemoService` share the one security-sensitive allowlist rather than
-duplicating it. The `synthetic reset` command is rewired to call the shared
-helper; its behavior is unchanged.
+**One extraction of existing code:** the reset-deletion allowlist
+`_RESET_DELETIONS` and its delete loop lived inside `cli/commands/synthetic.py`.
+They move to `synthetic/reset.py` (`RESET_DELETIONS`, `reset_synthetic_rows`,
+plus the shared `has_synthetic_ground_truth` / `has_non_synthetic_data`
+safety checks) so `synthetic reset` and `DemoService` share one
+security-sensitive allowlist rather than duplicating it. `synthetic reset` keeps
+its surgical row-deletion behavior (and gains the `has_non_synthetic_data`
+guard); **demo does not use it** — demo rebuilds its database instead, for the
+reasons below. `RESET_DELETIONS` stays raw/synthetic-only and never touches an
+audited `app.*` table.
 
 *Deliberately out of scope:* the larger "extract a full `SyntheticService` and
 move `_run_generate` out of the CLI layer" refactor. The
@@ -126,37 +136,64 @@ follow-up (filed), not part of this feature. `DemoService` calls the clean
 
 ### Data flow (`DemoService.run`)
 
-1. **Ensure** the target profile exists → `ProfileService.create(profile,
+1. **Ensure** the `demo` profile exists → `ProfileService.create(DEMO_PROFILE,
    init_inbox=True)`, tolerating `ProfileExistsError`.
-2. **Activate** it (`set_default_profile` + `set_current_profile`) so the next
-   `moneybin` command uses it with no extra step.
-3. **Open** the DB. Inspect for existing data:
-   - Synthetic data present (`synthetic.ground_truth` exists) → **reset** the
-     synthetic rows (after the CLI's confirmation gate).
-   - Non-synthetic data present → **refuse** (guard; mirrors `synthetic reset`).
-     A `demo` profile should only ever hold synthetic data.
-   - Empty → proceed.
+2. **Point the process at it** (`set_current_profile`) so we open the right
+   database. The *persisted* default switch is deferred to step 7.
+3. **If it already existed** → guard, then **rebuild the database from
+   scratch** (`_rebuild_database`: delete the DB file, `init_db` a fresh one):
+   - Holds real (non-synthetic) data, **or** holds data with no
+     `synthetic.ground_truth` marker → **refuse** (`DemoProfileNotOursError`).
+     Rebuilding destroys the file, so we only ever do it to a profile we can
+     prove the generator made and that holds nothing real.
+   - Empty shell (e.g. a prior run failed before generating) → proceed.
+   - Otherwise → require `reset_confirmed`, then rebuild.
 4. **Generate** → `GeneratorEngine(persona, seed, years).generate()` →
    `SyntheticWriter(db).write(...)`.
-5. **Full refresh** → `refresh(db)` (match → transform → categorize).
-6. **Doctor** → `DoctorService(db).run_all()`.
-7. **Answer** → `NetworthService(db).current()`.
+5. **Refresh** → `refresh(db, steps=["match", "transform", "categorize"])`. The
+   `gsheet` step is deliberately excluded: demo generated its own raw data and
+   must never trigger a live external pull. A failure in *any* step (including
+   `matching_error` / `categorization_error`) aborts — demo's premise is a
+   clean, categorized pipeline.
+6. **Doctor** → `DoctorService(db).run_all()`; **answer** →
+   `NetworthService(db).current()`.
+7. **Activate** → `set_default_profile(DEMO_PROFILE)`, only after a fully
+   successful run, so a refused or failed run never silently switches the
+   user's default profile.
+
+**Why rebuild instead of deleting the generated rows?** Surgically un-writing a
+demo run means (a) deleting derived state (`app.match_decisions`,
+`app.transaction_categories`) or leaving it orphaned when a new persona/seed
+changes the synthetic ids — which fails doctor's FK invariants; and (b) those
+`app.*` tables are audited and may only be mutated through their `*Repo`
+(Invariant 10), never by raw `DELETE`. A fresh database has neither problem: no
+orphans to clean, no `app.*` mutation at all. It is both simpler and more
+correct. `reset_synthetic_rows` therefore stays raw/synthetic-only and demo does
+not use it.
 
 ### Idempotency & reset model
 
 The default seed is a fixed constant, so `moneybin demo` produces a known,
 reproducible dataset. Re-running when the demo profile already holds data
-**prompts to confirm the reset** unless `--yes` is passed — the same UX as
-`synthetic reset`, honoring "magic stays visible" (`design-principles.md`)
-even though wiping synthetic demo data is self-evidently safe. Agents and
-scripts pass `--yes`.
+**prompts to confirm the rebuild** unless `--yes` is passed — the rebuild
+destroys the demo database, so it stays a visible, dismissible confirm
+("magic stays visible", `design-principles.md`). Agents and scripts pass
+`--yes`.
 
-**Prompt ownership.** The confirmation is a CLI concern; the reset is a service
-action. The CLI first asks `DemoService` whether the target profile already
-holds data (a cheap read), prompts via `typer.confirm` unless `--yes`, then
-calls `DemoService.run(..., reset_confirmed=<bool>)`. `run` performs the reset
-only when `reset_confirmed` is true and never prompts. If data exists and the
-reset isn't confirmed, the command aborts before any destructive action.
+**Prompt ownership.** The confirmation is a CLI concern; the rebuild is a
+service action. The CLI first asks `DemoService.profile_has_data()` (a cheap
+read), prompts via `typer.confirm` unless `--yes`, then calls
+`DemoService.run(..., reset_confirmed=<bool>)`. `run` rebuilds only when
+`reset_confirmed` is true and never prompts. If data exists and the rebuild
+isn't confirmed, the command aborts before any destructive action.
+
+**Guard scope.** Because there is no arbitrary `--profile` target, the only
+profile demo can destroy is one literally named `demo`. The guard therefore
+does not attempt to enumerate every table that could hold real data; it refuses
+anything it cannot positively attribute to the generator (no
+`synthetic.ground_truth` marker) or that trips `has_non_synthetic_data()`. That
+is a deliberate scope choice: enumeration can never be proven complete, and
+removing the arbitrary target removed the need for it.
 
 ### The closing answer
 
@@ -170,8 +207,11 @@ On success the CLI prints:
    trend."*).
 
 The numbers come from the service; the menu and example prompts are static
-presentation in the CLI layer. `--output json` emits the structured
-`DemoResult` and omits the prose menu.
+presentation in the CLI layer. `--output json` routes the `DemoResult` through
+the project's standard `render_or_json(build_envelope(...), cli_actor="demo")`
+path — same `{status, summary, data, actions}` envelope every other JSON-emitting
+command returns, and the same `privacy.log.jsonl` audit entry — and omits the
+prose menu.
 
 ### Error handling
 

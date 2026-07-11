@@ -99,12 +99,14 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- show [name]                -- Resolved settings (defaults to active)
 |   +-- set <key> <value>          -- Set config value
 |
-+-- demo                           -- Set up a demo profile with synthetic data + a first answer (leaf)
++-- demo                           -- Set up the demo profile with synthetic data + a first answer (leaf)
 |     [--persona basic|family|freelancer]  Data shape (default: basic)
-|     [--profile NAME]             Target profile (default: demo)
 |     [--seed N] [--years N]
-|     [--yes]                      Auto-accept the reset if the demo profile exists
+|     [--yes]                      Auto-accept the rebuild if the demo profile exists
 |     [--output json] [--quiet]
+|                                  Always targets the dedicated `demo` profile — no
+|                                  --profile target, so it can never be pointed at a
+|                                  real profile. Re-running rebuilds its database.
 |
 +-- import
 |   +-- files <paths...>           -- Smart import with full pipeline (accepts one or more paths)

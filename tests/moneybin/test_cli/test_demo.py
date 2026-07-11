@@ -51,14 +51,17 @@ def test_demo_runs_and_prints_networth(mocker: Any) -> None:
 
 
 @pytest.mark.unit
-def test_demo_json_output(mocker: Any) -> None:
+def test_demo_json_uses_standard_envelope(mocker: Any) -> None:
     _patch_service(mocker, _fake_result())
     result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.stdout)
-    assert payload["profile"] == "demo"
-    assert payload["net_worth"] == "12345.67"
-    assert payload["transaction_count"] == 900
+    envelope = json.loads(result.stdout)
+    # Standard CLI/MCP envelope shape, not a hand-rolled dict.
+    assert "data" in envelope
+    assert "summary" in envelope
+    assert envelope["data"]["profile"] == "demo"
+    assert envelope["data"]["net_worth"] == "12345.67"
+    assert envelope["data"]["transaction_count"] == 900
 
 
 @pytest.mark.unit
@@ -79,7 +82,16 @@ def test_demo_rejects_unknown_persona(mocker: Any) -> None:
 
 
 @pytest.mark.unit
-def test_demo_declining_reset_aborts(mocker: Any) -> None:
+def test_demo_has_no_profile_flag(mocker: Any) -> None:
+    # demo always targets the dedicated `demo` profile — it must not be
+    # pointable at an arbitrary (possibly real) profile.
+    _patch_service(mocker, _fake_result())
+    result = runner.invoke(app, ["demo", "--yes", "--profile", "my-real-money"])
+    assert result.exit_code == 2  # unknown option
+
+
+@pytest.mark.unit
+def test_demo_declining_rebuild_aborts(mocker: Any) -> None:
     svc = _patch_service(mocker, _fake_result())
     svc.profile_has_data.return_value = True  # existing demo data
     result = runner.invoke(app, ["demo"], input="n\n")  # decline the prompt

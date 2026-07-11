@@ -1,11 +1,10 @@
 """`moneybin demo` — one-command evaluator preset (synthetic profile + answer)."""
 
-import json
 import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option
+from moneybin.cli.output import OutputFormat, output_option, quiet_option
 
 logger = logging.getLogger(__name__)
 
@@ -26,26 +25,31 @@ def demo_command(
     persona: str = typer.Option(
         "basic", "--persona", help=f"Data shape: one of {', '.join(_PERSONAS)}"
     ),
-    profile: str = typer.Option("demo", "--profile", help="Target profile name"),
     seed: int | None = typer.Option(
         None, "--seed", min=1, max=9999, help="Deterministic seed (default: fixed)"
     ),
     years: int | None = typer.Option(None, "--years", help="Years of history"),
     yes: bool = typer.Option(
-        False, "--yes", "-y", help="Auto-accept the reset if the demo profile exists"
+        False, "--yes", "-y", help="Auto-accept the rebuild if the demo profile exists"
     ),
     output: OutputFormat = output_option,
-    quiet: bool = typer.Option(False, "-q", "--quiet", help="Suppress status lines"),
+    quiet: bool = quiet_option,
 ) -> None:
-    """Populate a demo profile with synthetic data and show a first answer.
+    """Set up the demo profile with synthetic data and show a first answer.
 
-    Creates (or refreshes) an isolated ``demo`` profile, generates persona data,
-    runs the full pipeline to a clean ``system doctor``, activates the profile,
-    and prints net worth plus next steps. Nothing here touches real financial
-    data — the demo profile only ever holds synthetic rows.
+    Always targets the dedicated ``demo`` profile — it can never be pointed at a
+    real financial profile. Re-running rebuilds that profile's database from
+    scratch and regenerates. For a differently-named synthetic sandbox, use
+    ``moneybin synthetic generate``.
     """
+    from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
-    from moneybin.services.demo_service import DEMO_DEFAULT_SEED, DemoService
+    from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.demo_service import (
+        DEMO_DEFAULT_SEED,
+        DEMO_PROFILE,
+        DemoService,
+    )
 
     if persona not in _PERSONAS:
         raise typer.BadParameter(f"persona must be one of {', '.join(_PERSONAS)}")
@@ -54,37 +58,42 @@ def demo_command(
     resolved_seed = seed if seed is not None else DEMO_DEFAULT_SEED
 
     with handle_cli_errors(cli_actor="demo"):
-        # Own the reset confirmation (magic stays visible) before mutating.
+        # Own the rebuild confirmation (magic stays visible) before destroying it.
         reset_confirmed = yes
-        if not yes and svc.profile_has_data(profile):
+        if not yes and svc.profile_has_data():
             reset_confirmed = typer.confirm(
-                f"Profile {profile!r} already has demo data. Reset and regenerate?"
+                f"Profile {DEMO_PROFILE!r} already has demo data. "
+                f"Rebuild it and regenerate?"
             )
             if not reset_confirmed:
                 raise typer.Abort()
 
         result = svc.run(
             persona=persona,
-            profile=profile,
             seed=resolved_seed,
             years=years,
             reset_confirmed=reset_confirmed,
         )
 
         if output == OutputFormat.JSON:
-            typer.echo(
-                json.dumps({
-                    "profile": result.profile,
-                    "persona": result.persona,
-                    "seed": result.seed,
-                    "account_count": result.account_count,
-                    "transaction_count": result.transaction_count,
-                    "doctor_failing": result.doctor_failing,
-                    "doctor_failing_names": result.doctor_failing_names,
-                    "net_worth": str(result.net_worth),
-                    "total_assets": str(result.total_assets),
-                    "total_liabilities": str(result.total_liabilities),
-                })
+            render_or_json(
+                build_envelope(
+                    data={
+                        "profile": result.profile,
+                        "persona": result.persona,
+                        "seed": result.seed,
+                        "account_count": result.account_count,
+                        "transaction_count": result.transaction_count,
+                        "doctor_failing": result.doctor_failing,
+                        "doctor_failing_names": result.doctor_failing_names,
+                        "net_worth": str(result.net_worth),
+                        "total_assets": str(result.total_assets),
+                        "total_liabilities": str(result.total_liabilities),
+                    },
+                    sensitivity="low",
+                ),
+                output,
+                cli_actor="demo",
             )
         else:
             if not quiet:

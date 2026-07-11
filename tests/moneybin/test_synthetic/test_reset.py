@@ -48,16 +48,20 @@ def test_reset_synthetic_rows_deletes_only_synthetic(db: Database) -> None:
 
 @pytest.mark.unit
 def test_reset_deletions_allowlist_is_synthetic_scoped() -> None:
-    # Raw source tables (source_file-bearing) must be synthetic-scoped so a real
-    # import can never be touched. Synthetic-owned tables (ground_truth + derived
-    # app-state) are cleared wholesale — safe only because callers gate on
-    # has_non_synthetic_data() first (profile holds ONLY generator data).
-    wholesale_ok = ("ground_truth", "match_decisions", "transaction_categories")
+    # Every non-ground_truth deletion is scoped to synthetic:// source files, so
+    # the helper can never touch a real user import.
     for table, where in RESET_DELETIONS.items():
-        if table.endswith(wholesale_ok):
-            assert where == "WHERE TRUE", f"{table} should be wholesale-cleared"
-        else:
-            assert "synthetic://" in where, f"{table} deletion is not synthetic-scoped"
+        if table.endswith("ground_truth"):
+            continue
+        assert "synthetic://" in where, f"{table} deletion is not synthetic-scoped"
+
+
+@pytest.mark.unit
+def test_reset_deletions_never_touch_audited_app_tables() -> None:
+    # Audited app.* tables (Invariant 10) may only be mutated through their
+    # *Repo. The demo preset rebuilds its database instead of deleting these.
+    for table in RESET_DELETIONS:
+        assert not table.startswith("app."), f"{table} must not be raw-deleted"
 
 
 @pytest.mark.unit

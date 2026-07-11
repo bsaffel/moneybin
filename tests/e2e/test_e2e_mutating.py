@@ -1577,7 +1577,8 @@ class TestDemo:
         )
         assert result.exit_code == 0, result.output
         assert "Traceback" not in result.stderr
-        payload = json.loads(result.stdout)
+        envelope = json.loads(result.stdout)
+        payload = envelope["data"]
         assert payload["profile"] == "demo"
         assert payload["transaction_count"] > 0
         assert payload["account_count"] > 0
