@@ -1816,7 +1816,7 @@ requires-dist = [
     { name = "ofxparse", specifier = ">=0.21" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pdfplumber", specifier = ">=0.11.9" },
-    { name = "plaid-python", specifier = ">=36.0.0" },
+    { name = "plaid-python", specifier = ">=40.0.0" },
     { name = "polars", specifier = ">=1.32.3" },
     { name = "prometheus-client", specifier = ">=0.22.0" },
     { name = "pyarrow", specifier = ">=23.0.0" },
@@ -2328,14 +2328,14 @@ wheels = [
 
 [[package]]
 name = "plaid-python"
-version = "39.2.0"
+version = "40.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nulltype" },
     { name = "python-dateutil" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/62/3dff402f2eb80b967ddcc142cd4f77c838740f15bdf3680de5a9bcdae8c8/plaid_python-39.2.0.tar.gz", hash = "sha256:552aff15f8e4dbbf469fcab224465fa2359e68757b60df9c8ed40e8163aa6c20", size = 1208776, upload-time = "2026-04-27T18:30:27.715Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/ba/6067e7ddd6e1b6c4686cfd6ec4d0a2f7172a2894e6fdeb6457f34bc94bb5/plaid_python-40.1.0.tar.gz", hash = "sha256:cb912654dc8f2d01813c6178e589f2d5f213f7675a0bdb653a14c1727c4592a6", size = 1229190, upload-time = "2026-06-25T19:47:32.831Z" }
 
 [[package]]
 name = "platformdirs"

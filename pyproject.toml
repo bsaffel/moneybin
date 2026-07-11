@@ -61,7 +61,7 @@ dependencies = [
     "polars>=1.32.3",
     "pyarrow>=23.0.0",
     # API integrations
-    "plaid-python>=36.0.0",
+    "plaid-python>=40.0.0",
     "ofxparse>=0.21",
     "requests>=2.33.1",
     "python-dotenv>=1.2.2",

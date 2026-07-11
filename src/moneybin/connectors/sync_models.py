@@ -11,7 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---- Server response models ----
 
@@ -116,6 +116,88 @@ class SyncBalance(BaseModel):
     available_balance: Decimal | None = None
 
 
+class SyncSecurity(BaseModel):
+    """One security in GET /sync/data response (Plaid Security, item-scoped).
+
+    Field names match the raw.plaid_securities columns; wire names arrive via
+    aliases so model_dump() feeds the loader without renaming.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    security_id: str
+    provider_item_id: str
+    institution_security_id: str | None = None
+    institution_id: str | None = None
+    ticker_symbol: str | None = None
+    market_identifier_code: str | None = None
+    security_name: str | None = Field(default=None, alias="name")
+    security_type: str | None = Field(default=None, alias="type")
+    close_price: Decimal | None = None
+    close_price_as_of: date | None = None
+    iso_currency_code: str | None = None
+    unofficial_currency_code: str | None = None
+    cusip: str | None = None
+    isin: str | None = None
+    is_cash_equivalent: bool | None = None
+
+
+class SyncInvestmentTransaction(BaseModel):
+    """One investment ledger event in GET /sync/data response.
+
+    CAUTION: amount keeps Plaid's convention (positive = cash out); the sign
+    flip happens only in prep.stg_plaid__investment_transactions.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    investment_transaction_id: str
+    account_id: str
+    provider_item_id: str
+    security_id: str | None = None
+    transaction_date: date = Field(alias="date")
+    transaction_datetime: datetime | None = None
+    transaction_name: str | None = Field(default=None, alias="name")
+    quantity: Decimal | None = None
+    amount: Decimal
+    price: Decimal | None = None
+    fees: Decimal | None = None
+    iso_currency_code: str | None = None
+    unofficial_currency_code: str | None = None
+    investment_transaction_type: str | None = Field(default=None, alias="type")
+    investment_transaction_subtype: str | None = Field(default=None, alias="subtype")
+
+
+class SyncHoldingTaxLot(BaseModel):
+    """One HoldingTaxLot entry inside SyncHolding.tax_lots[]."""
+
+    institution_lot_id: str | None = None
+    original_purchase_datetime: datetime | None = None
+    quantity: Decimal | None = None
+    purchase_price: Decimal | None = None
+    cost_basis: Decimal | None = None
+    current_value: Decimal | None = None
+    position_type: str | None = None
+
+
+class SyncHolding(BaseModel):
+    """One holdings-snapshot position in GET /sync/data response."""
+
+    account_id: str
+    provider_item_id: str
+    security_id: str
+    institution_price: Decimal | None = None
+    institution_price_as_of: date | None = None
+    institution_value: Decimal | None = None
+    cost_basis: Decimal | None = None
+    quantity: Decimal | None = None
+    iso_currency_code: str | None = None
+    unofficial_currency_code: str | None = None
+    vested_quantity: Decimal | None = None
+    vested_value: Decimal | None = None
+    tax_lots: list[SyncHoldingTaxLot] = Field(default_factory=list)
+
+
 class InstitutionResult(BaseModel):
     """Per-institution result inside SyncMetadata.institutions[]."""
 
@@ -125,6 +207,13 @@ class InstitutionResult(BaseModel):
     transaction_count: int | None = None
     error: str | None = None
     error_code: str | None = None
+    transactions_window_start: date | None = Field(
+        default=None,
+        description=(
+            "ISO date the server used as the /investments/transactions/get start "
+            "boundary for THIS item; required whenever the item has holdings rows."
+        ),
+    )
 
 
 class SyncMetadata(BaseModel):
@@ -142,6 +231,11 @@ class SyncDataResponse(BaseModel):
     transactions: list[SyncTransaction]
     balances: list[SyncBalance]
     removed_transactions: list[str]
+    securities: list[SyncSecurity] = Field(default_factory=list)
+    investment_transactions: list[SyncInvestmentTransaction] = Field(
+        default_factory=list
+    )
+    investment_holdings: list[SyncHolding] = Field(default_factory=list)
     metadata: SyncMetadata
 
 
@@ -172,6 +266,10 @@ class PullResult(BaseModel):
     accounts_loaded: int
     balances_loaded: int
     transactions_removed: int
+    securities_loaded: int = 0
+    investment_transactions_loaded: int = 0
+    holdings_loaded: int = 0
+    holding_lots_loaded: int = 0
     institutions: list[InstitutionResult]
     transforms_applied: bool = False
     transforms_duration_seconds: float | None = None
