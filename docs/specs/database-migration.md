@@ -263,8 +263,12 @@ Migrations may alter:
   conditional logic, runtime values, or library access is needed.
 - **Discovery**: migrations are `.sql` or `.py` files named `V<NNN>__<snake_case>.ext`
   (Flyway naming convention, 3+ digit version, double underscore separator).
-- **Scope**: migrations only touch `raw.*` and `app.*` schemas. `core.*`, `prep.*`, and
-  `analytics.*` are SQLMesh territory — never write migrations that alter them.
+- **Scope**: migrations only touch `raw.*` and `app.*` schemas. `seeds.*`, `meta.*`,
+  `core.*`, `prep.*`, `reports.*`, and `analytics.*` are SQLMesh territory — never write
+  migrations that alter them (on a materialized database they are views, so any write
+  raises at apply time). Enforced by `tests/moneybin/test_migration_schema_ownership.py`
+  (`_SQLMESH_OWNED_SCHEMAS`), which statically scans every migration and fails CI on any
+  such write — treat that set as the source of truth.
 - **Checksums**: SHA-256 of the file's raw bytes, stored as lowercase hex. Drift warns
   but does not fail.
 - **Transactions**: each migration file is wrapped in `BEGIN TRANSACTION` / `COMMIT`.
