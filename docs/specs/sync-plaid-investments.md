@@ -130,9 +130,12 @@ reach the ledger, everything downstream is existing machinery.
     transaction window has no acquiring transaction; on first sync, the
     holdings snapshot's unexplained quantity is seeded into the ledger as
     synthetic `opening_bootstrap` `transfer_in`s — per-lot basis and
-    acquisition date from `Holding.tax_lots[]` where present, else
-    `basis_incomplete`. Without this, a long-held position never opens a lot
-    and a later Plaid sale realizes an oversold zero-basis phantom gain. See
+    acquisition date drawn from the pre-window `Holding.tax_lots[]` (relative to
+    the server-supplied `transactions_window_start`), else `basis_incomplete`.
+    The holdings snapshot stays authoritative for the held position; realized
+    gains on shares bought pre-window and sold in-window are best-effort and
+    flagged. Without this, a long-held position never opens a lot and a later
+    Plaid sale realizes an oversold zero-basis phantom gain. See
     [Opening-lot bootstrap](#opening-lot-bootstrap).
 
 ---
@@ -224,7 +227,13 @@ bootstrap — see the SDK-floor note under that table.
 Field names and semantics track Plaid's Investments objects one-to-one
 (`Security`, `InvestmentTransaction`, `Holding`); the server passes them
 through without reshaping. `metadata` (job id, `synced_at`, per-institution
-results) is unchanged.
+results) gains **one** field: `transactions_window_start` — the ISO date the
+server used as the `/investments/transactions/get` start boundary for this sync
+(its watermark, or the first-sync floor). The server owns that watermark, so the
+client cannot derive it; the opening-lot bootstrap needs it to tell pre-window
+lots from in-window ones, and it must be present even when a security returns
+zero in-window transactions. The client stamps it onto every
+`raw.plaid_investment_holdings` row of the sync (§ that table).
 
 **Securities carry item scope.** Plaid returns `securities` as a top-level
 array on each *item's* response, not per account — and the same real security
@@ -351,6 +360,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
     unofficial_currency_code VARCHAR,         -- Non-ISO (crypto) currency
     vested_quantity DECIMAL(28, 10),          -- Vested units (equity compensation); NULL otherwise
     vested_value DECIMAL(18, 2),              -- Vested value (equity compensation); NULL otherwise
+    transactions_window_start DATE NOT NULL,  -- metadata.transactions_window_start; the sync's /investments/transactions/get start boundary; opening-lot bootstrap's pre-window/in-window discriminant; constant across a snapshot
     source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK)
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
@@ -767,55 +777,65 @@ fully-taxed phantom gain, term forced short. This is not an edge case; it is
 the normal state of any established brokerage account on first connect, and
 every surveyed competitor gets it wrong (they reset or zero the basis).
 
-**The fix — seed opening lots from the first holdings snapshot.** On an
-account's first successful investments sync, staging reconciles the holdings
-snapshot against the position derived from the in-window transaction ledger.
-For each `(account, security)` whose **held quantity exceeds** the quantity the
-in-window transactions account for, the unexplained remainder is materialized
-as one or more synthetic **opening `transfer_in`** rows in
-`core.fct_investment_transactions` (`source_type='plaid'`,
-`subtype='opening_bootstrap'` so it is auditable and never confused with a real
-ACATS transfer):
+**The fix — seed opening lots; the snapshot is authoritative for what's held.**
+Plaid's `tax_lots[]` describe the *shares still held*, so for anything currently
+held, per-lot cost basis and acquisition date are available regardless of a
+lot's age (subject to institution support). What the snapshot cannot recover is
+the basis of shares **bought before the window and sold inside it**: that lot is
+gone from the snapshot, and Plaid's sell `InvestmentTransaction` carries only
+proceeds, no cost basis. So bootstrap's job is twofold — (1) open pre-window
+lots so the *held* position carries correct basis and term, and (2) give
+in-window disposals of pre-window shares *something* to consume — a flagged
+`basis_incomplete` lot ("unknown basis") — instead of an oversold zero-basis
+phantom gain. Everything held is exact; realized gains on the pre-window-sold
+sliver are best-effort by construction (see "Snapshot is authoritative" below).
 
-- **Per-lot enrichment (draw the gap oldest-first).** The position-level gap
-  `G` (held quantity − in-window net quantity) is the **authoritative** quantity
-  to open — it already excludes everything the in-window ledger accounts for, so
-  it can never re-open a lot an in-window buy already created. `tax_lots[]`
-  describes the *whole* current position, so bootstrap must **not** emit one row
-  per lot. Instead, when `raw.plaid_investment_holding_lots` carries lots,
-  staging draws exactly `G` shares across the position's lots **oldest first**
-  (by `original_purchase_datetime`). Because `G` is precisely the
-  held-minus-in-window remainder, drawing that many shares from the oldest lots
-  inherently selects the pre-window lots and stops before the newer,
-  in-window-acquired ones — **no separate window-boundary date is needed**, and
-  the common no-in-window-activity case (`G` = full held quantity) simply draws
-  every lot with its own basis and date. Each drawn slice opens one `transfer_in`
-  carrying that lot's `original_purchase_datetime` (→ `original_acquisition_date`)
-  and a basis **proportional to the drawn quantity**: a fully-drawn lot carries
-  its full `cost_basis` (→ `amount`); the boundary lot where the cumulative draw
-  crosses `G` is drawn partially and carries `cost_basis × drawn_qty / lot_qty`,
-  so `amount` never claims more basis than the quantity it opens. Correct basis
-  *and* holding-period start — the differentiation edge.
-  - **Residual (`amount = NULL`).** If the datable lots can't cover `G` — the
-    broker reports lots for only part of the position, or a lot carries a NULL
-    `original_purchase_datetime` (no holding-period anchor, so it can't be
-    ordered) — the uncovered remainder opens as a single `basis_incomplete` row
-    (`amount = NULL`, snapshot-date fallback), flagged. Bootstrap never opens
-    more than `G`, so an over-covered position simply leaves its newest lots
-    undrawn (they are already in the ledger via in-window buys) — the expected
-    healthy case, not a mismatch.
-- **Position-level fallback (empty `tax_lots[]`).** When the institution
-  provides no lot detail, one opening `transfer_in` for the whole gap `G`.
-  `Holding.cost_basis` is the *whole-position* basis, so it maps to `amount`
-  **only when `G` equals the full held quantity** — no in-window transaction
-  touches this position, so the entire basis belongs to the opened gap. When
-  in-window transactions already explain part of the position (`G <` held
-  quantity), `Holding.cost_basis` covers shares the ledger has *already*
-  basis-accounted; using it for `G` would double-count basis, so the row opens
-  `basis_incomplete` (`amount = NULL`) instead — position-level data can't
-  isolate the gap's share of the basis. `Holding.cost_basis` absent →
-  `basis_incomplete` as well (the step-5 rule). Acquisition date unknown →
-  `NULL`, lot falls back to the snapshot date and is flagged.
+**Inputs.** Per `(account, security)`: the held quantity `H` and `tax_lots[]`
+from the newest holdings snapshot, the in-window transaction ledger, and the
+sync's **transaction-window start** `W` — the date-range start the server
+queried from, delivered on the response and persisted on
+`raw.plaid_investment_holdings.transactions_window_start` (§ Server contract).
+`W` is always known, even when a security has zero in-window transactions.
+
+**Algorithm.** On an account's first successful investments sync, for each
+`(account, security)` the synthetic rows are **opening `transfer_in`**s in
+`core.fct_investment_transactions` (`source_type='plaid'`,
+`subtype='opening_bootstrap'`, never confused with a real ACATS transfer):
+
+1. **Guards** (route to `system doctor` review, synthesize nothing):
+   `position_type='short'` or `H ≤ 0` — the engine models only long lots, so a
+   buy-to-cover would open a long lot that never reconciles to a short `H`; or
+   the security has any in-window `split` (see below).
+2. **Gap** `G = H − (in-window net signed transaction quantity)`, with `split`
+   rows **excluded** from the sum (their `quantity` is a multiplier, not shares).
+   Bootstrap fires only when `G > 0`.
+3. **Eligible pre-window lots** = `tax_lots[]` with `original_purchase_datetime
+   < W` (strict; the transaction window is inclusive `≥ W`, so a lot dated
+   exactly on `W` belongs to the window, not the bootstrap). Zero-quantity lots
+   are skipped.
+4. **Draw `G` oldest-first** across eligible lots. A fully-drawn lot →
+   `amount = cost_basis`; the boundary lot (cumulative draw crosses `G`) →
+   `amount = cost_basis × drawn_qty / lot_qty`, so `amount` never claims more
+   basis than the quantity it opens. **Two dates, deliberately different** — the
+   engine keys lot-*opening* order on `trade_date` but holding-period **term**
+   and FIFO consumption on `acquisition_date`: set `original_acquisition_date =
+   the lot's original_purchase_datetime` (correct term) and the row's **trade
+   date to just before `W`** (so the opening lot is processed *before* every
+   in-window disposal; otherwise an in-window sell runs first and goes oversold).
+5. **Known basis, unknown date.** A lot with a real `cost_basis` but NULL
+   `original_purchase_datetime` still opens with that basis (dated at `W`, term
+   flagged) — its basis is never discarded to the residual.
+6. **Residual (`amount = NULL`).** Any part of `G` the eligible lots cannot
+   cover — the pre-window-sold sliver, or an institution reporting no lot for
+   part of the position — opens as a single `basis_incomplete` row, **dated
+   oldest of all** (before every drawn lot). Under the engine's default FIFO this
+   makes in-window disposals consume the *unknown-basis* shares first, leaving
+   the known `tax_lots` intact as the held position.
+7. **Empty `tax_lots[]`.** One `transfer_in` for the whole `G`:
+   `amount = Holding.cost_basis` **only when `G = H`** (no in-window activity, so
+   the whole-position basis belongs entirely to the gap); when `G < H`,
+   position-level data can't isolate the gap's basis → `amount = NULL`
+   (`basis_incomplete`). Same before-`W` dating as the residual.
 
 **In-window splits route to review.** The gap is measured against the *current*
 (post-split) holdings snapshot, but a synthetic opening `transfer_in` is dated
@@ -828,21 +848,53 @@ security has an in-window `split`: that `(account, security)` is routed to
 `system doctor` review instead of synthesizing a row. A documented, visible v1
 limitation — like the cancel/removal boundary above — not silent corruption.
 
-**Determinism & idempotence.** The synthetic rows carry a content-hash
-`investment_transaction_id` over `(account_id, security_id, lot_index,
-original_purchase_datetime, cost_basis, 'opening_bootstrap')` — the residual
-`basis_incomplete` row uses a reserved `lot_index` sentinel — so a rebuild
-reproduces them exactly and a re-sync does not duplicate them. Because they
-live in the ledger, lots/gains/holdings derive from them through the unchanged
-engine — no special-casing downstream.
+**Determinism & idempotence.** Each synthetic row carries a content-hash
+`investment_transaction_id` over `(account_id, security_id, lot_key,
+original_acquisition_date, cost_basis, 'opening_bootstrap')`, where `lot_key` is
+the lot's `institution_lot_id` when the broker supplies one (stable across
+syncs) and its positional index otherwise; the residual uses a reserved
+sentinel. Plaid may reorder `tax_lots[]` between syncs, so keying on
+`institution_lot_id` — not raw position — is what keeps a re-sync from minting
+duplicate rows. Because they live in the ledger, lots/gains/holdings derive from
+them through the unchanged engine — no special-casing downstream.
 
-**Reconciliation, not fabrication.** Bootstrap fires only to explain a
-*positive* holdings-vs-ledger quantity gap. It never runs when the in-window
-transactions already account for the held quantity (no gap → no synthetic
-row), and a *negative* gap (ledger shows more than held — a disposal Plaid
-dropped from the window) is a reconciliation warning surfaced by `system
-doctor`, not a silent adjustment. The whole step is visible: bootstrap rows are
+**Snapshot is authoritative; the ledger is reconciled to it.** `tax_lots[]` are
+the *survivors* of any in-window disposal, and the engine elects its own
+lot-relief method (default FIFO, which may differ from the broker's), so
+replaying in-window sells against bootstrapped lots **cannot** perfectly
+reproduce the broker's realized gains when a pre-window lot was partially sold
+in-window. Two consequences, both handled visibly:
+
+- **Held position:** `dim_holdings` carries the snapshot's
+  `provider_reported_quantity`/`provider_reported_cost_basis` (§ Core
+  integration) as the authoritative held figures; `system doctor` **warns**
+  whenever the engine-derived held lots diverge from the snapshot. The
+  residual-first FIFO dating (step 6) keeps them aligned in the common case, but
+  a HIFO/average/specific-ID election or a broker relief-method mismatch can
+  still diverge — the warning makes that visible rather than silently wrong.
+- **Realized gains** on the pre-window-sold sliver carry the `basis_incomplete`
+  flag downstream and are never presented as authoritative.
+
+**Reconciliation, not fabrication.** Bootstrap fires only on a *positive*
+holdings-vs-ledger quantity gap — never when in-window transactions already
+account for `H` (no gap → no synthetic row). A *negative* gap (ledger shows more
+than held — a disposal Plaid dropped from the window) is a `system doctor`
+warning, not a silent adjustment. The whole step is visible: bootstrap rows are
 queryable by `subtype='opening_bootstrap'` and counted in the sync envelope.
+
+**Reconciliation cases.** Every case reconciles held quantity to `H`; basis is
+exact for held shares and flagged only where genuinely unrecoverable.
+
+| Case | Scenario | Bootstrap emits | Outcome |
+|---|---|---|---|
+| A | Pre-window buy, untouched | draw all pre-window lots @ real basis | held exact ✓ |
+| B | Pre-window + in-window buy, both held | in-window lot dated `≥ W` → excluded; draw the pre-window portion | held exact; in-window buy not double-counted ✓ |
+| C | Pre-window buy, in-window partial sell | draw surviving pre-window lots; shortfall → `basis_incomplete` (dated oldest) | held exact; sell consumes the incomplete shares first ✓ |
+| D | Sell-then-rebuy (pre-window lot closed, in-window replacement held) | replacement lot dated `≥ W` → excluded; residual `basis_incomplete` before `W` | held = replacement @ real basis; sold sliver flagged, **not** wrong-lot basis ✓ |
+| E | In-window split of pre-window shares | — | routed to `system doctor` review |
+| F | Empty `tax_lots[]` | `G=H` → `Holding.cost_basis`; `G<H` → `basis_incomplete` | held reconciles; basis exact only with no in-window activity |
+| G | Lot with NULL acquisition date | open @ real `cost_basis`, dated `W`, term flagged | basis kept, term uncertain |
+| H | Multiple pre-window lots, non-uniform basis, in-window sell | draw surviving lots; shortfall → `basis_incomplete` first; **doctor warns** if derived ≠ snapshot | held anchored to snapshot; realized best-effort |
 
 ---
 
@@ -936,7 +988,7 @@ data still loads.
 | Reinvest pairing | Golden fixture (captured from Sandbox): reinvest pair shares one `event_group_id`; unpairable row degrades to NULL group with lot/income effects intact. |
 | Basis-unknown transfer | An in-window `transfer_in`/`stock distribution` with Plaid `amount = 0` maps to `amount = NULL` (not 0) → the engine opens a `basis_incomplete` lot. Staging does **not** borrow basis from `Holding.tax_lots[]` for an individual in-window transfer (those lots describe the whole position and carry no transaction link) — per-lot basis is exercised only by the opening-lot bootstrap row below. |
 | Split normalization | A `transfer/split` share-delta converts to the multiplier `M` from the pre-split running position; every open lot scales by `M`, `cost_basis_total` preserved; an underivable pre-split position routes the split to review, not a corrupted lot. |
-| Opening-lot bootstrap | Holdings-vs-ledger positive gap synthesizes `subtype='opening_bootstrap'` `transfer_in`s (per-lot from `tax_lots[]` with real basis+acquisition date; position-level fallback → `basis_incomplete`); rebuild is idempotent (content-hash id); no gap → no synthetic row; negative gap → doctor warning, no silent write; a later sell consumes the bootstrapped lot instead of realizing oversold zero-basis. |
+| Opening-lot bootstrap | The eight reconciliation cases (A–H in § Opening-lot bootstrap) each drive a golden fixture: pre-window lots dated `< transactions_window_start` open with real basis+date; in-window and sold-then-rebought lots are excluded; the residual `basis_incomplete` row is dated before `W` and consumed first (a later sell never realizes oversold zero-basis); split/short positions route to review; empty `tax_lots[]` uses `Holding.cost_basis` only when `G=H`; rebuild is idempotent on `institution_lot_id`; no gap → no row; negative gap and engine-derived-≠-snapshot both raise a doctor warning, never a silent write. |
 | Merge migrates lot selections | Accepting a provisional-security merge re-points `app.lot_selections` to the survivor (recomputed `lot_id`); a specific-ID sale stays specific-ID across the rebuild; an unremappable selection blocks the merge. |
 
 ### Integration tests (server required)
@@ -967,7 +1019,7 @@ transactions), which also seed the golden files.
 | `sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
 | `sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
 | `sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
-| `sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap: holdings-vs-ledger reconciliation → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
+| `sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap: draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
 | `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
 | `tests/fixtures/plaid_investments_sync_response.json` | Golden file (captured from Sandbox) |
@@ -983,6 +1035,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
+| `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), and engine-derived held lots diverging from the `tax_lots` snapshot |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | Review sweep (CLI `review` / MCP) | Add `security_links_pending` count |
 
