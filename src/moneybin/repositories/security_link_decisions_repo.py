@@ -268,6 +268,27 @@ class SecurityLinkDecisionsRepo(BaseRepo):
             return []
         return [_decode_row(r) for r in rows]
 
+    def list_rejected(self) -> list[dict[str, Any]]:
+        """Return all rejected, non-reversed decisions (the never-re-propose set).
+
+        The ``SecurityResolver`` reads this as a batch cache: a
+        ``(ref_kind, ref_value, candidate_security_id)`` pairing the user
+        rejected is never proposed again — re-proposing it every sync would
+        mean the review queue never drains. A ``reversed`` decision is NOT in
+        this set (``reversed_at IS NULL``), so a reversal re-opens the
+        proposal. Returns an empty list when the table does not yet exist
+        (``CatalogException`` guard). Read-only — no audit emitted.
+        """
+        try:
+            rows = self._db.execute(
+                f"SELECT {_COLS} FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef
+                "WHERE status = 'rejected' AND reversed_at IS NULL "
+                "ORDER BY ref_value, decision_id",
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return [_decode_row(r) for r in rows]
+
     def count_pending(self) -> int:
         """Pending-decision count for the review sweep (fresh DB -> 0)."""
         try:

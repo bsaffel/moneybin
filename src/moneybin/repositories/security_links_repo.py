@@ -12,6 +12,8 @@ from __future__ import annotations
 import uuid
 from typing import Any, ClassVar
 
+import duckdb
+
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import SECURITY_LINKS, TableRef
@@ -74,6 +76,26 @@ class SecurityLinksRepo(BaseRepo):
                 source_type=row["source_type"],
             )
         super()._insert_row(row)
+
+    def lookup(self, *, ref_kind: str, ref_value: str, source_type: str) -> str | None:
+        """Accepted ``security_id`` bound to this provider ref, or ``None``. Read-only.
+
+        The resolver's rung-1 "is this ref already bound?" question, and the
+        guard it uses before binding a ref (``insert`` raises on an existing
+        accepted binding). Returns ``None`` when the table does not yet exist
+        (``CatalogException`` guard), matching the sibling decisions repo's
+        read methods, so a fresh DB reads as unbound rather than raising.
+        """
+        try:
+            row = self._db.execute(
+                f"SELECT security_id FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                "WHERE status = 'accepted' AND source_type = ? AND ref_kind = ? "
+                "AND ref_value = ? LIMIT 1",
+                [source_type, ref_kind, ref_value],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return None
+        return str(row[0]) if row is not None else None
 
     def insert(
         self,
