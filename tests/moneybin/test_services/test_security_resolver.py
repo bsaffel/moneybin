@@ -808,5 +808,92 @@ def test_missing_seed_registry_degrades_to_absent(db: Database) -> None:
     assert SecurityResolver(db).resolve_all() == {"auto_bound": 1}
 
 
+@pytest.mark.parametrize("insert_order", [("item_1", "item_2"), ("item_2", "item_1")])
+def test_two_institution_security_resolves_identically_regardless_of_insertion_order(
+    db: Database, insert_order: tuple[str, str]
+) -> None:
+    """The same security held at two institutions must resolve the same way either order.
+
+    raw.plaid_securities carries one row per (security_id, source_origin) —
+    a fund held at two brokerages is exactly two rows sharing one
+    security_id, each institution-scoped. Before the coalesce fix, an
+    un-merged candidate list let physical row order decide the outcome: the
+    row with ticker+MIC processed first cleanly auto-binds, but the
+    incomplete row (no ticker, only an abbreviated name) processed first
+    falls to a fuzzy-name proposal that mints a provisional twin — see the
+    module docstring's row-order nondeterminism. The merge makes this a
+    pure function of content, never of scan order.
+    """
+    _seed_mic_registry(db)
+    sid = _catalog(db, "Vanguard Total Stock Market ETF", ticker="VTI", exchange="XNAS")
+    rows_by_origin = {
+        "item_1": {
+            "source_origin": "item_1",
+            "institution_id": "ins_alpha",
+            "institution_security_id": "ALPHA-VTI",
+            "ticker_symbol": "VTI",
+            "market_identifier_code": "XNAS",
+            "security_name": "Vanguard Total Stock Market ETF",
+            "security_type": "etf",
+        },
+        "item_2": {
+            "source_origin": "item_2",
+            "institution_id": "ins_beta",
+            "institution_security_id": "BETA-VTI",
+            # incomplete on purpose: no ticker/MIC, abbreviated name — the
+            # shape that fuzzy-name-proposes (and mints a twin) if resolved
+            # as its own candidate instead of merging with item_1's row.
+            "security_name": "Vanguard Total Stock Mkt ETF",
+            "security_type": "etf",
+        },
+    }
+    for origin in insert_order:
+        _raw_security(db, "sec_dup", **rows_by_origin[origin])
+
+    counts = SecurityResolver(db).resolve_all()
+
+    assert counts == {"auto_bound": 1}
+    securities = db.execute("SELECT COUNT(*) FROM app.securities").fetchone()
+    assert securities is not None and securities[0] == 1  # no provisional twin minted
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    bindings = _bindings(db)
+    assert {b[2] for b in bindings} == {sid}  # both institutions bind the SAME security
+    ref_pairs = {(b[0], b[1]) for b in bindings}
+    assert ("institution_security_id", "ins_alpha:ALPHA-VTI") in ref_pairs
+    assert ("institution_security_id", "ins_beta:BETA-VTI") in ref_pairs
+
+
+def test_contradictory_cusip_across_institution_rows_degrades_to_absent(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two institution rows disagreeing on cusip for one security_id: never silently pick one.
+
+    Only cusip/isin get this treatment — the same two fields ``_contradicts``
+    already treats as strong, contradiction-capable identifiers. Degrading to
+    absent costs recall (this candidate loses cusip for matching) but never
+    risks a wrong bind manufactured from an arbitrarily-chosen value.
+    """
+    _raw_security(
+        db,
+        "sec_1",
+        source_origin="item_1",
+        cusip="037833100",
+        security_name="Widget Corp",
+    )
+    _raw_security(
+        db,
+        "sec_1",
+        source_origin="item_2",
+        cusip="999999999",
+        security_name="Widget Corp",
+    )
+    with caplog.at_level("WARNING"):
+        counts = SecurityResolver(db).resolve_all()
+    assert counts == {"minted": 1}
+    assert "contradictory cusip" in caplog.text
+    row = db.execute("SELECT cusip FROM app.securities").fetchone()
+    assert row == (None,)  # neither disagreeing value was silently picked
+
+
 def test_no_raw_securities_returns_empty_counts(db: Database) -> None:
     assert SecurityResolver(db).resolve_all() == {}

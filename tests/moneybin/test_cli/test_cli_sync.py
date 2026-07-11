@@ -30,6 +30,7 @@ def _fake_pull_result(
     opening_bootstrap_rows: int = 0,
     investment_source_overlap_accounts: list[str] | None = None,
     security_resolution: dict[str, int] | None = None,
+    security_resolution_error: str | None = None,
 ) -> PullResult:
     return PullResult(
         job_id="job-xyz",
@@ -54,6 +55,7 @@ def _fake_pull_result(
         opening_bootstrap_rows=opening_bootstrap_rows,
         investment_source_overlap_accounts=investment_source_overlap_accounts or [],
         security_resolution=security_resolution or {},
+        security_resolution_error=security_resolution_error,
     )
 
 
@@ -211,7 +213,7 @@ def test_sync_pull_text_output_shows_bootstrap_and_overlap(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull"])
     assert result.exit_code == 0, result.output
-    assert "Seeded 2 opening lot(s) for pre-window positions." in result.stdout
+    assert "2 opening lot(s) seeded for pre-window positions." in result.stdout
     assert "1 account(s) have both manual and Plaid investment history" in result.stdout
 
 
@@ -263,6 +265,46 @@ def test_sync_pull_json_mode_exits_nonzero_on_transforms_error(
     payload = json.loads(result.stdout)
     assert payload["transforms_applied"] is False
     assert payload["transforms_error"] == "SQLMeshError"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_surfaces_security_resolution_error(mock_build: MagicMock) -> None:
+    """Security resolution failure on pull warns via logger and exits non-zero.
+
+    Mirrors ``test_sync_pull_surfaces_transforms_error``: there is no
+    staging fallback for an unresolved security_id (unlike accounts), so a
+    swallowed resolution failure is exactly as silent a cost-basis
+    corruption as a swallowed transform failure and must carry the same
+    exit-code signal.
+    """
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        securities_loaded=3,
+        security_resolution_error="boom",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 1
+    service.pull.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_json_mode_exits_nonzero_on_security_resolution_error(
+    mock_build: MagicMock,
+) -> None:
+    """JSON-mode `sync pull` must also exit non-zero on security resolution failure."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        securities_loaded=3,
+        security_resolution_error="boom",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull", "--output", "json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["security_resolution_error"] == "boom"
 
 
 @pytest.mark.unit
@@ -318,6 +360,33 @@ def test_sync_link_surfaces_transforms_error_from_auto_pull(
         pull_result=_fake_pull_result(
             transforms_applied=False,
             transforms_error="SQLMeshError",
+        ),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "link"])
+    assert result.exit_code == 1
+    service.link.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_surfaces_security_resolution_error_from_auto_pull(
+    mock_build: MagicMock,
+) -> None:
+    """Link's auto-pull security resolution failure must warn and exit non-zero.
+
+    Mirrors ``test_sync_link_surfaces_transforms_error_from_auto_pull``: the
+    same fail-loud contract applies to a swallowed resolution failure as to a
+    swallowed transforms failure.
+    """
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=_fake_pull_result(
+            securities_loaded=3,
+            security_resolution_error="boom",
         ),
     )
     mock_build.return_value.__enter__.return_value = service

@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+import duckdb
+
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
@@ -160,16 +162,28 @@ class SyncService:
                 self._resolve_accounts(sync_data)
             except Exception as e:  # noqa: BLE001  # best-effort post-load metadata
                 logger.warning(f"Account resolution failed after pull: {e}")
-            # Security identity resolution — best-effort like account resolution
-            # above: raw rows stay durable, and any ref this run couldn't bind
-            # self-heals next sync via the staging COALESCE fallback (or shows
-            # up in the review queue). A failure here must not flip this pull's
-            # success accounting.
+            # Security identity resolution. Unlike account resolution above,
+            # there is NO staging COALESCE fallback for securities — B1's
+            # fallback (COALESCE(links.account_id, b.account_id)) exists only
+            # for accounts, whose source-native id is still usable in core
+            # even unresolved. security_id resolves ONLY through
+            # app.security_links; a row this run couldn't bind reaches
+            # core.fct_investment_transactions with security_id = NULL, and
+            # the cost-basis engine silently `continue`s past every
+            # NULL-security event (investments/cost_basis.py) — every buy/sell
+            # on that security is dropped from lots and gains, understating
+            # them, with no error surfaced anywhere else. Raw rows stay
+            # durable and retrying is idempotent, so this must not raise or
+            # roll back the pull's success accounting — but it MUST be
+            # reported, not swallowed: security_resolution_error flows into
+            # the CLI warning and exit code exactly like transforms_error.
             resolution: dict[str, int] = {}
+            security_resolution_error: str | None = None
             try:
                 if sync_data.securities:
                     resolution = SecurityResolver(self.db, actor="system").resolve_all()
-            except Exception as e:  # noqa: BLE001  # best-effort post-load resolution
+            except Exception as e:  # noqa: BLE001  # reported via security_resolution_error, not raised
+                security_resolution_error = str(e)
                 logger.warning(f"Security resolution failed after pull: {e}")
             overlap = self._investment_source_overlap()
             if overlap:
@@ -197,6 +211,7 @@ class SyncService:
             institutions=sync_data.metadata.institutions,
             investment_source_overlap_accounts=overlap,
             security_resolution=resolution,
+            security_resolution_error=security_resolution_error,
         )
         # Removals are a state change too: a pure-removal sync deletes from
         # raw.plaid_transactions and the deletion must propagate through
@@ -268,7 +283,11 @@ class SyncService:
         Manual rows store canonical account ids; raw Plaid rows store
         provider-native ids — the join resolves the Plaid side through
         ``app.account_links`` first (falling back to the raw id when no link
-        exists yet), since a raw-to-raw join would never match.
+        exists yet), since a raw-to-raw join would never match. The manual
+        side is a ``WHERE EXISTS`` semi-join, not an inner join: this runs on
+        every pull (including cash-only ones), and an inner join would cross
+        N Plaid rows by M manual rows for the same account before the
+        DISTINCT collapsed them back down — EXISTS only checks presence.
         """
         try:
             rows = self.db.execute(
@@ -279,23 +298,32 @@ class SyncService:
                   ON al.status = 'accepted' AND al.ref_kind = 'source_native'
                   AND al.source_type = 'plaid' AND al.source_origin = p.source_origin
                   AND al.ref_value = p.account_id
-                JOIN {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
-                  ON m.account_id = COALESCE(al.account_id, p.account_id)
+                WHERE EXISTS (
+                  SELECT 1 FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
+                  WHERE m.account_id = COALESCE(al.account_id, p.account_id)
+                )
                 ORDER BY account_id
                 """  # noqa: S608  # TableRef constants
             ).fetchall()
-        except Exception:  # noqa: BLE001 — tables may not exist on fresh DBs
+        except duckdb.CatalogException:  # tables may not exist on fresh DBs
             return []
         return [str(r[0]) for r in rows]
 
     def _count_bootstrap_rows(self) -> int:
-        """Count synthetic opening-lot bootstrap rows (spec: counted in the sync envelope)."""
+        """Count synthetic opening-lot bootstrap rows (spec: counted in the sync envelope).
+
+        Cumulative across all history, not scoped to this pull — bootstrap
+        writes once per (account, source_origin), so a later sync with zero
+        new bootstrap activity still reports every lot seeded on any earlier
+        pull. The CLI wording must read as a standing count, not a per-pull
+        delta (see sync.py's "opening lot(s) seeded" line).
+        """
         try:
             row = self.db.execute(
                 f"SELECT COUNT(*) FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
                 "WHERE subtype = 'opening_bootstrap'"
             ).fetchone()
-        except Exception:  # noqa: BLE001 — core view absent before first transform
+        except duckdb.CatalogException:  # core view absent before first transform
             return 0
         return int(row[0]) if row else 0
 

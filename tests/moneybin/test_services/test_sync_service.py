@@ -230,30 +230,42 @@ def test_pull_loads_investments_and_resolves_securities(
     ).fetchone()
     assert bindings is not None and bindings[0] >= 2  # resolver ran post-load
     # Stage-one (identity) outcomes are first-class in the envelope (R12).
-    # SecurityResolver._load_raw_securities() SELECTs DISTINCT over the
-    # identity-bearing columns (security_id, ticker, name, ...) and never
-    # selects provider_item_id — so the fixture's two "sec_dup" rows (same
-    # security_id/ticker/name, different provider_item_id, per
+    # SecurityResolver explicitly coalesces every raw.plaid_securities row
+    # sharing one security_id into ONE resolver candidate (merging ticker/
+    # name/cusip/isin so a non-null value from either institution's row
+    # wins) — so the fixture's two "sec_dup" rows (same security_id, but
+    # DIFFERENT institution_id/institution_security_id per institution, per
     # test_colliding_provider_ids_stay_distinct in the loader tests) collapse
     # to ONE candidate for identity resolution, even though both raw rows
-    # persist distinctly in raw.plaid_securities. 3 raw rows -> 2 resolver
-    # candidates (sec_aapl, sec_dup).
+    # persist distinctly in raw.plaid_securities and their institution refs
+    # are realistically populated (Plaid's normal shape for a security held
+    # at two brokerages) — collapse holds regardless of whether those fields
+    # are null, because the resolver groups by security_id, not because
+    # DISTINCT happens to dedup an all-null projection. 3 raw rows -> 2
+    # resolver candidates (sec_aapl, sec_dup).
     assert sum(result.security_resolution.values()) == 2
 
 
-def test_pull_security_resolution_failure_does_not_fail_the_pull(
+def test_pull_security_resolution_failure_reports_error_without_failing_the_pull(
     db: Database,
     loader: PlaidExtractor,
     mock_investments_client: MagicMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A resolver failure soft-fails: raw investment rows stay loaded, pull succeeds.
+    """A resolver failure keeps raw rows durable but must be REPORTED, not swallowed.
 
     Mirrors the established best-effort pattern for account resolution
-    (`_resolve_accounts`) — the load already committed and this pull was
-    already counted a success, so a resolver exception must not roll that
-    back or propagate. `security_resolution` reports empty rather than
-    raising, and the raw securities are still durable.
+    (`_resolve_accounts`) ONLY in that the SERVICE call itself must not raise
+    or roll back the pull's success accounting — the load already committed,
+    and retrying the pull is idempotent. But unlike account resolution, which
+    has a staging COALESCE fallback that keeps an unresolved account usable
+    in core, there is NO such fallback for securities: an unresolved
+    security_id reaches core.fct_investment_transactions as NULL and the
+    cost-basis engine silently drops every event carrying it, understating
+    lots and gains with no other signal anywhere. So `security_resolution_error`
+    must be populated (not swallowed into an indistinguishable empty dict) —
+    the CLI turns it into a warning and a non-zero exit, exactly like
+    `transforms_error` (see test_cli_sync.py).
     """
     with patch(
         "moneybin.services.sync_service.SecurityResolver",
@@ -265,6 +277,7 @@ def test_pull_security_resolution_failure_does_not_fail_the_pull(
 
     assert result.securities_loaded == 3
     assert result.security_resolution == {}
+    assert result.security_resolution_error == "boom"
     assert any("Security resolution failed" in r.message for r in caplog.records)
     count = db.execute("SELECT COUNT(*) FROM raw.plaid_securities").fetchone()
     assert count is not None and count[0] == 3

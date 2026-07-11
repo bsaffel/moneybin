@@ -281,6 +281,7 @@ class PullResult(BaseModel):
     opening_bootstrap_rows: int = 0
     investment_source_overlap_accounts: list[str] = Field(default_factory=list)
     security_resolution: dict[str, int] = Field(default_factory=dict)
+    security_resolution_error: str | None = None
 
 
 class LinkResult(BaseModel):

@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import difflib
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 import duckdb
 
@@ -101,11 +103,21 @@ def _norm(value: str | None) -> str | None:
 
 @dataclass(frozen=True)
 class _RawSecurity:
-    """One row of raw.plaid_securities, as the ladder sees it."""
+    """One resolver candidate — every raw.plaid_securities row sharing one security_id, merged.
+
+    ``raw.plaid_securities`` has PRIMARY KEY (security_id, source_origin): the
+    same Plaid security_id legitimately arrives as multiple rows, one per
+    institution connection (a fund held at two brokerages is the ordinary
+    case, not an edge case). ``institution_id``/``institution_security_id``
+    are institution-scoped by definition, so a raw row is never merged
+    across DIFFERENT security_ids — only rows sharing this security_id are
+    coalesced into one candidate (see ``SecurityResolver._merge_security_group``).
+    """
 
     security_id: str
-    institution_security_id: str | None
-    institution_id: str | None
+    institution_refs: tuple[
+        tuple[str, str], ...
+    ]  # (institution_id, institution_security_id) pairs, one per institution
     ticker: str | None
     mic: str | None
     name: str | None
@@ -532,17 +544,21 @@ class SecurityResolver:
         return _PLAID_TYPE_MAP.get((raw.security_type or "").strip().lower(), "other")
 
     def _refs_for(self, raw: _RawSecurity) -> list[tuple[str, str]]:
-        """The row's provider refs, primary (plaid_security_id) first.
+        """The candidate's provider refs, primary (plaid_security_id) first.
 
-        The institution ref is namespaced by institution_id — an
-        institution_security_id is unique only within its issuing institution.
+        One institution ref per institution this security arrived from
+        (``raw.institution_refs`` — see ``_merge_security_group``), each
+        namespaced by its own institution_id since an institution_security_id
+        is unique only within its issuing institution. Binding every one of
+        them (not just one) is what lets a churned plaid_security_id at
+        EITHER institution adopt via its own institution ref instead of
+        minting a twin.
         """
         refs = [("plaid_security_id", raw.security_id)]
-        if raw.institution_id and raw.institution_security_id:
-            refs.append((
-                "institution_security_id",
-                f"{raw.institution_id}:{raw.institution_security_id}",
-            ))
+        refs.extend(
+            ("institution_security_id", f"{institution_id}:{institution_security_id}")
+            for institution_id, institution_security_id in raw.institution_refs
+        )
         return refs
 
     # ------------------------------- loads -------------------------------
@@ -566,10 +582,19 @@ class SecurityResolver:
         return self._mic_by_alias.get(alias) if alias else None
 
     def _load_raw_securities(self) -> list[_RawSecurity]:
+        """Load and coalesce raw.plaid_securities into one candidate per security_id.
+
+        PRIMARY KEY (security_id, source_origin) means the ordinary
+        multi-institution case — one fund held at two brokerages — is TWO
+        rows sharing one security_id. A plain per-row candidate list would
+        let physical scan order (undefined for the ``ORDER BY security_id``
+        tie) arbitrarily decide which institution's attributes win and which
+        candidate binds first — see ``_merge_security_group``.
+        """
         try:
             rows = self._db.execute(
                 f"""
-                SELECT DISTINCT security_id, institution_security_id, institution_id,
+                SELECT security_id, institution_security_id, institution_id,
                        ticker_symbol, market_identifier_code, security_name,
                        security_type, cusip, isin, is_cash_equivalent,
                        COALESCE(iso_currency_code, unofficial_currency_code)
@@ -579,7 +604,86 @@ class SecurityResolver:
             ).fetchall()
         except duckdb.CatalogException:
             return []
-        return [_RawSecurity(*row) for row in rows]
+        groups: dict[str, list[tuple[Any, ...]]] = {}
+        for row in rows:
+            groups.setdefault(row[0], []).append(row)
+        return [
+            self._merge_security_group(security_id, group)
+            for security_id, group in groups.items()
+        ]
+
+    def _merge_security_group(
+        self, security_id: str, rows: list[tuple[Any, ...]]
+    ) -> _RawSecurity:
+        """Merge every raw row sharing ``security_id`` into one candidate.
+
+        Content-sorted (by institution_id, institution_security_id) rather
+        than scan-order-dependent, so the merged candidate is a pure function
+        of the rows' content — the same set of rows always merges to the same
+        result regardless of which physical row DuckDB happens to return
+        first.
+
+        ``ticker``/``mic`` are read from ONE row (the content-sorted-first
+        row with a non-null ticker) rather than independently from whichever
+        row has each: ``_strong_match`` evaluates them as a pair, and
+        sourcing them from different institutions' rows could manufacture an
+        exchange pairing no institution actually reported — the same
+        "normalization never manufactures a false agreement" invariant the
+        module docstring states for MIC aliasing. ``name``/``security_type``/
+        ``is_cash_equivalent``/``currency_code`` carry no such pairing
+        constraint and merge independently, first non-null wins.
+
+        ``cusip``/``isin`` are the two fields ``_contradicts`` already treats
+        as strong identifiers capable of proving "different instrument" — the
+        same scope applies here. When two rows for this security_id disagree
+        on a non-null cusip/isin, that's a genuine data contradiction, not a
+        value to silently pick: resolved to absent (never a value), matching
+        the module's absent-is-neutral convention (recall loss, never a
+        manufactured false agreement or contradiction downstream).
+        """
+        ordered = sorted(rows, key=lambda r: (r[2] or "", r[1] or ""))
+        ticker_row = next((r for r in ordered if r[3]), ordered[0])
+        institution_refs = tuple(
+            sorted({(r[2], r[1]) for r in ordered if r[2] and r[1]})
+        )
+        return _RawSecurity(
+            security_id=security_id,
+            institution_refs=institution_refs,
+            ticker=ticker_row[3],
+            mic=ticker_row[4],
+            name=self._first_non_null(r[5] for r in ordered),
+            security_type=self._first_non_null(r[6] for r in ordered),
+            cusip=self._merge_identifier(security_id, "cusip", (r[7] for r in ordered)),
+            isin=self._merge_identifier(security_id, "isin", (r[8] for r in ordered)),
+            is_cash_equivalent=self._first_non_null(r[9] for r in ordered),
+            currency_code=self._first_non_null(r[10] for r in ordered),
+        )
+
+    @staticmethod
+    def _first_non_null(values: Iterable[Any]) -> Any:
+        return next((v for v in values if v is not None), None)
+
+    def _merge_identifier(
+        self, security_id: str, field: str, values: Iterable[str | None]
+    ) -> str | None:
+        """One value for ``field`` across a security_id's rows, or absent on contradiction.
+
+        A single distinct non-null value wins outright. Two or more distinct
+        non-null values is a genuine data contradiction (two institutions
+        reporting different cusip/isin for what Plaid calls the same
+        security) — never silently picked. Degrading to absent costs recall
+        (this candidate loses that identifier for matching) but never
+        correctness, the same tradeoff the module already makes for
+        unnormalizable input (see ``_norm``'s docstring).
+        """
+        distinct = {v for v in values if v is not None}
+        if len(distinct) > 1:
+            logger.warning(
+                f"raw.plaid_securities: contradictory {field} across institution "
+                f"rows for security_id={security_id}; treated as absent"
+            )
+            return None
+        return next(iter(distinct), None)
 
     def _load_catalog(self) -> list[_CatalogEntry]:
         rows = self._db.execute(

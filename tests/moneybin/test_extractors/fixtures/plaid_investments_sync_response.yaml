@@ -17,12 +17,16 @@ securities:
     is_cash_equivalent: false
   - security_id: sec_dup
     provider_item_id: item_1
+    institution_id: ins_alpha
+    institution_security_id: ALPHA-VTI
     ticker_symbol: VTI
     name: Vanguard Total Stock Market ETF
     type: etf
     iso_currency_code: USD
   - security_id: sec_dup
     provider_item_id: item_2
+    institution_id: ins_beta
+    institution_security_id: BETA-VTI
     ticker_symbol: VTI
     name: Vanguard Total Stock Market ETF
     type: etf

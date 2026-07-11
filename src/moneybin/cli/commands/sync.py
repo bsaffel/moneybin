@@ -188,14 +188,27 @@ def sync_link(
     typer.echo(f"✅ Linked {result.institution_name}")
     if result.pull_result is not None:
         typer.echo(f"   Pulled {result.pull_result.transactions_loaded} transactions")
-        if result.pull_result.transforms_error:
+        pr = result.pull_result
+        if pr.security_resolution_error:
+            # Same fail-loud contract as `sync pull`: connect's auto-pull is
+            # the common path, so a silent resolution failure here would
+            # leave the success-looking ✅ line hiding investment
+            # transactions that never get attributed to a security.
+            logger.warning(
+                f"⚠️  security resolution failed ({pr.security_resolution_error}); "
+                "investment transactions from this pull will not be attributed "
+                "to securities, so cost basis will be incomplete. Raw data "
+                "already landed — retry with `moneybin sync pull` (idempotent)."
+            )
+        if pr.transforms_error:
             # Same fail-loud contract as `sync pull`: connect's auto-pull is
             # the common path, so a silent transforms failure here would
             # leave the success-looking ✅ line hiding stale core.* tables.
             logger.warning(
-                f"⚠️  transforms failed ({result.pull_result.transforms_error}); "
+                f"⚠️  transforms failed ({pr.transforms_error}); "
                 f"raw rows landed. Retry with `moneybin transform apply`."
             )
+        if pr.transforms_error or pr.security_resolution_error:
             raise typer.Exit(1)
 
 
@@ -365,8 +378,12 @@ def sync_pull(
                 f"{result.holdings_loaded} holdings."
             )
         if result.opening_bootstrap_rows:
+            # opening_bootstrap_rows is a cumulative, standing count (every
+            # bootstrap lot ever seeded across all history), not a per-pull
+            # delta — bootstrap writes once per (account, source_origin), so
+            # wording must not read as "just seeded by this pull".
             typer.echo(
-                f"   Seeded {result.opening_bootstrap_rows} opening lot(s) "
+                f"   {result.opening_bootstrap_rows} opening lot(s) seeded "
                 "for pre-window positions."
             )
         if result.investment_source_overlap_accounts:
@@ -398,6 +415,17 @@ def sync_pull(
             if awaiting:
                 line += " Review: `moneybin investments securities links pending`."
             typer.echo(line)
+        if result.security_resolution_error:
+            # There is no staging fallback for an unresolved security_id
+            # (see SyncService.pull's comment) — a failed resolution means
+            # this pull's investment transactions will not be attributed to
+            # securities, so cost basis will be incomplete until it's retried.
+            logger.warning(
+                f"⚠️  security resolution failed ({result.security_resolution_error}); "
+                "investment transactions from this pull will not be attributed "
+                "to securities, so cost basis will be incomplete. Raw data "
+                "already landed — retry with `moneybin sync pull` (idempotent)."
+            )
         if result.transforms_error:
             # Mirror import_cmd.py: route the warning to stderr via the
             # project logger so text-mode users see a human-readable hint.
@@ -409,8 +437,10 @@ def sync_pull(
 
     # Non-zero exit on refresh failure applies to BOTH output modes — agents
     # gating on process status need the signal whether they parse JSON or
-    # scrape text. Mirrors import_cmd.py:406.
-    if result.transforms_error:
+    # scrape text. Mirrors import_cmd.py:406. security_resolution_error joins
+    # the same gate — a swallowed resolution failure is exactly as silent a
+    # cost-basis corruption as a swallowed transform failure.
+    if result.transforms_error or result.security_resolution_error:
         raise typer.Exit(1)
 
 
