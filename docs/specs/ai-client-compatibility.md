@@ -64,8 +64,8 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | Codex (CLI/IDE/desktop) | **stdio + streamable HTTP** | `codex mcp add` / `~/.codex/config.toml` | **T1** | Set `startup_timeout_sec` > default 10s (uvx cold start 3–15s); per-server tool allow/deny useful for our surface |
 | Cursor | stdio, SSE, streamable HTTP | `~/.cursor/mcp.json`; **`cursor://` install deep link** ("Add to Cursor" badge) | **T1** | Deep-link badge in README is near-zero cost |
 | VS Code (Copilot agent) | stdio, http | `.vscode/mcp.json`; **`vscode:mcp/install` deep link**; GitHub MCP Registry one-click | **T1** | Org allowlist governance exists (registry-only policies) |
-| Gemini CLI | stdio, SSE, streamable HTTP + OAuth | `~/.gemini/settings.json`; `gemini extensions install <repo>` | **T1** | Extension gallery is un-vetted/community by design |
-| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T1 ⚠** | **100-active-tool cap vs our 102 registered** — verify connect-time visible count; keep headroom |
+| Gemini CLI | stdio, SSE, streamable HTTP + OAuth | `~/.gemini/settings.json`; `gemini extensions install <repo>` | **T1** | Extension gallery is un-vetted/community by design. **Sunsetting into Antigravity CLI** — the "Google agent surface" T1 slot is Antigravity going forward; keep Gemini CLI supported through the transition |
+| Antigravity (Google) | stdio, SSE, streamable HTTP | desktop app + `antigravity` CLI MCP config; Python SDK `skills_paths` | **T1** | Google's first-party agent surface — **peer to Codex (OpenAI) / Claude Code (Anthropic)**; its CLI is the Gemini-CLI successor. Surfaces in flux (desktop primary; Nov-2025 IDE on a deprecation track) → target desktop + CLI, re-verify the config path each release |
 | Zed | stdio (`context_servers`); remote unconfirmed | `settings.json` or packaged Zed extension | T2 | Extension packaging is a later nicety, not required |
 | JetBrains AI Assistant / Junie | stdio, streamable HTTP, SSE | IDE Settings → MCP; Junie `.junie/mcp/mcp.json` | T2 | |
 | Cline | stdio | in-app MCP Marketplace (one-click) | T2 | Marketplace submission is free/community — cheap reach when wanted |
@@ -74,6 +74,7 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | LibreChat | stdio, sse, streamable-http | `librechat.yaml` / in-app panel | T2 | |
 | Warp | stdio, SSE URL | UI add; auto-detects `.warp/.mcp.json` + reads Claude Code/Codex config | T2 | Often works with zero MoneyBin effort via config pickup |
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
+| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 102** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
 | ChatGPT web/desktop/mobile (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-permission tiering ambiguous in vendor docs — re-verify at M3D |
 | Cowork remote sessions | remote MCP via connectors | claude.ai connectors | **T3** | Same M3D unlock |
@@ -83,6 +84,35 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | Raycast | community extension-mediated | community `mcp-config.json` | **✗** | Revisit: first-party built-in MCP client ships |
 | GitHub Copilot cloud coding agent | no OAuth remote MCP | — | **✗** | Revisit: OAuth support lands |
 | SSE / WebSocket transports | deprecated / no-OAuth niche | — | **✗** | We ship `--transport sse` today: deprecate the flag at M3D, remove per the CLI deprecation policy |
+
+## Tiering rationale (momentum review, 2026-07-11)
+
+Nearly every serious client speaks **local stdio MCP**, so the marginal cost of
+*coverage* is near zero — one MoneyBin server + a documented config snippet
+reaches most of the field. The real cost is the **per-client tax**: install
+automation we smoke-test every release (T1) plus quirks like tool caps. So the
+tier line is drawn on *momentum × tax*, not on whether a client technically
+works.
+
+- **T1 = the frontier-lab agent surfaces + reach leaders.** Each major lab now
+  ships a first-party agent surface: **Codex** (OpenAI), **Claude Code**
+  (Anthropic), **Antigravity** (Google) — all T1, for coherence. Plus **Cursor**
+  (~$2B ARR, revenue leader), **VS Code / Copilot** (largest install base),
+  **Claude Desktop** (our consumer home), and **Gemini CLI** (T1 through its
+  sunset into Antigravity CLI).
+- **Windsurf → T2.** A top-3 name in 2024/early-2025, but Google poached its
+  founders and Cognition acquired the remainder (Dec 2025); it now trails badly
+  on adoption (~$82M vs Cursor's ~$2B ARR). Combined with the 100-tool-cap tax
+  against our 102-tool surface, it doesn't earn a release-gated T1 commitment.
+  Still documented (stdio works); revisit on a momentum change.
+- **Antigravity → T1.** Google-backed, MCP over stdio/SSE/HTTP, its CLI inherits
+  Gemini CLI's large base. Adoption is early and its surfaces are still moving,
+  so T1 targets the stable desktop + CLI and re-verifies config each release.
+
+Sources: AI-coding market-share reviews (Cursor ~$2B ARR / Claude Code most-loved
+/ Copilot largest base), Cognition–Windsurf acquisition coverage, and the
+Antigravity 2.0 four-surface launch (Google I/O 2026) confirming stdio MCP. Full
+session research: `private/research/2026-07-10-ai-client-compatibility.md`.
 
 ## Blessed-path corrections (Phase 0 — immediate)
 
@@ -107,19 +137,30 @@ Stale guidance found during the review; all are routine fixes:
    documented behavior — file with logs against claude-ai-mcp.
 5. **Verify the connect-time visible tool count** against Windsurf's
    100-active-tool cap (102 registered; extended-namespace tools are hidden by
-   default — confirm the visible number and record headroom policy).
+   default). Now informational only — Windsurf is T2, so this no longer gates a
+   T1 headroom policy; still worth knowing for any capped client.
 
 ## Packaging ladder (what we ship, in order)
 
-| Rung | Artifact | Reaches | Address |
-|---|---|---|---|
-| 1 | **PyPI + `uvx moneybin`** as the canonical config command (repo-checkout `uv run` stays the dev path) | every stdio client | M3B (existing first-public-release item) |
-| 2 | **`.mcpb` bundle** via `server.type="uv"` (manifest ≥0.2 with privacy policy, so it's directory-submittable later) | Claude Desktop one-click; Claude Code; MCP for Windows | M3B (existing item) |
-| 3 | **Claude Code plugin + self-hosted marketplace** (`.claude-plugin/marketplace.json` in a MoneyBin repo; bundles the MCP server now, skills later) | all Claude Code users, `/plugin install` | **M3B.new** |
-| 4 | **Official MCP Registry publish** (`server.json`, `pypi` registryType, namespace via GitHub OIDC or DNS) → aggregators (Smithery, Glama) pick it up; **install deep-link badges** (Cursor, VS Code) in README | discovery everywhere | **M3B.new** |
-| 5 | **Docker image**; Docker MCP Catalog when demand justifies (Gateway is invite-only — catalog listing alone is fine) | self-host crowd; Docker Desktop users | **M3B.new** (later) |
-| 6 | **Hosted remote MCP + OAuth** | claude.ai, ChatGPT, Cowork remote, mobile | **M3D** |
-| 7 | **Directory listings** (Claude Connectors Directory; ChatGPT App Directory) | ordinary consumer users | **M3O** |
+**The ladder splits on one line: does the channel require a human-review
+workflow?** Self-serve channels (rungs 1–4, plus the Homebrew tap) are
+**tester-distribution-eligible now** — they put MoneyBin in testers' hands with
+no external gatekeeper. The human-reviewed app directories (rung 7) are **held
+until v0.1 testing is complete** (founder directive 2026-07-11): no
+officially-reviewed public listing ships before the product is validated.
+Shipping the `.mcpb` *file* to testers (rung 2) is self-serve and fine now;
+*submitting* that `.mcpb` to the Connectors Directory is the human-review step,
+so it lives at rung 7's gate, not rung 2's.
+
+| Rung | Artifact | Reaches | Review gate | Address |
+|---|---|---|---|---|
+| 1 | **PyPI + `uvx moneybin`** as the canonical config command (repo-checkout `uv run` stays the dev path) | every stdio client | none (quiet publish) | M3B — **tester-eligible** |
+| 2 | **`.mcpb` bundle** via `server.type="uv"` (manifest ≥0.2 w/ privacy policy, so it's directory-submittable later) | Claude Desktop one-click; Claude Code; MCP for Windows | none (self-install) | M3B — **tester-eligible** |
+| 3 | **Claude Code plugin + self-hosted marketplace** (`.claude-plugin/marketplace.json` in a MoneyBin repo; bundles the MCP server now, skills later) | all Claude Code users, `/plugin install` | none (self-hosted marketplace needs no Anthropic approval) | M3B — **tester-eligible** |
+| 4 | **Official MCP Registry publish** (`server.json`, `pypi` registryType, namespace via GitHub OIDC or DNS) → aggregators (Smithery, Glama) pick it up; **install deep-link badges** (Cursor, VS Code) in README | discovery everywhere | none (self-serve namespace verification, like PyPI) | M3B — **tester-eligible** |
+| 5 | **Docker image**; Docker MCP Catalog when demand justifies (Gateway is invite-only — catalog listing alone is fine) | self-host crowd; Docker Desktop users | catalog submission is reviewed → treat as gated | M3B (later) / gated |
+| 6 | **Hosted remote MCP + OAuth** | claude.ai, ChatGPT, Cowork remote, mobile | n/a (our own infra) | **M3D** |
+| 7 | **Directory listings** (Claude Connectors Directory; ChatGPT App Directory; `.mcpb` directory submission) | ordinary consumer users | **human review** | **M3O — gated on v0.1 testing complete** |
 
 Existing strengths this plan builds on (do not regress): per-tool
 `readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint` annotations
@@ -165,21 +206,27 @@ authorization/consent"). This review sharpens the shape:
 
 ## M3O — first-party directory listings (new increment)
 
-The only channels that reach ordinary consumer users. Both are gated on M3D
-plus organizational prerequisites — sequenced last deliberately.
+The only channels that reach ordinary consumer users. All require a **human
+review** workflow, so per the 2026-07-11 founder directive M3O is **gated on
+v0.1 testing being complete** — no officially-reviewed public listing before the
+product is validated — *and* on M3D (authenticated remote) plus organizational
+prerequisites. Sequenced last, deliberately.
 
 - **Claude Connectors Directory:** submission requires a **Team/Enterprise
   claude.ai org** (owner-submitted), HTTPS remote server (streamable HTTP or
   SSE), OAuth 2.0 for authenticated services, per-tool title + annotations
   (✅ already shipped), privacy policy (instant rejection if missing), human
-  review with self-test attestation. Local one-click distribution submits
-  separately as an **MCPB** (manifest ≥0.2 with privacy policy) — available
-  as soon as rung 2 ships, independent of M3D.
+  review with self-test attestation.
+- **Local one-click via MCPB directory submission:** the `.mcpb` *file* ships to
+  testers at rung 2 now, but *submitting* it to the Connectors Directory
+  (manifest ≥0.2 with privacy policy) is itself a human-review step — so it
+  belongs to this v0.1-gated increment, not to rung 2.
 - **ChatGPT App Directory:** Apps SDK submission (Python/FastMCP is a blessed
   SDK), manual review, privacy policy + verified website + screenshots;
   regional exclusions (EEA/CH/UK at launch) may affect reach.
-- Prerequisite to name in roadmap: acquiring/holding the submitting org
-  accounts is a real cost, not a formality.
+- Prerequisite to name in roadmap: the submitting org account is a dedicated
+  MoneyBin organization (decided — see Decisions); acquiring/holding it is a
+  real cost, not a formality.
 
 ## Egress posture
 
@@ -212,24 +259,33 @@ posture they lack.
 - Homebrew formula (already in M3B, unchanged by this review).
 - REST API surface (future, `surface-design.md` §REST).
 
-## Open questions
+## Decisions (resolved 2026-07-11)
 
-1. Windsurf cap: what is the connect-time *visible* tool count, and do we
-   adopt a headroom policy (e.g., visible surface ≤ 80)?
-2. ChatGPT write-access plan tiering (Business/Enterprise-only vs broader) —
-   vendor docs conflict; re-verify at M3D execution.
-3. Google Antigravity's MCP story — thin sourcing (aggregator-only); verify
-   against Google primary docs before assigning a tier.
-4. Which org account (and whose) submits to the two directories at M3O.
-5. Does `.mcpb`'s `server.type="uv"` mode meet our cold-start budget on a
-   clean machine (no uv preinstalled)? Prototype early in M3B.
-6. **Claude Code plugin classification (rung 3) — founder call.** The distribution
-   roadmap deliberately classifies Claude Code / Codex plugins as *contributor UX*
-   (extension authoring, M3I), **not** user distribution, and lists them out of
-   scope for M3B. This spec's rung 3 treats a Claude Code plugin + self-hosted
-   marketplace as an MCP-*server*-distribution vector in M3B — a distinct use
-   (`/plugin install` adds the server, more discoverable than `claude mcp add`, and
-   the later skills-bundling channel). Reconcile before promotion: keep M3I's
-   contributor plugin as-is; confirm whether the server-distribution plugin is
-   worth building as an M3B rung. Recommendation: yes, it's cheap. See
-   `private/strategy/distribution-roadmap.md` 2026-07-10 banner.
+The initial review's open questions are resolved. Content decisions:
+
+- **Antigravity → T1** (was OQ3). It is Google's first-party agent surface — the
+  peer to Codex and Claude Code — supports stdio MCP, and its CLI succeeds the
+  sunsetting Gemini CLI. T1 targets the stable desktop + CLI surfaces and
+  re-verifies the config path each release while the surfaces settle.
+- **Windsurf → T2** (was OQ1). Momentum faded after the Cognition acquisition,
+  and the 100-active-tool cap vs our 102 is a per-release headroom tax not worth
+  paying for a distant follower. Documented, not release-gated; no headroom
+  policy. Revisit on a momentum change. (The Phase-0 item to *verify* the visible
+  count stays — still worth knowing — but it no longer gates a T1 commitment.)
+- **Ship the Claude Code distribution plugin in M3B** (was OQ6). It is a
+  server-distribution vector (`/plugin install moneybin` via a self-hosted
+  marketplace, no review) — distinct from, and additive to, the M3I
+  contributor/authoring plugin. Cheap, high-leverage for the most-loved client,
+  and needs no human-review workflow, so it fits tester distribution. Milestone
+  ordering is not immutable: it lands with the launch packaging set (rung 3), not
+  deferred to M3I.
+
+Deferred with a named trigger (deliberately not pre-resolved):
+
+- **ChatGPT read-vs-write plan tiering** (was OQ2) — verify at M3D execution;
+  vendor docs conflict and may change by then. Gates nothing now.
+- **Which org account submits to the directories** (was OQ4) — decided at M3O: a
+  dedicated MoneyBin organization account (cleaner than personal for a public
+  listing). Holding the org account is a real prerequisite, named not costed.
+- **`.mcpb` clean-machine cold-start budget** (was OQ5) — an M3B spike acceptance
+  test; measure on a machine with no uv preinstalled, don't opine.
