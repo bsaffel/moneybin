@@ -341,10 +341,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   unparseable rather than handed to the AI agent that could read it — including
   the single most common bank layout (separate "Withdrawals" and "Deposits"
   columns), which the deterministic parser defers by design. Those now escalate.
-  Genuinely non-transactional PDFs (a brokerage positions statement) still file
-  quietly as before, and so do statements in a number locale the importer cannot
-  replay — escalating those would send your statement to an AI provider for a
-  result it provably cannot use.
+  Genuinely non-transactional PDFs (a brokerage positions statement) are routed
+  to the seed store as before, and so are statements in a number locale the
+  importer cannot replay — escalating those would send your statement to an AI
+  provider for a result it provably cannot use.
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its

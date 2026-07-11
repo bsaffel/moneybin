@@ -35,6 +35,14 @@ class PdfDocument:
     source_file: str
     tables: list[PdfTable] = field(default_factory=list)
     text_lines: list[str] = field(default_factory=list)
+    page_count: int = 1
+    """Pages in the source PDF.
+
+    Carried explicitly because it cannot be recovered downstream: an unruled
+    statement yields no tables at all, so inferring the count from ``tables``
+    reports 1 page for every real (whitespace-aligned) statement — collapsing
+    the layout fingerprint's page bucket to a constant.
+    """
 
     def iter_rows(self) -> Iterator[tuple[int, dict[str, str]]]:
         """Yield (page, {header: cell}) for every row across all tables."""

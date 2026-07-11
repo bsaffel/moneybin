@@ -412,8 +412,12 @@ def _synthesize_tables_from_text(doc: PdfDocument) -> list[PdfTable]:
         for row in cells_per_line[idx + 1 :]:
             if len(row) != width:
                 break
-            if row == cells:  # page-break repeat of the header row
-                continue
+            if row == cells:
+                # Page-break repeat of the header. End this run rather than
+                # skipping past it: the repeat starts a run of its own on the
+                # outer loop, so continuing here would collect the next page's
+                # rows twice — once in this run and once in that one.
+                break
             rows.append(row)
         if rows:
             runs.setdefault(tuple(cells), []).extend(rows)

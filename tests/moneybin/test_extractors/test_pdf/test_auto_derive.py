@@ -576,3 +576,31 @@ def test_derive_across_pages_separated_by_a_footer() -> None:
     recipe = derive_recipe(doc, _EMPTY_META)
 
     assert recipe is not None
+
+
+def test_page_break_header_repeat_does_not_duplicate_rows() -> None:
+    """A repeated header must not have its rows collected twice.
+
+    When no footer separates the pages, the page-1 run skipped the page-2 header
+    and kept collecting — while page 2 also began its own run from that same
+    header. Merging the two runs then counted every page-2 row twice. The repeat
+    starts its own run regardless, so the earlier run must simply end there.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_text,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Date         Description          Amount",
+        "01/02/2024   COFFEE               -4.50",
+        "Date         Description          Amount",
+        "01/09/2024   GROCERY              -73.21",
+    ])
+
+    tables = _synthesize_tables_from_text(doc)
+
+    assert len(tables) == 1
+    assert tables[0].rows == [
+        ["01/02/2024", "COFFEE", "-4.50"],
+        ["01/09/2024", "GROCERY", "-73.21"],
+    ]

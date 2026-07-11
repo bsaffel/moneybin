@@ -47,7 +47,12 @@ class PDFExtractor:
             f"pdf extract: file={path.name} pages={page_count} "
             f"tables={len(tables)} text_lines={len(text_lines)}"
         )
-        return PdfDocument(source_file=path.name, tables=tables, text_lines=text_lines)
+        return PdfDocument(
+            source_file=path.name,
+            tables=tables,
+            text_lines=text_lines,
+            page_count=page_count,
+        )
 
 
 def _to_table(page_no: int, raw: list[list[str | None]]) -> PdfTable | None:

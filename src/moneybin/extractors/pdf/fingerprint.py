@@ -143,7 +143,12 @@ def compute_fingerprint(doc: PdfDocument) -> dict[str, Any]:
     It is suitable for direct insertion into ``app.pdf_formats.layout_fingerprint``
     and for passing to ``PdfFormatsRepo.get_by_fingerprint``.
     """
-    page_count = max(t.page for t in doc.tables) if doc.tables else 1
+    # Both signals are lower bounds on the real page count, so take the larger.
+    # max(table.page) alone reports 1 page for every unruled statement (they have
+    # no tables at all), pinning page_bucket to "1"; doc.page_count alone would
+    # trust a hand-built IR that never set it.
+    highest_table_page = max((t.page for t in doc.tables), default=1)
+    page_count = max(doc.page_count, highest_table_page)
     return {
         "issuer": _detect_issuer(doc),
         "headers": _unique_table_headers(doc),
