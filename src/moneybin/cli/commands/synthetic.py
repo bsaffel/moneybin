@@ -193,17 +193,10 @@ def synthetic_reset(
             )
 
             with get_database(read_only=False) as db:
-                # Safety check: only reset profiles created by the generator
-                try:
-                    gt_row = db.execute(
-                        """SELECT COUNT(*) FROM information_schema.tables
-                        WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"""
-                    ).fetchone()
-                    gt_exists = gt_row[0] if gt_row else 0
-                except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
-                    gt_exists = 0
+                from moneybin.synthetic.reset import has_synthetic_ground_truth
 
-                if not gt_exists:
+                # Safety check: only reset profiles created by the generator
+                if not has_synthetic_ground_truth(db):
                     logger.error(
                         f"❌ Profile {target_profile!r} was not created by the "
                         f"generator. Refusing to reset."

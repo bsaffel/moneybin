@@ -65,17 +65,6 @@ def _count_transactions(db: "Database") -> int:
         return 0
 
 
-def _has_ground_truth(db: "Database") -> bool:
-    try:
-        row = db.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"
-        ).fetchone()
-        return bool(row and row[0])
-    except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
-        return False
-
-
 class DemoService:
     """Set up (or refresh) a demo profile end-to-end."""
 
@@ -119,7 +108,10 @@ class DemoService:
         )
         from moneybin.services.refresh import refresh
         from moneybin.synthetic.engine import GeneratorEngine
-        from moneybin.synthetic.reset import reset_synthetic_rows
+        from moneybin.synthetic.reset import (
+            has_synthetic_ground_truth,
+            reset_synthetic_rows,
+        )
         from moneybin.synthetic.writer import SyntheticWriter
         from moneybin.utils.user_config import set_default_profile
 
@@ -137,7 +129,7 @@ class DemoService:
 
         with get_database(read_only=False) as db:
             # 3. Reset generator data, or refuse a profile holding real data.
-            if _has_ground_truth(db):
+            if has_synthetic_ground_truth(db):
                 if not reset_confirmed and _count_transactions(db) > 0:
                     # The CLI confirms before calling with reset_confirmed=True;
                     # this guards the service contract as defense in depth.

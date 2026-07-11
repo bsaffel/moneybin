@@ -5,6 +5,8 @@ import logging
 
 import typer
 
+from moneybin.cli.output import OutputFormat, output_option
+
 logger = logging.getLogger(__name__)
 
 _PERSONAS = ("basic", "family", "freelancer")
@@ -32,7 +34,7 @@ def demo_command(
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-accept the reset if the demo profile exists"
     ),
-    output: str = typer.Option("text", "-o", "--output", help="text | json"),
+    output: OutputFormat = output_option,
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Suppress status lines"),
 ) -> None:
     """Populate a demo profile with synthetic data and show a first answer.
@@ -69,7 +71,7 @@ def demo_command(
             reset_confirmed=reset_confirmed,
         )
 
-        if output == "json":
+        if output == OutputFormat.JSON:
             typer.echo(
                 json.dumps({
                     "profile": result.profile,
