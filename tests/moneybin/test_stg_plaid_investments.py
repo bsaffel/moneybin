@@ -133,15 +133,23 @@ def test_stg_securities_unresolved_yields_null_security_id(db: Database) -> None
 
 @pytest.mark.slow
 def test_stg_securities_reversed_link_does_not_resolve(db: Database) -> None:
-    """A reversed (undone) link must not resolve, and must not leak the join into a duplicate row."""
+    """Coexisting accepted and reversed links: only accepted row resolves canonical_id.
+
+    app.security_links is append-only. When a link is reversed, both the original
+    accepted row and the new reversed row coexist. The view must join ONLY on
+    status = 'accepted' to avoid fan-out (one raw security × two links = two rows).
+    """
     _raw_security(db)
-    _link_security(db, "sec_1", "cat000000001", status="reversed")
+    # Insert both accepted and reversed links for the same (ref, source_type, ref_kind)
+    _link_security(db, "sec_1", "cat000000001", status="accepted")
+    _link_security(db, "sec_1", "cat000000999", status="reversed")
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
     rows = db.execute(
         "SELECT security_id, source_security_key FROM prep.stg_plaid__securities"
     ).fetchall()
-    assert rows == [(None, "sec_1")]
+    # Must emit exactly one row, bound to the accepted link's canonical_id
+    assert rows == [("cat000000001", "sec_1")]
 
 
 @pytest.mark.slow
@@ -230,3 +238,26 @@ def test_stg_holdings_distinct_snapshots_both_preserved(db: Database) -> None:
         "SELECT quantity FROM prep.stg_plaid__investment_holdings ORDER BY quantity"
     ).fetchall()
     assert rows == [(Decimal("10.0"),), (Decimal("11.0"),)]
+
+
+@pytest.mark.slow
+def test_stg_holdings_reversed_security_link_does_not_resolve(db: Database) -> None:
+    """Coexisting accepted and reversed security links: only accepted resolves canonical_id.
+
+    Holdings join app.security_links on status = 'accepted' to resolve security_id.
+    When both accepted and reversed rows coexist for the same ref, the join must
+    emit only one row (not fan out).
+    """
+    _raw_holding(db)
+    _link_account(db, "acc_1", "canonical_acc")
+    # Insert both accepted and reversed links for the same (ref, source_type, ref_kind)
+    _link_security(db, "sec_1", "cat000000001", status="accepted")
+    _link_security(db, "sec_1", "cat000000999", status="reversed")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = db.execute(
+        "SELECT account_id, security_id, source_account_key, source_security_key "
+        "FROM prep.stg_plaid__investment_holdings"
+    ).fetchall()
+    # Must emit exactly one row: accepted link resolves security_id, account resolves
+    assert rows == [("canonical_acc", "cat000000001", "acc_1", "sec_1")]

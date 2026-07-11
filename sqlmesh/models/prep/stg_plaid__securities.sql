@@ -8,7 +8,17 @@ MODEL (
    masquerading as canonical would corrupt downstream lot resolution, so an
    unresolved security surfaces as NULL. The resolver binds on every rung before
    this view runs, so NULL here is a transient failure path that self-heals on the
-   next sync (sync-plaid-investments.md). */
+   next sync (sync-plaid-investments.md).
+
+   WARNING: raw.plaid_securities has PK (security_id, source_origin), but
+   app.security_links has no source_origin column (a security is provider-scoped,
+   not item-scoped). A security held at two institutions (e.g., VTI at both
+   Fidelity and Schwab) produces two rows with the same canonical security_id.
+   This view does not fan out (the join is 1-to-1 on the select); however, any
+   downstream model joining stg_plaid__securities on security_id alone will
+   double every row. Consumers must dedup first via
+   QUALIFY ROW_NUMBER() OVER (PARTITION BY security_id ORDER BY extracted_at DESC).
+*/
 SELECT
   links.security_id AS security_id,
   s.security_id AS source_security_key,
