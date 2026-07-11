@@ -532,6 +532,12 @@ class InboxService:
             # warning so the agent / scheduler has a structured signal
             # for files that may need re-import with --sign.
             "sign_correction_suggested": import_result.sign_correction_suggested,
+            # Same reason, sharper case: a saved `--sign` override just replayed,
+            # so the card detector was not consulted and the amounts follow an
+            # earlier human decision. The drain is the most unattended surface in
+            # the product — dropping the note here would make a durable override
+            # invisible exactly where nobody is watching.
+            "sign_override_replayed": import_result.sign_override_replayed,
         })
         INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
 

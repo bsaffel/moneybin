@@ -987,3 +987,125 @@ def test_sign_gate_metric_records_all_three_outcomes(
         save_format=False,
     )
     assert _count("confirmed") == confirmed_before + 1
+
+
+def _saved_pdf_format(db: Database) -> tuple[dict[str, Any], str, int]:
+    """Return (stored recipe, sign_convention column, version) of the sole format."""
+    import json as _json
+
+    row = db.execute(
+        "SELECT extraction_recipe, sign_convention, version FROM app.pdf_formats"
+    ).fetchone()
+    assert row is not None
+    return _json.loads(row[0]), row[1], int(row[2])
+
+
+@pytest.mark.integration
+def test_a_corrected_sign_override_on_a_replay_persists_and_sticks(
+    db: Database, tmp_path: Path
+) -> None:
+    """A ratified convention must be revocable — by the only tool the user has.
+
+    The recipe is written on first contact only, so a `sign=` on a REPLAY used to
+    correct that one import and silently revert the next month. With no delete or
+    edit path for saved PDF formats (`import formats delete` speaks to the tabular
+    table), a wrong first-contact ratification was permanent — while the CLI note
+    told the user "Re-run with --sign to change it". This makes that true.
+    """
+    svc = ImportService(db)
+
+    # 1. The user ratifies the WRONG convention on first contact.
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_income",
+    )
+    assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]  # inverted
+
+    # 2. Next statement, corrected: `sign=` on a replay of the saved format.
+    second = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+    assert second.transactions == 2
+    recipe, sign_column, version = _saved_pdf_format(db)
+    assert recipe["sign_convention"] == "negative_is_expense"
+    assert recipe["sign_ratified"] is True
+    assert version == 2  # audited + undo-reversible, not a silent overwrite
+    # `import formats show` reads the column, not the recipe — a stale column
+    # would report the convention the user just corrected away from.
+    assert sign_column == "negative_is_expense"
+
+    # 3. A third statement of the same format, no flags. The correction — not the
+    #    original ratification — must be what replays. (Fresh directory: the raw
+    #    PK includes source_file, so rows land either way and the AMOUNTS are what
+    #    discriminate a corrected replay from the stale inverted one.)
+    third_dir = tmp_path / "later"
+    third_dir.mkdir()
+    third = svc.import_file(write_card_statement_pdf(third_dir), refresh=False)
+
+    assert third.transactions == 2
+    assert third.sign_override_replayed is True
+    assert _amounts(db) == [
+        Decimal("-150.00"),  # statement 1, imported under the wrong ratification
+        Decimal("-50.00"),  # statement 2, corrected
+        Decimal("-50.00"),  # statement 3, corrected convention replayed
+        Decimal("50.00"),  # statement 1
+        Decimal("150.00"),  # statement 2
+        Decimal("150.00"),  # statement 3
+    ]
+
+
+@pytest.mark.integration
+def test_sign_override_typed_on_a_replay_is_not_reported_as_a_saved_replay(
+    db: Database, tmp_path: Path
+) -> None:
+    """The note must not tell the user a SAVED override acted when they just typed one.
+
+    The gate sets ``sign_ratified`` in the same call that accepts a `sign=`, so a
+    ratified-flag check alone is true on the very invocation supplying it — and the
+    user gets told the convention came from a saved override they are in fact
+    providing right now.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_income",
+    )
+
+    second = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+
+    assert second.sign_override_replayed is False
+
+
+@pytest.mark.integration
+def test_repeating_the_same_sign_override_does_not_bump_the_version(
+    db: Database, tmp_path: Path
+) -> None:
+    """A `--sign` re-typed out of habit is a no-op, not a version + audit row.
+
+    ``bump_version`` records the prior recipe for undo; bumping to an identical
+    recipe would spend a version on an event whose before_value equals its
+    after_value.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+
+    _, _, version = _saved_pdf_format(db)
+    assert version == 1

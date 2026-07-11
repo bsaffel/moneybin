@@ -93,7 +93,10 @@ class Recipe(BaseModel):
     # can never replay (the guard refuses the corrected recipe on the very
     # markers that caused the false positive) and the user re-overrides forever.
     # NOT set by confirm=True: agreeing with the detector needs no bypass, and
-    # granting one there would strip the guard in the dangerous direction.
+    # granting one there would strip the guard in the dangerous direction. NOT
+    # settable by an agent either — bridge.parse_bridge_response rejects a
+    # response naming this key, because the bridge apply path skips the confirm
+    # gate and persists what it is handed.
     # Additive with a default — old recipes in the app.pdf_formats JSON blob
     # deserialize as False, so no migration is required.
     sign_ratified: bool = False

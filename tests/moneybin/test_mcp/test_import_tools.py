@@ -333,6 +333,51 @@ class TestImportFilesConfirmationRequired:
         _args, kwargs = mock_service.import_file.call_args
         assert kwargs.get("actor_kind") == "agent"
 
+    async def test_sign_override_replay_reaches_the_agent(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A replayed `--sign` override must be visible on the MCP surface too.
+
+        The agent is the user's only narrator here: the saved override disarms the
+        credit-card detector for this format, so the row carries the fact and
+        actions[] tells the agent to say so. MCP has no `sign` parameter — the hint
+        must point at the CLI flag that can change it.
+        """
+        pdf = tmp_path / "statements" / "card.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database",
+            _fake_database,
+        )
+
+        from moneybin.services.import_service import ImportResult
+
+        mock_service = MagicMock()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(pdf),
+            file_type="pdf",
+            transactions=2,
+            import_id="abc123",
+            sign_override_replayed=True,
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(pdf)])
+
+        from moneybin.privacy.payloads.imports import ImportFilesPayload
+
+        data = result.data
+        assert isinstance(data, ImportFilesPayload)
+        assert data.files[0].sign_override_replayed is True
+        joined = " ".join(result.actions or [])
+        assert "saved" in joined and "--sign" in joined
+
 
 # ---------------------------------------------------------------------------
 # TestImportConfirmTool

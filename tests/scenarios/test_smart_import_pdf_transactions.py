@@ -298,6 +298,7 @@ def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
     - a subsequent deterministic import of the same layout REPLAYS the
       bridge-persisted recipe (matched_format_name set) — closing the ladder
     """
+    from moneybin.extractors.pdf.bridge import recipe_for_agent
     from moneybin.extractors.pdf.extractor import PDFExtractor
     from moneybin.extractors.pdf.routing import route_pdf_import
 
@@ -322,7 +323,11 @@ def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
         assert decision.recipe is not None
 
         bridge_response = {
-            "recipe": decision.recipe.model_dump(),
+            # recipe_for_agent, not model_dump: this is the exact shape the real
+            # bridge hands the agent — `sign_ratified` stripped, because a response
+            # naming it is rejected (it is the human's ratification, not the
+            # agent's to grant).
+            "recipe": recipe_for_agent(decision.recipe),
             # The agent's claimed rows: only the COUNT is used by apply (the
             # re-executed rows are what load); pass the YAML rows for realism.
             "rows": [dict(t) for t in expected_txns],

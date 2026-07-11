@@ -211,11 +211,16 @@ def test_pdf_preview_replay_failed_uses_replay_request_kind(
     payload = outcome.proposed.payload
     assert payload["request_kind"] == "replay_failed_re_derive"
     # The replay payload carries both the saved format name AND the actual
-    # recipe patterns the agent needs to diagnose and refresh the failed match.
+    # recipe patterns the agent needs to diagnose and refresh the failed match —
+    # minus `sign_ratified`, which is the human's ratification and neither the
+    # agent's to see nor to return (bridge.recipe_for_agent / parse_bridge_response).
     assert payload["saved_recipe_for_re_derive"] == {
         "name": "chase_checking_pdf",
-        "recipe": recipe.model_dump(),
+        "recipe": recipe.model_dump(exclude={"sign_ratified"}),
     }
+    saved = payload["saved_recipe_for_re_derive"]
+    assert isinstance(saved, dict)
+    assert "sign_ratified" not in saved["recipe"]
 
 
 @pytest.mark.parametrize(

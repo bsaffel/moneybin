@@ -21,6 +21,7 @@ from moneybin.extractors.pdf.bridge import (
     parse_bridge_response,
 )
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
+from moneybin.extractors.pdf.recipe import Recipe
 
 _VALID_RECIPE_DICT: dict[str, Any] = {
     "row_region": {"start_anchor": "Date", "end_anchor": "Total:"},
@@ -127,6 +128,59 @@ def test_parse_bridge_response_returns_typed_recipe_and_rows() -> None:
     assert isinstance(response, BridgeResponse)
     assert response.recipe.routing == "transactions"
     assert response.rows == rows
+
+
+def test_parse_bridge_response_leaves_the_recipe_unratified() -> None:
+    """A bridge-authored recipe is never a human's sign assertion."""
+    response = parse_bridge_response({"recipe": _VALID_RECIPE_DICT, "rows": []})
+    assert response.recipe.sign_ratified is False
+
+
+def test_recipe_for_agent_strips_the_ratification_flag() -> None:
+    """The saved recipe shown to the agent must not carry the human's ratification.
+
+    The replay-failure request hands the agent the saved recipe to re-derive from.
+    Shipping ``sign_ratified`` would both teach the agent the key it would need to
+    escalate with and make the contract incoherent — an honest agent echoing the
+    recipe back would be rejected for naming a field MoneyBin handed it.
+    """
+    from moneybin.extractors.pdf.bridge import recipe_for_agent
+
+    ratified = Recipe.model_validate({**_VALID_RECIPE_DICT, "sign_ratified": True})
+
+    payload = recipe_for_agent(ratified)
+
+    assert "sign_ratified" not in payload
+    # The patterns the agent actually needs still ship.
+    assert payload["row_split"] == _VALID_RECIPE_DICT["row_split"]
+    # And what it hands back round-trips through the ingress guard.
+    assert (
+        parse_bridge_response({"recipe": payload, "rows": []}).recipe.sign_ratified
+        is False
+    )
+
+
+def test_parse_bridge_response_rejects_agent_supplied_sign_ratified() -> None:
+    """The agent must not be able to self-grant the human's sign ratification.
+
+    ``sign_ratified`` disarms the polarity guard for a format forever, in both
+    directions; the apply path skips the sign confirm gate and persists the recipe
+    it is handed. An agent that could set the flag through this seam would grant
+    itself a permanent, silent ledger inversion — the exact outcome the gate exists
+    to prevent. Rejected loudly rather than coerced to False: the attempt is signal.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    hijacked: dict[str, Any] = {**_VALID_RECIPE_DICT, "sign_ratified": True}
+    with pytest.raises(BridgeResponseError, match="sign_ratified"):
+        parse_bridge_response({"recipe": hijacked, "rows": []})
+
+    # Even the honest-looking value is refused — the key is not the agent's to name.
+    with pytest.raises(BridgeResponseError, match="sign_ratified"):
+        parse_bridge_response({
+            "recipe": {**_VALID_RECIPE_DICT, "sign_ratified": False},
+            "rows": [],
+        })
 
 
 def test_parse_bridge_response_rejects_non_dict_payload() -> None:

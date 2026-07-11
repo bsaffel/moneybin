@@ -308,6 +308,49 @@ class TestSyncHappyPath:
         assert result.transforms_applied is True
         assert result.transforms_duration_seconds == 0.01
 
+    def test_processed_entry_carries_the_ratified_sign_replay_note(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The drain is the most unattended surface — a durable override is visible here.
+
+        The watched-folder sync imports without a human present. A saved `--sign`
+        override replaying onto a new statement bypasses the credit-card detector,
+        so the per-file entry must say so or the decision acts invisibly exactly
+        where nobody is watching.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+        from moneybin.services.refresh import RefreshResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                return ImportResult(
+                    file_path=path,
+                    file_type="pdf",
+                    transactions=2,
+                    sign_override_replayed=True,
+                )
+
+        def fake_refresh(db: object) -> RefreshResult:
+            return RefreshResult(applied=True, duration_seconds=0.01)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.pdf").write_bytes(b"%PDF-1.4 fake")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert result.processed[0]["sign_override_replayed"] is True
+
     def test_subfolder_passes_account_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

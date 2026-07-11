@@ -359,10 +359,13 @@ class TestImportFilesCommand:
         assert payload["data"]["total_count"] == 1
         assert "files" in payload["data"]
         assert payload["summary"]["sensitivity"] == "low"
-        # The single-file success entry must include sign_correction_suggested,
-        # matching the batch path — JSON-output agents see the same shape
-        # regardless of single-vs-multi-file invocation.
+        # The single-file success entry must include both sign signals, matching
+        # the batch path — JSON-output agents see the same shape regardless of
+        # single-vs-multi-file invocation. sign_override_replayed is the only
+        # channel a scripted caller has for "a saved --sign override replayed and
+        # the card detector was skipped"; the TTY path echoes it to stderr.
         assert "sign_correction_suggested" in payload["data"]["files"][0]
+        assert "sign_override_replayed" in payload["data"]["files"][0]
 
     def test_batch_envelope_sensitivity_medium_when_confirmation_payload_present(
         self,

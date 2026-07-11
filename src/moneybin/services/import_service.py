@@ -1848,7 +1848,10 @@ class ImportService:
         """
         from moneybin.config import get_settings
         from moneybin.extractors.confidence import Confidence, tier_for
-        from moneybin.extractors.pdf.bridge import build_bridge_request
+        from moneybin.extractors.pdf.bridge import (
+            build_bridge_request,
+            recipe_for_agent,
+        )
         from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
         from moneybin.services.import_confirmation import (
             BridgePayload,
@@ -1870,10 +1873,12 @@ class ImportService:
         # recipe patterns the agent needs to inspect and propose a refreshed
         # version. Carrying only the name forces a first-contact parse,
         # defeating the point of the replay path.
+        # recipe_for_agent, not model_dump: `sign_ratified` is not the agent's to
+        # see or return (bridge.parse_bridge_response rejects a response naming it).
         saved_recipe = (
             {
                 "name": decision.matched_format_name,
-                "recipe": decision.recipe.model_dump()
+                "recipe": recipe_for_agent(decision.recipe)
                 if decision.recipe is not None
                 else None,
             }
@@ -2292,6 +2297,59 @@ class ImportService:
             )
         )
 
+    def _persist_replayed_sign_override(
+        self, decision: "RouteDecision", *, import_id: str
+    ) -> None:
+        """Re-persist a saved format's recipe after an explicit `sign=` on a REPLAY.
+
+        The recipe is otherwise written only on first contact, so a `sign=` on a
+        later statement of a saved format would correct that one import and revert
+        the next month — and since there is no edit/delete path for saved PDF
+        formats, a wrong first-contact ratification would be permanent. The
+        override IS the revocation path; this is what makes it one.
+
+        Bumping the version (rather than overwriting) keeps the correction audited
+        and undo-reversible, and preserves the prior recipe in
+        ``audit_log.before_value``. Best-effort like every other bookkeeping write
+        in this block: the rows already landed with the corrected convention, and a
+        failed bump must not roll them back.
+        """
+        name = decision.matched_format_name
+        recipe = decision.recipe
+        fp = decision.fp
+        # A replay carries all three by construction — the format was matched BY
+        # the fingerprint. The guard satisfies the type checker; it is not a branch.
+        if name is None or recipe is None or fp is None:  # pragma: no cover
+            return
+        new_recipe = recipe.model_dump()
+        saved = self._pdf_formats.get_by_fingerprint(fp)
+        if saved is not None and saved.extraction_recipe == new_recipe:
+            # The saved recipe already says what the user just asserted (a `--sign`
+            # re-typed out of habit). Bumping would spend a version and an audit
+            # row on a no-op whose before_value equals its after_value.
+            return
+        try:
+            self._pdf_formats.bump_version(
+                name=name,
+                new_recipe=new_recipe,
+                reason="explicit sign override supplied on a replay of this format",
+                sign_convention=recipe.sign_convention,
+                # Not "system": the convention is a human assertion, not a
+                # detection. The service can't see which surface it arrived on.
+                actor="import",
+            )
+            logger.info(
+                f"PDF format {name!r} recipe re-persisted with the user's sign "
+                f"override (import_id={import_id[:8]}...)"
+            )
+        except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+            logger.warning(
+                f"PDF bump_version failed for format {name!r} (import_id="
+                f"{import_id[:8]}...) — the sign override applied to this import "
+                f"but will not replay onto the next statement",
+                exc_info=True,
+            )
+
     def _import_pdf(
         self,
         file_path: Path,
@@ -2414,11 +2472,17 @@ class ImportService:
         # this document (auto_derive.recipe_polarity_fits short-circuits on
         # sign_ratified), so the load runs on a human decision the detector may
         # still disagree with. Surface it — an override that acts invisibly on
-        # every future statement is the magic this codebase refuses. Only on a
-        # REPLAY (matched_format_name set): on first contact the user typed `sign=`
-        # in this very invocation and needs no reminder.
+        # every future statement is the magic this codebase refuses.
+        #
+        # Two conditions, both load-bearing. A REPLAY (matched_format_name set):
+        # on first contact the user typed `sign=` in this very invocation. And no
+        # `sign=` in THIS call: the gate sets sign_ratified in the same call it
+        # accepts an override, so without this the user who just typed `--sign` on
+        # a saved format would be told the convention came from a *saved* override
+        # they are in fact supplying right now.
         if (
-            decision.recipe is not None
+            sign is None
+            and decision.recipe is not None
             and decision.recipe.sign_ratified
             and decision.matched_format_name is not None
         ):
@@ -2448,6 +2512,7 @@ class ImportService:
                 doc=doc,
                 save_format=save_format,
                 account_id_override=account_id,
+                sign_override=sign,
             )
 
         # Seed path (Phase 1 fallback) ——————————————————————————————————
@@ -2521,6 +2586,7 @@ class ImportService:
         save_format: bool = True,
         account_id_override: str | None = None,
         rung: Literal["deterministic", "bridge"] = "deterministic",
+        sign_override: str | None = None,
     ) -> ImportResult:
         """Write PDF transaction rows to raw.tabular_transactions.
 
@@ -2538,6 +2604,10 @@ class ImportService:
         statement contains no account anchor and the user/agent wants the rows
         attached to an existing ``dim_accounts`` row rather than the
         filename-derived alias.
+
+        ``sign_override`` is the caller's explicit ``sign=`` (already applied to
+        ``decision.recipe`` by the gate). On a REPLAY it re-persists the corrected
+        recipe — see ``_persist_replayed_sign_override``.
         """
         from decimal import Decimal
 
@@ -2830,6 +2900,8 @@ class ImportService:
             )
 
         if decision.matched_format_name is not None:
+            if sign_override is not None:
+                self._persist_replayed_sign_override(decision, import_id=import_id)
             try:
                 self._pdf_formats.record_use(decision.matched_format_name)
             except Exception:  # noqa: BLE001 — observability bump must not roll back data
@@ -2899,6 +2971,9 @@ class ImportService:
                             "replay-guard reconciliation failure — re-derived "
                             f"recipe reconciled (rung={rung})"
                         ),
+                        # The re-derived recipe may land on a different convention
+                        # than the stored one; keep the display column truthful.
+                        sign_convention=decision.recipe.sign_convention,
                         actor="system",  # auto-bump: system-driven (Invariant 10)
                     )
                     # Record the actually-persisted name so callers

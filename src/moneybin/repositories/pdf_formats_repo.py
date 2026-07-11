@@ -223,6 +223,7 @@ class PdfFormatsRepo(BaseRepo):
         *,
         reason: str,
         actor: str,
+        sign_convention: str | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
@@ -232,6 +233,13 @@ class PdfFormatsRepo(BaseRepo):
         enabling the undo consumer to restore it. ``after_value`` reflects the new
         recipe at the new version number. Raises ``ValueError`` if the format does
         not exist.
+
+        ``sign_convention`` mirrors the new recipe's convention into the column of
+        the same name — the one ``save_new`` populates and ``import formats show``
+        displays. Pass it whenever the bumped recipe may carry a different
+        convention than the stored one, or the column keeps reporting the old
+        convention while the recipe replays the new one. Omitted → column
+        untouched.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(self._fetch_row(name), "name", name)
@@ -239,11 +247,12 @@ class PdfFormatsRepo(BaseRepo):
                 f"""
                 UPDATE {PDF_FORMATS.full_name}
                 SET extraction_recipe = ?::JSON,
+                    sign_convention = COALESCE(?::VARCHAR, sign_convention),
                     version = version + 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE name = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [json.dumps(new_recipe, sort_keys=True), name],
+                [json.dumps(new_recipe, sort_keys=True), sign_convention, name],
             )
             after = self._fetch_row(name)
             return self._emit_audit(
