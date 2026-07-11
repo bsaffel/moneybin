@@ -123,6 +123,19 @@ class ProfileService:
         except ValueError:
             return False
 
+    def has_database(self, name: str) -> bool:
+        """True if the profile directory already holds a database file.
+
+        `create()` adopts an unregistered directory and initializes a database only
+        when one is absent, so a caller that wants to tell the user which of the two
+        happened has to ask before calling. (It reports on the file's presence, not
+        its health — see `db_path` / `system doctor` for that.)
+        """
+        try:
+            return (self._profile_dir(name) / "moneybin.duckdb").exists()
+        except ValueError:
+            return False
+
     def ensure_registered(self, name: str, *, init_inbox: bool = False) -> Path:
         """Scaffold the non-database half of a profile: logs, temp, inbox, config.
 
@@ -202,6 +215,12 @@ class ProfileService:
                     f"Profile '{normalized}' already exists"
                 ) from None
             adopted = True
+            # An adopted directory was made by something else — `db init`, or a hand
+            # `mkdir` — at whatever the ambient umask was, typically 0o755. The
+            # encrypted database and privacy log are about to live behind it under
+            # our name, so it gets the same 0o700 the fresh path guarantees rather
+            # than keeping perms we never chose.
+            profile_dir.chmod(0o700)
         try:
             # Database before registration: `_init_database` is the step that
             # actually fails in the field (a locked or unavailable OS keychain), and

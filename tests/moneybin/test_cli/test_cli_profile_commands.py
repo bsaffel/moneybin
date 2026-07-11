@@ -87,6 +87,43 @@ class TestProfileCreate:
         assert result.exit_code == 0
         assert "Created profile" in caplog.text
 
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_does_not_claim_to_preserve_a_database_that_never_existed(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Adopting an empty directory initializes a NEW database — say nothing else.
+
+        This is the one message whose job is telling the user what happened to their
+        data; asserting a data-safety property about a database that never existed
+        would be exactly backwards.
+        """
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = True  # bare directory...
+        mock_svc.has_database.return_value = False  # ...with nothing in it
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        assert "Completed setup" in caplog.text
+        assert "left untouched" not in caplog.text
+
+    @patch("moneybin.cli.commands.profile.ProfileService")
+    def test_create_reports_a_preserved_database_when_one_was_adopted(
+        self, mock_cls: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_svc = mock_cls.return_value
+        mock_svc.exists.return_value = True
+        mock_svc.has_database.return_value = True
+        mock_svc.create.return_value = Path("/fake/profiles/alice")
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(app, ["create", "alice"])
+
+        assert result.exit_code == 0
+        assert "left untouched" in caplog.text
+
 
 class TestProfileList:
     """Tests for 'profile list' command."""

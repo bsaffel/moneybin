@@ -57,14 +57,17 @@ def profile_create(
         )
     svc = ProfileService()
     # A directory with no config.yaml is completed in place rather than refused, and
-    # it may already hold a `db init`'d database. Say which of the two happened —
-    # "Created" would hide the adoption from the person whose data is in there.
+    # it may already hold a `db init`'d database. Ask both questions before the call:
+    # "Created" would hide the adoption from the person whose data is in there, and
+    # claiming we preserved a database that never existed is just as wrong.
     adopting = svc.exists(name)
+    preserving_db = adopting and svc.has_database(name)
     try:
         profile_dir = svc.create(name, init_inbox=init_inbox)
         if adopting:
             logger.info(f"✅ Completed setup for profile {normalized} at {profile_dir}")
-            logger.info("Existing database left untouched.")
+            if preserving_db:
+                logger.info("Existing database left untouched.")
         else:
             logger.info(f"✅ Created profile {normalized} at {profile_dir}")
         if init_inbox:

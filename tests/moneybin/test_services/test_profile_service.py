@@ -149,6 +149,24 @@ class TestProfileCreateRepairsBareDirectory:
         with pytest.raises(ProfileExistsError):
             svc.create("alice")
 
+    def test_create_tightens_permissions_on_an_adopted_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An adopted directory gets the same 0o700 the fresh path guarantees.
+
+        Whatever made it — `db init`, a hand `mkdir` — did so at the ambient umask,
+        typically 0o755. Once we register it, the encrypted database and privacy log
+        live behind it, so it cannot keep permissions we never chose.
+        """
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        profile_dir.chmod(0o755)  # world-readable, as an ambient-umask mkdir leaves it
+
+        ProfileService().create("alice")
+
+        assert (profile_dir.stat().st_mode & 0o777) == 0o700
+
     def test_create_never_clobbers_an_existing_database(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
