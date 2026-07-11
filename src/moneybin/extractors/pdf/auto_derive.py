@@ -68,6 +68,13 @@ _DATE_FORMATS: list[tuple[str, str]] = [
     ("%m/%d/%y", r"\d{2}/\d{2}/\d{2}"),
 ]
 
+# "Does this cell open a transaction row?" — any date shape the deriver knows.
+# Built from _DATE_FORMATS so a new supported format can't be added to one and
+# forgotten in the other.
+_ANY_DATE_RE = _re.compile(
+    r"^(?:" + "|".join(pattern for _fmt, pattern in _DATE_FORMATS) + r")$"
+)
+
 # US / European number formats. Run via the `regex` package with a wall-clock
 # timeout — the inner alternation (\d{1,3}(,\d{3})*|\d+) can backtrack
 # exponentially on adversarial input like "1,2,3,4,5,6,7,8". This matches the
@@ -147,16 +154,46 @@ _META_FIELD_CASTS: dict[str, Literal["str", "decimal", "date", "int"]] = {
 # ---------------------------------------------------------------------------
 
 
-def has_transaction_table(doc: PdfDocument) -> bool:
-    """Return True when *doc* contains a transaction-shaped table.
+def derivation_failure_reason(
+    doc: PdfDocument,
+) -> Literal[
+    "no_transaction_table",
+    "unsupported_number_format",
+    "transaction_table_underivable",
+]:
+    """Explain why ``derive_recipe`` returned None, so routing can act on it.
 
-    Lets a caller tell "this isn't a transaction document" (a brokerage
-    positions statement — seed it) apart from "this IS one, and derivation
-    failed on it" (an unsupported number format, an ambiguous date format —
-    worth escalating to the driving agent). ``derive_recipe`` collapses both
-    outcomes into ``None``, so routing needs this to report an honest reason.
+    ``derive_recipe`` collapses every failure into ``None``, which is what let
+    routing report them all as ``no_transaction_table`` — a reason excluded from
+    bridge escalation — and silently seed statements the agent could have read.
+    The three outcomes need different handling:
+
+    - ``no_transaction_table`` — not a transaction document (a brokerage
+      positions statement). Seeding is correct; the bridge would be off-target.
+    - ``unsupported_number_format`` — a transaction table in a non-US number
+      locale. NOT bridge-eligible: ``execute_recipe`` rejects a non-US
+      ``number_format`` outright, so no recipe the agent could author would run.
+      Escalating would egress the user's statement text to an LLM and prompt for
+      a confirmation, then seed anyway.
+    - ``transaction_table_underivable`` — a transaction table the deterministic
+      rung couldn't crack (notably the deferred debit/credit split, the most
+      common real bank layout). This is precisely what the bridge is for.
     """
-    return _select_transaction_table(doc) is not None
+    if not _looks_transactional_anywhere(doc):
+        return "no_transaction_table"
+
+    # Only the strict selector's table can be format-probed; a debit/credit
+    # layout has no derivable sign convention, so it never reaches this branch
+    # and correctly falls through to "underivable".
+    table = _select_transaction_table(doc)
+    if table is not None:
+        sign, amount_cols = _classify_sign_convention(table.header)
+        if sign is not None:
+            number_fmt = _detect_number_format(table, amount_cols)
+            if number_fmt is not None and number_fmt != "us":
+                return "unsupported_number_format"
+
+    return "transaction_table_underivable"
 
 
 def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | None:
@@ -348,13 +385,19 @@ def _synthesize_tables_from_text(doc: PdfDocument) -> list[PdfTable]:
     the column count would otherwise pollute date/number-format detection.
 
     ``text_lines`` are flattened across pages, and a multi-page statement repeats
-    its column header at the top of each page. A repeated header splits to the
-    same width as a data row, so it is skipped rather than collected — otherwise
-    it lands in the row set and poisons date-format detection (which requires
-    every sample to parse), killing derivation on exactly the multi-page
-    statements this path exists to serve.
+    its column header at the top of each page, separated from the previous page's
+    rows by a footer ("Page 1 of 3"). The footer splits to a different width and
+    ends the run, so each page yields its own run. Runs sharing a header are
+    therefore **merged** into one table: selecting the largest single run instead
+    would derive from one page in isolation, and a page that happens to hold only
+    deposits would trip the all-positive sign-convention guard and route the
+    whole statement to seed.
+
+    A repeated header line splits to the same width as a data row, so it is
+    skipped rather than collected — otherwise it lands in the row set and poisons
+    date-format detection, which requires every sample to parse.
     """
-    tables: list[PdfTable] = []
+    runs: dict[tuple[str, ...], list[list[str]]] = {}
     cells_per_line = [
         _re.split(_ROW_SPLIT, line.strip()) if line.strip() else []
         for line in doc.text_lines
@@ -372,13 +415,70 @@ def _synthesize_tables_from_text(doc: PdfDocument) -> list[PdfTable]:
                 continue
             rows.append(row)
         if rows:
-            tables.append(PdfTable(page=1, header=cells, rows=rows))
+            runs.setdefault(tuple(cells), []).extend(rows)
 
-    return tables
+    return [
+        PdfTable(page=1, header=list(header), rows=rows)
+        for header, rows in runs.items()
+    ]
+
+
+def _is_transactional_header(headers: list[str]) -> bool:
+    """Return True when *headers* name a transaction table, derivable or not.
+
+    Deliberately looser than ``_is_transaction_shaped``: it accepts a
+    debit/credit column pair, which ``_classify_sign_convention`` rejects
+    because the deterministic executor can't disambiguate the blank side
+    (deferred to Phase 2b).
+
+    That distinction is the whole point. "Is this a statement?" and "can I derive
+    a recipe for it?" are different questions, and answering the first with the
+    second classes the most common real bank layout ("Withdrawals | Deposits") as
+    *not a transaction document* — silently seeding it instead of escalating to
+    the agent that could read it.
+    """
+    if len(headers) < 3 or not _DATE_COL_RE.match(headers[0]):
+        return False
+    if any(_AMOUNT_COL_RE.search(h) for h in headers):
+        return True
+    has_debit = any(_DEBIT_COL_RE.search(h) for h in headers)
+    has_credit = any(_CREDIT_COL_RE.search(h) for h in headers)
+    return has_debit and has_credit
+
+
+def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
+    r"""Return True when *doc* is a bank statement, derivable or not.
+
+    Checks ruled tables and reconstructed ones first, then falls back to the raw
+    text lines. That last step is load-bearing for the most common real layout: an
+    unruled debit/credit statement has exactly one blank side per row, and
+    ``\s{2,}`` collapses it — so its rows split to fewer cells than its header and
+    no table reconstructs at all. A transaction-shaped header line with dated rows
+    beneath it is still unambiguous evidence the document is a statement, which is
+    all this predicate is asked to decide.
+    """
+    if any(_is_transactional_header(t.header) and t.rows for t in doc.tables):
+        return True
+    if any(
+        _is_transactional_header(t.header) and t.rows
+        for t in _synthesize_tables_from_text(doc)
+    ):
+        return True
+
+    cells_per_line = [
+        _re.split(_ROW_SPLIT, line.strip()) if line.strip() else []
+        for line in doc.text_lines
+    ]
+    for idx, cells in enumerate(cells_per_line):
+        if not _is_transactional_header(cells):
+            continue
+        if any(row and _ANY_DATE_RE.match(row[0]) for row in cells_per_line[idx + 1 :]):
+            return True
+    return False
 
 
 def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
-    """Return the largest transaction-shaped table, or None.
+    """Return the largest *derivable* transaction-shaped table, or None.
 
     Ruled tables win when pdfplumber found any; tables reconstructed from
     ``text_lines`` are the fallback for unruled (real-world) statements.

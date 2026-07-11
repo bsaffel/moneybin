@@ -34,7 +34,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from moneybin.database import Database
-from moneybin.extractors.pdf.auto_derive import derive_recipe, has_transaction_table
+from moneybin.extractors.pdf.auto_derive import derivation_failure_reason, derive_recipe
 from moneybin.extractors.pdf.column_names import (
     AMOUNT_NAME_RE as _AMOUNT_NAME_RE,
 )
@@ -322,15 +322,12 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         )
         recipe = derive_recipe(doc, empty_meta)
         if recipe is None:
-            # Two very different failures reach here, and conflating them buries
-            # real transactions. A positions statement genuinely has no
-            # transaction table — seeding it is right, and handing it to the
-            # driving agent would be off-target. But a statement that IS
-            # transaction-shaped and merely defeated derivation (unsupported
-            # number locale, ambiguous date format, ambiguous sign) is exactly
-            # what the Phase 2b bridge exists for; silently seeding it hides
-            # rows the agent could have read.
-            underivable = has_transaction_table(doc)
+            # derive_recipe collapses every failure into None, and reporting them
+            # all as "no_transaction_table" (excluded from bridge escalation)
+            # buried real statements in an opaque seed. Ask why it failed so the
+            # three outcomes route differently — not a statement (seed), a locale
+            # the executor can't replay (seed; the bridge provably can't help),
+            # or a statement the deterministic rung couldn't crack (bridge).
             return RouteDecision(
                 outcome="seed",
                 recipe=None,
@@ -343,11 +340,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                     closing_balance=None,
                 ),
                 confidence=0.0,
-                reason=(
-                    "transaction_table_underivable"
-                    if underivable
-                    else "no_transaction_table"
-                ),
+                reason=derivation_failure_reason(doc),
                 # matched_format_name stays None: early return before saved_format lookup
                 fp=fp,
             )

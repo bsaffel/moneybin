@@ -547,3 +547,32 @@ def test_derive_from_text_lines_across_pages_with_repeated_header() -> None:
     recipe = derive_recipe(doc, _EMPTY_META)
 
     assert recipe is not None
+
+
+def test_derive_across_pages_separated_by_a_footer() -> None:
+    """Page footers must not truncate the reconstructed table to a single page.
+
+    A real statement puts a footer ("Page 1 of 2") between pages. That line
+    splits to a different width, ending the contiguous row run — so each page
+    became its OWN synthesized table and only the largest survived selection.
+
+    Here page 1 carries more rows but they are all deposits; the withdrawals sit
+    on page 2. Selecting page 1 alone means `_has_any_negative_amount` sees no
+    negative and derivation bails to seed — losing the whole statement — even
+    though the document plainly has negative amounts.
+    """
+    doc = _make_text_only_doc([
+        "Chase Bank",
+        "Date         Description          Amount",
+        "01/02/2024   REFUND A             10.00",
+        "01/03/2024   REFUND B             20.00",
+        "01/04/2024   REFUND C             30.00",
+        "Page 1 of 2",
+        "Date         Description          Amount",
+        "01/09/2024   GROCERY MART         -73.21",
+        "Page 2 of 2",
+    ])
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+
+    assert recipe is not None

@@ -41,14 +41,16 @@ def _document_key(doc: PdfDocument) -> str:
     Keyed on extracted *content*, not the file path, so re-importing the same
     statement from a different directory still deduplicates: identical content
     is the same statement.
+
+    Hashes only ``doc.tables`` — the rows seeds are actually built from
+    (``iter_rows`` reads nothing else). Folding in ``doc.text_lines`` would let a
+    pdfplumber upgrade, or any whitespace change in how text is emitted, re-key
+    every row of a document whose extracted cells did not change by one
+    character — and ``on_conflict='ignore'`` would then insert the whole
+    statement a second time instead of recognising it.
     """
     payload = json.dumps(
-        {
-            "tables": [
-                {"page": t.page, "header": t.header, "rows": t.rows} for t in doc.tables
-            ],
-            "text_lines": doc.text_lines,
-        },
+        [{"page": t.page, "header": t.header, "rows": t.rows} for t in doc.tables],
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]

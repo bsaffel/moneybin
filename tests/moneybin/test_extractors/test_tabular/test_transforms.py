@@ -539,3 +539,26 @@ class TestRunningBalanceValidation:
         )
         # forward 0/1, inverted 0/1 — neither passes
         assert result.balance_validated is False
+
+    def test_non_duplicate_row_ids_are_unchanged_by_occurrence_indexing(self) -> None:
+        """A row with no identical twin keeps the bare content hash.
+
+        The occurrence index must not re-key rows that were never colliding.
+        Suffixing the first occurrence too would rotate the transaction_id of
+        every row already in the database: old and new ids both survive the
+        `(transaction_id, account_id)` dedup in staging, so core would
+        double-count every pre-existing transaction on the next re-import.
+        Matches the PDF transaction-id scheme (import_service.py).
+        """
+        import hashlib
+
+        df = _make_df(
+            Date=["01/15/2026"],
+            Amount=["-42.50"],
+            Description=["KROGER"],
+        )
+        result = transform_dataframe(df=df, **_base_kwargs())
+
+        expected_key = "01/15/2026|-42.50|KROGER|test"
+        expected = f"csv_{hashlib.sha256(expected_key.encode()).hexdigest()[:16]}"
+        assert result.transactions["transaction_id"][0] == expected

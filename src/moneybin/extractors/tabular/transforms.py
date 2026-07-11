@@ -594,9 +594,9 @@ def _generate_transaction_ids(
     ID strategy (per identifiers.md):
     1. Source-provided ID → "{account_id}:{source_txn_id}"
     2. Content hash → "{source_type}_{sha256_16hex}"
-       Input: "{date}|{amount}|{description}|{account_id}|{occurrence}"
-       where occurrence is the 0-based ordinal of this row among rows with
-       identical content, so repeated real transactions survive dedup.
+       Input: "{date}|{amount}|{description}|{account_id}", with "|{occurrence}"
+       appended only on the 2nd and later rows of identical content, so repeated
+       real transactions survive dedup without re-keying the first.
 
     Args:
         df: Source DataFrame.
@@ -623,6 +623,12 @@ def _generate_transaction_ids(
     # and the staging ROW_NUMBER() dedup would drop one. The index counts
     # repeats of the *same content*, never the row's position in the file, so
     # inserting an unrelated row above a transaction does not re-key it.
+    #
+    # The FIRST occurrence keeps the bare content hash — suffixing it too would
+    # rotate the transaction_id of every row already imported, and old and new
+    # ids both survive the (transaction_id, account_id) dedup in staging, so
+    # core would double-count every pre-existing transaction. Same scheme as the
+    # PDF transaction ids in services/import_service.py; see identifiers.md.
     occurrences: Counter[str] = Counter()
     for idx in range(n):
         acct_id = account_ids[idx]
@@ -638,7 +644,7 @@ def _generate_transaction_ids(
             content_key = f"{date_str}|{amount_str}|{desc_str}|{acct_id}"
             occurrence = occurrences[content_key]
             occurrences[content_key] += 1
-            raw_key = f"{content_key}|{occurrence}"
+            raw_key = content_key if occurrence == 0 else f"{content_key}|{occurrence}"
             digest = hashlib.sha256(raw_key.encode()).hexdigest()[:16]
             ids.append(f"{source_type}_{digest}")
 

@@ -22,38 +22,56 @@ For records whose identity *is* their content — reimporting the same file must
 
 - **Algorithm**: SHA-256, truncated to 16 hex chars (64 bits). 64 bits gives ~1-in-a-billion collision probability at 100k records — sufficient for per-source transaction dedup, and short enough to be readable in logs and debugging. Use full SHA-256 if a single table could exceed ~1M records.
 - **Prefix**: Source-specific prefix to prevent cross-source collisions (`csv_`, `pdf_`, etc.).
-- **Input**: Pipe-delimited concatenation of the fields that define uniqueness, **plus an occurrence index** (below).
+- **Input**: Pipe-delimited concatenation of the fields that define uniqueness, **plus an occurrence suffix on repeats** (below).
 
 ```python
-raw = f"{date}|{amount}|{description}|{account_id}|{occurrence}"
+content_key = f"{date}|{amount}|{description}|{account_id}"
+# 2nd and later rows of identical content get a suffix; the first does not.
+raw = content_key if occurrence == 0 else f"{content_key}|{occurrence}"
 digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
 return f"csv_{digest}"
 ```
 
-### The occurrence index is mandatory
+### The occurrence suffix is mandatory — and never touches the first row
 
 A content hash alone cannot represent *two genuinely distinct transactions with
 identical content* — two $5.00 coffees at the same shop on the same day. Both
 rows hash the same, and the staging `ROW_NUMBER()` dedup drops one. That is
 silent financial data loss, and it is the single sharpest edge of strategy #2.
 
-**Rule:** every content-hash id folds in `occurrence` — the **0-based ordinal of
-the row among rows with identical content**, counted in file order. Apply it
-uniformly, including the first occurrence (`|0`). Do not special-case the first
-row: an "index only the duplicates" variant looks tidier but forces every future
-implementer to remember a branch, and two of them will forget.
+**Rule:** the 2nd and later rows of identical content append `|{occurrence}`,
+where `occurrence` is the **0-based ordinal among rows with identical content**,
+counted in file order. The **first occurrence keeps the bare content hash.**
 
-Two properties this shape guarantees, both load-bearing:
+Three properties, all load-bearing — a scheme that breaks any one of them
+silently corrupts the ledger:
 
+- **Never re-keys an existing row.** Suffixing the first occurrence too (`|0` on
+  every row) would rotate the `transaction_id` of every row already imported.
+  Old and new ids both survive the `(transaction_id, account_id)` dedup in
+  staging, so `core.fct_transactions` **double-counts every pre-existing
+  transaction** the next time its file is re-imported. This is why the first row
+  stays bare — it is a correctness requirement, not a stylistic one.
 - **Position-independent.** `occurrence` counts repeats of the same *content*,
   never the row's position in the file. Inserting an unrelated row above a
   transaction must not re-key it (`test_transaction_id_ignores_source_row_number`).
-- **Stable when a duplicate is added later.** A re-export that gains a second
-  identical row must not re-key the first. Indexing only colliding members
-  breaks this: the lone row's id would change from `base` to `base|0`, orphaning
-  the already-imported row so that two transactions import as three.
+- **Stable when a duplicate appears later.** A re-export that gains a second
+  identical row must not disturb the first: it keeps the bare hash and dedups
+  normally, while the new twin arrives as `|1`. (A scheme that suffixes *all*
+  members of a colliding group — `base|0`, `base|1` — violates this: the lone
+  row's id would change the moment a twin showed up, orphaning it so two
+  transactions import as three. Don't do that either.)
 
-Reference: `moneybin/extractors/tabular/transforms.py::_generate_transaction_ids`.
+Both content-hash transaction-id sites implement exactly this — keep them
+identical:
+
+- `moneybin/extractors/tabular/transforms.py::_generate_transaction_ids` (CSV/Excel)
+- `moneybin/services/import_service.py` (`_import_pdf_transactions`, `pdf_` ids)
+
+**Not the same thing:** `moneybin/extractors/pdf/seed_store.py` keys seed rows by
+`(alias, document, page, row_index, content)`. That is deliberate and different —
+a seed row is a raw cell dump whose identity *is* its position in one specific
+document, not a transaction identity. Don't "unify" it with the rule above.
 
 ## UUID4 (Truncated)
 

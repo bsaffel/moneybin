@@ -552,17 +552,47 @@ def test_positions_statement_reports_no_transaction_table(db: Database) -> None:
     assert decision.reason == "no_transaction_table"
 
 
-def test_underivable_transaction_table_is_distinguished_from_absent(
+def test_debit_credit_statement_is_underivable_not_absent(
     db: Database,
 ) -> None:
-    """A transaction table whose formats defeat derivation gets its own reason.
+    r"""A debit/credit statement IS transaction-shaped — it must reach the bridge.
 
-    The document IS transaction-shaped (date column, amount column, dated rows),
-    but the number format is one the executor can't replay. Reporting this as
-    `no_transaction_table` conflates "this isn't a transaction document" with
-    "this is one, and I couldn't parse it" — and silently buries real
-    transactions in an opaque seed. The agent bridge exists for exactly this
-    case, so it must be reachable.
+    "Date | Description | Withdrawals | Deposits" is the most common real bank
+    layout, and deterministic derivation deliberately defers it (Phase 2b: the
+    \\s{2,} split can't tell a blank debit cell from a blank credit cell). That
+    makes it the single largest class of "transaction-shaped but underivable" —
+    exactly what the agent bridge is for. Reporting it as `no_transaction_table`
+    (excluded from escalation) would silently seed the most common statement
+    there is.
+    """
+    doc = PdfDocument(
+        source_file="wf.pdf",
+        tables=[],
+        text_lines=[
+            "Wells Fargo",
+            "Date         Description          Withdrawals    Deposits",
+            "01/02/2024   COFFEE SHOP          4.50           ",
+            "01/05/2024   PAYROLL DEPOSIT                     2000.00",
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "transaction_table_underivable"
+
+
+def test_european_number_format_is_not_bridge_eligible(
+    db: Database,
+) -> None:
+    """A non-US number locale must NOT escalate — the executor cannot replay it.
+
+    The document is transaction-shaped, so it would otherwise report
+    `transaction_table_underivable` and reach the bridge. But `execute_recipe`
+    rejects a non-US `number_format` outright, so whatever recipe the agent
+    authors provably cannot run: the user pays an LLM egress of their statement
+    text and a confirmation prompt, and the import falls back to a seed anyway.
+    `unsupported_number_format` is deliberately excluded from escalation.
     """
     doc = PdfDocument(
         source_file="euro.pdf",
@@ -578,4 +608,4 @@ def test_underivable_transaction_table_is_distinguished_from_absent(
     decision = route_pdf_import(doc, db)
 
     assert decision.outcome == "seed"
-    assert decision.reason == "transaction_table_underivable"
+    assert decision.reason == "unsupported_number_format"
