@@ -331,8 +331,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `DROP TABLE` on a view raises `CatalogException` (the same class as the V032 fix
   above). V012 now drops only the migration-owned `app.merchant_overrides` and
   leaves the seed relations to SQLMesh. A static test (`test_migration_schema_ownership`)
-  now scans every migration and fails CI on any write to a SQLMesh-owned schema, so
-  this class cannot recur. (#309)
+  now scans every migration and fails CI on any migration that writes a
+  SQLMesh-owned schema. (#309)
 - **`import_preview` surfaces header detection and row-count reconciliation.**
   Silent header-eating (a real data row mistaken for a header) was invisible in
   the preview envelope. The envelope now carries `has_header`, `skip_rows`, and
