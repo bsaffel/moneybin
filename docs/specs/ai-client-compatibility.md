@@ -145,11 +145,15 @@ Stale guidance found during the review; all are routine fixes:
    documented behavior — file with logs against claude-ai-mcp.
 5. **Windsurf tool-cap overflow is a shipped defect, not informational.**
    Progressive disclosure was retired (`mcp-architecture.md` §3): the full
-   registered surface is visible at connect, so all 102 tools count against
-   Cascade's hard **100-active-tool ceiling** (measured live: 102 registered,
-   102 visible, 0 hidden). We are 2 over. **PR #315** warns at install time and
-   pins the count with a test; the durable fix is getting the visible surface
-   back under 100.
+   registered surface is visible at connect, so all **102** tools count against
+   Cascade's hard **100-active-tool ceiling**. Count confirmed against the live
+   served surface — `moneybin mcp list-tools` → `list_tools()` reports
+   `total_count: 102`, `0 hidden`. (Static `@mcp_tool`-decorator counts undercount
+   — e.g. 100 if you subtract the intentionally-unregistered budget/transform
+   modules — because the served surface includes tools registered outside those
+   modules; only a live `list_tools()` is authoritative.) We are 2 over. **PR
+   #315** warns at install time and pins the count with a test; the durable fix
+   is getting the served surface back under 100.
 6. **`docs/features.md` and `docs/specs/user-facing-doc-polish.md` are CORRECT
    about ChatGPT Desktop — do not "fix" them.** Both say the ChatGPT desktop app
    takes a local stdio server, and item 17 keeps a Desktop-vs-web/mobile split;
