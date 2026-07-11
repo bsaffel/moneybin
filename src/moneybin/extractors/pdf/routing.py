@@ -34,7 +34,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from moneybin.database import Database
-from moneybin.extractors.pdf.auto_derive import derive_recipe
+from moneybin.extractors.pdf.auto_derive import derive_recipe, has_transaction_table
 from moneybin.extractors.pdf.column_names import (
     AMOUNT_NAME_RE as _AMOUNT_NAME_RE,
 )
@@ -72,7 +72,8 @@ logger = logging.getLogger(__name__)
 _Reason = Literal[
     "passed",
     "low_confidence",
-    "no_transaction_table",
+    "no_transaction_table",  # not a transaction document at all (e.g. positions statement)
+    "transaction_table_underivable",  # IS transaction-shaped; derivation failed — Phase 2b bridge
     "reconciliation_failed",  # auto-derived recipe failed reconciliation
     "replay_reconciliation_failed",  # saved recipe stopped reconciling — Phase 2b bridge
     "metadata_incomplete",  # opening or closing balance not captured
@@ -321,6 +322,15 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         )
         recipe = derive_recipe(doc, empty_meta)
         if recipe is None:
+            # Two very different failures reach here, and conflating them buries
+            # real transactions. A positions statement genuinely has no
+            # transaction table — seeding it is right, and handing it to the
+            # driving agent would be off-target. But a statement that IS
+            # transaction-shaped and merely defeated derivation (unsupported
+            # number locale, ambiguous date format, ambiguous sign) is exactly
+            # what the Phase 2b bridge exists for; silently seeding it hides
+            # rows the agent could have read.
+            underivable = has_transaction_table(doc)
             return RouteDecision(
                 outcome="seed",
                 recipe=None,
@@ -333,7 +343,11 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                     closing_balance=None,
                 ),
                 confidence=0.0,
-                reason="no_transaction_table",
+                reason=(
+                    "transaction_table_underivable"
+                    if underivable
+                    else "no_transaction_table"
+                ),
                 # matched_format_name stays None: early return before saved_format lookup
                 fp=fp,
             )

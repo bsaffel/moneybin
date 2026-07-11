@@ -100,6 +100,14 @@ def _matches_european(sample: str) -> bool:
 # Number of sample values to use for format detection (first N non-empty cells).
 _SAMPLE_SIZE = 5
 
+# The column separator for whitespace-aligned statement text. This is the single
+# source of truth for three things that MUST agree, or a derived recipe parses
+# different column boundaries than the ones it was derived from:
+#   1. the recipe's `row_split`, which execute_recipe runs against document text,
+#   2. the start-anchor scan, which matches a text line against a table header,
+#   3. table reconstruction from text lines for unruled statements.
+_ROW_SPLIT = r"\s{2,}"
+
 # Candidate "end of transaction table" sentinels, ordered most-specific first.
 # Auto-derive scans the document text AFTER the table's start_anchor and
 # picks the first sentinel that appears; if none match we fall back to
@@ -137,6 +145,18 @@ _META_FIELD_CASTS: dict[str, Literal["str", "decimal", "date", "int"]] = {
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def has_transaction_table(doc: PdfDocument) -> bool:
+    """Return True when *doc* contains a transaction-shaped table.
+
+    Lets a caller tell "this isn't a transaction document" (a brokerage
+    positions statement — seed it) apart from "this IS one, and derivation
+    failed on it" (an unsupported number format, an ambiguous date format —
+    worth escalating to the driving agent). ``derive_recipe`` collapses both
+    outcomes into ``None``, so routing needs this to report an honest reason.
+    """
+    return _select_transaction_table(doc) is not None
 
 
 def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | None:
@@ -213,7 +233,7 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
         return Recipe(
             metadata_anchors=metadata_anchors,
             row_region=row_region,
-            row_split=r"\s{2,}",
+            row_split=_ROW_SPLIT,
             fields=fields,
             sign_convention=sign,
             number_format=number_fmt,
@@ -262,7 +282,7 @@ def _detect_start_anchor(doc: PdfDocument, table: PdfTable) -> str:
         stripped = line.strip()
         if not stripped:
             continue
-        cells = _re.split(r"\s{2,}", stripped)
+        cells = _re.split(_ROW_SPLIT, stripped)
         if cells == expected:
             return stripped
     return table.header[0]
@@ -308,9 +328,66 @@ def _is_transaction_shaped(table: PdfTable) -> bool:
     return sign is not None
 
 
+def _synthesize_tables_from_text(doc: PdfDocument) -> list[PdfTable]:
+    r"""Reconstruct candidate tables from ``doc.text_lines`` alone.
+
+    pdfplumber's ``extract_tables()`` keys on drawn ruling lines, but real bank
+    statements are typeset with whitespace-aligned columns and no rules — so
+    ``doc.tables`` comes back empty and the rows survive only in ``text_lines``.
+    Derivation used to read ``doc.tables`` exclusively while execution reads
+    ``text_lines``, leaving the deriver blind to exactly the input the executor
+    consumes: a real Chase statement extracted 0 transactions.
+
+    Splitting on ``\s{2,}`` — the same ``row_split`` the derived recipe will
+    execute with — means a table reconstructed here has the column boundaries
+    the executor will see, so the recipe is self-consistent by construction.
+
+    A header is any line splitting into >=3 cells whose first cell names a date
+    column; its rows are the contiguous run of following lines that split to the
+    same width. Contiguity matters: trailing summary lines that happen to share
+    the column count would otherwise pollute date/number-format detection.
+
+    ``text_lines`` are flattened across pages, and a multi-page statement repeats
+    its column header at the top of each page. A repeated header splits to the
+    same width as a data row, so it is skipped rather than collected — otherwise
+    it lands in the row set and poisons date-format detection (which requires
+    every sample to parse), killing derivation on exactly the multi-page
+    statements this path exists to serve.
+    """
+    tables: list[PdfTable] = []
+    cells_per_line = [
+        _re.split(_ROW_SPLIT, line.strip()) if line.strip() else []
+        for line in doc.text_lines
+    ]
+
+    for idx, cells in enumerate(cells_per_line):
+        if len(cells) < 3 or not _DATE_COL_RE.match(cells[0]):
+            continue
+        width = len(cells)
+        rows: list[list[str]] = []
+        for row in cells_per_line[idx + 1 :]:
+            if len(row) != width:
+                break
+            if row == cells:  # page-break repeat of the header row
+                continue
+            rows.append(row)
+        if rows:
+            tables.append(PdfTable(page=1, header=cells, rows=rows))
+
+    return tables
+
+
 def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
-    """Return the largest transaction-shaped table, or None."""
+    """Return the largest transaction-shaped table, or None.
+
+    Ruled tables win when pdfplumber found any; tables reconstructed from
+    ``text_lines`` are the fallback for unruled (real-world) statements.
+    """
     candidates = [t for t in doc.tables if _is_transaction_shaped(t)]
+    if not candidates:
+        candidates = [
+            t for t in _synthesize_tables_from_text(doc) if _is_transaction_shaped(t)
+        ]
     if not candidates:
         return None
     return max(candidates, key=lambda t: len(t.rows))

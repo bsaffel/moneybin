@@ -133,6 +133,69 @@ class TestTransformBasic:
             == shifted_result.transactions["transaction_id"][1]
         )
 
+    def test_identical_rows_survive_with_distinct_ids(self) -> None:
+        """Two genuinely distinct same-day purchases must not collapse to one id.
+
+        A CSV with no source id can legitimately carry repeated rows (two $5.00
+        coffees at the same shop on the same day). Without an occurrence index
+        in the content hash they share a transaction_id and the staging
+        ROW_NUMBER() dedup silently drops one — real financial data loss.
+        """
+        df = _make_df(
+            Date=["01/15/2026", "01/15/2026", "01/16/2026"],
+            Amount=["-5.00", "-5.00", "-73.21"],
+            Description=["COFFEE SHOP", "COFFEE SHOP", "GROCERY MART"],
+        )
+        result = transform_dataframe(df=df, **_base_kwargs())
+
+        ids = result.transactions["transaction_id"].to_list()
+        assert len(set(ids)) == 3, f"identical rows collapsed: {ids}"
+
+    def test_identical_rows_keep_ids_stable_across_reimport(self) -> None:
+        """Re-importing the same file reproduces the same ids (idempotent)."""
+        df = _make_df(
+            Date=["01/15/2026", "01/15/2026"],
+            Amount=["-5.00", "-5.00"],
+            Description=["COFFEE SHOP", "COFFEE SHOP"],
+        )
+        kwargs = _base_kwargs()
+        first = transform_dataframe(df=df, **kwargs)
+        second = transform_dataframe(df=df, **kwargs)
+
+        assert (
+            first.transactions["transaction_id"].to_list()
+            == second.transactions["transaction_id"].to_list()
+        )
+
+    def test_added_duplicate_does_not_rekey_the_original(self) -> None:
+        """A later export gaining a second identical row must not re-key the first.
+
+        Otherwise the original row orphans and both rows import as new — two
+        transactions become three.
+        """
+        kwargs = _base_kwargs()
+        one_coffee = transform_dataframe(
+            df=_make_df(
+                Date=["01/15/2026"],
+                Amount=["-5.00"],
+                Description=["COFFEE SHOP"],
+            ),
+            **kwargs,
+        )
+        two_coffees = transform_dataframe(
+            df=_make_df(
+                Date=["01/15/2026", "01/15/2026"],
+                Amount=["-5.00", "-5.00"],
+                Description=["COFFEE SHOP", "COFFEE SHOP"],
+            ),
+            **kwargs,
+        )
+
+        assert (
+            one_coffee.transactions["transaction_id"][0]
+            == two_coffees.transactions["transaction_id"][0]
+        )
+
     def test_source_transaction_id_used_when_present(self) -> None:
         df = _make_df(
             Date=["01/15/2026"],

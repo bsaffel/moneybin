@@ -1,0 +1,40 @@
+# Same statement as chase_checking_simple, typeset WITHOUT ruling lines — the
+# way real bank statements actually are. pdfplumber's extract_tables() finds no
+# table here, so recipe derivation must work from text lines alone.
+# Ground truth is identical to the ruled twin by construction: same rows, same
+# balances. If these two fixtures ever disagree, the text-line derivation path
+# has drifted from the ruled-table path.
+file: chase_checking_unruled.pdf
+expected_outcome: transactions
+expected_metadata:
+  account_id: "1234"
+  period_start: "2024-01-01"
+  period_end: "2024-01-31"
+  opening_balance: "1000.00"
+  closing_balance: "1126.29"
+expected_format:
+  institution_name: Chase Bank
+  document_kind: transactions
+  front_end: pdfplumber
+  routing: transactions
+expected_transactions:
+  - date: "2024-01-02"
+    description: "COFFEE SHOP"
+    amount: "-4.50"
+  - date: "2024-01-05"
+    description: "PAYROLL DEPOSIT"
+    amount: "2000.00"
+  - date: "2024-01-09"
+    description: "GROCERY MART"
+    amount: "-73.21"
+  - date: "2024-01-15"
+    description: "UTILITIES PAYMENT"
+    amount: "-150.00"
+  - date: "2024-01-22"
+    description: "REFUND"
+    amount: "-1646.00"
+expected_reconciliation:
+  passed: true
+  # closing - opening = 1126.29 - 1000.00 = 126.29; row sum = -4.50+2000.00-73.21-150.00-1646.00 = 126.29
+  observed_delta: "126.29"
+  expected_delta: "126.29"

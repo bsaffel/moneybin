@@ -27,19 +27,53 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$", re.ASCII)
 _PLAIN_NUMERIC_RE = re.compile(r"[+-]?(\d+\.\d+|\d+)", re.ASCII)
 
 
+def _document_key(doc: PdfDocument) -> str:
+    """Stable identity for a document's extracted content.
+
+    An alias is only the filename stem, so `2024-01/chase.pdf` and
+    `2024-02/chase.pdf` collapse to the same alias — and ``doc.source_file``
+    is just the basename, so it can't tell them apart either. Without a
+    document component in the row hash, a recurring charge that lands at the
+    same row index in two months (an identical NETFLIX line) hashes
+    identically across the two statements and the second is dropped by
+    on_conflict='ignore'.
+
+    Keyed on extracted *content*, not the file path, so re-importing the same
+    statement from a different directory still deduplicates: identical content
+    is the same statement.
+    """
+    payload = json.dumps(
+        {
+            "tables": [
+                {"page": t.page, "header": t.header, "rows": t.rows} for t in doc.tables
+            ],
+            "text_lines": doc.text_lines,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
 def write_pdf_seed(
     db: Database, doc: PdfDocument, *, alias: str, import_id: str
 ) -> tuple[int, int]:
     """Insert the document's rows as a seed and regenerate raw.pdf_<alias>.
 
-    Identity is SHA-256(alias|p<page>r<row_idx>|json(row))[:16] with a pdf_
-    prefix. The page+row-index component preserves legitimate duplicate-cell
-    rows (e.g. two same-day same-amount purchases) — only the *same content
-    at the same physical position* is treated as a duplicate, which keeps
-    re-imports of the same statement idempotent. Re-importing existing
-    content is a no-op via on_conflict='ignore' — existing rows keep their
-    original import_id so reverting a later import doesn't remove rows the
-    first import's log claims as complete.
+    Identity is SHA-256(alias|<doc_key>|p<page>r<row_idx>|json(row))[:16] with
+    a pdf_ prefix. Two components keep distinct rows distinct:
+
+    - The **page + row-index** preserves legitimate duplicate-cell rows *within*
+      one statement (two same-day same-amount purchases).
+    - The **document key** (``_document_key``) keeps two different statements
+      that share an alias from colliding on a row identical in both content and
+      position.
+
+    Only the same content, at the same position, in the same document is a
+    duplicate — which is exactly what makes re-importing one statement
+    idempotent. Re-importing existing content is a no-op via
+    on_conflict='ignore' — existing rows keep their original import_id so
+    reverting a later import doesn't remove rows the first import's log claims
+    as complete.
 
     Returns ``(extracted, inserted)`` where ``extracted`` is the number of
     rows produced by extraction (drives the zero-row gate so re-imports of
@@ -49,6 +83,7 @@ def write_pdf_seed(
     report ``inserted`` so re-imports don't inflate counts.
     """
     rows: list[dict[str, object]] = []
+    doc_key = _document_key(doc)
     # Per-page row index makes the hash position-aware: two rows with
     # identical cells but different positions (legitimate duplicate
     # transactions) get distinct hashes; the same row at the same position
@@ -60,7 +95,7 @@ def write_pdf_seed(
         data_json = json.dumps(cells, sort_keys=True)
         # 16 hex chars = 64 bits; see identifiers.md for scale threshold.
         digest = hashlib.sha256(
-            f"{alias}|p{page}r{idx}|{data_json}".encode()
+            f"{alias}|{doc_key}|p{page}r{idx}|{data_json}".encode()
         ).hexdigest()[:16]
         row_hash = f"pdf_{digest}"
         rows.append({

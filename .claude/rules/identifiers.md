@@ -22,13 +22,38 @@ For records whose identity *is* their content — reimporting the same file must
 
 - **Algorithm**: SHA-256, truncated to 16 hex chars (64 bits). 64 bits gives ~1-in-a-billion collision probability at 100k records — sufficient for per-source transaction dedup, and short enough to be readable in logs and debugging. Use full SHA-256 if a single table could exceed ~1M records.
 - **Prefix**: Source-specific prefix to prevent cross-source collisions (`csv_`, `pdf_`, etc.).
-- **Input**: Pipe-delimited concatenation of the fields that define uniqueness.
+- **Input**: Pipe-delimited concatenation of the fields that define uniqueness, **plus an occurrence index** (below).
 
 ```python
-raw = f"{date}|{amount}|{description}|{account_id}"
+raw = f"{date}|{amount}|{description}|{account_id}|{occurrence}"
 digest = hashlib.sha256(raw.encode()).hexdigest()[:16]
 return f"csv_{digest}"
 ```
+
+### The occurrence index is mandatory
+
+A content hash alone cannot represent *two genuinely distinct transactions with
+identical content* — two $5.00 coffees at the same shop on the same day. Both
+rows hash the same, and the staging `ROW_NUMBER()` dedup drops one. That is
+silent financial data loss, and it is the single sharpest edge of strategy #2.
+
+**Rule:** every content-hash id folds in `occurrence` — the **0-based ordinal of
+the row among rows with identical content**, counted in file order. Apply it
+uniformly, including the first occurrence (`|0`). Do not special-case the first
+row: an "index only the duplicates" variant looks tidier but forces every future
+implementer to remember a branch, and two of them will forget.
+
+Two properties this shape guarantees, both load-bearing:
+
+- **Position-independent.** `occurrence` counts repeats of the same *content*,
+  never the row's position in the file. Inserting an unrelated row above a
+  transaction must not re-key it (`test_transaction_id_ignores_source_row_number`).
+- **Stable when a duplicate is added later.** A re-export that gains a second
+  identical row must not re-key the first. Indexing only colliding members
+  breaks this: the lone row's id would change from `base` to `base|0`, orphaning
+  the already-imported row so that two transactions import as three.
+
+Reference: `moneybin/extractors/tabular/transforms.py::_generate_transaction_ids`.
 
 ## UUID4 (Truncated)
 

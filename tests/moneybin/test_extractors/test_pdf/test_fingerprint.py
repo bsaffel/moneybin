@@ -258,3 +258,27 @@ def test_match_format_uses_repo_get_by_fingerprint(db: Database) -> None:
 
     mock_repo.get_by_fingerprint.assert_called_once_with(fp)
     assert result is None
+
+
+def test_fingerprint_headers_populated_for_unruled_statement() -> None:
+    """An unruled statement must still fingerprint on its real column headers.
+
+    `_unique_table_headers` bailed out on `not doc.tables` before consulting the
+    transaction-table selector, so every whitespace-aligned statement (i.e. every
+    real one) fingerprinted as `headers: []`. Two different institutions would
+    then collide on the same degenerate fingerprint and replay each other's saved
+    recipe against the wrong layout.
+    """
+    doc = PdfDocument(
+        source_file="chase.pdf",
+        tables=[],
+        text_lines=[
+            "Chase Bank",
+            "Date         Description          Amount",
+            "01/02/2024   COFFEE SHOP          -4.50",
+        ],
+    )
+
+    fp = compute_fingerprint(doc)
+
+    assert fp["headers"] == ["Date", "Description", "Amount"]

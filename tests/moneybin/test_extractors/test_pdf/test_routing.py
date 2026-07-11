@@ -522,3 +522,60 @@ def test_forced_recipe_reconcile_fail_is_not_replay_guard(db: Database) -> None:
     assert decision.reason == "reconciliation_failed"
     assert decision.replay_guard_failed is False
     assert guard_after == guard_before
+
+
+# ---------------------------------------------------------------------------
+# Underivable-vs-absent transaction table (bridge escalation vs seed)
+# ---------------------------------------------------------------------------
+
+
+def test_positions_statement_reports_no_transaction_table(db: Database) -> None:
+    """A document with no transaction table at all seeds — it is not agent-fodder.
+
+    A brokerage positions statement (Symbol/Shares/Price/Value) is genuinely not
+    transaction-shaped. Escalating it to the driving agent would be off-target,
+    so it must keep reporting `no_transaction_table` and route to seed.
+    """
+    doc = PdfDocument(
+        source_file="positions.pdf",
+        tables=[],
+        text_lines=[
+            "Fidelity Investments",
+            "Symbol    Shares    Price     Value",
+            "AAPL      100       180.00    18000.00",
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "no_transaction_table"
+
+
+def test_underivable_transaction_table_is_distinguished_from_absent(
+    db: Database,
+) -> None:
+    """A transaction table whose formats defeat derivation gets its own reason.
+
+    The document IS transaction-shaped (date column, amount column, dated rows),
+    but the number format is one the executor can't replay. Reporting this as
+    `no_transaction_table` conflates "this isn't a transaction document" with
+    "this is one, and I couldn't parse it" — and silently buries real
+    transactions in an opaque seed. The agent bridge exists for exactly this
+    case, so it must be reachable.
+    """
+    doc = PdfDocument(
+        source_file="euro.pdf",
+        tables=[],
+        text_lines=[
+            "Euro Bank",
+            "Date         Description          Amount",
+            "01/02/2024   COFFEE SHOP          -4,50",
+            "01/05/2024   PAYROLL DEPOSIT      2.000,00",
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "transaction_table_underivable"

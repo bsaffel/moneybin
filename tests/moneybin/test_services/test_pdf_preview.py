@@ -340,3 +340,23 @@ def test_pdf_preview_non_bridge_reason_does_not_write_audit_row(
         "SELECT COUNT(*) FROM app.audit_log WHERE action = 'smart_import_parse'"
     ).fetchone()
     assert rows[0] == 0  # type: ignore[index]  # COUNT(*) always returns a 1-tuple
+
+
+def test_pdf_preview_underivable_transaction_table_escalates_to_bridge(
+    db: Database,
+    tmp_path: Path,
+    stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
+) -> None:
+    """A transaction-shaped doc that defeated derivation reaches the agent bridge.
+
+    This is the case routing used to bury: every derivation failure reported
+    `no_transaction_table`, which is excluded from bridge escalation, so real
+    transactions landed in an opaque seed instead of being handed to the agent
+    that could read them.
+    """
+    decisions, docs = stub_pdf_pipeline
+    docs.append(_doc())
+    decisions.append(_decision(reason="transaction_table_underivable", confidence=0.0))
+
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).pdf_preview(_make_pdf_path(tmp_path))

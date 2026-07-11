@@ -432,3 +432,118 @@ def test_round_trip_single_amount() -> None:
     result = execute_recipe(recipe, doc_text)
     # Two data rows should parse
     assert len(result.rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# Unruled statements: no pdfplumber table, rows live only in text_lines
+# ---------------------------------------------------------------------------
+
+
+def _make_text_only_doc(text_lines: list[str]) -> PdfDocument:
+    """Build a PdfDocument with NO tables — rows exist only as text lines.
+
+    This is what a real bank statement produces: pdfplumber's extract_tables()
+    keys on drawn ruling lines, and real statements are whitespace-aligned
+    without them.
+    """
+    return PdfDocument(source_file="stmt.pdf", tables=[], text_lines=text_lines)
+
+
+def test_derive_from_text_lines_when_no_ruled_table() -> None:
+    """A whitespace-aligned statement with no ruled table still yields a Recipe.
+
+    Root cause of F10: derivation read doc.tables (which requires ruling lines)
+    while execution reads doc.text_lines. A real Chase statement produced
+    tables=[] and derivation went blind, routing 10 real transactions to an
+    opaque seed instead of core.
+    """
+    doc = _make_text_only_doc([
+        "Chase Bank",
+        "Account Number: 1234",
+        "ACCOUNT ACTIVITY",
+        "Date         Description          Amount",
+        "01/02/2024   COFFEE SHOP          -4.50",
+        "01/05/2024   PAYROLL DEPOSIT      2000.00",
+        "01/09/2024   GROCERY MART         -73.21",
+    ])
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+
+    assert recipe is not None
+    assert recipe.routing == "transactions"
+    assert recipe.sign_convention == "negative_is_expense"
+
+
+def test_derived_text_line_recipe_executes_on_the_same_document() -> None:
+    r"""The recipe derived from text_lines must execute against that same text.
+
+    Derivation and execution must agree by construction — they now share the
+    \s{2,} splitter, so a recipe derived from text lines is self-consistent.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    text_lines = [
+        "Chase Bank",
+        "ACCOUNT ACTIVITY",
+        "Date         Description          Amount",
+        "01/02/2024   COFFEE SHOP          -4.50",
+        "01/05/2024   PAYROLL DEPOSIT      2000.00",
+        "01/09/2024   GROCERY MART         -73.21",
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+    assert recipe is not None
+
+    result = execute_recipe(recipe, "\n".join(text_lines))
+    assert len(result.rows) == 3
+
+
+def test_ruled_table_still_wins_when_present() -> None:
+    """A document WITH a ruled table keeps deriving from it (no behavior change)."""
+    doc = _make_doc(
+        header=["Date", "Description", "Amount"],
+        rows=[["01/15/2024", "Coffee Shop", "-4.50"]],
+    )
+    recipe = derive_recipe(doc, _EMPTY_META)
+    assert recipe is not None
+
+
+def test_non_transaction_text_does_not_derive_a_recipe() -> None:
+    """A positions statement (no date column) must NOT derive a transaction recipe.
+
+    Guards the text-line fallback against over-reach: it must stay as strict as
+    the ruled-table path, or investment statements would be misrouted.
+    """
+    doc = _make_text_only_doc([
+        "Fidelity Investments",
+        "Symbol    Shares    Price     Value",
+        "AAPL      100       180.00    18000.00",
+        "MSFT      50        350.00    17500.00",
+    ])
+
+    assert derive_recipe(doc, _EMPTY_META) is None
+
+
+def test_derive_from_text_lines_across_pages_with_repeated_header() -> None:
+    """A multi-page statement repeats its column header on each page.
+
+    text_lines are flattened across pages, so the page-2 header line splits to
+    the same width as a data row and was swallowed into the row set — poisoning
+    date-format detection (every sample must parse) and killing derivation.
+    Real statements are multi-page, so single-page-only derivation is no fix.
+    """
+    doc = _make_text_only_doc([
+        "Chase Bank",
+        "Date         Description          Amount",
+        "01/02/2024   COFFEE SHOP          -4.50",
+        "01/05/2024   PAYROLL DEPOSIT      2000.00",
+        # page 2 repeats the header
+        "Date         Description          Amount",
+        "01/09/2024   GROCERY MART         -73.21",
+        "01/15/2024   UTILITIES            -150.00",
+    ])
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+
+    assert recipe is not None

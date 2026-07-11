@@ -98,21 +98,24 @@ def _unique_table_headers(doc: PdfDocument) -> list[str]:
     using an ordered set built from a dict — Python dicts preserve
     insertion order since 3.7.
     """
-    if not doc.tables:
-        return []
     # Defer the import to break a potential cycle and to keep fingerprint
     # leaf-leaf even when auto_derive evolves.
     from moneybin.extractors.pdf.auto_derive import (
         _select_transaction_table,  # pyright: ignore[reportPrivateUsage]
     )
 
+    # Consult the selector BEFORE giving up on an empty doc.tables: an unruled
+    # statement (no drawn ruling lines — i.e. every real one) has no pdfplumber
+    # tables at all, and the selector reconstructs its table from text lines.
+    # Bailing early here fingerprinted every such statement as `headers: []`, so
+    # two different institutions collided on one degenerate fingerprint and
+    # replayed each other's saved recipe against the wrong layout.
     txn_table = _select_transaction_table(doc)
-    target = (
-        txn_table
-        if txn_table is not None
-        else max(doc.tables, key=lambda t: len(t.rows))
-    )
-    return list(dict.fromkeys(target.header))
+    if txn_table is not None:
+        return list(dict.fromkeys(txn_table.header))
+    if not doc.tables:
+        return []
+    return list(dict.fromkeys(max(doc.tables, key=lambda t: len(t.rows)).header))
 
 
 # The complete, closed set of page-count buckets ``_page_bucket`` can emit, in

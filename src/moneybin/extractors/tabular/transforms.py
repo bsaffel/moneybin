@@ -12,6 +12,7 @@ into the raw.tabular_transactions schema shape:
 
 import hashlib
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -593,7 +594,9 @@ def _generate_transaction_ids(
     ID strategy (per identifiers.md):
     1. Source-provided ID → "{account_id}:{source_txn_id}"
     2. Content hash → "{source_type}_{sha256_16hex}"
-       Input: "{date}|{amount}|{description}|{account_id}"
+       Input: "{date}|{amount}|{description}|{account_id}|{occurrence}"
+       where occurrence is the 0-based ordinal of this row among rows with
+       identical content, so repeated real transactions survive dedup.
 
     Args:
         df: Source DataFrame.
@@ -615,6 +618,12 @@ def _generate_transaction_ids(
         src_txn_ids = [str(v) if v is not None else None for v in raw]
 
     ids: list[str] = []
+    # Occurrence index per identity tuple. Two legitimately identical same-day
+    # rows (two $5.00 coffees at one shop) would otherwise share a content hash
+    # and the staging ROW_NUMBER() dedup would drop one. The index counts
+    # repeats of the *same content*, never the row's position in the file, so
+    # inserting an unrelated row above a transaction does not re-key it.
+    occurrences: Counter[str] = Counter()
     for idx in range(n):
         acct_id = account_ids[idx]
         src_id = src_txn_ids[idx]
@@ -626,7 +635,10 @@ def _generate_transaction_ids(
                 str(parsed_amounts[idx]) if parsed_amounts[idx] is not None else ""
             )
             desc_str = descriptions[idx] if idx < len(descriptions) else ""
-            raw_key = f"{date_str}|{amount_str}|{desc_str}|{acct_id}"
+            content_key = f"{date_str}|{amount_str}|{desc_str}|{acct_id}"
+            occurrence = occurrences[content_key]
+            occurrences[content_key] += 1
+            raw_key = f"{content_key}|{occurrence}"
             digest = hashlib.sha256(raw_key.encode()).hexdigest()[:16]
             ids.append(f"{source_type}_{digest}")
 

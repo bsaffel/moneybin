@@ -305,6 +305,39 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **PDF statements with no ruled table no longer import zero transactions.**
+  Recipe derivation picked its transaction table from `pdfplumber`'s table
+  detection, which only fires on *drawn ruling lines* — while the recipe
+  executor reads the document's text lines. Real bank statements are typeset
+  with whitespace-aligned columns and no rules, so derivation went blind on
+  exactly the input the executor consumes: a real Chase statement with a clean
+  `ACCOUNT ACTIVITY` section extracted **0 transactions** and its rows landed in
+  an opaque seed table instead of the ledger. Derivation now falls back to
+  reconstructing the table from text lines using the same column splitter the
+  recipe executes with. Statements already imported as seeds will import
+  correctly on re-import.
+- **CSV/Excel imports no longer silently drop legitimately identical rows.**
+  Transaction ids for sources without a native id are content hashes, so two
+  genuinely distinct same-day purchases with the same amount and description
+  (two $5.00 coffees at one shop) hashed identically and the staging dedup
+  dropped one — real transactions, gone, with no error. The hash now folds in an
+  occurrence index, so repeated rows survive while re-imports stay idempotent.
+  Re-import affected files to recover the missing rows.
+- **PDF statements sharing a filename no longer eat each other's rows.** Seed
+  rows were keyed on `(alias, page, row index, content)`, and the alias is just
+  the filename stem — so `2024-01/chase.pdf` and `2024-02/chase.pdf` collided,
+  and a recurring charge landing at the same row index in both months (an
+  identical subscription line) was silently discarded from the second statement.
+  The row key now includes the document's content identity.
+- **A PDF the importer can't parse now reaches the AI agent instead of being
+  buried.** Every recipe-derivation failure reported the same reason
+  (`no_transaction_table`), which is excluded from agent escalation on the
+  grounds that the document isn't a statement at all. So a document that *was* a
+  statement and merely defeated the parser — an unfamiliar number format,
+  an ambiguous date layout — was silently filed away as unparseable rather than
+  handed to the AI agent that could read it. Those now escalate; genuinely
+  non-transactional PDFs (a brokerage positions statement) still file quietly as
+  before.
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
