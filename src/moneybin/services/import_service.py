@@ -2194,10 +2194,15 @@ class ImportService:
         The gate deliberately does NOT route through ``resolve_or_confirm``: that
         seam lets an agent self-accept at ``high``, and a silently agent-accepted
         ledger inversion is the exact outcome this gate exists to prevent.
+
+        Bumps ``PDF_SIGN_GATE_TOTAL`` at each of its three exits: ``overridden``
+        (explicit ``sign=`` accepted), ``confirmed`` (``confirm=True`` ratified
+        an auto-derived inversion), ``proposed`` (raised for confirmation).
         """
         from typing import get_args
 
         from moneybin.extractors.pdf.routing import amount_shape_matches_sign_convention
+        from moneybin.metrics.registry import PDF_SIGN_GATE_TOTAL
 
         recipe = decision.recipe
         if recipe is None or decision.outcome != "transactions":
@@ -2216,13 +2221,22 @@ class ImportService:
             # sum absent keys and write every amount as 0 — silent, and worse
             # than the inversion the override was meant to correct.
             if not amount_shape_matches_sign_convention(recipe.fields, sign):
+                # The guard only fires when the shapes DON'T match, so the
+                # recipe's actual shape is the opposite of what `sign` reads —
+                # a `split_debit_credit` override failing means the recipe
+                # extracts a single amount column, not a debit/credit pair.
+                actual_shape = (
+                    "single amount column"
+                    if sign == "split_debit_credit"
+                    else "debit/credit pair"
+                )
                 raise UserError(
                     f"Sign convention {sign!r} does not fit this statement's "
-                    f"columns — its recipe extracts a "
-                    f"{'debit/credit pair' if sign == 'split_debit_credit' else 'single amount column'}"
-                    f" the convention does not read.",
+                    f"columns — its recipe extracts a {actual_shape} the "
+                    f"convention does not read.",
                     code="invalid_sign_convention",
                 )
+            PDF_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
             return dataclasses.replace(
                 decision, recipe=recipe.model_copy(update={"sign_convention": sign})
             )
@@ -2232,8 +2246,10 @@ class ImportService:
             return decision
 
         if confirm:
+            PDF_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
             return decision
 
+        PDF_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
         raise ImportConfirmationRequiredError(
             ConfirmationRequired(
                 channel="pdf",

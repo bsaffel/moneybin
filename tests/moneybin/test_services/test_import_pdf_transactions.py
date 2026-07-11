@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services.import_confirmation import (
@@ -829,3 +830,80 @@ def test_checking_statement_imports_without_a_sign_confirm(
 
     assert result.transactions == 2
     assert _amounts(db) == [Decimal("-50.00"), Decimal("150.00")]  # as printed
+
+
+@pytest.mark.integration
+def test_sign_override_shape_mismatch_names_the_shape_the_recipe_extracts(
+    db: Database, tmp_path: Path
+) -> None:
+    """The shape-guard error must name what the recipe ACTUALLY extracts.
+
+    The card statement's recipe extracts a single amount column. Overriding
+    with `split_debit_credit` (a shape this recipe does not have) must fail
+    with a message naming "single amount column" — not "debit/credit pair",
+    which is what an inverted ternary said before this fix. This is the
+    user's only in-band recovery path from a false-positive card detection;
+    a misdirecting message sends them to fix the wrong thing.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    with pytest.raises(UserError) as exc:
+        svc.import_file(pdf, refresh=False, sign="split_debit_credit")
+
+    assert exc.value.code == "invalid_sign_convention"
+    assert "single amount column" in exc.value.message
+    assert "debit/credit pair" not in exc.value.message
+    assert _row_count(db) == 0
+
+
+@pytest.mark.integration
+def test_sign_gate_metric_records_all_three_outcomes(
+    db: Database, tmp_path: Path
+) -> None:
+    """PDF_SIGN_GATE_TOTAL bumps proposed/confirmed/overridden at their exits.
+
+    The gate had zero telemetry before this fix — a false-positive card
+    detection was invisible in aggregate. Drives all three real transitions
+    (propose, override, confirm) end-to-end rather than asserting against the
+    gate's internals directly.
+
+    ``save_format=False`` on every call keeps each import a fresh
+    auto-derivation: a saved recipe would make the third call a REPLAY
+    (``is_auto_derived`` false), which returns before the ``confirmed`` bump
+    and would make this test's third assertion fail for the wrong reason.
+    """
+    from moneybin.metrics.registry import PDF_SIGN_GATE_TOTAL
+
+    def _count(outcome: str) -> float:
+        return PDF_SIGN_GATE_TOTAL.labels(outcome=outcome)._value.get()  # type: ignore[reportPrivateUsage]
+
+    proposed_before = _count("proposed")
+    overridden_before = _count("overridden")
+    confirmed_before = _count("confirmed")
+
+    svc = ImportService(db)
+
+    with pytest.raises(ImportConfirmationRequiredError):
+        svc.import_file(
+            write_card_statement_pdf(tmp_path, month="01"),
+            refresh=False,
+            save_format=False,
+        )
+    assert _count("proposed") == proposed_before + 1
+
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+        save_format=False,
+    )
+    assert _count("overridden") == overridden_before + 1
+
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        confirm=True,
+        save_format=False,
+    )
+    assert _count("confirmed") == confirmed_before + 1
