@@ -233,27 +233,26 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
     if number_fmt != "us":
         return None
 
-    # Sign-convention sanity check: auto_derive defaults single-amount layouts to
-    # negative_is_expense, but credit-card statements use the opposite convention
-    # (positive = expense, negative = payment). Two independent tells, because
-    # neither catches the other's case:
+    # The sign convention is not recoverable from the amounts. A checking
+    # statement (-50 groceries, +150 paycheck) and a card statement (+150
+    # charges, -50 payment) have identical sign distributions AND both
+    # reconcile cleanly, because reconciliation sums the raw signed amounts
+    # either way. The document's own required disclosures are the only signal
+    # that separates them.
     #
-    # - The document names itself a card statement. This is the load-bearing one:
-    #   a card statement with even one payment row has negative amounts, so the
-    #   amounts alone can never rule it out (see _looks_like_credit_card_statement).
-    # - No negative amounts at all. Catches a card statement that carries none of
-    #   the disclosures — the convention is ambiguous, and reconciliation still
-    #   passes on a flat (zero-delta) month while the import writes expenses as
-    #   income.
+    # Markers present -> the statement names itself a card; derive the inverted
+    # convention. The SERVICE gates this proposal behind a confirm — a wrong
+    # inversion corrupts every row on this import and on every future replay,
+    # so it is never applied silently (see ImportService._import_pdf).
     #
-    # Decline rather than guess: derivation failing routes the statement to the
-    # bridge, which can read it. A recipe with the sign convention backwards
-    # corrupts every row, on this import and on every future replay.
-    if sign == "negative_is_expense" and (
-        _looks_like_credit_card_statement(doc)
-        or not _has_any_negative_amount(table, amount_cols)
-    ):
-        return None
+    # No markers and no negative amount anywhere -> genuinely ambiguous. Decline
+    # rather than guess: derivation failing routes the statement to the bridge,
+    # which can read it.
+    if sign == "negative_is_expense":
+        if credit_card_markers(doc):
+            sign = "negative_is_income"
+        elif not _has_any_negative_amount(table, amount_cols):
+            return None
 
     fields = _build_fields(table.header, date_pattern, number_fmt)
     metadata_anchors = _build_metadata_anchors()
