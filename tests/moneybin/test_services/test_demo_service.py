@@ -208,6 +208,45 @@ def test_rebuild_requires_confirmation(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("persona", ["basic", "family", "freelancer"])
+def test_demo_pipeline_output_is_invisible_to_the_real_data_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
+) -> None:
+    # The inverse property, driven through the REAL pipeline for every persona.
+    # The guard now treats any `app.*` table outside _DEMO_WRITTEN_APP_TABLES as
+    # the user's — so if the pipeline ever starts writing another one, demo would
+    # refuse to rebuild its OWN profile on the next run. This is the test that
+    # catches that in CI rather than in a user's terminal.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.database import get_database
+    from moneybin.synthetic.reset import has_non_synthetic_data
+
+    DemoService().run(persona=persona, seed=42, years=1)
+
+    with get_database(read_only=True) as db:
+        assert has_non_synthetic_data(db) is False
+
+
+@pytest.mark.integration
+def test_dirty_doctor_does_not_switch_the_default_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A failing doctor is a failed run (the CLI exits 1), so it must not repoint the
+    # user's default at a demo profile we just told them is broken.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker, failing=2)
+
+    result = DemoService().run(persona="basic", seed=42)
+
+    assert result.doctor_failing == 2
+    assert result.previous_default is None
+
+    from moneybin.utils.user_config import get_default_profile
+
+    assert get_default_profile() != DEMO_PROFILE
+
+
+@pytest.mark.integration
 def test_rebuilds_an_empty_pre_existing_demo_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:

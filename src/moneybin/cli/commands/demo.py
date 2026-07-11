@@ -118,16 +118,19 @@ def demo_command(
                     )
                 # Demo repoints every later command at itself. Say so, and name the
                 # way back — a silent default switch is magic that must stay visible.
-                switch_back = (
-                    f" Switch back with: moneybin profile switch "
-                    f"{result.previous_default}"
-                    if result.previous_default
-                    else ""
-                )
-                typer.echo(
-                    f"⚙️  Default profile is now {result.profile!r}.{switch_back}",
-                    err=True,
-                )
+                # A failing doctor is a failed run, and the service leaves the
+                # default alone in that case, so say nothing.
+                if result.doctor_failing == 0:
+                    switch_back = (
+                        f" Switch back with: moneybin profile switch "
+                        f"{result.previous_default}"
+                        if result.previous_default
+                        else ""
+                    )
+                    typer.echo(
+                        f"⚙️  Default profile is now {result.profile!r}.{switch_back}",
+                        err=True,
+                    )
                 typer.echo(_NEXT_STEPS, err=True)
 
         # A demo that boots dirty is a real signal, not a warning to swallow.

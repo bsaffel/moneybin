@@ -167,6 +167,38 @@ def test_has_non_synthetic_data_guards_raw_tables_it_has_never_heard_of(
     assert has_non_synthetic_data(db) is True
 
 
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_securities_on_a_demo_profile(
+    db: Database,
+) -> None:
+    # The `ours` path (generator_made=True) routes through has_non_synthetic_data.
+    # Demo makes itself the default profile, so a user WILL accumulate real state
+    # in it — and a securities catalog needs no transaction behind it. The demo
+    # pipeline never writes app.securities, so it can only be the user's.
+    db.execute("CREATE SCHEMA IF NOT EXISTS synthetic")
+    db.execute("CREATE TABLE IF NOT EXISTS synthetic.ground_truth (id VARCHAR)")
+    db.execute(
+        "INSERT INTO app.securities (security_id, name, security_type) "
+        "VALUES (?, ?, ?)",
+        ["sec_1", "Vanguard S&P 500 ETF", "etf"],
+    )
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_budgets_on_a_demo_profile(
+    db: Database,
+) -> None:
+    # Same class as securities — the structural point is that enumerating the app
+    # tables that count would go stale exactly the way the raw allowlist did.
+    db.execute(
+        "INSERT INTO app.budgets (budget_id, category, monthly_amount, start_month) "
+        "VALUES (?, ?, ?, ?)",
+        ["bud_1", "Dining", "500.00", "2025-01"],
+    )
+    assert has_non_synthetic_data(db) is True
+
+
 @pytest.mark.integration
 def test_generator_output_is_invisible_to_the_real_data_guard(db: Database) -> None:
     # The inverse of the guarantee above, driven through the real writer. Every

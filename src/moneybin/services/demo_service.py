@@ -281,8 +281,15 @@ class DemoService:
         #    displaced: silently repointing every later command at `demo` is
         #    exactly the kind of magic that has to stay visible, and the caller
         #    needs the displaced name to offer a way back.
-        previous_default = get_default_profile()
-        set_default_profile(DEMO_PROFILE)
+        #
+        #    A failing doctor IS a failed run (the CLI exits 1 on it), so it must
+        #    not repoint the user's default at a demo profile we just told them is
+        #    broken. Leave them where they were.
+        previous_default: str | None = None
+        if report.failing == 0:
+            displaced = get_default_profile()
+            set_default_profile(DEMO_PROFILE)
+            previous_default = displaced if displaced != DEMO_PROFILE else None
 
         DEMO_RUN_TOTAL.labels(persona=persona).inc()
         logger.info(f"✅ Demo profile {DEMO_PROFILE!r} ready (seed={seed})")
@@ -297,7 +304,5 @@ class DemoService:
             net_worth=snapshot.net_worth,
             total_assets=snapshot.total_assets,
             total_liabilities=snapshot.total_liabilities,
-            previous_default=(
-                previous_default if previous_default != DEMO_PROFILE else None
-            ),
+            previous_default=previous_default,
         )

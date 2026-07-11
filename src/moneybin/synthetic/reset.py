@@ -11,7 +11,6 @@ from sqlglot import exp
 
 from moneybin.database import Database
 from moneybin.tables import (
-    BALANCE_ASSERTIONS,
     GROUND_TRUTH,
     OFX_ACCOUNTS,
     OFX_BALANCES,
@@ -78,40 +77,52 @@ def has_synthetic_ground_truth(db: Database) -> bool:
         return False
 
 
+# The only tables a freshly-created profile has rows in — migration bookkeeping,
+# not user data. Locked by `test_has_any_user_content_is_false_for_a_fresh_database`
+# and, against a REAL `init_db`, `test_rebuilds_an_empty_pre_existing_demo_profile`.
+_INIT_POPULATED_TABLES = frozenset({"app.schema_migrations", "app.versions"})
+
+# Everything a demo/synthetic run puts in `app` itself — bookkeeping above plus the
+# seed priorities the transform writes. A rebuild regenerates these, so they are not
+# the user's to lose. Verified across all three personas through the real pipeline by
+# `test_demo_pipeline_output_is_invisible_to_the_real_data_guard`; that test fails
+# loudly if the pipeline ever starts writing another `app` table, which would
+# otherwise make the guard refuse to rebuild demo's own profile.
+_DEMO_WRITTEN_APP_TABLES = _INIT_POPULATED_TABLES | {"app.seed_source_priority"}
+
+
 def _real_row_checks(db: Database) -> list[tuple[str, str]]:
     """Build the (quoted table, WHERE clause) checks that detect real user data.
 
-    Inverted deliberately. Enumerating the tables that *might* hold real data goes
-    stale the moment a new import source lands — and it fails OPEN, silently
-    leaving the new table's rows invisible to the guard (exactly how `pdf_seeds`
-    and `manual_investment_transactions` slipped past it). So instead we enumerate
-    the closed set the generator writes and read the live catalog for everything
-    else: an unrecognized `raw.*` table is real data by default, and a new import
-    source is guarded from the day it is added.
+    Inverted deliberately, on both schemas. Enumerating the tables that *might* hold
+    real data goes stale the moment a new source or feature lands — and it fails
+    OPEN, silently leaving the new table's rows invisible to the guard. That is
+    exactly how `raw.pdf_seeds`, `raw.manual_investment_transactions`, and then
+    `app.securities` each slipped past it in turn.
+
+    So enumerate the closed sets *we* write — the generator's raw tables, and the
+    `app` tables demo's own pipeline produces — and read the live catalog for
+    everything else. Any other `raw.*` or `app.*` table is real user data by
+    default: `app.securities`, `app.budgets`, and `app.user_categories` are all
+    user-authored with no transaction behind them, and the list only grows.
     """
     rows = db.execute(
-        "SELECT schema_name, table_name FROM duckdb_tables() WHERE schema_name = ?",
-        [OFX_TRANSACTIONS.schema],
+        "SELECT schema_name, table_name FROM duckdb_tables() "
+        "WHERE schema_name IN ('app', 'raw')"
     ).fetchall()
 
-    checks = [
-        (
-            _quote(schema, name),
+    checks: list[tuple[str, str]] = []
+    for schema, name in rows:
+        qualified = f"{schema}.{name}"
+        if qualified in _DEMO_WRITTEN_APP_TABLES:
+            continue  # ours; the rebuild regenerates it
+        where = (
             f"WHERE {_NON_SYNTHETIC_ROWS}"
-            if f"{schema}.{name}" in GENERATOR_WRITTEN_TABLES
-            else "",
+            if qualified in GENERATOR_WRITTEN_TABLES
+            else ""
         )
-        for schema, name in rows
-    ]
-    # User-authored balances live outside `raw` and the generator never writes them.
-    checks.append((_quote(BALANCE_ASSERTIONS.schema, BALANCE_ASSERTIONS.name), ""))
+        checks.append((_quote(schema, name), where))
     return checks
-
-
-# The only tables a freshly-created profile has rows in — migration bookkeeping,
-# not user data. Locked by `test_a_fresh_profile_holds_no_user_content`, which
-# fails loudly if `init_db` ever starts populating something else.
-_INIT_POPULATED_TABLES = frozenset({"app.schema_migrations", "app.versions"})
 
 
 def has_any_user_content(db: Database) -> bool:
