@@ -127,15 +127,40 @@ where = ["src"]
 include = ["moneybin*"]
 
 [tool.setuptools.package-data]
-# Include SQLMesh project files so wheel installs can run transformations
-# without a source checkout.
+# Every file the runtime loads from disk rather than imports. Without these a
+# `pip install moneybin` cannot create a profile, migrate a schema, run a
+# transform, or generate demo data.
+#
+# These MUST be in-package globs. A pattern that escapes the package directory
+# (e.g. "../../sqlmesh/models/*.sql") is silently ignored by setuptools — it
+# ships nothing and reports no error, which is exactly how the wheel came to
+# contain no SQL at all.
+#
+# The .py entries are deliberate: those files are *data*, read by path rather
+# than imported (SQLMesh scans its project dir; migrations.py loads .py
+# migrations via spec_from_file_location). They currently also arrive via
+# namespace-package discovery, but listing them here states the requirement
+# outright so a future `namespaces = false` cannot silently drop them.
+#
+# Globs are explicit per directory rather than a blanket "**/*" so that
+# gitignored build droppings (sqlmesh/.cache/, profiles/*/logs/) cannot leak
+# into the distribution.
+#
+# tests/e2e/test_wheel_packaging.py inspects a real built wheel and fails if any
+# runtime resource on disk is missing from it. Add new resource dirs there too.
 moneybin = [
+    "sql/schema/*.sql",
+    "sql/migrations/*.sql",
+    "sql/migrations/*.py",
     "sqlmesh/config.py",
     "sqlmesh/external_models.yaml",
     "sqlmesh/models/**/*.sql",
     "sqlmesh/models/**/*.py",
     "sqlmesh/models/seeds/*.csv",
     "sqlmesh/audits/**/*.sql",
+    "synthetic/data/**/*.yaml",
+    "data/tabular_formats/*.yaml",
+    "extractors/*/schema/*.sql",
 ]
 
 [project.scripts]
