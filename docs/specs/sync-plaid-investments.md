@@ -777,35 +777,33 @@ as one or more synthetic **opening `transfer_in`** rows in
 `subtype='opening_bootstrap'` so it is auditable and never confused with a real
 ACATS transfer):
 
-- **Per-lot enrichment (gap-bounded).** The position-level gap `G` (held
-  quantity − in-window net quantity) is the **authoritative** quantity to open —
-  it already excludes everything the in-window ledger accounts for, so it can
-  never re-open a lot an in-window buy already created. `tax_lots[]` describes
-  the *whole* current position (both pre-window lots and any in-window lot still
-  held), so bootstrap must **not** emit one row per lot. Instead, when
-  `raw.plaid_investment_holding_lots` carries lots, staging draws `G` down
-  against the lots acquired **before the window start**
-  (`original_purchase_datetime` < the sync's *requested* transaction-window
-  start — the date-range query's start boundary, **not** the first returned
-  transaction's date, which is NULL for the common long-held position that had
-  no in-window activity and would wrongly starve every lot to the residual
-  path) — definitionally the lots no in-window transaction represents —
-  **oldest first**. Each drawn slice opens one `transfer_in` carrying that lot's
-  `original_purchase_datetime` (→ `original_acquisition_date`) and a basis
-  **proportional to the drawn quantity**: a fully-drawn lot carries its full
-  `cost_basis` (→ `amount`); a partially-drawn lot (the overshoot tail below)
-  carries `cost_basis × drawn_qty / lot_qty`, so `amount` never claims more
-  basis than the quantity it opens. Correct basis *and* holding-period start —
-  the differentiation edge. Two reconciliation edges, both visible:
-  - **Lots undershoot `G`** (pre-window lots sum to less than the gap — NULL
-    `original_purchase_datetime` lots, or the broker reports no lot for part of
-    the position): the unexplained residual opens as a single `basis_incomplete`
-    row (`amount = NULL`, snapshot-date fallback), flagged.
-  - **Lots overshoot `G`** (pre-window lots sum to more than the gap — e.g. an
-    in-window partial sale already consumed part of a pre-window lot): allocation
-    stops at `G`, the boundary lot drawn only partially with its basis prorated
-    (above); the surplus is **not** emitted, and `system doctor` surfaces the
-    mismatch rather than the pipeline silently inflating quantity.
+- **Per-lot enrichment (draw the gap oldest-first).** The position-level gap
+  `G` (held quantity − in-window net quantity) is the **authoritative** quantity
+  to open — it already excludes everything the in-window ledger accounts for, so
+  it can never re-open a lot an in-window buy already created. `tax_lots[]`
+  describes the *whole* current position, so bootstrap must **not** emit one row
+  per lot. Instead, when `raw.plaid_investment_holding_lots` carries lots,
+  staging draws exactly `G` shares across the position's lots **oldest first**
+  (by `original_purchase_datetime`). Because `G` is precisely the
+  held-minus-in-window remainder, drawing that many shares from the oldest lots
+  inherently selects the pre-window lots and stops before the newer,
+  in-window-acquired ones — **no separate window-boundary date is needed**, and
+  the common no-in-window-activity case (`G` = full held quantity) simply draws
+  every lot with its own basis and date. Each drawn slice opens one `transfer_in`
+  carrying that lot's `original_purchase_datetime` (→ `original_acquisition_date`)
+  and a basis **proportional to the drawn quantity**: a fully-drawn lot carries
+  its full `cost_basis` (→ `amount`); the boundary lot where the cumulative draw
+  crosses `G` is drawn partially and carries `cost_basis × drawn_qty / lot_qty`,
+  so `amount` never claims more basis than the quantity it opens. Correct basis
+  *and* holding-period start — the differentiation edge.
+  - **Residual (`amount = NULL`).** If the datable lots can't cover `G` — the
+    broker reports lots for only part of the position, or a lot carries a NULL
+    `original_purchase_datetime` (no holding-period anchor, so it can't be
+    ordered) — the uncovered remainder opens as a single `basis_incomplete` row
+    (`amount = NULL`, snapshot-date fallback), flagged. Bootstrap never opens
+    more than `G`, so an over-covered position simply leaves its newest lots
+    undrawn (they are already in the ledger via in-window buys) — the expected
+    healthy case, not a mismatch.
 - **Position-level fallback (empty `tax_lots[]`).** When the institution
   provides no lot detail, one opening `transfer_in` for the whole gap `G`.
   `Holding.cost_basis` is the *whole-position* basis, so it maps to `amount`
@@ -936,7 +934,7 @@ data still loads.
 | `stg_plaid__securities` / `__investment_holdings` | Currency `COALESCE`; MIC → `exchange`; defensive type mapping; both-id resolution on holdings. |
 | Core union | Plaid rows in `fct_investment_transactions` with correct sign + provider columns; manual rows carry NULL provider columns; Plaid buys/sells produce lots and realized gains through the **unmodified** engine; `dim_holdings` reconciliation columns join only each account's newest snapshot — a position absent from it (sold elsewhere, broker stopped reporting) shows NULL `provider_reported_*`, and manual-only positions stay NULL throughout. |
 | Reinvest pairing | Golden fixture (captured from Sandbox): reinvest pair shares one `event_group_id`; unpairable row degrades to NULL group with lot/income effects intact. |
-| Basis-unknown transfer | A `transfer_in`/`stock distribution` with no Plaid basis and no `tax_lots[]` maps to `amount = NULL` (not 0) → the engine opens a `basis_incomplete` lot; a matching `tax_lots[].cost_basis` instead opens a complete lot. |
+| Basis-unknown transfer | An in-window `transfer_in`/`stock distribution` with Plaid `amount = 0` maps to `amount = NULL` (not 0) → the engine opens a `basis_incomplete` lot. Staging does **not** borrow basis from `Holding.tax_lots[]` for an individual in-window transfer (those lots describe the whole position and carry no transaction link) — per-lot basis is exercised only by the opening-lot bootstrap row below. |
 | Split normalization | A `transfer/split` share-delta converts to the multiplier `M` from the pre-split running position; every open lot scales by `M`, `cost_basis_total` preserved; an underivable pre-split position routes the split to review, not a corrupted lot. |
 | Opening-lot bootstrap | Holdings-vs-ledger positive gap synthesizes `subtype='opening_bootstrap'` `transfer_in`s (per-lot from `tax_lots[]` with real basis+acquisition date; position-level fallback → `basis_incomplete`); rebuild is idempotent (content-hash id); no gap → no synthetic row; negative gap → doctor warning, no silent write; a later sell consumes the bootstrapped lot instead of realizing oversold zero-basis. |
 | Merge migrates lot selections | Accepting a provisional-security merge re-points `app.lot_selections` to the survivor (recomputed `lot_id`); a specific-ID sale stays specific-ID across the rebuild; an unremappable selection blocks the merge. |
