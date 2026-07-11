@@ -92,6 +92,7 @@ Default: every operation is MCP-exposed. CLI-only status requires a justified ex
    - **Server lifecycle:** `mcp_serve`, `mcp_install`, `mcp_config_path`, `mcp_list_tools`, `mcp_list_prompts` (operator introspection of the local MCP surface).
    - **Profile + identity:** `profile_*`.
    - **Developer tooling:** `logs`, `stats`, `synthetic_generate`, `synthetic_reset`, `transform_seed`, `transform_restate`.
+   - **Bootstrapping:** `demo` — CLI-only for the same reason as `profile_*` (it creates and activates a profile, so it must run *before* an MCP session can exist), but its audience is the external evaluator, not the developer.
 
 What is NOT a valid CLI-only justification:
 - "Long-running" — MCP supports progress notifications.

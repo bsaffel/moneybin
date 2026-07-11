@@ -13,6 +13,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`moneybin demo` evaluator preset (M3A).** One command sets up an isolated
+  `demo` profile, generates synthetic data (`--persona
+  basic`/`family`/`freelancer`), runs the full pipeline — match, and categorization
+  by the real engine against the merchants the generator invented — to a clean
+  `system doctor`, activates the profile, and prints net worth plus next steps: a
+  from-install path to a working product with no real financial data. It always
+  targets the dedicated `demo` profile (there is no `--profile` target, so it can
+  never be pointed at a real one), and re-running rebuilds that profile's database
+  from scratch and regenerates (deterministic by default); `--yes` for
+  non-interactive use. (#310)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an
   investment-transaction ledger (`investments add` — buy, sell, reinvest,
@@ -356,6 +366,24 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   to the seed store as before, and so are statements in a number locale the
   importer cannot replay — escalating those would send your statement to an AI
   provider for a result it provably cannot use. (#313)
+- **Net worth no longer drops accounts with older statements.**
+  `core.fct_balances_daily` built each account's date spine only as far as *that
+  account's* last balance observation, so on any later date the account simply
+  vanished — and `reports.net_worth` sums the accounts present on a date. An account
+  whose statement landed a week before another's therefore contributed nothing to
+  the current net worth: a checking account with one January statement was absent
+  from a December total. Every account is now carried forward to the newest known
+  date, so net worth reflects each account's last known balance. Accounts that are
+  genuinely gone are excluded by archiving them (`include_in_net_worth` / `archived`,
+  already honored), not by silently ageing out. (#310)
+- **First-run guidance points an unset-up profile at `profile create`.** When the
+  active profile has never been set up at all, the "Database not found" message
+  now recommends `moneybin profile create <name> --init-inbox` (which scaffolds
+  config, database, and inbox) instead of `db init`, which would leave the profile
+  unregistered — absent from `moneybin profile list`, with no inbox. If the
+  profile *directory* already exists, the message still points at `db init`:
+  `profile create` refuses on the directory alone, so recommending it there would
+  dead-end the user. (#310)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its

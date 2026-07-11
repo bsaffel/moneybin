@@ -22,6 +22,7 @@ from .commands import (
     assets,
     categories,
     db,
+    demo,
     gsheet,
     import_cmd,
     investments,
@@ -97,6 +98,19 @@ def main_callback(
     stash_cli_flags(profile_name, verbose)
     setup_observability(stream="cli", verbose=verbose, profile=None)
 
+    # `demo` always targets the dedicated `demo` profile, so a --profile alongside it
+    # would be silently discarded. Reject it rather than accept-and-ignore: quietly
+    # doing something other than what the flag says is exactly the invisible magic
+    # `design-principles.md` rules out. (An ambient MONEYBIN_PROFILE is not an
+    # instruction about *this* command, so it stays tolerated and overridden.)
+    if ctx.invoked_subcommand == "demo" and profile_name:
+        raise typer.BadParameter(
+            "'demo' always targets the dedicated 'demo' profile and cannot be pointed "
+            "at another one. Drop --profile, or use 'moneybin synthetic generate' for "
+            "a differently-named synthetic sandbox.",
+            param_hint="--profile",
+        )
+
     # Set the active profile name eagerly when one is explicit. This only
     # validates the name format and updates module state — no dir check,
     # no I/O — so it's safe for `--help` and bare-group invocations.
@@ -107,9 +121,9 @@ def main_callback(
             raise typer.BadParameter(str(e)) from e
 
     # Profile commands are recovery tools (`profile create` legitimately runs
-    # against a profile that doesn't yet exist) and synthetic commands manage
-    # their own profile lifecycle — both skip the lazy dir-check + wizard.
-    if ctx.invoked_subcommand in ("profile", "synthetic"):
+    # against a profile that doesn't yet exist), and synthetic + demo commands
+    # manage their own profile lifecycle — all skip the lazy dir-check + wizard.
+    if ctx.invoked_subcommand in ("profile", "synthetic", "demo"):
         return
 
     register_profile_resolver(resolve_profile)
@@ -121,6 +135,10 @@ app.add_typer(
     name="profile",
     help="Manage user profiles (create, list, switch, delete, show, set)",
 )
+app.command(
+    name="demo",
+    help="Set up a demo profile with synthetic data and a first answer",
+)(demo.demo_command)
 app.add_typer(
     import_cmd.app,
     name="import",

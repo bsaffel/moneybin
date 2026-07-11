@@ -151,6 +151,11 @@ class TestResetCommand:
         mock_db.execute.return_value.fetchone.return_value = (1,)
         mock_db.path = Path("/tmp/test.duckdb")
         mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        # Profile-safety guard: the mocked profile is synthetic-only (the coarse
+        # (1,) fetchone mock would otherwise read as real data present).
+        mocker.patch(
+            "moneybin.synthetic.reset.has_non_synthetic_data", return_value=False
+        )
 
         # Mock _run_generate to avoid the full pipeline
         mock_run = mocker.patch(
@@ -174,7 +179,13 @@ class TestResetCommand:
     def test_reset_requires_yes_or_prompt(self, runner: CliRunner) -> None:
         """Without --yes, reset should prompt for confirmation."""
         # CliRunner sends EOF on stdin by default, so prompt is declined
-        with patch("moneybin.database.get_database") as mock_get_db:
+        with (
+            patch("moneybin.database.get_database") as mock_get_db,
+            patch(
+                "moneybin.synthetic.reset.has_non_synthetic_data",
+                return_value=False,
+            ),
+        ):
             mock_db = MagicMock()
             mock_db.__enter__ = MagicMock(return_value=mock_db)
             mock_db.__exit__ = MagicMock(return_value=False)
