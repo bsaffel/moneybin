@@ -689,6 +689,112 @@ def test_conflicting_refs_never_rewrite_a_binding(
     ]
 
 
+def test_ligature_ticker_never_auto_binds_to_ascii_lookalike(db: Database) -> None:
+    """A ligature-ticker catalog entry must never silently fuse with an ASCII lookalike.
+
+    A catalog ticker containing the "fi" ligature (U+FB01) must never fuse
+    with a genuinely different provider ticker 'FI' just because
+    str.upper() happens to map both to the same ASCII string.
+    """
+    sid = _catalog(db, "Some Ligature Corp", ticker="ﬁ")
+    _raw_security(db, "sec_1", security_name="Fiserv Inc.", ticker_symbol="FI")
+    counts = SecurityResolver(db).resolve_all()
+    assert "auto_bound" not in counts
+    assert _bindings(db)[0][2] != sid
+
+
+def test_dotless_i_ticker_never_auto_binds_to_ascii_lookalike(db: Database) -> None:
+    """A dotless-i catalog ticker must never silently fuse with an ASCII lookalike.
+
+    A catalog ticker with the Turkish dotless i (U+0131) must never fuse
+    with the genuinely different provider ticker 'IBM'. Python's default
+    Unicode case mapping folds both to 'IBM' at the SAME length as plain
+    'i' -> 'I', so a length-preserving check alone would miss this.
+    """
+    sid = _catalog(db, "Not Actually IBM", ticker="ıBM")
+    _raw_security(db, "sec_1", security_name="IBM", ticker_symbol="IBM")
+    counts = SecurityResolver(db).resolve_all()
+    assert "auto_bound" not in counts
+    assert _bindings(db)[0][2] != sid
+
+
+def test_ascii_whitespace_and_case_ticker_still_auto_binds(db: Database) -> None:
+    """Plain ASCII lower-case/whitespace tickers still normalize and auto-bind.
+
+    The non-ASCII guard (Fix 1) must not over-correct on ordinary input.
+    """
+    sid = _catalog(db, "HEICO Corp", ticker="hei")
+    _raw_security(db, "sec_1", security_name="HEICO Corp", ticker_symbol="  HeI  ")
+    assert SecurityResolver(db).resolve_all() == {"auto_bound": 1}
+    assert _bindings(db)[0][2] == sid
+
+
+def test_cross_sync_pending_provisional_never_offered_as_merge_candidate(
+    db: Database,
+) -> None:
+    """A still-pending provisional from an EARLIER sync is never offered as a merge candidate.
+
+    Not even to a row delivered in a LATER sync — the "don't offer an
+    unreviewed provisional" guard is not batch-scoped.
+    """
+    sid = _catalog(db, "Vanguard Total Stock Market ETF", security_type="etf")
+    _raw_security(
+        db,
+        "sec_1",
+        security_name="Vanguard Total Stock Mkt ETF",
+        security_type="etf",
+    )
+    # Sync 1: mints a provisional and proposes a merge into sid; stays pending.
+    assert SecurityResolver(db).resolve_all() == {"proposed": 1}
+    provisional_row = db.execute(
+        "SELECT security_id FROM app.securities WHERE created_by = 'plaid'"
+    ).fetchone()
+    assert provisional_row is not None
+    provisional = provisional_row[0]
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+    # Sync 2: a brand-new plaid security on the same fuzzy-matching name.
+    _raw_security(
+        db,
+        "sec_2",
+        security_name="Vanguard Total Stock Mkt ETF",
+        security_type="etf",
+    )
+    counts = SecurityResolver(db).resolve_all()
+    assert counts == {"adopted": 1, "proposed": 1}  # sec_1 adopts, sec_2 proposes
+    pending_for_sec_2 = [
+        p
+        for p in SecurityLinkDecisionsRepo(db).list_pending()
+        if p["ref_value"] == "sec_2"
+    ]
+    assert [p["candidate_security_id"] for p in pending_for_sec_2] == [sid]
+    assert provisional not in {p["candidate_security_id"] for p in pending_for_sec_2}
+
+
+def test_in_batch_mint_remains_a_valid_rung2_auto_bind_target(db: Database) -> None:
+    """Two provider rows sharing an exact identifier dedup onto ONE minted security.
+
+    Within a single batch. This pins the carve-out ``_mint``'s docstring
+    promises: the exclusion added by Fix 2 (cross-sync pending provisionals
+    barred from being OFFERED) must not also bar an in-batch mint from
+    being an auto-bind TARGET — those are different guards.
+    """
+    _seed_mic_registry(db)
+    for security_id in ("sec_1", "sec_2"):
+        _raw_security(
+            db,
+            security_id,
+            security_name="HEICO Corp Class A",
+            ticker_symbol="HEI.A",
+            market_identifier_code="XNAS",
+        )
+    assert SecurityResolver(db).resolve_all() == {"minted": 1, "auto_bound": 1}
+    rows = db.execute(
+        "SELECT COUNT(DISTINCT security_id) FROM app.securities"
+    ).fetchone()
+    assert rows is not None and rows[0] == 1
+
+
 def test_missing_seed_registry_degrades_to_absent(db: Database) -> None:
     # no seeds schema at all — exchange comparison must degrade, not raise
     _catalog(db, "Apple Inc.", ticker="AAPL", exchange="NASDAQ")

@@ -71,15 +71,32 @@ _PLACEHOLDER_NAME = "(Plaid security)"
 
 
 def _norm(value: str | None) -> str | None:
-    """Uppercase + strip an identifier; empty/whitespace reads as absent (None).
+    """Uppercase + strip an identifier; empty, whitespace, or non-ASCII reads as absent (None).
 
     Absent is the neutral value throughout the ladder: it never matches and
-    never contradicts. Normalizing here prevents a false MISS on ' aapl ' —
-    it can never create a false match, since the transform is
-    case/whitespace-only.
+    never contradicts. Uppercasing an ASCII string ('  aapl ' -> 'AAPL') is
+    safe: ASCII case-folding is a strict one-to-one letter mapping, so it can
+    only fix a false MISS, never manufacture a false match.
+
+    A non-ASCII input is not safe to uppercase. `str.upper()` performs full
+    Unicode case mapping, which can EXPAND a character (U+FB01 the "fi"
+    ligature -> 'FI', one code point becomes two) or COLLAPSE a distinct
+    character onto an ordinary ASCII letter's own case-fold while preserving
+    length (U+0131 Turkish dotless i -> 'I', identical to plain 'i' -> 'I').
+    Either way, a catalog identifier and a genuinely different provider
+    identifier can normalize to the same string — the same "lossy transform
+    manufactures a false UNIQUE hit" failure mode as the ticker-suffix strip,
+    but one rung deeper, where it reaches CUSIP/ISIN/ticker auto-bind
+    directly. A length-preserving check on the output cannot catch this by
+    itself (the dotless-i case IS length-preserving), so the guard checks the
+    INPUT instead: any non-ASCII input is refused outright rather than
+    normalized, at the cost of losing recall (never correctness) on
+    non-ASCII identifiers.
     """
-    normalized = (value or "").strip().upper()
-    return normalized or None
+    stripped = (value or "").strip()
+    if not stripped or not stripped.isascii():
+        return None
+    return stripped.upper()
 
 
 @dataclass(frozen=True)
@@ -152,7 +169,10 @@ class SecurityResolver:
         catalog = self._load_catalog()
         pending = self._load_pending()
         rejected = self._load_rejected()
-        minted: set[str] = set()
+        # Seeded with provisionals still awaiting review from an EARLIER sync
+        # (see ``_load_unreviewed_security_ids``), not just an empty set —
+        # this batch's own mints join it as ``_mint`` runs (see ``_offerable``).
+        minted: set[str] = self._load_unreviewed_security_ids(pending)
         counts: dict[str, int] = {}
         for raw in rows:
             outcome = self._resolve_one(raw, catalog, pending, rejected, minted)
@@ -309,6 +329,12 @@ class SecurityResolver:
     ) -> _Match:
         """Catalog entries matching the provider ticker's stem — flagged, never bound.
 
+        The stem is the ROOT segment: ``split(".")[0]`` drops everything from
+        the FIRST "." or "-" onward in one cut, not just a trailing suffix
+        (``BRK.B.L`` -> ``BRK``, not ``BRK.B``). Safe regardless, because this
+        rung only ever flags for review, never binds — over-stripping a
+        multi-dot ticker still routes to a human, never to a silent auto-bind.
+
         EVERY stem hit surfaces: a strip that lands on more than one entry is as
         ambiguous as any other tie, and the resolver never picks. A candidate a
         strong identifier contradicts is discarded outright (Guard 2) — a stripped
@@ -351,11 +377,16 @@ class SecurityResolver:
         """May this candidate be OFFERED to the reviewer as the merge survivor?
 
         Two disqualifiers. A pairing the user already rejected is never
-        re-proposed. And a security minted earlier in THIS batch is not a
-        reviewable survivor — it is itself an unreviewed provisional row, so
-        offering it would ask the human to merge into something pending review.
-        (It remains a valid rung-2 auto-bind target: in-batch dedup on an exact
-        identifier is intended.)
+        re-proposed. And a candidate that is itself an unreviewed provisional
+        row is not a reviewable survivor — offering it would ask the human to
+        merge into something pending review. That rule is NOT batch-scoped: it
+        covers a security minted earlier in THIS batch (added to ``minted`` by
+        ``_mint``) exactly as it covers a provisional minted on an EARLIER sync
+        that still has an unresolved pending decision (added to ``minted`` up
+        front by ``_load_unreviewed_security_ids`` — a decision persists across
+        syncs in the DB, so re-deriving the exclusion from in-batch state alone
+        would miss it). Either way it remains a valid rung-2 auto-bind target —
+        only the OFFER as a merge candidate is barred, never the bind.
         """
         if candidate.security_id in minted:
             return False
@@ -406,9 +437,13 @@ class SecurityResolver:
         """Mint a provider-provenance catalog row and add it to the in-batch catalog.
 
         The new entry joins ``catalog`` so a later row in the same batch carrying
-        the same CUSIP/ISIN/ticker adopts it (rung 2) instead of minting a twin.
-        It also joins ``minted``, which bars it from being OFFERED as a merge
-        survivor to a later row (see ``_offerable``).
+        the same CUSIP/ISIN/ticker adopts it (rung 2) instead of minting a twin —
+        this also covers a still-provisional security from an EARLIER sync,
+        which is already present in ``catalog`` because it was loaded from the
+        DB, so no special-casing is needed here for the cross-sync case. It
+        also joins ``minted``, which bars it from being OFFERED as a merge
+        survivor to a later row (see ``_offerable``) — never from being an
+        auto-bind target.
         """
         name = (
             (raw.name or "").strip() or (raw.ticker or "").strip() or _PLACEHOLDER_NAME
@@ -562,6 +597,26 @@ class SecurityResolver:
             for d in self._decisions.list_pending()
             if d["source_type"] == _SOURCE_TYPE
         }
+
+    def _load_unreviewed_security_ids(self, pending: set[tuple[str, str]]) -> set[str]:
+        """security_ids bound to a ref with an unresolved pending decision.
+
+        Seeds the ``minted`` exclusion set in ``resolve_all`` before the batch
+        starts: a provisional minted on an EARLIER sync and still awaiting
+        review is exactly as un-offerable a merge candidate as one minted THIS
+        batch (see ``_offerable``), but only the latter is visible from
+        in-batch state. The pending decision — and the binding it names —
+        persists in the DB across syncs, so this is recomputed here on every
+        ``resolve_all()`` call rather than tracked incrementally.
+        """
+        ids: set[str] = set()
+        for ref_kind, ref_value in pending:
+            bound = self._links.lookup(
+                ref_kind=ref_kind, ref_value=ref_value, source_type=_SOURCE_TYPE
+            )
+            if bound is not None:
+                ids.add(bound)
+        return ids
 
     def _load_rejected(self) -> set[tuple[str, str, str]]:
         return {
