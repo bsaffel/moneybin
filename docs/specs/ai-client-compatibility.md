@@ -35,9 +35,11 @@ before executing later phases.
 Every serious agentic client speaks MCP as of July 2026, but they bifurcate
 hard on transport. **Local stdio** is first-class in the developer/desktop
 tools (Claude Code, Claude Desktop, Codex, Cursor, VS Code Copilot, Windsurf,
-Gemini CLI, Zed, JetBrains, and the long tail). **Remote streamable-HTTP +
-OAuth** is the only way into the consumer cloud surfaces (claude.ai web/mobile,
-every ChatGPT surface, remote Cowork sessions) — and SSE is deprecated
+Gemini CLI, Zed, JetBrains, and the long tail — plus the **ChatGPT desktop
+app**, which takes a local stdio server via the shared Codex host). **Remote
+streamable-HTTP + OAuth** is the only way into the consumer cloud surfaces
+(claude.ai web/mobile, ChatGPT **web/mobile**, remote Cowork sessions) — and SSE
+is deprecated
 ecosystem-wide (still accepted only in legacy corners). Discovery is
 consolidating into first-party channels: `.mcpb` one-click bundles and plugin
 marketplaces on the Anthropic side, the Apps SDK directory on the OpenAI side,
@@ -77,7 +79,8 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
 | Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 102** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
-| ChatGPT web/desktop/mobile (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-permission tiering ambiguous in vendor docs — re-verify at M3D |
+| ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension |
+| ChatGPT web + mobile (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-permission tiering ambiguous — re-verify at M3D |
 | Cowork remote sessions | remote MCP via connectors | claude.ai connectors | **T3** | Same M3D unlock |
 | Claude Connectors Directory / ChatGPT App Directory | hosted remote + review | vendor submission portals | **T3 (M3O)** | Both require org accounts + human review; see M3O |
 | Gemini Code Assist | MCP in Private Preview | account-team request | **✗** | Revisit: GA announcement |
@@ -124,11 +127,15 @@ Stale guidance found during the review; all are routine fixes:
    manual JSON as legacy (still supported). Rewrite the section; add the
    Cowork caveat (remote sessions never see local MCP; local sessions do) and
    the managed-org flags (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`).
-2. **`mcp install --client chatgpt-desktop` prints instructions for a
-   local/stdio connector option that does not exist.** All ChatGPT surfaces
-   are remote-only (HTTPS + public `/mcp`; OpenAI recommends tunnels for local
-   dev). Replace the instructions with an honest "requires remote MCP —
-   arriving at M3D" message (and keep the client id reserved).
+2. **`mcp install --client chatgpt-desktop` should write the shared Codex TOML
+   config, not a remote-only disclaimer.** The ChatGPT desktop app hosts Codex
+   and reads `~/.codex/config.toml` — the same file `mcp install --client codex`
+   writes — so it takes an ordinary local stdio server (Settings → MCP servers →
+   Add → STDIO). Write that config, as **PR #315** implements. Only ChatGPT
+   **web/mobile** is remote-only (needs M3D). *(Corrects an earlier draft of this
+   spec that wrongly called all ChatGPT surfaces remote-only — its evidence was
+   the Apps SDK / Developer Mode "apps in ChatGPT" path, a different feature from
+   the desktop app's Codex-host MCP-servers setting.)*
 3. **Snippet hardening** in `mcp install`: emit the absolute `uv` path (macOS
    GUI-launched clients drop shell PATH — documented recurring failure);
    include `startup_timeout_sec` for Codex (uvx cold start 3–15s vs 10s
@@ -136,21 +143,19 @@ Stale guidance found during the review; all are routine fixes:
 4. **File the upstream Claude Desktop bug**: connector toggle ON in Chat with
    tools never reaching the model (observed 2026-07-10) contradicts Anthropic's
    documented behavior — file with logs against claude-ai-mcp.
-5. **Verify the connect-time visible tool count** against Windsurf's
-   100-active-tool cap (102 registered; extended-namespace tools are hidden by
-   default). Now informational only — Windsurf is T2, so this no longer gates a
-   T1 headroom policy; still worth knowing for any capped client.
-6. **The same ChatGPT-is-local misconception lives in two more checked-in
-   docs** — correct alongside item 2 (or in the doc-polish pass that owns them):
-   `docs/features.md`'s "MCP install across nine clients" list includes
-   **ChatGPT Desktop** as a local `mcp install` target, and
-   `docs/specs/user-facing-doc-polish.md` item 17 claims **ChatGPT Desktop has
-   local-stdio support today** with a Desktop-vs-web/mobile split. Both are
-   wrong: **all ChatGPT surfaces (web, desktop, mobile) are remote-only** — no
-   stdio, no per-surface split (verified against OpenAI Developer Mode / Apps
-   SDK docs, July 2026: "ChatGPT only accepts remote HTTPS MCP servers — no
-   stdio"). The support matrix collapsing web/desktop/mobile into one
-   remote-only T3 row is therefore correct, not an omission.
+5. **Windsurf tool-cap overflow is a shipped defect, not informational.**
+   Progressive disclosure was retired (`mcp-architecture.md` §3): the full
+   registered surface is visible at connect, so all 102 tools count against
+   Cascade's hard **100-active-tool ceiling** (measured live: 102 registered,
+   102 visible, 0 hidden). We are 2 over. **PR #315** warns at install time and
+   pins the count with a test; the durable fix is getting the visible surface
+   back under 100.
+6. **`docs/features.md` and `docs/specs/user-facing-doc-polish.md` are CORRECT
+   about ChatGPT Desktop — do not "fix" them.** Both say the ChatGPT desktop app
+   takes a local stdio server, and item 17 keeps a Desktop-vs-web/mobile split;
+   that is right (desktop = Codex host + `~/.codex/config.toml`, stdio;
+   web/mobile = remote-only). An earlier draft of this spec wrongly flagged them
+   as stale — recorded here so the error is not reintroduced.
 
 ## Packaging ladder (what we ship, in order)
 
@@ -172,7 +177,7 @@ so it lives at rung 7's gate, not rung 2's.
 | 3 | **Claude Code plugin + self-hosted marketplace** (`.claude-plugin/marketplace.json` in a MoneyBin repo; bundles the MCP server now, skills later) | all Claude Code users, `/plugin install` | none (self-hosted marketplace needs no Anthropic approval) | M3B — **tester-eligible** |
 | 4 | **Official MCP Registry publish** (`server.json`, `pypi` registryType, namespace via GitHub OIDC or DNS) → aggregators (Smithery, Glama) pick it up; **install deep-link badges** (Cursor, VS Code) in README | discovery everywhere | none (self-serve namespace verification, like PyPI) | M3B — **tester-eligible** |
 | 5 | **Docker image**; Docker MCP Catalog when demand justifies (Gateway is invite-only — catalog listing alone is fine) | self-host crowd; Docker Desktop users | catalog submission is reviewed → treat as gated | M3B (later) / gated |
-| 6 | **Hosted remote MCP + OAuth** | claude.ai, ChatGPT, Cowork remote, mobile | n/a (our own infra) | **M3D** |
+| 6 | **Hosted remote MCP + OAuth** | claude.ai, ChatGPT web/mobile, Cowork remote, mobile | n/a (our own infra) | **M3D** |
 | 7 | **Directory listings** (Claude Connectors Directory; ChatGPT App Directory; `.mcpb` directory submission) | ordinary consumer users | **human review** | **M3O — gated on the first public release** |
 
 Existing strengths this plan builds on (do not regress): per-tool
@@ -235,10 +240,8 @@ organizational prerequisites. Sequenced last, deliberately.
   testers at rung 2 now, but *submitting* it to the Connectors Directory
   (manifest ≥0.2 with privacy policy) is itself a human-review step — so it
   belongs to this first-public-release-gated increment, not to rung 2.
-- **ChatGPT App Directory:** Apps SDK submission (OpenAI's current "apps in
-  ChatGPT" construct, which superseded the deprecated 2023 "plugins";
-  Python/FastMCP is a blessed SDK), manual review, privacy policy + verified
-  website + screenshots;
+- **ChatGPT App Directory:** Apps SDK submission (Python/FastMCP is a blessed
+  SDK), manual review, privacy policy + verified website + screenshots;
   regional exclusions (EEA/CH/UK at launch) may affect reach.
 - Prerequisite to name in roadmap: the submitting org account is a dedicated
   MoneyBin organization (decided — see Decisions); acquiring/holding it is a
