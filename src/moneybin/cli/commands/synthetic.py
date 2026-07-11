@@ -193,7 +193,10 @@ def synthetic_reset(
             )
 
             with get_database(read_only=False) as db:
-                from moneybin.synthetic.reset import has_synthetic_ground_truth
+                from moneybin.synthetic.reset import (
+                    has_non_synthetic_data,
+                    has_synthetic_ground_truth,
+                )
 
                 # Safety check: only reset profiles created by the generator
                 if not has_synthetic_ground_truth(db):
@@ -203,6 +206,21 @@ def synthetic_reset(
                     )
                     logger.info(
                         f"💡 To destroy a non-generated profile, use "
+                        f"'moneybin profile delete {target_profile}'"
+                    )
+                    raise typer.Exit(1) from None
+
+                # Even a generator-created profile may have accumulated real
+                # imports (Plaid/manual/CSV). reset_synthetic_rows only removes
+                # `synthetic://` rows, so regenerating would layer synthetic data
+                # on top of real data — refuse rather than corrupt the profile.
+                if has_non_synthetic_data(db):
+                    logger.error(
+                        f"❌ Profile {target_profile!r} also holds real "
+                        f"(non-synthetic) data. Refusing to reset."
+                    )
+                    logger.info(
+                        f"💡 To destroy a profile with real data, use "
                         f"'moneybin profile delete {target_profile}'"
                     )
                     raise typer.Exit(1) from None

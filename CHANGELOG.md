@@ -19,8 +19,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   doctor`, activates the profile, and prints net worth plus next steps — a
   from-install path to a working product with no real financial data. Re-running
   resets and regenerates (deterministic by default); `--yes` for non-interactive
-  use. Also fixes the first-run "Database not found" guidance to point an
-  unregistered profile at `profile create` instead of `db init`. (#PR)
+  use. (#310)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an
   investment-transaction ledger (`investments add` — buy, sell, reinvest,
@@ -313,6 +312,11 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **First-run guidance points an unregistered profile at `profile create`.**
+  When a profile directory exists without a `config.yaml`, the "Database not
+  found" message now recommends `moneybin profile create <name> --init-inbox`
+  (which scaffolds config, database, and inbox) instead of `db init`, which
+  would leave the profile unregistered. (#310)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its

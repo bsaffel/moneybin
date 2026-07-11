@@ -95,7 +95,8 @@ def demo_command(
                     err=True,
                 )
             # The one obvious answer (stdout — it's the data the user asked for).
-            typer.echo(f"Net worth: ${result.net_worth:,.2f}")
+            nw = result.net_worth
+            typer.echo(f"Net worth: {'-' if nw < 0 else ''}${abs(nw):,.2f}")
             if not quiet:
                 if result.doctor_failing == 0:
                     typer.echo("✅ system doctor clean", err=True)

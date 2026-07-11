@@ -155,10 +155,19 @@ class DemoService:
                 counts.get(k, 0) for k in ("ofx_transactions", "tabular_transactions")
             )
 
-            # 5. Full refresh cascade (match → transform → categorize).
-            refresh_result = refresh(db)
-            if refresh_result.error:
-                raise RuntimeError(f"Demo refresh failed: {refresh_result.error}")
+            # 5. Refresh derived state (match → transform → categorize). Skip the
+            #    `gsheet` step: demo generated its own raw data and must never
+            #    trigger a live external pull (`pull_all_healthy` would import real
+            #    spreadsheet rows into the demo profile). Surface a real crash in
+            #    any step — demo's whole premise is a clean, categorized pipeline.
+            refresh_result = refresh(db, steps=["match", "transform", "categorize"])
+            refresh_error = (
+                refresh_result.error
+                or refresh_result.matching_error
+                or refresh_result.categorization_error
+            )
+            if refresh_error:
+                raise RuntimeError(f"Demo refresh failed: {refresh_error}")
 
             # 6. Doctor.
             report = DoctorService(db).run_all()

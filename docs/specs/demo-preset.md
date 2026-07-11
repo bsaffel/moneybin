@@ -106,9 +106,9 @@ flowchart TD
 ```
 
 `DemoResult` is a small dataclass carrying `profile`, `persona`, `seed`,
-account/transaction counts, `doctor` summary (failing/warning/passing counts),
-and the net-worth summary — everything the CLI renders in both `text` and
-`json` modes.
+account/transaction counts, the `doctor` outcome (`doctor_failing` count +
+`doctor_failing_names`), and the net-worth summary — everything the CLI renders
+in both `text` and `json` modes.
 
 **One extraction of existing code** (the only change to existing modules): the
 reset-deletion allowlist `_RESET_DELETIONS` and its delete loop currently live

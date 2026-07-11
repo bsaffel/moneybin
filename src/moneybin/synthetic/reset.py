@@ -9,11 +9,14 @@ import logging
 
 from moneybin.database import Database
 from moneybin.tables import (
+    BALANCE_ASSERTIONS,
     GROUND_TRUTH,
     MANUAL_TRANSACTIONS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
     OFX_TRANSACTIONS,
+    PLAID_ACCOUNTS,
+    PLAID_BALANCES,
     PLAID_TRANSACTIONS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
@@ -50,22 +53,30 @@ def has_synthetic_ground_truth(db: Database) -> bool:
 
 
 def has_non_synthetic_data(db: Database) -> bool:
-    """True if the profile holds any transaction the generator did NOT create.
+    """True if the profile holds any financial state the generator did NOT create.
 
-    The generator only ever writes OFX/tabular rows tagged
-    ``source_file LIKE 'synthetic://%'``. Real data therefore appears as
-    non-``synthetic://`` rows in those tables, or as ANY row in the Plaid or
-    manual raw tables (which the generator never touches). Any such row means
-    this is a real financial profile — the demo preset must refuse to seed it,
-    regardless of whether the ``synthetic.ground_truth`` marker table exists.
+    The generator only ever writes OFX/tabular rows (transactions, accounts,
+    balances) tagged ``source_file LIKE 'synthetic://%'``, plus
+    ``synthetic.ground_truth``. Real state therefore appears as non-``synthetic://``
+    rows in those tables, or as ANY row in a table the generator never touches
+    (Plaid, manual entry, user balance assertions). Any such row means this is a
+    real financial profile — the demo preset must refuse to seed it, regardless
+    of whether the ``synthetic.ground_truth`` marker table exists, and regardless
+    of whether the real data is transactions or balances/accounts alone.
     """
-    # (table, extra WHERE) — non-synthetic := non-`synthetic://` OFX/tabular
-    # rows, or ANY Plaid/manual row (the generator never writes those tables).
+    # (table, extra WHERE). Generator-written tables → real := non-`synthetic://`
+    # rows; tables the generator never writes → any row is real.
     real_row_checks = (
         (OFX_TRANSACTIONS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
         (TABULAR_TRANSACTIONS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
+        (OFX_BALANCES.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
+        (OFX_ACCOUNTS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
+        (TABULAR_ACCOUNTS.full_name, "WHERE source_file NOT LIKE 'synthetic://%'"),
         (PLAID_TRANSACTIONS.full_name, ""),
+        (PLAID_BALANCES.full_name, ""),
+        (PLAID_ACCOUNTS.full_name, ""),
         (MANUAL_TRANSACTIONS.full_name, ""),
+        (BALANCE_ASSERTIONS.full_name, ""),
     )
     for table, where in real_row_checks:
         try:

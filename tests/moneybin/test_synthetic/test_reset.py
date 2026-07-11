@@ -93,3 +93,14 @@ def test_has_non_synthetic_data_detects_plaid(db: Database) -> None:
         ["p1", "acct", "2025-01-01", "10.00", "sync_1", "item1"],
     )
     assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_balance_only_state(db: Database) -> None:
+    # Real financial state can exist as balances/assertions with no transactions.
+    db.execute(
+        "INSERT INTO app.balance_assertions (account_id, assertion_date, balance) "
+        "VALUES (?, ?, ?)",
+        ["acct", "2025-01-01", "100.00"],
+    )
+    assert has_non_synthetic_data(db) is True

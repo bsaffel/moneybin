@@ -179,3 +179,24 @@ def test_refuses_real_import_in_ground_truth_profile(
         DemoService().run(
             persona="basic", profile="demo", seed=42, reset_confirmed=True
         )
+
+
+@pytest.mark.integration
+def test_raises_on_refresh_error(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, mocker: Any
+) -> None:
+    # A real crash in matching/transform/categorize must abort demo, not ship a
+    # half-built profile. Covers the multi-field RefreshResult error check.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker)
+
+    from moneybin.services.refresh import RefreshResult
+
+    mocker.patch(
+        "moneybin.services.refresh.refresh",
+        return_value=RefreshResult(
+            applied=False, duration_seconds=0.0, categorization_error="boom"
+        ),
+    )
+    with pytest.raises(RuntimeError, match="Demo refresh failed"):
+        DemoService().run(persona="basic", profile="demo", seed=42)
