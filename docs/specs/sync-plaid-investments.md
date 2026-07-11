@@ -60,10 +60,12 @@ reach the ledger, everything downstream is existing machinery.
    duplicating it (overlapping date-range pulls are Plaid's normal investments
    behavior), with `source_file = sync_{job_id}` kept only as lineage. The
    **snapshot** pair (`raw.plaid_investment_holdings`,
-   `raw.plaid_investment_holding_lots`) instead makes `source_file` *part of the
-   PK*: each sync writes a distinct point-in-time snapshot that is deliberately
+   `raw.plaid_investment_holding_lots`) still scopes by `source_origin` (like all
+   Plaid raw tables) **and** additionally makes `source_file` *part of the PK*:
+   each sync writes a distinct point-in-time snapshot that is deliberately
    retained, not replaced (see the snapshot-identity note under those tables).
-   No data loss, no duplicate rows on re-sync.
+   No data loss, no duplicate rows on re-sync, and two items that share a
+   provider-local `(account_id, security_id)` never collide.
 3. **Sign faithfulness.** Plaid investment `amount` is **positive = cash out**
    — the exact opposite of the ledger convention (negative = cash out). Raw
    preserves Plaid's convention; the flip happens exclusively in
@@ -174,6 +176,7 @@ existing `accounts` / `transactions` / `balances` / `removed_transactions`:
     {
       "investment_transaction_id": "vNzRqk...",
       "account_id": "eJbKw3...",
+      "provider_item_id": "item_9Bd...",
       "security_id": "kqzLDp...",
       "date": "2026-07-06",
       "transaction_datetime": "2026-07-05T14:30:00Z",
@@ -191,6 +194,7 @@ existing `accounts` / `transactions` / `balances` / `removed_transactions`:
   "investment_holdings": [
     {
       "account_id": "eJbKw3...",
+      "provider_item_id": "item_9Bd...",
       "security_id": "kqzLDp...",
       "institution_price": 214.55,
       "institution_price_as_of": "2026-07-08",
@@ -226,24 +230,32 @@ bootstrap — see the SDK-floor note under that table.
 
 Field names and semantics track Plaid's Investments objects one-to-one
 (`Security`, `InvestmentTransaction`, `Holding`); the server passes them
-through without reshaping. `metadata` (job id, `synced_at`, per-institution
-results) gains **one** field: `transactions_window_start` — the ISO date the
-server used as the `/investments/transactions/get` start boundary for this sync
-(its watermark, or the first-sync floor). The server owns that watermark, so the
-client cannot derive it; the opening-lot bootstrap needs it to tell pre-window
-lots from in-window ones, and it must be present even when a security returns
-zero in-window transactions. The client stamps it onto every
-`raw.plaid_investment_holdings` row of the sync (§ that table).
+through without reshaping. `metadata`'s **per-institution results** gain one
+field: `transactions_window_start` — the ISO date the server used as the
+`/investments/transactions/get` start boundary **for that item** (its watermark,
+or the first-sync floor). Watermarks are per-`item_id` state, so this is
+**per-item, not a single top-level value**: an unscoped sync can return several
+items with different windows, and a bootstrap that classified one item's lots
+against another item's window would drop or duplicate basis. The server owns the
+watermark, so the client cannot derive it; the opening-lot bootstrap needs it to
+tell pre-window lots from in-window ones, and it must be present even for an item
+whose securities returned zero in-window transactions. The client stamps each
+item's value onto that item's `raw.plaid_investment_holdings` rows, matched by
+`source_origin` (= `provider_item_id`) (§ that table).
 
-**Securities carry item scope.** Plaid returns `securities` as a top-level
-array on each *item's* response, not per account — and the same real security
-can appear under multiple items with different provider `security_id`s. Since
-the server calls Plaid per item, it stamps each security with the
-`provider_item_id` it came from. That id lands as `source_origin` on
-`raw.plaid_securities` (part of its PK), so an unscoped multi-item pull keeps
-each item's securities distinct and the resolver binds under the right
-connection. Without it, top-level securities would have no scope and the
-`NOT NULL` PK column would have nothing to fill.
+**Every investment object carries item scope.** The server calls Plaid **per
+item**, so it stamps each `securities`, `investment_transactions`, and
+`investment_holdings` object with the `provider_item_id` it came from (nested
+`tax_lots` inherit their parent holding's). That id lands as `source_origin` on
+every raw Plaid table. This is what makes an **unscoped multi-item pull**
+correct: the wire objects are otherwise flat (`account_id`/`security_id` only),
+so without a per-row item id the client could not tell which item a holding
+belongs to — it could not populate the `source_origin` PK column, could not stamp
+that item's `transactions_window_start`, and two items sharing a provider-local
+`(account_id, security_id)` would be indistinguishable and collide. With it,
+each item's securities/transactions/holdings stay distinct, the resolver binds
+under the right connection, and the opening-lot bootstrap classifies each item's
+lots against **that item's** window.
 
 ### No removals or cancels in v1 (documented limitation)
 
@@ -360,16 +372,16 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
     unofficial_currency_code VARCHAR,         -- Non-ISO (crypto) currency
     vested_quantity DECIMAL(28, 10),          -- Vested units (equity compensation); NULL otherwise
     vested_value DECIMAL(18, 2),              -- Vested value (equity compensation); NULL otherwise
-    transactions_window_start DATE NOT NULL,  -- metadata.transactions_window_start; the sync's /investments/transactions/get start boundary; opening-lot bootstrap's pre-window/in-window discriminant; constant across a snapshot
+    transactions_window_start DATE NOT NULL,  -- Per-item metadata.transactions_window_start; this item's /investments/transactions/get start boundary; opening-lot bootstrap's pre-window/in-window discriminant; constant per source_origin within a snapshot
     source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK)
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes the snapshot to the institution connection
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes the snapshot to the institution connection; part of the PK
     extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, security_id, source_file)
+    PRIMARY KEY (account_id, security_id, source_origin, source_file)
 );
 ```
 
@@ -408,10 +420,10 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holding_lots (
     position_type VARCHAR,                    -- HoldingTaxLotPositionType (e.g. 'long' / 'short')
     source_file VARCHAR NOT NULL,             -- Snapshot identity (part of the PK), same as the parent holdings table
     source_type VARCHAR NOT NULL DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,           -- Plaid item_id
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; part of the PK
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, security_id, lot_index, source_file)
+    PRIMARY KEY (account_id, security_id, source_origin, lot_index, source_file)
 );
 ```
 
@@ -616,10 +628,11 @@ The heaviest view in this spec. In order:
 
    | Plaid (type/subtype) | → `type` | → `subtype` / notes |
    |---|---|---|
-   | buy/{buy, buy to cover, contribution} | `buy` | shorts collapse (out of scope) |
+   | buy/{buy, contribution} | `buy` | |
    | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source (`dividend`/`interest`/`capital_gain`); the paired Plaid income row maps to its own income type, linked by `event_group_id` |
    | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
-   | sell/{sell, sell short} | `sell` | |
+   | sell/sell | `sell` | |
+   | buy/buy to cover, sell/sell short | `other` | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids |
    | sell/distribution | `transfer_out` | in-kind outflow from tax-advantaged account |
    | transfer/stock distribution | `transfer_in` | in-kind **inflow** of shares (stock dividend / distribution) — opens a lot carrying supplied basis, or a `basis_incomplete` lot when none is given. **Must not fall to `other`**: `other` is not an acquisition type, so the engine would skip it and the shares would never enter holdings |
    | cash-or-fee/{account, legal, management, transfer, trust, fund, miscellaneous} fee, margin expense | `fee` | |
@@ -989,8 +1002,10 @@ data still loads.
 | Test area | What's tested |
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
+| `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
 | `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
+| `doctor_service` — short-leg surface | Golden payload with `buy to cover`/`sell short` legs: they map to `other` (recorded, kept out of the lot engine — no spurious long lot, no oversold phantom gain), and `system doctor` reports them as unmodeled short activity — surfaced, never silently dropped. |
 
 ### SQL tests (no server required)
 
@@ -1049,7 +1064,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
-| `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), and engine-derived held lots diverging from the `tax_lots` snapshot |
+| `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), engine-derived held lots diverging from the `tax_lots` snapshot, and **short-leg activity** (`buy to cover`/`sell short` mapped to `other`) surfaced as unmodeled |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | Review sweep (CLI `review` / MCP) | Add `security_links_pending` count |
 
