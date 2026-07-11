@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -239,6 +239,35 @@ def test_pull_loads_investments_and_resolves_securities(
     # persist distinctly in raw.plaid_securities. 3 raw rows -> 2 resolver
     # candidates (sec_aapl, sec_dup).
     assert sum(result.security_resolution.values()) == 2
+
+
+def test_pull_security_resolution_failure_does_not_fail_the_pull(
+    db: Database,
+    loader: PlaidExtractor,
+    mock_investments_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A resolver failure soft-fails: raw investment rows stay loaded, pull succeeds.
+
+    Mirrors the established best-effort pattern for account resolution
+    (`_resolve_accounts`) — the load already committed and this pull was
+    already counted a success, so a resolver exception must not roll that
+    back or propagate. `security_resolution` reports empty rather than
+    raising, and the raw securities are still durable.
+    """
+    with patch(
+        "moneybin.services.sync_service.SecurityResolver",
+        side_effect=RuntimeError("boom"),
+    ):
+        service = SyncService(client=mock_investments_client, db=db, loader=loader)
+        with caplog.at_level("WARNING"):
+            result = service.pull(refresh=False)
+
+    assert result.securities_loaded == 3
+    assert result.security_resolution == {}
+    assert any("Security resolution failed" in r.message for r in caplog.records)
+    count = db.execute("SELECT COUNT(*) FROM raw.plaid_securities").fetchone()
+    assert count is not None and count[0] == 3
 
 
 def test_pull_flags_manual_plaid_overlap(
