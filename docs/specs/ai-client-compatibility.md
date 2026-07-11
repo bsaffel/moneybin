@@ -8,9 +8,10 @@ draft
 
 M3B (packaging work items) · M3D (remote MCP + auth) · **M3O (new increment:
 first-party directory listings)** · Phase-0 corrections carry no milestone
-(routine doc/CLI fixes). M3O and the new M3B/M3D work items below get
-registered in [`roadmap.md`](../roadmap.md) when this spec is promoted to
-`ready`.
+(routine doc/CLI fixes). M3O and the new M3B/M3D work items are registered in
+[`roadmap.md`](../roadmap.md) in this PR (📐 M3O row + M3B/M3D notes), per
+`.claude/rules/shipping.md`'s new-spec checklist — not deferred to `ready`
+promotion.
 
 ## Goal
 
@@ -146,10 +147,9 @@ Stale guidance found during the review; all are routine fixes:
 workflow?** Self-serve channels (rungs 1–4, plus the Homebrew tap) are
 **tester-distribution-eligible now** — they put MoneyBin in testers' hands with
 no external gatekeeper. The human-reviewed app directories (rung 7) are **held
-until the first public release is validated** (founder directive 2026-07-11 —
-"v0.1 testing complete"; `docs/roadmap.md` calls this pre-v1 bar "the first
-public release"): no officially-reviewed public listing ships before the product
-is tested.
+until the first public release is validated** (founder directive 2026-07-11;
+`docs/roadmap.md`'s pre-v1 bar): no officially-reviewed public listing ships
+before the product is tested.
 Shipping the `.mcpb` *file* to testers (rung 2) is self-serve and fine now;
 *submitting* that `.mcpb` to the Connectors Directory is the human-review step,
 so it lives at rung 7's gate, not rung 2's.
@@ -210,9 +210,9 @@ authorization/consent"). This review sharpens the shape:
 
 The only channels that reach ordinary consumer users. All require a **human
 review** workflow, so per the 2026-07-11 founder directive M3O is **gated on
-the first public release being validated** ("v0.1 testing complete" in the
-directive) — no officially-reviewed public listing before the product is
-tested — *and* on M3D (authenticated remote) plus organizational
+the first public release being validated** — no officially-reviewed public
+listing before the product is tested — *and* on M3D (authenticated remote) plus
+organizational
 prerequisites. Sequenced last, deliberately.
 
 - **Claude Connectors Directory:** submission requires a **Team/Enterprise
@@ -236,7 +236,7 @@ prerequisites. Sequenced last, deliberately.
 Per the privacy framework: **cloud clients get remote MCP only behind
 authentication plus the sensitivity consent gate** (the planned
 medium/high-tier downgrade for cloud consumers in
-[`privacy-data-protection.md`](privacy-data-protection.md) becomes an M3D
+[`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) becomes an M3D
 prerequisite, not a fast-follow). Local-first remains the headline; remote is
 opt-in with visible consent. The unauthenticated transports stay behind
 `--insecure` until removed. No tunnel-based workaround (ngrok/Cloudflare to a
@@ -264,7 +264,7 @@ posture they lack.
 
 ## Decisions (resolved 2026-07-11)
 
-The initial review's open questions are resolved by the **founder directive of
+The initial review's open questions (OQ1–OQ6) are resolved by the **founder directive of
 2026-07-11** — a momentum review plus three calls (Antigravity → T1; ship the
 Claude Code distribution plugin; gate officially-reviewed distribution on the
 first public release). Content decisions:
