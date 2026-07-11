@@ -29,7 +29,7 @@ class TestSQLMeshContext:
         Regression for the #11 junk-dir leak: a test driving the real
         ``sqlmesh_context`` with a bare ``MagicMock`` (``_db_path`` left as an
         auto-mock) and ``sqlmesh.Context`` un-patched silently mkdir'd
-        ``sqlmesh/<MagicMock ...>/`` under the project root — because
+        ``src/moneybin/sqlmesh/<MagicMock ...>/`` under the project root — because
         ``cache_dir=str(db._db_path.parent / ...)`` stringified the mock. The
         guard converts that into an immediate ``TypeError`` (raised before any
         ``Context`` is built) whose traceback names the offending test, so the

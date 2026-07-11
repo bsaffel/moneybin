@@ -27,7 +27,7 @@ The arrow direction is the rule. Data flows left to right through `raw → prep 
 
 ## Layer reference
 
-The schemas correspond exactly to the directories under `sqlmesh/models/` and the schema DDL files under `src/moneybin/sql/schema/`. Each layer has one owner and one job.
+The schemas correspond exactly to the directories under `src/moneybin/sqlmesh/models/` and the schema DDL files under `src/moneybin/sql/schema/`. Each layer has one owner and one job.
 
 | Schema | Materialized | Owner (writes) | Consumers (reads) | Purpose |
 |---|---|---|---|---|
@@ -182,7 +182,7 @@ One view per CLI/MCP report. Read-only by design; the privacy middleware enforce
 
   Grain: one row per (gold `transaction_id`, contributing source row). Unmatched rows have exactly one provenance row; matched groups have one row per contributing source.
 - `meta.model_freshness` — per-model recency: when each model last ran, what it last consumed.
-- `seeds.categories` — the Plaid Personal Finance Categories taxonomy, shipped in-repo at `sqlmesh/models/seeds/categories.csv`. Combined with `app.user_categories` to produce `core.dim_categories`.
+- `seeds.categories` — the Plaid Personal Finance Categories taxonomy, shipped in-repo at `src/moneybin/sqlmesh/models/seeds/categories.csv`. Combined with `app.user_categories` to produce `core.dim_categories`.
 
 ## How a row gets in
 
@@ -341,7 +341,7 @@ Symptom-to-fix, in rough order of how often they come up.
 
 A few invariants that the codebase enforces, but worth knowing as the contract:
 
-- **Don't write to `core.*`.** It's derived. The MCP privacy middleware rejects `INSERT`/`UPDATE`/`DELETE` outside `app.*` and `raw.*`; the CLI doesn't expose any direct-write paths into `core`. Every shape you see in `core` traces back to a model in `sqlmesh/models/core/` or a join into `app.*`.
+- **Don't write to `core.*`.** It's derived. The MCP privacy middleware rejects `INSERT`/`UPDATE`/`DELETE` outside `app.*` and `raw.*`; the CLI doesn't expose any direct-write paths into `core`. Every shape you see in `core` traces back to a model in `src/moneybin/sqlmesh/models/core/` or a join into `app.*`.
 - **Don't read from `prep.*`.** Internal layer. Shape is unstable across releases. Read `core.*` instead — every column you'd want from `prep` is there or surfaced via the dimension joins.
 - **Use `TableRef` constants in code, not hardcoded names.** `TableRef.FCT_TRANSACTIONS` rather than `"core.fct_transactions"`. The `moneybin://schema` MCP resource is derived from the `TableRef` interface set, so what you can query via SQL is exactly what the agent sees.
 - **Parameterize SQL with `?` placeholders** for any user-supplied value. Identifier interpolation (when needed) goes through `TableRef`, an allowlist, or `sqlglot.exp.to_identifier(...)` — never bare f-strings. See `.claude/rules/security.md`.

@@ -136,7 +136,7 @@ src/moneybin/packages/<pkg>/
 └── README.md                    # contributor-facing docs
 ```
 
-SQLMesh is configured to scan both `sqlmesh/models/` (core) and `src/moneybin/packages/*/models/` (packages). Each package's models live with the package; the unified `sqlmesh ls` / `sqlmesh plan` tooling shows them together. The split is documented in `sqlmesh/README.md`.
+SQLMesh is configured to scan both `src/moneybin/sqlmesh/models/` (core) and `src/moneybin/packages/*/models/` (packages). Each package's models live with the package; the unified `sqlmesh ls` / `sqlmesh plan` tooling shows them together. The split is documented in `src/moneybin/sqlmesh/README.md`.
 
 ### Manifest schema
 
@@ -684,7 +684,7 @@ Shipped with the MoneyBin Claude Code plugin (the launch distribution unit). Whe
 
 | Skill | Drives |
 |---|---|
-| `/moneybin-create-report` | Single-report contribution — drafts a `reports.*` SQL view plus its `@report` runner module (Google-style docstring + keyword-only params), validates, installs to `sqlmesh/models/reports/` + `src/moneybin/reports/definitions/` (in-tree PR) or `~/.moneybin/reports/` (local-only) |
+| `/moneybin-create-report` | Single-report contribution — drafts a `reports.*` SQL view plus its `@report` runner module (Google-style docstring + keyword-only params), validates, installs to `src/moneybin/sqlmesh/models/reports/` + `src/moneybin/reports/definitions/` (in-tree PR) or `~/.moneybin/reports/` (local-only) |
 | `/moneybin-create-package` | Full analysis package scaffold — generates `src/moneybin/packages/<name>/` with manifest, models, tools, services, tests, README |
 | `/moneybin-extend-package` | Adds to an existing package — drafts a new report/tool/model respecting prefix discipline and capability declarations |
 | `/moneybin-draft-provider` | In-tree provider PR scaffold — generates `src/moneybin/extractors/<name>/` from API docs URL or sample data file, opens a draft PR |

@@ -22,16 +22,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_MODEL_FILE = (
-    _REPO_ROOT / "sqlmesh" / "models" / "prep" / "int_transactions__matched.sql"
-)
+_MODEL_FILE = SQLMESH_ROOT / "models" / "prep" / "int_transactions__matched.sql"
 
 # ---------------------------------------------------------------------------
 # DDL helpers

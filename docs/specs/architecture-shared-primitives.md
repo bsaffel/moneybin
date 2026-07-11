@@ -319,7 +319,7 @@ Every `core.*` model exposes an `updated_at` column whose value is the `MAX` of 
 
 - `stg_*` uses double-underscore to separate source from entity: `stg_ofx__transactions`, `stg_tabular__accounts`.
 - `int_*` uses double-underscore to separate domain from transformation: `int_transactions__matched`, `int_transactions__merged`.
-- Seeds materialize from CSV: `sqlmesh/models/seeds/categories.csv` → `seeds.categories`. The accompanying `.sql` file declares the seed model.
+- Seeds materialize from CSV: `src/moneybin/sqlmesh/models/seeds/categories.csv` → `seeds.categories`. The accompanying `.sql` file declares the seed model.
 
 ## Scenario Fixture Format
 
@@ -411,9 +411,9 @@ currency as formatting-only metadata.
 
 Two narrow naming changes rode along with this spec landing — both shipped. Retained for historical context.
 
-1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `sqlmesh/models/reports/net_worth.sql`, `TableRef.REPORTS_NET_WORTH` is the canonical reference (`src/moneybin/tables.py`), and `NetworthService` reads from it. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation.
+1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `src/moneybin/sqlmesh/models/reports/net_worth.sql`, `TableRef.REPORTS_NET_WORTH` is the canonical reference (`src/moneybin/tables.py`), and `NetworthService` reads from it. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation.
 
-2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). Shipped: `TableRef.FCT_TRANSACTION_LINES` and `sqlmesh/models/core/fct_transaction_lines.sql` carry the new name.
+2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). Shipped: `TableRef.FCT_TRANSACTION_LINES` and `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` carry the new name.
 
 3. **AGENTS.md "Architecture: Data Layers" table** now includes `app` and `reports` rows and links here for the full layer reference. AGENTS.md stays the at-a-glance orientation; this spec is the canonical reference.
 

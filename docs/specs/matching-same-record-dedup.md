@@ -392,7 +392,7 @@ Env var overrides follow the `MONEYBIN_` convention:
 
 When a new source is added to MoneyBin, the following must be updated for matching to work correctly:
 
-1. Create staging model in `sqlmesh/models/prep/` with tier 2 dedup (`ROW_NUMBER`)
+1. Create staging model in `src/moneybin/sqlmesh/models/prep/` with tier 2 dedup (`ROW_NUMBER`)
 2. Add a CTE to `int_transactions__unioned` and `UNION ALL` into the combined set — include `source_origin` column
 3. Insert the new `source_type` into `MatchingSettings.source_priority` at the appropriate position
 4. Define `source_origin` population logic (format name, institution ID, item ID, etc.)

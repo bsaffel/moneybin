@@ -1,19 +1,13 @@
 """Tests for updated fct_transactions model."""
 
-from pathlib import Path
+from moneybin.database import SQLMESH_ROOT
 
 
 class TestFctTransactionsModel:
     """Structural tests for the rewritten fct_transactions model."""
 
     def test_reads_from_merged_layer(self) -> None:
-        model_path = (
-            Path(__file__).resolve().parents[2]
-            / "sqlmesh"
-            / "models"
-            / "core"
-            / "fct_transactions.sql"
-        )
+        model_path = SQLMESH_ROOT / "models" / "core" / "fct_transactions.sql"
         content = model_path.read_text()
         assert "int_transactions__merged" in content
         # Should NOT have the old UNION ALL of staging CTEs
@@ -21,13 +15,7 @@ class TestFctTransactionsModel:
         assert "stg_tabular__transactions" not in content
 
     def test_has_new_columns(self) -> None:
-        model_path = (
-            Path(__file__).resolve().parents[2]
-            / "sqlmesh"
-            / "models"
-            / "core"
-            / "fct_transactions.sql"
-        )
+        model_path = SQLMESH_ROOT / "models" / "core" / "fct_transactions.sql"
         content = model_path.read_text()
         assert "canonical_source_type" in content
         assert "source_count" in content

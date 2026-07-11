@@ -22,7 +22,7 @@ The dim migrations are bundled because we are already touching the `core/` SQLMe
 
 A starter library of named SQL models — one per common question a user or AI consumer will ask — is the read-only counterpart to the `transactions`, `accounts`, and `import` write surfaces. The CLI and MCP `reports` namespaces (per [`moneybin-cli.md`](moneybin-cli.md) v2) need backing models; without them, those subcommands are stubs.
 
-Beyond surface mechanics, the recipe library is what makes MoneyBin's lineage story land. When an AI consumer says "you spent $4,200 on dining last quarter," MoneyBin can answer with a named model file in `sqlmesh/models/reports/`, traceable through `core.fct_transactions` to the rows in `raw`. Hosted PFMs can't make that move; local-first PFMs without a curated model layer don't either. The view layer is the discoverability surface — `moneybin reports list` becomes the menu the user didn't know they needed, and `moneybin://schema` advertises every model and column to AI consumers automatically.
+Beyond surface mechanics, the recipe library is what makes MoneyBin's lineage story land. When an AI consumer says "you spent $4,200 on dining last quarter," MoneyBin can answer with a named model file in `src/moneybin/sqlmesh/models/reports/`, traceable through `core.fct_transactions` to the rows in `raw`. Hosted PFMs can't make that move; local-first PFMs without a curated model layer don't either. The view layer is the discoverability surface — `moneybin reports list` becomes the menu the user didn't know they needed, and `moneybin://schema` advertises every model and column to AI consumers automatically.
 
 The `reports.*` schema convention was decided in [`architecture-shared-primitives.md`](architecture-shared-primitives.md):
 
@@ -348,7 +348,7 @@ This spec creates **eight SQLMesh views** and **zero new tables**. The migration
 ### Files to create
 
 ```
-sqlmesh/models/reports/
+src/moneybin/sqlmesh/models/reports/
 ├── net_worth.sql                 -- migrated from core/agg_net_worth.sql
 ├── cash_flow.sql
 ├── spending_trend.sql
@@ -358,7 +358,7 @@ sqlmesh/models/reports/
 ├── large_transactions.sql
 └── balance_drift.sql
 
-sqlmesh/models/core/
+src/moneybin/sqlmesh/models/core/
 ├── dim_categories.sql            -- migrated from app.categories Python-built view
 └── dim_merchants.sql             -- migrated from app.merchants Python-built view
 ```
@@ -366,7 +366,7 @@ sqlmesh/models/core/
 ### Files to modify
 
 **SQLMesh layer:**
-- `sqlmesh/models/core/agg_net_worth.sql` — **delete** (content moves to `sqlmesh/models/reports/net_worth.sql`).
+- `src/moneybin/sqlmesh/models/core/agg_net_worth.sql` — **delete** (content moves to `src/moneybin/sqlmesh/models/reports/net_worth.sql`).
 
 **Schema and registry:**
 - `src/moneybin/schema.py` — add `reports` to the schema list. Currently registers `raw, prep, core, app, meta, seeds, synthetic`; this spec adds the eighth.
@@ -492,7 +492,7 @@ The gate spec uses `reports.networth` (no underscore) throughout. This spec uses
 
 The PR includes a small text edit to `architecture-shared-primitives.md` replacing `reports.networth` with `reports.net_worth` at all three sites (§Data Layer, §SQLMesh Layer Conventions, §Cascading Edits) and updating the §Cascading Edits paragraph to point ownership of the agg-net-worth migration at this spec:
 
-> **`core.agg_net_worth` → `reports.net_worth`.** New `reports` schema is added to `src/moneybin/schema.py`. The SQLMesh model at `sqlmesh/models/core/agg_net_worth.sql` moves to `sqlmesh/models/reports/net_worth.sql`. `TableRef.AGG_NET_WORTH` is replaced by `TableRef.REPORTS_NET_WORTH`. `NetworthService` updates its three SQL references. **This migration is owned by `reports-recipe-library.md`** (the inaugurating implementation of the `reports.*` schema) and lands as part of that spec's first PR.
+> **`core.agg_net_worth` → `reports.net_worth`.** New `reports` schema is added to `src/moneybin/schema.py`. The SQLMesh model at `src/moneybin/sqlmesh/models/core/agg_net_worth.sql` moves to `src/moneybin/sqlmesh/models/reports/net_worth.sql`. `TableRef.AGG_NET_WORTH` is replaced by `TableRef.REPORTS_NET_WORTH`. `NetworthService` updates its three SQL references. **This migration is owned by `reports-recipe-library.md`** (the inaugurating implementation of the `reports.*` schema) and lands as part of that spec's first PR.
 
 Not a redesign — a rename plus an ownership transfer of a deferred migration to the spec that actually executes it.
 
@@ -520,7 +520,7 @@ The view is a derivation (`seeds.categories ∪ app.user_categories \ app.catego
 
 **Migration:**
 
-- Create `sqlmesh/models/core/dim_categories.sql` with the same SELECT body as today's `seeds.py`-built view. Model header: `MODEL (name core.dim_categories, kind VIEW);`.
+- Create `src/moneybin/sqlmesh/models/core/dim_categories.sql` with the same SELECT body as today's `seeds.py`-built view. Model header: `MODEL (name core.dim_categories, kind VIEW);`.
 - The user-state tables (`app.user_categories`, `app.category_overrides`) **stay where they are** — they're mutable user state, not derivations. Only the resolution view moves.
 - `seeds.py:refresh_views()` drops its categories branch entirely. The merchants branch is handled by migration 4 below.
 - `TableRef.CATEGORIES` repoints from `("app", "categories")` to `("core", "dim_categories")`. The constant name stays the same so existing call sites (`{CATEGORIES.full_name}`) continue to work post-migration; only the resolved schema-qualified name changes.
@@ -535,7 +535,7 @@ Same architectural fix as migration 3. The Python-built `app.merchants` view (in
 
 **Migration:**
 
-- Create `sqlmesh/models/core/dim_merchants.sql` with the same SELECT body as today's `seeds.py`-built view. Same SQLMesh model shape as `dim_categories`.
+- Create `src/moneybin/sqlmesh/models/core/dim_merchants.sql` with the same SELECT body as today's `seeds.py`-built view. Same SQLMesh model shape as `dim_categories`.
 - User-state tables (`app.user_merchants`, `app.merchant_overrides`) stay in `app.*`.
 - `seeds.py:refresh_views()` drops its merchants branch (and at this point the function may be deletable entirely if no other view branches remain — the implementation will check).
 - `TableRef.MERCHANTS` repoints from `("app", "merchants")` to `("core", "dim_merchants")`.
@@ -686,7 +686,7 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 
 ### Source files (reference points)
 
-- `sqlmesh/models/core/agg_net_worth.sql` — the model being migrated; same SELECT body lands in `sqlmesh/models/reports/net_worth.sql`.
+- `src/moneybin/sqlmesh/models/core/agg_net_worth.sql` — the model being migrated; same SELECT body lands in `src/moneybin/sqlmesh/models/reports/net_worth.sql`.
 - `src/moneybin/services/networth_service.py` — three SQL references update.
 - `src/moneybin/schema.py` — schema list extends from 7 to 8.
 - `src/moneybin/tables.py` — `TableRef` constants for the eight new views.

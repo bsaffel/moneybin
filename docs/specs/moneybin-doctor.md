@@ -24,11 +24,11 @@ Related specs:
 
 ### Invariant execution: SQLMesh named audits + DoctorService extras
 
-Row-level invariants are defined as SQLMesh standalone named audits in `sqlmesh/audits/`. Each audit is a `SELECT` query that returns violation rows — SQLMesh's convention. `DoctorService` auto-discovers all named audits via `ctx.standalone_audits`, renders each query with `audit.render_audit_query().sql(dialect="duckdb")`, and executes it against the open database connection.
+Row-level invariants are defined as SQLMesh standalone named audits in `src/moneybin/sqlmesh/audits/`. Each audit is a `SELECT` query that returns violation rows — SQLMesh's convention. `DoctorService` auto-discovers all named audits via `ctx.standalone_audits`, renders each query with `audit.render_audit_query().sql(dialect="duckdb")`, and executes it against the open database connection.
 
 Two additional checks that don't fit the "return violation rows" model (percentage thresholds, cross-layer counts) live as direct SQL in `DoctorService`.
 
-Adding a new invariant in the future: add a `.sql` file to `sqlmesh/audits/` — `DoctorService` picks it up automatically with no Python changes.
+Adding a new invariant in the future: add a `.sql` file to `src/moneybin/sqlmesh/audits/` — `DoctorService` picks it up automatically with no Python changes.
 
 ### Connection model
 
@@ -147,15 +147,15 @@ Always runs with `verbose=False` — affected IDs are omitted (agents can query 
 
 **`dedup_reconciliation` SQL:** Three queries inside one `try/except` — `raw_total` from `prep.int_transactions__unioned`, `core_count` as `COUNT(DISTINCT transaction_id)` from `core.fct_transactions`, and `dedup_absorbed` as `COUNT(*) - COUNT(DISTINCT match_group_id)` from `prep.int_transactions__matched` where `match_group_id IS NOT NULL`. This equals `Σ(group_size - 1)` over every connected component and is exact for any group topology including N-way merges and cyclic accepted-edge sets. All three queries are wrapped in one `try/except` so the invariant reports `skipped` (not errored) before the first transform, when the `prep`/`core` views don't yet exist.
 
-**Audit SQL column contract:** Each named audit's SELECT must return the violation entity's ID as the first column (e.g., `transaction_id`, `debit_transaction_id`). `DoctorService` uses `row[0]` for `affected_ids` — this is a convention, not schema-enforced. Document it in `sqlmesh/audits/README.md` or a comment in `DoctorService`.
+**Audit SQL column contract:** Each named audit's SELECT must return the violation entity's ID as the first column (e.g., `transaction_id`, `debit_transaction_id`). `DoctorService` uses `row[0]` for `affected_ids` — this is a convention, not schema-enforced. Document it in `src/moneybin/sqlmesh/audits/README.md` or a comment in `DoctorService`.
 
 **SQLMesh context in tests:** Unit tests mock `sqlmesh_context()` and inject pre-rendered SQL to avoid loading the full SQLMesh project. E2E tests use a real profile with a test database.
 
 ## Files to Create
 
-- `sqlmesh/audits/fct_transactions_fk_integrity.sql`
-- `sqlmesh/audits/fct_transactions_sign_convention.sql`
-- `sqlmesh/audits/bridge_transfers_balanced.sql`
+- `src/moneybin/sqlmesh/audits/fct_transactions_fk_integrity.sql`
+- `src/moneybin/sqlmesh/audits/fct_transactions_sign_convention.sql`
+- `src/moneybin/sqlmesh/audits/bridge_transfers_balanced.sql`
 - `src/moneybin/services/doctor_service.py` — `InvariantResult`, `DoctorService`
 - `src/moneybin/cli/commands/system/doctor.py` — Typer command under the `system` group
 - `tests/moneybin/test_services/test_doctor_service.py`

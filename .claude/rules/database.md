@@ -1,6 +1,6 @@
 ---
 description: "Database standards: DuckDB patterns, SQL formatting, schema conventions, model naming, column comments"
-paths: ["**/*.sql", "sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.py", "src/moneybin/schema.py", "src/moneybin/loaders/**"]
+paths: ["**/*.sql", "src/moneybin/sqlmesh/**", "src/moneybin/sql/**", "src/moneybin/database.py", "src/moneybin/schema.py", "src/moneybin/loaders/**"]
 ---
 
 # Database Standards
@@ -92,16 +92,16 @@ make format-sql
 ```
 
 `make format-sql` sets `MAX_FORK_WORKERS=1` before invoking the formatter. The
-bare `uv run sqlmesh -p sqlmesh format` doesn't import `moneybin.database` (which
+bare `uv run sqlmesh -p src/moneybin/sqlmesh format` doesn't import `moneybin.database` (which
 sets that for all runtime), so it falls back to a forked worker pool — disallowed
 by the encrypted-DB design (orphan FDs vs the single-writer lock) and blocked by
 the macOS sandbox's denied semaphore syscall. Run it whenever you touch
-`sqlmesh/models/**/*.sql`.
+`src/moneybin/sqlmesh/models/**/*.sql`.
 
 ## File Types
 
 - **Raw schema** (`src/moneybin/sql/schema/*.sql`): Plain SQL DDL.
-- **SQLMesh models** (`sqlmesh/models/**/*.sql`): Plain SQL with `MODEL()` block header.
+- **SQLMesh models** (`src/moneybin/sqlmesh/models/**/*.sql`): Plain SQL with `MODEL()` block header.
 
 ## Migrations
 
@@ -152,7 +152,7 @@ Both SQLMesh models and schema DDL use the same pattern: `/* description */` blo
 
 - Column comments go on the **final SELECT only** in SQLMesh models, not CTEs.
 - `sqlmesh format` converts `--` to `/* */` **and re-anchors each comment to its AST node** — a single-line `--` trailing a final-SELECT column is fine, but a *leading* or *multi-line* comment gets relocated/exploded. See Comment Placement above.
-- `append_newline=True` (set in `sqlmesh/config.py`) makes the formatter emit a trailing newline so it doesn't fight the `end-of-file-fixer` hook.
+- `append_newline=True` (set in `src/moneybin/sqlmesh/config.py`) makes the formatter emit a trailing newline so it doesn't fight the `end-of-file-fixer` hook.
 - **Do not use** the `columns` block with `COMMENT` keyword — SQLMesh silently swallows it without writing to DuckDB's catalog. Use inline comments instead.
 
 ## DuckDB vs. PostgreSQL

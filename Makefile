@@ -179,7 +179,7 @@ format-sql: venv ## Development: Format SQLMesh models (MAX_FORK_WORKERS=1 — s
 	@# would otherwise fork a worker pool — disallowed by the encrypted-DB design
 	@# (orphan FDs vs the single-writer lock; see src/moneybin/database.py) and
 	@# blocked outright by the macOS sandbox's denied semaphore syscall.
-	@MAX_FORK_WORKERS=1 uv run sqlmesh -p sqlmesh format
+	@MAX_FORK_WORKERS=1 uv run sqlmesh -p src/moneybin/sqlmesh format
 	@echo "$(GREEN)✅ SQL models formatted$(RESET)"
 
 lint: venv ## Development: Lint code with ruff

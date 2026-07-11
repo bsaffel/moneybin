@@ -5,7 +5,7 @@ canonical resolved dimensions — categories and merchants — are exposed as
 ``core.dim_categories`` and ``core.dim_merchants``. The resolved provider
 category-source bridge is exposed as ``core.bridge_category_source_map``.
 These views are also declared as SQLMesh models in
-``sqlmesh/models/core/dim_*.sql`` and ``bridge_category_source_map.sql``
+``src/moneybin/sqlmesh/models/core/dim_*.sql`` and ``bridge_category_source_map.sql``
 (the canonical spec for column shapes). ``refresh_views`` builds equivalent
 views directly via DuckDB so they are available in fresh test databases
 and on every ``Database`` open without requiring a full SQLMesh ``transform
@@ -153,7 +153,7 @@ def refresh_views(db: Database) -> None:
     if not is_pre_v006_table:
         db.execute("DROP VIEW IF EXISTS app.merchants")
 
-    # Build resolved dim views. Mirrors sqlmesh/models/core/dim_*.sql so tests
+    # Build resolved dim views. Mirrors src/moneybin/sqlmesh/models/core/dim_*.sql so tests
     # and freshly-opened databases see the dims without requiring a full
     # SQLMesh `transform apply`. SQLMesh subsequently CREATE OR REPLACEs these
     # with identical bodies on every transform run.
@@ -203,7 +203,7 @@ def refresh_views(db: Database) -> None:
     )
 
     # Build the two-tier category-source bridge. Mirrors
-    # sqlmesh/models/core/bridge_category_source_map.sql — a user row for
+    # src/moneybin/sqlmesh/models/core/bridge_category_source_map.sql — a user row for
     # (source_type, source_category_code) always wins over the seed default.
     db.execute(
         f"""

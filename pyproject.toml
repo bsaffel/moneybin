@@ -130,8 +130,12 @@ include = ["moneybin*"]
 # Include SQLMesh project files so wheel installs can run transformations
 # without a source checkout.
 moneybin = [
-    "../../sqlmesh/config.yaml",
-    "../../sqlmesh/models/**/*.sql",
+    "sqlmesh/config.py",
+    "sqlmesh/external_models.yaml",
+    "sqlmesh/models/**/*.sql",
+    "sqlmesh/models/**/*.py",
+    "sqlmesh/models/seeds/*.csv",
+    "sqlmesh/audits/**/*.sql",
 ]
 
 [project.scripts]
@@ -275,7 +279,7 @@ line-ending = "auto"
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
-include = ["src", "tests", "sqlmesh", "conftest.py"]
+include = ["src", "tests", "conftest.py"]
 typeCheckingMode = "strict"
 useLibraryCodeForTypes = true
 reportMissingImports = true

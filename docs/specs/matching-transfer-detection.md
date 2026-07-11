@@ -58,7 +58,7 @@ This spec covers pillar B from the [transaction-matching umbrella](matching-over
 
 ### `core.bridge_transfers` (new, SQLMesh VIEW)
 
-Shipped as a SQLMesh `kind VIEW` model (`sqlmesh/models/core/bridge_transfers.sql`) — derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL`. No mutable state in core; the view re-evaluates on every read.
+Shipped as a SQLMesh `kind VIEW` model (`src/moneybin/sqlmesh/models/core/bridge_transfers.sql`) — derived from `app.match_decisions` where `match_type = 'transfer'`, `match_status = 'accepted'`, and `reversed_at IS NULL`. No mutable state in core; the view re-evaluates on every read.
 
 Columns (one row per accepted transfer pair):
 

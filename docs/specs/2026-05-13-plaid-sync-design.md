@@ -616,7 +616,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
 
 ## Section 7: SQLMesh Staging and Core
 
-### Staging views (`sqlmesh/models/prep/`)
+### Staging views (`src/moneybin/sqlmesh/models/prep/`)
 
 `stg_plaid__transactions.sql` — sign flip here and ONLY here:
 

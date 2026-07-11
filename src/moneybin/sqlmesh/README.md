@@ -5,7 +5,7 @@ This directory contains the SQLMesh models for MoneyBin's medallion data pipelin
 ## Structure
 
 ```
-sqlmesh/
+src/moneybin/sqlmesh/
 ├── config.py              # SQLMesh config (reads DB path from MoneyBin settings)
 ├── external_models.yaml   # Definitions for raw tables produced by loaders
 └── models/
@@ -29,7 +29,7 @@ moneybin transform plan --apply
 You can also invoke SQLMesh directly from this directory:
 
 ```bash
-cd sqlmesh/
+cd src/moneybin/sqlmesh/
 uv run sqlmesh plan
 uv run sqlmesh run
 ```
@@ -44,7 +44,7 @@ SQLMesh's web UI is deprecated. The official replacement is the
 1. **Install the extension** from the VS Code marketplace:
    [Tobiko-Data.sqlmesh](https://marketplace.visualstudio.com/items?itemName=Tobiko-Data.sqlmesh)
 
-2. **Open this `sqlmesh/` directory** (or the workspace root) in VS Code.
+2. **Open this `src/moneybin/sqlmesh/` directory** (or the workspace root) in VS Code.
    The extension auto-discovers `config.py` in the workspace.
 
 3. **Set the Python interpreter** to the project's virtual environment:

@@ -123,7 +123,7 @@ Stability guarantees depend on the source's own behavior:
 - **Re-importing the same OFX file** — `<ACCTID>` is byte-stable, so the same `account_id` lands in `raw.ofx_accounts` and the same row wins in `core.dim_accounts`. Settings, assertions, notes, and tags keyed by that `account_id` survive.
 - **Re-importing a tabular file with the same `--account-name`** — same value, same `account_id`, same `core` row.
 - **Plaid steady state** — Plaid's documented contract is that `account_id` is stable for the life of an Item. As long as the Item is not deleted and re-linked, repeated syncs preserve `account_id`.
-- **Plaid re-link** — when a user re-links the same institution (Item revoked then reconnected, or institution-side account number change), Plaid issues a new `account_id`. MoneyBin loads it as a new row. There is **no auto-merge with the prior `account_id`** (verified — no merge code path exists in `src/moneybin/loaders/plaid_loader.py` or `sqlmesh/models/core/dim_accounts.sql`). Prior settings, assertions, and curation stay on the old `account_id`.
+- **Plaid re-link** — when a user re-links the same institution (Item revoked then reconnected, or institution-side account number change), Plaid issues a new `account_id`. MoneyBin loads it as a new row. There is **no auto-merge with the prior `account_id`** (verified — no merge code path exists in `src/moneybin/loaders/plaid_loader.py` or `src/moneybin/sqlmesh/models/core/dim_accounts.sql`). Prior settings, assertions, and curation stay on the old `account_id`.
 - **OFX `<ACCTID>` change** — same outcome: new `account_id`, new `core` row, prior state stranded.
 - **Display rename** — `account_id` is immutable across renames. Only `app.account_settings.display_name` changes.
 

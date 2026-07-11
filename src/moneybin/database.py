@@ -163,7 +163,7 @@ class SchemaDriftError(Exception):
 # model. NOT parsed at runtime; keep in sync via the parity test in
 # tests/moneybin/test_db_helpers_parity.py (Task 6C).
 EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
-    # sqlmesh/models/core/dim_accounts.sql — kind FULL
+    # src/moneybin/sqlmesh/models/core/dim_accounts.sql — kind FULL
     "core.dim_accounts": frozenset({
         "account_id",
         "routing_number",
@@ -185,7 +185,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "archived",
         "include_in_net_worth",
     }),
-    # sqlmesh/models/core/fct_balances_daily.py — kind FULL
+    # src/moneybin/sqlmesh/models/core/fct_balances_daily.py — kind FULL
     "core.fct_balances_daily": frozenset({
         "account_id",
         "balance_date",
@@ -567,12 +567,13 @@ class Database:
                 was skipped (no sqlmesh dir or sqlmesh not installed),
             False if migration failed or the durable state did not advance.
         """
-        sqlmesh_root = _SQLMESH_ROOT
+        sqlmesh_root = SQLMESH_ROOT
         if not sqlmesh_root.is_dir():
             logger.debug("sqlmesh project dir not found, skipping migrate")
             return True
 
         try:
+            from sqlmesh import Context  # type: ignore[import-untyped]
             from sqlmesh.core.config import Config, GatewayConfig
             from sqlmesh.core.config.connection import (
                 BaseDuckDBConnectionConfig,
@@ -580,8 +581,6 @@ class Database:
             )
             from sqlmesh.core.console import NoopConsole, set_console
             from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
-
-            from sqlmesh import Context  # type: ignore[import-untyped]
         except ImportError:
             logger.debug("sqlmesh not installed, skipping migrate")
             return True
@@ -1143,7 +1142,10 @@ def interrupt_and_reset_database(conn: "Database | None" = None) -> None:
 # SQLMesh encrypted-context helper
 # ---------------------------------------------------------------------------
 
-_SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
+# Inside the package, not above it: an installed wheel has no repo root to walk
+# up to, so a package-relative path is the only rule that resolves in both a
+# source checkout and site-packages.
+SQLMESH_ROOT = Path(__file__).resolve().parent / "sqlmesh"
 
 
 @contextmanager
@@ -1166,8 +1168,8 @@ def sqlmesh_context(
 
     Args:
         db: Open Database instance whose connection SQLMesh will borrow.
-        sqlmesh_root: Path to the sqlmesh/ directory. Defaults to the
-            project's ``sqlmesh/`` directory.
+        sqlmesh_root: Path to the src/moneybin/sqlmesh/ directory. Defaults to the
+            project's ``src/moneybin/sqlmesh/`` directory.
 
     Yields:
         A ``sqlmesh.Context`` connected to the encrypted database.
@@ -1175,6 +1177,9 @@ def sqlmesh_context(
     Raises:
         DatabaseKeyError: If the database connection is closed.
     """
+    from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
+        Context,
+    )
     from sqlmesh.core.config import Config, GatewayConfig
     from sqlmesh.core.config.connection import (
         BaseDuckDBConnectionConfig,
@@ -1182,10 +1187,6 @@ def sqlmesh_context(
     )
     from sqlmesh.core.console import NoopConsole, set_console
     from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
-
-    from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
-        Context,
-    )
 
     # SQLMesh's rich-based TerminalConsole writes plan/progress directly to
     # stdout, bypassing stdlib logging. Swap in NoopConsole so import/transform
@@ -1200,7 +1201,7 @@ def sqlmesh_context(
     # Quiet to ERROR; genuine sqlglot failures still surface.
     logging.getLogger("sqlglot").setLevel(logging.ERROR)
 
-    root = sqlmesh_root or _SQLMESH_ROOT
+    root = sqlmesh_root or SQLMESH_ROOT
 
     # Reuse the caller-supplied connection — DuckDB only allows one
     # connection per file.
@@ -1218,7 +1219,7 @@ def sqlmesh_context(
     # Contract guard: a real Database always has a Path here. A test that drives
     # the real sqlmesh_context with a bare mock db (and forgets to patch
     # sqlmesh.Context) reaches this line with an auto-mock _db_path, then
-    # silently mkdir's sqlmesh/<MagicMock ...>/ from the stringified cache_dir
+    # silently mkdir's src/moneybin/sqlmesh/<MagicMock ...>/ from the stringified cache_dir
     # below. Fail loudly here instead — the traceback names the offending test.
     if not isinstance(db_path, Path):  # pyright: ignore[reportUnnecessaryIsInstance]  # static type is Path; the guard exists for tests that pass a mock that violates it at runtime
         raise TypeError(
@@ -1244,7 +1245,7 @@ def sqlmesh_context(
         config = Config(
             default_gateway=_DATABASE_ALIAS,
             # Pin the SQLMesh cache beside this DB instead of the shared
-            # sqlmesh/.cache. The cache is keyed by model fingerprint, not by
+            # src/moneybin/sqlmesh/.cache. The cache is keyed by model fingerprint, not by
             # environment, so one cache shared across concurrent restate plans
             # on different DBs (parallel scenario-test workers) poisons each
             # other's snapshots and raises ConflictingPlanError. Per-DB scopes

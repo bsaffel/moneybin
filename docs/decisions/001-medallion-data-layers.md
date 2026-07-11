@@ -29,7 +29,7 @@ Adopt a three-layer medallion architecture with distinct schemas:
 
 ### Adding a new data source
 
-1. Create staging models in `sqlmesh/models/<source>/` (views in `prep` schema)
+1. Create staging models in `src/moneybin/sqlmesh/models/<source>/` (views in `prep` schema)
 2. Add a CTE to the relevant core model and `UNION ALL` into the `all_*` CTE
 3. No changes needed to consumers
 

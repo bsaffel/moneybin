@@ -99,8 +99,8 @@ The catalog grows organically — when a new child spec or feature needs a check
 
 Key assertions from the catalog are also expressed as SQLMesh audits so they fire automatically during pipeline runs. This is an optimization — the canonical definition lives in the assertion catalog. Contributors adding new models should attach appropriate audits, but the assertion library is the primary interface for verification.
 
-- **SQLMesh audits** — built-in (`not_null`, `unique`, `unique_combination_of_columns`, `forall`) plus custom audits in `sqlmesh/audits/` for reusable domain checks (referential integrity, sign convention, no future dates). Blocking by default; non-blocking variants available for soft checks.
-- **SQLMesh unit tests** — YAML-defined fixture tests in `sqlmesh/tests/` that validate transformation logic with controlled inputs and expected outputs. These test the *code*, not the data — "given these raw rows, does the staging model produce the right output?"
+- **SQLMesh audits** — built-in (`not_null`, `unique`, `unique_combination_of_columns`, `forall`) plus custom audits in `src/moneybin/sqlmesh/audits/` for reusable domain checks (referential integrity, sign convention, no future dates). Blocking by default; non-blocking variants available for soft checks.
+- **SQLMesh unit tests** — YAML-defined fixture tests in `src/moneybin/sqlmesh/tests/` that validate transformation logic with controlled inputs and expected outputs. These test the *code*, not the data — "given these raw rows, does the staging model produce the right output?"
 
 ## Persona Catalog
 

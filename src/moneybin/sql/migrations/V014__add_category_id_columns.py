@@ -103,7 +103,7 @@ def migrate(conn: object) -> None:
     # Database.__init__ calls refresh_views() AFTER migrations, so on the
     # auto-upgrade path core.dim_categories does not yet exist when V014 runs.
     # Inline a minimal version of the view definition here (mirrors
-    # moneybin.seeds.refresh_views and sqlmesh/models/core/dim_categories.sql)
+    # moneybin.seeds.refresh_views and src/moneybin/sqlmesh/models/core/dim_categories.sql)
     # so the backfill JOINs resolve. The post-migration refresh_views() call
     # then CREATE OR REPLACEs this with the canonical body.
     conn.execute("CREATE SCHEMA IF NOT EXISTS seeds")  # type: ignore[union-attr]
