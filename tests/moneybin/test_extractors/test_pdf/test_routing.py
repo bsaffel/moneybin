@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.extractors.pdf.auto_derive import derive_recipe
+from moneybin.extractors.pdf.auto_derive import derive_recipe, recipe_polarity_fits
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.metadata import StatementMetadata
 from moneybin.extractors.pdf.recipe import Recipe
@@ -141,6 +141,14 @@ def _valid_recipe_dict() -> dict[str, Any]:
         "sign_convention": "negative_is_expense",
         "routing": "transactions",
     }
+
+
+def _recipe(sign_convention: str = "negative_is_expense") -> Recipe:
+    """A valid Recipe with the given sign_convention; shape from _valid_recipe_dict."""
+    return Recipe.model_validate({
+        **_valid_recipe_dict(),
+        "sign_convention": sign_convention,
+    })
 
 
 def _save_chase_format(db: Database, recipe: dict[str, Any] | None = None) -> None:
@@ -899,6 +907,24 @@ def test_card_statement_does_not_replay_a_checking_recipe(db: Database) -> None:
     # The saved (bank) recipe was disowned, not reused — a populated
     # matched_format_name would tell the service "this was a replay."
     assert decision.matched_format_name is None
+
+
+def test_card_recipe_refuses_to_replay_onto_a_non_card_document() -> None:
+    """The mirror of #313. A saved card recipe must not invert a checking statement.
+
+    Fingerprint is (issuer, headers, page_bucket) — a same-issuer checking
+    statement with the same columns matches a card format's fingerprint. Without
+    this guard, replay writes every paycheck as an expense.
+    """
+    card_recipe = _recipe(sign_convention="negative_is_income")
+    checking_doc = _checking_statement_doc()
+    assert recipe_polarity_fits(card_recipe, checking_doc) is False
+
+
+def test_card_recipe_replays_onto_a_card_document() -> None:
+    card_recipe = _recipe(sign_convention="negative_is_income")
+    card_doc = _card_statement_doc(opening="0.00", closing="100.00")
+    assert recipe_polarity_fits(card_recipe, card_doc) is True
 
 
 def test_euro_symbol_statement_is_recognised_as_non_us(db: Database) -> None:

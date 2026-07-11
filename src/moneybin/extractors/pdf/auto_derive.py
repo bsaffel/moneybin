@@ -594,10 +594,25 @@ def recipe_polarity_fits(recipe: Recipe, doc: PdfDocument) -> bool:
     row holds a negative amount, so ``_has_any_negative_amount`` alone would accept
     it. That is the whole hazard — a payment row is not evidence the document
     spends in the negative direction.
+
+    The guard is symmetric. A ``negative_is_income`` (card) recipe replayed onto a
+    document with no card disclosures is refused for exactly the same reason a
+    ``negative_is_expense`` (bank) recipe is refused on a card: replay skips
+    derivation entirely, so the derivation-time guards never run.
     """
+    markers = credit_card_markers(doc)
+
+    if recipe.sign_convention == "negative_is_income":
+        # Mirror of the guard below. A saved card recipe replayed onto a document
+        # that no longer names itself a card would invert a checking statement's
+        # every row — the same corruption as the bank-recipe-onto-card case,
+        # pointed the other way. Fingerprint (issuer + headers + page_bucket)
+        # cannot separate them; only the disclosures can.
+        return bool(markers)
+
     if recipe.sign_convention != "negative_is_expense":
         return True
-    if _looks_like_credit_card_statement(doc):
+    if markers:
         return False
     table = _select_transaction_table(doc)
     if table is None:
@@ -839,26 +854,6 @@ def credit_card_markers(doc: PdfDocument) -> tuple[str, ...]:
     """
     haystack = "\n".join(doc.text_lines).lower()
     return tuple(m for m in _CREDIT_CARD_MARKERS if m in haystack)
-
-
-def _looks_like_credit_card_statement(doc: PdfDocument) -> bool:
-    """True when the document carries a credit-card statement's disclosures.
-
-    The deterministic rung cannot infer the sign convention from the amounts. A
-    checking statement (``-50`` groceries, ``+150`` paycheck) and a card statement
-    (``+150`` charges, ``-50`` payment) have *identical* sign distributions — the
-    information simply is not in the numbers. ``_classify_sign_convention``
-    nonetheless hands back ``negative_is_expense`` for every single-amount layout,
-    so without this check a card statement's charges import as **income** and its
-    payment as an expense, and reconciliation ties out because it sums the raw
-    signed amounts either way.
-
-    So read the document instead of guessing at its arithmetic, and when it names
-    itself a card statement, decline to derive: the bridge can read it. Declining
-    is the safe direction — an unnecessary escalation is visible and recoverable,
-    a silently inverted ledger is neither.
-    """
-    return bool(credit_card_markers(doc))
 
 
 def _has_any_negative_amount(table: PdfTable, amount_col_indices: list[int]) -> bool:
