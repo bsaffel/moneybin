@@ -192,11 +192,29 @@ existing `accounts` / `transactions` / `balances` / `removed_transactions`:
       "iso_currency_code": "USD",
       "unofficial_currency_code": null,
       "vested_quantity": null,
-      "vested_value": null
+      "vested_value": null,
+      "tax_lots": [
+        {
+          "institution_lot_id": "lot_7f...",
+          "original_purchase_datetime": "2021-03-11T00:00:00Z",
+          "quantity": 6.0,
+          "purchase_price": 121.00,
+          "cost_basis": 726.00,
+          "current_value": 1287.30,
+          "position_type": "long"
+        }
+      ]
     }
   ]
 }
 ```
+
+`tax_lots` is Plaid's `Holding.tax_lots[]` (`HoldingTaxLot`), passed through
+verbatim. It is an **empty array** when the institution provides no lot-level
+data; the server must forward it as-is (empty, not omitted) so the client can
+distinguish "no lots reported" from "lots not requested." It is the sole wire
+source for `raw.plaid_investment_holding_lots` and the per-lot opening-lot
+bootstrap — see the SDK-floor note under that table.
 
 Field names and semantics track Plaid's Investments objects one-to-one
 (`Security`, `InvestmentTransaction`, `Holding`); the server passes them
@@ -342,26 +360,37 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
 
 #### `raw.plaid_investment_holding_lots`
 
-Plaid's `Holding.tax_lots[]` (current docs also call this `lot_info[]`; pin the
-name against the SDK version at implementation) is a per-lot array — one entry
-per broker-tracked tax lot within a position, carrying `cost_basis`,
-`quantity`, and a nullable `acquisition_datetime`. It is captured as a
-normalized child of the holdings snapshot (not a JSON blob) because it is the
-**basis + acquisition-date source for the opening-lot bootstrap** (below), not
-just reconciliation reference. Nullable where the institution provides no lot
-detail.
+Plaid's `Holding.tax_lots[]` is a per-lot array — one `HoldingTaxLot` entry per
+broker-tracked lot within a position, carrying `institution_lot_id`,
+`original_purchase_datetime`, `quantity`, `purchase_price`, `cost_basis`,
+`current_value`, and `position_type`. It is captured as a normalized child of
+the holdings snapshot (not a JSON blob) because it is the **basis +
+acquisition-date source for the opening-lot bootstrap** (below), not just
+reconciliation reference. Plaid returns an **empty array** when the institution
+supplies no lot-level data, so the bootstrap's position-level fallback (below)
+is the common case, not the exception.
+
+> **SDK floor.** `Holding.tax_lots[]` shipped in `plaid-python` **40.0.0**
+> (released 2026-06-10) and is absent from the currently-locked 39.2.0. The
+> project dependency floor (`plaid-python>=36.0.0`) already permits it, but
+> implementation must raise the floor to `>=40.0.0` so a fresh resolve cannot
+> select a `tax_lots`-less build. Correctness never depends on the upgrade: the
+> position-level fallback uses only `Holding.cost_basis`/`quantity` (present
+> long before 40.0.0); only the per-lot basis/date refinement does.
 
 ```sql
-/* Per-lot detail within a Plaid holdings snapshot; the basis/acquisition-date source for opening-lot bootstrap. One row per broker tax lot per snapshot. */
+/* Per-lot detail within a Plaid holdings snapshot (Holding.tax_lots[], HoldingTaxLot); basis/acquisition-date source for opening-lot bootstrap. One row per broker lot per snapshot. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_holding_lots (
     account_id VARCHAR NOT NULL,              -- Plaid account_id
     security_id VARCHAR NOT NULL,             -- Plaid security_id
-    lot_index INTEGER NOT NULL,               -- Position of the lot within Holding.tax_lots[]; disambiguates lots with identical values
-    cost_basis DECIMAL(18, 2),                -- Broker-reported total cost basis of this lot (Plaid documents it fee-inclusive)
+    lot_index INTEGER NOT NULL,               -- Loader-assigned position within Holding.tax_lots[]; PK disambiguator (institution_lot_id is nullable)
+    institution_lot_id VARCHAR,               -- Broker's lot identifier; NULL where the institution does not provide one
+    original_purchase_datetime TIMESTAMP,     -- HoldingTaxLot.original_purchase_datetime; acquisition timestamp, NULL where absent
     quantity DECIMAL(28, 10),                 -- Units in this lot
-    acquisition_datetime TIMESTAMP,           -- Original acquisition timestamp; NULL where the institution does not provide it
-    iso_currency_code VARCHAR,
-    unofficial_currency_code VARCHAR,
+    purchase_price DECIMAL(18, 6),            -- Per-unit acquisition price for this lot
+    cost_basis DECIMAL(18, 2),                -- Broker-reported total cost basis of this lot (Plaid documents it fee-inclusive)
+    current_value DECIMAL(18, 2),             -- Broker-reported current market value of this lot
+    position_type VARCHAR,                    -- HoldingTaxLotPositionType (e.g. 'long' / 'short')
     source_file VARCHAR NOT NULL,             -- Snapshot identity (part of the PK), same as the parent holdings table
     source_type VARCHAR NOT NULL DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,           -- Plaid item_id
@@ -648,8 +677,9 @@ The heaviest view in this spec. In order:
    brokerage-sync implementations found every one resets the acquisition date
    on an external (ACATS) transfer-in — because the source lots aren't in their
    database. But the per-lot acquisition date *is* available from Plaid, on the
-   **holdings** side: `Holding.tax_lots[]` (`lot_info[]`) exposes a per-lot
-   `acquisition_datetime`, nullable where the institution doesn't provide it —
+   **holdings** side: `Holding.tax_lots[]` exposes a per-lot
+   `original_purchase_datetime`, nullable where the institution doesn't
+   provide it —
    and **no surveyed competitor consumes it**. v1 **does** capture it (§
    `raw.plaid_investment_holding_lots`) and the Opening-lot bootstrap uses it,
    so bootstrap-seeded lots for pre-window positions carry the *correct*
@@ -736,20 +766,38 @@ as one or more synthetic **opening `transfer_in`** rows in
 `subtype='opening_bootstrap'` so it is auditable and never confused with a real
 ACATS transfer):
 
-- **Per-lot when Plaid gives lots.** If `raw.plaid_investment_holding_lots`
-  carries the position's `tax_lots[]`, one opening `transfer_in` per lot,
-  each with that lot's `cost_basis` (→ `amount`) and
-  `acquisition_datetime` (→ `original_acquisition_date`). Correct basis *and*
-  correct holding-period start — the differentiation edge.
-- **Position-level fallback.** If no lot detail, one opening `transfer_in` for
-  the remainder quantity, basis from `Holding.cost_basis` when present (→
-  `amount`), else `amount = NULL` so it opens `basis_incomplete` (the step-5
-  rule). Acquisition date unknown → `NULL`, lot falls back to the snapshot
-  date and is flagged.
+- **Per-lot enrichment (gap-bounded).** The position-level gap `G` (held
+  quantity − in-window net quantity) is the **authoritative** quantity to open —
+  it already excludes everything the in-window ledger accounts for, so it can
+  never re-open a lot an in-window buy already created. `tax_lots[]` describes
+  the *whole* current position (both pre-window lots and any in-window lot still
+  held), so bootstrap must **not** emit one row per lot. Instead, when
+  `raw.plaid_investment_holding_lots` carries lots, staging draws `G` down
+  against the lots acquired **before the window start**
+  (`original_purchase_datetime` < the earliest in-window transaction date) —
+  definitionally the lots no in-window transaction represents — **oldest
+  first**. Each drawn slice opens one `transfer_in` carrying that lot's
+  `cost_basis` (→ `amount`) and `original_purchase_datetime` (→
+  `original_acquisition_date`): correct basis *and* holding-period start, the
+  differentiation edge. Two reconciliation edges, both visible:
+  - **Lots undershoot `G`** (pre-window lots sum to less than the gap — NULL
+    `original_purchase_datetime` lots, or the broker reports no lot for part of
+    the position): the unexplained residual opens as a single `basis_incomplete`
+    row (`amount = NULL`, snapshot-date fallback), flagged.
+  - **Lots overshoot `G`** (pre-window lots sum to more than the gap — e.g. an
+    in-window partial sale already consumed part of a pre-window lot): allocation
+    stops at `G`; the surplus is **not** emitted, and `system doctor` surfaces
+    the mismatch rather than the pipeline silently inflating quantity.
+- **Position-level fallback (empty `tax_lots[]`).** When the institution
+  provides no lot detail, one opening `transfer_in` for the whole gap `G`, basis
+  from `Holding.cost_basis` when present (→ `amount`), else `amount = NULL` so it
+  opens `basis_incomplete` (the step-5 rule). Acquisition date unknown → `NULL`,
+  lot falls back to the snapshot date and is flagged.
 
 **Determinism & idempotence.** The synthetic rows carry a content-hash
 `investment_transaction_id` over `(account_id, security_id, lot_index,
-acquisition_datetime, cost_basis, 'opening_bootstrap')`, so a rebuild
+original_purchase_datetime, cost_basis, 'opening_bootstrap')` — the residual
+`basis_incomplete` row uses a reserved `lot_index` sentinel — so a rebuild
 reproduces them exactly and a re-sync does not duplicate them. Because they
 live in the ledger, lots/gains/holdings derive from them through the unchanged
 engine — no special-casing downstream.
@@ -769,7 +817,7 @@ queryable by `subtype='opening_bootstrap'` and counted in the sync envelope.
 | Core model | Change |
 |---|---|
 | `core.dim_securities` | **None** (stays a catalog view over `app.securities`). The v1 model's `-- Future: UNION ALL resolved securities from prep.stg_plaid__securities` comment is superseded — minting puts every synced security *in* the catalog, so a union would double-count. Update the comment in place. |
-| `core.fct_investment_transactions` | Add `plaid_investment_transactions` CTE selecting from `prep.stg_plaid__investment_transactions`, `UNION ALL` with the manual staging model (the extension point foundation Requirement 7 reserved). **New nullable columns** `provider_type VARCHAR`, `provider_subtype VARCHAR` (NULL for manual rows). Plaid rows use Plaid's `investment_transaction_id` as the canonical id (source-provided, per the column contract). |
+| `core.fct_investment_transactions` | Add **two** Plaid CTEs — `plaid_investment_transactions` (from `prep.stg_plaid__investment_transactions`) **and** `plaid_opening_lots` (from `prep.stg_plaid__opening_lots`, the Requirement 13 bootstrap `transfer_in`s) — both `UNION ALL`'d with the manual staging model (the extension point foundation Requirement 7 reserved). Without the `plaid_opening_lots` branch the bootstrap model is built but never reaches the ledger, so pre-window sells still take the oversold zero-basis path. **New nullable columns** `provider_type VARCHAR`, `provider_subtype VARCHAR` (NULL for manual rows). Plaid transaction rows use Plaid's `investment_transaction_id` as the canonical id; bootstrap rows use their content-hash id (both source-provided, per the column contract). |
 | `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot*** (the `source_file` with `MAX(extracted_at)` per `source_origin`), never "latest row per position" or "latest holdings_date". Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
 | `core.fct_investment_lots` / `core.fct_realized_gains` | **No changes.** Derived from the unioned ledger; Plaid rows flow through the existing four-method engine automatically. |
 
@@ -895,7 +943,7 @@ transactions), which also seed the golden files.
 
 | File | Change |
 |---|---|
-| `sqlmesh/models/core/fct_investment_transactions.sql` | Plaid CTE + `UNION ALL`; `provider_type`/`provider_subtype` columns |
+| `sqlmesh/models/core/fct_investment_transactions.sql` | Plaid transaction CTE **and** `stg_plaid__opening_lots` CTE, both `UNION ALL`'d; `provider_type`/`provider_subtype` columns |
 | `sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
 | `sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
