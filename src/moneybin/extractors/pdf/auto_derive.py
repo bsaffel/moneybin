@@ -182,16 +182,17 @@ def derivation_failure_reason(
     if not _looks_transactional_anywhere(doc):
         return "no_transaction_table"
 
-    # Only the strict selector's table can be format-probed; a debit/credit
-    # layout has no derivable sign convention, so it never reaches this branch
-    # and correctly falls through to "underivable".
-    table = _select_transaction_table(doc)
+    # Probe the locale off the LOOSE table, not the strict one. The strict
+    # selector returns None for a debit/credit layout (no derivable sign
+    # convention), so probing it would skip the locale check for exactly the
+    # split-column statements — a European "Withdrawals | Deposits" statement
+    # would escalate, egress the user's statement text to an agent, and then be
+    # rejected by execute_recipe anyway.
+    table = _select_loose_transaction_table(doc)
     if table is not None:
-        sign, amount_cols = _classify_sign_convention(table.header)
-        if sign is not None:
-            number_fmt = _detect_number_format(table, amount_cols)
-            if number_fmt is not None and number_fmt != "us":
-                return "unsupported_number_format"
+        number_fmt = _detect_number_format(table, _amount_like_columns(table.header))
+        if number_fmt is not None and number_fmt != "us":
+            return "unsupported_number_format"
 
     return "transaction_table_underivable"
 
@@ -439,11 +440,40 @@ def _is_transactional_header(headers: list[str]) -> bool:
     """
     if len(headers) < 3 or not _DATE_COL_RE.match(headers[0]):
         return False
-    if any(_AMOUNT_COL_RE.search(h) for h in headers):
-        return True
-    has_debit = any(_DEBIT_COL_RE.search(h) for h in headers)
-    has_credit = any(_CREDIT_COL_RE.search(h) for h in headers)
-    return has_debit and has_credit
+    return bool(_amount_like_columns(headers))
+
+
+def _amount_like_columns(headers: list[str]) -> list[int]:
+    """Indices of every money-bearing column — amount, or the debit/credit pair.
+
+    Unlike ``_classify_sign_convention`` this doesn't care whether the layout is
+    *derivable*; it only answers "which columns hold numbers", which is all a
+    number-locale probe needs. The classifier rejects the debit/credit pair
+    outright, so reusing it here would leave split-column statements unprobed.
+    """
+    amounts = [i for i, h in enumerate(headers) if _AMOUNT_COL_RE.search(h)]
+    if amounts:
+        return amounts
+    # The debit/credit pair only counts as money-bearing when BOTH sides are
+    # present — a lone "Debit" column is not the split layout, and treating it
+    # as one would misclassify tables this predicate is meant to exclude.
+    debits = [i for i, h in enumerate(headers) if _DEBIT_COL_RE.search(h)]
+    credits = [i for i, h in enumerate(headers) if _CREDIT_COL_RE.search(h)]
+    if debits and credits:
+        return sorted(debits + credits)
+    return []
+
+
+def _select_loose_transaction_table(doc: PdfDocument) -> PdfTable | None:
+    """Largest transaction table, derivable or not (ruled, else reconstructed)."""
+    candidates = [
+        t
+        for t in (*doc.tables, *_synthesize_tables_from_text(doc))
+        if _is_transactional_header(t.header) and t.rows
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda t: len(t.rows))
 
 
 def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
@@ -457,12 +487,7 @@ def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
     beneath it is still unambiguous evidence the document is a statement, which is
     all this predicate is asked to decide.
     """
-    if any(_is_transactional_header(t.header) and t.rows for t in doc.tables):
-        return True
-    if any(
-        _is_transactional_header(t.header) and t.rows
-        for t in _synthesize_tables_from_text(doc)
-    ):
+    if _select_loose_transaction_table(doc) is not None:
         return True
 
     cells_per_line = [

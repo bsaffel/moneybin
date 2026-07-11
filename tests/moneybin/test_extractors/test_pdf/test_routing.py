@@ -609,3 +609,35 @@ def test_european_number_format_is_not_bridge_eligible(
 
     assert decision.outcome == "seed"
     assert decision.reason == "unsupported_number_format"
+
+
+def test_european_debit_credit_statement_is_not_bridge_eligible(
+    db: Database,
+) -> None:
+    """A non-US locale must not escalate even in the deferred debit/credit layout.
+
+    The number-format probe ran off the *strict* selector, which returns None for
+    a debit/credit layout — so a European split-column statement skipped the
+    locale check entirely and escalated. The bridge cannot help: `execute_recipe`
+    rejects a non-US `number_format` outright. That egresses the user's statement
+    text to an AI provider for a result that provably cannot be used, which is
+    the precise harm the reason split exists to prevent.
+    """
+    doc = PdfDocument(
+        source_file="euro_wf.pdf",
+        tables=[
+            PdfTable(
+                page=1,
+                header=["Date", "Description", "Withdrawals", "Deposits"],
+                rows=[
+                    ["01/02/2024", "COFFEE SHOP", "4,50", ""],
+                    ["01/05/2024", "PAYROLL", "", "2.000,00"],
+                ],
+            )
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "unsupported_number_format"
