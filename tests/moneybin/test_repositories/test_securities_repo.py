@@ -314,6 +314,86 @@ def test_refresh_updates_plaid_minted_row_and_audits(db: Database) -> None:
     assert _metric("securities.refresh") - before_metric == 1.0
 
 
+def test_refresh_is_noop_when_values_already_match(db: Database) -> None:
+    """A sync that resubmits identical provider attributes must not write or audit.
+
+    Guards against the omitted-field trap in reverse: the UPDATE always bumps
+    ``updated_at``, so without an explicit unchanged-values check every daily
+    resolver sync would accrue a no-op ``securities.refresh`` audit row per
+    security, forever.
+    """
+    repo = SecuritiesRepo(db)
+    before_metric = _metric("securities.refresh")
+    minted = _upsert(
+        repo,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    before_row = db.conn.execute(
+        "SELECT updated_at FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert before_row is not None
+    before_audit_count = len(_audit_rows_for(db, minted))
+
+    time.sleep(0.01)
+    event = repo.refresh_provider_attributes(
+        minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        actor="system",
+    )
+    assert event is None
+
+    after_row = db.conn.execute(
+        "SELECT updated_at FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert after_row == before_row
+
+    assert len(_audit_rows_for(db, minted)) == before_audit_count
+    assert _metric("securities.refresh") - before_metric == 0.0
+
+
+def test_refresh_writes_when_one_field_genuinely_differs(db: Database) -> None:
+    """A single-field diff (not all three) must still write and audit."""
+    repo = SecuritiesRepo(db)
+    before_metric = _metric("securities.refresh")
+    minted = _upsert(
+        repo,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    event = repo.refresh_provider_attributes(
+        minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI2",
+        actor="system",
+    )
+    assert event is not None
+
+    row = db.conn.execute(
+        "SELECT ticker FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert row == ("VTI2",)
+    assert _metric("securities.refresh") - before_metric == 1.0
+
+
 def test_refresh_leaves_other_columns_untouched(db: Database) -> None:
     """Guards the omitted-column trap: refresh must not NULL provider-untouched fields."""
     repo = SecuritiesRepo(db)
@@ -334,6 +414,12 @@ def test_refresh_leaves_other_columns_untouched(db: Database) -> None:
     ).target_id
     assert minted is not None
 
+    created_at = db.conn.execute(
+        "SELECT created_at FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert created_at is not None
+
     repo.refresh_provider_attributes(
         minted,
         name="Vanguard Total Stock Market ETF",
@@ -344,7 +430,7 @@ def test_refresh_leaves_other_columns_untouched(db: Database) -> None:
 
     row = db.conn.execute(
         "SELECT exchange, cusip, isin, figi, coingecko_id, is_cash_equivalent, "
-        "cost_basis_method, currency_code "
+        "cost_basis_method, currency_code, created_by, created_at "
         "FROM app.securities WHERE security_id = ?",
         [minted],
     ).fetchone()
@@ -357,6 +443,8 @@ def test_refresh_leaves_other_columns_untouched(db: Database) -> None:
         False,
         "fifo",
         "USD",
+        "plaid",
+        created_at[0],
     )
 
 

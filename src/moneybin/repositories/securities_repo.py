@@ -165,17 +165,32 @@ class SecuritiesRepo(BaseRepo):
 
         Returns ``None`` (no write, no audit) for user-authored or missing
         rows — the resolver's "never touch created_by='user'" rule is
-        enforced HERE.
+        enforced HERE — and also when ``name``/``security_type``/``ticker``
+        already match the stored row. Without that second check, ``UPDATE``
+        always bumps ``updated_at``, so ``before != after`` unconditionally
+        and a daily resolver sync would accrue one no-op ``securities.refresh``
+        audit row per security per day, forever.
+
+        The ``WHERE created_by = 'plaid'`` clause is defense-in-depth: the
+        Python check above already enforces provenance from the fetched
+        ``before`` row, but the clause keeps the invariant true at the SQL
+        layer even if a future refactor moves or fast-paths that fetch.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(security_id)
             if before is None or before.get("created_by") != "plaid":
                 return None
+            if (
+                before["name"] == name
+                and before["security_type"] == security_type
+                and before["ticker"] == ticker
+            ):
+                return None
             self._db.execute(
                 f"""
                 UPDATE {SECURITIES.full_name}
                 SET name = ?, security_type = ?, ticker = ?, updated_at = NOW()
-                WHERE security_id = ?
+                WHERE security_id = ? AND created_by = 'plaid'
                 """,  # noqa: S608  # TableRef + parameterized values
                 [name, security_type, ticker, security_id],
             )
@@ -201,6 +216,17 @@ class SecuritiesRepo(BaseRepo):
 
         Raises ``ValueError`` for a ``created_by='user'`` row — user-authored
         catalog entries are never deletable through this path.
+
+        No cascade: ``app.security_links.security_id`` and
+        ``app.security_link_decisions.candidate_security_id`` reference this
+        table with no FK (DuckDB). The caller MUST repoint dependent
+        ``app.security_links`` rows and migrate lot selections to another
+        security BEFORE calling — otherwise those rows are left orphaned.
+
+        The ``AND created_by = 'plaid'`` clause is defense-in-depth: the
+        Python check above already enforces provenance from the fetched
+        ``before`` row, but the clause keeps the invariant true at the SQL
+        layer even if a future refactor moves or fast-paths that fetch.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(
@@ -212,7 +238,10 @@ class SecuritiesRepo(BaseRepo):
                     "provider-minted (created_by='plaid') rows are deletable"
                 )
             self._db.execute(
-                f"DELETE FROM {SECURITIES.full_name} WHERE security_id = ?",  # noqa: S608  # TableRef + parameterized value
+                f"""
+                DELETE FROM {SECURITIES.full_name}
+                WHERE security_id = ? AND created_by = 'plaid'
+                """,  # noqa: S608  # TableRef + parameterized value
                 [security_id],
             )
             return self._emit_audit(
