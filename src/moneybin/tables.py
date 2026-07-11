@@ -101,6 +101,12 @@ MERCHANT_LINK_DECISIONS = TableRef("app", "merchant_link_decisions")
 SECURITIES = TableRef("app", "securities")
 LOT_SELECTIONS = TableRef("app", "lot_selections")
 MANUAL_INVESTMENT_TRANSACTIONS = TableRef("raw", "manual_investment_transactions")
+PLAID_SECURITIES = TableRef("raw", "plaid_securities")
+PLAID_INVESTMENT_TRANSACTIONS = TableRef("raw", "plaid_investment_transactions")
+PLAID_INVESTMENT_HOLDINGS = TableRef("raw", "plaid_investment_holdings")
+PLAID_INVESTMENT_HOLDING_LOTS = TableRef("raw", "plaid_investment_holding_lots")
+SECURITY_LINKS = TableRef("app", "security_links")
+SECURITY_LINK_DECISIONS = TableRef("app", "security_link_decisions")
 DIM_SECURITIES = TableRef("core", "dim_securities", audience="interface")
 FCT_INVESTMENT_TRANSACTIONS = TableRef(
     "core", "fct_investment_transactions", audience="interface"
@@ -112,6 +118,7 @@ DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
 SEED_CATEGORY_SOURCE_MAP = TableRef("seeds", "category_source_map")
+SEED_EXCHANGE_MIC_MAP = TableRef("seeds", "exchange_mic_map")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")
