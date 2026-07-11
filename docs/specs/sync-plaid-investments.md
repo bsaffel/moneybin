@@ -60,10 +60,12 @@ reach the ledger, everything downstream is existing machinery.
    duplicating it (overlapping date-range pulls are Plaid's normal investments
    behavior), with `source_file = sync_{job_id}` kept only as lineage. The
    **snapshot** pair (`raw.plaid_investment_holdings`,
-   `raw.plaid_investment_holding_lots`) instead makes `source_file` *part of the
-   PK*: each sync writes a distinct point-in-time snapshot that is deliberately
+   `raw.plaid_investment_holding_lots`) still scopes by `source_origin` (like all
+   Plaid raw tables) **and** additionally makes `source_file` *part of the PK*:
+   each sync writes a distinct point-in-time snapshot that is deliberately
    retained, not replaced (see the snapshot-identity note under those tables).
-   No data loss, no duplicate rows on re-sync.
+   No data loss, no duplicate rows on re-sync, and two items that share a
+   provider-local `(account_id, security_id)` never collide.
 3. **Sign faithfulness.** Plaid investment `amount` is **positive = cash out**
    — the exact opposite of the ledger convention (negative = cash out). Raw
    preserves Plaid's convention; the flip happens exclusively in
@@ -226,14 +228,18 @@ bootstrap — see the SDK-floor note under that table.
 
 Field names and semantics track Plaid's Investments objects one-to-one
 (`Security`, `InvestmentTransaction`, `Holding`); the server passes them
-through without reshaping. `metadata` (job id, `synced_at`, per-institution
-results) gains **one** field: `transactions_window_start` — the ISO date the
-server used as the `/investments/transactions/get` start boundary for this sync
-(its watermark, or the first-sync floor). The server owns that watermark, so the
-client cannot derive it; the opening-lot bootstrap needs it to tell pre-window
-lots from in-window ones, and it must be present even when a security returns
-zero in-window transactions. The client stamps it onto every
-`raw.plaid_investment_holdings` row of the sync (§ that table).
+through without reshaping. `metadata`'s **per-institution results** gain one
+field: `transactions_window_start` — the ISO date the server used as the
+`/investments/transactions/get` start boundary **for that item** (its watermark,
+or the first-sync floor). Watermarks are per-`item_id` state, so this is
+**per-item, not a single top-level value**: an unscoped sync can return several
+items with different windows, and a bootstrap that classified one item's lots
+against another item's window would drop or duplicate basis. The server owns the
+watermark, so the client cannot derive it; the opening-lot bootstrap needs it to
+tell pre-window lots from in-window ones, and it must be present even for an item
+whose securities returned zero in-window transactions. The client stamps each
+item's value onto that item's `raw.plaid_investment_holdings` rows, matched by
+`source_origin` (= `provider_item_id`) (§ that table).
 
 **Securities carry item scope.** Plaid returns `securities` as a top-level
 array on each *item's* response, not per account — and the same real security
@@ -360,16 +366,16 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
     unofficial_currency_code VARCHAR,         -- Non-ISO (crypto) currency
     vested_quantity DECIMAL(28, 10),          -- Vested units (equity compensation); NULL otherwise
     vested_value DECIMAL(18, 2),              -- Vested value (equity compensation); NULL otherwise
-    transactions_window_start DATE NOT NULL,  -- metadata.transactions_window_start; the sync's /investments/transactions/get start boundary; opening-lot bootstrap's pre-window/in-window discriminant; constant across a snapshot
+    transactions_window_start DATE NOT NULL,  -- Per-item metadata.transactions_window_start; this item's /investments/transactions/get start boundary; opening-lot bootstrap's pre-window/in-window discriminant; constant per source_origin within a snapshot
     source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK)
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes the snapshot to the institution connection
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; scopes the snapshot to the institution connection; part of the PK
     extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, security_id, source_file)
+    PRIMARY KEY (account_id, security_id, source_origin, source_file)
 );
 ```
 
@@ -408,10 +414,10 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holding_lots (
     position_type VARCHAR,                    -- HoldingTaxLotPositionType (e.g. 'long' / 'short')
     source_file VARCHAR NOT NULL,             -- Snapshot identity (part of the PK), same as the parent holdings table
     source_type VARCHAR NOT NULL DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,           -- Plaid item_id
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; part of the PK
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, security_id, lot_index, source_file)
+    PRIMARY KEY (account_id, security_id, source_origin, lot_index, source_file)
 );
 ```
 
@@ -616,10 +622,11 @@ The heaviest view in this spec. In order:
 
    | Plaid (type/subtype) | → `type` | → `subtype` / notes |
    |---|---|---|
-   | buy/{buy, buy to cover, contribution} | `buy` | shorts collapse (out of scope) |
+   | buy/{buy, contribution} | `buy` | |
    | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source (`dividend`/`interest`/`capital_gain`); the paired Plaid income row maps to its own income type, linked by `event_group_id` |
    | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
-   | sell/{sell, sell short} | `sell` | |
+   | sell/{sell} | `sell` | |
+   | buy/buy to cover, sell/sell short | `other` | **short-position legs.** The engine models only long lots, so mapping these to `buy`/`sell` would open a spurious long lot / realize an oversold phantom gain. Routed to `other` (recorded, kept out of the lot engine) until short accounting is modeled (margin/short is future work); `system doctor` surfaces the unmodeled short activity. This is a *deliberate* route to `other`, not the accidental security-bearing default the guard below forbids |
    | sell/distribution | `transfer_out` | in-kind outflow from tax-advantaged account |
    | transfer/stock distribution | `transfer_in` | in-kind **inflow** of shares (stock dividend / distribution) — opens a lot carrying supplied basis, or a `basis_incomplete` lot when none is given. **Must not fall to `other`**: `other` is not an acquisition type, so the engine would skip it and the shares would never enter holdings |
    | cash-or-fee/{account, legal, management, transfer, trust, fund, miscellaneous} fee, margin expense | `fee` | |
