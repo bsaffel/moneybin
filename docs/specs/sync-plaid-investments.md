@@ -88,7 +88,8 @@ reach the ledger, everything downstream is existing machinery.
    `app.security_link_decisions` (fuzzy-match review queue) — with a
    `SecurityResolver` running adopt-or-mint before transforms: adopt bound →
    auto-bind strong identifier → **provisional-mint + propose merge** on a
-   fuzzy match → mint into `app.securities` with `created_by = 'plaid'`.
+   fuzzy match or an ambiguous identifier tie (never auto-pick between tied
+   candidates) → mint into `app.securities` with `created_by = 'plaid'`.
    Every rung ends with an accepted binding, so **every security-bearing row
    reaches the ledger on the sync that delivered it** — the cost-basis engine
    skips NULL-`security_id` events, so a held-out-pending-review row would
@@ -520,13 +521,18 @@ account/merchant merge's app-state cascade.
 Python service, mirroring the merchant resolver's blocking → score →
 accept/review/mint. Runs in `SyncService.pull()` **after raw load, before
 transforms** — bindings must exist before the staging views' resolution joins
-are materialized into core. Ladder, per incoming raw security:
+are materialized into core. Resolution is a **distinct, reviewable stage** of
+the pull: per-outcome counts (adopted / auto-bound / proposed / minted /
+pending) are reported in the sync envelope and CLI output, so identity
+failures surface separately from row-level staging rejects (the two-stage
+shape shipped brokerage importers converge on). Ladder, per incoming raw
+security:
 
 | Rung | Condition | Action | Visibility |
 |---|---|---|---|
 | 1 | provider ref already in `security_links` (`accepted`) | **adopt** that `security_id` | silent — near-certain |
-| 2 | unbound; **strong identifier** matches exactly one catalog entry: CUSIP or ISIN equality (when present) auto-binds outright — exchange is irrelevant at this rung. Absent CUSIP/ISIN, an exact ticker match (foundation resolution chain, incl. the `BRK.B`-first / suffix-strip-second rule) auto-binds only with **exchange agreement on normalized MIC** (see below). A ticker match whose normalized exchanges *contradict* (both resolve to different MICs) → **falls to rung 3** rather than silently binding a possibly-wrong `security_id` | **auto-bind** (`decided_by='auto'`) | silent, reversible |
-| 3 | unbound; name-fuzzy match to one-or-more candidates (no contradicting strong identifier — Guard 2) | **provisional-mint + propose merge**: mint into `app.securities` (`created_by='plaid'`) and bind — then file a pending `security_link_decisions` row proposing a **merge** of the minted security into the best fuzzy candidate | **surfaced** for review |
+| 2 | unbound; **strong identifier** matches exactly one catalog entry: CUSIP or ISIN equality (when present) auto-binds outright — exchange is irrelevant at this rung. Absent CUSIP/ISIN, an exact ticker match (foundation resolution chain, incl. the `BRK.B`-first / suffix-strip-second rule) auto-binds only with **exchange agreement on normalized MIC** (see below). A ticker match whose normalized exchanges *contradict* (both resolve to different MICs) → **falls to rung 3** rather than silently binding a possibly-wrong `security_id`. **Refuse-to-merge on ambiguity:** one identifier (CUSIP, ISIN, or ticker) matching **more than one** catalog entry is a genuine ambiguity — typically a catalog duplicate — and **falls to rung 3 with every tied candidate**; the resolver never auto-picks among ties (a wrong silent merge corrupts cost basis irreversibly) | **auto-bind** (`decided_by='auto'`) | silent, reversible |
+| 3 | unbound; flagged candidate(s) from rung 2 (identifier tie, exchange contradiction) or a name-fuzzy match (no contradicting strong identifier — Guard 2) | **provisional-mint + propose merge**: mint into `app.securities` (`created_by='plaid'`) and bind — then file a pending `security_link_decisions` row **per flagged candidate** (`match_reason` = `identifier_tie` / `exchange_contradiction` / `fuzzy_name`) proposing a **merge** of the minted security into that candidate. Sibling decisions for one ref auto-reject on accept, so a tie resolves with a single review action | **surfaced** for review |
 | 4 | no candidate | **mint** into `app.securities` (`created_by='plaid'`, defensive type mapping below) + bind | silent; visible via `created_by` |
 
 **Exchange agreement is on normalized MIC, never raw strings.** `app.securities.exchange`
@@ -1003,7 +1009,7 @@ data still loads.
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
 | `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
-| `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
+| `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
 | `doctor_service` — short-leg surface | Golden payload with `buy to cover`/`sell short` legs: they map to `other` (recorded, kept out of the lot engine — no spurious long lot, no oversold phantom gain), and `system doctor` reports them as unmodeled short activity — surfaced, never silently dropped. |
 
@@ -1066,6 +1072,8 @@ transactions), which also seed the golden files.
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
 | `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), engine-derived held lots diverging from the `tax_lots` snapshot, and **short-leg activity** (`buy to cover`/`sell short` mapped to `other`) surfaced as unmodeled |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
+| `src/moneybin/connectors/sync_models.py` | `PullResult`: carry the per-outcome security-resolution counts (adopted / auto-bound / proposed / minted / pending) in the pull envelope — resolution is a reported stage, not a silent side effect |
+| `src/moneybin/cli/commands/sync.py` | `sync pull` output: render those counts, naming the pending-decision command whenever an identity is awaiting review |
 | Review sweep (CLI `review` / MCP) | Add `security_links_pending` count |
 
 Server-side work (moneybin-sync: consent already requested at link time;
@@ -1087,6 +1095,7 @@ contract above is its specification.
 | Multi-provider holdings tiebreak on `dim_holdings` | Single provider in v1; adopt the `fct_balances_daily` precedence pattern when a second holdings source lands |
 | Webhook-based sync, offline queue | Same exclusions as `sync-plaid.md` |
 | Price feeds (`close_price` as history) | `raw.plaid_securities.close_price` is a point-in-time convenience; the append-only price history is Pillar C (`investments-price-feeds.md`) |
+| Dividend diff-detection (propose dividends *missing* from the ledger, computed from held-quantity history × provider dividend data, behind a visible confirm) | Deferred to **M1J.2** (registered in `roadmap.md`) — an analysis/reconciliation flow on top of the synced ledger, not ingestion; needs holdings history and a dividend-expectation model this spec doesn't build |
 
 ## Key decisions
 
@@ -1112,6 +1121,16 @@ contract above is its specification.
   immutable snapshots); the alternative some ship — overwrite-in-place +
   hard-delete of absent positions — forces fragile "did the broker sell it or
   did the feed glitch?" heuristics we avoid entirely.
+- **Refuse to merge on ambiguous identity; resolution is its own stage.** One
+  identifier matching more than one catalog entry is a duplicate-catalog signal,
+  not a match — so every tied candidate is surfaced as its own merge proposal and
+  the resolver picks none of them. This is the strictest confirm in the pipeline
+  on purpose: a wrong silent merge fuses two securities' lots and corrupts cost
+  basis irreversibly, which is precisely the "cost of a wrong silent action" test
+  from `design-principles.md`. Reporting per-outcome resolution counts in the pull
+  envelope is the other half — it makes identity failures reviewable as their own
+  stage, distinct from row-level staging rejects, the two-stage shape shipped
+  brokerage importers converge on.
 - **Exchange compared as normalized MIC, never raw strings.** The catalog's
   free-text `exchange` (`"NASDAQ"`) and Plaid's ISO-10383 MIC (`"XNAS"`) are
   different vocabularies; a raw compare reads every real match as a
