@@ -193,16 +193,22 @@ class MerchantLinkDecisionsRepo(BaseRepo):
         """Reverse a decision (sets ``reversed_at``/``reversed_by``, status reversed).
 
         Captures the full prior row in ``before``. Raises ``ValueError`` when no
-        decision with this id exists, or when it is already reversed — re-reversing
+        decision with this id exists, when it is already reversed — re-reversing
         would overwrite the original reversal's audit trail
-        (``reversed_at``/``reversed_by``), so a second reverse is rejected.
+        (``reversed_at``/``reversed_by``) — or when it is still ``pending``: a
+        pending row has no accept/reject decision yet to undo, so reversing it
+        would silently dequeue a review item with no decision ever recorded.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(
                 self._fetch_row(decision_id), "decision_id", decision_id
             )
-            if before["reversed_at"] is not None:
-                raise ValueError(f"Decision already reversed: {decision_id}")
+            if before["status"] not in ("accepted", "rejected"):
+                raise ValueError(
+                    "merchant_link_decisions.reverse: cannot reverse decision "
+                    f"{decision_id} with status {before['status']!r}; only "
+                    "accepted/rejected decisions can be reversed"
+                )
             self._db.execute(
                 f"""
                 UPDATE {MERCHANT_LINK_DECISIONS.full_name}

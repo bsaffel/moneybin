@@ -182,6 +182,8 @@ class TestUndoOfMatchDecisionGeneric:
     def test_undo_reverse_restores_status_and_signals(self, db: Database) -> None:
         repo = MatchDecisionsRepo(db)
         _seed_match(repo)
+        # reverse() only accepts accepted/rejected rows; accept before reversing.
+        repo.update_status("m1", status="accepted", decided_by="user", actor="cli")
         reverse = repo.reverse("m1", reversed_by="user", actor="cli")
         repo.undo_event(reverse, actor="cli")
         row = db.execute(
@@ -190,7 +192,7 @@ class TestUndoOfMatchDecisionGeneric:
             ["m1"],
         ).fetchone()
         assert row is not None
-        assert row[0] == "pending"  # restored from 'reversed'
+        assert row[0] == "accepted"  # restored from 'reversed'
         assert row[1] is None  # reversed_at cleared back to before-image
         assert json.loads(row[2])["description_similarity"] == 0.87
 

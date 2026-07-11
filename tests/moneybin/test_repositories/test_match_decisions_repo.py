@@ -181,8 +181,28 @@ def test_reverse_raises_when_already_reversed(db: Database) -> None:
     repo = MatchDecisionsRepo(db)
     _insert(repo, match_status="accepted")
     repo.reverse("m0000000001", reversed_by="user", actor="cli")
-    with pytest.raises(ValueError, match="already reversed"):
+    with pytest.raises(ValueError, match="accepted/rejected decisions can be reversed"):
         repo.reverse("m0000000001", reversed_by="user", actor="cli")
+
+
+def test_reverse_raises_when_pending(db: Database) -> None:
+    """A pending match has no accept/reject decision yet to undo.
+
+    Reversing it would silently dequeue it from the pending queue with no
+    decision ever recorded — the guarantee the match review queue exists to
+    enforce.
+    """
+    repo = MatchDecisionsRepo(db)
+    _insert(repo, match_status="pending")
+
+    with pytest.raises(ValueError, match="accepted/rejected decisions can be reversed"):
+        repo.reverse("m0000000001", reversed_by="user", actor="cli")
+
+    row = db.conn.execute(
+        "SELECT match_status, reversed_at FROM app.match_decisions WHERE match_id = ?",
+        ["m0000000001"],
+    ).fetchone()
+    assert row == ("pending", None)
 
 
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
