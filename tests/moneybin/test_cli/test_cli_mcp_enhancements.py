@@ -261,22 +261,88 @@ class TestMCPInstall:
         payload = _json.loads(expected.read_text())
         assert "mcpServers" in payload
 
-    def test_install_chatgpt_desktop_prints_instructions(self) -> None:
-        """chatgpt-desktop emits the snippet plus Connector setup steps."""
-        result = runner.invoke(app, ["install", "--client", "chatgpt-desktop"])
-        assert result.exit_code == 0
-        assert "mcpServers" in result.output
-        assert "Connectors" in result.output
-        assert "Command:" in result.output
-        assert "Arguments:" in result.output
+    def test_install_chatgpt_desktop_says_remote_mcp_is_required(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """chatgpt-desktop cannot take a local server — say so instead of pretending.
 
-    def test_install_chatgpt_desktop_print_implicit(self) -> None:
-        """chatgpt-desktop has no programmatic install — --print is implicit (no error)."""
+        Every ChatGPT surface (web, desktop, mobile) connects only to a REMOTE MCP
+        server over HTTPS. The command used to walk the user through picking a
+        "local/stdio option" in the Connectors UI that has never existed, and called
+        it "the supported, authenticated path".
+        """
+        result = runner.invoke(app, ["install", "--client", "chatgpt-desktop"])
+        assert result.exit_code == 1
+        assert "remote" in caplog.text.lower()
+        assert "M3D" in caplog.text
+
+    def test_install_chatgpt_desktop_emits_no_stdio_snippet(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The stdio snippet is the misdirection — no ChatGPT surface can consume it."""
+        result = runner.invoke(app, ["install", "--client", "chatgpt-desktop"])
+        emitted = result.output + caplog.text
+        assert "mcpServers" not in emitted
+        assert "Add custom connector" not in emitted
+
+    def test_install_chatgpt_desktop_does_not_pitch_insecure_http(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """--insecure HTTP is not a workaround for the missing remote transport."""
+        result = runner.invoke(app, ["install", "--client", "chatgpt-desktop"])
+        assert "--insecure" not in (result.output + caplog.text)
+
+
+class TestMCPInstallSnippetHardening:
+    """The generated snippet must survive the launch context clients actually use."""
+
+    def test_snippet_uses_the_absolute_uv_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GUI-launched macOS clients don't inherit the shell PATH, so `uv` must be absolute."""
+
+        def fake_which(_cmd: str) -> str | None:
+            return "/opt/homebrew/bin/uv"
+
+        monkeypatch.setattr("shutil.which", fake_which)
         result = runner.invoke(
-            app, ["install", "--client", "chatgpt-desktop", "--print"]
+            app, ["install", "--client", "claude-desktop", "--print"]
         )
         assert result.exit_code == 0
-        assert "Connectors" in result.output
+        assert "/opt/homebrew/bin/uv" in result.output
+
+    def test_snippet_falls_back_to_bare_uv_when_not_resolvable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If `uv` isn't on our own PATH there's nothing to resolve — emit it bare."""
+
+        def fake_which(_cmd: str) -> str | None:
+            return None
+
+        monkeypatch.setattr("shutil.which", fake_which)
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+        assert result.exit_code == 0
+        assert '"command": "uv"' in result.output
+
+    def test_codex_snippet_sets_a_startup_timeout(self) -> None:
+        """Uvx cold start runs 3-15s; Codex's default startup timeout is 10s."""
+        result = runner.invoke(app, ["install", "--client", "codex", "--print"])
+        assert result.exit_code == 0
+        assert "startup_timeout_sec" in result.output
+
+    def test_gemini_cli_snippet_never_enables_trust(self) -> None:
+        """`trust: true` bypasses ALL tool-call confirmations — never for a finance server."""
+        result = runner.invoke(app, ["install", "--client", "gemini-cli", "--print"])
+        assert result.exit_code == 0
+        assert '"trust"' not in result.output
+
+    def test_gemini_cli_install_explains_the_trust_setting(self) -> None:
+        """Explain the setting we deliberately left off, so it isn't cargo-culted on."""
+        result = runner.invoke(app, ["install", "--client", "gemini-cli", "--print"])
+        assert "trust" in result.output.lower()
+        assert "confirmation" in result.output.lower()
 
     def test_old_config_generate_command_removed(self) -> None:
         """The old `mcp config generate` command no longer exists."""
@@ -348,7 +414,10 @@ class TestMCPInstallCodex:
         )
         assert result.exit_code == 0
         assert "[mcp_servers." in result.output
-        assert 'command = "uv"' in result.output
+        # `uv` is emitted as the absolute path we resolved (bare `uv` only when it
+        # isn't on PATH) — GUI-launched clients don't inherit the shell PATH.
+        assert 'command = "' in result.output
+        assert "uv" in result.output
         assert "args = [" in result.output
         # No mcpServers JSON header — codex output is TOML, not JSON.
         assert "mcpServers" not in result.output
@@ -381,8 +450,10 @@ class TestMCPInstallCodex:
         assert "mcp_servers" in parsed
         assert "MoneyBin (alice)" in parsed["mcp_servers"]
         entry = parsed["mcp_servers"]["MoneyBin (alice)"]
-        assert entry["command"] == "uv"
+        assert Path(entry["command"]).name == "uv"
         assert "moneybin" in entry["args"]
+        # Cold `uv run` outruns Codex's 10s default on first launch.
+        assert entry["startup_timeout_sec"] == 30
         # Concurrency guardrail must fire on per-invocation client installs.
         assert "auto-loads" in result.output
 
@@ -489,7 +560,7 @@ class TestMCPInstallVSCode:
         assert "servers" in payload
         entry = next(iter(payload["servers"].values()))
         assert entry["type"] == "stdio"
-        assert entry["command"] == "uv"
+        assert Path(entry["command"]).name == "uv"
 
     def test_install_vscode_outside_repo_errors(
         self, monkeypatch: pytest.MonkeyPatch

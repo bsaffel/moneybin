@@ -100,7 +100,7 @@ Parity is functional, not nominal — same outcomes reachable on both surfaces, 
 
 ### Transport and auth
 
-MCP runs over **stdio today** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex, and ChatGPT Desktop all attach this way. A **Streamable HTTP transport is planned** to unlock ChatGPT web/mobile and the hosted tier when the Web UI ships.
+MCP runs over **stdio today** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, and Codex all attach this way. **ChatGPT does not**: every ChatGPT surface (web, desktop, mobile) connects only to a remote MCP server over HTTPS, so none of them can reach a local MoneyBin. A **Streamable HTTP transport with authentication is planned** (M3D) to unlock ChatGPT and the hosted tier.
 
 Each profile is encrypted with a key held in the OS keychain (auto-key mode) or derived from a passphrase you supply (passphrase mode). `moneybin db unlock` opens the database once per session; subsequent CLI commands and MCP sessions share that unlocked state via short-lived in-process connections.
 

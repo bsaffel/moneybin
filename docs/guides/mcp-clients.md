@@ -29,7 +29,8 @@ The supported `--client` values are:
 - `vscode`
 - `gemini-cli`
 - `codex` (CLI, Desktop app, IDE extension — all share `~/.codex/config.toml`)
-- `chatgpt-desktop`
+
+`chatgpt-desktop` is a **reserved id that refuses to install** — ChatGPT can only reach a remote MCP server, and MoneyBin's is local. See [ChatGPT](#chatgpt--not-supported-yet).
 
 If `--client` is omitted, `claude-desktop` is the default. To look up the install path the command would write to (without writing), use:
 
@@ -39,21 +40,23 @@ moneybin mcp config path --client <name> [--profile <name>]
 
 ### Preview the snippet
 
-`--print` emits the exact bytes the command would write, without touching any file. Useful for review before merging into a shared config, and the only sane workflow for clients without a programmatic install path (ChatGPT Desktop). The shape varies by client:
+`--print` emits the exact bytes the command would write, without touching any file. Useful for review before merging into a shared config. The shape varies by client:
 
 ```json
 // Claude Desktop / Cursor / Windsurf / Gemini CLI / Claude Code — JSON, "mcpServers" key
 {
   "mcpServers": {
     "MoneyBin": {
-      "command": "uv",
+      "command": "/opt/homebrew/bin/uv",
       "args": ["run", "--directory", "/path/to/repo", "moneybin", "--profile", "default", "mcp", "serve"]
     }
   }
 }
 ```
 
-VS Code uses `{"servers": {...}}` with an explicit `"type": "stdio"`. Codex uses TOML under `[mcp_servers.MoneyBin]`. If `MONEYBIN_HOME` is set when you run install, an `env` block pinning it lands inside the server entry so the client launches the server with the same home directory you used.
+`command` is the **absolute path** to `uv`, resolved when you run install. That is deliberate: macOS clients launched from the GUI (Claude Desktop, Cursor) do not inherit your shell's `PATH`, so a bare `uv` resolves to nothing and the server dies at launch with an error the client reports as a generic failure. If `uv` isn't on your `PATH` at install time either, the bare name is emitted and the client will tell you it couldn't start.
+
+VS Code uses `{"servers": {...}}` with an explicit `"type": "stdio"`. Codex uses TOML under `[mcp_servers.MoneyBin]`, and carries a `startup_timeout_sec = 30` — Codex defaults to 10s, but a cold `uv run` (building the environment on first launch) routinely takes longer, so the very first connection is the one most likely to time out. If `MONEYBIN_HOME` is set when you run install, an `env` block pinning it lands inside the server entry so the client launches the server with the same home directory you used.
 
 Installing a non-default profile generates a distinct entry name (e.g. `MoneyBin (alice)`); see [Switching profiles](#switching-profiles) below.
 
@@ -73,6 +76,10 @@ The MCP transport is local-only and the MoneyBin server itself does not phone ho
 
 Anthropic's desktop app for macOS and Windows.
 
+Anthropic now blesses **desktop extensions (`.mcpb` bundles)** as the primary way to add a local MCP server: one file, installed through the app's own UI, no JSON editing. Hand-editing `claude_desktop_config.json` still works and is still supported — it is simply the legacy path now.
+
+**MoneyBin does not ship an `.mcpb` bundle yet** (it is tracked under M3B, alongside the PyPI publish). Until it does, the config-file path below is the way in — it is the legacy path, not a broken one.
+
 ```bash
 moneybin mcp install --client claude-desktop -y
 ```
@@ -82,6 +89,10 @@ moneybin mcp install --client claude-desktop -y
 - **Restart required:** Yes. Quit Claude Desktop entirely (menu bar → Quit, not just closing the window) and reopen it. The app reads its MCP config only at launch.
 - **Server lifecycle:** One server process per app instance, spawned at launch and reused across all chats. Opening "New chat" does not spawn another server.
 - **Confirmation UI:** Renders Claude's standard tool-call approval prompt. Tools marked `destructiveHint=true` (categorization commits, rule deletes, refresh runs) render with a more explicit confirmation than read-only tools.
+
+**Cowork sessions can't see MoneyBin.** Claude's Cowork surface runs *remote* sessions in Anthropic's cloud, and a remote session cannot reach an MCP server running on your machine — it will behave as though MoneyBin isn't installed. Local Claude Desktop sessions see it normally. This is not a misconfiguration; a local stdio server is simply unreachable from a cloud session (the fix is remote MCP transport, tracked as M3D).
+
+**Managed / work devices.** If Claude Desktop is administered by an organization, two admin flags decide whether any of this is available to you: `isLocalDevMcpEnabled` (local MCP servers at all) and `isDesktopExtensionEnabled` (`.mcpb` extensions). With them off, MoneyBin cannot be installed into that Claude Desktop, and the failure looks like the server silently never appearing. Check with whoever administers the device before debugging further.
 
 See [Verifying the connection](#verifying-the-connection) for a smoke test.
 
@@ -138,6 +149,12 @@ moneybin mcp install --client windsurf -y
 - **Server lifecycle:** One server process per Windsurf instance.
 - **Confirmation UI:** Tool-call approval is shown in the Cascade chat panel. Like Cursor, Windsurf reads `readOnlyHint` but doesn't currently distinguish `destructiveHint` in its UI.
 
+> **⚠️ MoneyBin exceeds Windsurf's tool limit.** Cascade holds a maximum of **100 tools at any one time**, across *all* your MCP servers combined. MoneyBin registers **102** and hides none of them, so a MoneyBin install alone is already over the ceiling — and any other MCP server you run competes for the same budget.
+>
+> Windsurf gives you no warning when you cross the line; tools past the limit simply aren't available to Cascade, and it will act as though MoneyBin can't do things it can. Open **Settings → MCP Servers** and toggle off the tools you don't need until you're under 100. Turning off namespaces you aren't using (for example `investments_*` or `tax_*` if you don't track those) is the quickest way down.
+>
+> Every other supported client is unaffected — this ceiling is specific to Cascade.
+
 ### VS Code (Copilot Chat, agent mode)
 
 GitHub Copilot Chat in agent mode reads workspace-scoped MCP config from `.vscode/mcp.json`.
@@ -168,6 +185,7 @@ moneybin mcp install --client gemini-cli -y
 - **Restart required:** No — `gemini` reads settings on each invocation.
 - **Server lifecycle:** Per-invocation. Every `gemini` command in any terminal spawns its own MoneyBin server. Multiple `gemini` sessions on the same profile coexist — reads usually coexist and writes serialize. A write-mode tool call fails only when another session holds a conflicting lock past the retry window (a long write, or a long read holding the read lock); a read-mode call fails only when it lands during a long write — see [Concurrency](#concurrency-which-clients-share-a-server) below.
 - **Confirmation UI:** `gemini` prompts in the terminal before invoking tools by default. Tool annotations are not currently surfaced in the prompt text.
+- **`trust` is deliberately not set.** Gemini CLI supports a per-server `"trust": true` setting that, in its own words, will "trust this server and bypass all tool call confirmations." MoneyBin does not write it. Our surface includes write tools — import, categorize, delete, refresh — and those should ask before they act on your financial data. Add it by hand only if you accept that every MoneyBin tool call runs unprompted.
 
 ### Codex (CLI, Desktop app, IDE extension)
 
@@ -189,20 +207,19 @@ moneybin mcp install --client codex -y
 
 As an alternative install path, OpenAI also documents `codex mcp add` for managing servers from the CLI. The block `moneybin mcp install --client codex` writes is equivalent.
 
-### ChatGPT Desktop
+### ChatGPT — not supported yet
 
-ChatGPT Desktop adds MCP servers through **Settings → Connectors** (Developer Mode), not a JSON config file we can write programmatically.
+**You cannot connect MoneyBin to ChatGPT today.** Every ChatGPT surface — web, desktop, and mobile — connects only to a **remote** MCP server reachable over HTTPS. None of them can spawn a local server on your machine, and there is no local/stdio connector option to select in the Connectors UI. MoneyBin's server is local stdio only.
 
 ```bash
-moneybin mcp install --client chatgpt-desktop
+moneybin mcp install --client chatgpt-desktop   # refuses, and explains why
 ```
 
-This invocation always prints the canonical snippet plus a numbered Connector-setup checklist (which fields to fill, where to paste them, and the HTTP-connector fallback). `--print` is implicit; there is no file to write.
+The command exits non-zero and points you at a client that does speak local MCP. The `chatgpt-desktop` client id stays reserved for when this becomes real.
 
-- **Config file:** none — the snippet is informational. Copy fields into the Connector UI by hand.
-- **Restart required:** Yes — restart ChatGPT Desktop after adding the connector.
-- **Server lifecycle:** One server process per app instance.
-- **MCP support gating:** ChatGPT Desktop's MCP support depends on app version and account plan. Use the local/stdio connector above — it is the supported path. MoneyBin's HTTP transport is **unauthenticated** (no HTTP auth exists yet) and refuses to start without an explicit `--insecure` opt-in. If your build accepts no stdio connector, `moneybin mcp serve --transport streamable-http --insecure` is a last-resort escape hatch — localhost-only, on a machine you trust, never exposed to a network. See [Transport](#transport) below.
+**What would change this:** authenticated remote MCP transport, tracked as **M3D** on the [roadmap](../roadmap.md). That is the whole gap — it needs a public HTTPS endpoint and an auth model, not a config tweak.
+
+**Do not** reach for `moneybin mcp serve --transport streamable-http --insecure` as a workaround. It has no authentication whatsoever — anyone who can reach the port can read and write your finances — and ChatGPT's cloud cannot reach a port on your laptop anyway, so it doesn't even solve the problem. See [Transport](#transport).
 
 ## Concurrency: which clients share a server
 

@@ -228,6 +228,17 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **MCP client guide corrected against what the clients actually do.** The Claude
+  Desktop section now leads with `.mcpb` desktop extensions as the vendor-blessed
+  path (config-file JSON is legacy-but-supported; MoneyBin's own bundle is still
+  M3B), and documents two failures that look like bugs but aren't: Cowork's *remote*
+  sessions can never see a local MCP server, and managed-org policy flags
+  (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`) can disable local MCP
+  outright. The Windsurf section now warns that **MoneyBin's 102 tools exceed
+  Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
+  dropped, so users must disable some by hand. The Gemini CLI section explains why
+  MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
+  our surface includes write tools). (#314)
 - **`core.dim_categories` gains an accounting `class` (M1V).** Every category
   now carries `class` (`income` | `expense` | `transfer` | `debt`), assigned
   at curation time for seed categories and defaulting to `expense` for user
@@ -315,6 +326,21 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **`mcp install --client chatgpt-desktop` no longer sends users down a path that
+  does not exist.** It printed a local/stdio config snippet and told the user to
+  "choose the local/stdio option" in ChatGPT's Connectors UI, calling that "the
+  supported, authenticated path". No such option exists: every ChatGPT surface (web,
+  desktop, mobile) connects only to a *remote* MCP server over HTTPS, and MoneyBin's
+  is local stdio. The command now refuses with a non-zero exit, explains why, and
+  names the clients that do work. Authenticated remote transport is tracked as M3D.
+  The `chatgpt-desktop` id stays reserved. (#314)
+- **MCP install snippets now pin the absolute `uv` path.** macOS clients launched
+  from the GUI (Claude Desktop, Cursor) do not inherit the shell's `PATH`, so a bare
+  `uv` in the generated config resolved to nothing and the server failed to start —
+  surfacing to the user as an opaque client-side error. (#314)
+- **Codex installs carry `startup_timeout_sec = 30`.** Codex defaults to 10s, but a
+  cold `uv run` (building the environment on first launch) routinely takes 3–15s, so
+  the very first connection was the one most likely to time out. (#314)
 - **Net worth no longer drops accounts with older statements.**
   `core.fct_balances_daily` built each account's date spine only as far as *that
   account's* last balance observation, so on any later date the account simply
@@ -326,13 +352,21 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   genuinely gone are excluded by archiving them (`include_in_net_worth` / `archived`,
   already honored), not by silently ageing out. (#310)
 - **First-run guidance points an unset-up profile at `profile create`.** When the
-  active profile has never been set up at all, the "Database not found" message
-  now recommends `moneybin profile create <name> --init-inbox` (which scaffolds
+  active profile has never been set up, the "Database not found" message now
+  recommends `moneybin profile create <name> --init-inbox` (which scaffolds
   config, database, and inbox) instead of `db init`, which would leave the profile
-  unregistered — absent from `moneybin profile list`, with no inbox. If the
-  profile *directory* already exists, the message still points at `db init`:
-  `profile create` refuses on the directory alone, so recommending it there would
-  dead-end the user. (#310)
+  unregistered — absent from `moneybin profile list`, with no inbox. A profile that
+  *is* registered but has no database still points at `db init`, which is the
+  correct verb there. (#310, #314)
+- **`moneybin profile create` can now repair a half-made profile.** A profile
+  directory with no `config.yaml` — left by a bare `moneybin db init`, a hand
+  `mkdir`, or an interrupted delete — was previously a dead end: `profile create`
+  refused on the directory's mere existence, `profile list` hid it, and it never
+  got an import inbox, with no verb anywhere to finish it. `create` now completes
+  such a directory in place (config, inbox, and a database only if one is absent —
+  an existing database is never touched or rolled back) and reports that it
+  completed rather than created it. `ProfileExistsError` now means "a *registered*
+  profile exists", so re-creating a real profile still refuses. (#314)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its

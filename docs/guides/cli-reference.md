@@ -445,7 +445,7 @@ MCP server lifecycle and client install.
 | Command | Purpose | Key flags |
 |---|---|---|
 | `mcp serve` | Start the MCP server (stdio by default). Non-stdio transports are unauthenticated and refuse to start without `--insecure`. | `-t, --transport {stdio,sse,streamable-http}`, `--insecure` |
-| `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, vscode, cursor, windsurf, gemini, chatgpt-desktop. | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
+| `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, vscode, cursor, windsurf, gemini-cli. (`chatgpt-desktop` is a reserved id that refuses: ChatGPT needs a remote MCP server — M3D.) | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
 | `mcp list-tools` | List every registered MCP tool with its sensitivity tier. | `-o, --output` |
 | `mcp list-prompts` | List every registered MCP prompt. | `-o, --output` |
 | `mcp config` | Show active MCP server configuration (profile, database path, max-rows, max-chars). | — |

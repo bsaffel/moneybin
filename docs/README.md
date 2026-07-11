@@ -43,7 +43,7 @@ For builders. The first two links are the developer surface; the third is for en
 
 - **[MCP server](guides/mcp-server.md)** — The builder doc. Tool catalog, response envelope, sensitivity tiers, latency and cost guidance for planning tool budgets.
 - **[Example prompts and workflows](reference/prompts/)** — Ready-to-use prompts (monthly review, anomaly detection, tax prep, transaction search) you can adapt for your own agent.
-- **[MCP clients](guides/mcp-clients.md)** — Per-client setup for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex, ChatGPT Desktop, and more.
+- **[MCP clients](guides/mcp-clients.md)** — Per-client setup for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, and Codex (plus why ChatGPT can't connect yet).
 - **Extending the server** — See [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) for the recipe (service, decorator, CLI peer, tests).
 
 ### Security and operations

@@ -13,6 +13,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import signal
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
@@ -66,6 +67,12 @@ _SUPPORTED_CLIENTS: tuple[str, ...] = (
 )
 
 _DEFAULT_CLIENT = "claude-desktop"
+
+# Codex defaults to a 10s startup timeout, but a cold `uv run` (resolving and
+# building the environment on first launch) routinely takes 3-15s — so the very
+# first connection is the one most likely to time out, and it reads to the user as
+# "MoneyBin is broken" rather than "the environment was still warming up".
+_CODEX_STARTUP_TIMEOUT_SEC = 30
 
 # ── config subgroup ──────────────────────────────────────────────────────────
 
@@ -238,6 +245,11 @@ def mcp_install(
         logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
         raise typer.Exit(2)  # usage error — matches `mcp config path` convention
 
+    # Refuse before building anything: there is no snippet a ChatGPT surface can
+    # consume, and printing one is what misled users.
+    if client in _NO_INSTALL_CLIENTS:
+        _refuse_remote_only_client(client)
+
     resolved_profile = profile or get_current_profile()
 
     args: list[str] = ["run"]
@@ -263,7 +275,7 @@ def mcp_install(
 
     args += ["moneybin", "--profile", resolved_profile, "mcp", "serve"]
 
-    server_entry: dict[str, Any] = {"command": "uv", "args": args}
+    server_entry: dict[str, Any] = {"command": _resolve_uv_command(), "args": args}
     if env:
         server_entry["env"] = env
 
@@ -274,13 +286,7 @@ def mcp_install(
     )
     snippet, snippet_text = _build_snippet(client, entry_name, server_entry)
     typer.echo(snippet_text)
-
-    # chatgpt-desktop has no programmatic install path — always print + show
-    # manual Connector setup instructions. --print is implicit; no error if
-    # the user explicitly passed it.
-    if client == "chatgpt-desktop":
-        _print_chatgpt_desktop_instructions(server_entry, entry_name)
-        return
+    _print_client_notes(client)
 
     if client == "claude-code":
         config_path = _client_install_path(client, resolved_profile)
@@ -356,7 +362,11 @@ def _build_snippet(
         snippet: dict[str, Any] = {"servers": {entry_name: vscode_entry}}
         return snippet, json.dumps(snippet, indent=2)
     if client == "codex":
-        snippet = {"mcp_servers": {entry_name: server_entry}}
+        codex_entry = {
+            **server_entry,
+            "startup_timeout_sec": _CODEX_STARTUP_TIMEOUT_SEC,
+        }
+        snippet = {"mcp_servers": {entry_name: codex_entry}}
         return snippet, _render_codex_toml(snippet)
     snippet = {"mcpServers": {entry_name: server_entry}}
     return snippet, json.dumps(snippet, indent=2)
@@ -512,45 +522,56 @@ def _print_claude_code_launch_hint(config_path: Path) -> None:
     )
 
 
-def _print_chatgpt_desktop_instructions(
-    server_entry: dict[str, Any], entry_name: str
-) -> None:
-    """Print step-by-step Connector setup for ChatGPT Desktop.
+def _refuse_remote_only_client(client: str) -> None:
+    """Refuse to install for a client that can only reach a REMOTE MCP server.
 
-    ChatGPT Desktop installs MCP servers through Settings → Connectors (Developer
-    Mode), not a JSON config file we can write. The snippet above is informational
-    — copy individual fields into the connector form.
+    Every ChatGPT surface — web, desktop, and mobile — connects over HTTPS to a
+    public MCP endpoint; none of them can spawn a local stdio server. We used to
+    print a stdio snippet and walk the user through selecting a "local/stdio
+    option" in the Connectors UI that does not exist, then call that the supported
+    path. The client id stays reserved so this refusal keeps working (and so the
+    id is ready when M3D lands remote transport + auth).
+
+    Never raise `--insecure` HTTP as the workaround: it would put an
+    unauthenticated listener holding the user's finances on the network, and no
+    ChatGPT surface can reach a localhost port anyway.
     """
-    command = server_entry["command"]
-    args_str = " ".join(server_entry.get("args", []))
-    env_pairs = server_entry.get("env", {})
+    local_clients = ", ".join(
+        c for c in _SUPPORTED_CLIENTS if c not in _NO_INSTALL_CLIENTS
+    )
+    logger.error(
+        f"❌ '{client}' cannot connect to a local MCP server, so there is nothing "
+        "to install. Every ChatGPT surface (web, desktop, mobile) connects only to "
+        "a remote MCP server over HTTPS — there is no local/stdio connector option "
+        "to choose. MoneyBin's server is stdio-only today; remote transport with "
+        "authentication is tracked as M3D on the roadmap. To use MoneyBin with an "
+        f"AI client now, install for one that speaks local MCP: {local_clients}."
+    )
+    raise typer.Exit(1)
 
-    typer.echo("")
-    typer.echo("ChatGPT Desktop install steps:")
-    typer.echo("  1. Open ChatGPT → Settings → Connectors.")
-    typer.echo(
-        "     If you don't see 'Add custom connector', enable Developer Mode "
-        "under Settings → Advanced first."
-    )
-    typer.echo("  2. Click 'Add custom connector' → choose the local/stdio option.")
-    typer.echo(f"  3. Name: {entry_name}")
-    typer.echo(f"     Command: {command}")
-    typer.echo(f"     Arguments: {args_str}")
-    if env_pairs:
-        typer.echo("     Environment variables:")
-        for key, value in env_pairs.items():
-            typer.echo(f"       {key}={value}")
-    typer.echo("  4. Save. ChatGPT will spawn the server on demand.")
-    typer.echo("")
-    typer.echo(
-        "Note: ChatGPT Desktop's MCP support is gated by version and plan. Use "
-        "the local/stdio connector above — it is the supported, authenticated "
-        "path. MoneyBin's HTTP transport is UNAUTHENTICATED (no HTTP auth exists "
-        "yet): `moneybin mcp serve --transport streamable-http --insecure` opens "
-        "a port anyone who can reach it can read and write your finances through. "
-        "Only use it on a trusted, localhost-only machine as a last resort if "
-        "your build accepts no stdio connector."
-    )
+
+def _resolve_uv_command() -> str:
+    """Absolute path to `uv`, falling back to the bare name.
+
+    macOS clients launched from the GUI (Claude Desktop, Cursor) do not inherit the
+    shell's PATH, so a bare `uv` in the config resolves to nothing and the server
+    fails to start with an error the user cannot act on. Pin the interpreter we can
+    see at install time. If `uv` isn't on our own PATH either, there is nothing to
+    resolve — emit it bare and let the client report the failure.
+    """
+    return shutil.which("uv") or "uv"
+
+
+def _print_client_notes(client: str) -> None:
+    """Print per-client caveats that the snippet itself cannot express."""
+    if client == "gemini-cli":
+        typer.echo("")
+        typer.echo(
+            "Note: Gemini CLI's `trust: true` server setting bypasses ALL tool-call "
+            "confirmations. MoneyBin deliberately does not set it — the surface "
+            "includes write tools (import, categorize, delete), and those should ask "
+            "before they act. Add it yourself only if you accept that."
+        )
 
 
 def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
