@@ -67,7 +67,7 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | Codex (CLI/IDE/desktop) | **stdio + streamable HTTP** | `codex mcp add` / `~/.codex/config.toml` | **T1** | Set `startup_timeout_sec` > default 10s (uvx cold start 3–15s); per-server tool allow/deny useful for our surface |
 | Cursor | stdio, SSE, streamable HTTP | `~/.cursor/mcp.json`; **`cursor://` install deep link** ("Add to Cursor" badge) | **T1** | Deep-link badge in README is near-zero cost |
 | VS Code (Copilot agent) | stdio, http | `.vscode/mcp.json`; **`vscode:mcp/install` deep link**; GitHub MCP Registry one-click | **T1** | Org allowlist governance exists (registry-only policies) |
-| Gemini CLI | stdio, SSE, streamable HTTP + OAuth | `~/.gemini/settings.json`; `gemini extensions install <repo>` | **T1** | Extension gallery is un-vetted/community by design. **Sunsetting into Antigravity CLI** — the "Google agent surface" T1 slot is Antigravity going forward; keep Gemini CLI supported through the transition |
+| Gemini CLI | stdio, SSE, streamable HTTP + OAuth | `~/.gemini/settings.json`; `gemini extensions install <repo>` | **T1** | Extension gallery is un-vetted/community by design. **Sunsetting into Antigravity CLI** — Antigravity carries the forward "Google agent surface" T1 slot. **Deliberately kept T1 (founder decision 2026-07-11), not demoted:** still widely installed today; revisit at actual sunset |
 | Antigravity (Google) | stdio, SSE, streamable HTTP | desktop app + `antigravity` CLI MCP config; Python SDK `skills_paths` | **T1** | Google's first-party agent surface — **peer to Codex (OpenAI) / Claude Code (Anthropic)**; its CLI is the Gemini-CLI successor. Surfaces in flux (desktop primary; Nov-2025 IDE on a deprecation track) → target desktop + CLI, re-verify the config path each release |
 | Zed | stdio (`context_servers`); remote unconfirmed | `settings.json` or packaged Zed extension | T2 | Extension packaging is a later nicety, not required |
 | JetBrains AI Assistant / Junie | stdio, streamable HTTP, SSE | IDE Settings → MCP; Junie `.junie/mcp/mcp.json` | T2 | |
@@ -79,7 +79,7 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
 | Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 102** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
-| ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension |
+| ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** (pending #315) | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension. **Until #315 merges, `chatgpt-desktop` is manual-config only** (still in `_NO_INSTALL_CLIENTS` on `main`) |
 | ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
 | Cowork remote sessions | remote MCP via connectors | claude.ai connectors | **T3** | Same M3D unlock |
 | Claude Connectors Directory / ChatGPT Apps SDK (→ "Plugins") | hosted remote + review | vendor submission portals | **T3 (M3O)** | Both require org accounts + human review; see M3O |
@@ -247,7 +247,8 @@ organizational prerequisites. Sequenced last, deliberately.
   + screenshots;
   regional exclusions (EEA/CH/UK at launch) may affect reach.
 - Prerequisite to name in roadmap: the submitting org account is a dedicated
-  MoneyBin organization (decided — see Decisions); acquiring/holding it is a
+  MoneyBin organization (provisional default; finalized at M3O — see Decisions);
+  acquiring/holding it is a
   real cost, not a formality.
 
 ## Egress posture
