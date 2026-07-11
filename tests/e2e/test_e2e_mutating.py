@@ -1554,3 +1554,71 @@ class TestPrivacyConsent:
             "privacy", "grant", "ml-categorization", "--yes", env=env
         ).assert_success()
         run_cli("privacy", "revoke-all", "--yes", env=env).assert_success()
+
+
+class TestDemo:
+    """`moneybin demo` — the evaluator preset (real full pipeline)."""
+
+    def test_demo_end_to_end_json(self, tmp_path: Path) -> None:
+        """Demo builds a populated, doctor-clean demo profile and reports net worth."""
+        env = base_env(tmp_path, "demo")
+        env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(tmp_path / "inbox-root")
+        result = run_cli(
+            "demo",
+            "--yes",
+            "--seed",
+            "42",
+            "--years",
+            "1",
+            "--output",
+            "json",
+            env=env,
+            timeout=300,
+        )
+        assert result.exit_code == 0, result.output
+        assert "Traceback" not in result.stderr
+        envelope = json.loads(result.stdout)
+        payload = envelope["data"]
+        assert payload["profile"] == "demo"
+        assert payload["transaction_count"] > 0
+        assert payload["account_count"] > 0
+        # The whole point of demo: it ends clean AND categorized. Coverage is part
+        # of the success signal because doctor's own coverage check is warn-only —
+        # demo once shipped 0% categorized while still reporting "clean".
+        assert payload["doctor_failing"] == 0, payload["doctor_failing_names"]
+        assert payload["categorized_count"] / payload["transaction_count"] > 0.7
+
+    def test_demo_rerun_after_a_real_cli_run(self, tmp_path: Path) -> None:
+        """A second `moneybin demo` rebuilds the profile the first one left behind.
+
+        This has to be a real subprocess, twice. Every CLI process that opened a
+        write connection flushes operational metrics to `app.metrics` at exit via
+        `atexit` — which no in-process test can trigger. The real-data guard reads
+        any unrecognized `app.*` table as the user's, so our own telemetry looked
+        like user data and made the demo profile unrebuildable. Only a real second
+        invocation proves it doesn't.
+        """
+        env = base_env(tmp_path, "demo")
+        env["MONEYBIN_IMPORT___INBOX_ROOT"] = str(tmp_path / "inbox-root")
+        first = run_cli(
+            "demo", "--yes", "--seed", "42", "--years", "1", env=env, timeout=300
+        )
+        assert first.exit_code == 0, first.output
+
+        second = run_cli(
+            "demo",
+            "--yes",
+            "--seed",
+            "7",
+            "--years",
+            "1",
+            "--output",
+            "json",
+            env=env,
+            timeout=300,
+        )
+        assert second.exit_code == 0, second.output
+        assert "Traceback" not in second.stderr
+        payload = json.loads(second.stdout)["data"]
+        assert payload["transaction_count"] > 0
+        assert payload["doctor_failing"] == 0, payload["doctor_failing_names"]

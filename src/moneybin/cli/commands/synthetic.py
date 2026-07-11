@@ -5,15 +5,6 @@ import random
 
 import typer
 
-from moneybin.tables import (
-    GROUND_TRUTH,
-    OFX_ACCOUNTS,
-    OFX_BALANCES,
-    OFX_TRANSACTIONS,
-    TABULAR_ACCOUNTS,
-    TABULAR_TRANSACTIONS,
-)
-
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
@@ -23,16 +14,6 @@ app = typer.Typer(
 
 # Persona -> default profile name mapping
 _PERSONA_PROFILES = {"basic": "alice", "family": "bob", "freelancer": "charlie"}
-
-# Tables to scope-delete during reset (allowlist from TableRef constants)
-_RESET_DELETIONS = {
-    GROUND_TRUTH.full_name: "WHERE TRUE",
-    OFX_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    OFX_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    OFX_BALANCES.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    TABULAR_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    TABULAR_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-}
 
 
 def _run_generate(
@@ -212,23 +193,34 @@ def synthetic_reset(
             )
 
             with get_database(read_only=False) as db:
-                # Safety check: only reset profiles created by the generator
-                try:
-                    gt_row = db.execute(
-                        """SELECT COUNT(*) FROM information_schema.tables
-                        WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"""
-                    ).fetchone()
-                    gt_exists = gt_row[0] if gt_row else 0
-                except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
-                    gt_exists = 0
+                from moneybin.synthetic.reset import (
+                    has_non_synthetic_data,
+                    has_synthetic_ground_truth,
+                )
 
-                if not gt_exists:
+                # Safety check: only reset profiles created by the generator
+                if not has_synthetic_ground_truth(db):
                     logger.error(
                         f"❌ Profile {target_profile!r} was not created by the "
                         f"generator. Refusing to reset."
                     )
                     logger.info(
                         f"💡 To destroy a non-generated profile, use "
+                        f"'moneybin profile delete {target_profile}'"
+                    )
+                    raise typer.Exit(1) from None
+
+                # Even a generator-created profile may have accumulated real
+                # imports (Plaid/manual/CSV). reset_synthetic_rows only removes
+                # `synthetic://` rows, so regenerating would layer synthetic data
+                # on top of real data — refuse rather than corrupt the profile.
+                if has_non_synthetic_data(db):
+                    logger.error(
+                        f"❌ Profile {target_profile!r} also holds real "
+                        f"(non-synthetic) data. Refusing to reset."
+                    )
+                    logger.info(
+                        f"💡 To destroy a profile with real data, use "
                         f"'moneybin profile delete {target_profile}'"
                     )
                     raise typer.Exit(1) from None
@@ -242,14 +234,11 @@ def synthetic_reset(
                         raise typer.Abort()
 
                 from moneybin.metrics.registry import SYNTHETIC_RESET_TOTAL
+                from moneybin.synthetic.reset import reset_synthetic_rows
 
                 SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
                 logger.info(f"⚙️  Resetting profile {target_profile!r}...")
-                for table, where in _RESET_DELETIONS.items():
-                    try:
-                        db.execute(f"DELETE FROM {table} {where}")  # noqa: S608 — allowlisted table names + literal WHERE clauses
-                    except Exception:  # noqa: BLE001,S110 — table may not exist
-                        pass
+                reset_synthetic_rows(db)
 
         # Regenerate
         _run_generate(

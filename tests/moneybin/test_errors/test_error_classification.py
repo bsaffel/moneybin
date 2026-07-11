@@ -1,6 +1,10 @@
 """Tests for the cross-cutting user-error classifier."""
 
+from collections.abc import Generator
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from moneybin import error_codes
 from moneybin.database import DatabaseKeyError
@@ -136,3 +140,69 @@ def test_classify_database_lock_error() -> None:
     result = classify_user_error(err)
     assert result is not None
     assert result.code == error_codes.INFRA_DATABASE_LOCKED
+
+
+@pytest.fixture(autouse=True)
+def _clean_active_profile() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Reset the process-wide active profile so DB-not-init guidance is deterministic."""
+    from moneybin import config
+
+    original = config._current_profile  # pyright: ignore[reportPrivateUsage]
+    config._current_profile = None  # pyright: ignore[reportPrivateUsage]
+    try:
+        yield
+    finally:
+        config._current_profile = original  # pyright: ignore[reportPrivateUsage]
+
+
+def test_db_not_initialized_unregistered_points_at_profile_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    set_current_profile("ghost")  # active profile, but no config.yaml under tmp_path
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" in result.message
+    assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
+
+
+def test_db_not_initialized_bare_directory_does_not_point_at_profile_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A directory that exists but was never registered: `profile create` refuses on
+    # the directory alone, so pointing there would dead-end the user. `db init`
+    # works, so that is what the message must say.
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "bare").mkdir(parents=True)  # no config.yaml, no db
+    set_current_profile("bare")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" not in result.message
+    assert "db init" in result.message.lower()
+
+
+def test_db_not_initialized_registered_points_at_db_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import patch as _patch
+
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    with _patch.object(ProfileService, "_init_database"):
+        ProfileService().create("real")  # registered: config.yaml written
+    set_current_profile("real")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "db init" in result.message.lower()

@@ -121,8 +121,33 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     if isinstance(exc, UserError):
         return exc
     if isinstance(exc, DatabaseNotInitializedError):
+        suggest_create = False
+        try:  # deferred imports avoid an errors<->services import cycle
+            from moneybin.config import get_current_profile
+            from moneybin.services.profile_service import ProfileService
+
+            profiles = ProfileService()
+            profile = get_current_profile(auto_resolve=False)
+            # Only send them to `profile create` when nothing is in its way: it
+            # refuses on the bare directory alone, so for a directory that exists
+            # but was never registered, that advice is a dead end. `db init` does
+            # work there, so fall back to it.
+            suggest_create = not profiles.is_registered(
+                profile
+            ) and not profiles.exists(profile)
+        except Exception:  # noqa: BLE001 — fall back to the db-init message
+            suggest_create = False
+        if suggest_create:
+            message = (
+                "Profile not set up. Run 'moneybin profile create <name> "
+                "--init-inbox' to create the profile (config, database, and inbox)."
+            )
+        else:
+            message = (
+                "Database not found. Run 'moneybin db init' to initialize it first."
+            )
         return UserError(
-            "Database not found. Run 'moneybin db init' to initialize it first.",
+            message,
             code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
         )
     if isinstance(exc, DatabaseLockError):

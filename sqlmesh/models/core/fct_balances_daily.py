@@ -1,8 +1,22 @@
 """SQLMesh Python model for core.fct_balances_daily.
 
-Per account: build a date spine from first to last observation, carry forward
-the last known balance adjusted by intervening transactions, and compute
-reconciliation deltas on observed days.
+Per account: build a date spine from the account's first observation to the
+NEWEST observation across all accounts, carry forward the last known balance
+adjusted by intervening transactions, and compute reconciliation deltas on
+observed days.
+
+The spine deliberately ends at the global last date, not the account's own. Ending
+each account at its own last observation silently drops it from every cross-account
+aggregate after that date — `reports.net_worth` sums the accounts present on a date
+and takes the latest one, so an account whose statement landed a week earlier than
+another's simply vanished from net worth. A checking account with one January
+statement contributed nothing to a December total. Carrying every account forward to
+the newest known date means net worth always reflects each account's last known
+balance, which is what the number is supposed to mean.
+
+An account that is genuinely gone should be excluded by archiving it
+(`app.account_settings.archived` / `include_in_net_worth`, already honored by
+`reports.net_worth`) — not by silently ageing out of the spine.
 
 Per-account precedence within a single date (most authoritative wins):
   user assertion > ofx/plaid snapshot > tabular running balance
@@ -94,10 +108,13 @@ def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
         "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days and on the first observation",
     },
     description=(
-        "One row per account per day from first observation to last observation. "
-        "Observed days use the most authoritative source for that date; gaps are "
-        "filled by carrying the last balance forward, adjusted by intervening "
-        "transactions from core.fct_transactions. Self-heals on every sqlmesh run."
+        "One row per account per day, from that account's first observation to the "
+        "newest observation across all accounts — so every account still carries its "
+        "last known balance on the latest date and none drops out of cross-account "
+        "aggregates like reports.net_worth. Observed days use the most authoritative "
+        "source for that date; gaps are filled by carrying the last balance forward, "
+        "adjusted by intervening transactions from core.fct_transactions. Self-heals "
+        "on every sqlmesh run."
     ),
 )
 def execute(
@@ -136,12 +153,17 @@ def execute(
         """  # noqa: S608  # table name from context.resolve_table(), not user input
     )
 
+    # The newest observation anywhere. Every account is carried forward to it, so no
+    # account drops out of a cross-account aggregate just because another account has
+    # a fresher statement (see the module docstring).
+    global_last_date = obs["balance_date"].max()  # type: ignore[reportUnknownMemberType]
+
     rows: list[dict[str, t.Any]] = []
     for account_id, group in obs.groupby("account_id"):  # type: ignore[reportUnknownMemberType] — pandas stubs are incomplete
         winners: pd.DataFrame = _select_winning_observations(group)
 
         first_date = winners["balance_date"].min()  # type: ignore[reportUnknownMemberType]
-        last_date = winners["balance_date"].max()  # type: ignore[reportUnknownMemberType]
+        last_date = global_last_date
         # pd.date_range returns Timestamps; .date converts to Python date objects,
         # which DuckDB maps to the DATE type without ambiguity.
         spine: list[date] = list(

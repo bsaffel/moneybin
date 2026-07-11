@@ -7,7 +7,7 @@ Runtime dataclasses represent generated data flowing through the pipeline.
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -286,6 +286,20 @@ class GeneratedTransaction:
     transaction_id: str = ""
 
 
+@dataclass(frozen=True)
+class MerchantSeed:
+    """One merchant pattern the categorization engine can match this run's data on.
+
+    Covers all three description sources — catalog merchants, recurring bills, and
+    income — so a generated profile categorizes end to end rather than only its
+    merchant-driven spending.
+    """
+
+    pattern: str
+    canonical_name: str
+    synthetic_category: str
+
+
 @dataclass
 class GenerationResult:
     """Complete output of a generation run, ready for the writer."""
@@ -296,3 +310,8 @@ class GenerationResult:
     transactions: list[GeneratedTransaction]
     start_date: datetime.date
     end_date: datetime.date
+    # Every merchant pattern this run's descriptions were drawn from. Carried so the
+    # seeder can teach the categorization engine about the merchants this run
+    # invented — without it the generated data matches nothing and the profile lands
+    # 0% categorized.
+    merchant_seeds: list[MerchantSeed] = field(default_factory=list)

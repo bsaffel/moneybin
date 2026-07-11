@@ -100,6 +100,51 @@ class ProfileService:
             raise ValueError(f"Invalid profile name: {name!r}")
         return profile_dir
 
+    def exists(self, name: str) -> bool:
+        """True if the profile directory exists at all — registered or not.
+
+        `create()` refuses on the bare directory, so callers offering recovery
+        advice need this to know whether `profile create` is even open to them.
+        """
+        try:
+            return self._profile_dir(name).exists()
+        except ValueError:
+            return False
+
+    def is_registered(self, name: str) -> bool:
+        """True if the profile was set up (has a config.yaml), not just db-init'd.
+
+        Distinguishes a fully-registered profile from a bare directory a manual
+        `db init` may have left behind — the two need different onboarding
+        guidance.
+        """
+        try:
+            return (self._profile_dir(name) / "config.yaml").exists()
+        except ValueError:
+            return False
+
+    def ensure_registered(self, name: str, *, init_inbox: bool = False) -> Path:
+        """Complete registration for a profile directory that exists but has no config.
+
+        `create()` raises `ProfileExistsError` off the directory alone, so a bare
+        `moneybin db init` leaves a directory (and database) that `list()` hides —
+        it filters on `config.yaml` — and that never got an inbox. This fills in
+        what's missing, in place, without touching an existing database.
+
+        Idempotent: a fully-registered profile is left alone.
+        """
+        normalized = normalize_profile_name(name)
+        profile_dir = self._profile_dir(name)
+        with _restrictive_umask():
+            (profile_dir / "logs").mkdir(mode=0o700, exist_ok=True)
+            (profile_dir / "temp").mkdir(mode=0o700, exist_ok=True)
+        if not (profile_dir / "config.yaml").exists():
+            generate_profile_config(profile_dir, normalized)
+            logger.debug(f"Completed registration for profile: {normalized}")
+        if init_inbox:
+            self._init_inbox(normalized)
+        return profile_dir
+
     def create(self, name: str, *, init_inbox: bool = False) -> Path:
         """Create a new profile with directory structure and config.
 
