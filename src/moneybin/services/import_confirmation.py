@@ -21,7 +21,7 @@ from moneybin.services.account_resolution_types import AccountProposalDict
 Channel = Literal["tabular", "gsheet", "pdf"]
 ActorKind = Literal["human", "agent"]
 ConfirmationReason = Literal[
-    "unknown_layout", "validation_failure", "account_confirmation"
+    "unknown_layout", "validation_failure", "account_confirmation", "sign_convention"
 ]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
@@ -50,6 +50,25 @@ class BridgePayload:
     """
 
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class SignConventionProposal:
+    """PDF-channel proposal to invert every amount's sign.
+
+    Carried when a statement names itself a credit card (`evidence`) and the
+    detector therefore proposes `negative_is_income`. The convention is not
+    recoverable from the amounts — a card and a checking statement have identical
+    sign distributions and both reconcile — so this proposal is never applied
+    silently: the caller ratifies it, or overrides it with `sign=`.
+
+    `sample_rows` shows the flip concretely: what the statement printed vs what
+    MoneyBin would record.
+    """
+
+    sign_convention: str
+    evidence: tuple[str, ...]
+    sample_rows: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -109,7 +128,7 @@ class ConfirmationRequired:
 
     channel: Channel
     confidence: Confidence
-    proposed: ProposedMapping | BridgePayload
+    proposed: ProposedMapping | BridgePayload | SignConventionProposal
     reason: ConfirmationReason
     samples: dict[str, list[str]] = field(default_factory=dict)
     error_message: str = ""
@@ -125,15 +144,24 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     new channel field (e.g. ``bridge_payload``) should land in one place. The
     tabular fields (``proposed_mapping``, ``unmapped_columns``) are populated
     from a ``ProposedMapping`` proposal; ``bridge_payload`` from a
-    ``BridgePayload`` proposal; the unused side is empty/None for the channel.
+    ``BridgePayload`` proposal; ``sign_convention``/``sign_evidence``/
+    ``sign_sample_rows`` from a ``SignConventionProposal``; the unused fields
+    are empty/None for the channel.
     """
     proposed = outcome.proposed
     proposed_mapping: dict[str, str] = {}
     unmapped: list[str] = []
     bridge_payload: dict[str, Any] | None = None
+    sign_convention: str | None = None
+    sign_evidence: list[str] = []
+    sign_sample_rows: list[dict[str, str]] = []
     if isinstance(proposed, ProposedMapping):
         proposed_mapping = dict(proposed.field_mapping)
         unmapped = list(proposed.unmapped_columns)
+    elif isinstance(proposed, SignConventionProposal):
+        sign_convention = proposed.sign_convention
+        sign_evidence = list(proposed.evidence)
+        sign_sample_rows = [dict(r) for r in proposed.sample_rows]
     else:
         bridge_payload = proposed.payload
     return {
@@ -148,6 +176,9 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "missing_required": list(outcome.confidence.missing_required),
         "unmapped_columns": unmapped,
         "bridge_payload": bridge_payload,
+        "sign_convention": sign_convention,
+        "sign_evidence": sign_evidence,
+        "sign_sample_rows": sign_sample_rows,
         "account_proposals": list(outcome.account_proposals),
     }
 
