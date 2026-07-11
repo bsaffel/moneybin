@@ -41,7 +41,8 @@ _VALID_TRANSPORTS: tuple[str, ...] = get_args(TransportType)
 # MCP client config file locations for clients that auto-load from a fixed path.
 # claude-code uses a per-profile path resolved at runtime (see _client_install_path).
 # vscode uses a workspace-local path (.vscode/mcp.json) resolved at runtime.
-# chatgpt-desktop has no config file — servers are added via the Connectors UI.
+# chatgpt-desktop has no config file and never will while our server is stdio —
+# every ChatGPT surface is remote-only, so `mcp install` refuses for it outright.
 _CLIENT_CONFIG_PATHS: dict[str, Path] = {
     "claude-desktop": Path.home()
     / "Library"
@@ -204,11 +205,11 @@ def mcp_install(
     Default behavior writes the config snippet directly into the client's
     config file (with a confirmation prompt unless --yes is set). Use
     --print to emit the snippet to stdout without writing — useful for
-    inspection or for clients with no programmatic install path.
+    inspection or for merging into a shared config by hand.
 
-    For chatgpt-desktop there is no JSON config to write; the command
-    always prints the snippet plus step-by-step Connector setup
-    instructions (--print is implicit).
+    chatgpt-desktop refuses with exit 1: every ChatGPT surface reaches only a
+    remote MCP server over HTTPS, and MoneyBin's is local stdio, so there is no
+    config to write and no connector to point at. Remote transport is M3D.
 
     Args:
         client: Target MCP client identifier.
@@ -225,9 +226,6 @@ def mcp_install(
 
         # Print the snippet without writing
         moneybin mcp install --client claude-desktop --print
-
-        # Print snippet + step-by-step Connector setup for ChatGPT Desktop
-        moneybin mcp install --client chatgpt-desktop
 
         # Codex (CLI / Desktop app / IDE extension all share ~/.codex/config.toml)
         moneybin mcp install --client codex --yes
@@ -495,7 +493,7 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
         if client == "codex"
         else "every `gemini` invocation"
     )
-    typer.echo("")
+    typer.echo("", err=True)
     typer.echo(
         f"⚠️  {client} auto-loads MoneyBin on {surface}. Two concurrent "
         f"sessions on profile '{profile}' share one DuckDB file. Writes "
@@ -503,22 +501,29 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
         "another session holds a conflicting lock past the retry window "
         "(a long write, or a long read for write-mode calls). To opt out of "
         "auto-load, re-run with `mcp install --print` and paste the snippet "
-        "manually. See docs/guides/mcp-clients.md."
+        "manually. See docs/guides/mcp-clients.md.",
+        err=True,
     )
 
 
 def _print_claude_code_launch_hint(config_path: Path) -> None:
-    """Tell the user how to launch Claude Code with the generated config."""
+    """Tell the user how to launch Claude Code with the generated config.
+
+    Stderr: this hint prints on the `--print` path too, and stdout there is the
+    snippet the user pipes to a file or to `jq`.
+    """
     import shlex
 
-    typer.echo("")
-    typer.echo("Launch Claude Code with this MCP server only:")
+    typer.echo("", err=True)
+    typer.echo("Launch Claude Code with this MCP server only:", err=True)
     typer.echo(
-        f"  claude --strict-mcp-config --mcp-config {shlex.quote(str(config_path))}"
+        f"  claude --strict-mcp-config --mcp-config {shlex.quote(str(config_path))}",
+        err=True,
     )
-    typer.echo("")
+    typer.echo("", err=True)
     typer.echo(
-        "Or run `make claude-mcp` from the repo to launch with the active profile."
+        "Or run `make claude-mcp` from the repo to launch with the active profile.",
+        err=True,
     )
 
 
@@ -563,14 +568,21 @@ def _resolve_uv_command() -> str:
 
 
 def _print_client_notes(client: str) -> None:
-    """Print per-client caveats that the snippet itself cannot express."""
+    """Print per-client caveats that the snippet itself cannot express.
+
+    To stderr, like every other advisory here: the snippet on stdout is the data,
+    and `--print` promises "the exact bytes the command would write" — a note mixed
+    into it would break `mcp install --print | jq` and any config the user pipes
+    straight to a file.
+    """
     if client == "gemini-cli":
-        typer.echo("")
+        typer.echo("", err=True)
         typer.echo(
             "Note: Gemini CLI's `trust: true` server setting bypasses ALL tool-call "
             "confirmations. MoneyBin deliberately does not set it — the surface "
             "includes write tools (import, categorize, delete), and those should ask "
-            "before they act. Add it yourself only if you accept that."
+            "before they act. Add it yourself only if you accept that.",
+            err=True,
         )
 
 

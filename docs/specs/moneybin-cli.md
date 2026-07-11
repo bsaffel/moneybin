@@ -432,7 +432,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- list-prompts               -- Show available MCP prompts
 |   +-- config path                -- Print the install-target config path for a client
 |   +-- install                    -- Install MoneyBin into a client's MCP config
-|         [--client claude-desktop|claude-code|cursor|vscode|chatgpt-desktop|codex|gemini-cli]
+|         [--client claude-desktop|claude-code|cursor|vscode|windsurf|codex|gemini-cli]
 |         [--profile NAME]           Profile to configure (default: active)
 |         [--print]                  Print the snippet instead of writing
 |         [--yes]                    Skip the install confirmation prompt
@@ -692,11 +692,12 @@ Proceed? [y/N]: y
 💡 Restart Claude Desktop to pick up the change
 ```
 
-Supported clients: `claude-desktop`, `claude-code`, `cursor`, `vscode`, `chatgpt-desktop`, `codex`, `gemini-cli`. Each profile generates a separate MCP server entry in the client config (e.g., "MoneyBin (alice)" and "MoneyBin (business)"). Codex uses slug config ids instead (`moneybin`, `moneybin-alice`, `moneybin-business`) because Codex validates server ids. The server receives `--profile` as an argument, baked into the generated config.
+Supported clients: `claude-desktop`, `claude-code`, `cursor`, `vscode`, `windsurf`, `codex`, `gemini-cli`. (`chatgpt-desktop` is reserved and refuses — see the flag notes above.) Each profile generates a separate MCP server entry in the client config (e.g., "MoneyBin (alice)" and "MoneyBin (business)"). Codex uses slug config ids instead (`moneybin`, `moneybin-alice`, `moneybin-business`) because Codex validates server ids. The server receives `--profile` as an argument, baked into the generated config.
 
 **Flags:**
 
-- `--print` — emit the snippet to stdout without writing to a config file. Use when scripting, when inspecting before installing, or for clients (`chatgpt-desktop`) that have no programmatic install path. The latter case auto-falls back to print + manual setup instructions when no `--print` is passed.
+- `--print` — emit the snippet to stdout without writing to a config file. Use when scripting or when inspecting before installing. Stdout carries only the config bytes; advisory notes (the Gemini `trust` caveat, the Claude Code launch hint, the auto-load warning) go to stderr, so `mcp install --print | jq` and `> file` both work.
+- `chatgpt-desktop` is a **reserved client id that refuses to install** (exit 1). Every ChatGPT surface reaches only a remote MCP server over HTTPS and MoneyBin's is local stdio, so there is no config to write and no connector to point at. Remote transport with auth is M3D.
 - `--yes` / `-y` — skip the install confirmation prompt.
 - Interactive mode (no `--client` flag) prompts the user to select a client and profile.
 

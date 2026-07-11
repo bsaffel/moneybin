@@ -42,7 +42,13 @@ def profile_create(
         ),
     ] = None,
 ) -> None:
-    """Create a new profile with directory structure, config, and encrypted database."""
+    """Create a profile, or finish setting up a half-made one.
+
+    Creates the directory structure, config, and encrypted database. A directory
+    left unregistered by a bare `db init`, a hand `mkdir`, or an interrupted delete
+    is completed in place rather than refused — an existing database is preserved
+    untouched. Refuses only when a fully registered profile already exists.
+    """
     from moneybin.utils.user_config import normalize_profile_name
 
     normalized = normalize_profile_name(name)

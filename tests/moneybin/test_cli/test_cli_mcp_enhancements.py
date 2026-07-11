@@ -341,8 +341,26 @@ class TestMCPInstallSnippetHardening:
     def test_gemini_cli_install_explains_the_trust_setting(self) -> None:
         """Explain the setting we deliberately left off, so it isn't cargo-culted on."""
         result = runner.invoke(app, ["install", "--client", "gemini-cli", "--print"])
-        assert "trust" in result.output.lower()
-        assert "confirmation" in result.output.lower()
+        assert "trust" in result.stderr.lower()
+        assert "confirmation" in result.stderr.lower()
+
+    @pytest.mark.parametrize(
+        "client", ["claude-desktop", "cursor", "windsurf", "gemini-cli", "claude-code"]
+    )
+    def test_print_emits_only_the_config_bytes_on_stdout(self, client: str) -> None:
+        """`--print` promises "the exact bytes the command would write".
+
+        Advisory text (the Gemini trust note, the Claude Code launch hint, the
+        auto-load warning) belongs on stderr. Mixed into stdout it breaks the
+        documented contract and anything the user pipes it through — this test parses
+        stdout as JSON, which is exactly what `mcp install --print | jq` does.
+        """
+        import json as _json
+
+        result = runner.invoke(app, ["install", "--client", client, "--print"])
+        assert result.exit_code == 0
+        parsed = _json.loads(result.stdout)  # raises if a note leaked onto stdout
+        assert "mcpServers" in parsed
 
     def test_old_config_generate_command_removed(self) -> None:
         """The old `mcp config generate` command no longer exists."""

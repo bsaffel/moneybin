@@ -65,7 +65,7 @@ Installing a non-default profile generates a distinct entry name (e.g. `MoneyBin
 The MCP transport is local-only and the MoneyBin server itself does not phone home, but the **client** you connect to is almost certainly cloud-hosted. Be deliberate about which surface is which.
 
 - **`moneybin mcp serve` (the server side).** Makes no outbound network calls of its own — no telemetry, no update checks, no license pings, no merchant-enrichment fetches. It reads and writes only the local DuckDB profile. The egress posture is "zero by default."
-- **The MCP client (Claude Desktop, Cursor, Codex, ChatGPT Desktop, …).** Sends your prompt and the tool-result payloads MoneyBin returns to its own hosted LLM provider, per the client's privacy policy. When you ask "what did I spend on groceries?", the agent receives row-level transaction data from MoneyBin and forwards it upstream as ordinary tool-result context.
+- **The MCP client (Claude Desktop, Cursor, Codex, …).** Sends your prompt and the tool-result payloads MoneyBin returns to its own hosted LLM provider, per the client's privacy policy. When you ask "what did I spend on groceries?", the agent receives row-level transaction data from MoneyBin and forwards it upstream as ordinary tool-result context.
 - **Sensitivity tiers.** Every MoneyBin tool declares `low` / `medium` / `high` per [`mcp-server.md`](mcp-server.md). A consent gate that downgrades `medium`/`high` responses for cloud clients is planned but not yet enforced. Until it is, **treat anything you ask the agent as if you sent it directly to the model provider** — because effectively, you did.
 - **Other MoneyBin surfaces.** Plaid sync, OAuth, and any future hosted-server features do make outbound calls when you use them. Those flow through `moneybin-sync`, not the MCP server — see [`docs/reference/server-api-contract.md`](../reference/server-api-contract.md) for that contract.
 - **Local-LLM clients.** No first-class MCP-compatible local-LLM agent is shipping today (Ollama doesn't expose MCP; LM Studio's support is experimental). When one becomes stable, MoneyBin will connect to it the same way it connects to Claude Desktop — the server side doesn't care which LLM is on the other end of the stdio pipe.
@@ -227,7 +227,7 @@ MoneyBin stores each profile's data in a single-writer DuckDB file, but each Mon
 
 | Pattern | Clients | Behavior |
 |---|---|---|
-| App-shared connection | Claude Desktop, ChatGPT Desktop, Cursor, VS Code, Windsurf | One server process per app instance, spawned at launch and reused across all chats. |
+| App-shared connection | Claude Desktop, Cursor, VS Code, Windsurf | One server process per app instance, spawned at launch and reused across all chats. |
 | Per-invocation | Claude Code (via `make claude-mcp`), Codex CLI, Gemini CLI | One server process per CLI invocation. Each new shell session spawns a fresh server; servers coexist on the same profile and contend only when operations need conflicting locks — concurrent writes, or a write racing a long-running read. |
 
 Different *profiles* never collide — each has its own DB and lock — so `MoneyBin (alice)` and `MoneyBin (bob)` can coexist in the same client without issue. Write contention only ever arises between concurrent sessions on the **same** profile.
@@ -301,7 +301,6 @@ Every MoneyBin tool emits the four MCP protocol annotations (`readOnlyHint`, `de
 | VS Code Copilot Chat | Honored | Version-dependent |
 | Gemini CLI | Not surfaced in prompt | Not surfaced in prompt |
 | Codex (CLI / Desktop / IDE) | Approval dialog uniform | Approval dialog uniform |
-| ChatGPT Desktop | Per Connector UI behavior | Per Connector UI behavior |
 
 Where the client doesn't render a distinct destructive-tool confirmation, treat every tool-call approval as "yes, run this." MoneyBin's tool descriptions name the mutation surface explicitly — read them before approving.
 

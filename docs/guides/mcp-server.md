@@ -7,7 +7,7 @@ The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and register
 
 ## Install
 
-`moneybin mcp install --client <name>` writes the snippet your client expects (`--print` to inspect first). Supported clients today: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex (CLI / Desktop / IDE), ChatGPT Desktop. See [`mcp-clients.md`](mcp-clients.md) for paths and per-client caveats.
+`moneybin mcp install --client <name>` writes the snippet your client expects (`--print` to inspect first). Supported clients today: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex (CLI / Desktop / IDE). ChatGPT is **not** supported — all its surfaces require a remote MCP server, which arrives with M3D. See [`mcp-clients.md`](mcp-clients.md) for paths and per-client caveats.
 
 There is no `mcp uninstall` command today. To turn the integration off, remove the `moneybin` entry from your MCP client's config file (Claude Desktop's `claude_desktop_config.json`, Cursor's `mcp.json`, etc.) and restart the client.
 

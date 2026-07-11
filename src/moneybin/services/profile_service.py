@@ -149,9 +149,10 @@ class ProfileService:
         data-safety guard has to clear first) call it directly.
 
         `config.yaml` is written LAST because it is the commit marker: `list()`
-        shows a profile once it exists, and `create()` refuses once it does. Write
-        it before the inbox and a failure half-way leaves a profile that is visible,
-        incomplete, and no longer completable by `create` — the dead end this whole
+        shows a profile once it exists, and `create()` refuses once it does. Do NOT
+        move it earlier — if it were written before the inbox (or before the caller's
+        database init), a failure half-way would leave a profile that is visible,
+        incomplete, and no longer completable by `create`: the dead end this whole
         contract exists to remove.
 
         Idempotent: a fully-registered profile is left alone.
