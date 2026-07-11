@@ -5,15 +5,6 @@ import random
 
 import typer
 
-from moneybin.tables import (
-    GROUND_TRUTH,
-    OFX_ACCOUNTS,
-    OFX_BALANCES,
-    OFX_TRANSACTIONS,
-    TABULAR_ACCOUNTS,
-    TABULAR_TRANSACTIONS,
-)
-
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
@@ -23,16 +14,6 @@ app = typer.Typer(
 
 # Persona -> default profile name mapping
 _PERSONA_PROFILES = {"basic": "alice", "family": "bob", "freelancer": "charlie"}
-
-# Tables to scope-delete during reset (allowlist from TableRef constants)
-_RESET_DELETIONS = {
-    GROUND_TRUTH.full_name: "WHERE TRUE",
-    OFX_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    OFX_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    OFX_BALANCES.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    TABULAR_TRANSACTIONS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-    TABULAR_ACCOUNTS.full_name: "WHERE source_file LIKE 'synthetic://%'",
-}
 
 
 def _run_generate(
@@ -242,14 +223,11 @@ def synthetic_reset(
                         raise typer.Abort()
 
                 from moneybin.metrics.registry import SYNTHETIC_RESET_TOTAL
+                from moneybin.synthetic.reset import reset_synthetic_rows
 
                 SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
                 logger.info(f"⚙️  Resetting profile {target_profile!r}...")
-                for table, where in _RESET_DELETIONS.items():
-                    try:
-                        db.execute(f"DELETE FROM {table} {where}")  # noqa: S608 — allowlisted table names + literal WHERE clauses
-                    except Exception:  # noqa: BLE001,S110 — table may not exist
-                        pass
+                reset_synthetic_rows(db)
 
         # Regenerate
         _run_generate(
