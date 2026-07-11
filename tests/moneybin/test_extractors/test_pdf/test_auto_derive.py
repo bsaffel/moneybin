@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
 from moneybin.extractors.pdf.auto_derive import derive_recipe
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.metadata import StatementMetadata
@@ -533,7 +536,9 @@ def test_derive_from_text_lines_across_pages_with_repeated_header() -> None:
     date-format detection (every sample must parse) and killing derivation.
     Real statements are multi-page, so single-page-only derivation is no fix.
     """
-    doc = _make_text_only_doc([
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    text_lines = [
         "Chase Bank",
         "Date         Description          Amount",
         "01/02/2024   COFFEE SHOP          -4.50",
@@ -542,11 +547,24 @@ def test_derive_from_text_lines_across_pages_with_repeated_header() -> None:
         "Date         Description          Amount",
         "01/09/2024   GROCERY MART         -73.21",
         "01/15/2024   UTILITIES            -150.00",
-    ])
+    ]
+    doc = _make_text_only_doc(text_lines)
 
     recipe = derive_recipe(doc, _EMPTY_META)
 
     assert recipe is not None
+    # Round-trip, not just `recipe is not None`: every row on both pages must
+    # come back exactly once. Asserting only that a recipe derived would pass
+    # even while the reconstructor double-collected page 2 (it hands the same
+    # derived recipe back either way) — the duplication is only visible in the
+    # rows the recipe actually yields.
+    result = execute_recipe(recipe, "\n".join(text_lines))
+    assert [(r["Date"], r["Amount"]) for r in result.rows] == [
+        (date(2024, 1, 2), Decimal("-4.50")),
+        (date(2024, 1, 5), Decimal("2000.00")),
+        (date(2024, 1, 9), Decimal("-73.21")),
+        (date(2024, 1, 15), Decimal("-150.00")),
+    ]
 
 
 def test_derive_across_pages_separated_by_a_footer() -> None:
@@ -561,7 +579,9 @@ def test_derive_across_pages_separated_by_a_footer() -> None:
     negative and derivation bails to seed — losing the whole statement — even
     though the document plainly has negative amounts.
     """
-    doc = _make_text_only_doc([
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    text_lines = [
         "Chase Bank",
         "Date         Description          Amount",
         "01/02/2024   REFUND A             10.00",
@@ -571,11 +591,22 @@ def test_derive_across_pages_separated_by_a_footer() -> None:
         "Date         Description          Amount",
         "01/09/2024   GROCERY MART         -73.21",
         "Page 2 of 2",
-    ])
+    ]
+    doc = _make_text_only_doc(text_lines)
 
     recipe = derive_recipe(doc, _EMPTY_META)
 
     assert recipe is not None
+    # Round-trip: the page-2 row is the whole point — a recipe derived from
+    # page 1 alone still satisfies `recipe is not None`, so only the executed
+    # rows show whether page 2 survived.
+    result = execute_recipe(recipe, "\n".join(text_lines))
+    assert [(r["Date"], r["Amount"]) for r in result.rows] == [
+        (date(2024, 1, 2), Decimal("10.00")),
+        (date(2024, 1, 3), Decimal("20.00")),
+        (date(2024, 1, 4), Decimal("30.00")),
+        (date(2024, 1, 9), Decimal("-73.21")),
+    ]
 
 
 def test_page_break_header_repeat_does_not_duplicate_rows() -> None:

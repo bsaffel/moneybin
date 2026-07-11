@@ -182,17 +182,14 @@ def derivation_failure_reason(
     if not _looks_transactional_anywhere(doc):
         return "no_transaction_table"
 
-    # Probe the locale off the LOOSE table, not the strict one. The strict
-    # selector returns None for a debit/credit layout (no derivable sign
-    # convention), so probing it would skip the locale check for exactly the
-    # split-column statements — a European "Withdrawals | Deposits" statement
-    # would escalate, egress the user's statement text to an agent, and then be
-    # rejected by execute_recipe anyway.
-    table = _select_loose_transaction_table(doc)
-    if table is not None:
-        number_fmt = _detect_number_format(table, _amount_like_columns(table.header))
-        if number_fmt is not None and number_fmt != "us":
-            return "unsupported_number_format"
+    # Probe the locale off whatever the table is visible as — NOT off the strict
+    # selector, which returns None for every debit/credit layout (no derivable
+    # sign convention) and would therefore skip the locale check for exactly the
+    # split-column statements the bridge exists to catch. See
+    # _number_format_anywhere for why the raw-text fallback rung matters.
+    number_fmt = _number_format_anywhere(doc)
+    if number_fmt is not None and number_fmt != "us":
+        return "unsupported_number_format"
 
     return "transaction_table_underivable"
 
@@ -480,20 +477,24 @@ def _select_loose_transaction_table(doc: PdfDocument) -> PdfTable | None:
     return max(candidates, key=lambda t: len(t.rows))
 
 
-def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
-    r"""Return True when *doc* is a bank statement, derivable or not.
+def _text_transaction_candidate(
+    doc: PdfDocument,
+) -> tuple[list[str], list[list[str]]] | None:
+    r"""Header cells + dated rows of a statement visible *only* in the raw text.
 
-    Checks ruled tables and reconstructed ones first, then falls back to the raw
-    text lines. That last step is load-bearing for the most common real layout: an
+    The last-resort reader, for the one layout no table reconstructs from: an
     unruled debit/credit statement has exactly one blank side per row, and
-    ``\s{2,}`` collapses it — so its rows split to fewer cells than its header and
-    no table reconstructs at all. A transaction-shaped header line with dated rows
-    beneath it is still unambiguous evidence the document is a statement, which is
-    all this predicate is asked to decide.
-    """
-    if _select_loose_transaction_table(doc) is not None:
-        return True
+    ``\s{2,}`` collapses it — so its rows split to *fewer* cells than its header
+    and ``_synthesize_tables_from_text``'s width match rejects them on the first
+    data row. A transaction-shaped header line with dated rows beneath it is
+    still unambiguous evidence of a statement, and those rows still carry the
+    document's money tokens, which is all the two callers need.
 
+    The returned rows are **ragged** — their widths differ from the header's and
+    from each other. Never index them by a header column position; treat them as
+    an unordered bag of cells (see ``_money_tokens``). Returning a ``PdfTable``
+    would invite exactly that misuse, which is why this returns a plain pair.
+    """
     cells_per_line = [
         _re.split(_ROW_SPLIT, line.strip()) if line.strip() else []
         for line in doc.text_lines
@@ -501,9 +502,27 @@ def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
     for idx, cells in enumerate(cells_per_line):
         if not _is_transactional_header(cells):
             continue
-        if any(row and _ANY_DATE_RE.match(row[0]) for row in cells_per_line[idx + 1 :]):
-            return True
-    return False
+        rows = [
+            row
+            for row in cells_per_line[idx + 1 :]
+            if row and _ANY_DATE_RE.match(row[0])
+        ]
+        if rows:
+            return cells, rows
+    return None
+
+
+def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
+    """Return True when *doc* is a bank statement, derivable or not.
+
+    Checks ruled tables and reconstructed ones first, then falls back to the raw
+    text lines — which is load-bearing for the most common real layout; see
+    ``_text_transaction_candidate``.
+    """
+    return (
+        _select_loose_transaction_table(doc) is not None
+        or _text_transaction_candidate(doc) is not None
+    )
 
 
 def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
@@ -520,6 +539,32 @@ def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
     if not candidates:
         return None
     return max(candidates, key=lambda t: len(t.rows))
+
+
+def transaction_headers(doc: PdfDocument) -> list[str] | None:
+    """The transaction table's column headers, however that table is visible.
+
+    Three rungs, most-specific first, because each finds a table the next can't:
+    the *derivable* table (what ``derive_recipe`` will actually use), else the
+    *loose* one (a debit/credit layout — real, just not derivable yet), else the
+    raw-text candidate (an unruled debit/credit layout, which reconstructs as no
+    table at all). Returns None only when the document isn't a statement.
+
+    Exists for ``fingerprint``: characterising a statement by "the largest table"
+    collapses every layout the deterministic rung can't crack onto one degenerate
+    fingerprint, so two different institutions collide and replay each other's
+    saved recipe against the wrong layout. The three rungs here are exactly the
+    three ways ``derivation_failure_reason`` can see a table, kept in one place so
+    the two can't drift.
+    """
+    for table in (_select_transaction_table(doc), _select_loose_transaction_table(doc)):
+        if table is not None:
+            return table.header
+    candidate = _text_transaction_candidate(doc)
+    if candidate is not None:
+        header, _ = candidate
+        return header
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -608,10 +653,17 @@ def _detect_number_format(
             if cell and cell not in ("", "-"):
                 samples.append(cell)
 
+    return _number_format_from_samples(samples)
+
+
+def _number_format_from_samples(
+    samples: list[str],
+) -> Literal["us", "european"] | None:
+    """Classify a bag of amount cells as one number locale, or None if ambiguous."""
     if not samples:
-        # No real amount cells in the first _SAMPLE_SIZE rows (only empties or
-        # "-" placeholders); can't determine format from this layout — refuse
-        # to auto-derive and let the caller seed.
+        # No real amount cells (only empties or "-" placeholders); can't
+        # determine the format from this layout — refuse to auto-derive and let
+        # the caller seed.
         return None
 
     # All samples must match a single format. Use the bounded helpers so a
@@ -622,6 +674,47 @@ def _detect_number_format(
         return "european"
 
     return None
+
+
+def _money_tokens(rows: list[list[str]]) -> list[str]:
+    """Money-shaped cells from ragged rows, where column position can't be trusted.
+
+    ``_text_transaction_candidate``'s rows have no reliable column alignment, so
+    column-indexed sampling (what ``_detect_number_format`` does) is unavailable.
+    Select by *shape* instead: keep a cell only if it parses as money under one
+    of the two locales. The two patterns disagree on the decimal separator and
+    can never both match one token, so a document mixing them stays ambiguous and
+    the caller escalates rather than guessing a locale.
+    """
+    samples: list[str] = []
+    for row in rows[:_SAMPLE_SIZE]:
+        for cell in row:
+            token = cell.strip().lstrip("$").strip()
+            if _matches_us(token) or _matches_european(token):
+                samples.append(token)
+    return samples
+
+
+def _number_format_anywhere(doc: PdfDocument) -> Literal["us", "european"] | None:
+    """The document's number locale, read from whatever the table is visible as.
+
+    Probes the LOOSE table when one reconstructs, and falls back to the raw-text
+    candidate when none does — the unruled debit/credit case. Skipping that
+    fallback leaves exactly those statements unprobed, so a European
+    ``Withdrawals | Deposits`` statement escalates to the bridge, egresses the
+    user's statement text to an agent, and is then rejected outright by
+    ``execute_recipe`` (which raises on any ``number_format != "us"``). That is
+    the precise harm the reason split exists to prevent.
+    """
+    table = _select_loose_transaction_table(doc)
+    if table is not None:
+        return _detect_number_format(table, _amount_like_columns(table.header))
+
+    candidate = _text_transaction_candidate(doc)
+    if candidate is None:
+        return None
+    _, rows = candidate
+    return _number_format_from_samples(_money_tokens(rows))
 
 
 def _has_any_negative_amount(table: PdfTable, amount_col_indices: list[int]) -> bool:

@@ -641,3 +641,64 @@ def test_european_debit_credit_statement_is_not_bridge_eligible(
 
     assert decision.outcome == "seed"
     assert decision.reason == "unsupported_number_format"
+
+
+# The unruled debit/credit statement — no ruling lines AND a split amount pair —
+# is the layout that reconstructs as no table at all: `\s{2,}` collapses the one
+# blank side, so each row splits to fewer cells than the header and the
+# width-matching reconstructor rejects it on the first data row. The locale probe
+# therefore has no table to read and must fall back to the raw text lines. These
+# two tests pin both sides of that fallback.
+
+
+def _unruled_debit_credit_doc(rows: list[str]) -> PdfDocument:
+    """A split-column statement whose rows exist ONLY as whitespace-aligned text."""
+    return PdfDocument(
+        source_file="unruled_wf.pdf",
+        tables=[],
+        text_lines=[
+            "Wells Fargo",
+            "Date         Description     Withdrawals   Deposits",
+            *rows,
+        ],
+    )
+
+
+def test_unruled_european_debit_credit_statement_is_not_bridge_eligible(
+    db: Database,
+) -> None:
+    """A non-US locale must not escalate even when NO table reconstructs at all.
+
+    Probing the loose selector fixed the *ruled* debit/credit case, but an unruled
+    one selects no table either — so the probe was skipped entirely and every such
+    statement, US or European, escalated. That is the most common real layout in a
+    non-US locale, and the bridge provably cannot help it: `execute_recipe` raises
+    on any `number_format != "us"`. Escalating egresses the user's raw statement
+    text to an AI provider for a result that cannot be used, then seeds anyway.
+    """
+    doc = _unruled_debit_credit_doc([
+        "01/02/2024   COFFEE SHOP     4,50",
+        "01/05/2024   PAYROLL                       2.000,00",
+    ])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "unsupported_number_format"
+
+
+def test_unruled_us_debit_credit_statement_still_escalates(db: Database) -> None:
+    """The locale fallback must not over-correct: a US unruled split layout escalates.
+
+    Negative control for the test above. The raw-text locale probe exists to hold
+    *non-US* statements back from the bridge — it must not also hold back the US
+    ones, which are precisely what the bridge was built to read.
+    """
+    doc = _unruled_debit_credit_doc([
+        "01/02/2024   COFFEE SHOP     4.50",
+        "01/05/2024   PAYROLL                       2,000.00",
+    ])
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.reason == "transaction_table_underivable"
