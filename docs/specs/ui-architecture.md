@@ -35,7 +35,7 @@ This spec is the foundation only. Out of scope:
 - **Authentication.** Hosted identity (Auth0/OIDC) is owned by M3D / M3H. The Web shell exposes an auth-chrome slot; it does not implement auth.
 - **Extension-package UI-slot loading.** Only the `<RegistrySlot>` primitive and slot type contract are stubbed. The registration/loading mechanism stays deferred per [`extension-contracts.md`](extension-contracts.md) ("no arbitrary UI plugins in 1.0").
 - **In-app AI agent.** See [Forward compatibility](#forward-compatibility-in-app-ai). Out of scope here; the architecture is designed not to foreclose it.
-- **Surface sequencing and strategy reversal.** When the MCP App ships relative to the Web UI, which dashboard ships first, and the corresponding roadmap/strategy-doc updates are separate work.
+- **Product-dashboard sequencing and broader public-positioning propagation.** ~~When the MCP App ships relative to the Web UI~~ — resolved 2026-06-12: web shell ships first, M3M paused (see the Address line and [Open questions](#open-questions--risks) #1). Which dashboard ships first, and propagating the pivot into public-facing features/comparison copy, remain separate work.
 - **SSR / Next.js, i18n, mobile, theming beyond light/dark.** Not required by the launch surface.
 
 ## Decisions
@@ -227,6 +227,7 @@ In-app AI (an agent chat panel inside the Web UI) is **out of scope** for this a
 - `spending-dashboard-mcp-app.md` / `portfolio-dashboard-mcp-app.md` (planned stubs; not yet written) — consumers; their components land in `ui-core`.
 - [`extension-contracts.md`](extension-contracts.md) (in-progress) — its "typed UI/MCP App component slots wait until the Web UI and hosted runtime mature" line stays true: this spec **stubs** the slot, it does not ship loading. No contradiction.
 - [`mcp-architecture.md`](mcp-architecture.md) / [`moneybin-mcp.md`](moneybin-mcp.md) — gain the `_meta.ui.resourceUri` declaration and `ui://` resource-serving requirement (see [Open questions](#open-questions--risks)).
+- [`agent-visualization.md`](agent-visualization.md) (draft, M3K.1) — the near-term interim surface while M3M is paused: since shipping hosts don't render MCP Apps yet, visualization expertise lives in MCP responses (chart-ready projections, presentation hints) rather than in `apps/mcp-app`. Its chart-ready projections double as `ui-core` chart inputs once the visual shells land — complementary work, not a contradiction.
 - [`source-observations.md`](source-observations.md) — already constrains the Web UI not to introduce a parallel observation store in React state; this architecture honors that (caching reads is fine; the warehouse stays source of truth).
 
 ## Open questions / risks

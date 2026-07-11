@@ -355,3 +355,21 @@ class TestProfileSet:
         svc = ProfileService()
         with pytest.raises(ProfileNotFoundError):
             svc.set("ghost", "logging.level", "DEBUG")
+
+
+class TestIsRegistered:
+    """Test the registered-vs-unregistered signal used by onboarding guidance."""
+
+    def test_unknown_profile_is_not_registered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        assert ProfileService().is_registered("ghost") is False
+
+    def test_created_profile_is_registered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("real")  # writes config.yaml (_init_database stubbed by autouse)
+        assert svc.is_registered("real") is True

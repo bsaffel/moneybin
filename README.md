@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-06-10 -->
+<!-- Last reviewed: 2026-07-09 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <img src="docs/assets/moneybin-icon.png" alt="MoneyBin" width="300">
@@ -94,11 +94,11 @@ moneybin sql query "SELECT category, SUM(amount) FROM core.fct_transactions GROU
 
 **MoneyBin is pre-v1.** It's in daily use by the author, and the foundation is built to last rather than built to demo.
 
-**Working today:** the CLI and MCP server (≈70 tools across nine AI clients), encrypted multi-profile storage, file imports (CSV/OFX/QFX/QBO/Excel/Parquet), native-text PDF statement import with saved replayable per-format recipes, a watched-folder inbox, Plaid sync (cash + credit cards), live Google Sheets sync, cross-source dedup and transfer detection, rule-based categorization with an opt-in LLM-assist step, eight curated reports, privacy-safe ad-hoc SQL, reversible edits with a full audit trail, and `moneybin system doctor` integrity checks.
+**Working today:** the CLI and MCP server (≈70 tools across nine AI clients), encrypted multi-profile storage, file imports (CSV/OFX/QFX/QBO/Excel/Parquet), native-text PDF statement import with saved replayable per-format recipes, a watched-folder inbox, Plaid sync (cash + credit cards), live Google Sheets sync, cross-source dedup and transfer detection, rule-based categorization with an opt-in LLM-assist step, investment tracking (buys, sells, dividends, four cost-basis methods, tax lots, realized gain/loss), eight curated reports, privacy-safe ad-hoc SQL, reversible edits with a full audit trail, and `moneybin system doctor` integrity checks.
 
 **In flight:** a `brew install` path and first-run onboarding, AI-assisted import for scanned and other hard-to-parse PDFs, an extensible report framework, Plaid production approval, and the contributor extension contract.
 
-**Planned:** investment & cost-basis tracking, multi-currency, budgets, a web UI dashboard, and an opt-in hosted tier — same code you can self-host.
+**Planned:** investment price feeds and net-worth integration, multi-currency, budgets, a web UI dashboard, and an opt-in hosted tier — same code you can self-host.
 
 → [What works today](docs/features.md) · [Roadmap](docs/roadmap.md) · [Where MoneyBin fits](docs/comparison.md)
 

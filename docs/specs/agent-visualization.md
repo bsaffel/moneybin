@@ -58,4 +58,5 @@ One orientation surface that teaches the driving agent how to visualize MoneyBin
 
 - [`mcp-architecture.md`](mcp-architecture.md) / [`moneybin-mcp.md`](moneybin-mcp.md) — the envelope contract and per-tool definitions stay canonical there; this spec adds presentation conventions on top.
 - [`ui-architecture.md`](ui-architecture.md) — chart-ready projections double as `ui-core` chart inputs when the visual shells land.
+- [`design-system/charts.md`](../../design-system/charts.md) — the binding chart grammar (ten canonical forms, category→hue map, "six max then Other" cutoff) that `ui-core` chart components render with once built; this spec's projections are the data-shape half of that contract. §2's presentation-hint vocabulary (chart form names, top-N sizing) should track that grammar's terms and cutoffs rather than drift independently; §3's served guide can reuse its "Chart-type per report" table instead of re-deriving report↔chart-shape pairings from scratch.
 - `mcp-ux-standards.md` (planned, M3K) — the broader UX-standards umbrella; this spec is its first concrete work item and folds under it editorially when that spec is written.

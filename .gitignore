@@ -29,6 +29,11 @@ venv/
 # MoneyBin runtime state (profiles, config, data, logs) when running in-repo
 /.moneybin/
 
+# Scratch / local dev artifacts (root-level screenshots, temp dirs, design handoff bundles)
+.tmp/
+/*.png
+*.zip
+
 # Data files (exclude sensitive financial data)
 data/
 *.csv

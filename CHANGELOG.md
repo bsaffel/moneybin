@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-09 -->
 
 # Changelog
 
@@ -13,6 +13,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`moneybin demo` evaluator preset (M3A).** One command sets up an isolated
+  `demo` profile, generates synthetic data (`--persona
+  basic`/`family`/`freelancer`), runs the full pipeline — match, and categorization
+  by the real engine against the merchants the generator invented — to a clean
+  `system doctor`, activates the profile, and prints net worth plus next steps: a
+  from-install path to a working product with no real financial data. It always
+  targets the dedicated `demo` profile (there is no `--profile` target, so it can
+  never be pointed at a real one), and re-running rebuilds that profile's database
+  from scratch and regenerates (deterministic by default); `--yes` for
+  non-interactive use. (#310)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an
   investment-transaction ledger (`investments add` — buy, sell, reinvest,
@@ -29,7 +39,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   `investments_gains` / `investments_securities` read and
   `investments_record` / `investments_securities_set` /
   `investments_lots_select` write MCP tools, plus the top-level `investments`
-  CLI group (replacing the earlier `accounts investments` placeholder).
+  CLI group (replacing the earlier `accounts investments` placeholder). (#300)
 - **Plaid balance snapshots flow into net worth and balance drift.**
   Plaid sync balances now reach `core.fct_balances` → `core.fct_balances_daily`,
   so `reports networth` / `networth-history` and balance-drift detection include
@@ -305,6 +315,24 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **Net worth no longer drops accounts with older statements.**
+  `core.fct_balances_daily` built each account's date spine only as far as *that
+  account's* last balance observation, so on any later date the account simply
+  vanished — and `reports.net_worth` sums the accounts present on a date. An account
+  whose statement landed a week before another's therefore contributed nothing to
+  the current net worth: a checking account with one January statement was absent
+  from a December total. Every account is now carried forward to the newest known
+  date, so net worth reflects each account's last known balance. Accounts that are
+  genuinely gone are excluded by archiving them (`include_in_net_worth` / `archived`,
+  already honored), not by silently ageing out. (#310)
+- **First-run guidance points an unset-up profile at `profile create`.** When the
+  active profile has never been set up at all, the "Database not found" message
+  now recommends `moneybin profile create <name> --init-inbox` (which scaffolds
+  config, database, and inbox) instead of `db init`, which would leave the profile
+  unregistered — absent from `moneybin profile list`, with no inbox. If the
+  profile *directory* already exists, the message still points at `db init`:
+  `profile create` refuses on the directory alone, so recommending it there would
+  dead-end the user. (#310)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
@@ -325,6 +353,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   open. V032 now only rebuilds `app.user_categories`; the seed table's `class`
   column is owned by SQLMesh and derived by `refresh_views()`, so an upgraded
   database recovers automatically on the next run. (#306)
+- **A second migration (V012) no longer stuck-fails on a fully-materialized
+  database.** V012 ran `DROP TABLE IF EXISTS` over `seeds.merchants_global/us/ca` —
+  former SQLMesh seed models that are views on a materialized database, where
+  `DROP TABLE` on a view raises `CatalogException` (the same class as the V032 fix
+  above). V012 now drops only the migration-owned `app.merchant_overrides` and
+  leaves the seed relations to SQLMesh. A static test (`test_migration_schema_ownership`)
+  now scans every migration and fails CI on any migration that writes a
+  SQLMesh-owned schema. (#309)
 - **`import_preview` surfaces header detection and row-count reconciliation.**
   Silent header-eating (a real data row mistaken for a header) was invisible in
   the preview envelope. The envelope now carries `has_header`, `skip_rows`, and
@@ -337,6 +373,40 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   (previously a structurally-suspicious layout could still self-accept at
   `medium`), routing it to the propose→confirm gate instead of an agent
   auto-accepting a wrong mapping.
+- **`moneybin system doctor` / `system_doctor` no longer hangs on a populated
+  database.** Two integrity checks (the `transaction_categories` foreign-key
+  check and the orphan `app.*`-state check) re-ran a correlated subquery
+  against `core.fct_transactions` — an expensive merge/dedup/categorization
+  view — once per row instead of once overall. Once `app.transaction_categories`
+  held enough rows, a full doctor run could take over a minute (past the MCP
+  30-second call cap) instead of the roughly 2 seconds it takes now; both
+  checks are rewritten as a single anti-join. (#301)
+- **Fixed stale command references in CLI hints and docstrings.** `make
+  claude-mcp`'s remediation hints pointed at the pre-rename `mcp config
+  generate --install` instead of `mcp install`; a synthetic-data reset hint
+  pointed at a `moneybin db destroy` command that never existed instead of
+  `moneybin profile delete`; and `DoctorSettings` docstrings referenced
+  `moneybin doctor` instead of `moneybin system doctor`. (#291)
+- **Sync credentials no longer collide across profiles.** Every profile now
+  gets its own opaque profile id, and Plaid-broker keychain/token storage is
+  scoped to it — previously every profile shared one token slot, so
+  authenticating in one profile could affect another. Profiles created before
+  this change get an id automatically on their next sync. (#279)
+- **`moneybin sync pull` now advances the broker's sync cursor after every
+  successful load.** The sync client never acknowledged a completed pull, so
+  the broker's per-institution cursor never advanced and every `sync pull`
+  re-fetched the same window from Plaid instead of only what's new —
+  client-side dedup masked this as wasted work rather than duplicate data. The
+  client now acks the broker once the pulled data is durable; a failed ack is
+  best-effort and doesn't fail the pull. (#262)
+- **A timed-out MCP write call could reset a different, healthy write's
+  database connection.** When `tool_timeout_seconds` was configured below the
+  database write-lock wait, a call that timed out before acquiring the lock
+  could trigger a global connection reset that interrupted an unrelated,
+  still-running write instead of only its own. The reset now targets only the
+  timed-out call's own connection, and `MCPConfig` rejects a
+  `tool_timeout_seconds` below the write-lock wait outright so the unsafe
+  configuration can no longer be set. (#244)
 - **SQLMesh state migrations now survive a dependency version bump.** After a
   SQLMesh upgrade, the in-process state migration wrote its bookkeeping to a
   throwaway in-memory catalog that vanished at process exit, so every subsequent
@@ -419,6 +489,12 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   stdio — the supported install path — is unaffected. Install docs and CLI help
   no longer present the unauthenticated HTTP path as a normal setup route.
   (#287)
+- **CVE fixes via dependency bumps.** `cryptography`, `pydantic-settings`, and
+  `python-multipart` bumped to clear 5 CVEs; `joserfc` pinned for a transitive
+  `authlib`/`fastmcp` CVE. Four starlette CVEs remain suppressed in
+  `pip-audit` — the fix requires starlette 1.x, unreachable while
+  `sqlmesh[lsp]` pins `fastapi==0.120.1` — and aren't exposed on MoneyBin's
+  stdio-only MCP transport. (#280)
 
 ### Added
 - **PDF import (seed path).** Native-text PDFs import via `moneybin import <file.pdf>` and the inbox; their tables land as a queryable JSON seed (`raw.pdf_seeds`) with an auto-generated typed view (`raw.pdf_<alias>`), reversible like any import. Mapping PDFs to transactions/core is a later phase.

@@ -102,6 +102,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["system", "audit", "history"],
     ["system", "audit", "get"],
     ["system", "audit", "undo"],
+    ["demo"],
     ["refresh"],
     ["transform"],
     ["synthetic"],

@@ -99,11 +99,12 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 | **C. Price feeds & valuation** | Yahoo + CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss | Yes (it *is* the feed) | `investments-price-feeds.md` *(planned)* |
 | **D. Net-worth integration** | Holdings valuation into `reports.net_worth` / `fct_balances` | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
-### Already-carved children (gated stubs)
+### Already-carved children
 
-These exist as planned specs that gate on the contracts above:
+Specs that build on the contracts above — the first has graduated from stub to
+a full spec; the rest remain planned stubs:
 
-- `sync-plaid-investments.md` — Plaid Investments product (holdings, securities, investment transactions).
+- [`sync-plaid-investments.md`](sync-plaid-investments.md) — Plaid Investments product (holdings, securities, investment transactions). **Spec ready 2026-07-10** — the first carved child to land.
 - Investment OFX import — `<INVSTMTRS>` handling, a child of `smart-import-financial.md`.
 - Portfolio/holdings reports — `reports.portfolio`, `reports.holdings`, gated per `reports-recipe-library.md`.
 - Investment-transaction dedup + transfer detection — children of the matching initiative.
@@ -259,11 +260,17 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
   has been corrected to drop "lot-selection overrides" from the `us_tax` write set
   (it now reads `app.lot_selections` + `core.fct_realized_gains` for Schedule D);
   `us_tax` keeps only tax-specific config (filing status, wash-sale adjustments).
-- **`dim_securities` source model.** v1 is manual-only (`app.securities` → `core.dim_securities`).
-  When Plaid/OFX importers arrive, `dim_securities` becomes a multi-source union with
-  cross-source resolution (mirroring `fct_transactions`). The foundation child fixes
-  the surrogate-key contract; the union/dedup mechanics are detailed when the first
-  importer lands.
+- **`dim_securities` source model — resolved** (2026-07-10, first importer
+  child). **Mint-into-catalog, not multi-source union**: the Plaid child's
+  `SecurityResolver` resolves provider refs via `app.security_links` /
+  `app.security_link_decisions` (adopt → auto-bind strong → review fuzzy →
+  mint into `app.securities` with `created_by='plaid'`), following the shipped
+  merchant precedent (`dim_merchants` is a thin catalog view). `dim_securities`
+  therefore stays a catalog view — a staging union *plus* minting would
+  double-count every synced security. Supersedes the "multi-source union
+  (mirroring `fct_transactions`)" expectation above; cross-source identity
+  lives in the link tables, not the dim's FROM clause. See
+  [`sync-plaid-investments.md`](sync-plaid-investments.md).
 - **Lots model: SQL vs Python — resolved.** The lot-consumption engine is a
   **Python SQLMesh model** (`fct_investment_lots.py` / `fct_realized_gains.py`),
   applying the existing `fct_balances_daily.py` precedent — sequential lot

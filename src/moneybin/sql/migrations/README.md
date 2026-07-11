@@ -44,8 +44,14 @@ Migrations may alter:
 - `raw.*` — loader-owned tables
 - `app.*` — application state tables
 
-Migrations must NOT alter (owned by SQLMesh):
-- `core.*`, `prep.*`, `analytics.*`
+Migrations must NOT write (owned by SQLMesh — exposed as views on a
+materialized database, where any `ALTER` / `DROP` / `TRUNCATE` / `INSERT` /
+`UPDATE` / `DELETE` / `MERGE` / `COPY … FROM` / non-idempotent `CREATE` raises):
+- `seeds.*`, `meta.*`, `core.*`, `prep.*`, `reports.*`, `analytics.*`
+
+This list is enforced by `tests/moneybin/test_migration_schema_ownership.py`
+(`_SQLMESH_OWNED_SCHEMAS`), which statically scans every migration and fails CI
+on any such write — treat that set as the source of truth.
 
 ## New Tables
 

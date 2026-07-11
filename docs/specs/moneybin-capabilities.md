@@ -127,6 +127,7 @@ not-yet-built.
 | 64| Override which lots a disposal draws from (specific identification) | `investments_lots_select` *(`disposal_txn_id`, `selections=[{lot_id, quantity}, ...]`; empty list reverts to FIFO)* | `investments lots select <disposal_txn_id> --lot ID:QTY [--lot ...]` / `--clear` | — | live |
 | 65| View realized gain/loss (the 1099-B surface) | `investments_gains` *(`account?`, `security?`, `from_date?`, `to_date?`, `term?`)* | `investments gains` *(`--account`, `--security`, `--from`, `--to`, `--term`)* | — | live |
 | 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
+| 67| Set up the evaluator demo profile (synthetic data → pipeline → clean doctor → first answer) | — *(cat 2 — dev/evaluator tooling)* | `demo` *(`--persona`, `--seed`, `--yes`; always targets the dedicated `demo` profile — no arbitrary `--profile` target)* | — | live (CLI-only) |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
