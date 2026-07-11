@@ -15,12 +15,13 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 ### Added
 - **`moneybin demo` evaluator preset (M3A).** One command sets up an isolated
   `demo` profile, generates synthetic data (`--persona
-  basic`/`family`/`freelancer`), runs the pipeline to a clean `system doctor`,
-  activates the profile, and prints net worth plus next steps — a from-install
-  path to a working product with no real financial data. It always targets the
-  dedicated `demo` profile (there is no `--profile` target, so it can never be
-  pointed at a real one), and re-running rebuilds that profile's database from
-  scratch and regenerates (deterministic by default); `--yes` for
+  basic`/`family`/`freelancer`), runs the full pipeline — match, and categorization
+  by the real engine against the merchants the generator invented — to a clean
+  `system doctor`, activates the profile, and prints net worth plus next steps: a
+  from-install path to a working product with no real financial data. It always
+  targets the dedicated `demo` profile (there is no `--profile` target, so it can
+  never be pointed at a real one), and re-running rebuilds that profile's database
+  from scratch and regenerates (deterministic by default); `--yes` for
   non-interactive use. (#310)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an

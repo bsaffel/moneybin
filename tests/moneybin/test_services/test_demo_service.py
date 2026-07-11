@@ -50,7 +50,7 @@ def _mock_pipeline(mocker: Any, *, net_worth: str = "100.00", failing: int = 0) 
 
     engine = mocker.patch("moneybin.synthetic.engine.GeneratorEngine")
     engine.return_value.generate.return_value = SimpleNamespace(
-        accounts=[object(), object()], transactions=[]
+        accounts=[object(), object()], transactions=[], merchant_seeds=[]
     )
     writer = mocker.patch("moneybin.synthetic.writer.SyntheticWriter")
     writer.return_value.write.return_value = {"tabular_transactions": 5}
@@ -205,6 +205,33 @@ def test_rebuild_requires_confirmation(
 
     with pytest.raises(RuntimeError, match="reset not confirmed"):
         DemoService().run(persona="basic", seed=42, reset_confirmed=False)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("persona", ["basic", "family", "freelancer"])
+def test_demo_ships_a_categorized_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persona: str
+) -> None:
+    # Demo's headline promise. It previously shipped 0% categorized — the generator
+    # never taught the engine about the merchants it invented, and doctor's coverage
+    # check is warn-only, so the run still reported "clean" while
+    # "What did I spend on dining last month?" returned nothing.
+    #
+    # The floor is deliberately well under what the personas actually reach (~84-93%)
+    # so it tracks the real failure — a collapse to zero — rather than churning on
+    # every merchant-catalog tweak.
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    from moneybin.database import get_database
+
+    result = DemoService().run(persona=persona, seed=42, years=1)
+
+    assert result.transaction_count > 0
+    assert result.categorized_count / result.transaction_count > 0.7
+
+    with get_database(read_only=True) as db:
+        merchants = db.execute("SELECT COUNT(*) FROM app.user_merchants").fetchone()
+        assert merchants is not None
+        assert merchants[0] > 0
 
 
 @pytest.mark.integration

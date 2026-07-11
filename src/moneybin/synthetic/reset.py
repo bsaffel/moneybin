@@ -17,6 +17,7 @@ from moneybin.tables import (
     OFX_TRANSACTIONS,
     TABULAR_ACCOUNTS,
     TABULAR_TRANSACTIONS,
+    USER_MERCHANTS,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,29 @@ _NON_USER_TABLES = frozenset({
     "app.versions",
     "app.seed_source_priority",
     "app.metrics",
+    # Evidence, not financial state — and redundant here: every mutation it records
+    # also landed in a table this guard already checks.
+    "app.audit_log",
+    # Strictly derived from transactions, and written by demo's own match/categorize
+    # steps. Safe to exclude because they cannot exist without a transaction behind
+    # them: if that transaction is real, the raw table it came from already flags the
+    # profile; if it is synthetic, the rebuild regenerates these rows anyway. Contrast
+    # `_OURS_IN_APP` below — a user can author a merchant with no transactions at all,
+    # so that table needs a provenance filter rather than a blanket exclusion.
+    "app.transaction_categories",
+    "app.match_decisions",
 })
+
+# App tables BOTH we and the user write. Blanket-excluding one would blind the guard
+# to real user state; blanket-including it would make demo refuse to rebuild its own
+# profile (the merchant seeder writes here). So guard the rows we did NOT write —
+# the same shape as GENERATOR_WRITTEN_TABLES on the raw side.
+#
+# `synthetic` is the provenance the seeder stamps (`merchant_seed.py`), so a merchant
+# the user authored inside the demo profile still reads as theirs and is protected.
+_OURS_IN_APP: dict[str, str] = {
+    USER_MERCHANTS.full_name: "created_by <> 'synthetic'",
+}
 
 
 def _real_row_checks(db: Database) -> list[tuple[str, str]]:
@@ -124,11 +147,13 @@ def _real_row_checks(db: Database) -> list[tuple[str, str]]:
         qualified = f"{schema}.{name}"
         if qualified in _NON_USER_TABLES:
             continue  # platform state; the rebuild recreates it
-        where = (
-            f"WHERE {_NON_SYNTHETIC_ROWS}"
-            if qualified in GENERATOR_WRITTEN_TABLES
-            else ""
-        )
+
+        if qualified in GENERATOR_WRITTEN_TABLES:
+            where = f"WHERE {_NON_SYNTHETIC_ROWS}"
+        elif qualified in _OURS_IN_APP:
+            where = f"WHERE {_OURS_IN_APP[qualified]}"
+        else:
+            where = ""
         checks.append((_quote(schema, name), where))
     return checks
 

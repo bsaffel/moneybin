@@ -106,6 +106,19 @@ safe without being brittle:
   and declined. No in-process test could catch it, because `atexit` never fires
   there; the regression guard is `test_demo_rerun_after_a_real_cli_run`, which runs
   the command twice as a real subprocess.
+
+  `app.transaction_categories` and `app.match_decisions` are excluded on a different
+  argument: they are *strictly derived from transactions*, so they cannot exist
+  without one behind them. If that transaction is real, the raw table it came from
+  already flags the profile; if it is synthetic, the rebuild regenerates these rows.
+
+  `app.user_merchants` gets neither treatment, because both we and the user write it
+  — the merchant seeder populates it, but a user can also author a merchant with no
+  transactions at all (exactly the `app.securities` shape). Blanket-excluding it would
+  blind the guard to real user state; blanket-including it would make demo refuse to
+  rebuild itself. So the seeder stamps its rows `created_by = 'synthetic'`, and
+  `_OURS_IN_APP` guards only the rows we did *not* write — the same shape as
+  `GENERATOR_WRITTEN_TABLES` on the raw side.
 - **Not generator-made** → someone else's profile that merely happens to be named
   `demo`. Here `has_any_user_content` refuses on *any* row in *any* `app.*` /
   `raw.*` table beyond migration bookkeeping (`app.schema_migrations`,
@@ -201,14 +214,36 @@ follow-up (filed), not part of this feature. `DemoService` calls the clean
      run could never proceed.
 4. **Generate** → `GeneratorEngine(persona, seed, years).generate()` →
    `SyntheticWriter(db).write(...)`.
-5. **Refresh** → `refresh(db, steps=["match", "transform", "categorize"])`. The
-   `gsheet` step is deliberately excluded: demo generated its own raw data and
-   must never trigger a live external pull. A failure in *any* step (including
-   `matching_error` / `categorization_error`) aborts — demo's premise is a
-   clean, categorized pipeline.
-6. **Doctor** → `DoctorService(db).run_all()`; **answer** →
+5. **Transform**, on its own → `refresh(db, steps=["transform"])`. It must be its
+   own call: `refresh()` runs its steps in canonical order (`gsheet` → `match` →
+   `transform` → `categorize`) *regardless of the order they are passed in*, so a
+   single combined call runs `match` first — against a database demo just rebuilt,
+   where `prep.*`/`core.*` don't exist yet. `refresh()` treats the resulting
+   `CatalogException` as an expected first-load precondition and swallows it, so
+   matching silently never ran on any demo profile. Build the views first.
+6. **Seed the merchant catalog** → `seed_merchant_catalog(db, result)`. The
+   generator draws descriptions from category-organized merchant catalogs but only
+   ever wrote them into `raw.*` descriptions, so a fresh profile had nothing for
+   `CategorizationService` to match against and landed **0% categorized** — while
+   doctor still reported clean, because its coverage check is warn-only. Seeding the
+   same catalog the run drew from (into `app.user_merchants`, via `UserMerchantsRepo`
+   per Invariant 10) lets the *real* categorization engine do the work, so demo
+   demonstrates categorization rather than faking it. Scoped to the synthetic sandbox
+   — this is not a return of the retired global seed merchant catalog. Ordering is
+   load-bearing: after the transform (`category_id` resolves against
+   `core.dim_categories`), before `categorize`.
+7. **Match + categorize** → `refresh(db, steps=["match", "categorize"])` against the
+   built views. The `gsheet` step is never requested: demo generated its own raw data
+   and must never trigger a live external pull. A failure in *any* step (including
+   `matching_error` / `categorization_error`) aborts — demo's premise is a clean,
+   categorized pipeline.
+8. **Doctor** → `DoctorService(db).run_all(full=True)` — exhaustive, not the default
+   1000-row sample, so "doctor clean" is a guarantee rather than a heuristic on a
+   3-year `family` run. `DemoResult.categorized_count` carries coverage into the
+   success signal too: doctor's own coverage check is warn-only, so without it a run
+   that categorized *nothing* still reported clean. **Answer** →
    `NetworthService(db).current()`.
-7. **Activate** → `set_default_profile(DEMO_PROFILE)`, only after a fully
+9. **Activate** → `set_default_profile(DEMO_PROFILE)`, only after a fully
    successful run **and only when doctor is clean** (a failing doctor exits 1 —
    that is a failed run, and it must not repoint the user's default at a profile
    we just called broken), so a refused or failed run never silently switches the

@@ -1582,8 +1582,11 @@ class TestDemo:
         assert payload["profile"] == "demo"
         assert payload["transaction_count"] > 0
         assert payload["account_count"] > 0
-        # The whole point of demo: it ends clean.
+        # The whole point of demo: it ends clean AND categorized. Coverage is part
+        # of the success signal because doctor's own coverage check is warn-only —
+        # demo once shipped 0% categorized while still reporting "clean".
         assert payload["doctor_failing"] == 0, payload["doctor_failing_names"]
+        assert payload["categorized_count"] / payload["transaction_count"] > 0.7
 
     def test_demo_rerun_after_a_real_cli_run(self, tmp_path: Path) -> None:
         """A second `moneybin demo` rebuilds the profile the first one left behind.

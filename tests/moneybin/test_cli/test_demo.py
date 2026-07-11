@@ -25,6 +25,7 @@ def _fake_result(**overrides: Any) -> DemoResult:
         seed=42,
         account_count=2,
         transaction_count=900,
+        categorized_count=850,
         doctor_failing=0,
         doctor_failing_names=[],
         net_worth=Decimal("12345.67"),
@@ -109,6 +110,42 @@ def test_demo_first_run_needs_no_yes_and_no_prompt(mocker: Any) -> None:
     result = runner.invoke(app, ["demo"])
     assert result.exit_code == 0, result.output
     assert svc.run.call_args.kwargs["reset_confirmed"] is False
+
+
+@pytest.mark.unit
+def test_demo_forwards_non_default_args_to_the_service(mocker: Any) -> None:
+    svc = _patch_service(mocker, _fake_result())
+    result = runner.invoke(
+        app,
+        ["demo", "--yes", "--persona", "family", "--seed", "7", "--years", "2"],
+    )
+    assert result.exit_code == 0, result.output
+    kwargs = svc.run.call_args.kwargs
+    assert kwargs["persona"] == "family"
+    assert kwargs["seed"] == 7
+    assert kwargs["years"] == 2
+
+
+@pytest.mark.unit
+def test_demo_rejects_a_nonpositive_years(mocker: Any) -> None:
+    # `--years -1` used to reach the generator, which computed start_year after
+    # end_year and produced zero transactions while still reporting a ready profile.
+    svc = _patch_service(mocker, _fake_result())
+    result = runner.invoke(app, ["demo", "--yes", "--years", "-1"])
+    assert result.exit_code == 2  # usage error
+    svc.run.assert_not_called()
+
+
+@pytest.mark.unit
+def test_demo_quiet_suppresses_status_but_not_the_answer(mocker: Any) -> None:
+    _patch_service(mocker, _fake_result())
+    result = runner.invoke(app, ["demo", "--yes", "--quiet"])
+    assert result.exit_code == 0, result.output
+    # The answer is the data — never suppressed.
+    assert "12345.67" in result.stdout
+    # Status chatter is.
+    assert "Demo profile" not in result.output
+    assert "Try next" not in result.output
 
 
 @pytest.mark.unit

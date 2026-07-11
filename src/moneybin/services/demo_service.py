@@ -24,6 +24,7 @@ from moneybin.errors import UserError
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+    from moneybin.services.refresh import RefreshResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ class DemoResult:
     seed: int
     account_count: int
     transaction_count: int
+    # Demo promises a *categorized* profile, and doctor's coverage check is
+    # warn-only — so coverage has to be in the success signal, or a run that
+    # categorized nothing still reports clean.
+    categorized_count: int
     doctor_failing: int
     doctor_failing_names: list[str]
     net_worth: Decimal
@@ -91,6 +96,32 @@ class DemoRefreshFailedError(UserError):
         )
 
 
+def _count_categorized(db: "Database") -> int:
+    """Transactions that came out of the pipeline with a category."""
+    from moneybin.tables import FCT_TRANSACTIONS
+
+    try:
+        row = db.execute(
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
+            f"WHERE category IS NOT NULL"
+        ).fetchone()
+    except Exception:  # noqa: BLE001 — core views absent (transform mocked/not run)
+        return 0
+    return int(row[0]) if row else 0
+
+
+def _check_refresh(result: "RefreshResult") -> None:
+    """Abort the demo if any refresh step reported a failure.
+
+    `refresh()` reports crashes as returned errors rather than exceptions, so an
+    unchecked call fails silently. Demo's whole premise is a clean, categorized
+    pipeline — a half-built profile is worse than none.
+    """
+    error = result.error or result.matching_error or result.categorization_error
+    if error:
+        raise DemoRefreshFailedError(str(error))
+
+
 def _count_transactions(db: "Database") -> int:
     try:
         row = db.execute(
@@ -127,7 +158,11 @@ class DemoService:
 
     def profile_has_data(self) -> bool:
         """True if the demo profile's database exists and already holds data."""
-        from moneybin.config import get_current_profile, set_current_profile
+        from moneybin.config import (
+            clear_current_profile,
+            get_current_profile,
+            set_current_profile,
+        )
         from moneybin.database import DatabaseNotInitializedError, get_database
 
         try:
@@ -141,7 +176,12 @@ class DemoService:
         except DatabaseNotInitializedError:
             return False
         finally:
-            if original is not None:
+            # Put the process back exactly as we found it — including the case where
+            # no profile was resolved yet, which would otherwise leak `demo` into
+            # global state for every later caller.
+            if original is None:
+                clear_current_profile()
+            else:
                 set_current_profile(original)
 
     def _guard_and_rebuild(self, *, reset_confirmed: bool) -> None:
@@ -227,6 +267,7 @@ class DemoService:
         )
         from moneybin.services.refresh import refresh
         from moneybin.synthetic.engine import GeneratorEngine
+        from moneybin.synthetic.merchant_seed import seed_merchant_catalog
         from moneybin.synthetic.writer import SyntheticWriter
         from moneybin.utils.user_config import get_default_profile, set_default_profile
 
@@ -240,7 +281,7 @@ class DemoService:
             existed = True
 
         # 2. Point the process at it so we open the right database. The PERSISTED
-        #    default switch happens only after a fully successful run (step 7).
+        #    default switch happens only after a fully successful run (step 9).
         set_current_profile(DEMO_PROFILE)
 
         # 3. An existing demo profile must be provably ours before we rebuild it.
@@ -262,25 +303,37 @@ class DemoService:
                 counts.get(k, 0) for k in ("ofx_transactions", "tabular_transactions")
             )
 
-            # 5. Refresh derived state (match → transform → categorize). Skip the
-            #    `gsheet` step: demo generated its own raw data and must never
-            #    trigger a live external pull. Surface a real crash in any step —
-            #    demo's whole premise is a clean, categorized pipeline.
-            refresh_result = refresh(db, steps=["match", "transform", "categorize"])
-            refresh_error = (
-                refresh_result.error
-                or refresh_result.matching_error
-                or refresh_result.categorization_error
-            )
-            if refresh_error:
-                raise DemoRefreshFailedError(str(refresh_error))
+            # 5. Transform FIRST, on its own. `refresh()` always runs its steps in
+            #    canonical order (gsheet → match → transform → categorize), so a
+            #    single call would run `match` before `transform` — and demo always
+            #    works on a database it just rebuilt, where `prep.*`/`core.*` don't
+            #    exist yet. Matching would raise CatalogException, which `refresh()`
+            #    quietly treats as an expected first-load precondition, and demo
+            #    would silently never match. Build the views, then match.
+            #    The `gsheet` step is deliberately never requested: demo generated
+            #    its own raw data and must never trigger a live external pull.
+            _check_refresh(refresh(db, steps=["transform"]))
 
-            # 6. Doctor + the one obvious answer.
-            report = DoctorService(db).run_all()
+            # 6. Teach the categorization engine about the merchants this run
+            #    invented. Without it the generated data matches no merchant and the
+            #    profile lands 0% categorized — demo's headline promise is a
+            #    *categorized* profile. Must follow the transform (`category_id`
+            #    resolves against `core.dim_categories`) and precede `categorize`.
+            seed_merchant_catalog(db, result)
+
+            # 7. Now match + categorize against the built views.
+            _check_refresh(refresh(db, steps=["match", "categorize"]))
+            categorized_count = _count_categorized(db)
+
+            # 8. Doctor + the one obvious answer. `full=True`: demo's dataset is
+            #    small and freshly generated, so an exhaustive audit costs little —
+            #    and "doctor clean" should be a guarantee, not a 1000-row sample
+            #    (the default sampling would under-cover a 3-year `family` run).
+            report = DoctorService(db).run_all(full=True)
             failing_names = [r.name for r in report.invariants if r.status == "fail"]
             snapshot = NetworthService(db).current()
 
-        # 7. Only now — a complete, successful run — make demo the persisted
+        # 9. Only now — a complete, successful run — make demo the persisted
         #    default so the next command lands on it. Report the profile we
         #    displaced: silently repointing every later command at `demo` is
         #    exactly the kind of magic that has to stay visible, and the caller
@@ -303,6 +356,7 @@ class DemoService:
             seed=seed,
             account_count=account_count,
             transaction_count=txn_count,
+            categorized_count=categorized_count,
             doctor_failing=report.failing,
             doctor_failing_names=failing_names,
             net_worth=snapshot.net_worth,

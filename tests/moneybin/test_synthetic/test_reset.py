@@ -186,6 +186,38 @@ def test_has_non_synthetic_data_detects_securities_on_a_demo_profile(
 
 
 @pytest.mark.unit
+def test_has_non_synthetic_data_ignores_seeded_synthetic_merchants(
+    db: Database,
+) -> None:
+    # The merchant seeder writes app.user_merchants so the categorization engine can
+    # match generated data. Those rows are OURS — reading them as user data would
+    # make demo refuse to rebuild its own profile on every second run.
+    db.execute(
+        "INSERT INTO app.user_merchants "
+        "(merchant_id, raw_pattern, match_type, canonical_name, created_by) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ["m1", "GREAT CLIPS", "contains", "Great Clips", "synthetic"],
+    )
+    assert has_non_synthetic_data(db) is False
+
+
+@pytest.mark.unit
+def test_has_non_synthetic_data_detects_a_user_authored_merchant(
+    db: Database,
+) -> None:
+    # ...but a merchant the USER authored inside the demo profile is theirs, and a
+    # rebuild would destroy it. This is why the seeded rows are stamped with a
+    # distinct provenance instead of the table being excluded wholesale.
+    db.execute(
+        "INSERT INTO app.user_merchants "
+        "(merchant_id, raw_pattern, match_type, canonical_name, created_by) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ["m2", "MY CORNER STORE", "contains", "My Corner Store", "user"],
+    )
+    assert has_non_synthetic_data(db) is True
+
+
+@pytest.mark.unit
 def test_has_non_synthetic_data_detects_budgets_on_a_demo_profile(
     db: Database,
 ) -> None:

@@ -28,7 +28,13 @@ def demo_command(
     seed: int | None = typer.Option(
         None, "--seed", min=1, max=9999, help="Deterministic seed (default: fixed)"
     ),
-    years: int | None = typer.Option(None, "--years", help="Years of history"),
+    years: int | None = typer.Option(
+        None,
+        "--years",
+        min=1,
+        max=10,
+        help="Years of history (default: the persona's own)",
+    ),
     yes: bool = typer.Option(
         False, "--yes", "-y", help="Auto-accept the rebuild if the demo profile exists"
     ),
@@ -84,6 +90,7 @@ def demo_command(
                         "seed": result.seed,
                         "account_count": result.account_count,
                         "transaction_count": result.transaction_count,
+                        "categorized_count": result.categorized_count,
                         "doctor_failing": result.doctor_failing,
                         "doctor_failing_names": result.doctor_failing_names,
                         "net_worth": str(result.net_worth),
@@ -101,7 +108,8 @@ def demo_command(
                 typer.echo(
                     f"✅ Demo profile {result.profile!r} ready "
                     f"({result.account_count} accounts, "
-                    f"{result.transaction_count} transactions).",
+                    f"{result.transaction_count} transactions, "
+                    f"{result.categorized_count} categorized).",
                     err=True,
                 )
             # The one obvious answer (stdout). Bare Decimal matches the sibling
