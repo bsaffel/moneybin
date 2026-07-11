@@ -36,7 +36,10 @@ logger = logging.getLogger(__name__)
 
 def migrate(conn: object) -> None:
     """Drop app.merchant_overrides and rewrite legacy categorized_by='seed' rows."""
-    logger.debug("V012: dropping app.merchant_overrides if present")
+    # info (not debug) preserves the log level V012 shipped with — see
+    # database.md "keep whatever level they shipped with" for already-applied
+    # migrations. The body changed (bug fix) but the level convention holds.
+    logger.info("Dropping app.merchant_overrides if present")
     conn.execute("DROP TABLE IF EXISTS app.merchant_overrides")  # type: ignore[union-attr]
 
     # Rewrite any historical 'seed' rows so the new 7-level precedence ladder

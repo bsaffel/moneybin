@@ -23,10 +23,14 @@ Write-target resolution and its limit: the target relation is resolved when it
 is an inline literal, a module constant (``conn.execute(_CREATE_SQL)``, e.g.
 V034), a ``for <var> in (<string literals>)`` loop variable interpolated into an
 f-string (V012's ``DROP TABLE IF EXISTS {table}`` over a literal tuple), or a
-local literal assignment. A target computed at *runtime* — a function argument,
-a name read from ``duckdb_indexes()`` / ``duckdb_tables()`` — can't be resolved
-statically and is not scanned; the regex fallback still covers the common
-static-target / dynamic-*value* shape. SQL is read only from ``.execute()``
+local literal assignment. Two loop idioms present elsewhere in the ladder are
+NOT resolved and would blank their target: ``for k, v in {dict}.items()`` (V003,
+keys are all ``raw.*`` today) and ``for a, b in <name>`` where the name is a
+built/mutated list (V014's ``list(_BACKFILLS)`` + conditional append, all
+``app.*`` today). Extending the binder to those is tracked as follow-up work; a
+target computed at true *runtime* — a function argument, a name read from
+``duckdb_indexes()`` / ``duckdb_tables()`` — can't be resolved statically at all.
+The regex fallback still covers the common static-target / dynamic-*value* shape. SQL is read only from ``.execute()``
 arguments, so a docstring or comment mentioning ``ALTER TABLE seeds.x`` never
 triggers a false positive.
 """
@@ -97,8 +101,12 @@ def _owned_schema_of(stmt: _Node) -> str | None:
 
 def _describe(stmt: _Node, schema: str) -> str:
     target = stmt.this.find(exp.Table) if stmt.this is not None else None
-    name = f"{schema}.{target.name}" if target is not None else schema
-    return f"{stmt.key.upper()} {name}"
+    if target is not None and target.name:
+        return f"{stmt.key.upper()} {schema}.{target.name}"
+    # Schema-level op (e.g. DROP SCHEMA) — the target Table carries the schema in
+    # `.db` with no `.name`, so name it by kind + schema (avoids "DROP seeds.").
+    kind = str(stmt.args.get("kind") or "").upper()
+    return " ".join(p for p in (stmt.key.upper(), kind, schema) if p)
 
 
 def _fallback(sql: str) -> list[str]:
