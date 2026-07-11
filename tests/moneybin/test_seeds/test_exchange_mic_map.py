@@ -1,11 +1,9 @@
 """exchange_mic_map seed: one row per alias, identity rows present."""
 
 import csv
-from pathlib import Path
+import pathlib
 
-_CSV = (
-    Path(__file__).parents[2] / "sqlmesh" / "models" / "seeds" / "exchange_mic_map.csv"
-)
+_CSV = pathlib.Path("sqlmesh/models/seeds/exchange_mic_map.csv")
 
 
 def test_mic_map_well_formed() -> None:
