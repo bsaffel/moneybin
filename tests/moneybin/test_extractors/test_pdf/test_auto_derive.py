@@ -635,3 +635,39 @@ def test_page_break_header_repeat_does_not_duplicate_rows() -> None:
         ["01/02/2024", "COFFEE", "-4.50"],
         ["01/09/2024", "GROCERY", "-73.21"],
     ]
+
+
+def test_text_candidate_rows_stop_at_the_end_of_the_transaction_table() -> None:
+    """A trailing date-led section must not be folded into the candidate's rows.
+
+    The raw-text rung scans for date-led lines rather than a contiguous run (a
+    wrapped description or page footer would end a contiguous run early, and an
+    empty run reports the document as no-transaction-table — seeding exactly the
+    statements this rung exists to escalate). Scanning to the end of the document
+    instead of to the table's end sentinel means a "Daily Balance Summary" — its
+    lines also open with a date — lands in the sample the locale probe reads.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _text_transaction_candidate,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Wells Fargo",
+        "Date         Description     Withdrawals   Deposits",
+        "01/02/2024   COFFEE SHOP     4.50",
+        "01/05/2024   PAYROLL                       2,000.00",
+        "Ending Balance                             1,995.50",
+        "Daily Balance Summary",
+        "01/02/2024   -4.50",
+        "01/05/2024   1,995.50",
+    ])
+
+    candidate = _text_transaction_candidate(doc)
+
+    assert candidate is not None
+    header, rows = candidate
+    assert header == ["Date", "Description", "Withdrawals", "Deposits"]
+    assert rows == [
+        ["01/02/2024", "COFFEE SHOP", "4.50"],
+        ["01/05/2024", "PAYROLL", "2,000.00"],
+    ]

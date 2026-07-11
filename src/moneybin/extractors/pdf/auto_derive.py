@@ -494,22 +494,39 @@ def _text_transaction_candidate(
     from each other. Never index them by a header column position; treat them as
     an unordered bag of cells (see ``_money_tokens``). Returning a ``PdfTable``
     would invite exactly that misuse, which is why this returns a plain pair.
+
+    The scan stops at the table's end sentinel rather than running to the end of
+    the document, so a later date-led section (a "Daily Balance Summary") can't
+    fold its rows into the sample. It deliberately does NOT require rows to be
+    *contiguous* with the header the way ``_synthesize_tables_from_text`` does: a
+    wrapped description line or a page footer ends a contiguous run early, and a
+    run that comes back empty reports the document as no-transaction-table —
+    seeding the very statements this rung exists to escalate.
     """
-    cells_per_line = [
-        _re.split(_ROW_SPLIT, line.strip()) if line.strip() else []
-        for line in doc.text_lines
-    ]
+    lines = [line.strip() for line in doc.text_lines]
+    cells_per_line = [_re.split(_ROW_SPLIT, line) if line else [] for line in lines]
     for idx, cells in enumerate(cells_per_line):
         if not _is_transactional_header(cells):
             continue
-        rows = [
-            row
-            for row in cells_per_line[idx + 1 :]
-            if row and _ANY_DATE_RE.match(row[0])
-        ]
+        rows: list[list[str]] = []
+        for offset in range(idx + 1, len(cells_per_line)):
+            if _opens_end_anchor(lines[offset]):
+                break
+            row = cells_per_line[offset]
+            if row and _ANY_DATE_RE.match(row[0]):
+                rows.append(row)
         if rows:
             return cells, rows
     return None
+
+
+def _opens_end_anchor(line: str) -> bool:
+    """True when *line* opens one of the document's end-of-transaction sentinels.
+
+    Safe to test against the raw line: a transaction row starts with its date, so
+    only a summary line can start with one of these.
+    """
+    return any(line.startswith(candidate) for candidate in _END_ANCHOR_CANDIDATES)
 
 
 def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
