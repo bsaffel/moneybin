@@ -927,6 +927,21 @@ def test_card_recipe_replays_onto_a_card_document() -> None:
     assert recipe_polarity_fits(card_recipe, card_doc) is True
 
 
+def test_route_decision_carries_card_markers(db: Database) -> None:
+    """The confirm gate shows the user which disclosures drove the inversion."""
+    doc = _card_statement_doc(opening="0.00", closing="100.00")
+    decision = route_pdf_import(doc, db)
+    assert decision.outcome == "transactions"
+    assert decision.recipe is not None
+    assert decision.recipe.sign_convention == "negative_is_income"
+    assert "minimum payment" in decision.card_markers
+
+
+def test_route_decision_has_no_markers_for_checking(db: Database) -> None:
+    decision = route_pdf_import(_checking_statement_doc(), db)
+    assert decision.card_markers == ()
+
+
 def test_euro_symbol_statement_is_recognised_as_non_us(db: Database) -> None:
     """A € amount must read as European, not as an unknown locale.
 
