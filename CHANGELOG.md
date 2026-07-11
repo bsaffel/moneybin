@@ -238,7 +238,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
   dropped, so users must disable some by hand. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
-  our surface includes write tools). (#314)
+  our surface includes write tools). (#315)
 - **`core.dim_categories` gains an accounting `class` (M1V).** Every category
   now carries `class` (`income` | `expense` | `transfer` | `debt`), assigned
   at curation time for seed categories and defaulting to `expense` for user
@@ -333,14 +333,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   desktop, mobile) connects only to a *remote* MCP server over HTTPS, and MoneyBin's
   is local stdio. The command now refuses with a non-zero exit, explains why, and
   names the clients that do work. Authenticated remote transport is tracked as M3D.
-  The `chatgpt-desktop` id stays reserved. (#314)
+  The `chatgpt-desktop` id stays reserved. (#315)
 - **MCP install snippets now pin the absolute `uv` path.** macOS clients launched
   from the GUI (Claude Desktop, Cursor) do not inherit the shell's `PATH`, so a bare
   `uv` in the generated config resolved to nothing and the server failed to start —
-  surfacing to the user as an opaque client-side error. (#314)
+  surfacing to the user as an opaque client-side error. (#315)
 - **Codex installs carry `startup_timeout_sec = 30`.** Codex defaults to 10s, but a
   cold `uv run` (building the environment on first launch) routinely takes 3–15s, so
-  the very first connection was the one most likely to time out. (#314)
+  the very first connection was the one most likely to time out. (#315)
 - **Net worth no longer drops accounts with older statements.**
   `core.fct_balances_daily` built each account's date spine only as far as *that
   account's* last balance observation, so on any later date the account simply
@@ -357,7 +357,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   config, database, and inbox) instead of `db init`, which would leave the profile
   unregistered — absent from `moneybin profile list`, with no inbox. A profile that
   *is* registered but has no database still points at `db init`, which is the
-  correct verb there. (#310, #314)
+  correct verb there. (#310, #315)
 - **`moneybin profile create` can now repair a half-made profile.** A profile
   directory with no `config.yaml` — left by a bare `moneybin db init`, a hand
   `mkdir`, or an interrupted delete — was previously a dead end: `profile create`
@@ -366,7 +366,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   such a directory in place (config, inbox, and a database only if one is absent —
   an existing database is never touched or rolled back) and reports that it
   completed rather than created it. `ProfileExistsError` now means "a *registered*
-  profile exists", so re-creating a real profile still refuses. (#314)
+  profile exists", so re-creating a real profile still refuses. (#315)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
