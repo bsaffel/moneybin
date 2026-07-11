@@ -832,10 +832,13 @@ def _number_format_anywhere(doc: PdfDocument) -> Literal["us", "european"] | Non
 # deposit-account statement. US card issuers are required to print the payment and
 # APR disclosures, so this is high-recall as well as high-precision.
 #
-# Matched case-insensitively against the document's text lines. A false positive
-# costs an unnecessary escalation to the bridge (the statement is still captured);
-# a false negative silently inverts the sign of every row. The asymmetry is the
-# whole reason this list is scanned rather than the amounts.
+# Matched case-insensitively against the document's text lines. A match *proposes*
+# the inverted convention; the service gates that proposal behind a confirm
+# (ImportService._gate_pdf_sign_convention), so a false positive costs a needless
+# confirmation the user can override with `sign=`. A false negative, by contrast,
+# would import a card statement's every charge as income with nothing surfaced —
+# reconciliation passes either way. That asymmetry is the whole reason this list
+# is scanned rather than the amounts.
 _CREDIT_CARD_MARKERS: tuple[str, ...] = (
     "minimum payment",
     "credit limit",

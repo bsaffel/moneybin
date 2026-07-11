@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.account_label import parse_account_label
 from moneybin.extractors.tabular.formats import (
@@ -48,7 +49,9 @@ from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
+    ConfirmationRequired,
     ImportConfirmationRequiredError,
+    SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
 
@@ -210,6 +213,36 @@ _BRIDGE_ELIGIBLE_REASONS: frozenset[str] = frozenset({
     "metadata_incomplete",
     "transaction_table_underivable",
 })
+
+# A card-statement inversion is a confident inference (the disclosures are
+# unambiguous) whose COST IF WRONG is a corrupted ledger, on this import and on
+# every future replay. `medium` says "eyeball this" — it is never `high`, because
+# `high` is the tier an agent may self-accept at.
+_CARD_SIGN_CONFIDENCE = Confidence(
+    score=0.75, tier="medium", flagged=("sign_convention",), missing_required=()
+)
+
+# How many rows the sign proposal shows as before/after samples.
+_SIGN_SAMPLE_LIMIT = 3
+
+
+def _sign_sample_rows(
+    rows: list[dict[str, Any]], *, limit: int = _SIGN_SAMPLE_LIMIT
+) -> list[dict[str, str]]:
+    """Show the flip concretely: what the statement printed vs what we'd record."""
+    from decimal import Decimal
+
+    samples: list[dict[str, str]] = []
+    for row in rows[:limit]:
+        printed = row.get("amount")
+        if printed is None:
+            continue
+        samples.append({
+            "description": str(row.get("description", ""))[:60],
+            "as_printed": str(printed),
+            "as_recorded": str(-Decimal(str(printed))),
+        })
+    return samples
 
 
 @dataclass(frozen=True)
@@ -1886,10 +1919,16 @@ class ImportService:
             )
         )
 
-    def pdf_preview(self, file_path: Path) -> PdfPreviewResult:
+    def pdf_preview(
+        self,
+        file_path: Path,
+        *,
+        confirm: bool = False,
+        sign: str | None = None,
+    ) -> PdfPreviewResult:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
-        Three outcomes — same machinery as ``_import_pdf`` but no side effects
+        Four outcomes — same machinery as ``_import_pdf`` but no side effects
         on raw tables and no ``raw.import_log`` row:
 
         - Deterministic success (``decision.outcome == "transactions"``):
@@ -1910,9 +1949,19 @@ class ImportService:
           not help on these (the document isn't transaction-shaped, or has
           no extractable content), so we surface the gap honestly rather
           than ship an empty payload.
+        - Auto-derived credit-card statement: raises
+          ``ImportConfirmationRequiredError`` carrying a
+          ``SignConventionProposal`` — the same gate ``_import_pdf`` applies, so
+          preview and import agree on what the statement will do to the ledger.
+          ``confirm=True`` (or an explicit ``sign=``) previews past it.
 
         This is a read-mostly path: side effects are the audit row on
         escalation (Req 14) and the metric bump. No ``raw.*`` rows land.
+
+        Args:
+            file_path: Path to the PDF to preview.
+            confirm: Ratify an auto-derived sign inversion instead of raising.
+            sign: Override the detected sign convention (``SignConventionType``).
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -1920,6 +1969,7 @@ class ImportService:
         canonical = file_path.resolve()
         doc = PDFExtractor().extract(canonical)
         decision = route_pdf_import(doc, self._db)
+        decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
 
         if decision.outcome == "transactions":
             return PdfPreviewResult(
@@ -2116,6 +2166,94 @@ class ImportService:
             reject_reason=None,
         )
 
+    def _gate_pdf_sign_convention(
+        self,
+        decision: "RouteDecision",
+        *,
+        sign: str | None,
+        confirm: bool,
+    ) -> "RouteDecision":
+        """Ratify, override, or gate an auto-derived sign inversion.
+
+        A `negative_is_income` recipe flips every amount. The convention is not
+        recoverable from the numbers (a card and a checking statement have
+        identical sign distributions and both reconcile), so the inference rests
+        on the document's disclosures alone — and the decision is persisted and
+        replays on every future statement of this format. It is therefore never
+        applied silently on first contact.
+
+        A REPLAY (`matched_format_name` set) was confirmed once already and loads
+        without asking again — the confirm is once per format, not per statement.
+
+        Install this only downstream of ``route_pdf_import``. ``route_forced_recipe``
+        (the bridge apply) also reports ``matched_format_name is None``, but a
+        caller who supplied ``bridge_response={'recipe': ..., 'rows': [...]}`` has
+        already ratified that recipe's sign convention — re-gating it would ask
+        twice, with no card evidence to show the second time.
+
+        The gate deliberately does NOT route through ``resolve_or_confirm``: that
+        seam lets an agent self-accept at ``high``, and a silently agent-accepted
+        ledger inversion is the exact outcome this gate exists to prevent.
+        """
+        from typing import get_args
+
+        from moneybin.extractors.pdf.routing import amount_shape_matches_sign_convention
+
+        recipe = decision.recipe
+        if recipe is None or decision.outcome != "transactions":
+            return decision
+
+        if sign is not None:
+            if sign not in get_args(SignConventionType):
+                raise UserError(
+                    f"Invalid sign convention: {sign!r}. "
+                    f"Valid values: {list(get_args(SignConventionType))}.",
+                    code="invalid_sign_convention",
+                )
+            # The loader reads convention-specific row keys: `amount` for the
+            # single-column conventions, `debit`/`credit` for the split. An
+            # override that names the shape this recipe did not extract would
+            # sum absent keys and write every amount as 0 — silent, and worse
+            # than the inversion the override was meant to correct.
+            if not amount_shape_matches_sign_convention(recipe.fields, sign):
+                raise UserError(
+                    f"Sign convention {sign!r} does not fit this statement's "
+                    f"columns — its recipe extracts a "
+                    f"{'debit/credit pair' if sign == 'split_debit_credit' else 'single amount column'}"
+                    f" the convention does not read.",
+                    code="invalid_sign_convention",
+                )
+            return dataclasses.replace(
+                decision, recipe=recipe.model_copy(update={"sign_convention": sign})
+            )
+
+        is_auto_derived = decision.matched_format_name is None
+        if recipe.sign_convention != "negative_is_income" or not is_auto_derived:
+            return decision
+
+        if confirm:
+            return decision
+
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="pdf",
+                confidence=_CARD_SIGN_CONFIDENCE,
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=decision.card_markers,
+                    sample_rows=_sign_sample_rows(decision.rows),
+                ),
+                reason="sign_convention",
+                error_message=(
+                    "This looks like a credit-card statement "
+                    f"(matched: {', '.join(decision.card_markers)}). Charges will be "
+                    "recorded as expenses and payments as credits — every amount's "
+                    "sign is inverted. Confirm with import_confirm(accept=True), or "
+                    "override with sign='negative_is_expense' if this is not a card."
+                ),
+            )
+        )
+
     def _import_pdf(
         self,
         file_path: Path,
@@ -2123,6 +2261,8 @@ class ImportService:
         save_format: bool = True,
         account_id: str | None = None,
         actor_kind: "ActorKind" = "human",
+        sign: str | None = None,
+        confirm: bool = False,
     ) -> ImportResult:
         """Import a native-text PDF via the Phase 2a routing state machine.
 
@@ -2160,6 +2300,13 @@ class ImportService:
             actor_kind: 'agent' when a driving agent that can fulfill a bridge
                 extraction is present (MCP, agent-driven CLI) — enables bridge
                 escalation. 'human'/default keeps the Phase 2a seed fallback.
+            sign: Override the detected sign convention (a
+                ``SignConventionType``). The in-band recovery from a
+                false-positive card detection — see
+                ``_gate_pdf_sign_convention``.
+            confirm: Ratify an auto-derived ``negative_is_income`` (credit-card)
+                inversion. Without it, such a statement raises
+                ``ImportConfirmationRequiredError`` and loads nothing.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -2216,6 +2363,14 @@ class ImportService:
             and decision.reason in _BRIDGE_ELIGIBLE_REASONS
         ):
             self._raise_pdf_bridge_escalation(canonical, doc, decision)
+
+        # Sign gate: an auto-derived inversion needs ratification, an explicit
+        # `sign=` overrules the detector. Sits OUTSIDE the extract/route
+        # try/except above — a confirmation is not a failed import, and counting
+        # it as one (PDF_IMPORT_TOTAL{outcome="failed"}) would misreport the
+        # gate's whole purpose. Raises before begin_import: nothing loads, and no
+        # import_log row is stranded in "importing".
+        decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
 
         # Committing to a write — open the import_log row now.
         import_id = import_log.begin_import(
@@ -2790,7 +2945,9 @@ class ImportService:
             format_name: Explicit format name for tabular imports (bypasses
                 auto-detection).
             overrides: Field→column overrides for tabular imports.
-            sign: Sign convention override for tabular imports.
+            sign: Sign convention override. Tabular: overrides the detected
+                format. PDF: overrules the credit-card detector (the in-band
+                recovery from a false-positive inversion).
             date_format: Date format override for tabular imports.
             number_format: Number format override for tabular imports.
             save_format: Auto-save detected format for future imports.
@@ -2801,7 +2958,9 @@ class ImportService:
             no_size_limit: Override file size limit for tabular imports.
             auto_accept: Auto-accept the top fuzzy account match without prompting
                 (CLI: --yes / -y). Defaults to False.
-            confirm: Accept the proposed mapping without further prompting.
+            confirm: Ratify the system's proposal without further prompting —
+                the detected column mapping (tabular) or the credit-card sign
+                inversion (PDF).
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
             account_bindings: Map of source_account_key -> canonical account_id
                 (adopt) or "new" (mint standalone), ratifying the account-binding
@@ -2943,6 +3102,8 @@ class ImportService:
                 save_format=save_format,
                 account_id=account_id,
                 actor_kind=actor_kind,
+                sign=sign,
+                confirm=confirm,
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 

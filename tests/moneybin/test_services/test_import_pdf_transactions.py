@@ -6,10 +6,14 @@ else falls back to the Phase 1 raw.pdf_seeds path.
 
 Mock strategy: stub PDFExtractor.extract() to return a hand-built PdfDocument
 (no real PDF parsing), so the routing pipeline exercises end-to-end without I/O.
+The sign-convention gate tests are the exception — they import committed
+statement PDFs through the real extractor, because the evidence the gate acts on
+is text the extractor has to actually surface.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -19,7 +23,15 @@ import pytest
 from moneybin.database import Database
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+from moneybin.services.import_confirmation import (
+    ImportConfirmationRequiredError,
+    SignConventionProposal,
+)
 from moneybin.services.import_service import ImportService
+from tests.moneybin.pdf_statement_fixtures import (
+    write_card_statement_pdf,
+    write_checking_statement_pdf,
+)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures / helpers (mirrors test_routing.py)
@@ -698,3 +710,122 @@ def test_pdf_scanned_no_text_layer_raises_unsupported(
         "WHERE schema_name = 'raw' AND view_name LIKE 'pdf_%'"
     ).fetchone()
     assert views is not None and views[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests 13-17: the sign-convention gate (auto-derived inversion needs a confirm)
+# ---------------------------------------------------------------------------
+
+
+def _amounts(db: Database) -> list[Decimal]:
+    return sorted(
+        r[0]
+        for r in db.execute(
+            "SELECT amount FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+        ).fetchall()
+    )
+
+
+def _row_count(db: Database) -> int:
+    row = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+@pytest.mark.integration
+def test_card_statement_import_requires_confirmation(
+    db: Database, tmp_path: Path
+) -> None:
+    """An auto-derived inversion never lands rows unratified."""
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(pdf, refresh=False)
+
+    outcome = exc.value.outcome
+    assert outcome.channel == "pdf"
+    assert outcome.reason == "sign_convention"
+    proposed = outcome.proposed
+    assert isinstance(proposed, SignConventionProposal)
+    assert proposed.sign_convention == "negative_is_income"
+    assert "minimum payment" in proposed.evidence
+    # The samples show the flip concretely: printed +150.00 → recorded -150.00.
+    assert proposed.sample_rows
+    assert proposed.sample_rows[0]["as_printed"] == "150.00"
+    assert proposed.sample_rows[0]["as_recorded"] == "-150.00"
+    # `medium`, never `high`: `high` is the tier an agent may self-accept at.
+    assert outcome.confidence.tier == "medium"
+
+    assert _row_count(db) == 0
+
+
+@pytest.mark.integration
+def test_confirmed_card_statement_records_charges_as_expenses(
+    db: Database, tmp_path: Path
+) -> None:
+    """The whole point: a +150 charge is an EXPENSE; a -50 payment is a credit."""
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    svc.import_file(pdf, refresh=False, confirm=True)
+
+    assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]
+
+
+@pytest.mark.integration
+def test_sign_override_overrules_the_card_detector(
+    db: Database, tmp_path: Path
+) -> None:
+    """A false-positive detection must be recoverable in-band, not by editing the PDF."""
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    svc.import_file(pdf, refresh=False, sign="negative_is_expense")
+
+    assert _amounts(db) == [Decimal("-50.00"), Decimal("150.00")]  # as printed
+
+
+@pytest.mark.integration
+def test_replayed_card_format_needs_no_second_confirmation(
+    db: Database, tmp_path: Path
+) -> None:
+    """The confirm is once per FORMAT, not once per statement."""
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        confirm=True,
+        save_format=True,
+    )
+
+    # Second month, same layout -> replays the saved recipe, no confirm.
+    svc.import_file(write_card_statement_pdf(tmp_path, month="02"), refresh=False)
+
+    assert _row_count(db) == 4
+    # Both statements inverted — every charge an expense, every payment a credit.
+    assert _amounts(db) == [
+        Decimal("-150.00"),
+        Decimal("-150.00"),
+        Decimal("50.00"),
+        Decimal("50.00"),
+    ]
+
+
+@pytest.mark.integration
+def test_checking_statement_imports_without_a_sign_confirm(
+    db: Database, tmp_path: Path
+) -> None:
+    """The gate's precision guard: the card twin with no disclosures never asks.
+
+    Same issuer, same columns, same balances, same two amounts — only the
+    disclosures differ. A gate that fired here would invert a real checking
+    ledger (every paycheck an expense), which is the cost this test pins down.
+    """
+    pdf = write_checking_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    result = svc.import_file(pdf, refresh=False)
+
+    assert result.transactions == 2
+    assert _amounts(db) == [Decimal("-50.00"), Decimal("150.00")]  # as printed

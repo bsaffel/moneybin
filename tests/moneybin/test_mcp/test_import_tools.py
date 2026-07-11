@@ -710,6 +710,30 @@ def _bridge_error(reason: str = "unknown_layout") -> ImportConfirmationRequiredE
     return ImportConfirmationRequiredError(outcome)
 
 
+def _sign_error() -> ImportConfirmationRequiredError:
+    """A confirmation error whose proposal is a PDF SignConventionProposal."""
+    from moneybin.services.import_confirmation import SignConventionProposal
+
+    outcome = ConfirmationRequired(
+        channel="pdf",
+        confidence=_make_confidence(score=0.75, tier="medium"),
+        proposed=SignConventionProposal(
+            sign_convention="negative_is_income",
+            evidence=("minimum payment", "credit limit"),
+            sample_rows=[
+                {
+                    "description": "COFFEE SHOP",
+                    "as_printed": "150.00",
+                    "as_recorded": "-150.00",
+                }
+            ],
+        ),
+        reason="sign_convention",
+        error_message="This looks like a credit-card statement.",
+    )
+    return ImportConfirmationRequiredError(outcome)
+
+
 class TestImportFilesPdfBridge:
     """import_files surfaces the bridge payload when a PDF escalates."""
 
@@ -881,6 +905,47 @@ class TestImportPreviewPdf:
         assert data["status"] == "confirmation_required"
         assert data["channel"] == "pdf"
         assert data["bridge_payload"]["request_kind"] == "propose_recipe"
+
+    async def test_pdf_sign_confirmation_returns_proposal(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A card statement surfaces the inversion, not a RuntimeError.
+
+        The handler used to reject any non-BridgePayload proposal outright, so the
+        moment pdf_preview could raise a sign confirmation, every credit-card
+        statement previewed as a server error instead of the confirm.
+        """
+        pdf = tmp_path / "statements" / "chase_card.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.pdf_preview.side_effect = _sign_error()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_preview(file_path=str(pdf))
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["channel"] == "pdf"
+        assert data["reason"] == "sign_convention"
+        assert data["sign_convention"] == "negative_is_income"
+        assert data["sign_evidence"] == ["minimum payment", "credit limit"]
+        assert data["sign_sample_rows"][0]["as_printed"] == "150.00"
+        assert data["sign_sample_rows"][0]["as_recorded"] == "-150.00"
+
+        # The agent is told both branches — and told not to pick one itself.
+        actions = " ".join(result.actions)
+        assert "accept=True" in actions
+        assert "sign='negative_is_expense'" in actions
+        assert "Do not self-accept" in actions
 
 
 class TestImportConfirmBridge:

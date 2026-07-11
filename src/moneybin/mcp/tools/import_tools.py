@@ -128,6 +128,27 @@ def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
     )
 
 
+def _sign_confirm_actions(file_path: str, error_message: str) -> list[str]:
+    """The agent-facing hints for a PDF sign-convention confirmation_required.
+
+    Both branches are named explicitly because the agent must NOT pick one on its
+    own: ratifying inverts every amount in the statement, and getting it wrong
+    corrupts the ledger on this import and on every future replay of the format.
+    Show the user `sign_sample_rows` (printed vs recorded) and let them decide.
+    """
+    return [
+        error_message,
+        "Show the user sign_sample_rows — what the statement printed vs what "
+        "MoneyBin would record — and have THEM confirm the inversion. Do not "
+        "self-accept: a wrong flip silently reverses every amount.",
+        f"Once the user confirms it is a credit card, call import_confirm("
+        f"file_path={file_path!r}, accept=True) to import with charges recorded "
+        "as expenses.",
+        f"If it is NOT a credit card, call import_confirm(file_path={file_path!r}, "
+        "sign='negative_is_expense') to import the amounts exactly as printed.",
+    ]
+
+
 @mcp_tool(read_only=False, idempotent=False)
 def import_files(
     paths: list[str], refresh: bool = True, force: bool = False
@@ -427,15 +448,18 @@ def import_files(
 
 
 def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
-    """Preview a PDF via ImportService.pdf_preview (deterministic or bridge).
+    """Preview a PDF via ImportService.pdf_preview (deterministic, bridge, or sign).
 
-    Returns a deterministic preview dict, or — when the layout is bridge-
-    eligible — a ``confirmation_required`` envelope carrying the bridge payload
-    (and writing the Req 14 egress audit row, so a writable DB is required).
+    Returns a deterministic preview dict, or a ``confirmation_required`` envelope
+    — carrying the bridge payload when the layout is bridge-eligible (and writing
+    the Req 14 egress audit row, so a writable DB is required), or the proposed
+    sign inversion when the statement names itself a credit card.
     """
     from moneybin.services.import_confirmation import (
         BridgePayload,
         ImportConfirmationRequiredError,
+        SignConventionProposal,
+        confirmation_payload_dict,
     )
     from moneybin.services.import_service import ImportService
 
@@ -443,16 +467,38 @@ def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
         with get_database(read_only=False) as db:
             preview = ImportService(db).pdf_preview(path)
     except ImportConfirmationRequiredError as e:
-        # pdf_preview only escalates via _raise_pdf_bridge_escalation, which
+        proposed = e.outcome.proposed
+        if isinstance(proposed, SignConventionProposal):
+            # A credit-card statement: every amount's sign is about to be
+            # inverted. Serialize the proposal (evidence + printed-vs-recorded
+            # samples) so the agent can show the user what the flip does before
+            # ratifying it.
+            payload = confirmation_payload_dict(e.outcome)
+            return build_envelope(
+                sensitivity="medium",
+                data={
+                    "status": "confirmation_required",
+                    "channel": e.outcome.channel,
+                    "file": path.name,
+                    "tier": e.outcome.confidence.tier,
+                    "score": e.outcome.confidence.score,
+                    "reason": e.outcome.reason,
+                    "error_message": e.outcome.error_message,
+                    "sign_convention": payload["sign_convention"],
+                    "sign_evidence": payload["sign_evidence"],
+                    "sign_sample_rows": payload["sign_sample_rows"],
+                },
+                actions=_sign_confirm_actions(str(path), e.outcome.error_message),
+            )
+        # Otherwise pdf_preview escalated via _raise_pdf_bridge_escalation, which
         # always constructs a BridgePayload — so proposed is never the tabular
         # ProposedMapping here. Fail loudly on a contract break rather than carry
         # a dead `else None` that would emit bridge_payload=null while actions[]
         # still tells the agent to "Read bridge_payload".
-        proposed = e.outcome.proposed
         if not isinstance(proposed, BridgePayload):
             raise RuntimeError(
-                "pdf_preview escalation must carry a BridgePayload, "
-                f"got {type(proposed).__name__}"
+                "pdf_preview escalation must carry a BridgePayload or a "
+                f"SignConventionProposal, got {type(proposed).__name__}"
             ) from e
         bridge_payload = proposed.payload
         return build_envelope(
