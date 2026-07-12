@@ -954,3 +954,54 @@ def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -
     # The human's informed override, after seeing estimated_match_count.
     allowed = service.accept(accept=[pid], reject=[], actor="test", allow_broad=True)
     assert allowed.approved == 1
+
+
+def test_estimated_match_count_agrees_with_what_approval_categorizes(
+    real_db: Database,
+) -> None:
+    """The blast radius shown to the reviewer is the blast radius they get (F17).
+
+    If this drifts, estimated_match_count becomes a decorative number and the
+    whole guard is theater — the reviewer would be consenting to the wrong
+    thing. Do NOT weaken this assertion or adjust it to match observed
+    behavior: a failure here means ``_pattern_hits`` (the estimator) has
+    diverged from ``CategorizationService.match_first_rule`` (the matcher),
+    which is the exact bug this test exists to catch.
+    """
+    service = AutoRuleService(real_db)
+
+    for i in range(25):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -20.0, 'AMZN MKTP US*1A2B3C', 'csv')",
+            [f"t_{i}"],
+        )
+    for i in range(5):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -30.0, 'WHOLE FOODS MARKET', 'csv')",
+            [f"o_{i}"],
+        )
+
+    pid = service._proposed.insert(
+        merchant_pattern="AMZN",
+        match_type="contains",
+        category="Shopping",
+        subcategory=None,
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    estimated = service._estimate_match_counts(service.list_pending_proposals())[pid]
+    # allow_broad=True: 25 matches on 1 trigger clears the broad floor/ratio
+    # (20 floor, 10x factor) — this is the human's informed override after
+    # seeing estimated_match_count, not a bypass of the guard under test.
+    approved = service.approve([pid], actor="test", allow_broad=True)
+
+    assert estimated == 25
+    assert approved.newly_categorized == estimated
