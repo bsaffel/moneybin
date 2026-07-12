@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios update-test-durations claude-mcp
+.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios update-test-durations claude-mcp audit
 
 # Default target
 .DEFAULT_GOAL := help
@@ -194,6 +194,35 @@ type-check: venv ## Development: Type check with pyright
 
 check: format lint type-check ## Development: Run all code quality checks
 	@echo "$(GREEN)✅ All code quality checks complete$(RESET)"
+
+# The single home for the pip-audit invocation: both the Security workflow and
+# the Release pipeline call `make audit`, so the accepted-vuln ignore list lives
+# here once and cannot drift. `uv run` auto-syncs, so this stands alone in CI.
+#
+# Accepted, time-boxed starlette ignores — all share one root cause and one
+# exposure rationale. Root cause: the fixes are all on the starlette 1.x
+# line, but sqlmesh's [lsp] extra hard-pins fastapi==0.120.1 (latest sqlmesh
+# 0.235.4 included), which requires starlette<0.50 — so any starlette>=1.x is
+# unreachable while we keep the SQLMesh editor LSP. (Latest fastapi loosened
+# its starlette cap, but sqlmesh's exact pin blocks adopting it.) Exposure:
+# all are HTTP-server-surface vulns; MoneyBin runs stdio MCP with no live HTTP
+# listener and uses no StaticFiles / HTTPEndpoint / request.form() /
+# request.url.hostname, so current exposure is nil:
+#   PYSEC-2026-161 (fix 1.0.1)  Host-header validation bypass
+#   PYSEC-2026-248 (fix 1.3.0)  request.url host spoofing (reads .url.hostname)
+#   PYSEC-2026-249 (fix 1.3.1)  urlencoded form limits silently ignored
+#   CVE-2026-48817 (fix 1.1.0)  HTTPEndpoint method dispatch via getattr
+#   CVE-2026-48818 (fix 1.1.0)  StaticFiles UNC SMB SSRF — Windows-only;
+#                               MoneyBin targets macOS/Linux only
+# REMOVE these ignores and bump starlette to the latest fix line before the
+# M3D Streamable-HTTP transport ships (tracked as a gated follow-up).
+audit: ## Development: Audit resolved dependencies for known CVEs (pip-audit)
+	@uv run pip-audit --skip-editable \
+		--ignore-vuln PYSEC-2026-161 \
+		--ignore-vuln PYSEC-2026-248 \
+		--ignore-vuln PYSEC-2026-249 \
+		--ignore-vuln CVE-2026-48817 \
+		--ignore-vuln CVE-2026-48818
 
 claude-mcp: venv ## Development: Launch Claude Code with the MoneyBin MCP server (PROFILE=name to override active profile)
 	@exec ./scripts/claude-mcp.sh $(PROFILE)
