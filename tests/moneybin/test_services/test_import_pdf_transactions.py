@@ -1240,3 +1240,50 @@ def test_checking_statement_leaves_account_type_null(
     ).fetchone()
     assert row is not None
     assert row[0] is None
+
+
+# ---------------------------------------------------------------------------
+# Test 20: transaction ids are stable across sign conventions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_transaction_ids_are_stable_across_sign_conventions(
+    db: Database, tmp_path: Path
+) -> None:
+    """Flipping the convention must NOT rotate ids — else a re-import double-counts.
+
+    Ids are keyed on the RAW pre-normalization ``amount``/``debit``/``credit``
+    cell values (import_service.py, ``content_key`` in ``_import_pdf_transactions``
+    around line 2768-2779) — never on the sign-normalized ``amount`` column a
+    convention flip changes. ``save_format=False`` on both calls keeps each
+    import first-contact: the first asserts ``negative_is_expense`` via an
+    explicit override, the second confirms the card detector's own
+    ``negative_is_income`` proposal — two genuinely different conventions, not
+    one convention replayed twice. (Without ``save_format=False`` the first
+    call's ratified override would persist to ``app.pdf_formats`` and the
+    second call would replay it unchanged, silently testing one convention
+    against itself.)
+    """
+    svc = ImportService(db)
+    pdf = write_card_statement_pdf(tmp_path)
+
+    svc.import_file(pdf, refresh=False, sign="negative_is_expense", save_format=False)
+    as_expense = {
+        r[0]
+        for r in db.execute(
+            "SELECT transaction_id FROM raw.tabular_transactions"
+        ).fetchall()
+    }
+    db.execute("DELETE FROM raw.tabular_transactions")
+
+    svc.import_file(pdf, refresh=False, confirm=True, save_format=False)
+    as_income = {
+        r[0]
+        for r in db.execute(
+            "SELECT transaction_id FROM raw.tabular_transactions"
+        ).fetchall()
+    }
+
+    assert as_expense == as_income
+    assert len(as_expense) == 2  # sanity: the fixture's two rows, not an empty set
