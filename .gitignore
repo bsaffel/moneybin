@@ -74,6 +74,10 @@ logs/
 src/moneybin/sqlmesh/.cache/
 src/moneybin/sqlmesh/logs/
 
+# Profile state materialized inside the package dir when MONEYBIN_HOME resolves
+# in-tree. Never shipped; tests/e2e/test_wheel_packaging.py would false-fail on it.
+src/moneybin/profiles/
+
 # Environment variables and secrets
 .env
 .env.local
