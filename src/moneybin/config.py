@@ -598,6 +598,36 @@ class CategorizationSettings(BaseModel):
             "Caps memory and response size for unbounded queues."
         ),
     )
+    auto_rule_min_contains_length: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Minimum length for a machine-invented 'contains' pattern. Shorter "
+            "patterns are proposed as 'exact' instead: a 2-char contains rule "
+            "(e.g. 'TO', from a truncated 'TRANSFER TO ...') matches COSTCO, "
+            "STORE, AUTO and TOTAL, so one accepted proposal silently "
+            "relabels the ledger."
+        ),
+    )
+    auto_rule_broad_match_min: int = Field(
+        default=20,
+        ge=1,
+        description=(
+            "Blast-radius floor. A proposal matching fewer transactions than "
+            "this is never flagged broad, however thin its evidence — keeps the "
+            "guard from crying wolf on small rules."
+        ),
+    )
+    auto_rule_broad_match_factor: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "A proposal is broad when its estimated match count exceeds "
+            "factor x trigger_count — i.e. its blast radius is disproportionate "
+            "to the evidence behind it. Broad proposals cannot be accepted "
+            "without an explicit allow_broad override."
+        ),
+    )
     auto_rule_backfill_scan_cap: int = Field(
         default=50_000,
         ge=1,
