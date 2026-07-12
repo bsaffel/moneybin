@@ -1,4 +1,9 @@
-"""Staging views for Plaid investments: resolution, normalization, taxonomy."""
+"""Staging views for Plaid investments: resolution, normalization, taxonomy.
+
+Also covers the core boundary those views feed: the three-branch union into
+``core.fct_investment_transactions`` and the non-authoritative
+``provider_reported_*`` reconciliation columns on ``core.dim_holdings``.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,11 @@ import pytest
 from moneybin.database import Database, sqlmesh_context
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services.investment_service import (
+    _PIPELINE_EMITTED_SUBTYPES,  # pyright: ignore[reportPrivateUsage]
+    _SUBTYPE_VOCAB,  # pyright: ignore[reportPrivateUsage]
+    TAXONOMY,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -99,6 +109,34 @@ def _raw_investment_txn(db: Database, **overrides: object) -> None:
     }
     row.update(overrides)
     _insert(db, "raw.plaid_investment_transactions", row)
+
+
+def _manual_investment_txn(db: Database, **overrides: object) -> None:
+    """Seed one raw.manual_investment_transactions row (the ledger's other branch)."""
+    row: dict[str, object] = {
+        "source_transaction_id": "manual_1",
+        "import_id": "test_import",
+        "account_id": "acc_m",
+        "security_id": "sec_m",
+        "security_ref": None,
+        "type": "buy",
+        "subtype": None,
+        "event_group_id": None,
+        "trade_date": "2026-01-05",
+        "settlement_date": None,
+        "original_acquisition_date": None,
+        "quantity": "1",
+        "price": "100",
+        "amount": "-100.00",
+        "fees": None,
+        "currency_code": "USD",
+        "description": "Manual buy",
+        "created_at": "2026-01-05 00:00:00",
+        "created_by": "cli",
+        "investment_transaction_id": "manual_1",
+    }
+    row.update(overrides)
+    _insert(db, "raw.manual_investment_transactions", row)
 
 
 def _link_security(
@@ -1413,3 +1451,358 @@ def test_bootstrap_resolves_canonical_ids(db: Database) -> None:
         ("sec_a", "canonical_acc", "acc_1", "cat000000001"),
         ("sec_u", "canonical_acc", "acc_1", None),  # NULL, never 'sec_u'
     ]
+
+
+# ── core.fct_investment_transactions / core.dim_holdings ────────────────────
+#
+# The core boundary. Three staging branches union into the ledger (manual,
+# Plaid transactions, Plaid opening lots); dim_holdings carries the broker's
+# NON-AUTHORITATIVE claim beside MoneyBin's own lot-derived position.
+#
+# Every core test binds its securities: an unbound security stays NULL through
+# staging (deliberate — see test_stg_investment_txns_security_id_is_null_
+# passthrough), and the cost-basis engine skips NULL-security events, so no lot
+# (and therefore no dim_holdings row) would exist to assert on.
+
+
+@pytest.mark.slow
+def test_plaid_rows_flow_to_lots_and_gains_through_unchanged_engine(
+    db: Database,
+) -> None:
+    """Both Plaid branches reach the engine: bootstrap opens lots, the sell consumes them.
+
+    Also pins the sign end-to-end: Plaid's sell (amount -6000 = cash IN) must
+    land as POSITIVE proceeds. A second flip anywhere in core would make the
+    proceeds negative and the buy-side basis an income.
+    """
+    _raw_holding(db, security_id="sec_c", quantity="40", cost_basis="400.00")
+    _raw_lot(
+        db,
+        "sec_c",
+        0,
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="40",
+        cost_basis="400.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_c_sell",
+        security_id="sec_c",
+        transaction_date="2025-02-01",
+        quantity="-60",
+        amount="-6000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+    )
+    _link_security(db, "sec_c", "cat0000000c1")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    # bootstrap seeded (case C): the held position is anchored to the snapshot
+    holding = db.execute(
+        "SELECT quantity, cost_basis FROM core.dim_holdings "
+        "WHERE security_id = 'cat0000000c1'"
+    ).fetchall()
+    assert holding == [(Decimal("40"), Decimal("400.00"))]
+    # the in-window sell consumed the residual (unknown-basis) shares first
+    gain = db.execute(
+        "SELECT quantity, proceeds, basis_incomplete FROM core.fct_realized_gains "
+        "WHERE security_id = 'cat0000000c1'"
+    ).fetchall()
+    assert gain == [(Decimal("60"), Decimal("6000.00"), True)]
+
+
+@pytest.mark.slow
+def test_provider_columns_carried_and_manual_rows_null(db: Database) -> None:
+    """Provider fidelity reaches core; the manual branch carries NULLs, never blanks."""
+    _raw_investment_txn(db)  # plaid buy
+    _manual_investment_txn(db)
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = {
+        r[0]: (r[1], r[2], r[3], r[4])
+        for r in db.execute(
+            "SELECT investment_transaction_id, provider_type, provider_subtype, "
+            "source_type, amount FROM core.fct_investment_transactions"
+        ).fetchall()
+    }
+    assert rows["itx_1"] == ("buy", "buy", "plaid", Decimal("-2145.50"))
+    assert rows["manual_1"] == (None, None, "manual", Decimal("-100.00"))
+
+
+@pytest.mark.slow
+def test_dim_holdings_reconciles_against_newest_snapshot_only(db: Database) -> None:
+    _raw_investment_txn(db, transaction_date="2025-01-10")  # in-window buy of 10
+    _raw_holding(db, quantity="10", cost_basis="2000.00")  # first snapshot
+    _raw_holding(
+        db,
+        quantity="10",
+        cost_basis="1980.00",  # NEWEST snapshot
+        source_file="sync_j2",
+        extracted_at="2026-08-01 12:00:00",
+    )
+    _link_security(db, "sec_1", "cat000000001")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    row = db.execute(
+        """
+        SELECT quantity, cost_basis, provider_reported_quantity,
+               provider_reported_cost_basis, provider_reported_as_of::VARCHAR
+        FROM core.dim_holdings WHERE security_id = 'cat000000001'
+        """
+    ).fetchone()
+    # Ledger-derived figures come from the engine, never from the broker's claim.
+    assert row == (
+        Decimal("10"),
+        Decimal("2145.50"),
+        Decimal("10"),
+        Decimal("1980.00"),  # newest, not the first snapshot's 2000.00
+        "2026-08-01 12:00:00",
+    )
+
+
+@pytest.mark.slow
+def test_same_day_second_pull_wins_on_extracted_at_not_holdings_date(
+    db: Database,
+) -> None:
+    """Two pulls on one UTC day TIE on holdings_date — extracted_at breaks the tie.
+
+    holdings_date is extracted_at::DATE, so it cannot order same-day snapshots.
+    The newer snapshot is deliberately named EARLIER alphabetically, so a
+    `holdings_date DESC, source_file DESC` ordering would pick the stale one.
+    """
+    _raw_investment_txn(db, transaction_date="2025-01-10")
+    _raw_holding(db, quantity="10", cost_basis="2000.00", source_file="sync_b")
+    _raw_holding(
+        db,
+        quantity="10",
+        cost_basis="1975.00",  # same calendar day, six hours later
+        source_file="sync_a",
+        extracted_at="2026-07-08 18:00:00",
+    )
+    _link_security(db, "sec_1", "cat000000001")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    row = db.execute(
+        "SELECT provider_reported_cost_basis, provider_reported_as_of::VARCHAR "
+        "FROM core.dim_holdings WHERE security_id = 'cat000000001'"
+    ).fetchone()
+    assert row == (Decimal("1975.00"), "2026-07-08 18:00:00")
+
+
+@pytest.mark.slow
+def test_position_absent_from_newest_snapshot_shows_null(db: Database) -> None:
+    _raw_investment_txn(db, transaction_date="2025-01-10")
+    _raw_holding(db, quantity="10", cost_basis="1980.00")
+    # newest snapshot omits the position entirely (sold elsewhere / feed stopped)
+    _raw_holding(
+        db,
+        security_id="sec_other",
+        quantity="1",
+        cost_basis="1.00",
+        source_file="sync_j2",
+        extracted_at="2026-08-01 12:00:00",
+    )
+    _link_security(db, "sec_1", "cat000000001")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    row = db.execute(
+        """
+        SELECT quantity, provider_reported_quantity, provider_reported_cost_basis,
+               provider_reported_value, provider_reported_as_of
+        FROM core.dim_holdings WHERE security_id = 'cat000000001'
+        """
+    ).fetchone()
+    # NULL is itself the reconciliation signal — never a stale survivor.
+    assert row == (Decimal("10"), None, None, None, None)
+
+
+@pytest.mark.slow
+def test_two_institutions_holding_one_security_do_not_fan_out(db: Database) -> None:
+    """One canonical security at two items: two positions, each with its own claim.
+
+    prep.stg_plaid__securities emits one row per (security_id, source_origin), so
+    a join keyed on the canonical security_id alone would double every row. The
+    reconciliation join must key on (account_id, security_id) and aggregate to
+    exactly one provider-reported row per position.
+    """
+    for account, security, origin, qty, basis in (
+        ("acc_1", "sec_p", "item_1", "10", "1000.00"),
+        ("acc_2", "sec_q", "item_2", "40", "4000.00"),
+    ):
+        _raw_investment_txn(
+            db,
+            investment_transaction_id=f"itx_{security}",
+            account_id=account,
+            security_id=security,
+            source_origin=origin,
+            transaction_date="2025-01-10",
+            quantity=qty,
+            amount=basis,  # Plaid positive = cash out
+        )
+        _raw_holding(
+            db,
+            account_id=account,
+            security_id=security,
+            source_origin=origin,
+            quantity=qty,
+            cost_basis=basis,
+        )
+        # Both provider refs resolve to the SAME canonical security.
+        _link_security(db, security, "cat000000001")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = db.execute(
+        """
+        SELECT account_id, quantity, provider_reported_quantity,
+               provider_reported_cost_basis
+        FROM core.dim_holdings WHERE security_id = 'cat000000001' ORDER BY account_id
+        """
+    ).fetchall()
+    assert rows == [
+        ("acc_1", Decimal("10"), Decimal("10"), Decimal("1000.00")),
+        ("acc_2", Decimal("40"), Decimal("40"), Decimal("4000.00")),
+    ]
+
+
+@pytest.fixture
+def core_ledger(db: Database) -> Database:
+    """One plan over every branch that reaches (or is kept out of) the ledger."""
+    _raw_investment_txn(db, investment_transaction_id="itx_buy")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_div",
+        security_id=None,
+        quantity=None,
+        amount="-50.00",
+        investment_transaction_type="cash",
+        investment_transaction_subtype="qualified dividend",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_reinvest",
+        quantity="1",
+        investment_transaction_type="buy",
+        investment_transaction_subtype="dividend reinvestment",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_tax",
+        security_id=None,
+        quantity=None,
+        investment_transaction_type="fee",
+        investment_transaction_subtype="tax withheld",
+    )
+    # A real (in-window) ACATS transfer_in — the row a bootstrap must not be
+    # confused with.
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_acats",
+        security_id="sec_t",
+        transaction_date="2025-06-01",
+        quantity="5",
+        amount="0",
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="transfer",
+    )
+    # Review-routed: neither may reach the ledger.
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_split",
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="split",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_unmapped",
+        investment_transaction_subtype="quantum entanglement",
+    )
+    # A pre-window position with no acquiring transaction → bootstrap transfer_in.
+    _raw_holding(db, security_id="sec_boot", quantity="100", cost_basis="1000.00")
+    _raw_lot(
+        db,
+        "sec_boot",
+        0,
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="100",
+        cost_basis="1000.00",
+    )
+    _manual_investment_txn(db)
+    _link_security(db, "sec_1", "cat000000001")
+    _link_security(db, "sec_t", "cat000000002")
+    _link_security(db, "sec_boot", "cat000000003")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    return db
+
+
+@pytest.mark.slow
+def test_core_excludes_review_routed_rows(core_ledger: Database) -> None:
+    """`WHERE ledger_include` is load-bearing: review rows stay visible in staging only."""
+    ids = {
+        r[0]
+        for r in core_ledger.execute(
+            "SELECT investment_transaction_id FROM core.fct_investment_transactions"
+        ).fetchall()
+    }
+    assert {"itx_buy", "itx_div", "itx_reinvest", "itx_tax", "itx_acats"} <= ids
+    assert "manual_1" in ids
+    assert not {"itx_split", "itx_unmapped"} & ids
+    # ...but they are still staged for the doctor to review.
+    staged = core_ledger.execute(
+        "SELECT COUNT(*) FROM prep.stg_plaid__investment_transactions "
+        "WHERE NOT ledger_include"
+    ).fetchone()
+    assert staged is not None and staged[0] == 2
+
+
+@pytest.mark.slow
+def test_core_ledger_vocabulary_is_closed(core_ledger: Database) -> None:
+    """The ledger vocabulary at the CORE boundary is user-authorable ∪ pipeline-emitted.
+
+    Staging pins its own output (test_taxonomy_emits_only_closed_vocabulary); this
+    pins the union of every branch that reaches the public table, so a new value
+    cannot slip in through the bootstrap or the manual branch unnoticed.
+    """
+    closed = {
+        type_: _SUBTYPE_VOCAB.get(type_, frozenset())
+        | _PIPELINE_EMITTED_SUBTYPES.get(type_, frozenset())
+        for type_ in TAXONOMY
+    }
+    pairs = core_ledger.execute(
+        "SELECT DISTINCT type, subtype FROM core.fct_investment_transactions"
+    ).fetchall()
+    assert pairs, "fixture produced no ledger rows"
+    for type_, subtype in pairs:
+        assert type_ in TAXONOMY, f"leaked type {type_!r}"
+        assert subtype is None or subtype in closed[type_], (
+            f"leaked subtype {subtype!r} for type {type_!r}"
+        )
+    # Both halves of the superset are actually exercised by the fixture.
+    assert ("reinvest", "dividend") in pairs  # user-authorable
+    assert ("transfer_in", "opening_bootstrap") in pairs  # pipeline-emitted only
+
+
+@pytest.mark.slow
+def test_bootstrap_row_is_distinguishable_from_a_real_transfer_in(
+    core_ledger: Database,
+) -> None:
+    """A reconstruction must never read as an observation.
+
+    Both are type='transfer_in'; only the bootstrap carries
+    subtype='opening_bootstrap' (impossible to hand-author — it is not in the
+    user-authorable vocabulary), so the doctor and any consumer can tell the
+    reconstructed pre-window lot from a broker-reported ACATS transfer.
+    """
+    rows = {
+        r[0]: (r[1], r[2])
+        for r in core_ledger.execute(
+            "SELECT security_id, subtype, investment_transaction_id "
+            "FROM core.fct_investment_transactions WHERE type = 'transfer_in'"
+        ).fetchall()
+    }
+    acats_subtype, acats_id = rows["cat000000002"]
+    boot_subtype, boot_id = rows["cat000000003"]
+    assert acats_subtype is None
+    assert acats_id == "itx_acats"
+    assert boot_subtype == "opening_bootstrap"
+    assert boot_id.startswith("plaid_opening_")

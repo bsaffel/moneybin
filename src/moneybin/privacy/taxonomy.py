@@ -579,6 +579,14 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "cost_basis": DataClass.BALANCE,
         "average_cost": DataClass.BALANCE,
         "currency_code": DataClass.CURRENCY,
+        # The broker's non-authoritative claim about the same position. Being a
+        # reference rather than MoneyBin's own figure changes nothing about its
+        # sensitivity — it discloses the identical holding, so each column
+        # carries the same class as the ledger-derived column it mirrors.
+        "provider_reported_quantity": DataClass.TXN_AMOUNT,
+        "provider_reported_cost_basis": DataClass.BALANCE,
+        "provider_reported_value": DataClass.BALANCE,
+        "provider_reported_as_of": DataClass.TIMESTAMP_OBSERVABILITY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "dim_merchants"): {
@@ -662,6 +670,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "amount": DataClass.TXN_AMOUNT,
         "fees": DataClass.TXN_AMOUNT,
         "currency_code": DataClass.CURRENCY,
+        # The provider's original type/subtype strings, preserved for audit — a
+        # closed-vocabulary routing tag from the source, like `type`/`subtype`.
+        "provider_type": DataClass.TXN_TYPE,
+        "provider_subtype": DataClass.TXN_TYPE,
         "source_type": DataClass.TXN_TYPE,
         "source_origin": DataClass.TXN_TYPE,
         "description": DataClass.DESCRIPTION,
