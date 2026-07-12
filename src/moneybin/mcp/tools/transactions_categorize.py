@@ -443,7 +443,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         transactions_categorize_stats,
         "transactions_categorize_stats",
         "Get categorization coverage statistics: total, categorized, uncategorized, "
-        "percent, and breakdown by source. Pass include_auto=True to also include "
+        "percent, and breakdown by source. In by_source, 'rule' counts rows "
+        "categorized by a persisted rule and 'merchant_map' counts rows the "
+        "merchant-map engine categorized (both are stored as categorized_by='rule'; "
+        "the split is reporting-only, so 'rule' reconciles with the list from "
+        "transactions_categorize_rules). Pass include_auto=True to also include "
         "auto-rule health metrics (active rules, pending proposals, transactions "
         "categorized by auto-rules); the response data becomes "
         "{overall: {...}, auto: {...}} instead of the flat shape.",
@@ -453,7 +457,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         transactions_categorize_pending,
         "transactions_categorize_pending",
         "Find transactions that have not been categorized yet. "
-        "Excludes transfer pairs and archived accounts. "
+        "Excludes archived accounts and transfers whose pair has already been "
+        "matched. A transfer whose pair is NOT yet matched still appears here, "
+        "flagged pending_transfer_match=true — categorizing such a row "
+        "double-counts it against the eventual transfer pair, so resolve "
+        "matching first. "
         "sort='impact' ranks by ABS(amount)*age_days (largest-value/oldest first); "
         "sort='date' (default) orders by most recent first. "
         "Filter by min_amount (absolute value) and account (account_id or display_name). "
@@ -505,9 +513,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "transactions_categorize_auto_accept",
         "Batch accept/reject auto-rule proposals. Accepted "
         "proposals become active rules and immediately categorize "
-        "matching transactions. A proposal flagged is_broad (estimated_match_count far "
-        "exceeds its evidence) is skipped, not promoted, unless allow_broad=True — a broad "
-        "rule recategorizes many transactions at once. "
+        "matching transactions. Two kinds of proposal are skipped, not promoted, "
+        "unless allow_broad=True: one flagged is_broad (estimated_match_count far "
+        "exceeds its evidence — a broad rule recategorizes many transactions at "
+        "once), and one whose 'contains' pattern is too short to discriminate "
+        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL). "
         "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
     )
     register(
