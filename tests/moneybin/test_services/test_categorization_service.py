@@ -723,6 +723,35 @@ class TestGetCategorizationStats:
         assert stats["categorized"] == 1
         assert stats["by_user"] == 1
 
+    @pytest.mark.unit
+    def test_stats_splits_merchant_map_writes_from_rule_writes(
+        self, db: Database
+    ) -> None:
+        """by_source distinguishes the two engines that both persist categorized_by='rule' (F20).
+
+        apply_merchant_categories deliberately stamps merchant-map writes as
+        'rule' (orchestrator.py) so they don't pollute override-detection.
+        That's correct storage, but it made stats report "rule: 298" against
+        an empty rules[] list, which reads to an agent as data loss.
+        """
+        # A real rule write: rule_id set.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by, rule_id, merchant_id) "
+            "VALUES ('t_1', 'Shopping', 'rule', 'r_1', NULL)"
+        )
+        # A merchant-map write: merchant_id set, no rule_id.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by, rule_id, merchant_id) "
+            "VALUES ('t_2', 'Groceries', 'rule', NULL, 'm_1')"
+        )
+
+        stats = get_categorization_stats(db)
+
+        assert stats["by_rule"] == 1
+        assert stats["by_merchant_map"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Categories view (seeds + user, with overrides)

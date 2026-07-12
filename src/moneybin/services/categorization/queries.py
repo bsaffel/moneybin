@@ -325,15 +325,29 @@ class CategorizationQueries:
             "pct_categorized": pct,
         }
 
-        # Breakdown by source
+        # Breakdown by source. `categorized_by='rule'` is written by BOTH the
+        # rule engine and apply_merchant_categories — the latter deliberately
+        # stamps the 'rule' method rather than the merchant's authoring
+        # provenance, so machine writes don't leak into the auto-rule
+        # override-detection query (which counts 'user'/'ai' as human
+        # corrections). Correct storage, but it made a lone `by_rule: 298`
+        # unreconcilable with an empty rules[] list. Split them for reporting
+        # using columns already on the row — the persisted value is untouched.
         try:
             source_rows = self._db.execute(
                 f"""
-                SELECT categorized_by, COUNT(*) AS cnt
+                SELECT
+                  CASE
+                    WHEN categorized_by = 'rule' AND rule_id IS NULL
+                         AND merchant_id IS NOT NULL
+                    THEN 'merchant_map'
+                    ELSE categorized_by
+                  END AS source,
+                  COUNT(*) AS cnt
                 FROM {TRANSACTION_CATEGORIES.full_name}
-                GROUP BY categorized_by
+                GROUP BY 1
                 ORDER BY cnt DESC
-                """
+                """  # noqa: S608  # TableRef constant
             ).fetchall()
             for source, count in source_rows:
                 stats[f"by_{source}"] = count
