@@ -85,12 +85,11 @@ bind fails `listen EPERM`, so the server must run **unsandboxed**
 
 ## Guidelines & other original content (NOT synced by the converter)
 
-The Claude Design project has 36 cards; the converter carries only the
-**7 components**. The remaining **29** are `@dsCard`-marked HTML specimen cards
-outside the converter's component scope (28 guidelines + the dashboard UI-kit
-below):
+The converter carries only the **9 components**. The remaining **30** cards are
+`@dsCard`-marked HTML specimens outside the converter's component scope
+(29 guidelines + the dashboard UI-kit below):
 
-- **28 `guidelines/*.html`** (Colors ×5, Type ×3, Shape ×3, Brand ×2, Charts ×12,
+- **29 `guidelines/*.html`** (Colors ×5, Type ×3, Shape ×3, Brand ×3, Charts ×12,
   Iconography, Voice ×2). The converter's `guidelinesGlob` is **`.md`-only**
   (it skips `.html`), so these must be staged + uploaded by hand:
   1. Post-build: `cp guidelines/*.html ds-bundle/guidelines/` (they reference
@@ -105,9 +104,26 @@ below):
   `ui_kits/web_app/` depth). Synced via the same hand-upload path as guidelines
   (`ui_kits/**` added to the plan writes; `cp ui_kits/web_app/index.html
   ds-bundle/ui_kits/web_app/` post-build, then upload).
-- **`MoneyBin Brand Kit.dc.html`** — the master authoring doc in Design Composer
-  (`<x-dc>` + `support.js`) format, not a standard `@dsCard` card. Source of
-  truth the rest was extracted from; not a sync target.
+## No CDN fetches — don't reintroduce them
+
+`.dc.html` authoring docs and the old hand-authored `components/*/*.card.html`
+specimen cards were **removed** from this tree. Both pulled React / ReactDOM /
+Babel from `unpkg.com` (and the brand kit also pulled fonts from
+`fonts.googleapis.com`), which the no-telemetry rule forbids — `tokens/typography.css`
+says so in as many words. They also rendered wrong: the brand kit fell back to
+**Times**, because the fonts it asked for never loaded.
+
+Neither was a sync target — the published mirror contains no `.card.html`, no
+`support.js`, and no `.dc.html`. The component cards the Design System pane shows
+are the converter's **generated** previews, which load React from the local
+`_vendor/` and a precompiled `_preview/<Name>.js` (no Babel, no network). That is
+the sanctioned pattern.
+
+So: **anything in this tree must render offline from local assets.** If you need a
+live-component specimen, add a `.design-sync/previews/<Name>.tsx` and let the
+converter generate it — never hand-author a card that `<script src>`s a CDN. The
+argued `.dc.html` rationale docs stay in the claude.ai Design Kit project, where
+the design runtime that renders them actually exists.
 
 ## Re-sync risks
 

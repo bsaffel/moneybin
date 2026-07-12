@@ -6,7 +6,7 @@
 
 **Signature element: trust as furniture.** Every number can show its work — brass `SQL` chips on every widget, dotted underlines on auditable figures, a persistent vault status bar in the app chrome. Trust is a UI affordance, not a marketing claim.
 
-Sources: authored from scratch in this project (no external Figma/codebase). The full argued spec — with the hi-fi dashboard mockup and the design rationale — is `MoneyBin Brand Kit.dc.html` at the design-system root.
+Sources: authored from scratch in this project (no external Figma/codebase). The argued spec behind these rules — the hi-fi dashboard mockup and the design rationale — lives in the claude.ai **Design Kit** project, where it renders against the design runtime. This tree carries the binding artifacts: tokens, components, specimen cards, and `charts.md`.
 
 ## Content fundamentals
 - Numbers first, verbs second: "Synced 4 min ago · 214 new transactions".
@@ -28,7 +28,7 @@ Sources: authored from scratch in this project (no external Figma/codebase). The
 - **Charts (BI-grade):** `charts.md` is the binding grammar (it wins over any other chart section here), demonstrated by the 12 `guidelines/charts-*.html` specimens. In brief: no axis strokes, horizontal hairlines max 5, mono 11px labels; LINEAR interpolation only — gaps never bridged (stepped carry-forward is the honest form for balance data); single series brass, multi `chart-1..8` max 6, and a category keeps its hue in every view; area fills ≤8%; off-scale zero disclosed on the chart. Provenance is a **three-rung ladder**: SQL chip on every widget → a global **deep-audit strip** (one toggle adds a mono `AUDIT` line — n=, scale/clip, exclusions — to every widget) → **pinned tooltips** snapping to real data points. Signs print in the glyph on chart labels and legends too (sankey, donut, stacked bars), not only in `Amount`.
 
 ## Iconography
-Custom-drawn line icons: 20×20 grid, 1.5px stroke, squared caps, no fills, one weight, literal metaphors (see `guidelines/icons-grammar.html` — copy these SVGs). The AI/ask surface is the terminal caret `▸_`, never ✨. Unicode used sparingly as glyphs (⌘K, ⇄ transfers, ▲▼ deltas, ● status). No icon font; inline SVG. No emoji ever. Banned metaphors: coins raining, sparkles, magic wands. If a stock icon is unavoidable, restroke to spec (nearest CDN match: Lucide at 1.5px, squared caps where possible — flag any substitution).
+`components/core/Icon.jsx` is the single icon source — 19 custom-drawn glyphs (`guidelines/icons-grammar.html` is the specimen card). Grammar: 20×20 grid, 1.5px stroke, squared caps, no fills, one weight, literal metaphors, `currentColor`. Sizes: 16px in controls and table rows, 20px in nav rails. An icon never appears without a visible label except in a collapsed rail or an icon-only control, where `title` is mandatory. Brass only when the element itself is active/brass — never decoration. **New glyphs are a system change** — draw to the grammar and add them to `Icon.jsx`, never an inline one-off SVG in a screen; `Icon.jsx` also carries a reserve set drawn ahead of need, promoted into the typed vocabulary only when a shipping surface needs it. The AI/ask surface is the terminal caret `▸_`, never ✨. Unicode used sparingly as glyphs (⌘K, ⇄ transfers, ▲▼ deltas, ● status). No icon font. No emoji ever. Banned metaphors: coins raining, sparkles, magic wands. If a stock icon is unavoidable, restroke to spec (nearest CDN match: Lucide at 1.5px, squared caps where possible — flag any substitution).
 
 **Logo:** the "coin & slot" mark — solid coin poised over a slot cut clean through a rounded-square plate (`components/brand/Mark.jsx`). Wordmark: "MoneyBin" Newsreader semibold — the `components/brand/Wordmark.jsx` lock-up composes the Mark, with the optical baseline nudge and brass on "Bin" baked in. **Duck-key** (`components/brand/DuckKey.jsx`): reusable glyph — the negative of the "bill-hole" keyhole; mono in app chrome, full-color eyed in docs/marketing; never rotated, bill always right. **Mascot ("Bill")** is docs/CLI only, never app chrome; NEVER a duck swimming/splashing in coins, no coin piles, no top hat/cane/spats (Disney IP adjacency).
 
@@ -36,9 +36,8 @@ Custom-drawn line icons: 20×20 grid, 1.5px stroke, squared caps, no fills, one 
 - `styles.css` → `tokens/` (colors, typography, shape) — global CSS entry
 - `guidelines/` — specimen cards (Colors ×5, Type ×3, Shape ×3, Brand ×3, Charts ×12, Voice ×2, Iconography)
 - `charts.md` — binding chart grammar (prose companion to the 12 `guidelines/charts-*.html` specimens)
-- `components/core/` — Button, Chip · `components/data/` — Amount, WidgetCard · `components/chrome/` — VaultStatusBar · `components/brand/` — Mark, DuckKey, Wordmark
+- `components/core/` — Button, Chip, Icon · `components/data/` — Amount, WidgetCard · `components/chrome/` — VaultStatusBar · `components/brand/` — Mark, DuckKey, Wordmark
 - `ui_kits/web_app/` — dashboard home (static reference extraction of the brand kit §09)
-- `MoneyBin Brand Kit.dc.html` — the full argued spec (sections 01–10 incl. rationale)
 
 ### Intentional additions
 - `Amount` — not a visual primitive in a source kit, but the money-formatting hard rules (mono, tabular, redundant sign) need a single enforcement point.
