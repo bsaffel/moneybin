@@ -117,6 +117,10 @@ class PendingTxnRow:
     # RECORD_ID (spec D6): opaque canonical surrogate, not PII; passes through.
     account_id: Annotated[str | None, DataClass.RECORD_ID]
     age_days: Annotated[int | None, DataClass.AGGREGATE]
+    # True when an unresolved (pending, unreversed) app.match_decisions row
+    # references this transaction (F19) — categorizing it would double-count
+    # against the eventual transfer pair once matching resolves it.
+    pending_transfer_match: Annotated[bool, DataClass.AGGREGATE]
 
 
 @dataclass(frozen=True, slots=True)

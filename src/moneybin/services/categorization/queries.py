@@ -35,6 +35,8 @@ from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
+    INT_TRANSACTIONS_MATCHED,
+    MATCH_DECISIONS,
     MERCHANTS,
     REPORTS_UNCATEGORIZED_QUEUE,
     STG_PLAID_TRANSACTIONS,
@@ -270,7 +272,63 @@ class CategorizationQueries:
                 details={"missing_object": REPORTS_UNCATEGORIZED_QUEUE.full_name},
             ) from e
 
-        return [dict(zip(columns, row, strict=False)) for row in rows]
+        pending_matches = self._transactions_with_pending_matches()
+        result_rows = [dict(zip(columns, row, strict=False)) for row in rows]
+        for row in result_rows:
+            row["pending_transfer_match"] = row["transaction_id"] in pending_matches
+        return result_rows
+
+    def _transactions_with_pending_matches(self) -> set[str]:
+        """Return gold transaction_ids that have an unresolved match decision.
+
+        ``app.match_decisions`` keys on ``(source_type, source_transaction_id)``,
+        not the gold ``transaction_id`` the queue reports, so this maps through
+        ``prep.int_transactions__matched`` — the layer that assigns the gold id
+        to each source member.
+
+        Materialized as a set in ONE query, then applied in memory. Do NOT turn
+        this into a correlated EXISTS against the queue view: correlating
+        against the fct_transactions merge pipeline per row is what made
+        system_doctor hang for >73s in production (F14).
+
+        Joins on ``account_id`` in addition to ``(source_type,
+        source_transaction_id)`` — the matched model's own header comment
+        establishes that pair as node identity *scoped by account_id*
+        (``source_transaction_id`` is only guaranteed unique within an
+        account, per ``identifiers.md``); dropping the scope could join a
+        pending match on one account's transaction to a different account's
+        gold id that happens to share the same source id. The "b" leg scopes
+        on ``COALESCE(account_id_b, account_id)`` — ``account_id_b`` is NULL
+        for same-account dedup matches and populated only for cross-account
+        transfers (``app_match_decisions.sql``), so a bare ``account_id``
+        would mis-scope every transfer's second leg.
+        """
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT m.transaction_id
+                FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                JOIN {MATCH_DECISIONS.full_name} AS d
+                  ON  d.source_type_a = m.source_type
+                  AND d.source_transaction_id_a = m.source_transaction_id
+                  AND d.account_id = m.account_id
+                WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
+
+                UNION
+
+                SELECT DISTINCT m.transaction_id
+                FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                JOIN {MATCH_DECISIONS.full_name} AS d
+                  ON  d.source_type_b = m.source_type
+                  AND d.source_transaction_id_b = m.source_transaction_id
+                  AND COALESCE(d.account_id_b, d.account_id) = m.account_id
+                WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
+                """  # noqa: S608  # TableRef constants + literal predicates, no user input
+            ).fetchall()
+        except duckdb.CatalogException:
+            # Pre-matching (no matches run yet) or pre-migration: nothing to flag.
+            return set()
+        return {str(r[0]) for r in rows}
 
     def count_uncategorized(self) -> int:
         """Return the number of transactions without a category assignment."""

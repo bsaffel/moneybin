@@ -165,16 +165,25 @@ def transactions_categorize_pending(
                 memo=None,
                 account_id=r.get("account_id"),
                 age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+                pending_transfer_match=bool(r.get("pending_transfer_match", False)),
             )
             for r in records
         ]
     )
+    actions = [
+        "Use transactions_categorize_commit to commit categorizations for these transactions",
+        "Use transactions_categorize_rules_create to set up automatic categorization",
+    ]
+    flagged = sum(1 for r in records if r.get("pending_transfer_match"))
+    if flagged:
+        actions.append(
+            f"{flagged} of these have an unresolved transfer match. Categorizing "
+            "a transfer leg double-counts it against the eventual pair — resolve "
+            "them first with transactions_matches_run / transactions_matches_set."
+        )
     return build_envelope(
         data=payload,
-        actions=[
-            "Use transactions_categorize_commit to commit categorizations for these transactions",
-            "Use transactions_categorize_rules_create to set up automatic categorization",
-        ],
+        actions=actions,
     )
 
 

@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 from moneybin.database import Database
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization import (
@@ -23,6 +24,7 @@ from moneybin.services.categorization import (
 from moneybin.services.categorization.assist import (
     _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
 )
+from moneybin.services.categorization.queries import CategorizationQueries
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
@@ -3437,3 +3439,126 @@ class TestCategorizePendingPlaidPass:
             "WHERE transaction_id = 't5'"
         ).fetchone()
         assert row == ("Food & Drink", "provider_native")
+
+
+# ---------------------------------------------------------------------------
+# list_uncategorized_transactions — pending transfer match flag (F19)
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_UNCATEGORIZED_QUEUE_MODEL_FILE = (
+    _REPO_ROOT / "sqlmesh" / "models" / "reports" / "uncategorized_queue.sql"
+)
+
+
+def _install_uncategorized_queue_view(db: Database) -> None:
+    """Materialize reports.uncategorized_queue from the real model SQL.
+
+    core.fct_transactions / core.dim_accounts already exist as physical
+    tables via the module's autouse create_core_tables() fixture; this
+    rebuilds the actual queue view on top of them from the shipped model
+    file so the test binds to the real column contract instead of a
+    hand-typed stub that could drift from it.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    raw = _UNCATEGORIZED_QUEUE_MODEL_FILE.read_text()
+    start = raw.index("MODEL")
+    end = raw.index(");", start) + 2
+    body = raw[end:].strip()
+    db.execute(f"CREATE OR REPLACE VIEW reports.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
+
+
+def _install_matched_stub(db: Database) -> None:
+    """Minimal prep.int_transactions__matched stub for the pending-match join.
+
+    Only the columns _transactions_with_pending_matches() reads (mirrors the
+    lightweight stub pattern in test_validation/test_evaluations.py) — the
+    real recursive matched-view logic is covered separately in
+    matching/test_int_matched_model.py.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS prep.int_transactions__matched (
+            transaction_id VARCHAR,
+            source_transaction_id VARCHAR,
+            source_type VARCHAR,
+            account_id VARCHAR
+        )
+    """)
+
+
+def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
+    db: Database,
+) -> None:
+    """An unmatched transfer leg is flagged, not silently categorizable (F19).
+
+    reports.uncategorized_queue filters `NOT is_transfer`, but is_transfer only
+    becomes true AFTER matching links the pair. Pre-matching, a "BILL PAY" leg is
+    the top-impact "uncategorized" row — and categorizing it double-counts
+    against the eventual transfer pair.
+
+    The flag is driven by real app.match_decisions state, not a description
+    heuristic: a BILL PAY to an EXTERNAL biller is a genuine expense, and a
+    heuristic would hide it.
+
+    Uses a genuinely cross-account transfer (t_transfer's leg is "b", in a
+    *different* account than the match decision's primary account_id) — the
+    realistic shape of a transfer between two of the user's own accounts, and
+    the branch that requires scoping the "b" leg on
+    ``COALESCE(account_id_b, account_id)`` rather than a bare ``account_id``.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_checking', 'Checking', false), "
+        "('acct_savings', 'Savings', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_transfer', 'acct_checking', '2026-06-01', -500.00, "
+        "'BILL PAY Chase - Freedom', 'ofx', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
+        "'GROCERY STORE', 'ofx', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "(transaction_id, source_transaction_id, source_type, account_id) "
+        "VALUES ('t_transfer', 'src_transfer_leg', 'ofx', 'acct_checking')"
+    )
+    # Register a PENDING, unreversed match referencing t_transfer's source id
+    # via the real audited writer — binds the test to the true column contract
+    # (source_transaction_id_a/source_type_a, not the gold transaction_id).
+    # t_transfer is the "b" leg, in a different account (account_id_b) than
+    # the match's primary account_id (the "a" leg's savings-account deposit).
+    MatchDecisionsRepo(db).insert(
+        match_id="m_pending1",
+        source_transaction_id_a="src_deposit_leg",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="src_transfer_leg",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id="acct_savings",
+        account_id_b="acct_checking",
+        confidence_score=0.9,
+        match_signals={},
+        match_type="transfer",
+        match_status="pending",
+        decided_by="auto",
+        actor="system",
+    )
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
+
+    assert rows is not None
+    flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
+    assert flagged["t_transfer"] is True
+    assert flagged["t_expense"] is False
