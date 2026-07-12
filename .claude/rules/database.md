@@ -83,7 +83,9 @@ Precedent: `core.dim_accounts` joins `app.account_settings` (per
 
 **Always use `sqlmesh_context()`** from `database.py`, never subprocess or raw `sqlmesh.Context()`. Subprocess calls break profile isolation — child processes read `~/.moneybin/config.yaml` and connect to the wrong database. Since SQLMesh's DuckDB config doesn't support `ENCRYPTION_KEY`, `sqlmesh_context()` injects a pre-connected encrypted adapter into `BaseDuckDBConnectionConfig._data_file_to_adapter` keyed by db path — SQLMesh reuses it instead of opening its own unencrypted connection. See `sqlmesh_context()` in `database.py` and `migrate_sqlmesh_state()` in `database.py`.
 
-**httpfs is not needed.** The DuckDB connection inside `sqlmesh_context()` does not load the `httpfs` extension. All SQLMesh models read from local DuckDB tables — no models use remote file access (`read_parquet` over HTTP, `s3://`, etc.). If a future model requires remote access, `INSTALL httpfs; LOAD httpfs;` must be added to the connection setup in `sqlmesh_context()`.
+**httpfs IS loaded — for crypto, not for file access.** Since DuckDB 1.4.1 the built-in mbedtls crypto module is read-only, so an encrypted *write* is impossible without the OpenSSL crypto that ships inside `httpfs`. Every MoneyBin database is encrypted, so `_seal_connection()` in `database.py` loads `httpfs` on every write connection (read connections don't need it, but DuckDB loads a cached copy itself during ATTACH).
+
+The remote filesystems httpfs carries are then revoked on that same connection: `_seal_connection()` sets `disabled_filesystems='HTTPFileSystem,S3FileSystem'` and `lock_configuration=true`, so `http(s)://`, `s3://`, `gcs://`, `gs://` and `r2://` all raise `PermissionException` — and the configuration cannot be unlocked from inside a session. No SQLMesh model may use remote file access; a model that reaches for `s3://` will fail. See the "Extension seal" block at the top of `database.py` and `tests/moneybin/test_database/test_extension_seal.py`.
 
 ## SQL Formatting
 

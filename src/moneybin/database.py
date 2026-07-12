@@ -70,6 +70,115 @@ _migration_check_done: set[Path] = set()
 _database_accessed: bool = False
 _database_written: bool = False
 
+# --- Extension seal ---------------------------------------------------------
+# DuckDB 1.4.1 disabled encrypted *writes* through its built-in mbedtls crypto
+# (RNG vulnerability, GHSA-vmp8-hg63-v2hp). mbedtls is now a read-only crypto
+# module: it still decrypts, but any write to an encrypted database fails with
+# "DuckDB currently has a read-only crypto module loaded". The only supported
+# encrypted-write path is the OpenSSL crypto that ships inside `httpfs` — so
+# every MoneyBin *write* connection must load httpfs, and every MoneyBin
+# database is encrypted.
+#
+# httpfs brings the http/s3 filesystems with it, on the very connection an MCP
+# agent runs SQL against. The seal keeps the crypto and revokes the filesystems.
+#
+# `disabled_filesystems` is one-way by DuckDB's own semantics — it refuses to be
+# shrunk ("has been disabled previously, it cannot be re-enabled"), locked or
+# not. `lock_configuration` closes the *other* door: without it an agent can
+# re-enable `autoinstall_known_extensions` and load an extension whose
+# filesystem ISN'T in our disable list (azure), then read `az://`. That is
+# reachable from `sql_query`, whose validator permits `PRAGMA` — and `PRAGMA
+# autoinstall_known_extensions=true` is a config write. So the lock is what
+# makes the agent-facing handle a boundary rather than a suggestion.
+#
+# The lock therefore goes on READ-ONLY connections only — the ones that execute
+# agent-supplied SQL. It cannot go on write connections: DuckDB itself issues
+# `SET current_transaction_invalidation_policy` when running DDL that carries a
+# DEFAULT inside an explicit transaction (exactly what MigrationRunner does), and
+# a locked configuration refuses that SET — even to the value it already holds.
+# Write connections never execute agent SQL; they run our migrations and SQLMesh
+# transforms. They still get the filesystem disable and the extension lockdown,
+# just not the lock.
+#
+# Note `LOAD` itself is NOT gated by lock_configuration — a session can still
+# load httpfs. That buys it nothing: `disabled_filesystems` is enforced at
+# filesystem-lookup time, so the remote schemes stay refused.
+#
+# Watch item: if a future DuckDB restores built-in write crypto without httpfs,
+# all of this — the LOAD, the disable, the lock, and test_extension_seal.py —
+# can be deleted.
+
+# The extension whose OpenSSL crypto module makes encrypted writes possible.
+_CRYPTO_EXTENSION = "httpfs"
+
+# Every remote filesystem httpfs registers. S3FileSystem also serves gcs://,
+# gs:// and r2://. Other remote backends (azure://) live in extensions that
+# autoinstall=false + allow_community=false + the lock prevent loading at all.
+_DISABLED_FILESYSTEMS = "HTTPFileSystem,S3FileSystem"
+
+# Set before anything else so nothing can be silently fetched or loaded, and
+# so an agent's SQL can't pull in an extension by merely referencing it.
+_EXTENSION_LOCKDOWN_SQL = (
+    "SET autoinstall_known_extensions=false",
+    "SET autoload_known_extensions=false",
+    "SET allow_community_extensions=false",
+)
+
+
+def _seal_connection(conn: duckdb.DuckDBPyConnection, *, writable: bool) -> None:
+    """Lock down a fresh connection's extension and filesystem surface.
+
+    Must run BEFORE the encrypted ATTACH — the crypto module is selected as the
+    database is attached, so a later ``LOAD httpfs`` is too late for a write.
+    Every statement must also precede ``lock_configuration``, which freezes all
+    of them.
+
+    Args:
+        conn: Freshly-opened DuckDB connection, not yet attached.
+        writable: True for read-write opens, which need OpenSSL crypto and so
+            must load httpfs. Read-only opens decrypt fine with the built-in
+            mbedtls module and skip the load — though DuckDB still pulls in a
+            locally-installed httpfs itself during ATTACH, which is why the
+            filesystem disable is applied to both paths rather than only to the
+            write one. Read-only opens additionally lock the configuration; see
+            the "Extension seal" block above for why write opens cannot.
+    """
+    for stmt in _EXTENSION_LOCKDOWN_SQL:
+        conn.execute(stmt)
+
+    if writable:
+        _load_crypto_extension(conn)
+
+    conn.execute(f"SET disabled_filesystems='{_DISABLED_FILESYSTEMS}'")
+
+    if not writable:
+        conn.execute("SET lock_configuration=true")
+
+
+def _load_crypto_extension(conn: duckdb.DuckDBPyConnection) -> None:
+    """Install and load httpfs for its OpenSSL crypto module.
+
+    INSTALL is a local no-op once the extension is cached in the DuckDB
+    extension directory; it only reaches the network on a machine that has
+    never fetched httpfs for this DuckDB version. Explicit INSTALL still works
+    with ``autoinstall_known_extensions=false`` — that setting governs only the
+    *implicit* installs DuckDB would otherwise trigger from a query.
+    """
+    try:
+        conn.execute(f"INSTALL {_CRYPTO_EXTENSION}")
+        conn.execute(f"LOAD {_CRYPTO_EXTENSION}")
+    except duckdb.Error as e:
+        conn.close()
+        raise DatabaseCryptoError(
+            f"Cannot open the database for writing — MoneyBin needs DuckDB's "
+            f"'{_CRYPTO_EXTENSION}' extension for the OpenSSL crypto that "
+            f"encrypted writes require, and it could not be installed.\n\n"
+            f"DuckDB downloads it once per version; this machine has no cached "
+            f"copy, so the first write needs network access to "
+            f"extensions.duckdb.org.\n\n"
+            f"Underlying error: {e}"
+        ) from e
+
 
 def _pin_cursor_to_moneybin(cur: Any) -> None:
     """Pin a freshly-opened SQLMesh cursor to the persistent ``moneybin`` catalog.
@@ -140,6 +249,14 @@ def escape_sql_literal(value: str) -> str:
 
 class DatabaseKeyError(Exception):
     """Raised when the database encryption key cannot be retrieved."""
+
+
+class DatabaseCryptoError(Exception):
+    """DuckDB's OpenSSL crypto module (httpfs) is unavailable.
+
+    Encrypted writes require it since DuckDB 1.4.1. Practically this means a
+    machine with no cached httpfs and no network access on its first write.
+    """
 
 
 class DatabaseLockError(Exception):
@@ -373,6 +490,7 @@ class Database:
             # can. pop_all() disarms the cleanup once construction succeeds.
             with ExitStack() as stack:
                 stack.callback(self._conn.close)
+                _seal_connection(self._conn, writable=False)
                 _attach_encrypted(
                     self._conn,
                     build_attach_sql(db_path, encryption_key, read_only=True),
@@ -402,6 +520,7 @@ class Database:
         # get_database() uses to manage the write-lock lifetime.
         with ExitStack() as stack:
             stack.callback(self._conn.close)
+            _seal_connection(self._conn, writable=True)
             _attach_encrypted(self._conn, build_attach_sql(db_path, encryption_key))
             self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
@@ -1204,9 +1323,16 @@ def sqlmesh_context(
 
     # Reuse the caller-supplied connection — DuckDB only allows one
     # connection per file.
-    # httpfs is NOT loaded — no SQLMesh models use remote file access.
-    # If a future model needs read_parquet over HTTP or s3://, add
-    # conn.execute("INSTALL httpfs; LOAD httpfs;") to Database.__init__.
+    #
+    # That connection HAS httpfs loaded (on write opens `_seal_connection` loads
+    # it explicitly; on read opens DuckDB pulls in a locally-cached copy itself
+    # during ATTACH). It is loaded for its OpenSSL crypto module, not for remote
+    # file access — since DuckDB 1.4.1 the built-in mbedtls crypto is read-only,
+    # so an encrypted write is impossible without it. No SQLMesh model reads
+    # remote files, and none can: `_seal_connection` disables the http/s3
+    # filesystems httpfs registers and locks the configuration, so a model (or
+    # an agent) that reaches for s3:// gets a PermissionException. See the
+    # "Extension seal" block at the top of this module.
     if db._conn is None:  # pyright: ignore[reportPrivateUsage]
         raise DatabaseKeyError(
             "Database connection is closed — cannot create SQLMesh context."
