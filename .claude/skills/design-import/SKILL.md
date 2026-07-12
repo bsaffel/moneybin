@@ -95,10 +95,14 @@ Claude Design output is **not** repo-native. Fix it:
 **Cards**
 - **Inject `<meta charset="utf-8">`** into every `<head>` — always omitted, and
   `−·–▲▼` render as mojibake without it.
-- **Tokens only, no hardcoded hex.** A baked hex isn't just a style violation: it
-  **freezes the card at the dark-theme value and breaks it under
+- **Tokens only, or declare the literal.** A baked hex isn't just a style violation:
+  it **freezes the card at the dark-theme value and breaks it under
   `[data-theme="light"]`**. Prefer `currentColor` + a `var(--*)` on the parent, which
-  also mirrors how the component actually inherits color.
+  also mirrors how the component actually inherits color. A literal is legitimate only
+  where a token structurally can't work — a swatch chip that *is* the value it
+  documents, a brand plate rendering dark and light at once — and then it must say so
+  on the element that paints it: `data-literal-color="#C79B3B"`, listing exactly the
+  hexes in that element's own `style`. Undeclared (or stale) literals fail the gate.
 - **Freeze any runtime `<script>` to static SVG.** Run its logic once, bake the
   elements inline, delete the script. Specimens must render static.
 
@@ -161,7 +165,7 @@ ships. Use `browser_evaluate` to check what actually matters:
 | Dropping in the handoff's `tokens.css` | Usually a cross-check snapshot, not a change. Repo tokens are canonical — diff, don't replace. |
 | Leaving a card's runtime `<script>` | Specimens must be static SVG. Freeze it. |
 | Forgetting `<meta charset>` | Mojibake on signs and glyphs. Every card needs it. |
-| Hardcoded hex in a card | Breaks light theme silently. Tokens / `currentColor` only. |
+| Hardcoded hex in a card | Breaks light theme silently. Tokens / `currentColor` — or, where a token can't express it, an explicit `data-literal-color` on the painting element. |
 | Overwriting a richer repo doc with the handoff's shorter one | Reconcile, don't overwrite. |
 
 ## See also

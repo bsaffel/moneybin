@@ -16,8 +16,15 @@ It is fast (no DB, no network) and it fails on the things that are invisible in
 a browser: a component missing its preview or `docsMap` entry (silently dropped
 from the bundle), a `.jsx` that registers on a window global instead of
 exporting (bundles, never resolves), an `Icon.names` list that disagrees with
-its own `.d.ts`, a CDN fetch, a card frozen to one theme by a hardcoded hex, and
-a doc surface that forgot to list a component.
+its own `.d.ts`, a CDN fetch, a card frozen to one theme by an undeclared literal
+hex, and a doc surface that forgot to list a component.
+
+On literals: a card paints with `var(--*)`, or it declares what it paints with —
+`data-literal-color="#C79B3B"` on the element whose `style` carries the hex. Only
+two things earn a literal (a swatch chip that *is* the value it documents; a brand
+plate rendering dark and light at once), and rather than let the gate guess which,
+the card names them. Guessing leaked four times, once hiding a real theme-freeze
+bug in `colors-brass.html`.
 
 **Why it exists:** every one of those shipped to `main` and survived — one of
 them for weeks — because this directory is authored by hand and verified by eye,

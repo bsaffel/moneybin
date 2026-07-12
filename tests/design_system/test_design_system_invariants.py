@@ -26,8 +26,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterator
-from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -37,7 +35,6 @@ _REPO_ROOT = Path(__file__).parents[2]
 _DS = _REPO_ROOT / "design-system"
 _COMPONENTS = _DS / "components"
 _GUIDELINES = _DS / "guidelines"
-_TOKENS = _DS / "tokens"
 _CONFIG = _DS / ".design-sync" / "config.json"
 _PREVIEWS = _DS / ".design-sync" / "previews"
 
@@ -51,34 +48,6 @@ _ENUMERATING_DOCS = (
     _REPO_ROOT / ".claude" / "skills" / "moneybin-design" / "SKILL.md",
 )
 
-# Two — and only two — reasons a card may apply a literal hex. They are kept
-# apart on purpose: a single blanket per-file exemption is what let a real
-# theme-freeze bug hide inside colors-brass.html (a CTA sample hardcoding
-# `color:#141311` on a brass fill, which stays near-black on light theme's darker
-# brass instead of following --on-accent-brass).
-
-# 1. Swatch cards: a chip painted with the literal value it documents. The binding
-#    is to the chip's own CELL, not to the file — the chip renders no text and its
-#    label sits beside it in the parent. A file-wide "is this hex printed anywhere?"
-#    rule is too loose: the swatches print #C79B3B, so unrelated chrome could reuse
-#    that value and inherit their documentation. Anything that renders text, or
-#    paints a value its own cell never prints, is chrome and must use tokens.
-_SWATCH_CARDS = frozenset({
-    "colors-brass.html",
-    "colors-chart.html",
-    "colors-dark.html",
-    "colors-light.html",
-    "colors-semantic.html",
-})
-
-# 2. Dual-plate brand cards: they render the mark on the dark plate AND the light
-#    plate side by side in one card. A token resolves to exactly one value per
-#    theme, so it structurally cannot express "both at once".
-_DUAL_PLATE_CARDS = frozenset({
-    "brand-logo.html",
-    "brand-duckkey.html",
-})
-
 _CDN_HOSTS = (
     "unpkg.com",
     "fonts.googleapis.com",
@@ -89,146 +58,80 @@ _CDN_HOSTS = (
     "cdnjs.cloudflare.com",
 )
 
-# A hex is "applied" when it is *rendered* — inside a style attribute, a <style>
-# block, or an SVG presentation attribute. A hex that is merely displayed (a
-# swatch's own text label) is fine; it is the applied value that freezes a card
-# to one theme.
-#
-# Match on structure, not on a property-name list: `border:1px solid #2A2723`
-# puts the hex three tokens after the colon, and attributes may be single-quoted,
-# so a "property, then colon, then hex" pattern silently misses both.
-_STYLE_ATTR = re.compile(r"""style\s*=\s*(["'])(.*?)\1""", re.I | re.S)
-_STYLE_BLOCK = re.compile(r"<style[^>]*>(.*?)</style>", re.I | re.S)
-_PRESENTATION_ATTR = re.compile(
-    r"""\b(?:stroke|fill|color|stop-color|flood-color|lighting-color)\s*=\s*"""
-    r"""(["'])\s*(#[0-9A-Fa-f]{3,8})\s*\1""",
-    re.I,
-)
 _HEX = re.compile(r"#[0-9A-Fa-f]{3,8}\b")
 
-
-def _applied_hex(html: str) -> list[str]:
-    """Every hex color the card actually renders with (not ones it merely prints)."""
-    applied: list[str] = []
-    for _quote, body in _STYLE_ATTR.findall(html):
-        applied += _HEX.findall(body)
-    for body in _STYLE_BLOCK.findall(html):
-        applied += _HEX.findall(body)
-    applied += [hex_value for _quote, hex_value in _PRESENTATION_ATTR.findall(html)]
-    return applied
-
-
-_VOID_TAGS = frozenset({
-    "br",
-    "hr",
-    "img",
-    "input",
-    "meta",
-    "link",
-    "area",
-    "base",
-    "col",
-    "embed",
-    "wbr",
+# A hex is *applied* when it paints something — in a ``style`` attribute or an SVG
+# presentation attribute. A hex merely printed as text (a swatch's own label) is
+# inert; it is the applied value that freezes a card to one theme.
+_PRESENTATION_ATTRS = frozenset({
+    "stroke",
+    "fill",
+    "color",
+    "stop-color",
+    "flood-color",
+    "lighting-color",
 })
 
-
-@dataclass
-class _El:
-    """One element in the card, with the hexes it paints and its place in the tree."""
-
-    tag: str
-    hexes: set[str]
-    parent: _El | None = None
-    children: list[_El] = field(default_factory=list)
-    text: list[str] = field(default_factory=list)
-
-    def own_text(self) -> str:
-        return " ".join(self.text)
-
-    def subtree_text(self) -> str:
-        return self.own_text() + " " + " ".join(c.subtree_text() for c in self.children)
-
-    def has_text(self) -> bool:
-        """True if this element renders text anywhere beneath it, not just directly."""
-        return bool(self.subtree_text().strip())
-
-    def walk(self) -> Iterator[_El]:
-        yield self
-        for child in self.children:
-            yield from child.walk()
+# The escape hatch. Two cards legitimately apply literal colors: a paint chip whose
+# whole job is to *be* the value it documents, and the brand plates, which render the
+# mark on the dark surface and the light surface at once (a token resolves to one
+# value per theme, so it structurally cannot express both). Earlier revisions of this
+# gate tried to *infer* which literals were legitimate from page structure — is the
+# element textless? does its cell print the value? — and leaked four different ways,
+# once hiding a real theme-freeze bug. Intent is not recoverable from structure, so
+# the card declares it: every literal color is spelled out on the element that paints
+# it, and an undeclared literal is a failure. Nothing is inferred, so nothing leaks.
+_DECLARATION_ATTR = "data-literal-color"
 
 
-class _CardTree(HTMLParser):
-    """Parse a specimen card into a tree so a hex can be bound to the element painting it."""
+class _CardColors(HTMLParser):
+    """Audit a card's literal colors against what each element declares."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.root = _El(tag="#root", hexes=set())
-        self._cursor = self.root
+        self.undeclared: set[str] = set()  # painted, never declared
+        self.stale: set[str] = set()  # declared, no longer painted
+        self.in_stylesheet: set[str] = set()  # painted from a <style> block
+        self._in_style = False
 
-    def _hexes(self, attrs: list[tuple[str, str | None]]) -> set[str]:
-        return {h.upper() for h in _HEX.findall(" ".join(v for _k, v in attrs if v))}
-
-    def _add(self, tag: str, attrs: list[tuple[str, str | None]]) -> _El:
-        el = _El(tag=tag, hexes=self._hexes(attrs), parent=self._cursor)
-        self._cursor.children.append(el)
-        return el
+    def _audit(self, attrs: list[tuple[str, str | None]]) -> None:
+        painted: set[str] = set()
+        declared: set[str] = set()
+        for key, value in attrs:
+            if value is None:
+                continue
+            name = key.lower()
+            if name == "style" or name in _PRESENTATION_ATTRS:
+                painted |= {h.upper() for h in _HEX.findall(value)}
+            elif name == _DECLARATION_ATTR:
+                declared |= {h.upper() for h in _HEX.findall(value)}
+        self.undeclared |= painted - declared
+        self.stale |= declared - painted
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        el = self._add(tag, attrs)
-        if tag not in _VOID_TAGS:
-            self._cursor = el
+        if tag == "style":
+            self._in_style = True
+        self._audit(attrs)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._add(
-            tag, attrs
-        )  # self-closing (SVG <line/>): a leaf, never descended into
-
-    def handle_data(self, data: str) -> None:
-        self._cursor.text.append(data)
+        self._audit(attrs)  # self-closing (SVG <line/>) — no children to descend into
 
     def handle_endtag(self, tag: str) -> None:
-        node: _El | None = self._cursor
-        while node is not None and node.tag != tag:
-            node = node.parent
-        if node is not None and node.parent is not None:
-            self._cursor = node.parent
+        if tag == "style":
+            self._in_style = False
+
+    def handle_data(self, data: str) -> None:
+        # A <style> block paints elements it never names, so no element can declare
+        # its colors. Tokens only — there is no escape hatch here by construction.
+        if self._in_style:
+            self.in_stylesheet |= {h.upper() for h in _HEX.findall(data)}
 
 
-def _swatch_violations(html: str) -> tuple[set[str], set[str]]:
-    """Audit a swatch card: (chrome hexes, chip hexes its own cell never documents).
-
-    A swatch *chip* paints the literal value it documents and renders no text — the
-    label sits beside it, in the parent cell. Two ways to be illegitimate:
-
-    - **chrome**: the painted element renders text (anywhere beneath it). Then it is
-      UI, not a swatch, and must use tokens. A hex inside a ``<style>`` block styles
-      the whole card, so it is chrome by definition.
-    - **undocumented**: a textless element paints a value its *own cell* never prints.
-      Binding to the cell — not to the whole file — is the point: the swatches print
-      ``#C79B3B``, so a file-wide rule would let unrelated chrome reuse that value and
-      inherit their documentation.
-    """
-    tree = _CardTree()
-    tree.feed(html)
-    tree.close()
-
-    chrome: set[str] = set()
-    undocumented: set[str] = set()
-    for el in tree.root.walk():
-        if el.tag in {"style", "script"}:
-            chrome |= {h.upper() for h in _HEX.findall(el.subtree_text())}
-            continue
-        if not el.hexes:
-            continue
-        if el.has_text():
-            chrome |= el.hexes
-            continue
-        cell = el.parent if el.parent is not None else tree.root
-        documented = {h.upper() for h in _HEX.findall(cell.subtree_text())}
-        undocumented |= el.hexes - documented
-    return chrome, undocumented
+def _card_colors(html: str) -> _CardColors:
+    audit = _CardColors()
+    audit.feed(html)
+    audit.close()
+    return audit
 
 
 def _component_jsx() -> list[Path]:
@@ -415,64 +318,40 @@ def test_guideline_card_contract(card: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "card",
-    sorted(
-        p
-        for p in _GUIDELINES.glob("*.html")
-        if p.name not in _SWATCH_CARDS and p.name not in _DUAL_PLATE_CARDS
-    ),
-    ids=lambda p: p.name,
-)
-def test_guideline_card_uses_tokens_not_hardcoded_hex(card: Path) -> None:
-    """An applied hex freezes a card at one theme.
-
-    A hardcoded ``#A39C90`` is not merely a style violation: it is ``--text-secondary``
-    at its *dark* value, so the card keeps rendering dark-on-light under
-    ``[data-theme="light"]``.
-    """
-    applied = _applied_hex(card.read_text())
-    assert not applied, (
-        f"{card.name}: applies hardcoded hex {sorted(set(applied))} — use var(--*) or "
-        f'currentColor, or the card breaks under [data-theme="light"]'
-    )
-
-
-@pytest.mark.parametrize(
     "card", sorted(_GUIDELINES.glob("*.html")), ids=lambda p: p.name
 )
-def test_swatch_card_only_hardcodes_the_value_it_documents(card: Path) -> None:
-    """A swatch may paint its own literal value — and nothing else.
+def test_card_declares_every_literal_color(card: Path) -> None:
+    """A card paints with tokens, or it declares the literal it paints with.
 
-    Exempting a whole *file* is too coarse: it hides ordinary UI chrome that happens
-    to sit in a color card. ``colors-brass.html`` shipped a CTA sample hardcoding
-    ``color:#141311`` on a ``var(--accent-brass)`` fill; on light theme the brass
-    darkens to ``#8A6A1C`` while the text stayed near-black, so the sample
-    contradicted the very ``Button`` it demonstrates (which reads
-    ``--on-accent-brass``).
+    An undeclared literal freezes the card at one theme. ``icons-grammar.html``
+    hardcoded ``#A39C90`` — ``--text-secondary`` at its *dark* value — so it kept
+    rendering dark-on-light under ``[data-theme="light"]``; ``colors-brass.html``
+    hardcoded ``color:#141311`` on a brass fill, contradicting the very ``Button`` it
+    demonstrates (which reads ``--on-accent-brass``, and inverts on light theme).
 
-    The exemption is bound to the swatch *chip*, not to the file. A file-wide rule
-    ("this hex is printed somewhere in the card") is still too loose: the swatches
-    print ``#C79B3B``, so a CTA sample doing ``background:#C79B3B`` would inherit
-    their documentation and freeze to one theme anyway. A chip is an element that
-    paints the literal value and carries no text of its own; anything with text is
-    chrome and must use tokens.
-
-    Dual-plate brand cards are the one true whole-file exemption.
+    A few literals are legitimate — a paint chip *is* the value it documents, and the
+    brand plates render dark and light at once. Rather than infer which ones those are
+    (four leaks and counting), the card names them: ``data-literal-color`` on the
+    element that paints them, listing exactly the hexes in its own ``style``. Stale
+    declarations fail too, so editing a color forces you to re-affirm it is deliberate.
     """
-    if card.name in _DUAL_PLATE_CARDS:
-        pytest.skip(
-            "renders the dark and light plates together; no token expresses both"
-        )
+    audit = _card_colors(card.read_text())
 
-    chrome, undocumented = _swatch_violations(card.read_text())
-    assert not chrome, (
-        f"{card.name}: {sorted(chrome)} is applied to an element that has text, so it "
-        f"is UI chrome, not a swatch chip. Use var(--*) — a hardcoded value freezes it "
-        f'under [data-theme="light"].'
+    assert not audit.undeclared, (
+        f"{card.name}: paints {sorted(audit.undeclared)} with no {_DECLARATION_ATTR} "
+        f"declaration. Use var(--*) or currentColor — a literal freezes the element "
+        f'under [data-theme="light"]. If the literal is deliberate (a swatch chip, a '
+        f'brand plate), declare it: {_DECLARATION_ATTR}="{sorted(audit.undeclared)[0]}".'
     )
-    assert not undocumented, (
-        f"{card.name}: applies {sorted(undocumented)} without printing it, so it is "
-        f"styling, not a swatch. Use var(--*)."
+    assert not audit.stale, (
+        f"{card.name}: declares {sorted(audit.stale)} via {_DECLARATION_ATTR} but no "
+        f"longer paints it — drop the stale declaration so the next edit still has to "
+        f"justify its literals."
+    )
+    assert not audit.in_stylesheet, (
+        f"{card.name}: its <style> block paints {sorted(audit.in_stylesheet)}. A "
+        f"stylesheet rule styles elements it never names, so no element can declare "
+        f"the literal — use var(--*) here, always."
     )
 
 
