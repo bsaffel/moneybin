@@ -48,16 +48,28 @@ _ENUMERATING_DOCS = (
     _REPO_ROOT / ".claude" / "skills" / "moneybin-design" / "SKILL.md",
 )
 
-# Specimen cards whose subject matter *is* literal color: they render the dark
-# and light plates side by side in a single card, which a token cannot express
-# (a token resolves to exactly one value per theme). Every other card must read
-# its colors from tokens, or it freezes at one theme.
-_LITERAL_COLOR_CARDS = frozenset({
+# Two — and only two — reasons a card may apply a literal hex. They are kept
+# apart on purpose: a single blanket per-file exemption is what let a real
+# theme-freeze bug hide inside colors-brass.html (a CTA sample hardcoding
+# `color:#141311` on a brass fill, which stays near-black on light theme's darker
+# brass instead of following --on-accent-brass).
+
+# 1. Swatch cards: a chip painted with the literal value it is documenting. The
+#    hex is the *subject*, so the card must also print it — that is what makes it
+#    a swatch rather than a hardcoded style. Anything applied but NOT printed is
+#    ordinary UI chrome and must use tokens like any other card.
+_SWATCH_CARDS = frozenset({
     "colors-brass.html",
     "colors-chart.html",
     "colors-dark.html",
     "colors-light.html",
     "colors-semantic.html",
+})
+
+# 2. Dual-plate brand cards: they render the mark on the dark plate AND the light
+#    plate side by side in one card. A token resolves to exactly one value per
+#    theme, so it structurally cannot express "both at once".
+_DUAL_PLATE_CARDS = frozenset({
     "brand-logo.html",
     "brand-duckkey.html",
 })
@@ -257,7 +269,11 @@ def test_guideline_card_contract(card: Path) -> None:
 
 @pytest.mark.parametrize(
     "card",
-    sorted(p for p in _GUIDELINES.glob("*.html") if p.name not in _LITERAL_COLOR_CARDS),
+    sorted(
+        p
+        for p in _GUIDELINES.glob("*.html")
+        if p.name not in _SWATCH_CARDS and p.name not in _DUAL_PLATE_CARDS
+    ),
     ids=lambda p: p.name,
 )
 def test_guideline_card_uses_tokens_not_hardcoded_hex(card: Path) -> None:
@@ -265,13 +281,50 @@ def test_guideline_card_uses_tokens_not_hardcoded_hex(card: Path) -> None:
 
     A hardcoded ``#A39C90`` is not merely a style violation: it is ``--text-secondary``
     at its *dark* value, so the card keeps rendering dark-on-light under
-    ``[data-theme="light"]``. Cards whose subject is literal color are exempt
-    (see ``_LITERAL_COLOR_CARDS``).
+    ``[data-theme="light"]``.
     """
     applied = _applied_hex(card.read_text())
     assert not applied, (
         f"{card.name}: applies hardcoded hex {sorted(set(applied))} — use var(--*) or "
         f'currentColor, or the card breaks under [data-theme="light"]'
+    )
+
+
+@pytest.mark.parametrize(
+    "card", sorted(_GUIDELINES.glob("*.html")), ids=lambda p: p.name
+)
+def test_swatch_card_only_hardcodes_the_value_it_documents(card: Path) -> None:
+    """A swatch may paint its own literal value — and nothing else.
+
+    Exempting a whole *file* is too coarse: it hides ordinary UI chrome that happens
+    to sit in a color card. ``colors-brass.html`` shipped a CTA sample hardcoding
+    ``color:#141311`` on a ``var(--accent-brass)`` fill; on light theme the brass
+    darkens to ``#8A6A1C`` while the text stayed near-black, so the sample
+    contradicted the very ``Button`` it demonstrates (which reads
+    ``--on-accent-brass``).
+
+    So a swatch card's applied hex is legitimate only when the card also *prints*
+    that hex — that is what makes it the subject rather than a hardcoded style.
+    Dual-plate brand cards are the one true whole-file exemption.
+    """
+    if card.name in _DUAL_PLATE_CARDS:
+        pytest.skip(
+            "renders the dark and light plates together; no token expresses both"
+        )
+
+    html = card.read_text()
+    applied = {h.upper() for h in _applied_hex(html)}
+    if not applied:
+        return
+
+    printed = {
+        h.upper() for text in re.findall(r">([^<]+)<", html) for h in _HEX.findall(text)
+    }
+    undocumented = applied - printed
+    assert not undocumented, (
+        f"{card.name}: applies {sorted(undocumented)} without printing it, so it is "
+        f"styling, not a swatch. Use var(--*) — a hardcoded value here freezes the "
+        f'card under [data-theme="light"].'
     )
 
 
