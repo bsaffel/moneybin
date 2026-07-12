@@ -25,6 +25,8 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.services.investment_service import (
+    _PIPELINE_EMITTED_SUBTYPES,  # pyright: ignore[reportPrivateUsage]  # tested directly
+    _SUBTYPE_VOCAB,  # pyright: ignore[reportPrivateUsage]  # tested directly
     InvestmentService,
     SecurityResolutionError,
 )
@@ -117,6 +119,44 @@ def _raw_rows(db: Database, account_id: str = "acct_brokerage") -> list[Any]:
         """,  # noqa: S608  # test read, static SQL
         [account_id],
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Closed ledger vocabulary (user-authorable ∪ pipeline-emitted)
+# ---------------------------------------------------------------------------
+
+
+class TestSubtypeVocabulary:
+    """Pins the full ledger-wide subtype vocabulary at the core boundary.
+
+    _SUBTYPE_VOCAB gates USER-AUTHORABLE subtypes (record_event's
+    _validate_event); the sync pipeline (e.g. prep.stg_plaid__opening_lots)
+    writes subtype='opening_bootstrap' straight into core, bypassing that
+    validator entirely -- a strict superset tracked separately in
+    _PIPELINE_EMITTED_SUBTYPES. A new value on either side must edit this test
+    deliberately, so a subtype can never slip into
+    core.fct_investment_transactions unnoticed by both surfaces' closed-vocabulary
+    contracts.
+    """
+
+    def test_ledger_subtype_vocabulary_is_closed(self) -> None:
+        combined = {
+            type_: _SUBTYPE_VOCAB.get(type_, frozenset())
+            | _PIPELINE_EMITTED_SUBTYPES.get(type_, frozenset())
+            for type_ in set(_SUBTYPE_VOCAB) | set(_PIPELINE_EMITTED_SUBTYPES)
+        }
+        assert combined == {
+            "dividend": frozenset({"qualified", "non_qualified"}),
+            "capital_gain_distribution": frozenset({"short_term", "long_term"}),
+            "fee": frozenset({"tax_withheld"}),
+            "reinvest": frozenset({"dividend", "interest", "capital_gain"}),
+            "transfer_in": frozenset({"opening_bootstrap"}),
+        }
+
+    def test_pipeline_emitted_subtypes_are_not_user_authorable(self) -> None:
+        """opening_bootstrap must stay impossible to hand-author (Fix 5)."""
+        for type_, subtypes in _PIPELINE_EMITTED_SUBTYPES.items():
+            assert not subtypes & _SUBTYPE_VOCAB.get(type_, frozenset())
 
 
 # ---------------------------------------------------------------------------

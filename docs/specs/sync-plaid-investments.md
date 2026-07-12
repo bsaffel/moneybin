@@ -870,8 +870,10 @@ for a security with zero transactions in that first window.
    date to just before `W`** (so the opening lot is processed *before* every
    in-window disposal; otherwise an in-window sell runs first and goes oversold).
 5. **Known basis, unknown date.** A lot with a real `cost_basis` but NULL
-   `original_purchase_datetime` still opens with that basis (dated at `W`, term
-   flagged) — its basis is never discarded to the residual.
+   `original_purchase_datetime` still opens with that basis, dated at `W` — a
+   **synthetic** acquisition date, not a recovered one, so the holding-period term
+   computed from it is understated by design (nothing downstream marks the term
+   itself uncertain). Its basis is never discarded to the residual.
 6. **Residual (`amount = NULL`).** Any part of `G` the eligible lots cannot
    cover — the pre-window-sold sliver, or an institution reporting no lot for
    part of the position — opens as a single `basis_incomplete` row, **dated
@@ -895,20 +897,38 @@ security has an in-window `split`: that `(account, security)` is routed to
 `system doctor` review instead of synthesizing a row. A documented, visible v1
 limitation — like the cancel/removal boundary above — not silent corruption.
 
+**Fully-sold pre-window positions route to review, too.** Plaid never reports a
+*closed* position, so a pre-window position that was fully sold before the first
+snapshot leaves **no** `raw.plaid_investment_holdings` row at all — it never
+reaches the guards above (they all key off a holdings row) and, without an
+explicit check, would sail past both `stg_plaid__opening_lots` and
+`stg_plaid__opening_lot_review` invisibly: the in-window sell finds no lot to
+consume and realizes a fully-taxed zero-basis phantom gain that `basis_incomplete`
+flags but nothing explains. `prep.stg_plaid__opening_lot_review` closes this gap
+directly: any in-window `sell`/`transfer_out` for an `(account, security)` with
+no holdings row in **any** snapshot is flagged `sold_out_prewindow`.
+
 **Determinism & idempotence.** Each synthetic row carries a
 `plaid_opening_`-prefixed content-hash `investment_transaction_id` (the
 source-specific prefix `identifiers.md` requires, matching `lot_`/`manual_`
-elsewhere) over `(account_id, security_id, lot_key,
-original_acquisition_date, cost_basis, 'opening_bootstrap')`, where `lot_key` is
-the lot's `institution_lot_id` when the broker supplies one, else its position
-**within the frozen first snapshot** (§ Inputs); the residual uses a reserved
+elsewhere) over `(source_origin, account_id, security_id, lot_key,
+original_acquisition_date, cost_basis, 'opening_bootstrap')`. `source_origin` is
+included because `(account_id, security_id)` is only unique **within** a Plaid
+item (§ raw PK). `lot_key` **always** carries the lot's position within the
+frozen first snapshot (§ Inputs) — `institution_lot_id`, when the broker
+supplies one, is appended to that positional key, never substituted for it, so
+two lots sharing one broker-supplied `institution_lot_id` still hash to distinct
+ids instead of colliding onto one engine `lot_id`; the residual uses a reserved
 sentinel. Because the bootstrap reads only that immutable first snapshot, even
-the positional fallback is stable across syncs though Plaid may reorder
-`tax_lots[]` later — so the synthetic `investment_transaction_id`, the engine
-`lot_id` hashed from it, and any `app.lot_selections` pointing at those lots
-never churn on a re-sync. Because the rows live in the ledger, lots/gains/
-holdings derive from them through the unchanged engine — no special-casing
-downstream.
+the positional component is stable across syncs though Plaid may reorder
+`tax_lots[]` later — but that freezes only the holdings side (`lot_key`,
+`original_acquisition_date`); `cost_basis` on a boundary lot derives from
+`gap_qty`, which reads the transaction window and is **not** frozen. So the
+synthetic `investment_transaction_id`, the engine `lot_id` hashed from it, and
+any `app.lot_selections` pointing at those lots are stable against a **later
+snapshot** — never against an in-window transaction correction landing after the
+fact. Because the rows live in the ledger, lots/gains/holdings derive from them
+through the unchanged engine — no special-casing downstream.
 
 **Snapshot is authoritative; the ledger is reconciled to it.** `tax_lots[]` are
 the *survivors* of any in-window disposal, and the engine elects its own

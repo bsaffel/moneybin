@@ -1049,6 +1049,40 @@ def test_case_e_split_and_guards_route_to_review(bootstrap_cases: Database) -> N
 
 
 @pytest.mark.slow
+def test_sold_out_prewindow_position_routes_to_review(db: Database) -> None:
+    """A fully-sold pre-window position has no holdings row in any snapshot.
+
+    Plaid never reports closed positions. Without an explicit check it reaches
+    neither stg_plaid__opening_lots (nothing to draw from -- it never enters
+    int_plaid__opening_positions) nor stg_plaid__opening_lot_review, and becomes
+    a silent zero-basis oversold disposal instead of a visible gap.
+    """
+    # Establishes transactions_window_start=2024-07-08 for this account/item via an
+    # unrelated held security; sec_gone itself has NO holdings row anywhere.
+    _raw_holding(db, security_id="sec_other", quantity="5", cost_basis="50.00")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_gone_sell",
+        security_id="sec_gone",
+        transaction_date="2025-01-15",  # in-window
+        quantity="-10",
+        amount="-1000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    assert _opening(db, "sec_gone") == []  # nothing to bootstrap -- no basis data
+    reasons = dict(
+        db.execute(
+            "SELECT source_security_key, reason FROM prep.stg_plaid__opening_lot_review"
+        ).fetchall()
+    )
+    assert reasons["sec_gone"] == "sold_out_prewindow"
+    assert "sec_other" not in reasons  # the held position bootstraps normally
+
+
+@pytest.mark.slow
 def test_case_f_empty_lots_position_fallback(bootstrap_cases: Database) -> None:
     f1 = _opening(bootstrap_cases, "sec_f1")  # G = H → whole-position basis
     assert len(f1) == 1
@@ -1195,6 +1229,36 @@ def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(db: Database) -> 
 
 
 @pytest.mark.slow
+def test_boundary_lot_prorates_a_half_cent_tie_up(db: Database) -> None:
+    """DECIMAL / DECIMAL in DuckDB returns DOUBLE.
+
+    A cast straight from that DOUBLE to DECIMAL(18,2) truncates a half-cent tie
+    instead of rounding it. 300.03 x 1/2 = 150.015 exactly; DECIMAL(18,2)'s HALF_UP convention rounds that
+    UP to 150.02. The prior boundary-lot test (sec_h, above) rounds identically
+    under a naive direct cast OR the DECIMAL(28,10) round-trip -- it asserts
+    precision without ever exercising a tie. This case does discriminate: a naive
+    ``(lot_basis * drawn_qty / lot_qty)::DECIMAL(18,2)`` cast emits -150.01 (the
+    DOUBLE holds 150.01499999999999...); the DECIMAL(28,10) round-trip emits the
+    correct -150.02. Verified by reverting the round-trip cast locally: this test
+    goes RED (-150.01 != -150.02) without it, GREEN with it restored.
+    """
+    _raw_holding(db, security_id="sec_tie", quantity="1", cost_basis="150.02")
+    _raw_lot(
+        db,
+        "sec_tie",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="2",
+        cost_basis="300.03",
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = _opening(db, "sec_tie")  # gap = 1 - 0 = 1; boundary draws 1 of 2
+    assert len(rows) == 1
+    assert rows[0][:3] == (Decimal("1"), Decimal("-150.02"), "2021-01-01")
+
+
+@pytest.mark.slow
 def test_bootstrap_id_cannot_collide_across_securities_in_one_account(
     db: Database,
 ) -> None:
@@ -1224,6 +1288,42 @@ def test_bootstrap_id_cannot_collide_across_securities_in_one_account(
     ).fetchall()
     assert len(ids) == 2
     assert ids[0][1] != ids[1][1]
+
+
+@pytest.mark.slow
+def test_shared_institution_lot_id_still_yields_distinct_ids(db: Database) -> None:
+    """Two lots sharing a broker institution_lot_id still get distinct ids.
+
+    Same date, same basis, only the institution_lot_id shared. Pre-fix, lot_key
+    = COALESCE(institution_lot_id, 'idx_N') drops lot_index the
+    moment institution_lot_id is present -- two lots sharing one broker id then
+    hash identically, producing two ledger rows with the SAME
+    investment_transaction_id (violates core.fct_investment_transactions' declared
+    grain) and collapsing both onto one engine lot_id (cost_basis.py's
+    by_lot_id dict keeps only one; app.lot_selections becomes ambiguous).
+    """
+    _raw_holding(db, security_id="sec_shared", quantity="20", cost_basis="200.00")
+    for idx in (0, 1):
+        _raw_lot(
+            db,
+            "sec_shared",
+            idx,
+            institution_lot_id="LOT_SHARED",  # SAME broker id on both lots
+            original_purchase_datetime="2021-01-01 00:00:00",  # SAME date
+            quantity="10",
+            cost_basis="100.00",  # SAME basis
+        )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = db.execute(
+        "SELECT quantity, amount, investment_transaction_id "
+        "FROM prep.stg_plaid__opening_lots WHERE source_security_key = 'sec_shared' "
+        "ORDER BY investment_transaction_id"
+    ).fetchall()
+    assert len(rows) == 2  # both lots drawn in full; gap = 20, two lots of 10 each
+    assert rows[0][:2] == (Decimal("10"), Decimal("-100.00"))
+    assert rows[1][:2] == (Decimal("10"), Decimal("-100.00"))
+    assert rows[0][2] != rows[1][2]  # distinct ids despite identical date/basis
 
 
 @pytest.mark.slow

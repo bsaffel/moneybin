@@ -35,11 +35,21 @@ MODEL (
    (account_id, security_id) is only unique WITHIN a Plaid item — it is part of the
    raw PK for exactly that reason — and security is in it because two securities in
    one account would otherwise collide onto one id, and from there onto one engine
-   lot_id the moment a security merge unifies them. Because the inputs are read from
-   the frozen first snapshot, even the positional lot_key fallback ('idx_N') is
-   stable across re-syncs though Plaid may reorder tax_lots[] later, so the ids, the
-   engine lot_ids hashed from them, and any app.lot_selections pointing at them never
-   churn. */
+   lot_id the moment a security merge unifies them. lot_key ALWAYS carries lot_index
+   — institution_lot_id, when the broker supplies one, is appended to it, never
+   substituted for it — so two lots sharing one broker-supplied institution_lot_id
+   still hash to distinct ids instead of colliding onto one engine lot_id.
+
+   Stability, precisely. Because the holdings-side inputs (lot_key,
+   acquisition_date) are read from the frozen first snapshot, even the positional
+   lot_key fallback ('idx_N') is stable across re-syncs though Plaid may reorder
+   tax_lots[] later. That freezes the HOLDINGS side only — NOT basis_amount, which
+   on a boundary lot derives from gap_qty, which reads
+   prep.stg_plaid__investment_transactions (not frozen). So the ids, the engine
+   lot_ids hashed from them, and any app.lot_selections pointing at them are stable
+   against a LATER SNAPSHOT — never against an in-window transaction correction: a
+   late-arriving in-window buy can still close the gap and make a bootstrap row
+   change or vanish. */
 WITH bootstrappable AS (
   SELECT
     *
@@ -51,7 +61,9 @@ WITH bootstrappable AS (
      is inclusive of W, so a lot dated exactly on W belongs to the window and drawing
      it would double-count the in-window buy that already opened it. A lot with a real
      basis but NO date is still eligible — its basis is never discarded — but it sorts
-     LAST and is dated at W, term flagged (spec case G). */
+     LAST and is dated at W (spec case G): that date is SYNTHETIC, not recovered, so
+     the holding-period term computed from it is understated by design — nothing
+     downstream marks the term itself uncertain. */
   SELECT
     b.source_account_key,
     b.source_security_key,
@@ -100,11 +112,15 @@ WITH bootstrappable AS (
     cumulative_qty - lot_qty < gap_qty
 ), drawn_rows AS (
   /* A fully-drawn lot keeps its basis EXACTLY — no arithmetic touches it. Only the
-     boundary lot prorates, and only that row pays the DECIMAL -> DOUBLE rounding
-     DuckDB's `/` forces (it has no decimal division); it is re-cast straight back to
-     DECIMAL(18,2). Prorating a full draw instead of short-circuiting it would put
-     every lot's basis through that float, which is exactly what the money-type rule
-     forbids. A lot with no basis at all prorates to NULL -> basis_incomplete. */
+     boundary lot prorates, and only that row pays DuckDB's DECIMAL -> DOUBLE detour
+     (it has no decimal division; `/` on two DECIMALs returns DOUBLE). The DOUBLE is
+     cast to DECIMAL(28,10) BEFORE narrowing to DECIMAL(18,2): that first cast lands
+     the double on the exact decimal tie, so the (28,10) -> (18,2) narrowing is exact
+     decimal rounding, not float truncation — casting straight to DECIMAL(18,2)
+     truncates a tie instead of rounding it (e.g. 150.015 -> 150.01, not 150.02).
+     Prorating a full draw instead of short-circuiting it would put every lot's basis
+     through that detour, which is exactly what the money-type rule forbids. A lot
+     with no basis at all prorates to NULL -> basis_incomplete. */
   SELECT
     source_account_key,
     source_security_key,
@@ -112,13 +128,15 @@ WITH bootstrappable AS (
     window_start,
     snapshot_extracted_at,
     currency_code,
-    COALESCE(institution_lot_id, 'idx_' || lot_index::TEXT) AS lot_key,
+    'idx_' || lot_index::TEXT || COALESCE('_' || institution_lot_id, '') AS lot_key,
     drawn_qty AS quantity,
     CASE
       WHEN drawn_qty = lot_qty
       THEN lot_basis
       ELSE (
-        lot_basis * drawn_qty / lot_qty
+        (
+          lot_basis * drawn_qty / lot_qty
+        )::DECIMAL(28, 10)
       )::DECIMAL(18, 2)
     END AS basis_amount,
     COALESCE(original_purchase_datetime::DATE, window_start) AS acquisition_date
