@@ -130,6 +130,11 @@ jobs:
         with:
           attestations: true  # PEP 740 provenance
           repository-url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/legacy/' || '' }}
+          # Only for the TestPyPI rehearsal: TestPyPI rejects a duplicate version,
+          # so without this a second dry-run of the same pyproject version 409s at
+          # upload. The real PyPI push (tag) keeps skip-existing off — a duplicate
+          # there must fail loudly, never be silently skipped.
+          skip-existing: ${{ github.event_name == 'workflow_dispatch' }}
 
   verify-live:
     name: Verify published (${{ matrix.os }})
@@ -157,7 +162,8 @@ jobs:
 
           # PyPI's CDN + uv's resolver cache lag behind a fresh upload, so the
           # first `uv tool run` against a just-published version is near-certain
-          # to 404. Retry with a fixed backoff instead of failing the release.
+          # to 404. Retry the resolution probe with a fixed backoff instead of
+          # failing the release.
           retry() {
             attempt=1
             max_attempts=5
@@ -172,10 +178,15 @@ jobs:
             done
           }
 
+          # Retry ONLY the resolution/version probe — once it succeeds the
+          # package is cached, so `demo` cannot 404 and is run once, not retried.
+          # Retrying demo would be wrong: a genuine demo failure must fail the
+          # release, and a retry after demo already wrote data would block on its
+          # non-interactive rebuild confirm. `--yes` auto-accepts that rebuild.
           retry uv tool run --from "moneybin==$VERSION" --with keyrings.alt \
             moneybin --version
-          retry uv tool run --from "moneybin==$VERSION" --with keyrings.alt \
-            moneybin demo --persona basic
+          uv tool run --from "moneybin==$VERSION" --with keyrings.alt \
+            moneybin demo --persona basic --yes
 
   github-release:
     name: GitHub Release
