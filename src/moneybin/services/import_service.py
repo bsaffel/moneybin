@@ -2836,12 +2836,23 @@ class ImportService:
                 if decision.metadata.account_id
                 else None
             )
+            # A confirmed negative_is_income recipe means the user ratified "this is
+            # a credit card" — a fact about the account, not a guess. 'credit' matches
+            # the vocabulary core.fct_balances keys its liability negation on.
+            # on_conflict="ignore" below means a type Plaid/OFX already set is never
+            # clobbered. decision.recipe is narrowed non-None by the raise at the
+            # top of this method (mirrors sign_conv above).
+            account_type = (
+                "credit"
+                if decision.recipe.sign_convention == "negative_is_income"
+                else None
+            )
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [resolved_alias],
                 "account_number": [None],
                 "account_number_masked": [_to_account_number_mask(raw_account_id)],
-                "account_type": [None],
+                "account_type": [account_type],
                 "institution_name": [str(institution) if institution else None],
                 "currency": [None],
                 "source_file": [str(canonical)],

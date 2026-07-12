@@ -1205,3 +1205,38 @@ def test_no_save_format_does_not_rewrite_the_saved_recipe_on_a_sign_override(
         Decimal("50.00"),  # month 01
         Decimal("150.00"),  # month 02
     ]
+
+
+# ---------------------------------------------------------------------------
+# Test 18-19: a confirmed card statement types the account 'credit'
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_confirmed_card_statement_types_the_account_credit(
+    db: Database, tmp_path: Path
+) -> None:
+    """A confirmed card is a FACT about the account — keep it, don't discard it."""
+    svc = ImportService(db)
+    svc.import_file(write_card_statement_pdf(tmp_path), refresh=False, confirm=True)
+
+    row = db.execute(
+        "SELECT account_type FROM raw.tabular_accounts WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "credit"
+
+
+@pytest.mark.integration
+def test_checking_statement_leaves_account_type_null(
+    db: Database, tmp_path: Path
+) -> None:
+    """We only assert a type we actually established. No guessing."""
+    svc = ImportService(db)
+    svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+
+    row = db.execute(
+        "SELECT account_type FROM raw.tabular_accounts WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None
