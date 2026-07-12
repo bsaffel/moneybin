@@ -161,6 +161,34 @@ jobs:
           name: coverage
           path: coverage.xml
 
+  # Build the wheel, install it into a venv with no repo on sys.path, and run
+  # the real user path from outside the checkout. Every other job runs inside
+  # the repo against the locked dependency set, so none of them can see a wheel
+  # that ships no schema/migrations/models — or a published dependency range
+  # that resolves to a broken version. The script is shared with the release
+  # workflow so the release matrix cannot drift from this guard.
+  smoke-install:
+    name: Clean-install smoke test
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Build the wheel
+        run: uv build --wheel --out-dir dist
+
+      - name: Smoke-test the installed wheel
+        env:
+          WORK_DIR: ${{ runner.temp }}/smoke
+        run: ./scripts/smoke_install.sh dist
+
   test-integration:
     name: Integration tests
     needs: [changes]
