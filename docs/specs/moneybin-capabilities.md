@@ -127,9 +127,11 @@ not-yet-built.
 | 64| Override which lots a disposal draws from (specific identification) | `investments_lots_select` *(`disposal_txn_id`, `selections=[{lot_id, quantity}, ...]`; empty list reverts to FIFO)* | `investments lots select <disposal_txn_id> --lot ID:QTY [--lot ...]` / `--clear` | — | live |
 | 65| View realized gain/loss (the 1099-B surface) | `investments_gains` *(`account?`, `security?`, `from_date?`, `to_date?`, `term?`)* | `investments gains` *(`--account`, `--security`, `--from`, `--to`, `--term`)* | — | live |
 | 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
-| 67| List pending security-link merge decisions grouped by provider ref | `investments_securities_links_pending` | `investments securities links pending` *(`--output json`)* | — | live |
-| 68| Accept (merge) or reject one pending security-link merge decision | `investments_securities_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `into: str\|null`; accept requires `into` = the decision's own `candidate_security_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `investments securities links set <decision_id> --accept --into <candidate_security_id>` (merge) / `--reject` (keep as distinct instrument) | — | live |
-| 69| Show recent security-link decisions (all statuses) | `investments_securities_links_history` *(`limit=50`)* | `investments securities links history` *(`--limit`, `--output json`)* | — | live |
+| 67| Set up the evaluator demo profile (synthetic data → pipeline → clean doctor → first answer) | — *(cat 2 — dev/evaluator tooling)* | `demo` *(`--persona`, `--seed`, `--yes`; always targets the dedicated `demo` profile — no arbitrary `--profile` target)* | — | live (CLI-only) |
+| 68| Confirm a credit-card PDF's inverted sign convention (charges → expenses) | `import_files`/`import_preview` *(return `confirmation_required` with `reason="sign_convention"` + `sign_sample_rows` when a PDF names itself a credit card; `actions[]` direct to the CLI — MCP cannot ratify a sign inversion in place yet, elicitation-based confirm planned)* | `import files <path> --confirm` *(confirm the inversion)* / `import files <path> --sign negative_is_expense` *(overrule a false card detection)* | — | live (CLI ratifies; MCP surfaces + defers) |
+| 69| List pending security-link merge decisions grouped by provider ref | `investments_securities_links_pending` | `investments securities links pending` *(`--output json`)* | — | live |
+| 70| Accept (merge) or reject one pending security-link merge decision | `investments_securities_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `into: str\|null`; accept requires `into` = the decision's own `candidate_security_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `investments securities links set <decision_id> --accept --into <candidate_security_id>` (merge) / `--reject` (keep as distinct instrument) | — | live |
+| 71| Show recent security-link decisions (all statuses) | `investments_securities_links_history` *(`limit=50`)* | `investments securities links history` *(`--limit`, `--output json`)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -192,15 +194,25 @@ register alongside the top-level `investments` CLI group. Sensitivity is derived
 per tool from payload field classification rather than declared statically —
 `high` for the ledger/holdings/lots/gains tools (cost basis and proceeds are
 `BALANCE`-classified), `low` for the securities catalog (reference data only).
+Row 68 added 2026-07-11 with the credit-card sign-convention PR: a PDF that names
+itself a credit card derives a `negative_is_income` recipe that inverts every
+amount, gated behind a `reason="sign_convention"` confirmation. The CLI ratifies
+natively (`import files <path> --confirm`) or overrules a false detection
+(`--sign negative_is_expense`). MCP surfaces the confirmation with the printed-vs-
+recorded sample rows and directs the agent to the CLI: it deliberately has no
+in-place ratify path (no `sign=` param; `accept=`/`mapping=` on a `.pdf` returns
+`confirm_channel_conflict`), because inverting a whole statement is a decision the
+agent must never self-accept. In-place confirm is deferred to an elicitation-based
+flow (the server asks the human directly).
 Row 53 updated 2026-07-11 with the security-link review-surface PR (M1G.4
 Task 12): `review`'s payload gains `security_links_pending`, covering a fifth
 queue alongside matches/categorize/account-links/merchant-links.
-Rows 67–69 added 2026-07-11 with the same PR: `investments securities links
+Rows 69–71 added 2026-07-11 with the same PR: `investments securities links
 {pending,set,history}` CLI commands wired over `SecurityLinksService` (Task
 10), grouped by provider ref the same way `merchants links pending` groups by
 provider entity id, with candidates enriched with the catalog's ticker/name
 (a bare `candidate_security_id` tells the reviewer nothing about the merge).
-Rows 67–69 updated 2026-07-11 with the follow-up review-surface fix wave:
+Rows 69–71 updated 2026-07-11 with the follow-up review-surface fix wave:
 `investments_securities_links_{pending,set,history}` MCP tools ship,
 mirroring `merchants_links_*` (§5b/§5d of `moneybin-mcp.md`); `review`'s
 `actions[]` now routes the agent to the MCP tool instead of the CLI. The
@@ -213,7 +225,7 @@ mirroring `merchants_links_set`'s `target_merchant_id` guard — a tied group
 files one decision per candidate, so an unconfirmed accept could merge into
 the wrong security and auto-reject the right one.
 Rows 50 and 56 updated 2026-07-12: `accounts_links_set` and
-`merchants_links_set` are brought onto the same shape as row 68's
+`merchants_links_set` are brought onto the same shape as row 70's
 `investments_securities_links_set` — the three tools do the same job on three
 entity types, so a defect in one is a defect in all three. Both gain an
 explicit `action` parameter (accept/reject is no longer inferred from the

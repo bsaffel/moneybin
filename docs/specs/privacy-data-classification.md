@@ -66,7 +66,7 @@ from context. The full registry lives in
 that required a call.
 
 The audit was initially conducted by static enumeration of
-`sqlmesh/models/core/` and `src/moneybin/sql/schema/app_*.sql`. CI now
+`src/moneybin/sqlmesh/models/core/` and `src/moneybin/sql/schema/app_*.sql`. CI now
 enforces the live catalog contract through
 `tests/moneybin/test_privacy/test_classification_registry_coverage.py`,
 which opens an encrypted temporary database with a test secret store and

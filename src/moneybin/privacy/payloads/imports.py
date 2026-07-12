@@ -51,6 +51,9 @@ class ImportPerFileRow:
     import_id: Annotated[str | None, DataClass.RECORD_ID]
     error: Annotated[str | None, DataClass.DESCRIPTION]
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
+    # True when a saved `sign=` override replayed onto this PDF, bypassing the
+    # credit-card marker detector for its format.
+    sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE] = False
     # Populated only when status == "confirmation_required": detector
     # proposal + samples + flagged + missing_required so the agent can
     # call `import_confirm` per file. Sample values are row-shaped

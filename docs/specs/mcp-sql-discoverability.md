@@ -131,7 +131,7 @@ Key choices:
 - `src/moneybin/tables.py` — add `audience` field to `TableRef`, mark interface tables, add `INTERFACE_TABLES` derivation helper.
 - `src/moneybin/mcp/resources.py` — register `moneybin://schema` resource (~10 lines, calls `build_schema_doc()` and `json.dumps`).
 - `src/moneybin/mcp/tools/sql.py` — append a single line to `sql_query`'s docstring and the registration description: *"For schema, columns, and example queries, read resource `moneybin://schema`."*
-- `sqlmesh/models/core/fct_transactions.sql`, `sqlmesh/models/core/dim_accounts.sql`, `sqlmesh/models/core/bridge_transfers.sql` — add a one-line pointer comment near the top: `/* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */`.
+- `src/moneybin/sqlmesh/models/core/fct_transactions.sql`, `src/moneybin/sqlmesh/models/core/dim_accounts.sql`, `src/moneybin/sqlmesh/models/core/bridge_transfers.sql` — add a one-line pointer comment near the top: `/* Query examples for the LLM: see src/moneybin/services/schema_catalog.py (EXAMPLES dict) */`.
 - `src/moneybin/sql/schema/app_*.sql` files for each interface app table (e.g. `app_budgets.sql`, `app_categories.sql`, `app_merchants.sql`, `app_categorization_rules.sql`, `app_transaction_categories.sql`, `app_transaction_notes.sql`) — same pointer comment.
 - `docs/specs/INDEX.md` — add this spec to the **MCP** section.
 

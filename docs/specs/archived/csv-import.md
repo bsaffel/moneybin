@@ -73,16 +73,16 @@ Add CTE + `UNION ALL` in `dim_accounts.sql` and `fct_transactions.sql` with `sou
 - `src/moneybin/loaders/csv_loader.py` -- DuckDB loading
 - `src/moneybin/sql/schema/raw_csv_transactions.sql` -- DDL
 - `src/moneybin/sql/schema/raw_csv_accounts.sql` -- DDL
-- `sqlmesh/models/csv/stg_csv__accounts.sql` -- Staging view
-- `sqlmesh/models/csv/stg_csv__transactions.sql` -- Staging view
-- `sqlmesh/models/csv/schema.yml` -- SQLMesh audits
+- `src/moneybin/sqlmesh/models/csv/stg_csv__accounts.sql` -- Staging view
+- `src/moneybin/sqlmesh/models/csv/stg_csv__transactions.sql` -- Staging view
+- `src/moneybin/sqlmesh/models/csv/schema.yml` -- SQLMesh audits
 - `tests/moneybin/test_extractors/test_csv_extractor.py`
 - `tests/moneybin/test_loaders/test_csv_loader.py`
 
 ### Files to modify
 - `src/moneybin/cli/commands/extract.py` -- Add `extract csv` command
-- `sqlmesh/models/core/dim_accounts.sql` -- Add CSV CTE + UNION ALL
-- `sqlmesh/models/core/fct_transactions.sql` -- Add CSV CTE + UNION ALL
+- `src/moneybin/sqlmesh/models/core/dim_accounts.sql` -- Add CSV CTE + UNION ALL
+- `src/moneybin/sqlmesh/models/core/fct_transactions.sql` -- Add CSV CTE + UNION ALL
 
 ### Key decisions
 

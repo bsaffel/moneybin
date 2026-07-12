@@ -9,23 +9,16 @@ in db_helpers.py mirrors the SQLMesh model verbatim.
 from __future__ import annotations
 
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 from tests.moneybin.db_helpers import create_core_tables
 
 pytestmark = pytest.mark.unit
 
 
-_MODEL_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "sqlmesh"
-    / "models"
-    / "core"
-    / "fct_transactions.sql"
-)
+_MODEL_PATH = SQLMESH_ROOT / "models" / "core" / "fct_transactions.sql"
 
 
 class TestFctTransactionsCurationColumns:

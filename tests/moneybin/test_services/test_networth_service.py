@@ -20,7 +20,7 @@ def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None
 
     Bypasses SQLMesh for unit-test speed. The SQLMesh model is actually a VIEW
     over fct_balances_daily JOIN dim_accounts; we substitute a TABLE with the
-    same shape. Schema must match `sqlmesh/models/reports/net_worth.sql`'s
+    same shape. Schema must match `src/moneybin/sqlmesh/models/reports/net_worth.sql`'s
     SELECT projection.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")

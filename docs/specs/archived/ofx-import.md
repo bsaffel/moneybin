@@ -48,9 +48,9 @@ All tables include `source_file`, `extracted_at`, and `loaded_at` metadata colum
 - `src/moneybin/extractors/ofx_extractor.py` -- OFX/QFX parsing with ofxparse
 - `src/moneybin/loaders/ofx_loader.py` -- DuckDB loading with INSERT OR REPLACE
 - `src/moneybin/sql/schema/raw_ofx_*.sql` -- DDL for raw tables
-- `sqlmesh/models/ofx/stg_ofx__*.sql` -- Staging views
-- `sqlmesh/models/core/dim_accounts.sql` -- Account dimension (UNION ALL from staging)
-- `sqlmesh/models/core/fct_transactions.sql` -- Transaction fact table
+- `src/moneybin/sqlmesh/models/ofx/stg_ofx__*.sql` -- Staging views
+- `src/moneybin/sqlmesh/models/core/dim_accounts.sql` -- Account dimension (UNION ALL from staging)
+- `src/moneybin/sqlmesh/models/core/fct_transactions.sql` -- Transaction fact table
 
 ### Key decisions
 - **Parquet first**: Save to Parquet before DuckDB. Parquet files are the permanent archive; DuckDB is the working database. Enables disaster recovery and format portability.

@@ -114,6 +114,47 @@ for i, (date, desc, amount) in enumerate(chase_rows):
 c3.save()
 print(f"wrote {out_chase}")  # noqa: T201  # one-shot generator script
 
+# ── chase_checking_unruled.pdf ────────────────────────────────────────────────
+# The SAME statement as chase_checking_simple.pdf, but with NO ruling lines —
+# columns are whitespace-aligned, which is how real bank statements are actually
+# typeset. pdfplumber's extract_tables() finds nothing here (it keys on ruling
+# lines), so doc.tables is empty and only doc.text_lines carries the rows.
+#
+# This fixture exists because every other fixture in this file deliberately
+# draws ruling lines "so pdfplumber's extract_tables() finds them" — which made
+# the suite structurally incapable of catching F10, where a real Chase statement
+# extracted 0 transactions. Recipe derivation must work from text_lines alone.
+out_unruled = fixtures / "chase_checking_unruled.pdf"
+c6 = canvas.Canvas(str(out_unruled), pagesize=letter)
+c6.setFont("Courier", 10)
+
+c6.drawString(72, 740, "Chase Bank")
+c6.drawString(72, 724, "Account Number: 1234")
+c6.drawString(72, 708, "Statement Period: 01/01/2024 to 01/31/2024")
+c6.drawString(72, 692, "Beginning Balance: $1000.00")
+c6.drawString(72, 676, "Ending Balance: $1126.29")
+c6.drawString(72, 652, "ACCOUNT ACTIVITY")
+
+# Same rows and same reconciliation as chase_checking_simple.pdf:
+# -4.50 + 2000.00 + -73.21 + -150.00 + -1646.00 = 126.29 = 1126.29 - 1000.00 ✓
+unruled_rows = [
+    ("Date", "Description", "Amount"),
+    ("01/02/2024", "COFFEE SHOP", "-4.50"),
+    ("01/05/2024", "PAYROLL DEPOSIT", "2000.00"),
+    ("01/09/2024", "GROCERY MART", "-73.21"),
+    ("01/15/2024", "UTILITIES PAYMENT", "-150.00"),
+    ("01/22/2024", "REFUND", "-1646.00"),
+]
+unruled_y = 632
+for date, desc, amount in unruled_rows:
+    c6.drawString(72, unruled_y, date)
+    c6.drawString(168, unruled_y, desc)
+    c6.drawString(360, unruled_y, amount)
+    unruled_y -= 16
+
+c6.save()
+print(f"wrote {out_unruled}")  # noqa: T201  # one-shot generator script
+
 # ── amex_credit_simple.pdf ────────────────────────────────────────────────────
 # Credit card statement, negative_is_expense convention (charges are negative
 # row amounts). Balance anchors capture unsigned digits — r"([\d,]+\.\d{2})"
@@ -192,3 +233,101 @@ for i, row_data in enumerate(fid_rows):
 
 c5.save()
 print(f"wrote {out_fidelity}")  # noqa: T201  # one-shot generator script
+
+
+# ── chase_card_2024_01/02.pdf + chase_checking_2024_01.pdf ────────────────────
+# A matched pair: same issuer, same columns, same page count, same balances and
+# the same two amounts — differing ONLY in the credit-card disclosures. That is
+# the whole point. The sign convention is not recoverable from the numbers (both
+# reconcile), so the disclosures are the only signal that separates a card
+# statement (+150 charge = an expense) from a checking statement (+150 credit =
+# income), and a fixture pair that differed in any other respect could not prove
+# the detector keys on them.
+#
+# Balances: opening 0.00 → closing 100.00; row sum = 150.00 + (-50.00) = 100.00 ✓
+# (reconciliation sums the amounts as printed, before any sign flip).
+# The card's second month varies only the statement period and the row dates, so
+# it fingerprints identically and exercises the saved-recipe replay path.
+def _statement(
+    path: Path,
+    *,
+    disclosures: list[str],
+    rows: list[tuple[str, str, str]],
+    period: tuple[str, str],
+) -> None:
+    """Draw a one-page Chase statement with a ruled Date/Description/Amount table."""
+    c = canvas.Canvas(str(path), pagesize=letter)
+    c.setFont("Courier", 10)
+
+    header_lines = [
+        "Chase Bank",
+        "Account Number: 1234",
+        f"Statement Period: {period[0]} to {period[1]}",
+        "Beginning Balance: $0.00",
+        "Ending Balance: $100.00",
+        *disclosures,
+    ]
+    y = 740
+    for line in header_lines:
+        c.drawString(72, y, line)
+        y -= 16
+
+    col_xs = [72, 168, 360, 456]
+    top = y - 8
+    row_ys = [top - 16 * i for i in range(len(rows) + 2)]  # header + data rows
+
+    c.setLineWidth(0.5)
+    for line_y in row_ys:
+        c.line(col_xs[0], line_y, col_xs[-1], line_y)
+    for x in col_xs:
+        c.line(x, row_ys[0], x, row_ys[-1])
+
+    for i, (date, desc, amount) in enumerate([
+        ("Date", "Description", "Amount"),
+        *rows,
+    ]):
+        text_y = row_ys[i] - 12
+        c.drawString(col_xs[0] + 2, text_y, date)
+        c.drawString(col_xs[1] + 2, text_y, desc)
+        c.drawString(col_xs[2] + 2, text_y, amount)
+
+    # End-of-table sentinel (_END_ANCHOR_CANDIDATES) so the derived recipe carves
+    # a bounded row region instead of falling back to scanning the whole document.
+    c.drawString(72, row_ys[-1] - 20, "Total Transactions: 2")
+    c.save()
+    print(f"wrote {path}")  # noqa: T201  # one-shot generator script
+
+
+_CARD_DISCLOSURES = ["Minimum Payment Due: $25.00", "Credit Limit: $10,000"]
+
+_statement(
+    fixtures / "chase_card_2024_01.pdf",
+    disclosures=_CARD_DISCLOSURES,
+    rows=[
+        ("01/05/2024", "COFFEE SHOP", "150.00"),
+        ("01/20/2024", "PAYMENT THANK YOU", "-50.00"),
+    ],
+    period=("01/01/2024", "01/31/2024"),
+)
+
+_statement(
+    fixtures / "chase_card_2024_02.pdf",
+    disclosures=_CARD_DISCLOSURES,
+    rows=[
+        ("02/05/2024", "COFFEE SHOP", "150.00"),
+        ("02/20/2024", "PAYMENT THANK YOU", "-50.00"),
+    ],
+    period=("02/01/2024", "02/29/2024"),
+)
+
+# The twin: no disclosures, so the amounts read in the bank convention — the
+# -50.00 is the expense and the +150.00 the income.
+_statement(
+    fixtures / "chase_checking_2024_01.pdf",
+    disclosures=[],
+    rows=[
+        ("01/05/2024", "GROCERY MART", "-50.00"),
+        ("01/20/2024", "PAYROLL DEPOSIT", "150.00"),
+    ],
+    period=("01/01/2024", "01/31/2024"),
+)

@@ -66,8 +66,16 @@ _FILE_ACCESS_FUNCTIONS = re.compile(
 # URL scheme literals used as path arguments to DuckDB table scans when httpfs
 # is loaded. These bypass function-name matching because DuckDB accepts
 # `SELECT * FROM 'https://evil.com/data.parquet'` with no function keyword.
+#
+# This list mirrors the remote filesystems the connection seal disables
+# (`_DISABLED_FILESYSTEMS` in database.py): http/https + the S3-served schemes
+# (s3/gcs/gs/r2) + hf (HuggingFace) + az (azure, blocked at extension-load).
+# This validator and the connection seal are deliberate defense-in-depth for
+# each other: the seal is the hard boundary (DuckDB refuses the scheme even if
+# this regex misses it), and this layer rejects the query earlier with a clear
+# message. Keep the two lists in sync when either changes.
 _URL_SCHEME_PATTERNS = re.compile(
-    r"(https?://|s3://|az://|gcs://)",
+    r"(https?://|s3://|az://|gcs://|gs://|r2://|hf://)",
     re.IGNORECASE,
 )
 

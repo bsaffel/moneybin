@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import csv
-import pathlib
+
+from moneybin.database import SQLMESH_ROOT
+
+_SEEDS = SQLMESH_ROOT / "models" / "seeds"
 
 
 def test_class_assignment() -> None:
-    rows = list(
-        csv.DictReader(pathlib.Path("sqlmesh/models/seeds/categories.csv").open())
-    )
+    rows = list(csv.DictReader((_SEEDS / "categories.csv").open()))
 
     def expect(cid: str) -> str:
         return (

@@ -27,8 +27,10 @@ from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
 from moneybin.services.import_confirmation import (
     BridgePayload,
     ImportConfirmationRequiredError,
+    SignConventionProposal,
 )
 from moneybin.services.import_service import ImportService, PdfPreviewResult
+from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
 
 
 def _make_recipe() -> Recipe:
@@ -209,11 +211,16 @@ def test_pdf_preview_replay_failed_uses_replay_request_kind(
     payload = outcome.proposed.payload
     assert payload["request_kind"] == "replay_failed_re_derive"
     # The replay payload carries both the saved format name AND the actual
-    # recipe patterns the agent needs to diagnose and refresh the failed match.
+    # recipe patterns the agent needs to diagnose and refresh the failed match —
+    # minus `sign_ratified`, which is the human's ratification and neither the
+    # agent's to see nor to return (bridge.recipe_for_agent / parse_bridge_response).
     assert payload["saved_recipe_for_re_derive"] == {
         "name": "chase_checking_pdf",
-        "recipe": recipe.model_dump(),
+        "recipe": recipe.model_dump(exclude={"sign_ratified"}),
     }
+    saved = payload["saved_recipe_for_re_derive"]
+    assert isinstance(saved, dict)
+    assert "sign_ratified" not in saved["recipe"]
 
 
 @pytest.mark.parametrize(
@@ -340,3 +347,69 @@ def test_pdf_preview_non_bridge_reason_does_not_write_audit_row(
         "SELECT COUNT(*) FROM app.audit_log WHERE action = 'smart_import_parse'"
     ).fetchone()
     assert rows[0] == 0  # type: ignore[index]  # COUNT(*) always returns a 1-tuple
+
+
+def test_pdf_preview_underivable_transaction_table_escalates_to_bridge(
+    db: Database,
+    tmp_path: Path,
+    stub_pdf_pipeline: tuple[list[RouteDecision], list[PdfDocument]],
+) -> None:
+    """A transaction-shaped doc that defeated derivation reaches the agent bridge.
+
+    This is the case routing used to bury: every derivation failure reported
+    `no_transaction_table`, which is excluded from bridge escalation, so real
+    transactions landed in an opaque seed instead of being handed to the agent
+    that could read them.
+    """
+    decisions, docs = stub_pdf_pipeline
+    docs.append(_doc())
+    decisions.append(_decision(reason="transaction_table_underivable", confidence=0.0))
+
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).pdf_preview(_make_pdf_path(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Sign-convention gate — pdf_preview must agree with _import_pdf on whether an
+# auto-derived credit-card inversion needs ratification. These import a
+# committed card-statement PDF through the real extractor (not the stubbed
+# pipeline above) because the gate acts on the card disclosures the extractor
+# has to actually surface — a hand-built decision can't stand in for that.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_pdf_preview_card_statement_raises_sign_convention_confirmation(
+    db: Database, tmp_path: Path
+) -> None:
+    """Preview must gate the same auto-derived inversion `_import_pdf` gates.
+
+    Without this, an agent could preview a card statement clean, then hit the
+    confirmation requirement only on the real import — the two paths would
+    disagree about what the statement is going to do to the ledger.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+
+    with pytest.raises(ImportConfirmationRequiredError) as excinfo:
+        ImportService(db).pdf_preview(pdf)
+
+    outcome = excinfo.value.outcome
+    assert outcome.channel == "pdf"
+    assert outcome.reason == "sign_convention"
+    assert isinstance(outcome.proposed, SignConventionProposal)
+    assert outcome.proposed.sign_convention == "negative_is_income"
+
+
+@pytest.mark.integration
+def test_pdf_preview_card_statement_confirm_true_returns_deterministic_result(
+    db: Database, tmp_path: Path
+) -> None:
+    """`confirm=True` previews past the gate instead of raising."""
+    pdf = write_card_statement_pdf(tmp_path)
+
+    result = ImportService(db).pdf_preview(pdf, confirm=True)
+
+    assert isinstance(result, PdfPreviewResult)
+    assert result.deterministic is True
+    assert result.decision_reason == "passed"
+    assert result.row_count == 2

@@ -1009,6 +1009,27 @@ def set_current_profile(profile: str) -> None:
         raise ValueError(f"Invalid profile name: {e}") from e
 
 
+def clear_current_profile() -> None:
+    """Unset the current profile, restoring the "not yet resolved" state.
+
+    The counterpart to `set_current_profile`. Without it, a caller that must set a
+    profile temporarily has no way to put the process back as it found it when
+    nothing was set to begin with, and leaks its own choice into global state.
+    """
+    global _current_profile, _current_settings
+
+    if _current_profile is None:
+        return
+
+    _current_profile = None
+    _current_settings = None  # Invalidate settings cache
+    # Each profile has its own encryption key; clear the process-level key cache so
+    # the next Database() open fetches the correct one.
+    from moneybin.database import invalidate_encryption_key_cache  # noqa: PLC0415
+
+    invalidate_encryption_key_cache()
+
+
 def get_current_profile(*, auto_resolve: bool = True) -> str:
     """Get the current active user profile.
 

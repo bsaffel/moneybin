@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from moneybin import error_codes
 from moneybin.connectors.sync_errors import SyncError
 from moneybin.database import (
+    DatabaseCryptoError,
     DatabaseKeyError,
     DatabaseLockError,
     DatabaseNotInitializedError,
@@ -121,8 +122,32 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     if isinstance(exc, UserError):
         return exc
     if isinstance(exc, DatabaseNotInitializedError):
+        suggest_create = False
+        try:  # deferred imports avoid an errors<->services import cycle
+            from moneybin.config import get_current_profile
+            from moneybin.services.profile_service import ProfileService
+
+            profiles = ProfileService()
+            profile = get_current_profile(auto_resolve=False)
+            # Registration, not the directory, decides the verb. `profile create`
+            # completes an unregistered directory in place (config, database, and
+            # inbox), so it is the right advice whether or not one is already there.
+            # A *registered* profile has finished setup and is only missing its
+            # database — that is `db init`'s job, and `profile create` would refuse.
+            suggest_create = not profiles.is_registered(profile)
+        except Exception:  # noqa: BLE001 — fall back to the db-init message
+            suggest_create = False
+        if suggest_create:
+            message = (
+                "Profile not set up. Run 'moneybin profile create <name> "
+                "--init-inbox' to create the profile (config, database, and inbox)."
+            )
+        else:
+            message = (
+                "Database not found. Run 'moneybin db init' to initialize it first."
+            )
         return UserError(
-            "Database not found. Run 'moneybin db init' to initialize it first.",
+            message,
             code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
         )
     if isinstance(exc, DatabaseLockError):
@@ -155,6 +180,18 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             str(exc),
             code=error_codes.INFRA_WRONG_KEY,
             hint=database_key_error_hint(),
+        )
+    if isinstance(exc, DatabaseCryptoError):
+        # The exception already carries a crafted, actionable message (which
+        # extension is missing and why the first write needs network). Preserve
+        # it and add the one-line recovery hint the other Database*Errors carry.
+        return UserError(
+            str(exc),
+            code=error_codes.INFRA_CRYPTO_UNAVAILABLE,
+            hint=(
+                "💡 Run one write while online so DuckDB can fetch its crypto "
+                "extension from extensions.duckdb.org, then retry offline."
+            ),
         )
     if isinstance(exc, SchemaDriftError):
         return UserError(

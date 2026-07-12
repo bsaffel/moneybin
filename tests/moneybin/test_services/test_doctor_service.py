@@ -6,13 +6,12 @@ import dataclasses
 import re
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.services.doctor_service import (
     DoctorReport,
     DoctorService,
@@ -483,13 +482,7 @@ def test_dedup_reconciliation_fails_clearly_when_core_exceeds_staging(
     assert "-2" not in (result.detail or "")
 
 
-_MATCHED_MODEL_FILE = (
-    Path(__file__).resolve().parents[3]
-    / "sqlmesh"
-    / "models"
-    / "prep"
-    / "int_transactions__matched.sql"
-)
+_MATCHED_MODEL_FILE = SQLMESH_ROOT / "models" / "prep" / "int_transactions__matched.sql"
 
 _UNIONED_FULL_DDL = """\
 CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (

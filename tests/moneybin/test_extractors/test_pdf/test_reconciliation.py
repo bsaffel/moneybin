@@ -195,6 +195,27 @@ def test_negative_is_income_pass() -> None:
     assert result.passed is True
 
 
+def test_card_statement_reconciles_under_negative_is_income() -> None:
+    """A card's balance GROWS with charges: sum(raw) == closing - opening, unflipped.
+
+    Reconciliation sums raw PRE-normalization amounts (see
+    ``_sum_pre_normalization``), so a card statement ties out identically under
+    either single-amount convention — the same +150.00 charge, -50.00 payment
+    rows that pass here also pass under ``negative_is_expense``. That parity is
+    exactly why reconciliation cannot tell a card statement from a checking one;
+    pin it so nobody "fixes" reconcile to special-case cards and breaks the
+    bank-account case pinned by ``test_split_debit_credit_credit_card_convention_fails``
+    below. Numbers match the real card fixture
+    (``tests/moneybin/pdf_statement_fixtures.py::write_card_statement_pdf``).
+    """
+    rows = _signed_rows("150.00", "-50.00")
+    result = reconcile(rows, _meta("0.00", "100.00"), "negative_is_income")
+    assert result.passed is True
+    assert result.reason == "passed"
+    assert result.expected_delta == Decimal("100.00")
+    assert result.observed_delta == Decimal("100.00")
+
+
 # ---------------------------------------------------------------------------
 # split_debit_credit missing keys treated as zero
 # ---------------------------------------------------------------------------

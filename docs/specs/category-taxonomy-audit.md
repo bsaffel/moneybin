@@ -165,7 +165,7 @@ refreshed and `source_taxonomy_version` bumped in the same change.
 
 ## Migration & mechanics
 
-Category content lives in SQLMesh seeds (`sqlmesh/models/seeds/categories.csv`,
+Category content lives in SQLMesh seeds (`src/moneybin/sqlmesh/models/seeds/categories.csv`,
 `category_source_map.csv`), not migration DDL. Because M1V already added the
 `class` column and the bridge, this pass is **seed-content-only** for the common
 case: add/retire/reclass rows in the two CSVs, refresh the resolved views. A

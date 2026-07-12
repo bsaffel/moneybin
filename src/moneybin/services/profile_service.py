@@ -100,11 +100,88 @@ class ProfileService:
             raise ValueError(f"Invalid profile name: {name!r}")
         return profile_dir
 
+    def exists(self, name: str) -> bool:
+        """True if the profile directory exists at all — registered or not.
+
+        `create()` refuses on the bare directory, so callers offering recovery
+        advice need this to know whether `profile create` is even open to them.
+        """
+        try:
+            return self._profile_dir(name).exists()
+        except ValueError:
+            return False
+
+    def is_registered(self, name: str) -> bool:
+        """True if the profile was set up (has a config.yaml), not just db-init'd.
+
+        Distinguishes a fully-registered profile from a bare directory a manual
+        `db init` may have left behind — the two need different onboarding
+        guidance.
+        """
+        try:
+            return (self._profile_dir(name) / "config.yaml").exists()
+        except ValueError:
+            return False
+
+    def has_database(self, name: str) -> bool:
+        """True if the profile directory already holds a database file.
+
+        `create()` adopts an unregistered directory and initializes a database only
+        when one is absent, so a caller that wants to tell the user which of the two
+        happened has to ask before calling. (It reports on the file's presence, not
+        its health — see `db_path` / `system doctor` for that.)
+        """
+        try:
+            return (self._profile_dir(name) / "moneybin.duckdb").exists()
+        except ValueError:
+            return False
+
+    def ensure_registered(self, name: str, *, init_inbox: bool = False) -> Path:
+        """Scaffold the non-database half of a profile: logs, temp, inbox, config.
+
+        A bare `moneybin db init` leaves a directory (and database) that `list()`
+        hides — it filters on `config.yaml` — and that never got an inbox. This
+        fills in what's missing, in place, without touching an existing database.
+
+        `create()` composes this for both the fresh and the adopted path, so there
+        is one scaffolding routine rather than two that can drift. Callers that
+        must run their own checks *before* scaffolding (e.g. `DemoService`, whose
+        data-safety guard has to clear first) call it directly.
+
+        `config.yaml` is written LAST because it is the commit marker: `list()`
+        shows a profile once it exists, and `create()` refuses once it does. Do NOT
+        move it earlier — if it were written before the inbox (or before the caller's
+        database init), a failure half-way would leave a profile that is visible,
+        incomplete, and no longer completable by `create`: the dead end this whole
+        contract exists to remove.
+
+        Idempotent: a fully-registered profile is left alone.
+        """
+        normalized = normalize_profile_name(name)
+        profile_dir = self._profile_dir(name)
+        with _restrictive_umask():
+            (profile_dir / "logs").mkdir(mode=0o700, exist_ok=True)
+            (profile_dir / "temp").mkdir(mode=0o700, exist_ok=True)
+        if init_inbox:
+            self._init_inbox(normalized)
+        if not (profile_dir / "config.yaml").exists():
+            generate_profile_config(profile_dir, normalized)
+            logger.debug(f"Completed registration for profile: {normalized}")
+        return profile_dir
+
     def create(self, name: str, *, init_inbox: bool = False) -> Path:
-        """Create a new profile with directory structure and config.
+        """Create a profile, or complete an unregistered one, in place.
 
         Creates ``<base>/profiles/<normalized_name>/`` with subdirectories
-        ``logs/`` and ``temp/``, and a ``config.yaml`` with sensible defaults.
+        ``logs/`` and ``temp/``, a ``config.yaml`` with sensible defaults, and an
+        encrypted database.
+
+        A directory with no ``config.yaml`` is *adopted*, not refused: a bare
+        ``moneybin db init``, a hand ``mkdir``, or a partial delete leaves exactly
+        that, and refusing it would strand the profile with no repair verb
+        (``profile list`` hides it, and it has no inbox). Adoption never touches an
+        existing database and never rolls the directory back — it may already hold
+        the user's data.
 
         Args:
             name: Profile name (will be normalized to lowercase with hyphens).
@@ -112,10 +189,11 @@ class ProfileService:
                 ``<inbox_root>/<normalized_name>/{inbox,processed,failed}/``.
 
         Returns:
-            Path to the new profile directory.
+            Path to the profile directory.
 
         Raises:
-            ProfileExistsError: If a profile with the normalized name already exists.
+            ProfileExistsError: If a *registered* profile (one with a
+                ``config.yaml``) already exists under the normalized name.
             ValueError: If the name contains no valid characters.
         """
         normalized = normalize_profile_name(name)
@@ -124,25 +202,44 @@ class ProfileService:
         # other per-profile state; not readable by other users. Restrictive
         # umask makes the perms apply at creation time — no window where the
         # dir exists at the umask-default (typically 0o755).
+        #
+        # mkdir(exist_ok=False) doubles as the existence check, so the
+        # registered-vs-bare decision happens atomically against the filesystem
+        # rather than in a check-then-act window.
         try:
             with _restrictive_umask():
                 profile_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+            adopted = False
         except FileExistsError:
-            raise ProfileExistsError(f"Profile '{normalized}' already exists") from None
+            if (profile_dir / "config.yaml").exists():
+                raise ProfileExistsError(
+                    f"Profile '{normalized}' already exists"
+                ) from None
+            adopted = True
+            # An adopted directory was made by something else — `db init`, or a hand
+            # `mkdir` — at whatever the ambient umask was, typically 0o755. The
+            # encrypted database and privacy log are about to live behind it under
+            # our name, so it gets the same 0o700 the fresh path guarantees rather
+            # than keeping perms we never chose.
+            profile_dir.chmod(0o700)
         try:
-            with _restrictive_umask():
-                (profile_dir / "logs").mkdir(mode=0o700)
-                (profile_dir / "temp").mkdir(mode=0o700)
-            generate_profile_config(profile_dir, normalized)
-            self._init_database(profile_dir, normalized)
-            if init_inbox:
-                self._init_inbox(normalized)
+            # Database before registration: `_init_database` is the step that
+            # actually fails in the field (a locked or unavailable OS keychain), and
+            # `ensure_registered` writes the `config.yaml` commit marker. Registering
+            # first would leave a failed create visible to `list()` and refused by
+            # `create()` — stranding the user exactly as before.
+            if not (profile_dir / "moneybin.duckdb").exists():
+                self._init_database(profile_dir, normalized)
+            self.ensure_registered(normalized, init_inbox=init_inbox)
         except Exception:
-            # Roll back the partially created profile so the user can retry
-            # without hitting ProfileExistsError.
-            shutil.rmtree(profile_dir, ignore_errors=True)
+            # Roll back only a directory we made ourselves. An adopted directory
+            # may hold a `db init`'d database — the thing the caller is trying to
+            # recover — and rmtree would destroy it. It stays unregistered, so a
+            # retry of `create` still completes it.
+            if not adopted:
+                shutil.rmtree(profile_dir, ignore_errors=True)
             raise
-        logger.debug(f"Created profile: {normalized}")
+        logger.debug(f"{'Completed' if adopted else 'Created'} profile: {normalized}")
         return profile_dir
 
     @staticmethod

@@ -20,13 +20,13 @@ from datetime import datetime
 
 import pandas as pd
 import pyarrow as pa
-
-from moneybin.investments.cost_basis import compute_lots_and_gains
-from moneybin.investments.sqlmesh_loader import load_engine_inputs
 from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
     ExecutionContext,
     model,
 )
+
+from moneybin.investments.cost_basis import compute_lots_and_gains
+from moneybin.investments.sqlmesh_loader import load_engine_inputs
 
 
 @model(

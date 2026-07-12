@@ -33,7 +33,7 @@ but still need no external services.
 ## Project shape
 
 MoneyBin is a Python + DuckDB + SQLMesh + Typer + MCP application. Code lives
-under `src/moneybin/`; SQL transformations under `sqlmesh/`; tests under
+under `src/moneybin/`; SQL transformations under `src/moneybin/sqlmesh/`; tests under
 `tests/`. Read these as you need them:
 
 - [`AGENTS.md`](AGENTS.md) — critical rules, key abstractions, code standards.
@@ -142,7 +142,7 @@ make check test
 
 Runs Ruff format, Ruff lint, Pyright, and unit tests. CI runs the same checks
 plus integration, e2e, and scenarios. SQL changes also need
-`uv run sqlmesh -p sqlmesh format`.
+`uv run sqlmesh -p src/moneybin/sqlmesh format`.
 
 ### 6. Commit and PR
 

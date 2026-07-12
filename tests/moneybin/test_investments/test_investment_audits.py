@@ -25,13 +25,13 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.database import Database, sqlmesh_context
+from moneybin.database import SQLMESH_ROOT, Database, sqlmesh_context
 from tests.moneybin.db_helpers import (
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
     create_core_tables,
 )
 
-_AUDITS_DIR = Path(__file__).resolve().parents[3] / "sqlmesh" / "audits"
+_AUDITS_DIR = SQLMESH_ROOT / "audits"
 _AUDIT_PATH = _AUDITS_DIR / "fct_investment_transactions_sign_convention.sql"
 _FK_AUDIT_PATH = _AUDITS_DIR / "fct_investment_transactions_fk_integrity.sql"
 

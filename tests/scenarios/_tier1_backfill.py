@@ -26,7 +26,7 @@ from moneybin.validation.assertions import (
 from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner.loader import SetupSpec
 
-# Schema enumerated by hand from sqlmesh/models/core/fct_transactions.sql.
+# Schema enumerated by hand from src/moneybin/sqlmesh/models/core/fct_transactions.sql.
 # Updating this requires inspecting the SQL — never paste a query result.
 # Pyright treats DECIMAL/DATE/etc. types as DuckDB renders them in
 # information_schema.columns.
@@ -66,7 +66,7 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "loaded_at": "TIMESTAMP",
     # Per-row freshness column added by core-updated-at-convention spec;
     # MAX of loaded_at, categorized_at, and per-txn aggregates of note/tag/split
-    # timestamps. See sqlmesh/models/core/fct_transactions.sql outer SELECT.
+    # timestamps. See src/moneybin/sqlmesh/models/core/fct_transactions.sql outer SELECT.
     "updated_at": "TIMESTAMP",
     "is_transfer": "BOOLEAN",
     "transfer_pair_id": "VARCHAR",
@@ -77,7 +77,7 @@ FCT_TRANSACTIONS_SCHEMA: dict[str, str] = {
     "transaction_year_month": "VARCHAR",
     "transaction_year_quarter": "VARCHAR",
     # Curation columns added by transaction-curation spec (V007); see
-    # sqlmesh/models/core/fct_transactions.sql notes_agg/tags_agg/splits_agg CTEs.
+    # src/moneybin/sqlmesh/models/core/fct_transactions.sql notes_agg/tags_agg/splits_agg CTEs.
     "notes": 'STRUCT(note_id VARCHAR, "text" VARCHAR, author VARCHAR, created_at TIMESTAMP)[]',
     "note_count": "BIGINT",
     "tags": "VARCHAR[]",

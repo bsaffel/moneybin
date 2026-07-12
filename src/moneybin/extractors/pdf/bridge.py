@@ -44,6 +44,14 @@ TRANSPARENCY_NOTICE = (
 # and bounds payload size on dense statements.
 _TABLE_PREVIEW_ROW_CAP = 5
 
+# Recipe fields the agent neither sees nor sets. ``sign_ratified`` records a
+# human's explicit `sign=` override and disarms the polarity guard for a format
+# forever — see ``parse_bridge_response``. Both halves of that contract live here
+# so they cannot drift: ``recipe_for_agent`` strips the field on the way out (an
+# honest agent never holds the key to echo back), ``parse_bridge_response``
+# rejects it on the way in.
+_AGENT_EXCLUDED_RECIPE_FIELDS = frozenset({"sign_ratified"})
+
 RequestKind = Literal["propose_recipe", "replay_failed_re_derive"]
 
 
@@ -121,6 +129,18 @@ def build_bridge_request(
     )
 
 
+def recipe_for_agent(recipe: Recipe) -> dict[str, Any]:
+    """Serialize a saved Recipe for the bridge request, minus what the agent can't set.
+
+    Used for ``saved_recipe_for_re_derive``: the agent inspects the saved patterns
+    to propose a refreshed version, so it must see them — but not
+    ``sign_ratified``. Showing a field the response is then rejected for naming
+    would be an incoherent contract, and it would teach the agent the exact key it
+    would need to escalate with.
+    """
+    return recipe.model_dump(exclude=set(_AGENT_EXCLUDED_RECIPE_FIELDS))
+
+
 def parse_bridge_response(payload: object) -> BridgeResponse:
     """Validate an agent's response; raise ``BridgeResponseError`` on bad shape.
 
@@ -131,7 +151,8 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
     ``Recipe.model_validate`` enforces the security bounds (Req 9b — pattern
     length + nested-quantifier check) before the apply-side executor ever
     runs against the agent's patterns, so a malicious bridge response cannot
-    bypass those guards by going through this seam.
+    bypass those guards by going through this seam. ``sign_ratified`` is
+    rejected outright for the same reason — see below.
     """
     if not isinstance(payload, dict):
         raise BridgeResponseError("bridge response must be a dict")
@@ -151,6 +172,23 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
     # the source dict (untrusted JSON) types its values as object.
     typed_recipe = cast(dict[str, Any], raw_recipe)
     typed_rows = cast(list[dict[str, Any]], raw_rows)
+    # `sign_ratified` records a HUMAN's explicit `sign=` override, and it disarms
+    # the polarity guard (auto_derive.recipe_polarity_fits) for this format on
+    # every future statement, in both directions. The bridge is not the human:
+    # the apply path skips the sign confirm gate by design, and the recipe it
+    # returns is persisted to app.pdf_formats — so an agent able to set the flag
+    # here would self-grant a permanent, silent ledger inversion, the exact
+    # outcome the gate exists to prevent. Reject rather than coerce to False: an
+    # attempted bypass is a signal worth surfacing, not a field worth ignoring.
+    # recipe_for_agent strips these on egress, so an honest agent never sees one.
+    named = _AGENT_EXCLUDED_RECIPE_FIELDS & typed_recipe.keys()
+    if named:
+        raise BridgeResponseError(
+            f"bridge response 'recipe' must not set {sorted(named)} — these record "
+            "a user's explicit sign-convention override and cannot be granted by "
+            "the agent. Omit the key; the 'sign_convention' you declare is "
+            "applied as-is, and the user overrides it with the CLI's --sign flag."
+        )
     try:
         recipe = Recipe.model_validate(typed_recipe)
     except Exception as e:  # noqa: BLE001 — pydantic ValidationError + bound-validator ValueErrors

@@ -41,7 +41,7 @@ data/
 *.xlsx
 *.xls
 # SQLMesh seed data is safe to track (static reference data, not financial)
-!sqlmesh/models/seeds/*.csv
+!src/moneybin/sqlmesh/models/seeds/*.csv
 # Test fixtures are synthetic/non-sensitive and must be tracked for CI
 !tests/fixtures/*.csv
 !tests/fixtures/*.pdf
@@ -71,8 +71,12 @@ logs/
 .ipynb_checkpoints
 
 # SQLMesh
-sqlmesh/.cache/
-sqlmesh/logs/
+src/moneybin/sqlmesh/.cache/
+src/moneybin/sqlmesh/logs/
+
+# Profile state materialized inside the package dir when MONEYBIN_HOME resolves
+# in-tree. Never shipped; tests/e2e/test_wheel_packaging.py would false-fail on it.
+src/moneybin/profiles/
 
 # Environment variables and secrets
 .env

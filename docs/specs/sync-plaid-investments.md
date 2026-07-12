@@ -1154,11 +1154,11 @@ transactions), which also seed the golden files.
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql` | DDL — provider-owned raw; per-item, per-pull holdings receipt, written even when the item reports ZERO positions (the sole source of "which snapshot is newest") |
 | `src/moneybin/sql/schema/app_security_links.sql` | DDL — cross-cutting `app.*`, registered in `_NON_PROVIDER_SCHEMA_FILES` |
 | `src/moneybin/sql/schema/app_security_link_decisions.sql` | DDL — cross-cutting `app.*` |
-| `sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
-| `sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
-| `sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
-| `sqlmesh/models/prep/stg_plaid__investment_holdings_snapshots.sql` | Staging view (passthrough) — the newest-snapshot source for `core.dim_holdings` and the doctor's holdings checks |
-| `sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the **first** snapshot per `(account, source_origin)` (`MIN(extracted_at)`): draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_holdings_snapshots.sql` | Staging view (passthrough) — the newest-snapshot source for `core.dim_holdings` and the doctor's holdings checks |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the **first** snapshot per `(account, source_origin)` (`MIN(extracted_at)`): draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
 | `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
 | `tests/fixtures/plaid_investments_sync_response.json` | Golden file (captured from Sandbox) |
@@ -1168,9 +1168,9 @@ transactions), which also seed the golden files.
 
 | File | Change |
 |---|---|
-| `sqlmesh/models/core/fct_investment_transactions.sql` | Plaid transaction CTE **and** `stg_plaid__opening_lots` CTE, both `UNION ALL`'d; `provider_type`/`provider_subtype` columns |
-| `sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
-| `sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
+| `src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql` | Plaid transaction CTE **and** `stg_plaid__opening_lots` CTE, both `UNION ALL`'d; `provider_type`/`provider_subtype` columns |
+| `src/moneybin/sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
+| `src/moneybin/sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |

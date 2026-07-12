@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS app.pdf_formats (
     routing VARCHAR NOT NULL CHECK (routing IN ('transactions', 'seed')), -- Outcome this format produces
     field_mapping JSON,                  -- Destination field -> extracted field (transactions routing); NULL for seed
     seed_alias VARCHAR,                  -- View alias for routing='seed' (raw.pdf_<seed_alias>); NULL for transactions
-    sign_convention VARCHAR,             -- negative_is_expense | negative_is_income | split_debit_credit (transactions)
+    sign_convention VARCHAR,             -- negative_is_expense | negative_is_income (credit cards, confirm-gated) | split_debit_credit (transactions)
     date_format VARCHAR,                 -- strftime format for date parsing
     number_format VARCHAR NOT NULL DEFAULT 'us', -- us | european | swiss_french | zero_decimal
     source VARCHAR NOT NULL DEFAULT 'detected', -- detected (bridge-proposed + vetted) | manual

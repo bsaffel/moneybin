@@ -298,6 +298,7 @@ def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
     - a subsequent deterministic import of the same layout REPLAYS the
       bridge-persisted recipe (matched_format_name set) — closing the ladder
     """
+    from moneybin.extractors.pdf.bridge import recipe_for_agent
     from moneybin.extractors.pdf.extractor import PDFExtractor
     from moneybin.extractors.pdf.routing import route_pdf_import
 
@@ -322,7 +323,11 @@ def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
         assert decision.recipe is not None
 
         bridge_response = {
-            "recipe": decision.recipe.model_dump(),
+            # recipe_for_agent, not model_dump: this is the exact shape the real
+            # bridge hands the agent — `sign_ratified` stripped, because a response
+            # naming it is rejected (it is the human's ratification, not the
+            # agent's to grant).
+            "recipe": recipe_for_agent(decision.recipe),
             # The agent's claimed rows: only the COUNT is used by apply (the
             # re-executed rows are what load); pass the YAML rows for realism.
             "rows": [dict(t) for t in expected_txns],
@@ -374,3 +379,59 @@ def test_bridge_apply_round_trip_persists_and_replays(tmp_path: Path) -> None:
         )
         # Still exactly one format row — replay reuses, never re-saves.
         assert _count_pdf_formats(db) == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 5: Unruled statement (no ruling lines) still routes to transactions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_unruled_chase_statement_routes_transactions(tmp_path: Path) -> None:
+    """A statement with no ruling lines routes to transactions, not the seed path.
+
+    Regression guard for F10. pdfplumber's extract_tables() keys on drawn ruling
+    lines; real bank statements are whitespace-aligned without them, so
+    doc.tables is empty and the rows exist only in doc.text_lines. Recipe
+    derivation previously read doc.tables exclusively and went blind — a real
+    Chase statement with a clean ACCOUNT ACTIVITY section extracted 0
+    transactions and landed as an opaque seed.
+
+    This fixture is chase_checking_simple's twin with the ruling lines removed,
+    so its ground truth is identical. Both must import the same 5 transactions.
+    """
+    gt = _load_yaml("chase_checking_unruled")
+    assert gt["expected_outcome"] == "transactions"
+
+    pdf_src = _pdf_path("chase_checking_unruled")
+    pdf_copy = tmp_path / "chase_checking_unruled.pdf"
+    shutil.copy(pdf_src, pdf_copy)
+
+    with scenario_env(_minimal_scenario("chase-unruled")) as (db, _tmp, _env):
+        svc = ImportService(db)
+        result = svc.import_file(pdf_copy, refresh=False)
+
+        expected_txn_count = len(gt["expected_transactions"])
+        assert result.transactions == expected_txn_count, (
+            f"Unruled statement extracted {result.transactions} transactions, "
+            f"expected {expected_txn_count} — it likely fell back to the seed path"
+        )
+        assert result.import_id is not None
+
+        rows = _fetch_tabular_rows(db, result.import_id)
+        assert len(rows) == expected_txn_count
+
+        for i, (row, expected) in enumerate(
+            zip(rows, gt["expected_transactions"], strict=True)
+        ):
+            assert row["date"] == expected["date"], (
+                f"Row {i} date mismatch: got {row['date']!r}, expected {expected['date']!r}"
+            )
+            assert row["amount"] == Decimal(expected["amount"]), (
+                f"Row {i} amount mismatch: got {row['amount']}, expected {expected['amount']}"
+            )
+            assert row["description"] == expected["description"], (
+                f"Row {i} description mismatch: got {row['description']!r}, "
+                f"expected {expected['description']!r}"
+            )

@@ -95,17 +95,19 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 - **Action hints** — Successful responses include an `actions[]` array suggesting next-step tool calls (e.g., after a successful import, an action hint points at `refresh_run`), so agents can chain without prompt-side instructions for common flows. -> [MCP server guide](guides/mcp-server.md)
 - **Curated schema resource** — `moneybin://schema` MCP resource (and `sql_schema` tool mirror) exposes core + select app interface tables with column comments and example queries. -> [Data model reference](reference/data-model.md)
 - **Read-only SQL — privacy-safe on both surfaces** — `sql_query` (MCP) and `moneybin sql query` (CLI) run read-only `SELECT`/`WITH`/`DESCRIBE`/`SHOW`/`PRAGMA`/`EXPLAIN` against the `core` and `app` schemas, sharing one enforcement primitive: writes and file-access functions are blocked, and each output column is classified via sqlglot lineage so CRITICAL fields (account/routing numbers) are masked (`****<last4>`) — raw SQL is not a privacy bypass on either surface. App-state mutations (notes, tags, splits, rules) flow through dedicated tools, not raw SQL. (`moneybin db query`/`shell`/`ui` are raw, unmasked operator access.)
-- **MCP install across nine clients** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), ChatGPT Desktop. `moneybin mcp install --client <name>` writes the client config. -> [MCP clients guide](guides/mcp-clients.md)
+- **MCP install across eight clients** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). `moneybin mcp install --client <name>` writes the client config. ChatGPT on the **web/mobile** needs a remote MCP server, which arrives with M3D. -> [MCP clients guide](guides/mcp-clients.md)
 - **First-run setup, in session** — Connect before creating a profile and MoneyBin sets itself up on the first tool call instead of failing. Elicitation-capable clients (e.g. Claude Desktop) are prompted for a profile name and the encrypted profile is created in place — no terminal step, no restart; tools-only clients get one clear message pointing at `moneybin profile create`. -> [MCP server guide](guides/mcp-server.md)
 - **Stability promise** — Pre-v1. Tool names and envelope fields may change before the v1 launch; the CHANGELOG records every rename, and removed tools stay as deprecation-aliased shims for one minor release.
 
 ## CLI
 
+- **`moneybin demo` — try it with no real data** — One command sets up an isolated `demo` profile with synthetic data, runs the pipeline to a clean `system doctor`, and shows net worth plus next steps. `--persona basic|family|freelancer` picks the data shape; re-running rebuilds the demo profile from scratch. It only ever touches the dedicated `demo` profile, so it can never write into a real one. The fastest way to see what MoneyBin does before connecting anything real.
 - **Typer v2 taxonomy** — Path-prefix-verb-suffix naming; entity groups (`accounts`, `transactions`), reference-data groups (`categories`, `merchants`), `reports` for cross-domain rollups, `system` for orientation. -> [CLI reference](guides/cli-reference.md)
 - **`--output json` parity with MCP** — Every read command exposes `--output json` and returns the same `{status, summary, data, actions, error?, next_cursor?}` envelope as the corresponding MCP tool, redacted by the same middleware. Agents driving the shell are first-class. -> [CLI reference](guides/cli-reference.md)
 - **Structured error envelopes** — Runtime errors emit a machine-readable envelope to stdout when `--output json` is active.
 - **Field projection** — `--json-fields` on `moneybin transactions list` selects a subset of fields; other read-only commands will adopt progressively.
 - **Shell completion** — `moneybin --install-completion` / `--show-completion`.
+- **Version** — `moneybin --version` prints the installed MoneyBin version.
 
 ## SQL access
 

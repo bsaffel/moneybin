@@ -1,9 +1,13 @@
 """Tests for the cross-cutting user-error classifier."""
 
+from collections.abc import Generator
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from moneybin import error_codes
-from moneybin.database import DatabaseKeyError
+from moneybin.database import DatabaseCryptoError, DatabaseKeyError
 from moneybin.errors import UserError, classify_user_error
 
 
@@ -18,6 +22,24 @@ def test_classify_database_key_error_returns_user_error() -> None:
     assert result.code == error_codes.INFRA_WRONG_KEY
     assert "locked" in result.message
     assert result.hint == "Run: moneybin db unlock"
+
+
+def test_classify_database_crypto_error_returns_user_error() -> None:
+    """DatabaseCryptoError maps to a UserError instead of an unclassified crash.
+
+    Raised when the OpenSSL crypto module (httpfs) can't be installed/loaded on
+    a write connection — reachable on a machine with no cached httpfs and no
+    network on its first encrypted write. Like its Database*Error siblings it
+    must reach the CLI/MCP structured-error contract, not surface as a raw
+    traceback (CLI) or a generic masked envelope (MCP).
+    """
+    result = classify_user_error(
+        DatabaseCryptoError("needs httpfs for OpenSSL crypto; no network")
+    )
+    assert result is not None
+    assert result.code == error_codes.INFRA_CRYPTO_UNAVAILABLE
+    # The exception's own crafted message survives to the surface.
+    assert "httpfs" in result.message
 
 
 def test_classify_file_not_found_returns_user_error() -> None:
@@ -136,3 +158,91 @@ def test_classify_database_lock_error() -> None:
     result = classify_user_error(err)
     assert result is not None
     assert result.code == error_codes.INFRA_DATABASE_LOCKED
+
+
+@pytest.fixture(autouse=True)
+def _clean_active_profile() -> Generator[None, None, None]:  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    """Reset the process-wide active profile so DB-not-init guidance is deterministic."""
+    from moneybin import config
+
+    original = config._current_profile  # pyright: ignore[reportPrivateUsage]
+    config._current_profile = None  # pyright: ignore[reportPrivateUsage]
+    try:
+        yield
+    finally:
+        config._current_profile = original  # pyright: ignore[reportPrivateUsage]
+
+
+def test_db_not_initialized_unregistered_points_at_profile_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    set_current_profile("ghost")  # active profile, but no config.yaml under tmp_path
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" in result.message
+    assert result.code == error_codes.INFRA_DATABASE_NOT_INITIALIZED
+
+
+def test_db_not_initialized_bare_directory_points_at_profile_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A directory that exists but was never registered. This used to be steered at
+    # `db init` because `profile create` refused on the bare directory — a dead end
+    # dressed up as advice: `db init` would build a database into a profile that
+    # `profile list` still hides and that has no inbox. `create()` now completes the
+    # directory in place, so the guidance names the verb that actually finishes setup.
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    (tmp_path / "profiles" / "bare").mkdir(parents=True)  # no config.yaml, no db
+    set_current_profile("bare")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" in result.message
+
+
+def test_db_not_initialized_registered_profile_points_at_db_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fully registered profile whose database is missing (deleted, or never
+    # init'd). Setup is done; only the database is absent — so `db init` is the
+    # right verb, and `profile create` would (correctly) refuse.
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    with patch.object(ProfileService, "_init_database"):  # no keychain in unit tests
+        ProfileService().create("registered")
+    set_current_profile("registered")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "profile create" not in result.message
+    assert "db init" in result.message.lower()
+
+
+def test_db_not_initialized_registered_points_at_db_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import patch as _patch
+
+    from moneybin.config import set_current_profile
+    from moneybin.database import DatabaseNotInitializedError
+    from moneybin.services.profile_service import ProfileService
+
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    with _patch.object(ProfileService, "_init_database"):
+        ProfileService().create("real")  # registered: config.yaml written
+    set_current_profile("real")
+
+    result = classify_user_error(DatabaseNotInitializedError("missing"))
+    assert result is not None
+    assert "db init" in result.message.lower()

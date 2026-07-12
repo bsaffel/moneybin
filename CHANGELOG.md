@@ -10,9 +10,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Credit-card PDF statements now import with correct signs.** A statement that
+  names itself a credit card (via its required disclosures — "minimum payment",
+  "credit limit", and the like) derives the inverted convention
+  (`negative_is_income`) behind an explicit confirmation: charges record as
+  expenses, payments as credits. Previously every card statement was refused,
+  because the sign convention could not be expressed and guessing it would have
+  silently inverted the ledger. The confirmation is once per statement format —
+  confirm it is a card (`moneybin import files <path> --confirm`), or overrule a
+  false detection (`--sign negative_is_expense`), and that override survives every
+  future replay of the format. Confirming a card also types its account as
+  `credit`, so it is counted as a liability in net worth. (MCP surfaces the same
+  confirmation and, for now, routes it to the CLI to resolve; in-place
+  confirmation is planned.)
+
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`moneybin --version`** prints the installed MoneyBin version. (#316)
+- **PyPI release pipeline with Trusted Publishing.** A tagged release builds the
+  wheel and publishes it to PyPI over OIDC Trusted Publishing (no stored token),
+  gated on a clean-install smoke test across macOS and Linux on Python 3.12 and
+  3.13 and a post-publish check that installs MoneyBin from the real index. (#316)
+- **`moneybin demo` evaluator preset (M3A).** One command sets up an isolated
+  `demo` profile, generates synthetic data (`--persona
+  basic`/`family`/`freelancer`), runs the full pipeline — match, and categorization
+  by the real engine against the merchants the generator invented — to a clean
+  `system doctor`, activates the profile, and prints net worth plus next steps: a
+  from-install path to a working product with no real financial data. It always
+  targets the dedicated `demo` profile (there is no `--profile` target, so it can
+  never be pointed at a real one), and re-running rebuilds that profile's database
+  from scratch and regenerates (deterministic by default); `--yes` for
+  non-interactive use. (#310)
 - **Plaid Investments sync (M1G.4).** Securities, investment transactions, and
   dated holdings snapshots (with per-lot tax data) now ride the existing
   `sync pull` job into five new `raw.plaid_*` tables and flow into the
@@ -45,7 +75,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   validation: reinvest/corporate-action pairing (`event_group_id`) is not yet
   linked, fee inclusion in `amount` is assumed (with a drift guard), and
   every stock split routes to manual review instead of auto-deriving a
-  multiplier. (#TBD)
+  multiplier. (#318)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an
   investment-transaction ledger (`investments add` — buy, sell, reinvest,
@@ -251,6 +281,25 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **Outside a repo checkout, `moneybin mcp install` now writes a config that runs
+  the published package, pinned to the installed version.** The generated client
+  entry uses `uv tool run --from moneybin==X.Y.Z` instead of pointing at a local
+  checkout. The pin is deliberate: MoneyBin runs forward-only schema migrations
+  when it opens your database, so an unpinned config would let a newly released
+  version install itself on the client's next restart and migrate your encrypted
+  ledger with no action from you. Re-run `moneybin mcp install` to move to a newer
+  version. (#316)
+- **MCP client guide corrected against what the clients actually do.** The Claude
+  Desktop section now leads with `.mcpb` desktop extensions as the vendor-blessed
+  path (config-file JSON is legacy-but-supported; MoneyBin's own bundle is still
+  M3B), and documents two failures that look like bugs but aren't: Cowork's *remote*
+  sessions can never see a local MCP server, and managed-org policy flags
+  (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`) can disable local MCP
+  outright. The Windsurf section now warns that **MoneyBin's 102 tools exceed
+  Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
+  dropped, so users must disable some by hand. The Gemini CLI section explains why
+  MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
+  our surface includes write tools). (#315)
 - **Accepting a link merge now requires a human confirm on every surface.** The
   account, merchant, and security link tools (`accounts_links_set`,
   `merchants_links_set`, `investments_securities_links_set`) gate the accept
@@ -259,7 +308,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   These proposals are raised precisely *because* identity resolution could not
   bind unambiguously, so accepting one is never a decision an agent should make
   alone. Accept and reject are now explicit rather than inferred from whether a
-  target id was supplied.
+  target id was supplied. (#318)
 
 - **`core.dim_categories` gains an accounting `class` (M1V).** Every category
   now carries `class` (`income` | `expense` | `transfer` | `debt`), assigned
@@ -348,19 +397,126 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **An installed MoneyBin could not create a profile or run a transform.** The
+  built wheel shipped none of the SQL schema, migrations, SQLMesh models, or
+  synthetic demo data it needs at runtime — the `package-data` globs pointed
+  outside the package directory, which setuptools silently ignores. The SQLMesh
+  project now lives inside the package (`src/moneybin/sqlmesh/`), every runtime
+  resource ships in the wheel, and the packaged contents are verified against the
+  real built wheel. (#316)
+- **PDF statements with no ruled table no longer import zero transactions.**
+  Recipe derivation picked its transaction table from `pdfplumber`'s table
+  detection, which only fires on *drawn ruling lines* — while the recipe
+  executor reads the document's text lines. Real bank statements are typeset
+  with whitespace-aligned columns and no rules, so derivation went blind on
+  exactly the input the executor consumes: a real Chase statement with a clean
+  `ACCOUNT ACTIVITY` section extracted **0 transactions** — its rows either
+  landed in an opaque seed table or, for a statement with no ruled content
+  anywhere, failed outright with "No tables extracted from PDF". Derivation now
+  falls back to reconstructing the table from text lines using the same column
+  splitter the recipe executes with. Statements already imported as seeds will
+  import correctly on re-import. (#313)
+- **Credit-card statements no longer import their charges as income.** The PDF
+  importer assumes "negative = expense" for every single-amount-column layout —
+  the deposit-account convention — and its only safeguard was "does this
+  statement contain a negative amount?" A card statement carries the opposite
+  convention (charges positive, payments negative), and almost always has a
+  payment or refund row, so it sailed through that check and every charge was
+  booked as **income**. Reconciliation could not catch it: it sums the raw signed
+  amounts, which tie out to the balance change with the signs exactly backwards.
+  The importer now reads the statement's own disclosures (minimum payment, credit
+  limit, APR) instead of guessing at its arithmetic, and hands a card statement to
+  the AI agent rather than importing it under the wrong convention. Signs cannot
+  be inferred from the amounts alone — a checking statement and a card statement
+  have identical sign distributions. This also closes the same hole on the
+  saved-format replay path, which ran before derivation and skipped the guard
+  entirely. (#313)
+- **CSV/Excel imports no longer silently drop legitimately identical rows.**
+  Transaction ids for sources without a native id are content hashes, so two
+  genuinely distinct same-day purchases with the same amount and description
+  (two $5.00 coffees at one shop) hashed identically and the staging dedup
+  dropped one — real transactions, gone, with no error. The second and later
+  rows of identical content now carry an occurrence suffix, matching the scheme
+  PDF transaction ids already used. Ids of rows that were never colliding are
+  unchanged, so **re-importing an affected file recovers the dropped rows** and
+  leaves everything else alone. (#313)
+- **PDF statements sharing a filename no longer eat each other's rows.** Seed
+  rows were keyed on `(alias, page, row index, content)`, and the alias is just
+  the filename stem — so `2024-01/chase.pdf` and `2024-02/chase.pdf` collided,
+  and a recurring charge landing at the same row index in both months (an
+  identical subscription line) was silently discarded from the second statement.
+  The row key now includes the document's content identity. This re-keys existing
+  `raw.pdf_seeds` rows: revert an affected PDF import (`moneybin import revert
+  <id>`) before re-importing it, or the statement is seeded twice. (#313)
+- **A PDF the importer can't parse now reaches the AI agent instead of being
+  buried.** Every recipe-derivation failure reported the same reason
+  (`no_transaction_table`), which is excluded from agent escalation on the
+  grounds that the document isn't a statement at all. So a document that *was* a
+  statement and merely defeated the parser was silently filed away as
+  unparseable rather than handed to the AI agent that could read it — including
+  the single most common bank layout (separate "Withdrawals" and "Deposits"
+  columns), which the deterministic parser defers by design. Those now escalate.
+  Genuinely non-transactional PDFs (a brokerage positions statement) are routed
+  to the seed store as before, and so are statements in a number locale the
+  importer cannot replay — escalating those would send your statement to an AI
+  provider for a result it provably cannot use. (#313)
+- **`mcp install --client chatgpt-desktop` now actually installs.** It printed a
+  config snippet and told the user to "choose the local/stdio option" in ChatGPT's
+  Connectors UI, calling that "the supported, authenticated path" — but it wrote
+  nothing, so following the instructions got you nowhere. The ChatGPT desktop app
+  **hosts Codex and shares its MCP configuration** ("The ChatGPT desktop app, Codex
+  CLI, and IDE extension support MCP servers and share MCP configuration for the
+  same Codex host"), so the command now writes the real `~/.codex/config.toml`
+  entry — the same one `--client codex` writes, meaning one install serves the
+  ChatGPT desktop app, the Codex CLI, and the IDE extension. It also names the
+  restart step (ChatGPT → Settings → MCP servers → Restart) and warns that ChatGPT
+  on the **web** cannot see a local server at all: that needs remote MCP (M3D). (#315)
+- **MCP install snippets now pin the absolute `uv` path.** macOS clients launched
+  from the GUI (Claude Desktop, Cursor) do not inherit the shell's `PATH`, so a bare
+  `uv` in the generated config resolved to nothing and the server failed to start —
+  surfacing to the user as an opaque client-side error. (#315)
+- **Codex installs carry `startup_timeout_sec = 30`.** Codex defaults to 10s, but a
+  cold `uv run` (building the environment on first launch) routinely takes 3–15s, so
+  the very first connection was the one most likely to time out. (#315)
+- **Net worth no longer drops accounts with older statements.**
+  `core.fct_balances_daily` built each account's date spine only as far as *that
+  account's* last balance observation, so on any later date the account simply
+  vanished — and `reports.net_worth` sums the accounts present on a date. An account
+  whose statement landed a week before another's therefore contributed nothing to
+  the current net worth: a checking account with one January statement was absent
+  from a December total. Every account is now carried forward to the newest known
+  date, so net worth reflects each account's last known balance. Accounts that are
+  genuinely gone are excluded by archiving them (`include_in_net_worth` / `archived`,
+  already honored), not by silently ageing out. (#310)
+- **First-run guidance points an unset-up profile at `profile create`.** When the
+  active profile has never been set up, the "Database not found" message now
+  recommends `moneybin profile create <name> --init-inbox` (which scaffolds
+  config, database, and inbox) instead of `db init`, which would leave the profile
+  unregistered — absent from `moneybin profile list`, with no inbox. A profile that
+  *is* registered but has no database still points at `db init`, which is the
+  correct verb there. (#310, #315)
+- **`moneybin profile create` can now repair a half-made profile.** A profile
+  directory with no `config.yaml` — left by a bare `moneybin db init`, a hand
+  `mkdir`, or an interrupted delete — was previously a dead end: `profile create`
+  refused on the directory's mere existence, `profile list` hid it, and it never
+  got an import inbox, with no verb anywhere to finish it. `create` now completes
+  such a directory in place (config, inbox, and a database only if one is absent —
+  an existing database is never touched or rolled back) and reports that it
+  completed rather than created it. `ProfileExistsError` now means "a *registered*
+  profile exists", so re-creating a real profile still refuses. (#315)
 - **An empty target no longer silently rejects a link-merge proposal forever.**
   On the account, merchant, and security link tools, an empty-string target id
   fell through a truthiness test and was recorded as a permanent REJECT, which
   identity resolution never re-proposes — so a malformed argument could
   permanently suppress a correct merge with no error to the user. Empty targets
-  are now an input error.
+  are now an input error. (#318)
 - **Undoing the undo of an accepted link merge no longer fails.**
   `MerchantLinksRepo.repoint` and `SecurityLinksRepo.repoint` emitted their two
   audit rows in the reverse of their SQL order, so the undo engine's reverse
   replay re-inserted the new binding before restoring the old one — tripping the
   at-most-one-accepted-binding guard on a state the forward path never produces.
   Every merge redo failed deterministically, with a stack trace rather than a
-  message.
+  message. (#318)
 - **Reversing a pending review decision no longer silently discards it.**
   `reverse()` on all four review-queue decision repos (`security_link`,
   `account_link`, `match`, `merchant_link`) checked only `reversed_at IS
@@ -370,7 +526,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   to reverse anything but an already-decided (`accepted`/`rejected`) row.
   `SecurityLinksRepo` also gained `repoint()` (replacing an in-place
   `rebind()`), preserving append-only binding history the same way
-  `MerchantLinksRepo.repoint` already does. (#TBD)
+  `MerchantLinksRepo.repoint` already does. (#318)
 - **`moneybin system doctor` now actually runs its SQLMesh invariant
   checks.** Every audit file under `sqlmesh/audits/` was missing `standalone
   TRUE`, so SQLMesh loaded them as generic audits — which only run when a
@@ -379,7 +535,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   invariants since they shipped, and three audits never executed. All
   audits are now `standalone TRUE` and run on every check; one revived audit
   (`fct_transactions_sign_convention`) was also corrected to stop flagging
-  legitimate `$0.00` transactions. (#TBD)
+  legitimate `$0.00` transactions. (#318)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
@@ -527,6 +683,15 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   is actionable signal for users or agents driving the CLI/MCP.
 
 ### Security
+- **The agent-facing SQL connection can no longer reach remote filesystems.**
+  Since DuckDB 1.4.1, the only supported encrypted-write path is the OpenSSL
+  crypto inside the `httpfs` extension, which DuckDB silently auto-loads on the
+  first encrypted write — leaving a live, unrestricted http/s3 filesystem on
+  every MoneyBin connection, including the read-only handle MCP agents run SQL
+  against, with nothing disabling it. MoneyBin now loads `httpfs` explicitly only
+  where its crypto is needed, disables the HTTP and S3 filesystems on every
+  connection, and locks that configuration on read-only connections so agent SQL
+  cannot re-enable extension loading to pull in another remote filesystem. (#316)
 - **The unauthenticated HTTP MCP transport is now gated behind `--insecure`.**
   `moneybin mcp serve` refuses to start any non-stdio transport (`sse`,
   `streamable-http`) unless `--insecure` is passed, exiting with a usage error

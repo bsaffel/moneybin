@@ -30,7 +30,7 @@ via a resolution step every import/sync runs through, backed by a durable
 Today each loader mints its **own** `account_id`, so one real account becomes one
 `account_id` *per source*. There is **no reconciliation layer** (grep finds no
 `account_link` / `canonical_account` / account-alias concept anywhere in `src/`,
-`sqlmesh/`, or `docs/specs/`).
+`src/moneybin/sqlmesh/`, or `docs/specs/`).
 
 Live test on real Wells Fargo data: the same 5 WF accounts imported as **both**
 `.qfx` (279 txns) and `.csv` (279 exact twins). Expected cross-source dedup to

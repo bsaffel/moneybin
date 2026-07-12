@@ -1,11 +1,11 @@
 """Integration test: DoctorService's real SQLMesh standalone-audit wiring.
 
-Guards the audit-revival regression (the fix wave following commit
-8456fa46): every file in ``sqlmesh/audits/`` silently lacked ``standalone
-TRUE``, so SQLMesh loaded them as *generic* (model-attached) audits that no
-model referenced — ``moneybin doctor`` reported zero SQLMesh invariants for
-as long as the audits existed, and three shipped audits never once executed
-against a real database.
+Guards the audit-revival regression: every file in
+``src/moneybin/sqlmesh/audits/`` silently lacked ``standalone TRUE``, so
+SQLMesh loaded them as *generic* (model-attached) audits that no model
+referenced — ``moneybin doctor`` reported zero SQLMesh invariants for as long
+as the audits existed, and three shipped audits never once executed against a
+real database.
 
 ``make check test`` and ``make test-scenarios`` could not have caught this:
 standalone audits are non-blocking by SQLMesh's own design (a violation
@@ -17,7 +17,7 @@ real discovery path and asserts on what it finds — this is that test.
 
 Two assertions matter, run against a real (non-mocked) ``sqlmesh_context``:
 
-1. Every audit file under ``sqlmesh/audits/`` is discovered — its name
+1. Every audit file under ``src/moneybin/sqlmesh/audits/`` is discovered — its name
    appears in ``DoctorService``'s report. An audit that loses its
    ``standalone TRUE`` line disappears from ``ctx.standalone_audits``
    *entirely*; it produces NO ``InvariantResult``, not a failing one. This
@@ -29,18 +29,16 @@ Two assertions matter, run against a real (non-mocked) ``sqlmesh_context``:
    a defect).
 
 Verified by temporarily removing ``standalone TRUE`` from one audit file and
-confirming assertion 1 goes red before restoring it (see the task report for
-the exact command run).
+confirming assertion 1 goes red before restoring it.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.services.doctor_service import DoctorService
 from tests.moneybin.db_helpers import (
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
@@ -49,11 +47,11 @@ from tests.moneybin.db_helpers import (
 
 pytestmark = pytest.mark.integration
 
-_AUDITS_DIR = Path(__file__).resolve().parents[3] / "sqlmesh" / "audits"
+_AUDITS_DIR = SQLMESH_ROOT / "audits"
 
 
 def _discover_audit_names() -> set[str]:
-    """The audit names declared in ``sqlmesh/audits/*.sql``.
+    """The audit names declared in ``src/moneybin/sqlmesh/audits/*.sql``.
 
     Ground truth independent of what ``DoctorService`` reports — derived by
     parsing the real files, not by hardcoding a name list that could drift
@@ -138,7 +136,9 @@ def test_standalone_audits_are_all_discovered_and_pass_on_clean_data(
     db: Database,
 ) -> None:
     expected_names = _discover_audit_names()
-    assert expected_names, "no audit files under sqlmesh/audits/ — fixture is broken"
+    assert expected_names, (
+        "no audit files under src/moneybin/sqlmesh/audits/ — fixture is broken"
+    )
 
     _seed_clean_data(db)
     report = DoctorService(db).run_all(verbose=True)
@@ -151,7 +151,8 @@ def test_standalone_audits_are_all_discovered_and_pass_on_clean_data(
     # and re-running — see module docstring).
     missing = expected_names - observed.keys()
     assert not missing, (
-        f"{missing} declared in sqlmesh/audits/ but absent from DoctorService's "
+        f"{missing} declared in src/moneybin/sqlmesh/audits/ but absent from "
+        f"DoctorService's "
         "report — check each file has `standalone TRUE` in its AUDIT(...) header"
     )
 

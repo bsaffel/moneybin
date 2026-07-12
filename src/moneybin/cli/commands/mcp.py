@@ -13,6 +13,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import signal
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
@@ -40,7 +41,15 @@ _VALID_TRANSPORTS: tuple[str, ...] = get_args(TransportType)
 # MCP client config file locations for clients that auto-load from a fixed path.
 # claude-code uses a per-profile path resolved at runtime (see _client_install_path).
 # vscode uses a workspace-local path (.vscode/mcp.json) resolved at runtime.
-# chatgpt-desktop has no config file — servers are added via the Connectors UI.
+_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+
+# The ChatGPT desktop app hosts Codex, and shares its MCP configuration: per
+# OpenAI's docs, "The ChatGPT desktop app, Codex CLI, and IDE extension support MCP
+# servers and share MCP configuration for the same Codex host" — one
+# `~/.codex/config.toml`, stdio servers included (Settings → MCP servers → Add
+# server → STDIO). So chatgpt-desktop is a real local install that happens to land
+# in Codex's file, NOT a separate config format. ChatGPT *web* is the surface that
+# genuinely cannot reach a local server; it doesn't read this file at all.
 _CLIENT_CONFIG_PATHS: dict[str, Path] = {
     "claude-desktop": Path.home()
     / "Library"
@@ -50,22 +59,30 @@ _CLIENT_CONFIG_PATHS: dict[str, Path] = {
     "cursor": Path.home() / ".cursor" / "mcp.json",
     "windsurf": Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
     "gemini-cli": Path.home() / ".gemini" / "settings.json",
-    "codex": Path.home() / ".codex" / "config.toml",
+    "codex": _CODEX_CONFIG_PATH,
+    "chatgpt-desktop": _CODEX_CONFIG_PATH,
 }
+
+# Clients whose config is the Codex TOML (`[mcp_servers.<name>]`), not JSON.
+_CODEX_HOSTED_CLIENTS: tuple[str, ...] = ("codex", "chatgpt-desktop")
 
 # Clients that don't write to a fixed path. Listed for help text and validation.
 _PROFILE_SCOPED_CLIENTS: tuple[str, ...] = ("claude-code",)
 _WORKSPACE_SCOPED_CLIENTS: tuple[str, ...] = ("vscode",)
-_NO_INSTALL_CLIENTS: tuple[str, ...] = ("chatgpt-desktop",)
 
 _SUPPORTED_CLIENTS: tuple[str, ...] = (
     *_CLIENT_CONFIG_PATHS,
     *_PROFILE_SCOPED_CLIENTS,
     *_WORKSPACE_SCOPED_CLIENTS,
-    *_NO_INSTALL_CLIENTS,
 )
 
 _DEFAULT_CLIENT = "claude-desktop"
+
+# Codex defaults to a 10s startup timeout, but a cold `uv run` (resolving and
+# building the environment on first launch) routinely takes 3-15s — so the very
+# first connection is the one most likely to time out, and it reads to the user as
+# "MoneyBin is broken" rather than "the environment was still warming up".
+_CODEX_STARTUP_TIMEOUT_SEC = 30
 
 # ── config subgroup ──────────────────────────────────────────────────────────
 
@@ -114,8 +131,8 @@ def mcp_config_path(
     """Print the install path of an MCP client's config file.
 
     Used by `make claude-mcp` to locate the per-profile Claude Code config.
-    Exits non-zero with no output for clients that don't have a JSON config
-    file (e.g. chatgpt-desktop).
+    Exits non-zero with no output for clients that resolve no path (e.g. `vscode`
+    outside a repo checkout).
 
     Profile resolution is non-interactive: if no profile is set and `--profile`
     is not given, this exits with a clear error instead of starting the
@@ -197,11 +214,12 @@ def mcp_install(
     Default behavior writes the config snippet directly into the client's
     config file (with a confirmation prompt unless --yes is set). Use
     --print to emit the snippet to stdout without writing — useful for
-    inspection or for clients with no programmatic install path.
+    inspection or for merging into a shared config by hand.
 
-    For chatgpt-desktop there is no JSON config to write; the command
-    always prints the snippet plus step-by-step Connector setup
-    instructions (--print is implicit).
+    chatgpt-desktop writes the same ~/.codex/config.toml as codex: the ChatGPT
+    desktop app hosts Codex and shares its MCP configuration, so one entry serves
+    the desktop app, the Codex CLI, and the IDE extension. ChatGPT on the web can
+    NOT see it — reaching that needs a remote MCP server (M3D).
 
     Args:
         client: Target MCP client identifier.
@@ -219,11 +237,11 @@ def mcp_install(
         # Print the snippet without writing
         moneybin mcp install --client claude-desktop --print
 
-        # Print snippet + step-by-step Connector setup for ChatGPT Desktop
-        moneybin mcp install --client chatgpt-desktop
-
         # Codex (CLI / Desktop app / IDE extension all share ~/.codex/config.toml)
         moneybin mcp install --client codex --yes
+
+        # ChatGPT desktop app (same Codex-hosted config as above)
+        moneybin mcp install --client chatgpt-desktop --yes
 
         # Workspace-local .vscode/mcp.json
         moneybin mcp install --client vscode --yes
@@ -238,9 +256,10 @@ def mcp_install(
         logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
         raise typer.Exit(2)  # usage error — matches `mcp config path` convention
 
+    from moneybin.cli.main import get_version
+
     resolved_profile = profile or get_current_profile()
 
-    args: list[str] = ["run"]
     env: dict[str, str] = {}
 
     # os.getenv used intentionally: get_settings().base_dir cannot distinguish
@@ -253,17 +272,30 @@ def mcp_install(
     if moneybin_home:
         # Explicit override — pin the home so it survives the client's launch context.
         env["MONEYBIN_HOME"] = str(Path(moneybin_home).expanduser().resolve())
-        if repo_root is not None:
-            args += ["--directory", str(repo_root)]
-    elif repo_root is not None:
-        # Repo checkout: anchor uv at the repo root so repo detection resolves
-        # the local .moneybin/ at server-launch time.
-        args += ["--directory", str(repo_root)]
-    # else: default ~/.moneybin/ — omit --directory; rely on a global install on PATH.
+
+    if repo_root is not None:
+        # Repo checkout (the dev path): anchor uv at the repo root so repo
+        # detection resolves the local .moneybin/ at server-launch time.
+        args: list[str] = ["run", "--directory", str(repo_root)]
+    else:
+        # Installed path: run the PUBLISHED package, pinned. Unpinned would let
+        # a new release auto-install on the client's next restart and migrate
+        # the user's encrypted database with no user action.
+        #
+        # Accepted pre-launch gap: until the first tag publishes moneybin to
+        # PyPI, this pinned `--from moneybin==X.Y.Z` config is unresolvable, so a
+        # user who runs `mcp install` from outside the repo checkout during the
+        # pre-launch window gets a config `uv tool run` can't satisfy. Narrow and
+        # self-resolving — the documented pre-launch install is the git-clone dev
+        # path (which takes the repo_root branch above), and README/
+        # ai-client-compatibility.md present the published path as arriving with
+        # the first release. No fallback is added: once published the pin is
+        # correct, and a permanent warning would be post-launch noise.
+        args = ["tool", "run", "--from", f"moneybin=={get_version()}"]
 
     args += ["moneybin", "--profile", resolved_profile, "mcp", "serve"]
 
-    server_entry: dict[str, Any] = {"command": "uv", "args": args}
+    server_entry: dict[str, Any] = {"command": _resolve_uv_command(), "args": args}
     if env:
         server_entry["env"] = env
 
@@ -274,13 +306,7 @@ def mcp_install(
     )
     snippet, snippet_text = _build_snippet(client, entry_name, server_entry)
     typer.echo(snippet_text)
-
-    # chatgpt-desktop has no programmatic install path — always print + show
-    # manual Connector setup instructions. --print is implicit; no error if
-    # the user explicitly passed it.
-    if client == "chatgpt-desktop":
-        _print_chatgpt_desktop_instructions(server_entry, entry_name)
-        return
+    _print_client_notes(client)
 
     if client == "claude-code":
         config_path = _client_install_path(client, resolved_profile)
@@ -355,8 +381,12 @@ def _build_snippet(
         vscode_entry = {"type": "stdio", **server_entry}
         snippet: dict[str, Any] = {"servers": {entry_name: vscode_entry}}
         return snippet, json.dumps(snippet, indent=2)
-    if client == "codex":
-        snippet = {"mcp_servers": {entry_name: server_entry}}
+    if client in _CODEX_HOSTED_CLIENTS:
+        codex_entry = {
+            **server_entry,
+            "startup_timeout_sec": _CODEX_STARTUP_TIMEOUT_SEC,
+        }
+        snippet = {"mcp_servers": {entry_name: codex_entry}}
         return snippet, _render_codex_toml(snippet)
     snippet = {"mcpServers": {entry_name: server_entry}}
     return snippet, json.dumps(snippet, indent=2)
@@ -452,7 +482,7 @@ def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
 def _get_client_config_path(client: str) -> Path:
     """Return the fixed-path config file for clients in `_CLIENT_CONFIG_PATHS`.
 
-    Profile-scoped (`claude-code`) and no-install (`chatgpt-desktop`) clients are
+    Profile-scoped (`claude-code`) and workspace-scoped (`vscode`) clients are
     handled inline in `mcp_install` and never reach this helper.
     """
     if client not in _CLIENT_CONFIG_PATHS:
@@ -464,7 +494,14 @@ def _get_client_config_path(client: str) -> Path:
 
 # Per-invocation CLI clients: every shell command spawns a fresh server.
 # Surface this so users understand the "always-on" install semantics.
-_PER_INVOCATION_CLIENTS: frozenset[str] = frozenset({"codex", "gemini-cli"})
+# chatgpt-desktop is included because it writes the *shared* Codex config — so
+# installing "for ChatGPT" also makes every `codex` shell invocation auto-load
+# MoneyBin, which is exactly the surprise this warning exists to prevent.
+_PER_INVOCATION_CLIENTS: frozenset[str] = frozenset({
+    "codex",
+    "chatgpt-desktop",
+    "gemini-cli",
+})
 
 
 def _maybe_warn_auto_load(client: str, profile: str) -> None:
@@ -481,11 +518,11 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
     if client not in _PER_INVOCATION_CLIENTS:
         return
     surface = (
-        "the Codex CLI, Desktop app, and IDE extension"
-        if client == "codex"
+        "the Codex CLI, Desktop app, IDE extension, and ChatGPT desktop app"
+        if client in _CODEX_HOSTED_CLIENTS
         else "every `gemini` invocation"
     )
-    typer.echo("")
+    typer.echo("", err=True)
     typer.echo(
         f"⚠️  {client} auto-loads MoneyBin on {surface}. Two concurrent "
         f"sessions on profile '{profile}' share one DuckDB file. Writes "
@@ -493,64 +530,97 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
         "another session holds a conflicting lock past the retry window "
         "(a long write, or a long read for write-mode calls). To opt out of "
         "auto-load, re-run with `mcp install --print` and paste the snippet "
-        "manually. See docs/guides/mcp-clients.md."
+        "manually. See docs/guides/mcp-clients.md.",
+        err=True,
     )
 
 
 def _print_claude_code_launch_hint(config_path: Path) -> None:
-    """Tell the user how to launch Claude Code with the generated config."""
+    """Tell the user how to launch Claude Code with the generated config.
+
+    Stderr: this hint prints on the `--print` path too, and stdout there is the
+    snippet the user pipes to a file or to `jq`.
+    """
     import shlex
 
-    typer.echo("")
-    typer.echo("Launch Claude Code with this MCP server only:")
+    typer.echo("", err=True)
+    typer.echo("Launch Claude Code with this MCP server only:", err=True)
     typer.echo(
-        f"  claude --strict-mcp-config --mcp-config {shlex.quote(str(config_path))}"
+        f"  claude --strict-mcp-config --mcp-config {shlex.quote(str(config_path))}",
+        err=True,
     )
-    typer.echo("")
+    typer.echo("", err=True)
     typer.echo(
-        "Or run `make claude-mcp` from the repo to launch with the active profile."
+        "Or run `make claude-mcp` from the repo to launch with the active profile.",
+        err=True,
     )
 
 
-def _print_chatgpt_desktop_instructions(
-    server_entry: dict[str, Any], entry_name: str
-) -> None:
-    """Print step-by-step Connector setup for ChatGPT Desktop.
+def _resolve_uv_command() -> str:
+    """Absolute path to `uv`, falling back to the bare name.
 
-    ChatGPT Desktop installs MCP servers through Settings → Connectors (Developer
-    Mode), not a JSON config file we can write. The snippet above is informational
-    — copy individual fields into the connector form.
+    macOS clients launched from the GUI (Claude Desktop, Cursor) do not inherit the
+    shell's PATH, so a bare `uv` in the config resolves to nothing and the server
+    fails to start with an error the user cannot act on. Pin the interpreter we can
+    see at install time. If `uv` isn't on our own PATH either, there is nothing to
+    resolve — emit it bare and let the client report the failure.
     """
-    command = server_entry["command"]
-    args_str = " ".join(server_entry.get("args", []))
-    env_pairs = server_entry.get("env", {})
+    return shutil.which("uv") or "uv"
 
-    typer.echo("")
-    typer.echo("ChatGPT Desktop install steps:")
-    typer.echo("  1. Open ChatGPT → Settings → Connectors.")
-    typer.echo(
-        "     If you don't see 'Add custom connector', enable Developer Mode "
-        "under Settings → Advanced first."
-    )
-    typer.echo("  2. Click 'Add custom connector' → choose the local/stdio option.")
-    typer.echo(f"  3. Name: {entry_name}")
-    typer.echo(f"     Command: {command}")
-    typer.echo(f"     Arguments: {args_str}")
-    if env_pairs:
-        typer.echo("     Environment variables:")
-        for key, value in env_pairs.items():
-            typer.echo(f"       {key}={value}")
-    typer.echo("  4. Save. ChatGPT will spawn the server on demand.")
-    typer.echo("")
-    typer.echo(
-        "Note: ChatGPT Desktop's MCP support is gated by version and plan. Use "
-        "the local/stdio connector above — it is the supported, authenticated "
-        "path. MoneyBin's HTTP transport is UNAUTHENTICATED (no HTTP auth exists "
-        "yet): `moneybin mcp serve --transport streamable-http --insecure` opens "
-        "a port anyone who can reach it can read and write your finances through. "
-        "Only use it on a trusted, localhost-only machine as a last resort if "
-        "your build accepts no stdio connector."
-    )
+
+def _print_client_notes(client: str) -> None:
+    """Print per-client caveats that the snippet itself cannot express.
+
+    To stderr, like every other advisory here: the snippet on stdout is the data,
+    and `--print` promises "the exact bytes the command would write" — a note mixed
+    into it would break `mcp install --print | jq` and any config the user pipes
+    straight to a file.
+    """
+    if client == "gemini-cli":
+        typer.echo("", err=True)
+        typer.echo(
+            "Note: Gemini CLI's `trust: true` server setting bypasses ALL tool-call "
+            "confirmations. MoneyBin deliberately does not set it — the surface "
+            "includes write tools (import, categorize, delete), and those should ask "
+            "before they act. Add it yourself only if you accept that.",
+            err=True,
+        )
+    if client == "chatgpt-desktop":
+        typer.echo("", err=True)
+        typer.echo(
+            "Note: this writes ~/.codex/config.toml — the ChatGPT desktop app hosts "
+            "Codex and shares its MCP configuration, so this same entry also serves "
+            "the Codex CLI and IDE extension (installing for `codex` is equivalent). "
+            "In ChatGPT, the server appears under Settings → MCP servers; select "
+            "Restart there to pick it up. ChatGPT on the WEB cannot see it — it "
+            "does not read local Codex config, and reaching it needs a remote MCP "
+            "server (M3D).",
+            err=True,
+        )
+    if client == "windsurf":
+        # Windsurf silently drops whatever doesn't fit, so a user who never opens
+        # the guide would just find MoneyBin unable to do things it can do. The
+        # counts come from moneybin.mcp.surface (plain constants, no FastMCP import
+        # — resolving them live would make `mcp install` boot the server), and a
+        # test asserts them against the live registry so they can't go stale.
+        from moneybin.mcp.surface import (  # noqa: PLC0415 — keep it off the CLI cold-start path
+            VISIBLE_TOOL_COUNT,
+            WINDSURF_ACTIVE_TOOL_CAP,
+        )
+
+        overflow = VISIBLE_TOOL_COUNT - WINDSURF_ACTIVE_TOOL_CAP
+        typer.echo("", err=True)
+        typer.echo(
+            f"⚠️  Windsurf (Cascade) holds at most {WINDSURF_ACTIVE_TOOL_CAP} tools "
+            f"at a time, across ALL your MCP servers. MoneyBin registers "
+            f"{VISIBLE_TOOL_COUNT} and hides none, so this install alone is "
+            f"{overflow} over the ceiling — and Windsurf gives no warning when it "
+            "drops the overflow; it simply acts as though MoneyBin cannot do things "
+            "it can. Open Settings → MCP Servers and disable the tools you don't "
+            "need (turning off a namespace you don't use, e.g. investments_* or "
+            "tax_*, is the quickest way down). See docs/guides/mcp-clients.md.",
+            err=True,
+        )
 
 
 def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:

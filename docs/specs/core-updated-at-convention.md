@@ -132,7 +132,7 @@ For the two existing `*_overrides` tables, the live schema is `updated_at TIMEST
 1. **DDL migration** — `app.user_categories` and `app.user_merchants` gain `updated_at`. `app.category_overrides` tightens existing `updated_at` to `NOT NULL`. (`app.merchant_overrides` was also tightened by V010 historically; V012 drops the table outright.)
 2. **Service writes** — every `INSERT … ON CONFLICT DO UPDATE` and bare `UPDATE` against the four tables above sets `updated_at = NOW()`. Specific call sites identified during plan execution.
 3. **SQLMesh model edits** — five core models (`dim_accounts`, `fct_transactions`, `dim_categories`, `dim_merchants`, `fct_balances`) gain/replace `updated_at` per the formulas above. The misleading `CURRENT_TIMESTAMP AS updated_at` on `dim_accounts` is replaced. `fct_balances` also gains `loaded_at` propagation through its source CTEs.
-4. **`meta.model_freshness` view** — new SQLMesh model in `sqlmesh/models/meta/` exposing the public column contract above.
+4. **`meta.model_freshness` view** — new SQLMesh model in `src/moneybin/sqlmesh/models/meta/` exposing the public column contract above.
 5. **`SystemService.model_freshness()` method** — typed wrapper over the view; lives alongside `SystemService.status()` and the `ModelFreshness` dataclass in `src/moneybin/services/system_service.py`.
 6. **Per-column comments** — every `updated_at` column on the five core models gets a comment matching the convention (see [Documentation](#documentation)).
 7. **Cascading edits** — see below.

@@ -1,29 +1,17 @@
 """Tests for int_transactions__unioned model structure."""
 
-from pathlib import Path
+from moneybin.database import SQLMESH_ROOT
 
 
 class TestIntTransactionsUnionedModel:
     """Structural tests for the int_transactions__unioned SQLMesh model."""
 
     def test_model_file_exists(self) -> None:
-        model_path = (
-            Path(__file__).resolve().parents[2]
-            / "sqlmesh"
-            / "models"
-            / "prep"
-            / "int_transactions__unioned.sql"
-        )
+        model_path = SQLMESH_ROOT / "models" / "prep" / "int_transactions__unioned.sql"
         assert model_path.exists()
 
     def test_model_has_required_columns(self) -> None:
-        model_path = (
-            Path(__file__).resolve().parents[2]
-            / "sqlmesh"
-            / "models"
-            / "prep"
-            / "int_transactions__unioned.sql"
-        )
+        model_path = SQLMESH_ROOT / "models" / "prep" / "int_transactions__unioned.sql"
         content = model_path.read_text()
         assert "source_transaction_id" in content
         assert "source_type" in content
@@ -36,12 +24,6 @@ class TestIntTransactionsUnionedModel:
         assert "UNION ALL" in content
 
     def test_model_is_view(self) -> None:
-        model_path = (
-            Path(__file__).resolve().parents[2]
-            / "sqlmesh"
-            / "models"
-            / "prep"
-            / "int_transactions__unioned.sql"
-        )
+        model_path = SQLMESH_ROOT / "models" / "prep" / "int_transactions__unioned.sql"
         content = model_path.read_text()
         assert "kind VIEW" in content

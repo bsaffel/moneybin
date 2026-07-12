@@ -16,6 +16,7 @@ from moneybin.synthetic.models import (
     GeneratedTransaction,
     GenerationResult,
     MerchantCatalog,
+    MerchantSeed,
     load_merchant_catalog,
     load_persona,
 )
@@ -166,4 +167,49 @@ class GeneratorEngine:
             transactions=all_txns,
             start_date=start_date,
             end_date=end_date,
+            merchant_seeds=self._merchant_seeds(),
         )
+
+    def _merchant_seeds(self) -> list[MerchantSeed]:
+        """Every merchant pattern this persona's descriptions are drawn from.
+
+        Three sources, because descriptions come from three generators: catalog
+        merchants (spending), recurring bills, and income. Seeding only the first
+        leaves roughly a third of a persona's transactions uncategorized.
+        """
+        seeds: list[MerchantSeed] = []
+
+        for catalog in self._merchants.values():
+            for merchant in catalog.merchants:
+                # The generator embeds `description_prefix` at the head of the raw
+                # description when set, and otherwise uses the merchant name.
+                seeds.append(
+                    MerchantSeed(
+                        pattern=merchant.description_prefix or merchant.name,
+                        canonical_name=merchant.name,
+                        synthetic_category=catalog.category,
+                    )
+                )
+
+        for bill in self._persona.recurring:
+            seeds.append(
+                MerchantSeed(
+                    pattern=bill.description,
+                    canonical_name=bill.description,
+                    synthetic_category=bill.category,
+                )
+            )
+
+        for income in self._persona.income:
+            # The description renders `description_template` with the employer, so
+            # the employer name is the stable substring to match on.
+            if income.employer:
+                seeds.append(
+                    MerchantSeed(
+                        pattern=income.employer,
+                        canonical_name=income.employer,
+                        synthetic_category="income",
+                    )
+                )
+
+        return seeds

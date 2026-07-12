@@ -2,7 +2,7 @@
 
 Synthetic personas use machine-friendly lowercase labels (``grocery``,
 ``utilities``, ``income``). The canonical taxonomy in
-``sqlmesh/models/seeds/categories.csv`` uses Title Case (``Food & Drink``,
+``src/moneybin/sqlmesh/models/seeds/categories.csv`` uses Title Case (``Food & Drink``,
 ``Housing & Utilities``, ``Income``). Without alignment, categorization
 evaluations and sign-convention assertions compare values from different
 naming conventions and always fail.

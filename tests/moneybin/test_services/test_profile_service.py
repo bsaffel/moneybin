@@ -112,6 +112,154 @@ class TestProfileCreate:
         assert not (tmp_path / "profiles" / "rollback-test").exists()
 
 
+class TestProfileCreateRepairsBareDirectory:
+    """`create()` completes an unregistered directory instead of dead-ending on it.
+
+    A bare `moneybin db init`, a hand `mkdir`, or a partial delete leaves a profile
+    directory with no `config.yaml`. Before this contract, `create()` raised off the
+    *directory* (`mkdir(exist_ok=False)`), so such a profile could never be
+    completed: `profile create` refused, `profile list` hid it, and it had no inbox.
+    `ProfileExistsError` now means "a *registered* profile exists".
+    """
+
+    def test_create_completes_an_unregistered_bare_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A directory with no config.yaml is registered in place, not refused."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+
+        svc = ProfileService()
+        svc.create("alice")
+
+        assert svc.is_registered("alice") is True
+        assert (profile_dir / "config.yaml").exists()
+        assert (profile_dir / "logs").is_dir()
+        assert (profile_dir / "temp").is_dir()
+
+    def test_create_registered_profile_still_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exception survives — it just means "registered" now, not "directory"."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("alice")
+
+        with pytest.raises(ProfileExistsError):
+            svc.create("alice")
+
+    def test_create_tightens_permissions_on_an_adopted_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An adopted directory gets the same 0o700 the fresh path guarantees.
+
+        Whatever made it — `db init`, a hand `mkdir` — did so at the ambient umask,
+        typically 0o755. Once we register it, the encrypted database and privacy log
+        live behind it, so it cannot keep permissions we never chose.
+        """
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        profile_dir.chmod(0o755)  # world-readable, as an ambient-umask mkdir leaves it
+
+        ProfileService().create("alice")
+
+        assert (profile_dir.stat().st_mode & 0o777) == 0o700
+
+    def test_create_never_clobbers_an_existing_database(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `db init`'d database in a bare directory survives the repair untouched.
+
+        This is the whole risk of the repair path: the directory we adopt may already
+        hold the user's encrypted data.
+        """
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        db_file = profile_dir / "moneybin.duckdb"
+        db_file.write_bytes(b"pretend-encrypted-duckdb")
+
+        svc = ProfileService()
+        with patch.object(ProfileService, "_init_database") as init_db:
+            svc.create("alice")
+
+        init_db.assert_not_called()
+        assert db_file.read_bytes() == b"pretend-encrypted-duckdb"
+
+    def test_create_initializes_a_database_when_the_bare_directory_has_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A directory with no database still gets one — repair completes the profile."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        (tmp_path / "profiles" / "alice").mkdir(parents=True)
+
+        svc = ProfileService()
+        with patch.object(ProfileService, "_init_database") as init_db:
+            svc.create("alice")
+
+        init_db.assert_called_once()
+
+    def test_failed_create_leaves_the_profile_retryable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A create() that dies part-way must not leave the profile half-registered.
+
+        `config.yaml` is the commit marker: `list()` shows a profile once it exists,
+        and `create()` refuses once it does. So a failed create that had already
+        written it would strand the user — the command's own "run `profile create`
+        to retry" hint would then hit `ProfileExistsError`, rebuilding the very dead
+        end this contract removes. Registration must be the last step.
+
+        Real trigger: `_init_database` fails whenever the OS keychain refuses the
+        write (locked keychain, headless box, denied prompt).
+        """
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)  # bare directory, no database
+
+        svc = ProfileService()
+        with (
+            patch.object(
+                ProfileService, "_init_database", side_effect=RuntimeError("keychain")
+            ),
+            pytest.raises(RuntimeError, match="keychain"),
+        ):
+            svc.create("alice")
+
+        assert profile_dir.exists()  # adopted directory is never rolled back
+        assert svc.is_registered("alice") is False  # ...but `create` can retry it
+        assert "alice" not in [p["name"] for p in svc.list()]
+
+    def test_failed_repair_does_not_delete_the_adopted_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rollback deletes only a directory `create()` made itself.
+
+        The rollback in the fresh-create path is `shutil.rmtree`. Applying it to an
+        adopted directory would destroy the very database the user was trying to
+        recover.
+        """
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        profile_dir = tmp_path / "profiles" / "alice"
+        profile_dir.mkdir(parents=True)
+        db_file = profile_dir / "moneybin.duckdb"
+        db_file.write_bytes(b"pretend-encrypted-duckdb")
+
+        svc = ProfileService()
+        with (
+            patch.object(
+                ProfileService, "_init_inbox", side_effect=RuntimeError("inbox fail")
+            ),
+            pytest.raises(RuntimeError, match="inbox fail"),
+        ):
+            svc.create("alice", init_inbox=True)
+
+        assert profile_dir.exists()
+        assert db_file.read_bytes() == b"pretend-encrypted-duckdb"
+
+
 class TestProfileList:
     """Test profile listing."""
 
@@ -355,3 +503,21 @@ class TestProfileSet:
         svc = ProfileService()
         with pytest.raises(ProfileNotFoundError):
             svc.set("ghost", "logging.level", "DEBUG")
+
+
+class TestIsRegistered:
+    """Test the registered-vs-unregistered signal used by onboarding guidance."""
+
+    def test_unknown_profile_is_not_registered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        assert ProfileService().is_registered("ghost") is False
+
+    def test_created_profile_is_registered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        svc = ProfileService()
+        svc.create("real")  # writes config.yaml (_init_database stubbed by autouse)
+        assert svc.is_registered("real") is True

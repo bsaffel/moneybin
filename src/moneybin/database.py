@@ -70,6 +70,129 @@ _migration_check_done: set[Path] = set()
 _database_accessed: bool = False
 _database_written: bool = False
 
+# --- Extension seal ---------------------------------------------------------
+# DuckDB 1.4.1 disabled encrypted *writes* through its built-in mbedtls crypto
+# (RNG vulnerability, GHSA-vmp8-hg63-v2hp). mbedtls is now a read-only crypto
+# module: it still decrypts, but any write to an encrypted database fails with
+# "DuckDB currently has a read-only crypto module loaded". The only supported
+# encrypted-write path is the OpenSSL crypto that ships inside `httpfs` — so
+# every MoneyBin *write* connection must load httpfs, and every MoneyBin
+# database is encrypted.
+#
+# httpfs brings the http/s3 filesystems with it, on the very connection an MCP
+# agent runs SQL against. The seal keeps the crypto and revokes the filesystems.
+#
+# `disabled_filesystems` is one-way by DuckDB's own semantics — it refuses to be
+# shrunk ("has been disabled previously, it cannot be re-enabled"), locked or
+# not. `lock_configuration` closes the *other* door: without it an agent can
+# re-enable `autoinstall_known_extensions` and load an extension whose
+# filesystem ISN'T in our disable list (azure), then read `az://`. That is
+# reachable from `sql_query`, whose validator permits `PRAGMA` — and `PRAGMA
+# autoinstall_known_extensions=true` is a config write. So the lock is what
+# makes the agent-facing handle a boundary rather than a suggestion.
+#
+# The lock therefore goes on READ-ONLY connections only — the ones that execute
+# agent-supplied SQL. It cannot go on write connections: DuckDB itself issues
+# `SET current_transaction_invalidation_policy` when running DDL that carries a
+# DEFAULT inside an explicit transaction (exactly what MigrationRunner does), and
+# a locked configuration refuses that SET — even to the value it already holds.
+# Write connections never execute agent SQL; they run our migrations and SQLMesh
+# transforms. They still get the filesystem disable and the extension lockdown,
+# just not the lock.
+#
+# Note `LOAD` itself is NOT gated by lock_configuration — a session can still
+# load httpfs. That buys it nothing: `disabled_filesystems` is enforced at
+# filesystem-lookup time, so the remote schemes stay refused.
+#
+# `enable_external_access=false` was considered as a blunter seal and rejected:
+# it blocks the local encrypted DB file itself (the ATTACH can't open it), so it
+# is unusable here. `disabled_filesystems` is the right tool — it revokes the
+# remote filesystems by name while leaving LocalFileSystem intact.
+#
+# Watch item: if a future DuckDB restores built-in write crypto without httpfs,
+# all of this — the LOAD, the disable, the lock, and test_extension_seal.py —
+# can be deleted.
+
+# The extension whose OpenSSL crypto module makes encrypted writes possible.
+_CRYPTO_EXTENSION = "httpfs"
+
+# Every remote filesystem httpfs registers, kept in lockstep with what the
+# extension actually exposes: HTTPFileSystem (http/https), S3FileSystem (which
+# also serves gcs://, gs:// and r2://), and HuggingFaceFileSystem (hf://).
+# Other remote backends (azure://) live in extensions that autoinstall=false +
+# allow_community=false + the lock prevent loading at all. This list is a hand-
+# maintained allowlist-of-denies precisely because it must NOT include
+# LocalFileSystem — disabling that would block the encrypted DB file itself. Its
+# completeness is guarded by test_disabled_filesystems_covers_every_registered_fs
+# in test_extension_seal.py, which loads httpfs, enumerates conn.list_filesystems()
+# (which returns only extension-registered remote filesystems, never the local
+# one), and fails CI the moment DuckDB registers a fourth we haven't disabled —
+# so a silently-missed filesystem is a red build, not open egress.
+_DISABLED_FILESYSTEMS = "HTTPFileSystem,S3FileSystem,HuggingFaceFileSystem"
+
+# Set before anything else so nothing can be silently fetched or loaded, and
+# so an agent's SQL can't pull in an extension by merely referencing it.
+_EXTENSION_LOCKDOWN_SQL = (
+    "SET autoinstall_known_extensions=false",
+    "SET autoload_known_extensions=false",
+    "SET allow_community_extensions=false",
+)
+
+
+def _seal_connection(conn: duckdb.DuckDBPyConnection, *, writable: bool) -> None:
+    """Lock down a fresh connection's extension and filesystem surface.
+
+    Must run BEFORE the encrypted ATTACH — the crypto module is selected as the
+    database is attached, so a later ``LOAD httpfs`` is too late for a write.
+    Every statement must also precede ``lock_configuration``, which freezes all
+    of them.
+
+    Args:
+        conn: Freshly-opened DuckDB connection, not yet attached.
+        writable: True for read-write opens, which need OpenSSL crypto and so
+            must load httpfs. Read-only opens decrypt fine with the built-in
+            mbedtls module and skip the load — though DuckDB still pulls in a
+            locally-installed httpfs itself during ATTACH, which is why the
+            filesystem disable is applied to both paths rather than only to the
+            write one. Read-only opens additionally lock the configuration; see
+            the "Extension seal" block above for why write opens cannot.
+    """
+    for stmt in _EXTENSION_LOCKDOWN_SQL:
+        conn.execute(stmt)
+
+    if writable:
+        _load_crypto_extension(conn)
+
+    conn.execute(f"SET disabled_filesystems='{_DISABLED_FILESYSTEMS}'")
+
+    if not writable:
+        conn.execute("SET lock_configuration=true")
+
+
+def _load_crypto_extension(conn: duckdb.DuckDBPyConnection) -> None:
+    """Install and load httpfs for its OpenSSL crypto module.
+
+    INSTALL is a local no-op once the extension is cached in the DuckDB
+    extension directory; it only reaches the network on a machine that has
+    never fetched httpfs for this DuckDB version. Explicit INSTALL still works
+    with ``autoinstall_known_extensions=false`` — that setting governs only the
+    *implicit* installs DuckDB would otherwise trigger from a query.
+    """
+    try:
+        conn.execute(f"INSTALL {_CRYPTO_EXTENSION}")
+        conn.execute(f"LOAD {_CRYPTO_EXTENSION}")
+    except duckdb.Error as e:
+        conn.close()
+        raise DatabaseCryptoError(
+            f"Cannot open the database for writing — MoneyBin needs DuckDB's "
+            f"'{_CRYPTO_EXTENSION}' extension for the OpenSSL crypto that "
+            f"encrypted writes require, and it could not be installed.\n\n"
+            f"DuckDB downloads it once per version; this machine has no cached "
+            f"copy, so the first write needs network access to "
+            f"extensions.duckdb.org.\n\n"
+            f"Underlying error: {e}"
+        ) from e
+
 
 def _pin_cursor_to_moneybin(cur: Any) -> None:
     """Pin a freshly-opened SQLMesh cursor to the persistent ``moneybin`` catalog.
@@ -142,6 +265,14 @@ class DatabaseKeyError(Exception):
     """Raised when the database encryption key cannot be retrieved."""
 
 
+class DatabaseCryptoError(Exception):
+    """DuckDB's OpenSSL crypto module (httpfs) is unavailable.
+
+    Encrypted writes require it since DuckDB 1.4.1. Practically this means a
+    machine with no cached httpfs and no network access on its first write.
+    """
+
+
 class DatabaseLockError(Exception):
     """DuckDB file lock held by another process; caller may retry."""
 
@@ -163,7 +294,7 @@ class SchemaDriftError(Exception):
 # model. NOT parsed at runtime; keep in sync via the parity test in
 # tests/moneybin/test_db_helpers_parity.py (Task 6C).
 EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
-    # sqlmesh/models/core/dim_accounts.sql — kind FULL
+    # src/moneybin/sqlmesh/models/core/dim_accounts.sql — kind FULL
     "core.dim_accounts": frozenset({
         "account_id",
         "routing_number",
@@ -185,7 +316,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "archived",
         "include_in_net_worth",
     }),
-    # sqlmesh/models/core/fct_balances_daily.py — kind FULL
+    # src/moneybin/sqlmesh/models/core/fct_balances_daily.py — kind FULL
     "core.fct_balances_daily": frozenset({
         "account_id",
         "balance_date",
@@ -373,6 +504,7 @@ class Database:
             # can. pop_all() disarms the cleanup once construction succeeds.
             with ExitStack() as stack:
                 stack.callback(self._conn.close)
+                _seal_connection(self._conn, writable=False)
                 _attach_encrypted(
                     self._conn,
                     build_attach_sql(db_path, encryption_key, read_only=True),
@@ -402,6 +534,7 @@ class Database:
         # get_database() uses to manage the write-lock lifetime.
         with ExitStack() as stack:
             stack.callback(self._conn.close)
+            _seal_connection(self._conn, writable=True)
             _attach_encrypted(self._conn, build_attach_sql(db_path, encryption_key))
             self._conn.execute(f"USE {_DATABASE_ALIAS}")
 
@@ -567,12 +700,13 @@ class Database:
                 was skipped (no sqlmesh dir or sqlmesh not installed),
             False if migration failed or the durable state did not advance.
         """
-        sqlmesh_root = _SQLMESH_ROOT
+        sqlmesh_root = SQLMESH_ROOT
         if not sqlmesh_root.is_dir():
             logger.debug("sqlmesh project dir not found, skipping migrate")
             return True
 
         try:
+            from sqlmesh import Context  # type: ignore[import-untyped]
             from sqlmesh.core.config import Config, GatewayConfig
             from sqlmesh.core.config.connection import (
                 BaseDuckDBConnectionConfig,
@@ -580,8 +714,6 @@ class Database:
             )
             from sqlmesh.core.console import NoopConsole, set_console
             from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
-
-            from sqlmesh import Context  # type: ignore[import-untyped]
         except ImportError:
             logger.debug("sqlmesh not installed, skipping migrate")
             return True
@@ -1143,7 +1275,10 @@ def interrupt_and_reset_database(conn: "Database | None" = None) -> None:
 # SQLMesh encrypted-context helper
 # ---------------------------------------------------------------------------
 
-_SQLMESH_ROOT = Path(__file__).resolve().parents[2] / "sqlmesh"
+# Inside the package, not above it: an installed wheel has no repo root to walk
+# up to, so a package-relative path is the only rule that resolves in both a
+# source checkout and site-packages.
+SQLMESH_ROOT = Path(__file__).resolve().parent / "sqlmesh"
 
 
 @contextmanager
@@ -1166,8 +1301,7 @@ def sqlmesh_context(
 
     Args:
         db: Open Database instance whose connection SQLMesh will borrow.
-        sqlmesh_root: Path to the sqlmesh/ directory. Defaults to the
-            project's ``sqlmesh/`` directory.
+        sqlmesh_root: Root path for SQLMesh models; defaults to ``SQLMESH_ROOT``.
 
     Yields:
         A ``sqlmesh.Context`` connected to the encrypted database.
@@ -1175,6 +1309,9 @@ def sqlmesh_context(
     Raises:
         DatabaseKeyError: If the database connection is closed.
     """
+    from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
+        Context,
+    )
     from sqlmesh.core.config import Config, GatewayConfig
     from sqlmesh.core.config.connection import (
         BaseDuckDBConnectionConfig,
@@ -1182,10 +1319,6 @@ def sqlmesh_context(
     )
     from sqlmesh.core.console import NoopConsole, set_console
     from sqlmesh.core.engine_adapter.duckdb import DuckDBEngineAdapter
-
-    from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
-        Context,
-    )
 
     # SQLMesh's rich-based TerminalConsole writes plan/progress directly to
     # stdout, bypassing stdlib logging. Swap in NoopConsole so import/transform
@@ -1200,13 +1333,20 @@ def sqlmesh_context(
     # Quiet to ERROR; genuine sqlglot failures still surface.
     logging.getLogger("sqlglot").setLevel(logging.ERROR)
 
-    root = sqlmesh_root or _SQLMESH_ROOT
+    root = sqlmesh_root or SQLMESH_ROOT
 
     # Reuse the caller-supplied connection — DuckDB only allows one
     # connection per file.
-    # httpfs is NOT loaded — no SQLMesh models use remote file access.
-    # If a future model needs read_parquet over HTTP or s3://, add
-    # conn.execute("INSTALL httpfs; LOAD httpfs;") to Database.__init__.
+    #
+    # That connection HAS httpfs loaded (on write opens `_seal_connection` loads
+    # it explicitly; on read opens DuckDB pulls in a locally-cached copy itself
+    # during ATTACH). It is loaded for its OpenSSL crypto module, not for remote
+    # file access — since DuckDB 1.4.1 the built-in mbedtls crypto is read-only,
+    # so an encrypted write is impossible without it. No SQLMesh model reads
+    # remote files, and none can: `_seal_connection` disables the http/s3
+    # filesystems httpfs registers and locks the configuration, so a model (or
+    # an agent) that reaches for s3:// gets a PermissionException. See the
+    # "Extension seal" block at the top of this module.
     if db._conn is None:  # pyright: ignore[reportPrivateUsage]
         raise DatabaseKeyError(
             "Database connection is closed — cannot create SQLMesh context."
@@ -1218,7 +1358,7 @@ def sqlmesh_context(
     # Contract guard: a real Database always has a Path here. A test that drives
     # the real sqlmesh_context with a bare mock db (and forgets to patch
     # sqlmesh.Context) reaches this line with an auto-mock _db_path, then
-    # silently mkdir's sqlmesh/<MagicMock ...>/ from the stringified cache_dir
+    # silently mkdir's src/moneybin/sqlmesh/<MagicMock ...>/ from the stringified cache_dir
     # below. Fail loudly here instead — the traceback names the offending test.
     if not isinstance(db_path, Path):  # pyright: ignore[reportUnnecessaryIsInstance]  # static type is Path; the guard exists for tests that pass a mock that violates it at runtime
         raise TypeError(
@@ -1244,7 +1384,7 @@ def sqlmesh_context(
         config = Config(
             default_gateway=_DATABASE_ALIAS,
             # Pin the SQLMesh cache beside this DB instead of the shared
-            # sqlmesh/.cache. The cache is keyed by model fingerprint, not by
+            # src/moneybin/sqlmesh/.cache. The cache is keyed by model fingerprint, not by
             # environment, so one cache shared across concurrent restate plans
             # on different DBs (parallel scenario-test workers) poisons each
             # other's snapshots and raises ConflictingPlanError. Per-DB scopes

@@ -34,7 +34,12 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from moneybin.database import Database
-from moneybin.extractors.pdf.auto_derive import derive_recipe
+from moneybin.extractors.pdf.auto_derive import (
+    credit_card_markers,
+    derivation_failure_reason,
+    derive_recipe,
+    recipe_polarity_fits,
+)
 from moneybin.extractors.pdf.column_names import (
     AMOUNT_NAME_RE as _AMOUNT_NAME_RE,
 )
@@ -72,7 +77,8 @@ logger = logging.getLogger(__name__)
 _Reason = Literal[
     "passed",
     "low_confidence",
-    "no_transaction_table",
+    "no_transaction_table",  # not a transaction document at all (e.g. positions statement)
+    "transaction_table_underivable",  # IS transaction-shaped; derivation failed — Phase 2b bridge
     "reconciliation_failed",  # auto-derived recipe failed reconciliation
     "replay_reconciliation_failed",  # saved recipe stopped reconciling — Phase 2b bridge
     "metadata_incomplete",  # opening or closing balance not captured
@@ -108,6 +114,10 @@ class RouteDecision:
     # doc were somehow mutated between calls. None on early seed returns that
     # short-circuit before the fingerprint is computed.
     fp: dict[str, Any] | None = None
+    # Card-statement disclosures matched on this document (empty when not a card).
+    # The service surfaces these as the evidence behind a negative_is_income
+    # proposal — an inversion the user cannot see the basis for is not reviewable.
+    card_markers: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +319,21 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
             # for every future import.
             saved_format = None
 
+    if recipe is not None and not recipe_polarity_fits(recipe, doc):
+        # The fingerprint matched but the sign convention doesn't fit this
+        # document — see recipe_polarity_fits. Fall through to auto-derive, whose
+        # own all-positive guard routes the document to seed / the bridge instead
+        # of importing every charge with its sign inverted.
+        logger.warning(
+            f"Saved recipe {saved_format.name!r} is negative_is_expense but this "
+            f"document has no negative amounts — refusing to replay"
+            if saved_format is not None
+            else "Refusing to replay a sign-mismatched recipe"
+        )
+        recipe = None
+        is_replay = False
+        saved_format = None
+
     if recipe is None:
         # Auto-derive: metadata not yet captured; derive_recipe accepts an
         # empty StatementMetadata (documented as forward-compatible unused).
@@ -321,6 +346,12 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         )
         recipe = derive_recipe(doc, empty_meta)
         if recipe is None:
+            # derive_recipe collapses every failure into None, and reporting them
+            # all as "no_transaction_table" (excluded from bridge escalation)
+            # buried real statements in an opaque seed. Ask why it failed so the
+            # three outcomes route differently — not a statement (seed), a locale
+            # the executor can't replay (seed; the bridge provably can't help),
+            # or a statement the deterministic rung couldn't crack (bridge).
             return RouteDecision(
                 outcome="seed",
                 recipe=None,
@@ -333,9 +364,10 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                     closing_balance=None,
                 ),
                 confidence=0.0,
-                reason="no_transaction_table",
+                reason=derivation_failure_reason(doc),
                 # matched_format_name stays None: early return before saved_format lookup
                 fp=fp,
+                card_markers=credit_card_markers(doc),
             )
 
     # Steps 2-5 (execute → reconcile) are shared with the Phase 2b
@@ -347,6 +379,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         fp,
         recipe_source="replay" if is_replay else "auto_derive",
         matched_format_name=matched_name,
+        card_markers=credit_card_markers(doc),
     )
 
 
@@ -374,6 +407,7 @@ def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:
         fp,
         recipe_source="bridge",
         matched_format_name=None,
+        card_markers=credit_card_markers(doc),
     )
 
 
@@ -384,6 +418,7 @@ def _run_recipe_pipeline(
     *,
     recipe_source: RecipeSource,
     matched_format_name: str | None,
+    card_markers: tuple[str, ...] = (),
 ) -> RouteDecision:
     """Execute a recipe and apply the confidence + reconciliation gates.
 
@@ -413,6 +448,8 @@ def _run_recipe_pipeline(
         recipe_source: Where the recipe came from — see behaviors above.
         matched_format_name: Saved format name on replay; None otherwise
             (signals first-contact save to the service).
+        card_markers: Card disclosures matched on the document, threaded onto
+            every returned decision (empty when not a card).
     """
     use_recipe_anchors = recipe_source in ("replay", "bridge")
     is_saved_replay = recipe_source == "replay"
@@ -445,6 +482,7 @@ def _run_recipe_pipeline(
             reason="unsupported_number_format",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
     rows = _canonicalize_rows(recipe, extracted.rows)
 
@@ -464,6 +502,7 @@ def _run_recipe_pipeline(
             reason="no_rows",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # ------------------------------------------------------------------
@@ -489,6 +528,7 @@ def _run_recipe_pipeline(
             reason="low_confidence",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # ------------------------------------------------------------------
@@ -526,6 +566,7 @@ def _run_recipe_pipeline(
             reason="metadata_incomplete",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # ------------------------------------------------------------------
@@ -549,6 +590,7 @@ def _run_recipe_pipeline(
             reason="passed",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # Reconciliation failed.
@@ -572,6 +614,7 @@ def _run_recipe_pipeline(
             replay_guard_failed=True,
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     return RouteDecision(
@@ -587,4 +630,5 @@ def _run_recipe_pipeline(
         # format to carry.
         matched_format_name=None,
         fp=fp,
+        card_markers=card_markers,
     )

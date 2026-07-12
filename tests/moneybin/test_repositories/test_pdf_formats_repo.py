@@ -166,6 +166,53 @@ def test_bump_version_audit_before_value_is_recoverable_recipe(db: Database) -> 
     assert after_value["version"] == 2
 
 
+def test_bump_version_mirrors_the_new_recipes_sign_convention(db: Database) -> None:
+    """The column tracks the recipe automatically — no caller has to remember it.
+
+    ``import formats show`` reads the ``sign_convention`` column, not the recipe.
+    A bump that changes the recipe's convention while the column keeps reporting
+    the old one is a silent lie to every reader of the column, and it was a
+    caller's responsibility to prevent — so a third bump site could reintroduce it.
+    """
+    repo = PdfFormatsRepo(db)
+    _save_new(
+        repo,
+        recipe={**_RECIPE_V1, "sign_convention": "negative_is_income"},
+        sign_convention="negative_is_income",
+    )
+
+    repo.bump_version(
+        "chase_checking_pdf",
+        {**_RECIPE_V2, "sign_convention": "negative_is_expense"},
+        reason="user corrected a false-positive card detection",
+        actor="import",
+    )
+
+    row = db.conn.execute(
+        "SELECT sign_convention FROM app.pdf_formats WHERE name = ?",
+        ["chase_checking_pdf"],
+    ).fetchone()
+    assert row == ("negative_is_expense",)
+
+
+def test_bump_version_leaves_the_column_alone_when_the_recipe_omits_it(
+    db: Database,
+) -> None:
+    """A recipe with no ``sign_convention`` key must not NULL the column."""
+    repo = PdfFormatsRepo(db)
+    _save_new(repo, recipe=_RECIPE_V1, sign_convention="negative_is_expense")
+
+    repo.bump_version(
+        "chase_checking_pdf", _RECIPE_V2, reason="added description field", actor="cli"
+    )
+
+    row = db.conn.execute(
+        "SELECT sign_convention FROM app.pdf_formats WHERE name = ?",
+        ["chase_checking_pdf"],
+    ).fetchone()
+    assert row == ("negative_is_expense",)
+
+
 def test_get_by_fingerprint_returns_match(db: Database) -> None:
     repo = PdfFormatsRepo(db)
     _save_new(repo, fingerprint=_FINGERPRINT)

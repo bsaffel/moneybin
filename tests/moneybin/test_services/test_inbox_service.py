@@ -308,6 +308,49 @@ class TestSyncHappyPath:
         assert result.transforms_applied is True
         assert result.transforms_duration_seconds == 0.01
 
+    def test_processed_entry_carries_the_ratified_sign_replay_note(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The drain is the most unattended surface — a durable override is visible here.
+
+        The watched-folder sync imports without a human present. A saved `--sign`
+        override replaying onto a new statement bypasses the credit-card detector,
+        so the per-file entry must say so or the decision acts invisibly exactly
+        where nobody is watching.
+        """
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_service import ImportResult
+        from moneybin.services.refresh import RefreshResult
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **_kwargs: object) -> ImportResult:
+                return ImportResult(
+                    file_path=path,
+                    file_type="pdf",
+                    transactions=2,
+                    sign_override_replayed=True,
+                )
+
+        def fake_refresh(db: object) -> RefreshResult:
+            return RefreshResult(applied=True, duration_seconds=0.01)
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+        monkeypatch.setattr(
+            "moneybin.services.refresh.refresh", fake_refresh, raising=True
+        )
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.pdf").write_bytes(b"%PDF-1.4 fake")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert result.processed[0]["sign_override_replayed"] is True
+
     def test_subfolder_passes_account_name(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -613,6 +656,92 @@ class TestSyncFailure:
         candidates: Any = proposals[0]["candidates"]
         assert [c["account_id"] for c in candidates] == ["acct_a"]
         assert candidates[0]["signal"] == "fallback"
+
+    def test_card_statement_pending_sidecar_names_sign_recovery(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A first-contact card statement produces a sign-honest sidecar.
+
+        "magic stays visible": a whole-ledger sign inversion the user can't see
+        the evidence for must never be applied. The sidecar must name the
+        --confirm / --sign recovery and carry the matched disclosures +
+        printed-vs-recorded rows — NOT the tabular --accept / --mapping hint,
+        which would silently invert every deposit (--accept) or dead-end loop on
+        a PDF (--mapping).
+        """
+        import yaml
+
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            SignConventionProposal,
+        )
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="pdf",
+                        confidence=Confidence(
+                            score=1.0, tier="high", flagged=(), missing_required=()
+                        ),
+                        proposed=SignConventionProposal(
+                            sign_convention="negative_is_income",
+                            evidence=("Minimum Payment Due", "New Balance"),
+                            sample_rows=[
+                                {
+                                    "description": "COFFEE SHOP",
+                                    "as_printed": "12.50",
+                                    "as_recorded": "-12.50",
+                                }
+                            ],
+                        ),
+                        reason="sign_convention",
+                        error_message=(
+                            "This looks like a credit-card statement "
+                            "(matched: Minimum Payment Due, New Balance)."
+                        ),
+                    )
+                )
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "statement.pdf").write_bytes(b"%PDF-1.4 fake\n")
+
+        result = svc.sync(year_month="2026-05")
+
+        assert len(result.failed) == 0
+        assert len(result.pending) == 1
+        assert result.pending[0]["reason"] == "sign_convention"
+
+        moved = svc.pending_dir / "2026-05" / "statement.pdf"
+        sidecar = moved.with_name("statement.pdf.pending.yml")
+        assert moved.exists()
+        loaded = yaml.safe_load(sidecar.read_text())
+
+        assert loaded["reason"] == "sign_convention"
+        actions = loaded["actions"]
+        # The two honest recoveries — and nothing that mislabels the flip.
+        assert any("--confirm" in a for a in actions)
+        assert any("--sign negative_is_expense" in a for a in actions)
+        assert not any("--accept" in a for a in actions)
+        assert not any("--mapping" in a for a in actions)
+        # Evidence + printed-vs-recorded rows must ride in the sidecar, not be
+        # dropped (they are empty on a ProposedMapping-shaped payload).
+        assert loaded["sign_evidence"] == ["Minimum Payment Due", "New Balance"]
+        assert loaded["sign_sample_rows"][0]["as_printed"] == "12.50"
+        assert loaded["sign_sample_rows"][0]["as_recorded"] == "-12.50"
+        assert "credit-card statement" in loaded["error_message"]
+        # None of the tabular mapping fields leak in as misleading empties.
+        assert "proposed_mapping" not in loaded
 
     def test_unknown_error_uses_generic_code(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

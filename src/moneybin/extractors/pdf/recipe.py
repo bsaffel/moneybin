@@ -85,6 +85,21 @@ class Recipe(BaseModel):
     sign_convention: Literal[
         "negative_is_expense", "negative_is_income", "split_debit_credit"
     ]
+    # True only when a human overrode the detector with an explicit `sign=` on
+    # this format's import (ImportService._gate_pdf_sign_convention). It tells
+    # the replay guard that the convention above is an assertion, not an
+    # inference, so auto_derive.recipe_polarity_fits must not second-guess it —
+    # without that, a sign= override correcting a false-positive card detection
+    # can never replay (the guard refuses the corrected recipe on the very
+    # markers that caused the false positive) and the user re-overrides forever.
+    # NOT set by confirm=True: agreeing with the detector needs no bypass, and
+    # granting one there would strip the guard in the dangerous direction. NOT
+    # settable by an agent either — bridge.parse_bridge_response rejects a
+    # response naming this key, because the bridge apply path skips the confirm
+    # gate and persists what it is handed.
+    # Additive with a default — old recipes in the app.pdf_formats JSON blob
+    # deserialize as False, so no migration is required.
+    sign_ratified: bool = False
     number_format: Literal["us", "european", "swiss_french", "zero_decimal"] = "us"
     routing: Literal["transactions", "seed"]
 

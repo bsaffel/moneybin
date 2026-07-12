@@ -1,6 +1,6 @@
 """Shared input loader for the investment cost-basis SQLMesh models.
 
-Lives OUTSIDE ``sqlmesh/models/`` on purpose so SQLMesh's model scanner never
+Lives OUTSIDE ``src/moneybin/sqlmesh/models/`` on purpose so SQLMesh's model scanner never
 imports it as a model. Both ``core.fct_investment_lots`` and
 ``core.fct_realized_gains`` run the same pure engine
 (``moneybin.investments.cost_basis``) over the same three inputs; this module is

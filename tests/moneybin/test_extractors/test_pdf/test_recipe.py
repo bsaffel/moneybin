@@ -122,6 +122,23 @@ def test_recipe_model_dump_round_trips() -> None:
     assert r1 == r2
 
 
+def test_recipe_saved_before_sign_ratified_defaults_to_unratified() -> None:
+    """Recipes already in app.pdf_formats predate the field — they must still load.
+
+    ``extraction_recipe`` is a JSON blob, so the field is additive with a default
+    and needs no migration. This pins that: a recipe dict with no ``sign_ratified``
+    key validates, and defaults to False — the safe side, where the replay guard
+    still applies. A future ``extra="forbid"`` or a non-defaulted field would break
+    every saved format on upgrade, and this is what would catch it.
+    """
+    legacy = _make_recipe()
+    assert "sign_ratified" not in legacy
+
+    recipe = Recipe.model_validate(legacy)
+
+    assert recipe.sign_ratified is False
+
+
 # ---------------------------------------------------------------------------
 # Executor: timeout (dynamic bound)
 # ---------------------------------------------------------------------------

@@ -1676,8 +1676,8 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/data/tabular_formats/mint.yaml` | Built-in Mint format |
 | `src/moneybin/data/tabular_formats/ynab.yaml` | Built-in YNAB format |
 | `src/moneybin/data/tabular_formats/maybe.yaml` | Built-in Maybe/Sure migration format |
-| `sqlmesh/models/prep/stg_tabular__accounts.sql` | Staging view replacing `stg_csv__accounts` |
-| `sqlmesh/models/prep/stg_tabular__transactions.sql` | Staging view replacing `stg_csv__transactions` |
+| `src/moneybin/sqlmesh/models/prep/stg_tabular__accounts.sql` | Staging view replacing `stg_csv__accounts` |
+| `src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql` | Staging view replacing `stg_csv__transactions` |
 | `tests/moneybin/test_extractors/test_tabular_extractor.py` | Unit tests for detection engine |
 | `tests/moneybin/test_extractors/test_tabular_formats.py` | Unit tests for format system |
 | `tests/moneybin/test_loaders/test_tabular_loader.py` | Unit tests for transform and load |
@@ -1691,8 +1691,8 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/services/import_service.py` | Replace CSV-specific import with tabular import pipeline |
 | `src/moneybin/cli/commands/import_cmd.py` | Update flags, add format management subcommands |
 | `src/moneybin/mcp/tools/import_tools.py` | Format-neutral import MCP tools (`import_files`, `import_preview`, `import_status`, `import_revert`, `import_formats`); replaces the previous `csv_*` tools |
-| `sqlmesh/models/core/dim_accounts.sql` | Replace `csv` CTE with `tabular` |
-| `sqlmesh/models/core/fct_transactions.sql` | Replace `csv` CTE with `tabular` |
+| `src/moneybin/sqlmesh/models/core/dim_accounts.sql` | Replace `csv` CTE with `tabular` |
+| `src/moneybin/sqlmesh/models/core/fct_transactions.sql` | Replace `csv` CTE with `tabular` |
 
 ### Files to remove/archive
 
@@ -1704,8 +1704,8 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/data/csv_profiles/` | Remove directory (replaced by `tabular_formats/`) |
 | `src/moneybin/sql/schema/raw_csv_transactions.sql` | Remove (replaced by `raw_tabular_transactions.sql`) |
 | `src/moneybin/sql/schema/raw_csv_accounts.sql` | Remove (replaced by `raw_tabular_accounts.sql`) |
-| `sqlmesh/models/prep/stg_csv__accounts.sql` | Remove (replaced by `stg_tabular__accounts.sql`) |
-| `sqlmesh/models/prep/stg_csv__transactions.sql` | Remove (replaced by `stg_tabular__transactions.sql`) |
+| `src/moneybin/sqlmesh/models/prep/stg_csv__accounts.sql` | Remove (replaced by `stg_tabular__accounts.sql`) |
+| `src/moneybin/sqlmesh/models/prep/stg_csv__transactions.sql` | Remove (replaced by `stg_tabular__transactions.sql`) |
 
 ### Key decisions
 

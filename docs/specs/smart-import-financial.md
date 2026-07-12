@@ -142,7 +142,7 @@ Legacy rows imported before this change have `import_id = NULL`. They appear in 
 - `src/moneybin/metrics/registry.py` — add `moneybin_ofx_import_*` metric counterparts.
 - `src/moneybin/testing/synthetic/models.py` — extend `source_type` literal as needed for QBO scenarios.
 - `src/moneybin/testing/synthetic/writer.py` — emit `.qbo` variants when scenarios request them.
-- `sqlmesh/models/prep/stg_ofx__*.sql` — surface new columns in staging views.
+- `src/moneybin/sqlmesh/models/prep/stg_ofx__*.sql` — surface new columns in staging views.
 - `docs/specs/INDEX.md` — register this spec; mark `archived/ofx-import.md` as superseded.
 - `README.md` — "What Works Today" section gains QBO + revert support per `shipping.md`.
 

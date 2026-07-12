@@ -83,7 +83,7 @@ This avoids MCP sampling (not supported by Claude Code or Claude Desktop) and av
 
 ## Default Taxonomy
 
-SQLMesh seed model (`sqlmesh/models/seeds/categories.sql` + `.csv`) with Plaid PFCv2:
+SQLMesh seed model (`src/moneybin/sqlmesh/models/seeds/categories.sql` + `.csv`) with Plaid PFCv2:
 
 **16 primary categories:** Income, Transfer, Loan Payments, Bank Fees, Entertainment, Food & Drink, Shopping, Home Improvement, Healthcare, Personal Care, Services, Government & Nonprofit, Transportation, Travel, Housing & Utilities, Other
 
@@ -130,8 +130,8 @@ Under `data categorize`:
 - `src/moneybin/sql/schema/app_categories.sql`
 - `src/moneybin/sql/schema/app_merchants.sql`
 - `src/moneybin/sql/schema/app_categorization_rules.sql`
-- `sqlmesh/models/seeds/categories.sql`
-- `sqlmesh/models/seeds/categories.csv`
+- `src/moneybin/sqlmesh/models/seeds/categories.sql`
+- `src/moneybin/sqlmesh/models/seeds/categories.csv`
 - `src/moneybin/services/categorization_service.py`
 - `src/moneybin/cli/commands/categorize.py`
 - `tests/moneybin/test_services/test_categorization_service.py`

@@ -6,10 +6,14 @@ else falls back to the Phase 1 raw.pdf_seeds path.
 
 Mock strategy: stub PDFExtractor.extract() to return a hand-built PdfDocument
 (no real PDF parsing), so the routing pipeline exercises end-to-end without I/O.
+The sign-convention gate tests are the exception — they import committed
+statement PDFs through the real extractor, because the evidence the gate acts on
+is text the extractor has to actually surface.
 """
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -17,9 +21,18 @@ from unittest.mock import patch
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+from moneybin.services.import_confirmation import (
+    ImportConfirmationRequiredError,
+    SignConventionProposal,
+)
 from moneybin.services.import_service import ImportService
+from tests.moneybin.pdf_statement_fixtures import (
+    write_card_statement_pdf,
+    write_checking_statement_pdf,
+)
 
 # ---------------------------------------------------------------------------
 # Shared fixtures / helpers (mirrors test_routing.py)
@@ -698,3 +711,579 @@ def test_pdf_scanned_no_text_layer_raises_unsupported(
         "WHERE schema_name = 'raw' AND view_name LIKE 'pdf_%'"
     ).fetchone()
     assert views is not None and views[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests 13-17: the sign-convention gate (auto-derived inversion needs a confirm)
+# ---------------------------------------------------------------------------
+
+
+def _amounts(db: Database) -> list[Decimal]:
+    return sorted(
+        r[0]
+        for r in db.execute(
+            "SELECT amount FROM raw.tabular_transactions WHERE source_type = 'pdf'"
+        ).fetchall()
+    )
+
+
+def _row_count(db: Database) -> int:
+    row = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+@pytest.mark.integration
+def test_card_statement_import_requires_confirmation(
+    db: Database, tmp_path: Path
+) -> None:
+    """An auto-derived inversion never lands rows unratified."""
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(pdf, refresh=False)
+
+    outcome = exc.value.outcome
+    assert outcome.channel == "pdf"
+    assert outcome.reason == "sign_convention"
+    proposed = outcome.proposed
+    assert isinstance(proposed, SignConventionProposal)
+    assert proposed.sign_convention == "negative_is_income"
+    assert "minimum payment" in proposed.evidence
+    # The samples show the flip concretely: printed +150.00 → recorded -150.00.
+    assert proposed.sample_rows
+    assert proposed.sample_rows[0]["as_printed"] == "150.00"
+    assert proposed.sample_rows[0]["as_recorded"] == "-150.00"
+    # `medium`, never `high`: `high` is the tier an agent may self-accept at.
+    assert outcome.confidence.tier == "medium"
+
+    assert _row_count(db) == 0
+
+
+@pytest.mark.integration
+def test_confirmed_card_statement_records_charges_as_expenses(
+    db: Database, tmp_path: Path
+) -> None:
+    """The whole point: a +150 charge is an EXPENSE; a -50 payment is a credit."""
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    svc.import_file(pdf, refresh=False, confirm=True)
+
+    assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]
+
+
+@pytest.mark.integration
+def test_sign_override_overrules_the_card_detector(
+    db: Database, tmp_path: Path
+) -> None:
+    """A false-positive detection must be recoverable in-band, not by editing the PDF."""
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    svc.import_file(pdf, refresh=False, sign="negative_is_expense")
+
+    assert _amounts(db) == [Decimal("-50.00"), Decimal("150.00")]  # as printed
+
+
+@pytest.mark.integration
+def test_replayed_card_format_needs_no_second_confirmation(
+    db: Database, tmp_path: Path
+) -> None:
+    """The confirm is once per FORMAT, not once per statement."""
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        confirm=True,
+        save_format=True,
+    )
+
+    # Second month, same layout -> replays the saved recipe, no confirm.
+    svc.import_file(write_card_statement_pdf(tmp_path, month="02"), refresh=False)
+
+    assert _row_count(db) == 4
+    # Both statements inverted — every charge an expense, every payment a credit.
+    assert _amounts(db) == [
+        Decimal("-150.00"),
+        Decimal("-150.00"),
+        Decimal("50.00"),
+        Decimal("50.00"),
+    ]
+
+
+@pytest.mark.integration
+def test_checking_statement_imports_without_a_sign_confirm(
+    db: Database, tmp_path: Path
+) -> None:
+    """The gate's precision guard: the card twin with no disclosures never asks.
+
+    Same issuer, same columns, same balances, same two amounts — only the
+    disclosures differ. A gate that fired here would invert a real checking
+    ledger (every paycheck an expense), which is the cost this test pins down.
+    """
+    pdf = write_checking_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    result = svc.import_file(pdf, refresh=False)
+
+    assert result.transactions == 2
+    assert _amounts(db) == [Decimal("-50.00"), Decimal("150.00")]  # as printed
+
+
+@pytest.mark.integration
+def test_sign_override_shape_mismatch_names_the_shape_the_recipe_extracts(
+    db: Database, tmp_path: Path
+) -> None:
+    """The shape-guard error must name what the recipe ACTUALLY extracts.
+
+    The card statement's recipe extracts a single amount column. Overriding
+    with `split_debit_credit` (a shape this recipe does not have) must fail
+    with a message naming "single amount column" — not "debit/credit pair",
+    which is what an inverted ternary said before this fix. This is the
+    user's only in-band recovery path from a false-positive card detection;
+    a misdirecting message sends them to fix the wrong thing.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+    svc = ImportService(db)
+
+    with pytest.raises(UserError) as exc:
+        svc.import_file(pdf, refresh=False, sign="split_debit_credit")
+
+    assert exc.value.code == "invalid_sign_convention"
+    assert "single amount column" in exc.value.message
+    assert "debit/credit pair" not in exc.value.message
+    assert _row_count(db) == 0
+
+
+@pytest.mark.integration
+def test_sign_override_replays_without_asking_again(
+    db: Database, tmp_path: Path
+) -> None:
+    """A `sign=` override must survive into every future statement of the format.
+
+    The override's whole purpose is recovering from a false-positive card
+    detection — and a false positive is, by construction, a document that CARRIES
+    card markers. Without ``sign_ratified`` on the recipe, the polarity guard
+    disowns the saved recipe on the next statement (a ``negative_is_expense``
+    recipe replayed onto a marker-bearing document), derivation re-runs,
+    re-proposes the inversion, and the gate raises again — forever. The user would
+    have to re-override every month and the saved format would be dead weight.
+    """
+    svc = ImportService(db)
+
+    first = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+    # First contact: the user typed `sign=` themselves — nothing to re-surface.
+    assert first.sign_override_replayed is False
+
+    # Next month, same layout, no flags. The saved override must replay.
+    second = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"), refresh=False
+    )
+
+    assert second.transactions == 2
+    # Both statements loaded as printed — the override held on the replay.
+    assert _amounts(db) == [
+        Decimal("-50.00"),
+        Decimal("-50.00"),
+        Decimal("150.00"),
+        Decimal("150.00"),
+    ]
+    # A durable override that acts invisibly is exactly the magic this codebase
+    # refuses: the replay bypasses the detector, so the user is told it happened.
+    assert second.sign_override_replayed is True
+
+
+@pytest.mark.integration
+def test_confirm_does_not_ratify_the_sign_convention(
+    db: Database, tmp_path: Path
+) -> None:
+    """`confirm=True` agrees with the detector; it must NOT disarm the polarity guard.
+
+    Ratifying "yes, this IS a card" needs no guard bypass — the marker check
+    re-confirms that recipe on every replay of a real card. Setting
+    ``sign_ratified`` here would instead strip the protection in the dangerous
+    direction: a checking statement sharing this fingerprint (same issuer, same
+    columns, same page count) would silently import every paycheck as an expense.
+    """
+    import json as _json
+
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+
+    row = db.execute("SELECT extraction_recipe FROM app.pdf_formats").fetchone()
+    assert row is not None
+    stored = _json.loads(row[0])
+    assert stored["sign_convention"] == "negative_is_income"
+    assert stored["sign_ratified"] is False
+
+    # The card's fingerprint-identical twin: the guard must still refuse to replay
+    # the card recipe onto it, so its rows land as printed.
+    result = svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+
+    assert result.sign_override_replayed is False
+    assert _amounts(db) == [
+        Decimal("-150.00"),  # card: +150.00 charge, inverted on confirm
+        Decimal("-50.00"),  # checking: as printed, NOT inverted
+        Decimal("50.00"),  # card: -50.00 payment, inverted on confirm
+        Decimal("150.00"),  # checking: as printed, NOT inverted
+    ]
+
+
+@pytest.mark.integration
+def test_sign_gate_metric_records_all_three_outcomes(
+    db: Database, tmp_path: Path
+) -> None:
+    """PDF_SIGN_GATE_TOTAL bumps proposed/confirmed/overridden at their exits.
+
+    The gate had zero telemetry before this fix — a false-positive card
+    detection was invisible in aggregate. Drives all three real transitions
+    (propose, override, confirm) end-to-end rather than asserting against the
+    gate's internals directly.
+
+    ``save_format=False`` on every call keeps each import a fresh
+    auto-derivation: a saved recipe would make the third call a REPLAY
+    (``is_auto_derived`` false), which returns before the ``confirmed`` bump
+    and would make this test's third assertion fail for the wrong reason.
+    """
+    from moneybin.metrics.registry import PDF_SIGN_GATE_TOTAL
+
+    def _count(outcome: str) -> float:
+        return PDF_SIGN_GATE_TOTAL.labels(outcome=outcome)._value.get()  # type: ignore[reportPrivateUsage]
+
+    proposed_before = _count("proposed")
+    overridden_before = _count("overridden")
+    confirmed_before = _count("confirmed")
+
+    svc = ImportService(db)
+
+    with pytest.raises(ImportConfirmationRequiredError):
+        svc.import_file(
+            write_card_statement_pdf(tmp_path, month="01"),
+            refresh=False,
+            save_format=False,
+        )
+    assert _count("proposed") == proposed_before + 1
+
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+        save_format=False,
+    )
+    assert _count("overridden") == overridden_before + 1
+
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        confirm=True,
+        save_format=False,
+    )
+    assert _count("confirmed") == confirmed_before + 1
+
+
+def _saved_pdf_format(db: Database) -> tuple[dict[str, Any], str, int]:
+    """Return (stored recipe, sign_convention column, version) of the sole format."""
+    import json as _json
+
+    row = db.execute(
+        "SELECT extraction_recipe, sign_convention, version FROM app.pdf_formats"
+    ).fetchone()
+    assert row is not None
+    return _json.loads(row[0]), row[1], int(row[2])
+
+
+@pytest.mark.integration
+def test_a_corrected_sign_override_on_a_replay_persists_and_sticks(
+    db: Database, tmp_path: Path
+) -> None:
+    """A ratified convention must be revocable — by the only tool the user has.
+
+    The recipe is written on first contact only, so a `sign=` on a REPLAY used to
+    correct that one import and silently revert the next month. With no delete or
+    edit path for saved PDF formats (`import formats delete` speaks to the tabular
+    table), a wrong first-contact ratification was permanent — while the CLI note
+    told the user "Re-run with --sign to change it". This makes that true.
+    """
+    svc = ImportService(db)
+
+    # 1. The user asserts the WRONG convention on first contact — and it sticks:
+    #    the recipe is saved, and every future statement of this layout replays it.
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_income",
+    )
+    assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]  # inverted
+
+    # 2. Next statement, corrected: `sign=` on a replay of the saved format.
+    second = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+    assert second.transactions == 2
+    recipe, sign_column, version = _saved_pdf_format(db)
+    assert recipe["sign_convention"] == "negative_is_expense"
+    assert recipe["sign_ratified"] is True
+    assert version == 2  # audited + undo-reversible, not a silent overwrite
+    # `import formats show` reads the column, not the recipe — a stale column
+    # would report the convention the user just corrected away from.
+    assert sign_column == "negative_is_expense"
+
+    # 3. A third statement of the same format, no flags. The correction — not the
+    #    original ratification — must be what replays. (Fresh directory: the raw
+    #    PK includes source_file, so rows land either way and the AMOUNTS are what
+    #    discriminate a corrected replay from the stale inverted one.)
+    third_dir = tmp_path / "later"
+    third_dir.mkdir()
+    third = svc.import_file(write_card_statement_pdf(third_dir), refresh=False)
+
+    assert third.transactions == 2
+    assert third.sign_override_replayed is True
+    assert _amounts(db) == [
+        Decimal("-150.00"),  # statement 1, imported under the wrong ratification
+        Decimal("-50.00"),  # statement 2, corrected
+        Decimal("-50.00"),  # statement 3, corrected convention replayed
+        Decimal("50.00"),  # statement 1
+        Decimal("150.00"),  # statement 2
+        Decimal("150.00"),  # statement 3
+    ]
+
+
+@pytest.mark.integration
+def test_sign_override_typed_on_a_replay_is_not_reported_as_a_saved_replay(
+    db: Database, tmp_path: Path
+) -> None:
+    """The note must not tell the user a SAVED override acted when they just typed one.
+
+    The gate sets ``sign_ratified`` in the same call that accepts a `sign=`, so a
+    ratified-flag check alone is true on the very invocation supplying it — and the
+    user gets told the convention came from a saved override they are in fact
+    providing right now.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_income",
+    )
+
+    second = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+
+    assert second.sign_override_replayed is False
+
+
+@pytest.mark.integration
+def test_repeating_the_same_sign_override_does_not_bump_the_version(
+    db: Database, tmp_path: Path
+) -> None:
+    """A `--sign` re-typed out of habit is a no-op, not a version + audit row.
+
+    ``bump_version`` records the prior recipe for undo; bumping to an identical
+    recipe would spend a version on an event whose before_value equals its
+    after_value.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+    )
+
+    _, _, version = _saved_pdf_format(db)
+    assert version == 1
+
+
+@pytest.mark.integration
+def test_a_redundant_sign_override_does_not_disarm_the_polarity_guard(
+    db: Database, tmp_path: Path
+) -> None:
+    """A `sign=` that AGREES with the convention in force must NOT ratify.
+
+    Ratifying on *any* `sign=` hands out the guard bypass for free. The user
+    re-states the convention their card is already importing under — nothing to
+    correct, nothing to bypass — and the saved recipe comes back ratified, so the
+    polarity guard stands down forever. The next CHECKING statement that
+    fingerprints identically (same issuer, same columns, same page count) then
+    replays the card recipe and imports every paycheck as an expense: the exact
+    corruption this gate exists to prevent, re-opened by a no-op flag.
+
+    Same reasoning as ``confirm=True``, which declines to ratify for this reason.
+    Only a DISAGREEING `sign=` needs the bypass.
+    """
+    svc = ImportService(db)
+
+    # 1. A genuine card, confirmed. Saved: negative_is_income, guard armed.
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+
+    # 2. Next month's card, with the convention already in force re-typed.
+    second = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_income",
+    )
+    assert second.transactions == 2
+
+    recipe, sign_column, version = _saved_pdf_format(db)
+    assert recipe["sign_convention"] == "negative_is_income"
+    assert recipe["sign_ratified"] is False  # the guard survives the no-op flag
+    assert sign_column == "negative_is_income"
+    assert version == 1  # nothing changed — no bump, no audit row
+
+    # 3. The card's fingerprint-identical checking twin. The guard must still
+    #    refuse to replay the card recipe onto it: its rows land as printed.
+    third = svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+
+    assert third.sign_override_replayed is False
+    assert _amounts(db) == [
+        Decimal("-150.00"),  # card 01: +150.00 charge, inverted
+        Decimal("-150.00"),  # card 02: inverted by the saved recipe
+        Decimal("-50.00"),  # checking: as printed, NOT inverted
+        Decimal("50.00"),  # card 01: -50.00 payment, inverted
+        Decimal("50.00"),  # card 02
+        Decimal("150.00"),  # checking: as printed, NOT inverted
+    ]
+
+
+@pytest.mark.integration
+def test_no_save_format_does_not_rewrite_the_saved_recipe_on_a_sign_override(
+    db: Database, tmp_path: Path
+) -> None:
+    """`save_format=False` must suppress the replay re-persist, not just save_new.
+
+    ``--no-save-format`` is what a user reaches for on a one-off or sensitive
+    statement: it promises the import will not teach ``app.pdf_formats`` anything.
+    A `sign=` on that import applies to THIS statement only — it must not flip the
+    saved recipe's convention, bump its version, or leave an audit row.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        sign="negative_is_expense",
+        save_format=False,
+    )
+
+    recipe, sign_column, version = _saved_pdf_format(db)
+    assert recipe["sign_convention"] == "negative_is_income"
+    assert recipe["sign_ratified"] is False
+    assert sign_column == "negative_is_income"
+    assert version == 1
+    bump = db.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'pdf_format.bump_version'"
+    ).fetchone()
+    assert bump is not None and bump[0] == 0
+
+    # The override still governed the import it was typed on.
+    assert _amounts(db) == [
+        Decimal("-150.00"),  # month 01, confirmed as a card → inverted
+        Decimal("-50.00"),  # month 02, overridden → as printed
+        Decimal("50.00"),  # month 01
+        Decimal("150.00"),  # month 02
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Test 18-19: a confirmed card statement types the account 'credit'
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_confirmed_card_statement_types_the_account_credit(
+    db: Database, tmp_path: Path
+) -> None:
+    """A confirmed card is a FACT about the account — keep it, don't discard it."""
+    svc = ImportService(db)
+    svc.import_file(write_card_statement_pdf(tmp_path), refresh=False, confirm=True)
+
+    row = db.execute(
+        "SELECT account_type FROM raw.tabular_accounts WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "credit"
+
+
+@pytest.mark.integration
+def test_checking_statement_leaves_account_type_null(
+    db: Database, tmp_path: Path
+) -> None:
+    """We only assert a type we actually established. No guessing."""
+    svc = ImportService(db)
+    svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+
+    row = db.execute(
+        "SELECT account_type FROM raw.tabular_accounts WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None
+
+
+# ---------------------------------------------------------------------------
+# Test 20: transaction ids are stable across sign conventions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_transaction_ids_are_stable_across_sign_conventions(
+    db: Database, tmp_path: Path
+) -> None:
+    """Flipping the convention must NOT rotate ids — else a re-import double-counts.
+
+    Ids are keyed on the RAW pre-normalization ``amount``/``debit``/``credit``
+    cell values (import_service.py, ``content_key`` in ``_import_pdf_transactions``
+    around line 2768-2779) — never on the sign-normalized ``amount`` column a
+    convention flip changes. ``save_format=False`` on both calls keeps each
+    import first-contact: the first asserts ``negative_is_expense`` via an
+    explicit override, the second confirms the card detector's own
+    ``negative_is_income`` proposal — two genuinely different conventions, not
+    one convention replayed twice. (Without ``save_format=False`` the first
+    call's ratified override would persist to ``app.pdf_formats`` and the
+    second call would replay it unchanged, silently testing one convention
+    against itself.)
+    """
+    svc = ImportService(db)
+    pdf = write_card_statement_pdf(tmp_path)
+
+    svc.import_file(pdf, refresh=False, sign="negative_is_expense", save_format=False)
+    as_expense = {
+        r[0]
+        for r in db.execute(
+            "SELECT transaction_id FROM raw.tabular_transactions"
+        ).fetchall()
+    }
+    db.execute("DELETE FROM raw.tabular_transactions")
+
+    svc.import_file(pdf, refresh=False, confirm=True, save_format=False)
+    as_income = {
+        r[0]
+        for r in db.execute(
+            "SELECT transaction_id FROM raw.tabular_transactions"
+        ).fetchall()
+    }
+
+    assert as_expense == as_income
+    assert len(as_expense) == 2  # sanity: the fixture's two rows, not an empty set

@@ -619,8 +619,8 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 - `src/moneybin/sql/schema/app_transaction_splits.sql`
 - `src/moneybin/sql/schema/app_imports.sql`
 - `src/moneybin/sql/schema/app_audit_log.sql`
-- `sqlmesh/models/prep/stg_manual__transactions.sql` — staging view feeding `int_transactions__unioned`
-- `sqlmesh/models/core/fct_transaction_lines.sql` — split-expanded grain
+- `src/moneybin/sqlmesh/models/prep/stg_manual__transactions.sql` — staging view feeding `int_transactions__unioned`
+- `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` — split-expanded grain
 - `src/moneybin/services/audit_service.py` — `AuditService.record_audit_event`, query methods
 - `src/moneybin/cli/commands/transactions/` (package) — `transactions_create`, `transactions_notes_*`, `transactions_tags_*`, `transactions_splits_*`, `transactions_audit`. (Shipped as a package, not a flat module — each subgroup is its own file inside the package.)
 - `src/moneybin/cli/commands/system/` (package) — `system_audit_list`, `system_audit_show`.
@@ -648,8 +648,8 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 - `src/moneybin/services/schema_catalog.py` — register new tables and columns; add example queries for LIST/STRUCT use
 - `src/moneybin/tables.py` — add `TableRef` constants for the new app tables
 - `src/moneybin/schema.py` — register new schema files
-- `sqlmesh/models/core/fct_transactions.sql` — add the three CTE joins and seven new output columns
-- `sqlmesh/models/prep/int_transactions__unioned.sql` — add manual staging branch
+- `src/moneybin/sqlmesh/models/core/fct_transactions.sql` — add the three CTE joins and seven new output columns
+- `src/moneybin/sqlmesh/models/prep/int_transactions__unioned.sql` — add manual staging branch
 - `src/moneybin/config.py` — `MatchingSettings.source_priority` adds `manual` at priority 0
 - `src/moneybin/mcp/tools/__init__.py` — register new tools
 - `tests/e2e/test_e2e_mcp.py` — extend with new tool coverage

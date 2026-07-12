@@ -369,7 +369,7 @@ Same command runs in both places. When CI fails and local passes:
 | Test passes once, fails on re-run | Mutating fixture not isolated, or cached settings leaking across tests | `conftest.py` resets DB module state per test — check you're not creating a `Database` outside the `scenario_env` context |
 | Stale generator output | Synthetic generator changed shape but expected count didn't | Re-derive via `expected_generator_txn_count(setup)` from `_tier1_backfill.py`; never paste the new number |
 | Expectation drifts after a refactor | Code change altered output | **Fix the code first.** Updating the expectation requires a written PR justification explaining why the new value is correct in itself, not "what the new code produces." |
-| Tier 1 fails on a new column | `FCT_TRANSACTIONS_SCHEMA` in `_tier1_backfill.py` is out of date | Re-enumerate from `sqlmesh/models/core/fct_transactions.sql` by hand — never paste a query result |
+| Tier 1 fails on a new column | `FCT_TRANSACTIONS_SCHEMA` in `_tier1_backfill.py` is out of date | Re-enumerate from `src/moneybin/sqlmesh/models/core/fct_transactions.sql` by hand — never paste a query result |
 
 ---
 
