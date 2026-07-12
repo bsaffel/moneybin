@@ -70,10 +70,18 @@ def transactions_categorize_stats(
     """Get categorization coverage statistics.
 
     Returns total transactions, categorized count, uncategorized count,
-    percentage categorized, breakdown by categorization source
-    (user, ai, rule, provider_native), and plaid_unmapped — the count of
-    Plaid transactions whose PFC code has no category-source-bridge mapping
-    yet (omitted when no Plaid data is present).
+    percentage categorized, breakdown by categorization source, and
+    plaid_unmapped — the count of Plaid transactions whose PFC code has no
+    category-source-bridge mapping yet (omitted when no Plaid data is
+    present).
+
+    The source breakdown carries one bucket per persisted ``categorized_by``
+    value (``user``, ``rule``, ``auto_rule``, ``migration``, ``ml``,
+    ``provider_native``, ``ai``) plus a reporting-only ``merchant_map``
+    bucket: rows written via merchant-pattern matching are split out of
+    ``rule`` here so the count reconciles with transactions_categorize_rules'
+    rule list, but the persisted ``categorized_by`` value on those rows is
+    still ``rule``.
 
     Args:
         include_auto: When True, also return auto-rule health metrics

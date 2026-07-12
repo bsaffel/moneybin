@@ -24,6 +24,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `credit`, so it is counted as a liability in net worth. (MCP surfaces the same
   confirmation and, for now, routes it to the CLI to resolve; in-place
   confirmation is planned.)
+- **Auto-rule proposals can no longer silently mass-mislabel the ledger.** A
+  transaction description that normalizes to a 1–2 character token (e.g. "TO",
+  from a truncated "TRANSFER TO ...") previously became a `contains` rule —
+  matching any description containing that substring, including unrelated
+  merchants like STORE, AUTO, and TOTAL. Accepting the proposal would
+  recategorize all of them as Internal Transfer, which also drops those rows
+  out of every spend report. A short, machine-invented pattern is now proposed
+  as an `exact` match instead of `contains` (a user-authored merchant pattern
+  is untouched); every proposal reports how many transactions it would
+  actually recategorize (`estimated_match_count`); and a proposal whose blast
+  radius outruns its evidence (`is_broad`) is skipped on accept unless the
+  caller explicitly opts in (MCP `allow_broad`, CLI `--allow-broad`).
+- **The uncategorized-transactions queue no longer treats an unresolved
+  transfer leg as an ordinary row.** A transaction awaiting a transfer-match
+  decision was previously indistinguishable from any other uncategorized row;
+  categorizing it double-counts it against the eventual transfer pair once
+  matching resolves. Rows with a pending transfer match are now flagged, with
+  a hint to resolve the match first — they are still returned, never hidden.
 
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
@@ -243,6 +261,18 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **`transactions_categorize_assist` renames `description_redacted`/`memo_redacted`
+  to `description_scrubbed`/`memo_scrubbed`.** Behavior is unchanged and was
+  always correct: merchant text is the categorization signal and is sent to
+  the model in full; what is scrubbed is embedded PII such as account numbers
+  in the memo. The old field names claimed descriptions were withheld, which
+  was never true. The `categorize export` / `commit-from-file` file format
+  carries the new field names.
+- **Categorization stats split the `rule` bucket into `rule` and
+  `merchant_map`.** `transactions_categorize_stats`'s `by_source` breakdown
+  previously folded merchant-mapping writes into `by_rule`, so the count
+  didn't reconcile with the rules list. The persisted `categorized_by` value
+  is unchanged — this is a reporting-only split.
 - **MCP client guide corrected against what the clients actually do.** The Claude
   Desktop section now leads with `.mcpb` desktop extensions as the vendor-blessed
   path (config-file JSON is legacy-but-supported; MoneyBin's own bundle is still

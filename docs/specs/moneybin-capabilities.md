@@ -74,7 +74,7 @@ not-yet-built.
 | 13| Soft-delete a categorization rule by ID                          | `transactions_categorize_rules_delete` | `transactions categorize rules delete` | —          | live                  |
 | 14| Commit externally-decided categorizations (LLM workflow's terminal step) | `transactions_categorize_commit`        | `transactions categorize commit`        | —          | live                  |
 | 15| Run the categorization engine cascade (rules + merchants)        | `transactions_categorize_run`            | `transactions categorize run`            | —          | live                  |
-| 16| Get redacted batch for LLM categorization                        | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
+| 16| Get PII-scrubbed batch for LLM categorization                    | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
 | 17| Categorization coverage statistics (with optional auto-rule health) | `transactions_categorize_stats` *(`include_auto=True` for auto metrics)* | `transactions categorize stats` | — | live |
 | 18| Fetch uncategorized transactions queue (sortable by date or impact) | `transactions_categorize_pending` *(`sort`, `min_amount`, `account`)* | `transactions categorize pending` | — | live |
 | 19| Check auto-rule health metrics in isolation                      | absorbed into row 17 (`include_auto=True`) | `transactions categorize auto stats` *(CLI-only after MCP tool retired)* | — | live |
@@ -129,6 +129,8 @@ not-yet-built.
 | 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
 | 67| Set up the evaluator demo profile (synthetic data → pipeline → clean doctor → first answer) | — *(cat 2 — dev/evaluator tooling)* | `demo` *(`--persona`, `--seed`, `--yes`; always targets the dedicated `demo` profile — no arbitrary `--profile` target)* | — | live (CLI-only) |
 | 68| Confirm a credit-card PDF's inverted sign convention (charges → expenses) | `import_files`/`import_preview` *(return `confirmation_required` with `reason="sign_convention"` + `sign_sample_rows` when a PDF names itself a credit card; `actions[]` direct to the CLI — MCP cannot ratify a sign inversion in place yet, elicitation-based confirm planned)* | `import files <path> --confirm` *(confirm the inversion)* / `import files <path> --sign negative_is_expense` *(overrule a false card detection)* | — | live (CLI ratifies; MCP surfaces + defers) |
+| 69| Review pending auto-rule proposals with each proposal's estimated blast radius | `transactions_categorize_auto_review` *(returns `estimated_match_count` + `is_broad` per proposal)* | `transactions categorize auto review` | — | live |
+| 70| Accept or reject pending auto-rule proposals (a broad proposal requires an explicit override) | `transactions_categorize_auto_accept` *(`accept`, `reject`, `allow_broad` — required to promote an `is_broad` proposal)* | `transactions categorize auto accept --accept/--reject [--allow-broad]` | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -201,6 +203,17 @@ in-place ratify path (no `sign=` param; `accept=`/`mapping=` on a `.pdf` returns
 `confirm_channel_conflict`), because inverting a whole statement is a decision the
 agent must never self-accept. In-place confirm is deferred to an elicitation-based
 flow (the server asks the human directly).
+Rows 69–70 added 2026-07-12 with the auto-rule blast-radius guard PR:
+`transactions_categorize_auto_review` (MCP) / `moneybin transactions categorize
+auto review` (CLI) now surface `estimated_match_count` and `is_broad` per
+proposal; `transactions_categorize_auto_accept` (MCP) /
+`moneybin transactions categorize auto accept` (CLI) gain `allow_broad` /
+`--allow-broad`, required to promote a proposal flagged `is_broad`. Row 16's
+capability description is corrected from "redacted" to "PII-scrubbed" in the
+same PR — the `transactions_categorize_assist` fields are renamed
+`description_scrubbed`/`memo_scrubbed` (were `description_redacted`/
+`memo_redacted`); merchant text was always sent in full, only embedded PII
+was ever masked.
 
 ## Exemption categories
 
