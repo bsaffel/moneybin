@@ -135,6 +135,18 @@ PDF_BRIDGE_EGRESS_TOTAL = Counter(
     ["outcome"],  # values: "proposed", "applied", "declined", "invalid"
 )
 
+# Sign-convention gate outcomes (ImportService._gate_pdf_sign_convention). A
+# false-positive card detection would silently invert a real ledger, so this
+# safety-critical gate needs the same visibility as the bridge egress above.
+# "proposed" = an auto-derived negative_is_income inversion raised for
+# confirmation; "confirmed" = ratified via confirm=True; "overridden" = a
+# caller supplied an explicit sign= that overruled the detector.
+PDF_SIGN_GATE_TOTAL = Counter(
+    "moneybin_pdf_sign_gate_total",
+    "PDF sign-convention gate outcomes by resolution.",
+    ["outcome"],  # values: "proposed", "confirmed", "overridden"
+)
+
 # ── Smart import confirmation ────────────────────────────────────────────────
 
 IMPORT_CONFIRMATIONS_TOTAL = Counter(

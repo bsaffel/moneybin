@@ -320,6 +320,60 @@ def test_apply_malformed_response_bumps_invalid_metric(
     assert _invalid_count() == before + 1
 
 
+def test_apply_persists_a_bridge_recipe_unratified(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """The bridge's own recipes save with the guard armed.
+
+    ``sign_ratified`` records a human's `--sign` override. A bridge-authored
+    recipe is an agent's inference, so the polarity guard must keep second-guessing
+    it on every replay, exactly as it does an auto-derived one.
+    """
+    import json as _json
+
+    result = ImportService(db).apply_pdf_bridge_response(
+        _pdf_path(tmp_path), _bridge_response()
+    )
+
+    assert result.format_name is not None
+    row = db.conn.execute(
+        f"SELECT extraction_recipe FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [result.format_name],
+    ).fetchone()
+    assert row is not None
+    assert _json.loads(row[0])["sign_ratified"] is False
+
+
+def test_apply_rejects_a_response_that_self_grants_sign_ratified(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """The bridge is not the user, and cannot ratify a sign convention as one.
+
+    ``apply_pdf_bridge_response`` skips the sign confirm gate by design and
+    persists the recipe it is handed. A response carrying ``sign_ratified`` would
+    therefore short-circuit ``recipe_polarity_fits`` on every future statement of
+    that fingerprint — a silent, agent-granted ledger inversion, with no human in
+    the loop. Nothing loads and nothing persists.
+    """
+    from moneybin.extractors.pdf.bridge import BridgeResponseError
+
+    hijacked = {**_valid_recipe_dict(), "sign_ratified": True}
+    with pytest.raises(BridgeResponseError, match="sign_ratified"):
+        ImportService(db).apply_pdf_bridge_response(
+            _pdf_path(tmp_path), _bridge_response(recipe=hijacked)
+        )
+
+    formats = db.conn.execute(
+        f"SELECT COUNT(*) FROM {PDF_FORMATS.full_name}"  # noqa: S608  # TableRef constant, not user input
+    ).fetchone()
+    assert formats is not None and formats[0] == 0
+    loaded = db.conn.execute(
+        f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant, not user input
+        "WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert loaded is not None and loaded[0] == 0
+
+
 def test_apply_uncompilable_regex_raises_bridge_response_error(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:

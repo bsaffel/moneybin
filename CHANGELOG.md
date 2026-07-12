@@ -10,6 +10,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **Credit-card PDF statements now import with correct signs.** A statement that
+  names itself a credit card (via its required disclosures — "minimum payment",
+  "credit limit", and the like) derives the inverted convention
+  (`negative_is_income`) behind an explicit confirmation: charges record as
+  expenses, payments as credits. Previously every card statement was refused,
+  because the sign convention could not be expressed and guessing it would have
+  silently inverted the ledger. The confirmation is once per statement format —
+  confirm it is a card (`moneybin import files <path> --confirm`), or overrule a
+  false detection (`--sign negative_is_expense`), and that override survives every
+  future replay of the format. Confirming a card also types its account as
+  `credit`, so it is counted as a liability in net worth. (MCP surfaces the same
+  confirmation and, for now, routes it to the CLI to resolve; in-place
+  confirmation is planned.)
+
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added

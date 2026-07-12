@@ -232,6 +232,14 @@ class PdfFormatsRepo(BaseRepo):
         enabling the undo consumer to restore it. ``after_value`` reflects the new
         recipe at the new version number. Raises ``ValueError`` if the format does
         not exist.
+
+        The new recipe's own ``sign_convention`` is mirrored into the column of
+        the same name — the one ``save_new`` populates and ``import formats show``
+        reads. Derived here rather than passed in: a bump that changes the recipe's
+        convention but leaves the column reporting the old one is a silent lie to
+        every reader of the column, and a caller that must remember to pass it will
+        eventually forget. A recipe carrying no ``sign_convention`` key leaves the
+        column untouched.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(self._fetch_row(name), "name", name)
@@ -239,11 +247,16 @@ class PdfFormatsRepo(BaseRepo):
                 f"""
                 UPDATE {PDF_FORMATS.full_name}
                 SET extraction_recipe = ?::JSON,
+                    sign_convention = COALESCE(?::VARCHAR, sign_convention),
                     version = version + 1,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE name = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [json.dumps(new_recipe, sort_keys=True), name],
+                [
+                    json.dumps(new_recipe, sort_keys=True),
+                    new_recipe.get("sign_convention"),
+                    name,
+                ],
             )
             after = self._fetch_row(name)
             return self._emit_audit(

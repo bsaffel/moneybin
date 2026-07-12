@@ -128,6 +128,7 @@ not-yet-built.
 | 65| View realized gain/loss (the 1099-B surface) | `investments_gains` *(`account?`, `security?`, `from_date?`, `to_date?`, `term?`)* | `investments gains` *(`--account`, `--security`, `--from`, `--to`, `--term`)* | — | live |
 | 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
 | 67| Set up the evaluator demo profile (synthetic data → pipeline → clean doctor → first answer) | — *(cat 2 — dev/evaluator tooling)* | `demo` *(`--persona`, `--seed`, `--yes`; always targets the dedicated `demo` profile — no arbitrary `--profile` target)* | — | live (CLI-only) |
+| 68| Confirm a credit-card PDF's inverted sign convention (charges → expenses) | `import_files`/`import_preview` *(return `confirmation_required` with `reason="sign_convention"` + `sign_sample_rows` when a PDF names itself a credit card; `actions[]` direct to the CLI — MCP cannot ratify a sign inversion in place yet, elicitation-based confirm planned)* | `import files <path> --confirm` *(confirm the inversion)* / `import files <path> --sign negative_is_expense` *(overrule a false card detection)* | — | live (CLI ratifies; MCP surfaces + defers) |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -190,6 +191,16 @@ register alongside the top-level `investments` CLI group. Sensitivity is derived
 per tool from payload field classification rather than declared statically —
 `high` for the ledger/holdings/lots/gains tools (cost basis and proceeds are
 `BALANCE`-classified), `low` for the securities catalog (reference data only).)*
+Row 68 added 2026-07-11 with the credit-card sign-convention PR: a PDF that names
+itself a credit card derives a `negative_is_income` recipe that inverts every
+amount, gated behind a `reason="sign_convention"` confirmation. The CLI ratifies
+natively (`import files <path> --confirm`) or overrules a false detection
+(`--sign negative_is_expense`). MCP surfaces the confirmation with the printed-vs-
+recorded sample rows and directs the agent to the CLI: it deliberately has no
+in-place ratify path (no `sign=` param; `accept=`/`mapping=` on a `.pdf` returns
+`confirm_channel_conflict`), because inverting a whole statement is a decision the
+agent must never self-accept. In-place confirm is deferred to an elicitation-based
+flow (the server asks the human directly).
 
 ## Exemption categories
 

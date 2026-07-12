@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from moneybin.extractors.pdf.auto_derive import derive_recipe
+from moneybin.extractors.pdf.auto_derive import credit_card_markers, derive_recipe
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
 from moneybin.extractors.pdf.metadata import StatementMetadata
 
@@ -671,3 +671,24 @@ def test_text_candidate_rows_stop_at_the_end_of_the_transaction_table() -> None:
         ["01/02/2024", "COFFEE SHOP", "4.50"],
         ["01/05/2024", "PAYROLL", "2,000.00"],
     ]
+
+
+# ---------------------------------------------------------------------------
+# credit_card_markers: which disclosures the confirm gate shows the user
+# ---------------------------------------------------------------------------
+
+
+def test_credit_card_markers_returns_matched_disclosures() -> None:
+    """The detector reports WHICH disclosures matched — the confirm gate shows them."""
+    doc = _make_text_only_doc([
+        "CHASE SAPPHIRE",
+        "Minimum Payment Due: $25.00",
+        "Credit Limit: $10,000",
+        "Date Description Amount",
+    ])
+    assert credit_card_markers(doc) == ("minimum payment", "credit limit")
+
+
+def test_credit_card_markers_empty_for_checking_statement() -> None:
+    doc = _make_text_only_doc(["CHASE TOTAL CHECKING", "Date Description Amount"])
+    assert credit_card_markers(doc) == ()

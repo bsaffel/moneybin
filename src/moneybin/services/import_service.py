@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.account_label import parse_account_label
 from moneybin.extractors.tabular.formats import (
@@ -48,7 +49,9 @@ from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
 from moneybin.services.import_confirmation import (
     ActorKind,
+    ConfirmationRequired,
     ImportConfirmationRequiredError,
+    SignConventionProposal,
 )
 from moneybin.services.refresh import refresh as _refresh
 
@@ -70,6 +73,10 @@ class ImportResult:
     core_tables_rebuilt: bool = False
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_override_replayed: bool = False
+    """True when this PDF replayed a saved recipe whose sign convention a human set
+    with `sign=` — the card-marker detector is bypassed for that format, so the
+    replay is surfaced rather than applied silently."""
     import_id: str | None = None
     """UUID of the raw.import_log row this import created."""
     pdf_format_name: str | None = None
@@ -151,6 +158,9 @@ class PerFileResult:
     error: str | None = None
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_override_replayed: bool = False
+    """Mirrors ``ImportResult.sign_override_replayed`` for batch imports — a saved
+    `sign=` override replayed onto this file, bypassing the card-marker detector."""
 
     confirmation_payload: dict[str, object] | None = None
     """Populated only when status == 'confirmation_required': detector proposal
@@ -210,6 +220,36 @@ _BRIDGE_ELIGIBLE_REASONS: frozenset[str] = frozenset({
     "metadata_incomplete",
     "transaction_table_underivable",
 })
+
+# A card-statement inversion is a confident inference (the disclosures are
+# unambiguous) whose COST IF WRONG is a corrupted ledger, on this import and on
+# every future replay. `medium` says "eyeball this" — it is never `high`, because
+# `high` is the tier an agent may self-accept at.
+_CARD_SIGN_CONFIDENCE = Confidence(
+    score=0.75, tier="medium", flagged=("sign_convention",), missing_required=()
+)
+
+# How many rows the sign proposal shows as before/after samples.
+_SIGN_SAMPLE_LIMIT = 3
+
+
+def _sign_sample_rows(
+    rows: list[dict[str, Any]], *, limit: int = _SIGN_SAMPLE_LIMIT
+) -> list[dict[str, str]]:
+    """Show the flip concretely: what the statement printed vs what we'd record."""
+    from decimal import Decimal
+
+    samples: list[dict[str, str]] = []
+    for row in rows[:limit]:
+        printed = row.get("amount")
+        if printed is None:
+            continue
+        samples.append({
+            "description": str(row.get("description", ""))[:60],
+            "as_printed": str(printed),
+            "as_recorded": str(-Decimal(str(printed))),
+        })
+    return samples
 
 
 @dataclass(frozen=True)
@@ -1808,7 +1848,10 @@ class ImportService:
         """
         from moneybin.config import get_settings
         from moneybin.extractors.confidence import Confidence, tier_for
-        from moneybin.extractors.pdf.bridge import build_bridge_request
+        from moneybin.extractors.pdf.bridge import (
+            build_bridge_request,
+            recipe_for_agent,
+        )
         from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
         from moneybin.services.import_confirmation import (
             BridgePayload,
@@ -1830,10 +1873,12 @@ class ImportService:
         # recipe patterns the agent needs to inspect and propose a refreshed
         # version. Carrying only the name forces a first-contact parse,
         # defeating the point of the replay path.
+        # recipe_for_agent, not model_dump: `sign_ratified` is not the agent's to
+        # see or return (bridge.parse_bridge_response rejects a response naming it).
         saved_recipe = (
             {
                 "name": decision.matched_format_name,
-                "recipe": decision.recipe.model_dump()
+                "recipe": recipe_for_agent(decision.recipe)
                 if decision.recipe is not None
                 else None,
             }
@@ -1886,10 +1931,16 @@ class ImportService:
             )
         )
 
-    def pdf_preview(self, file_path: Path) -> PdfPreviewResult:
+    def pdf_preview(
+        self,
+        file_path: Path,
+        *,
+        confirm: bool = False,
+        sign: str | None = None,
+    ) -> PdfPreviewResult:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
-        Three outcomes — same machinery as ``_import_pdf`` but no side effects
+        Four outcomes — same machinery as ``_import_pdf`` but no side effects
         on raw tables and no ``raw.import_log`` row:
 
         - Deterministic success (``decision.outcome == "transactions"``):
@@ -1910,9 +1961,19 @@ class ImportService:
           not help on these (the document isn't transaction-shaped, or has
           no extractable content), so we surface the gap honestly rather
           than ship an empty payload.
+        - Auto-derived credit-card statement: raises
+          ``ImportConfirmationRequiredError`` carrying a
+          ``SignConventionProposal`` — the same gate ``_import_pdf`` applies, so
+          preview and import agree on what the statement will do to the ledger.
+          ``confirm=True`` (or an explicit ``sign=``) previews past it.
 
         This is a read-mostly path: side effects are the audit row on
         escalation (Req 14) and the metric bump. No ``raw.*`` rows land.
+
+        Args:
+            file_path: Path to the PDF to preview.
+            confirm: Ratify an auto-derived sign inversion instead of raising.
+            sign: Override the detected sign convention (``SignConventionType``).
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -1920,6 +1981,7 @@ class ImportService:
         canonical = file_path.resolve()
         doc = PDFExtractor().extract(canonical)
         decision = route_pdf_import(doc, self._db)
+        decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
 
         if decision.outcome == "transactions":
             return PdfPreviewResult(
@@ -2116,6 +2178,202 @@ class ImportService:
             reject_reason=None,
         )
 
+    def _gate_pdf_sign_convention(
+        self,
+        decision: "RouteDecision",
+        *,
+        sign: str | None,
+        confirm: bool,
+    ) -> "RouteDecision":
+        """Ratify, override, or gate an auto-derived sign inversion.
+
+        A `negative_is_income` recipe flips every amount. The convention is not
+        recoverable from the numbers (a card and a checking statement have
+        identical sign distributions and both reconcile), so the inference rests
+        on the document's disclosures alone — and the decision is persisted and
+        replays on every future statement of this format. It is therefore never
+        applied silently on first contact.
+
+        A REPLAY (`matched_format_name` set) was confirmed once already and loads
+        without asking again — the confirm is once per format, not per statement.
+
+        Install this only downstream of ``route_pdf_import``. ``route_forced_recipe``
+        (the bridge apply) also reports ``matched_format_name is None``, but a
+        caller who supplied ``bridge_response={'recipe': ..., 'rows': [...]}`` has
+        already ratified that recipe's sign convention — re-gating it would ask
+        twice, with no card evidence to show the second time.
+
+        The gate deliberately does NOT route through ``resolve_or_confirm``: that
+        seam lets an agent self-accept at ``high``, and a silently agent-accepted
+        ledger inversion is the exact outcome this gate exists to prevent.
+
+        Bumps ``PDF_SIGN_GATE_TOTAL`` at each of its three exits: ``overridden``
+        (explicit ``sign=`` accepted), ``confirmed`` (``confirm=True`` ratified
+        an auto-derived inversion), ``proposed`` (raised for confirmation).
+        """
+        from typing import get_args
+
+        from moneybin.extractors.pdf.routing import amount_shape_matches_sign_convention
+        from moneybin.metrics.registry import PDF_SIGN_GATE_TOTAL
+
+        recipe = decision.recipe
+        if recipe is None or decision.outcome != "transactions":
+            return decision
+
+        if sign is not None:
+            if sign not in get_args(SignConventionType):
+                raise UserError(
+                    f"Invalid sign convention: {sign!r}. "
+                    f"Valid values: {list(get_args(SignConventionType))}.",
+                    code="invalid_sign_convention",
+                )
+            # The loader reads convention-specific row keys: `amount` for the
+            # single-column conventions, `debit`/`credit` for the split. An
+            # override that names the shape this recipe did not extract would
+            # sum absent keys and write every amount as 0 — silent, and worse
+            # than the inversion the override was meant to correct.
+            if not amount_shape_matches_sign_convention(recipe.fields, sign):
+                # The guard only fires when the shapes DON'T match, so the
+                # recipe's actual shape is the opposite of what `sign` reads —
+                # a `split_debit_credit` override failing means the recipe
+                # extracts a single amount column, not a debit/credit pair.
+                actual_shape = (
+                    "single amount column"
+                    if sign == "split_debit_credit"
+                    else "debit/credit pair"
+                )
+                raise UserError(
+                    f"Sign convention {sign!r} does not fit this statement's "
+                    f"columns — its recipe extracts a {actual_shape} the "
+                    f"convention does not read.",
+                    code="invalid_sign_convention",
+                )
+            PDF_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
+            # Ratify only a DISAGREEING override. sign_ratified marks the
+            # convention as a human assertion the replay guard must defer to on
+            # every future statement of this format
+            # (auto_derive.recipe_polarity_fits) — and deferring means the guard
+            # no longer refuses a fingerprint-identical statement of the OTHER
+            # kind. Only a `sign=` that contradicts the convention in force needs
+            # that bypass: without it the corrected recipe is disowned on the same
+            # card markers that caused the false positive, derivation re-runs, and
+            # the gate raises again next month, and every month after.
+            #
+            # A `sign=` that AGREES buys nothing — the convention it names is
+            # already the one in force, so it replays on its own — and granting it
+            # the bypass would strip the guard for free, in the direction that
+            # costs (see the `confirm` branch below, which declines for the same
+            # reason). `or recipe.sign_ratified` preserves an EARLIER human
+            # ratification: an agreeing `--sign` re-typed out of habit must not
+            # revoke it.
+            ratified = recipe.sign_ratified or sign != recipe.sign_convention
+            return dataclasses.replace(
+                decision,
+                recipe=recipe.model_copy(
+                    update={"sign_convention": sign, "sign_ratified": ratified}
+                ),
+            )
+
+        is_auto_derived = decision.matched_format_name is None
+        if recipe.sign_convention != "negative_is_income" or not is_auto_derived:
+            return decision
+
+        if confirm:
+            PDF_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+            # Deliberately NOT sign_ratified. `confirm` ratifies "this IS a card",
+            # and the resulting negative_is_income recipe already replays cleanly —
+            # the marker check re-confirms it on every real card statement. Setting
+            # the flag here would buy nothing and would disarm the guard in the
+            # direction that actually costs: a checking statement sharing this
+            # format's fingerprint would import every paycheck as an expense.
+            return decision
+
+        PDF_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="pdf",
+                confidence=_CARD_SIGN_CONFIDENCE,
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=decision.card_markers,
+                    sample_rows=_sign_sample_rows(decision.rows),
+                ),
+                reason="sign_convention",
+                # Recovery is the CLI on both surfaces: the CLI confirms natively
+                # (--confirm / --sign), and MCP cannot ratify a sign inversion in
+                # place yet (elicitation-based confirm is planned), so its agent is
+                # directed to the same terminal command. No literal path here — the
+                # path isn't in scope at the gate; each surface fills in the concrete
+                # command from the file it holds.
+                error_message=(
+                    "This looks like a credit-card statement "
+                    f"(matched: {', '.join(decision.card_markers)}). Charges will be "
+                    "recorded as expenses and payments as credits — every amount's "
+                    "sign is inverted. Re-run the import in a terminal to confirm: "
+                    "`moneybin import files <path> --confirm` if it IS a credit card, "
+                    "or `moneybin import files <path> --sign negative_is_expense` if "
+                    "it is not."
+                ),
+            )
+        )
+
+    def _persist_replayed_sign_override(
+        self, decision: "RouteDecision", *, import_id: str
+    ) -> None:
+        """Re-persist a saved format's recipe after an explicit `sign=` on a REPLAY.
+
+        The recipe is otherwise written only on first contact, so a `sign=` on a
+        later statement of a saved format would correct that one import and revert
+        the next month — and since there is no edit/delete path for saved PDF
+        formats, a wrong first-contact ratification would be permanent. The
+        override IS the revocation path; this is what makes it one.
+
+        Bumping the version (rather than overwriting) keeps the correction audited
+        and undo-reversible, and preserves the prior recipe in
+        ``audit_log.before_value``. Best-effort like every other bookkeeping write
+        in this block — the read that decides whether to bump included: the rows
+        already landed with the corrected convention, and no failure here may roll
+        them back or abort the import before ``finalize_import``.
+
+        Callers gate on ``save_format``: this rewrites a saved recipe, which is
+        precisely what ``--no-save-format`` asks the import not to do.
+        """
+        name = decision.matched_format_name
+        recipe = decision.recipe
+        fp = decision.fp
+        # A replay carries all three by construction — the format was matched BY
+        # the fingerprint. The guard satisfies the type checker; it is not a branch.
+        if name is None or recipe is None or fp is None:  # pragma: no cover
+            return
+        new_recipe = recipe.model_dump()
+        try:
+            saved = self._pdf_formats.get_by_fingerprint(fp)
+            if saved is not None and saved.extraction_recipe == new_recipe:
+                # The saved recipe already says what the user just asserted (a
+                # `--sign` re-typed out of habit). Bumping would spend a version
+                # and an audit row on a no-op whose before_value equals its
+                # after_value.
+                return
+            self._pdf_formats.bump_version(
+                name=name,
+                new_recipe=new_recipe,
+                reason="explicit sign override supplied on a replay of this format",
+                # Not "system": the convention is a human assertion, not a
+                # detection. The service can't see which surface it arrived on.
+                actor="import",
+            )
+            logger.info(
+                f"PDF format {name!r} recipe re-persisted with the user's sign "
+                f"override (import_id={import_id[:8]}...)"
+            )
+        except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+            logger.warning(
+                f"PDF bump_version failed for format {name!r} (import_id="
+                f"{import_id[:8]}...) — the sign override applied to this import "
+                f"but will not replay onto the next statement",
+                exc_info=True,
+            )
+
     def _import_pdf(
         self,
         file_path: Path,
@@ -2123,6 +2381,8 @@ class ImportService:
         save_format: bool = True,
         account_id: str | None = None,
         actor_kind: "ActorKind" = "human",
+        sign: str | None = None,
+        confirm: bool = False,
     ) -> ImportResult:
         """Import a native-text PDF via the Phase 2a routing state machine.
 
@@ -2144,11 +2404,13 @@ class ImportService:
 
         Args:
             file_path: Path to the PDF file.
-            save_format: When False, suppresses the auto-derived recipe save
-                on first contact. Mirrors the tabular ``--no-save-format`` /
+            save_format: When False, suppresses every write to
+                ``app.pdf_formats`` — the auto-derived recipe save on first
+                contact AND the recipe re-persist a ``sign=`` triggers on a
+                replay. Mirrors the tabular ``--no-save-format`` /
                 ``save_format=False`` semantics so a user/agent importing a
-                one-off or sensitive statement can avoid leaving an
-                ``app.pdf_formats`` row that fingerprints the layout for
+                one-off or sensitive statement can avoid leaving (or mutating)
+                an ``app.pdf_formats`` row that fingerprints the layout for
                 future replays.
             account_id: Optional override for the account_id the rows are
                 attached to. Required when reconciliation passes via balances
@@ -2160,6 +2422,13 @@ class ImportService:
             actor_kind: 'agent' when a driving agent that can fulfill a bridge
                 extraction is present (MCP, agent-driven CLI) — enables bridge
                 escalation. 'human'/default keeps the Phase 2a seed fallback.
+            sign: Override the detected sign convention (a
+                ``SignConventionType``). The in-band recovery from a
+                false-positive card detection — see
+                ``_gate_pdf_sign_convention``.
+            confirm: Ratify an auto-derived ``negative_is_income`` (credit-card)
+                inversion. Without it, such a statement raises
+                ``ImportConfirmationRequiredError`` and loads nothing.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -2217,6 +2486,34 @@ class ImportService:
         ):
             self._raise_pdf_bridge_escalation(canonical, doc, decision)
 
+        # Sign gate: an auto-derived inversion needs ratification, an explicit
+        # `sign=` overrules the detector. Sits OUTSIDE the extract/route
+        # try/except above — a confirmation is not a failed import, and counting
+        # it as one (PDF_IMPORT_TOTAL{outcome="failed"}) would misreport the
+        # gate's whole purpose. Raises before begin_import: nothing loads, and no
+        # import_log row is stranded in "importing".
+        decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
+
+        # A saved `sign=` override just replayed: the polarity guard stood down for
+        # this document (auto_derive.recipe_polarity_fits short-circuits on
+        # sign_ratified), so the load runs on a human decision the detector may
+        # still disagree with. Surface it — an override that acts invisibly on
+        # every future statement is the magic this codebase refuses.
+        #
+        # Two conditions, both load-bearing. A REPLAY (matched_format_name set):
+        # on first contact the user typed `sign=` in this very invocation. And no
+        # `sign=` in THIS call: the gate sets sign_ratified in the same call it
+        # accepts an override, so without this the user who just typed `--sign` on
+        # a saved format would be told the convention came from a *saved* override
+        # they are in fact supplying right now.
+        if (
+            sign is None
+            and decision.recipe is not None
+            and decision.recipe.sign_ratified
+            and decision.matched_format_name is not None
+        ):
+            result.sign_override_replayed = True
+
         # Committing to a write — open the import_log row now.
         import_id = import_log.begin_import(
             self._db,
@@ -2241,6 +2538,7 @@ class ImportService:
                 doc=doc,
                 save_format=save_format,
                 account_id_override=account_id,
+                sign_override=sign,
             )
 
         # Seed path (Phase 1 fallback) ——————————————————————————————————
@@ -2314,6 +2612,7 @@ class ImportService:
         save_format: bool = True,
         account_id_override: str | None = None,
         rung: Literal["deterministic", "bridge"] = "deterministic",
+        sign_override: str | None = None,
     ) -> ImportResult:
         """Write PDF transaction rows to raw.tabular_transactions.
 
@@ -2331,6 +2630,11 @@ class ImportService:
         statement contains no account anchor and the user/agent wants the rows
         attached to an existing ``dim_accounts`` row rather than the
         filename-derived alias.
+
+        ``sign_override`` is the caller's explicit ``sign=`` (already applied to
+        ``decision.recipe`` by the gate). On a REPLAY it re-persists the corrected
+        recipe — see ``_persist_replayed_sign_override`` — and ``save_format``
+        gates that write too, not just the first-contact save.
         """
         from decimal import Decimal
 
@@ -2540,12 +2844,27 @@ class ImportService:
                 if decision.metadata.account_id
                 else None
             )
+            # A negative_is_income recipe carries a "this is a credit card" verdict:
+            # either human-confirmed on the deterministic rung (the --confirm sign
+            # gate) or agent-authored via the bridge recipe (this method is shared
+            # with apply_pdf_bridge_response → route_forced_recipe, which does NOT
+            # run the sign gate). Either way 'credit' follows from the recipe's own
+            # convention — a fact about the account, not a guess — and matches the
+            # vocabulary core.fct_balances keys its liability negation on.
+            # on_conflict="ignore" below means a type Plaid/OFX already set is never
+            # clobbered. decision.recipe is narrowed non-None by the raise at the
+            # top of this method (mirrors sign_conv above).
+            account_type = (
+                "credit"
+                if decision.recipe.sign_convention == "negative_is_income"
+                else None
+            )
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [resolved_alias],
                 "account_number": [None],
                 "account_number_masked": [_to_account_number_mask(raw_account_id)],
-                "account_type": [None],
+                "account_type": [account_type],
                 "institution_name": [str(institution) if institution else None],
                 "currency": [None],
                 "source_file": [str(canonical)],
@@ -2623,6 +2942,12 @@ class ImportService:
             )
 
         if decision.matched_format_name is not None:
+            # save_format gates this exactly as it gates the first-contact
+            # save_new below — re-persisting the recipe IS a format write, and
+            # --no-save-format is what a user reaches for on a one-off or
+            # sensitive statement they don't want teaching the saved profile.
+            if sign_override is not None and save_format:
+                self._persist_replayed_sign_override(decision, import_id=import_id)
             try:
                 self._pdf_formats.record_use(decision.matched_format_name)
             except Exception:  # noqa: BLE001 — observability bump must not roll back data
@@ -2790,7 +3115,9 @@ class ImportService:
             format_name: Explicit format name for tabular imports (bypasses
                 auto-detection).
             overrides: Field→column overrides for tabular imports.
-            sign: Sign convention override for tabular imports.
+            sign: Sign convention override. Tabular: overrides the detected
+                format. PDF: overrules the credit-card detector (the in-band
+                recovery from a false-positive inversion).
             date_format: Date format override for tabular imports.
             number_format: Number format override for tabular imports.
             save_format: Auto-save detected format for future imports.
@@ -2801,7 +3128,9 @@ class ImportService:
             no_size_limit: Override file size limit for tabular imports.
             auto_accept: Auto-accept the top fuzzy account match without prompting
                 (CLI: --yes / -y). Defaults to False.
-            confirm: Accept the proposed mapping without further prompting.
+            confirm: Ratify the system's proposal without further prompting —
+                the detected column mapping (tabular) or the credit-card sign
+                inversion (PDF).
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
             account_bindings: Map of source_account_key -> canonical account_id
                 (adopt) or "new" (mint standalone), ratifying the account-binding
@@ -2943,6 +3272,8 @@ class ImportService:
                 save_format=save_format,
                 account_id=account_id,
                 actor_kind=actor_kind,
+                sign=sign,
+                confirm=confirm,
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 
@@ -2995,6 +3326,7 @@ class ImportService:
                         rows_loaded=rows_loaded,
                         import_id=r.import_id,
                         sign_correction_suggested=r.sign_correction_suggested,
+                        sign_override_replayed=r.sign_override_replayed,
                     )
                 )
                 any_succeeded = True

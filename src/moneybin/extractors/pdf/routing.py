@@ -35,6 +35,7 @@ from pydantic import ValidationError
 
 from moneybin.database import Database
 from moneybin.extractors.pdf.auto_derive import (
+    credit_card_markers,
     derivation_failure_reason,
     derive_recipe,
     recipe_polarity_fits,
@@ -113,6 +114,10 @@ class RouteDecision:
     # doc were somehow mutated between calls. None on early seed returns that
     # short-circuit before the fingerprint is computed.
     fp: dict[str, Any] | None = None
+    # Card-statement disclosures matched on this document (empty when not a card).
+    # The service surfaces these as the evidence behind a negative_is_income
+    # proposal — an inversion the user cannot see the basis for is not reviewable.
+    card_markers: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +367,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
                 reason=derivation_failure_reason(doc),
                 # matched_format_name stays None: early return before saved_format lookup
                 fp=fp,
+                card_markers=credit_card_markers(doc),
             )
 
     # Steps 2-5 (execute → reconcile) are shared with the Phase 2b
@@ -373,6 +379,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         fp,
         recipe_source="replay" if is_replay else "auto_derive",
         matched_format_name=matched_name,
+        card_markers=credit_card_markers(doc),
     )
 
 
@@ -400,6 +407,7 @@ def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:
         fp,
         recipe_source="bridge",
         matched_format_name=None,
+        card_markers=credit_card_markers(doc),
     )
 
 
@@ -410,6 +418,7 @@ def _run_recipe_pipeline(
     *,
     recipe_source: RecipeSource,
     matched_format_name: str | None,
+    card_markers: tuple[str, ...] = (),
 ) -> RouteDecision:
     """Execute a recipe and apply the confidence + reconciliation gates.
 
@@ -439,6 +448,8 @@ def _run_recipe_pipeline(
         recipe_source: Where the recipe came from — see behaviors above.
         matched_format_name: Saved format name on replay; None otherwise
             (signals first-contact save to the service).
+        card_markers: Card disclosures matched on the document, threaded onto
+            every returned decision (empty when not a card).
     """
     use_recipe_anchors = recipe_source in ("replay", "bridge")
     is_saved_replay = recipe_source == "replay"
@@ -471,6 +482,7 @@ def _run_recipe_pipeline(
             reason="unsupported_number_format",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
     rows = _canonicalize_rows(recipe, extracted.rows)
 
@@ -490,6 +502,7 @@ def _run_recipe_pipeline(
             reason="no_rows",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # ------------------------------------------------------------------
@@ -515,6 +528,7 @@ def _run_recipe_pipeline(
             reason="low_confidence",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # ------------------------------------------------------------------
@@ -552,6 +566,7 @@ def _run_recipe_pipeline(
             reason="metadata_incomplete",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # ------------------------------------------------------------------
@@ -575,6 +590,7 @@ def _run_recipe_pipeline(
             reason="passed",
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     # Reconciliation failed.
@@ -598,6 +614,7 @@ def _run_recipe_pipeline(
             replay_guard_failed=True,
             matched_format_name=matched_format_name,
             fp=fp,
+            card_markers=card_markers,
         )
 
     return RouteDecision(
@@ -613,4 +630,5 @@ def _run_recipe_pipeline(
         # format to carry.
         matched_format_name=None,
         fp=fp,
+        card_markers=card_markers,
     )

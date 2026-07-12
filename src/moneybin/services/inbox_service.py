@@ -532,6 +532,12 @@ class InboxService:
             # warning so the agent / scheduler has a structured signal
             # for files that may need re-import with --sign.
             "sign_correction_suggested": import_result.sign_correction_suggested,
+            # Same reason, sharper case: a saved `--sign` override just replayed,
+            # so the card detector was not consulted and the amounts follow an
+            # earlier human decision. The drain is the most unattended surface in
+            # the product — dropping the note here would make a durable override
+            # invisible exactly where nobody is watching.
+            "sign_override_replayed": import_result.sign_override_replayed,
         })
         INBOX_SYNC_TOTAL.labels(outcome="processed").inc()
 
@@ -619,6 +625,7 @@ class InboxService:
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
             ProposedMapping,
+            SignConventionProposal,
         )
 
         if not isinstance(error, ImportConfirmationRequiredError):
@@ -660,9 +667,20 @@ class InboxService:
 
         proposed_mapping: dict[str, str] = {}
         unmapped_columns: list[str] = []
+        # A sign-convention gate carries no column mapping — it proposes inverting
+        # every amount's sign. Carry the matched-disclosure evidence and the
+        # printed-vs-recorded rows into the sidecar so the "magic" (a whole-ledger
+        # flip) stays visible to whoever ratifies it. See write_pending_sidecar.
+        sign_convention: str | None = None
+        sign_evidence: list[str] = []
+        sign_sample_rows: list[dict[str, str]] = []
         if isinstance(outcome_obj.proposed, ProposedMapping):
             proposed_mapping = dict(outcome_obj.proposed.field_mapping)
             unmapped_columns = list(outcome_obj.proposed.unmapped_columns)
+        elif isinstance(outcome_obj.proposed, SignConventionProposal):
+            sign_convention = outcome_obj.proposed.sign_convention
+            sign_evidence = list(outcome_obj.proposed.evidence)
+            sign_sample_rows = [dict(r) for r in outcome_obj.proposed.sample_rows]
 
         # move_to_outcome may have appended a collision suffix, changing the stem
         # after the proposal's bare content-key was built from the original name.
@@ -684,6 +702,10 @@ class InboxService:
             unmapped_columns=unmapped_columns,
             account_hint=account_hint,
             account_proposals=pending_proposals,
+            sign_convention=sign_convention,
+            sign_evidence=sign_evidence,
+            sign_sample_rows=sign_sample_rows,
+            error_message=outcome_obj.error_message,
         )
         entry = _base_entry()
         entry["moved_to"] = str(moved.relative_to(self.root))
@@ -776,6 +798,10 @@ class InboxService:
         unmapped_columns: list[str],
         account_hint: str | None = None,
         account_proposals: list[AccountProposalDict] | None = None,
+        sign_convention: str | None = None,
+        sign_evidence: list[str] | None = None,
+        sign_sample_rows: list[dict[str, str]] | None = None,
+        error_message: str = "",
     ) -> Path:
         """Write a <filename>.pending.yml sidecar with the detector proposal.
 
@@ -795,8 +821,44 @@ class InboxService:
         ``account_proposals`` is passed for ``reason="account_confirmation"``
         so the sidecar can name the real source key in the --account-binding
         hint. For other reasons it is not used to build actions and serializes as an empty list in the payload.
+
+        ``reason="sign_convention"`` (a card statement proposing to invert every
+        amount) is special-cased: the mapping/``--accept`` language does not
+        apply — there is no column mapping, and ``--accept`` would silently flip
+        the whole ledger. The sidecar instead names the honest recovery
+        (``import files <path> --confirm`` if it IS a card / ``--sign
+        negative_is_expense`` if it is NOT) and carries the matched-disclosure
+        evidence (``sign_evidence``) plus the printed-vs-recorded rows
+        (``sign_sample_rows``) so the flip is visible before anyone ratifies it.
+        Mirrors the MCP ``_sign_confirm_actions`` treatment.
         """
         sidecar = moved_path.with_name(moved_path.name + ".pending.yml")
+        if reason == "sign_convention":
+            # "magic stays visible": a whole-ledger sign inversion the user can't
+            # see the evidence for must never be applied. Show the disclosures +
+            # the printed-vs-recorded rows, and offer the two honest recoveries —
+            # never the tabular --accept/--mapping hints (--accept would flip
+            # silently; --mapping is a dead-end loop for a PDF).
+            payload: dict[str, object] = {
+                "channel": channel,
+                "tier": tier,
+                "score": round(float(score), 4),
+                "reason": reason,
+                "error_message": error_message,
+                "sign_convention": sign_convention,
+                "sign_evidence": list(sign_evidence or []),
+                "sign_sample_rows": [dict(r) for r in (sign_sample_rows or [])],
+                "actions": [
+                    f"If it IS a credit card: moneybin import files {moved_path} "
+                    "--confirm (records charges as expenses, payments as credits).",
+                    f"If it is NOT a credit card: moneybin import files "
+                    f"{moved_path} --sign negative_is_expense (records amounts "
+                    "exactly as printed).",
+                ],
+            }
+            sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))
+            sidecar.chmod(_FILE_MODE)
+            return sidecar
         proposals = account_proposals or []
         actions: list[str] = []
         if reason == "account_confirmation":
@@ -844,7 +906,7 @@ class InboxService:
                 f"--mapping <dest_field>=<source_column>{account_suffix} "
                 "(partial-merge override; repeatable)"
             )
-        payload: dict[str, object] = {
+        payload = {
             "channel": channel,
             "tier": tier,
             "score": round(float(score), 4),

@@ -17,6 +17,7 @@ from moneybin.services.import_confirmation import (
     Override,
     ProposedMapping,
     Resolved,
+    SignConventionProposal,
     resolve_or_confirm,
     validate_partial_mapping,
 )
@@ -172,6 +173,72 @@ class TestConfirmationPayloadDict:
         )
         d = confirmation_payload_dict(out)
         assert d["account_proposals"] == []
+
+    def test_confirmation_payload_dict_serializes_a_sign_proposal(self) -> None:
+        from moneybin.services.import_confirmation import confirmation_payload_dict
+
+        outcome = ConfirmationRequired(
+            channel="pdf",
+            confidence=Confidence(
+                score=0.75,
+                tier="medium",
+                flagged=("sign_convention",),
+                missing_required=(),
+            ),
+            proposed=SignConventionProposal(
+                sign_convention="negative_is_income",
+                evidence=("minimum payment", "credit limit"),
+                sample_rows=[
+                    {
+                        "description": "COFFEE",
+                        "as_printed": "150.00",
+                        "as_recorded": "-150.00",
+                    }
+                ],
+            ),
+            reason="sign_convention",
+        )
+        payload = confirmation_payload_dict(outcome)
+        assert payload["reason"] == "sign_convention"
+        assert payload["sign_convention"] == "negative_is_income"
+        assert payload["sign_evidence"] == ["minimum payment", "credit limit"]
+        assert payload["sign_sample_rows"] == [
+            {
+                "description": "COFFEE",
+                "as_printed": "150.00",
+                "as_recorded": "-150.00",
+            }
+        ]
+        assert payload["bridge_payload"] is None
+        assert payload["proposed_mapping"] == {}
+
+
+class TestSignConventionProposal:
+    """Validate SignConventionProposal shape and immutability."""
+
+    def test_is_frozen(self) -> None:
+        p = SignConventionProposal(
+            sign_convention="negative_is_income",
+            evidence=("minimum payment",),
+            sample_rows=[],
+        )
+        with pytest.raises(AttributeError):
+            p.sign_convention = "positive_is_income"  # type: ignore[misc]
+
+    def test_carries_evidence_and_sample_rows(self) -> None:
+        p = SignConventionProposal(
+            sign_convention="negative_is_income",
+            evidence=("minimum payment", "credit limit"),
+            sample_rows=[
+                {
+                    "description": "COFFEE",
+                    "as_printed": "150.00",
+                    "as_recorded": "-150.00",
+                }
+            ],
+        )
+        assert p.evidence == ("minimum payment", "credit limit")
+        assert p.sample_rows[0]["description"] == "COFFEE"
 
 
 class TestResolved:

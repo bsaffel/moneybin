@@ -13,6 +13,7 @@ Tools:
 from __future__ import annotations
 
 import logging
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -126,6 +127,30 @@ def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
         f"file_path={file_path!r}, bridge_response={{'recipe': ..., "
         "'rows': [...]}) to reconcile and load."
     )
+
+
+def _sign_confirm_actions(file_path: str, error_message: str) -> list[str]:
+    """The agent-facing hints for a PDF sign-convention confirmation_required.
+
+    Ratifying a card statement inverts every amount, and a wrong flip corrupts the
+    ledger on this import and on every future replay of the format — so the agent
+    must NOT ratify it. MCP has no in-place path to confirm a sign inversion yet
+    (elicitation-based confirm is planned); until then the human resolves it in a
+    terminal, where inverting every amount is a deliberate, visible act. The hints
+    therefore point at the CLI, not at an `import_confirm` call that cannot ratify
+    a sign flip.
+    """
+    quoted = shlex.quote(file_path)
+    return [
+        error_message,
+        "Show the user sign_sample_rows — what the statement printed vs what "
+        "MoneyBin would record — so THEY decide. MCP cannot ratify a sign "
+        "inversion in place yet; resolve it in a terminal:",
+        f"If it IS a credit card: moneybin import files {quoted} --confirm "
+        "(records charges as expenses).",
+        f"If it is NOT a credit card: moneybin import files {quoted} "
+        "--sign negative_is_expense (records amounts exactly as printed).",
+    ]
 
 
 @mcp_tool(read_only=False, idempotent=False)
@@ -307,6 +332,7 @@ def import_files(
                         rows_loaded=one.rows_loaded,
                         import_id=one.import_id,
                         sign_correction_suggested=one.sign_correction_suggested,
+                        sign_override_replayed=one.sign_override_replayed,
                     )
                 ],
                 transforms_applied=transforms_applied,
@@ -331,6 +357,7 @@ def import_files(
             import_id=r.import_id,
             error=r.error,
             sign_correction_suggested=r.sign_correction_suggested,
+            sign_override_replayed=r.sign_override_replayed,
             confirmation_payload=r.confirmation_payload,
         )
         for r in batch.per_file
@@ -349,6 +376,14 @@ def import_files(
         tier = raw_tier if isinstance(raw_tier, str) else "low"
         raw_err = payload.get("error_message")
         err_msg = raw_err if isinstance(raw_err, str) else ""
+        # PDF sign-convention channel (credit-card inversion): the agent must NOT
+        # ratify it — a wrong flip reverses every amount. MCP can't confirm the
+        # inversion in place yet, so _sign_confirm_actions points at the terminal
+        # recovery. It owns err_msg as its lead line, so skip the generic
+        # "Validation failed" prefix (this is a proposal, not a validation error).
+        if payload.get("reason") == "sign_convention":
+            actions.extend(_sign_confirm_actions(pending.path, err_msg))
+            continue
         if err_msg:
             actions.append(f"Validation failed: {err_msg}")
         # PDF bridge channel: the agent must read confirmation_payload's
@@ -401,6 +436,14 @@ def import_files(
             "value) to override. MCP import_files does not accept a "
             "sign parameter today."
         )
+    if any(r.sign_override_replayed for r in batch.per_file):
+        actions.append(
+            "One or more statements took their sign convention from a saved "
+            "`--sign` override on that statement format — the credit-card "
+            "detector was not consulted, so amounts follow the human's earlier "
+            "decision. Tell the user; change it by re-running via CLI with "
+            "`moneybin import files <path> --sign <SignConventionType>`."
+        )
     if not batch.transforms_applied and batch.imported_count > 0:
         actions.append("Run refresh_run when ready to refresh derived tables")
     if batch.transforms_error:
@@ -427,15 +470,18 @@ def import_files(
 
 
 def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
-    """Preview a PDF via ImportService.pdf_preview (deterministic or bridge).
+    """Preview a PDF via ImportService.pdf_preview (deterministic, bridge, or sign).
 
-    Returns a deterministic preview dict, or — when the layout is bridge-
-    eligible — a ``confirmation_required`` envelope carrying the bridge payload
-    (and writing the Req 14 egress audit row, so a writable DB is required).
+    Returns a deterministic preview dict, or a ``confirmation_required`` envelope
+    — carrying the bridge payload when the layout is bridge-eligible (and writing
+    the Req 14 egress audit row, so a writable DB is required), or the proposed
+    sign inversion when the statement names itself a credit card.
     """
     from moneybin.services.import_confirmation import (
         BridgePayload,
         ImportConfirmationRequiredError,
+        SignConventionProposal,
+        confirmation_payload_dict,
     )
     from moneybin.services.import_service import ImportService
 
@@ -443,16 +489,38 @@ def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
         with get_database(read_only=False) as db:
             preview = ImportService(db).pdf_preview(path)
     except ImportConfirmationRequiredError as e:
-        # pdf_preview only escalates via _raise_pdf_bridge_escalation, which
+        proposed = e.outcome.proposed
+        if isinstance(proposed, SignConventionProposal):
+            # A credit-card statement: every amount's sign is about to be
+            # inverted. Serialize the proposal (evidence + printed-vs-recorded
+            # samples) so the agent can show the user what the flip does before
+            # ratifying it.
+            payload = confirmation_payload_dict(e.outcome)
+            return build_envelope(
+                sensitivity="medium",
+                data={
+                    "status": "confirmation_required",
+                    "channel": e.outcome.channel,
+                    "file": path.name,
+                    "tier": e.outcome.confidence.tier,
+                    "score": e.outcome.confidence.score,
+                    "reason": e.outcome.reason,
+                    "error_message": e.outcome.error_message,
+                    "sign_convention": payload["sign_convention"],
+                    "sign_evidence": payload["sign_evidence"],
+                    "sign_sample_rows": payload["sign_sample_rows"],
+                },
+                actions=_sign_confirm_actions(str(path), e.outcome.error_message),
+            )
+        # Otherwise pdf_preview escalated via _raise_pdf_bridge_escalation, which
         # always constructs a BridgePayload — so proposed is never the tabular
         # ProposedMapping here. Fail loudly on a contract break rather than carry
         # a dead `else None` that would emit bridge_payload=null while actions[]
         # still tells the agent to "Read bridge_payload".
-        proposed = e.outcome.proposed
         if not isinstance(proposed, BridgePayload):
             raise RuntimeError(
-                "pdf_preview escalation must carry a BridgePayload, "
-                f"got {type(proposed).__name__}"
+                "pdf_preview escalation must carry a BridgePayload or a "
+                f"SignConventionProposal, got {type(proposed).__name__}"
             ) from e
         bridge_payload = proposed.payload
         return build_envelope(
@@ -914,16 +982,29 @@ def import_confirm(
 
     if path.suffix.lower() == ".pdf":
         # A PDF reached the tabular confirm channel (bridge_response is None here
-        # but accept=/mapping= may be set). There is no valid tabular confirm for
-        # a PDF: re-importing with actor_kind="agent" would re-raise the bridge
-        # escalation, but this tool's catch below only serializes ProposedMapping
-        # — the agent would get accept/mapping actions again and loop. Direct it
-        # to the bridge channel instead of running the tabular path.
+        # but accept=/mapping= may be set). accept=/mapping= never ratify a PDF —
+        # two kinds of PDF confirmation land here, each with a different recovery,
+        # and both are surfaced honestly rather than routing-to-detect (which would
+        # re-extract the document and, for a bridge PDF, write a spurious egress
+        # audit row):
+        #   * Bridge (native-text extraction) — re-call with bridge_response=.
+        #   * Sign convention (credit-card inversion) — MCP cannot ratify a sign
+        #     flip in place yet (elicitation-based confirm is planned); the human
+        #     resolves it in a terminal, where inverting every amount is a
+        #     deliberate, visible act. accept=True must never silently invert the
+        #     ledger, and the tabular catch below only serializes ProposedMapping,
+        #     so running the tabular path here would loop the agent instead.
+        quoted = shlex.quote(str(path))
         raise UserError(
-            "PDF confirmations use the bridge channel, not accept=/mapping=. "
-            "Read the confirmation_required bridge_payload and call "
-            "import_confirm(file_path=..., bridge_response={'recipe': ..., "
-            "'rows': [...]}).",
+            "A PDF confirmation cannot be ratified with accept=/mapping= over MCP. "
+            "If import_files/import_preview returned a bridge_payload (native-text "
+            "extraction), call import_confirm(file_path=..., bridge_response="
+            "{'recipe': ..., 'rows': [...]}). If it returned a sign-convention "
+            "confirmation (a credit-card statement — confirming inverts every "
+            "amount's sign), MCP cannot ratify the inversion in place yet; resolve "
+            f"it in a terminal: `moneybin import files {quoted} --confirm` if it IS "
+            f"a credit card, or `moneybin import files {quoted} --sign "
+            "negative_is_expense` if it is not.",
             code="confirm_channel_conflict",
         )
 

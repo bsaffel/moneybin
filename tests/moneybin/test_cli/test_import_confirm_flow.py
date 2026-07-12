@@ -28,6 +28,7 @@ from moneybin.services.import_confirmation import (
     ConfirmationRequired,
     ImportConfirmationRequiredError,
     ProposedMapping,
+    SignConventionProposal,
 )
 from moneybin.services.import_service import ImportResult
 
@@ -97,6 +98,37 @@ def _make_confirmation_error(
         proposed=proposed,
         reason="unknown_layout",
         samples=dict(proposed.sample_values),
+    )
+    return ImportConfirmationRequiredError(outcome)
+
+
+def _make_sign_confirmation_error() -> ImportConfirmationRequiredError:
+    """Build a PDF sign-convention ImportConfirmationRequiredError."""
+    outcome = ConfirmationRequired(
+        channel="pdf",
+        confidence=Confidence(
+            score=1.0,
+            tier="high",
+            flagged=(),
+            missing_required=(),
+        ),
+        proposed=SignConventionProposal(
+            sign_convention="negative_is_income",
+            evidence=("Minimum Payment Due", "New Balance"),
+            sample_rows=[
+                {
+                    "description": "COFFEE SHOP",
+                    "as_printed": "12.50",
+                    "as_recorded": "-12.50",
+                }
+            ],
+        ),
+        reason="sign_convention",
+        error_message=(
+            "This looks like a credit-card statement "
+            "(matched: Minimum Payment Due, New Balance). Charges will be "
+            "recorded as expenses and payments as credits."
+        ),
     )
     return ImportConfirmationRequiredError(outcome)
 
@@ -303,6 +335,70 @@ class TestImportFilesConfirmFlow:
         assert "checking" in result.output  # the source key
         assert "cand87654321" in result.output  # the candidate account id
         assert "--account-binding" in result.output
+
+    def test_sign_convention_tty_shows_evidence_and_sign_recovery(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Interactive prompt renders a card sign flip honestly.
+
+        It must show the matched disclosures and the printed-vs-recorded rows,
+        and name the --confirm / --sign recovery — never "Validation failed"
+        (this is a proposal) or --mapping (a dead-end loop for a PDF).
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_sign_confirmation_error(),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(pdf_file)])
+
+        # Evidence + printed-vs-recorded rows are visible.
+        assert "Minimum Payment Due" in result.output
+        assert "12.50" in result.output
+        assert "-12.50" in result.output
+        # Honest recovery, no mislabeling.
+        assert "--confirm" in result.output
+        assert "--sign negative_is_expense" in result.output
+        assert "Validation failed" not in result.output
+        assert "--mapping" not in result.output
+
+    def test_sign_convention_json_envelope_carries_evidence_and_recovery(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """--output json surfaces the sign proposal + honest recovery actions."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_sign_confirmation_error(),
+        )
+
+        result = runner.invoke(app, ["files", str(pdf_file), "--output", "json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        data = payload["data"]
+        assert data["reason"] == "sign_convention"
+        assert data["sign_convention"] == "negative_is_income"
+        assert data["sign_evidence"] == ["Minimum Payment Due", "New Balance"]
+        assert data["sign_sample_rows"][0]["as_recorded"] == "-12.50"
+        actions = payload["actions"]
+        assert any("--confirm" in a for a in actions)
+        assert any("--sign negative_is_expense" in a for a in actions)
+        # No tabular mapping/validation/preview language for a sign flip.
+        assert not any("Validation failed" in a for a in actions)
+        assert not any("--mapping" in a for a in actions)
+        assert not any("import preview" in a for a in actions)
 
     def test_unknown_layout_non_tty_emits_json_envelope(
         self,

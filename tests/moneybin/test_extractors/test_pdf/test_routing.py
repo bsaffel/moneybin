@@ -30,7 +30,9 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
+from moneybin.extractors.pdf.auto_derive import derive_recipe, recipe_polarity_fits
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
+from moneybin.extractors.pdf.metadata import StatementMetadata
 from moneybin.extractors.pdf.recipe import Recipe
 from moneybin.extractors.pdf.routing import route_forced_recipe, route_pdf_import
 from moneybin.metrics.registry import (
@@ -139,6 +141,14 @@ def _valid_recipe_dict() -> dict[str, Any]:
         "sign_convention": "negative_is_expense",
         "routing": "transactions",
     }
+
+
+def _recipe(sign_convention: str = "negative_is_expense") -> Recipe:
+    """A valid Recipe with the given sign_convention; shape from _valid_recipe_dict."""
+    return Recipe.model_validate({
+        **_valid_recipe_dict(),
+        "sign_convention": sign_convention,
+    })
 
 
 def _save_chase_format(db: Database, recipe: dict[str, Any] | None = None) -> None:
@@ -765,38 +775,197 @@ def _card_statement_doc(opening: str = "0.00", closing: str = "100.00") -> PdfDo
     )
 
 
-def test_card_statement_with_a_payment_row_is_not_auto_derived(db: Database) -> None:
-    """One payment row must not be taken as proof the document spends negative.
+def _empty_metadata() -> StatementMetadata:
+    """The StatementMetadata value route_pdf_import passes to derive_recipe (routing.py:335)."""
+    return StatementMetadata(
+        account_id=None,
+        period_start=None,
+        period_end=None,
+        opening_balance=None,
+        closing_balance=None,
+    )
 
-    `_classify_sign_convention` returns `negative_is_expense` for EVERY
-    single-amount layout — it cannot express the card convention — so the only
-    thing standing between a card statement and an inverted ledger was
-    `_has_any_negative_amount`. A real card statement almost always carries a
-    payment or refund, which satisfies that check, so the guard waved through
-    exactly the documents it was meant to stop.
 
-    Reconciliation cannot catch it either: it sums the raw signed amounts
-    (150 - 50 = 100) against the balance delta (+100), so the statement ties out
-    with every charge booked as income and the payment booked as an expense.
+def _card_statement_doc_all_positive() -> PdfDocument:
+    """A card statement with no payment row — an ordinary card month, still a card."""
+    return _make_doc(
+        text_lines=[
+            "Chase Bank Statement",
+            "Account Number: 1234",
+            "Statement Period: 01/01/2024",
+            "To: 01/31/2024",
+            "Minimum Payment Due: $25.00",
+            "Beginning Balance: $0.00",
+            "Ending Balance: $150.00",
+            _ROW_REGION_START,
+            "01/15/2024  Coffee Shop  150.00",
+            _ROW_REGION_END,
+        ],
+        tables=[_standard_table([["01/15/2024", "Coffee Shop", "150.00"]])],
+    )
 
-    Declining to derive routes it to the bridge, which can read the statement.
+
+def _checking_statement_doc() -> PdfDocument:
+    """An ordinary checking statement: no card markers, mixed-sign amounts."""
+    return _make_doc(
+        text_lines=[
+            "Chase Bank Statement",
+            "Account Number: 1234",
+            "Statement Period: 01/01/2024",
+            "To: 01/31/2024",
+            "Beginning Balance: $1000.00",
+            "Ending Balance: $1100.00",
+            _ROW_REGION_START,
+            "01/15/2024  Coffee Shop  -50.00",
+            "01/20/2024  Paycheck  150.00",
+            _ROW_REGION_END,
+        ],
+        tables=[_standard_table()],
+    )
+
+
+def _all_positive_no_markers_doc() -> PdfDocument:
+    """No card markers, no negative amounts anywhere — genuinely ambiguous."""
+    return _make_doc(
+        text_lines=[
+            "Chase Bank Statement",
+            "Account Number: 1234",
+            "Statement Period: 01/01/2024",
+            "To: 01/31/2024",
+            "Beginning Balance: $1000.00",
+            "Ending Balance: $1200.00",
+            _ROW_REGION_START,
+            "01/15/2024  Coffee Shop  50.00",
+            "01/20/2024  Grocery Mart  150.00",
+            _ROW_REGION_END,
+        ],
+        tables=[
+            _standard_table([
+                ["01/15/2024", "Coffee Shop", "50.00"],
+                ["01/20/2024", "Grocery Mart", "150.00"],
+            ])
+        ],
+    )
+
+
+def test_card_statement_derives_negative_is_income() -> None:
+    """A self-declared card statement derives the inverted convention.
+
+    #313 made this decline (safe but useless — the card would not import at all).
+    The markers state the convention outright, so derive it; the SERVICE gates the
+    inversion behind a confirm (see test_import_pdf_transactions.py).
     """
-    decision = route_pdf_import(_card_statement_doc(), db)
+    doc = _card_statement_doc(opening="0.00", closing="100.00")
+    recipe = derive_recipe(doc, _empty_metadata())
+    assert recipe is not None
+    assert recipe.sign_convention == "negative_is_income"
 
-    assert decision.outcome == "seed"
-    assert decision.recipe is None
-    assert decision.reason == "transaction_table_underivable"  # bridge-eligible
+
+def test_card_statement_with_no_payment_row_still_derives() -> None:
+    """All-positive amounts + card markers is NOT ambiguous — the markers decide.
+
+    Today this declines on both #313 tells. A card month with no payment is an
+    ordinary card month.
+    """
+    doc = _card_statement_doc_all_positive()
+    recipe = derive_recipe(doc, _empty_metadata())
+    assert recipe is not None
+    assert recipe.sign_convention == "negative_is_income"
+
+
+def test_checking_statement_still_derives_negative_is_expense() -> None:
+    """The happy path stays silent — only the inversion is gated."""
+    doc = _checking_statement_doc()
+    recipe = derive_recipe(doc, _empty_metadata())
+    assert recipe is not None
+    assert recipe.sign_convention == "negative_is_expense"
+
+
+def test_all_positive_without_card_markers_still_declines() -> None:
+    """Genuinely ambiguous: no markers, no negatives. Never guess — escalate."""
+    doc = _all_positive_no_markers_doc()
+    assert derive_recipe(doc, _empty_metadata()) is None
 
 
 def test_card_statement_does_not_replay_a_checking_recipe(db: Database) -> None:
-    """The replay gate must apply the card check, not just the any-negative one."""
+    """The replay gate must apply the card check, not just the any-negative one.
+
+    A saved negative_is_expense Chase recipe must not replay onto a Chase card
+    statement sharing its fingerprint (issuer, headers, page_bucket) — that would
+    import every charge as income. The gate disowns it (matched_format_name stays
+    None, proving no replay happened); auto_derive then re-reads the document
+    fresh and, since Task 2, proposes the correct negative_is_income recipe
+    instead of declining outright.
+    """
     _save_chase_format(db)  # negative_is_expense, Chase / Date,Description,Amount / 1pg
 
     decision = route_pdf_import(_card_statement_doc(), db)
 
-    assert decision.outcome == "seed"
-    assert decision.recipe is None
+    assert decision.outcome == "transactions"
+    assert decision.recipe is not None
+    assert decision.recipe.sign_convention == "negative_is_income"
+    # The saved (bank) recipe was disowned, not reused — a populated
+    # matched_format_name would tell the service "this was a replay."
     assert decision.matched_format_name is None
+
+
+def test_card_recipe_refuses_to_replay_onto_a_non_card_document() -> None:
+    """The mirror of #313. A saved card recipe must not invert a checking statement.
+
+    Fingerprint is (issuer, headers, page_bucket) — a same-issuer checking
+    statement with the same columns matches a card format's fingerprint. Without
+    this guard, replay writes every paycheck as an expense.
+    """
+    card_recipe = _recipe(sign_convention="negative_is_income")
+    checking_doc = _checking_statement_doc()
+    assert recipe_polarity_fits(card_recipe, checking_doc) is False
+
+
+def test_card_recipe_replays_onto_a_card_document() -> None:
+    card_recipe = _recipe(sign_convention="negative_is_income")
+    card_doc = _card_statement_doc(opening="0.00", closing="100.00")
+    assert recipe_polarity_fits(card_recipe, card_doc) is True
+
+
+def test_a_human_ratified_sign_outranks_the_marker_heuristic() -> None:
+    """`sign_ratified` short-circuits the guard — in BOTH directions.
+
+    The guard reads the document's text; ``sign_ratified`` means a human already
+    read it and disagreed. Both refusals it would otherwise raise are exactly the
+    ones that make an override unreplayable: a ``negative_is_expense`` recipe on a
+    marker-bearing document (the false-positive card the user corrected), and a
+    ``negative_is_income`` recipe on a document with no markers (a genuine card
+    that prints none of the five disclosures).
+    """
+    bank_recipe = _recipe(sign_convention="negative_is_expense")
+    card_recipe = _recipe(sign_convention="negative_is_income")
+    card_doc = _card_statement_doc(opening="0.00", closing="100.00")
+    checking_doc = _checking_statement_doc()
+
+    # Both are refused while the convention is only an inference…
+    assert recipe_polarity_fits(bank_recipe, card_doc) is False
+    assert recipe_polarity_fits(card_recipe, checking_doc) is False
+
+    # …and both replay once a human has asserted them.
+    ratified_bank = bank_recipe.model_copy(update={"sign_ratified": True})
+    ratified_card = card_recipe.model_copy(update={"sign_ratified": True})
+    assert recipe_polarity_fits(ratified_bank, card_doc) is True
+    assert recipe_polarity_fits(ratified_card, checking_doc) is True
+
+
+def test_route_decision_carries_card_markers(db: Database) -> None:
+    """The confirm gate shows the user which disclosures drove the inversion."""
+    doc = _card_statement_doc(opening="0.00", closing="100.00")
+    decision = route_pdf_import(doc, db)
+    assert decision.outcome == "transactions"
+    assert decision.recipe is not None
+    assert decision.recipe.sign_convention == "negative_is_income"
+    assert "minimum payment" in decision.card_markers
+
+
+def test_route_decision_has_no_markers_for_checking(db: Database) -> None:
+    decision = route_pdf_import(_checking_statement_doc(), db)
+    assert decision.card_markers == ()
 
 
 def test_euro_symbol_statement_is_recognised_as_non_us(db: Database) -> None:
