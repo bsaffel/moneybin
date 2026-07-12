@@ -575,13 +575,22 @@ class AutoRuleService:
                     str(p.get("match_type") or ""),
                 )
             }
-            # ONE scan (_estimate_match_counts), not one per id — see its own
-            # docstring for why a repeated scan of core.fct_transactions is a
-            # hang risk (F14).
-            counts = self._estimate_match_counts(pending)
+            # Estimate only what the length check hasn't already refused. An
+            # id in `unselective_ids` is skipped below no matter what its blast
+            # radius is, so scanning for it buys nothing — and the scan is a
+            # full pass over core.fct_transactions (the merge/dedup view whose
+            # needless re-evaluation is what hung system_doctor for >73s).
+            # `_estimate_match_counts` short-circuits on an empty list, so an
+            # accept set made up entirely of short-pattern proposals now costs
+            # no scan at all.
+            to_estimate = [
+                p for p in pending if str(p["proposed_rule_id"]) not in unselective_ids
+            ]
+            # ONE scan for the whole remaining set — never one per id.
+            counts = self._estimate_match_counts(to_estimate)
             broad_ids = {
                 str(p["proposed_rule_id"])
-                for p in pending
+                for p in to_estimate
                 if self._is_broad(
                     counts.get(str(p["proposed_rule_id"]), 0),
                     int(p.get("trigger_count", 0) or 0),

@@ -917,15 +917,19 @@ def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -
     one --approve-all away from relabeling every COSTCO/STORE/AUTO row as an
     Internal Transfer, which also drops them out of spend reports.
 
-    Uses "COSTCO AUTO CENTER" rather than bare "COSTCO WHOLESALE" — the latter
-    does not actually contain the substring "TO" (verified with a literal
-    ``in`` check; see the correction already made in
-    ``test_review_surfaces_blast_radius_and_flags_broad`` above), so it would
-    not exercise the `contains "TO"` blast radius this test names.
+    The pattern is deliberately LONG ENOUGH to clear the specificity floor
+    ("COSTCO" is 6 chars, well over ``auto_rule_min_contains_length``). A short
+    pattern like "TO" is refused by the floor before the blast radius is ever
+    computed, so using one here would prove nothing about the broad guard —
+    the test would pass with the broad check deleted. Isolating the guards is
+    the point: this test owns the blast-radius refusal, and
+    ``test_approve_refuses_legacy_short_contains_proposal_without_allow_broad``
+    owns the specificity refusal.
     """
     service = AutoRuleService(real_db)
 
-    # 40 transactions that a `contains "TO"` rule would hit.
+    # 40 transactions a `contains "COSTCO"` rule would hit — past the broad
+    # floor (20) and >10x the single trigger behind the proposal.
     for i in range(40):
         real_db.execute(
             "INSERT INTO core.fct_transactions "
@@ -934,7 +938,7 @@ def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -
             [f"t_{i}"],
         )
     pid = service._proposed.insert(
-        merchant_pattern="TO",
+        merchant_pattern="COSTCO",
         match_type="contains",
         category="Transfer",
         subcategory="Internal Transfer",
@@ -1010,6 +1014,50 @@ def test_approve_refuses_legacy_short_contains_proposal_without_allow_broad(
     # The human's informed override, after seeing the pattern is too short.
     allowed = service.approve([pid], actor="test", allow_broad=True)
     assert allowed.approved == 1
+
+
+def test_approve_skips_the_blast_radius_scan_when_every_id_is_short(
+    real_db: Database,
+) -> None:
+    """A short-pattern refusal must not pay for a blast-radius scan it can't use.
+
+    ``_estimate_match_counts`` scans all of ``core.fct_transactions`` — the full
+    merge/dedup view whose needless re-evaluation is what hung ``system_doctor``
+    for >73s. An id already refused by the length check is skipped regardless of
+    its blast radius, so estimating it buys nothing. When the whole accept set is
+    short-pattern proposals, the scan must not happen at all.
+    """
+    service = AutoRuleService(real_db)
+    pid = service._proposed.insert(
+        merchant_pattern="TO",
+        match_type="contains",
+        category="Transfer",
+        subcategory="Internal Transfer",
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    scanned: list[list[dict[str, object]]] = []
+    original = service._estimate_match_counts
+
+    def _spy(proposals: list[dict[str, object]]) -> dict[str, int]:
+        scanned.append(proposals)
+        return original(proposals)  # type: ignore[arg-type]
+
+    service._estimate_match_counts = _spy  # type: ignore[method-assign]
+    result = service.approve([pid], actor="test")
+
+    assert result.skipped == 1
+    assert result.approved == 0
+    # The estimator may be called, but it must be handed nothing to scan —
+    # _estimate_match_counts short-circuits on an empty list without touching
+    # core.fct_transactions.
+    assert all(p == [] for p in scanned), (
+        f"blast-radius scan was handed {scanned} for an all-short accept set"
+    )
 
 
 def test_estimated_match_count_agrees_with_what_approval_categorizes(
