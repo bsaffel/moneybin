@@ -74,8 +74,8 @@ The frozen dataclass that crosses the privacy boundary in `src/moneybin/services
 @dataclass(frozen=True)
 class RedactedTransaction:
     transaction_id: str
-    description_redacted: str
-    memo_redacted: str
+    description_scrubbed: str
+    memo_scrubbed: str
     source_type: str
     transaction_type: str | None
     check_number: str | None
@@ -85,7 +85,7 @@ class RedactedTransaction:
     amount_sign: Literal["+", "-", "0"]
 ```
 
-`memo_redacted` runs through the same `redact_for_llm()` pipeline that `description_redacted` does. The existing redactor already strips P2P recipients, account-number tails, hash-prefixed refs, bare digits, embedded contact info, dates, and city/state — the patterns that memos carry. No new redaction rules are required for the v1 expansion; the contract is "run the existing redactor over both fields."
+`memo_scrubbed` runs through the same `redact_for_llm()` pipeline that `description_scrubbed` does. The existing redactor already strips P2P recipients, account-number tails, hash-prefixed refs, bare digits, embedded contact info, dates, and city/state — the patterns that memos carry. No new redaction rules are required for the v1 expansion; the contract is "run the existing redactor over both fields."
 
 ## Matcher algorithm
 

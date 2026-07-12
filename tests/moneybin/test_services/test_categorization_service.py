@@ -1292,7 +1292,7 @@ def db_with_uncategorized_txns(db: Database) -> Database:
 def test_categorize_assist_returns_redacted_uncategorized(
     db_with_uncategorized_txns: Database,
 ) -> None:
-    """categorize_assist should return uncategorized txns with redacted descriptions only."""
+    """categorize_assist should return uncategorized txns with scrubbed descriptions only."""
     from moneybin.services.categorization import (
         CategorizationService,
         RedactedTransaction,
@@ -1304,7 +1304,7 @@ def test_categorize_assist_returns_redacted_uncategorized(
     assert all(isinstance(r, RedactedTransaction) for r in result)
     for r in result:
         assert hasattr(r, "transaction_id")
-        assert hasattr(r, "description_redacted")
+        assert hasattr(r, "description_scrubbed")
         assert hasattr(r, "source_type")
         # Confirm no amount/date/account fields
         assert not hasattr(r, "amount")

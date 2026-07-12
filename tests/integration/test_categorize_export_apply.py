@@ -128,10 +128,10 @@ class TestExportApplyRoundTrip:
 
         exported = json.loads(export_file.read_text())
         assert len(exported) == 3
-        # Verify redacted shape: transaction_id, description_redacted, source_type present
+        # Verify scrubbed shape: transaction_id, description_scrubbed, source_type present
         for item in exported:
             assert "transaction_id" in item
-            assert "description_redacted" in item
+            assert "description_scrubbed" in item
             assert "source_type" in item
             # No PII fields
             assert "amount" not in item
@@ -165,14 +165,14 @@ class TestExportApplyRoundTrip:
         payload = json.dumps([
             {
                 "transaction_id": "txn_export_000",
-                "description_redacted": "STARBUCKS",
+                "description_scrubbed": "STARBUCKS",
                 "source_type": "csv",
                 "category": "Food",
                 "subcategory": "Coffee",
             },
             {
                 "transaction_id": "txn_export_001",
-                "description_redacted": "STARBUCKS",
+                "description_scrubbed": "STARBUCKS",
                 "source_type": "csv",
                 "category": "Food",
             },

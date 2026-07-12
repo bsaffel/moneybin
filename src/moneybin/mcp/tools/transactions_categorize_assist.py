@@ -1,4 +1,4 @@
-"""MCP tool: transactions_categorize_assist — redacted batch for LLM categorization."""
+"""MCP tool: transactions_categorize_assist — PII-scrubbed batch for LLM categorization."""
 
 from __future__ import annotations
 
@@ -25,14 +25,19 @@ def transactions_categorize_assist(
     account_filter: list[str] | None = None,
     date_range: dict[str, str] | None = None,
 ) -> ResponseEnvelope[CatAssistPayload]:
-    """Return uncategorized transactions as redacted records for LLM categorization.
+    """Return uncategorized transactions as PII-scrubbed rows for LLM categorization.
+
+    Merchant text is PRESERVED and sent to the model — it is the categorization
+    signal, and stripping it would make the task impossible. What is scrubbed is
+    embedded PII: account numbers in the memo are masked (e.g.
+    "ON-LINE xxxxxxxxx5648"). No amounts, dates, or account identifiers are sent;
+    only an amount SIGN.
 
     The LLM proposes (category, subcategory, canonical_merchant_name) for each.
     The user reviews; the LLM commits via transactions_categorize_commit with
     categorized_by='ai'.
 
-    Privacy: descriptions pass through redact_for_llm() before transmission.
-    No amounts, dates, or account references are ever sent.
+    Sensitivity: medium — descriptions leave the machine.
 
     Args:
         limit: Max records to return. Defaults to assist_default_batch_size (100).
@@ -72,8 +77,8 @@ def transactions_categorize_assist(
         transactions=[
             AssistRow(
                 transaction_id=r.transaction_id,
-                description_redacted=r.description_redacted,
-                memo_redacted=r.memo_redacted,
+                description_scrubbed=r.description_scrubbed,
+                memo_scrubbed=r.memo_scrubbed,
                 source_type=r.source_type,
                 transaction_type=r.transaction_type,
                 check_number=r.check_number,
@@ -90,7 +95,7 @@ def transactions_categorize_assist(
         actions=[
             "Propose (category, subcategory, canonical_merchant_name) per item",
             "Use transactions_categorize_commit to commit user-accepted proposals",
-            "Redaction: description + memo redacted; structural fields exposed for matcher and LLM signal",
+            "Scrubbing: description + memo have embedded PII masked, merchant text preserved; structural fields exposed for matcher and LLM signal",
         ],
     )
 
@@ -101,6 +106,8 @@ def register_transactions_categorize_assist_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_categorize_assist,
         "transactions_categorize_assist",
-        "Fetch uncategorized transactions as redacted records for LLM-assisted "
-        "categorization. Descriptions are redacted; no amounts or account IDs sent.",
+        "Fetch uncategorized transactions as PII-scrubbed records for LLM-assisted "
+        "categorization. Merchant text (description/memo) IS sent in full — it's "
+        "the categorization signal; only embedded PII (e.g. account numbers in "
+        "the memo) is masked. No amounts, dates, or account IDs sent.",
     )

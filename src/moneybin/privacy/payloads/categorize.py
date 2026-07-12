@@ -21,7 +21,7 @@ Tier derivation summary:
   - ``AutoReviewPayload``          → Tier.MEDIUM (via AutoReviewProposalRow)
   - ``AutoAcceptPayload``          → Tier.LOW  (AGGREGATE only — counts + IDs)
   - ``AutoStatsPayload``           → Tier.LOW  (AGGREGATE only — counts)
-  - ``AssistRow``                  → Tier.MEDIUM (description_redacted = DESCRIPTION)
+  - ``AssistRow``                  → Tier.MEDIUM (description_scrubbed = DESCRIPTION)
   - ``CatAssistPayload``           → Tier.MEDIUM (via AssistRow)
 
 ``transactions_categorize_assist`` deliberately redacts amounts and dates.
@@ -272,8 +272,8 @@ class AssistRow:
 
     transaction_id: Annotated[str, DataClass.RECORD_ID]
     # DESCRIPTION — drives CatAssistPayload to Tier.MEDIUM
-    description_redacted: Annotated[str, DataClass.DESCRIPTION]
-    memo_redacted: Annotated[str, DataClass.DESCRIPTION]
+    description_scrubbed: Annotated[str, DataClass.DESCRIPTION]
+    memo_scrubbed: Annotated[str, DataClass.DESCRIPTION]
     source_type: Annotated[str, DataClass.TXN_TYPE]
     transaction_type: Annotated[str | None, DataClass.TXN_TYPE]
     check_number: Annotated[str | None, DataClass.DESCRIPTION]

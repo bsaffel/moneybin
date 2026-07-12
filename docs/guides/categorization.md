@@ -69,7 +69,7 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 | `assist` | Returns uncategorized transactions as redacted JSON for an LLM to annotate. Does not write. |
 | `export-uncategorized` | Same redacted shape, written to a file or stdout. Convenience wrapper for pipeline use. |
 | `commit` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Commits a JSON array of `{transaction_id, category, subcategory}` items. Accepts `--input <path>` or `-` for stdin. |
-| `commit-from-file` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Same as `commit` but takes the path as a positional argument; tolerant of export-shape extras like `description_redacted`. |
+| `commit-from-file` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Same as `commit` but takes the path as a positional argument; tolerant of export-shape extras like `description_scrubbed`. |
 | `run` | Re-runs the deterministic cascade (rules and merchants) over uncategorized rows. `--methods rules,merchants` controls the order. No LLM involvement. |
 | `rules list` | Lists active rules in priority order. |
 | `rules create` | Single rule: `NAME --pattern X --category Y [--match-type contains\|exact\|regex] [--priority N] [--min-amount/--max-amount] [--account-id ID]`. Batch: `--from-file rules.json`. `--reapply` re-evaluates uncategorized rows. |
@@ -165,7 +165,7 @@ A top-level JSON array. Each item:
 | `subcategory` | string (1–100) | no | Must pair validly with `category` in the taxonomy if present. |
 | `canonical_merchant_name` | string (1–200) | no | **MCP only.** The CLI `commit` and `commit-from-file` strip this key at the boundary; only `transactions_categorize_commit` (MCP) routes it through to the exemplar accumulator. |
 
-Export rows from `export-uncategorized` carry additional keys (`description_redacted`, `memo_redacted`, `transaction_type`, `is_transfer`, etc.) for the LLM to read. The CLI `commit-from-file` silently drops keys outside `{transaction_id, category, subcategory}` at the boundary, so you can pipe the export → annotated payload back through unchanged.
+Export rows from `export-uncategorized` carry additional keys (`description_scrubbed`, `memo_scrubbed`, `transaction_type`, `is_transfer`, etc.) for the LLM to read. The CLI `commit-from-file` silently drops keys outside `{transaction_id, category, subcategory}` at the boundary, so you can pipe the export → annotated payload back through unchanged.
 
 ### `rules.json` (input to `rules create --from-file`)
 
@@ -278,7 +278,7 @@ Two design choices that matter:
 `transactions_categorize_assist` (and the matching CLI command) returns a `RedactedTransaction` per uncategorized row. The shape is frozen:
 
 - `transaction_id`
-- `description_redacted`, `memo_redacted` — both passed through `redact_for_llm()` which strips card last-fours, emails, phones, P2P recipient names, and other PII patterns
+- `description_scrubbed`, `memo_scrubbed` — merchant text preserved and sent in full (it's the categorization signal); both passed through `redact_for_llm()` which strips card last-fours, emails, phones, P2P recipient names, and other embedded-PII patterns
 - `source_type` — `csv`, `ofx`, `plaid`, etc.
 - `transaction_type` — `DEBIT` / `CREDIT` / `CHECK` / `XFER` / `ATM` / ...
 - `check_number` — for handwritten checks

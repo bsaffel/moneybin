@@ -113,9 +113,9 @@ class TestCategorizeAssistCLI:
         rows = envelope["data"]["transactions"]
         assert len(rows) == 2
         first = rows[0]
-        # Redaction contract: redacted fields present, raw fields absent.
-        assert "description_redacted" in first
-        assert "memo_redacted" in first
+        # Privacy contract: scrubbed fields present, raw fields absent.
+        assert "description_scrubbed" in first
+        assert "memo_scrubbed" in first
         assert "amount" not in first
         assert "transaction_date" not in first
         assert "account_id" not in first

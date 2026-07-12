@@ -364,8 +364,8 @@ class RedactedTransaction:
     transaction_id: (
         str  # source-provided FITID or content hash; non-sensitive synthetic identifier
     )
-    description_redacted: str  # redact_for_llm(description)
-    memo_redacted: str  # redact_for_llm(memo) — added in v2
+    description_scrubbed: str  # redact_for_llm(description)
+    memo_scrubbed: str  # redact_for_llm(memo) — added in v2
     source_type: str  # 'csv' | 'ofx' | 'plaid' | 'pdf'
     transaction_type: str | None
     check_number: str | None
@@ -532,7 +532,7 @@ JSON contracts:
 **Export output / apply input first half:**
 ```json
 [
-  {"transaction_id": "txn_abc123", "description_redacted": "STARBUCKS", "source_type": "csv"}
+  {"transaction_id": "txn_abc123", "description_scrubbed": "STARBUCKS", "source_type": "csv"}
 ]
 ```
 
