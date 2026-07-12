@@ -477,6 +477,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "active rules by matcher+output (merchant_pattern, match_type, "
         "min/max_amount, account_id, category, subcategory); name and "
         "priority are metadata. Retries return the existing rule_id. "
+        "A NEW 'contains' rule whose pattern is too short to discriminate "
+        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL) is refused and "
+        "reported in error_details unless allow_broad=true — use "
+        "match_type='exact' for a short pattern, or set allow_broad=true to "
+        "accept the risk. An already-active rule is returned as-is, ungated. "
         "Writes app.categorization_rules; revert with transactions_categorize_rules_delete (soft-delete sets active=False).",
     )
     register(
