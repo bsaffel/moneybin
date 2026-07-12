@@ -43,6 +43,32 @@ from moneybin.tables import (
 logger = logging.getLogger(__name__)
 
 
+def _utc_naive(value: datetime | None) -> datetime | None:
+    """Rebase an instant onto UTC and drop the tzinfo.
+
+    The raw.plaid_* datetime columns are naive ``TIMESTAMP``, and DuckDB
+    rebases a tz-AWARE value into the machine's session zone on insert — so a
+    tz-aware column would store the LOCAL wall clock, and every ``::DATE``
+    staging derives from it (``trade_date``, ``acquisition_date``) would be the
+    local calendar date, off by a day outside UTC. Storing the UTC wall clock
+    makes those casts the UTC calendar date on any machine, and keeps them on
+    the same calendar as ``holdings_date`` (also a UTC date, below) — a
+    mismatch between the two synthesizes phantom opening lots.
+
+    A naive input is taken as already-UTC: the sync server's contract is UTC.
+    """
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _utc_date(value: datetime) -> date:
+    """The instant's UTC calendar date — never the machine's or the offset's."""
+    if value.tzinfo is None:
+        return value.date()
+    return value.astimezone(UTC).date()
+
+
 @dataclass(frozen=True)
 class LoadResult:
     """Per-table row counts returned by PlaidExtractor.load()."""
@@ -141,7 +167,10 @@ _INVESTMENT_TRANSACTIONS_SCHEMA = pl.Schema({
     "account_id": pl.Utf8,
     "security_id": pl.Utf8,
     "transaction_date": pl.Date,
-    "transaction_datetime": pl.Datetime(time_zone="UTC"),
+    # Naive on purpose — carries a UTC wall clock via _utc_naive(). A tz-aware
+    # dtype here would make DuckDB rebase the instant into the machine's local
+    # zone on insert (the raw column is naive TIMESTAMP), misdating trade_date.
+    "transaction_datetime": pl.Datetime("us"),
     "transaction_name": pl.Utf8,
     "quantity": pl.Decimal(28, 10),
     "amount": pl.Decimal(18, 2),
@@ -184,7 +213,8 @@ _INVESTMENT_HOLDING_LOTS_SCHEMA = pl.Schema({
     "security_id": pl.Utf8,
     "lot_index": pl.Int32,
     "institution_lot_id": pl.Utf8,
-    "original_purchase_datetime": pl.Datetime(time_zone="UTC"),
+    # Naive on purpose — see _utc_naive() and _INVESTMENT_TRANSACTIONS_SCHEMA.
+    "original_purchase_datetime": pl.Datetime("us"),
     "quantity": pl.Decimal(28, 10),
     "purchase_price": pl.Decimal(28, 10),
     "cost_basis": pl.Decimal(18, 2),
@@ -340,10 +370,18 @@ class PlaidExtractor:
         and break downstream joins. Server should structure responses with per-
         institution account groupings to make this unambiguous (followup).
 
-        Also raises if `sync_data.transactions` or `sync_data.balances` reference
-        an `account_id` not present in `sync_data.accounts` — eventual-consistency
-        on Plaid's side surfaces this occasionally, and a KeyError during the
-        per-row dict lookup leaves no useful context. Loud and explicit is better.
+        Also raises if any data array — `transactions`, `balances`,
+        `investment_transactions` or `investment_holdings` — references an
+        `account_id` not present in `sync_data.accounts`. Eventual-consistency on
+        Plaid's side surfaces this occasionally, and a KeyError during the per-row
+        dict lookup leaves no useful context. Loud and explicit is better.
+
+        The investment arrays need the guard even though they stamp `source_origin`
+        from their own `provider_item_id` (never this mapping): an account missing
+        from `sync_data.accounts` gets no `app.account_links` row, so staging's
+        `COALESCE(al.account_id, r.account_id)` falls back to the raw Plaid id and
+        `core.fct_investment_transactions` / `core.dim_holdings` carry an
+        `account_id` with no `core.dim_accounts` row.
         """
         institutions = sync_data.metadata.institutions
         if len(institutions) == 1:
@@ -369,13 +407,16 @@ class PlaidExtractor:
                     )
                 mapping[acc.account_id] = name_to_item[acc.institution_name]
 
-        referenced = {txn.account_id for txn in sync_data.transactions} | {
-            bal.account_id for bal in sync_data.balances
-        }
+        referenced = (
+            {txn.account_id for txn in sync_data.transactions}
+            | {bal.account_id for bal in sync_data.balances}
+            | {itx.account_id for itx in sync_data.investment_transactions}
+            | {hold.account_id for hold in sync_data.investment_holdings}
+        )
         orphans = referenced - mapping.keys()
         if orphans:
             raise ValueError(
-                f"transactions/balances reference account_id(s) not present in "
+                f"sync payload references account_id(s) not present in "
                 f"sync_data.accounts: {sorted(orphans)}. This typically indicates "
                 f"eventual-consistency drift on the server — retry the sync, and "
                 f"if it persists, the server's account_id stream is out of sync "
@@ -513,6 +554,7 @@ class PlaidExtractor:
             [
                 {
                     **txn.model_dump(exclude={"provider_item_id"}),
+                    "transaction_datetime": _utc_naive(txn.transaction_datetime),
                     "source_file": source_file,
                     "source_type": "plaid",
                     "source_origin": txn.provider_item_id,
@@ -550,7 +592,13 @@ class PlaidExtractor:
             window_start = window_by_item[holding.provider_item_id]
             holding_rows.append({
                 **holding.model_dump(exclude={"provider_item_id", "tax_lots"}),
-                "holdings_date": extracted_at.date(),
+                # UTC calendar date of the snapshot instant — never the
+                # machine's local date. int_plaid__opening_positions compares
+                # this against trade_date, which SQL derives as a UTC date from
+                # the UTC-wall-clock columns; different calendars there push a
+                # snapshot-day buy outside the in-window net and synthesize a
+                # phantom opening lot.
+                "holdings_date": _utc_date(extracted_at),
                 "transactions_window_start": window_start,
                 "source_file": source_file,
                 "source_type": "plaid",
@@ -564,6 +612,9 @@ class PlaidExtractor:
                     "security_id": holding.security_id,
                     "lot_index": lot_index,
                     **lot.model_dump(),
+                    "original_purchase_datetime": _utc_naive(
+                        lot.original_purchase_datetime
+                    ),
                     "source_file": source_file,
                     "source_type": "plaid",
                     "source_origin": holding.provider_item_id,

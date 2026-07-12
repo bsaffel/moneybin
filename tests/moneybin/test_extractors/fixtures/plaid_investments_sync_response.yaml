@@ -1,6 +1,20 @@
 # Hand-authored to the sync-plaid-investments.md server contract (PR #311 shape).
 # Replace with a Plaid Sandbox capture when moneybin-sync ships the endpoints.
-accounts: []
+# Every account referenced by investment_transactions / investment_holdings must
+# appear here — the loader's orphan guard rejects a payload whose investment
+# arrays name an account the accounts array never delivered.
+accounts:
+  - account_id: acc_1
+    account_type: investment
+    account_subtype: brokerage
+    institution_name: Alpha Brokerage
+    official_name: Alpha Brokerage Individual
+    mask: "1234"
+  - account_id: acc_dup
+    account_type: investment
+    account_subtype: ira
+    institution_name: Beta Retirement
+    mask: "5678"
 transactions: []
 balances: []
 removed_transactions: []

@@ -290,22 +290,38 @@ def test_pull_flags_manual_plaid_overlap(
 ) -> None:
     """An account carrying both manual and Plaid investment rows is flagged.
 
-    The fixture's raw Plaid investment transactions use account_id='acc_1'
-    directly (no account_links row exists — the investments fixture ships no
-    `accounts`), so a manual row on the SAME account_id overlaps via the
-    COALESCE fallback rather than a resolved canonical link.
+    Drives the real sequence: a first pull resolves Plaid's provider-native
+    account_id to a canonical one in `app.account_links`; the user then
+    hand-records a trade against that canonical account; the next pull sees
+    both sources on one account. Manual rows store canonical ids and raw Plaid
+    rows store provider-native ids, so the overlap join only matches once the
+    link exists — which is why the manual row must be keyed on the canonical
+    id, not on Plaid's 'acc_1'.
     """
+    service = SyncService(client=mock_investments_client, db=db, loader=loader)
+    service.pull(refresh=False)
+
+    link = db.execute(
+        """
+        SELECT account_id FROM app.account_links
+        WHERE status = 'accepted' AND ref_kind = 'source_native'
+          AND source_type = 'plaid' AND ref_value = 'acc_1'
+        """
+    ).fetchone()
+    assert link is not None, "first pull must resolve acc_1 to a canonical account"
+    canonical_account_id = link[0]
+
     db.execute(
         """
         INSERT INTO raw.manual_investment_transactions (
             source_transaction_id, import_id, account_id, type, trade_date, created_by
         ) VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ["manual_test1", "imp_test1", "acc_1", "buy", "2026-07-01", "cli"],
+        ["manual_test1", "imp_test1", canonical_account_id, "buy", "2026-07-01", "cli"],
     )
-    service = SyncService(client=mock_investments_client, db=db, loader=loader)
+
     result = service.pull(refresh=False)
-    assert result.investment_source_overlap_accounts == ["acc_1"]
+    assert result.investment_source_overlap_accounts == [canonical_account_id]
 
 
 def test_link_new_institution_auto_pulls(

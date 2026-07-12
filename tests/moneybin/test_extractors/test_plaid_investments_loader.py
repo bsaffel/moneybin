@@ -1,5 +1,6 @@
 """PlaidExtractor investment loading: counts, scoping, snapshots, drift."""
 
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -225,7 +226,7 @@ def test_zero_quantity_buy_reaches_reconciliation_and_counts_drift(
     reconciles against nothing, so it must count as drift.
     """
     payload = {
-        "accounts": [],
+        "accounts": [{"account_id": "acc_1", "institution_name": "Alpha Brokerage"}],
         "transactions": [],
         "balances": [],
         "removed_transactions": [],
@@ -247,13 +248,124 @@ def test_zero_quantity_buy_reaches_reconciliation_and_counts_drift(
         "metadata": {
             "job_id": "j-zero-qty",
             "synced_at": "2026-07-08T12:00:00Z",
-            "institutions": [],
+            "institutions": [
+                {
+                    "provider_item_id": "item_1",
+                    "institution_name": "Alpha Brokerage",
+                    "status": "completed",
+                }
+            ],
         },
     }
     name = "moneybin_investment_amount_drift_rows_total"
     before = REGISTRY.get_sample_value(name) or 0.0
     _load(db, SyncDataResponse.model_validate(payload), job_id="j-zero-qty")
     assert (REGISTRY.get_sample_value(name) or 0.0) - before == 1.0
+
+
+def test_event_timestamps_land_as_utc_wall_clocks_in_a_non_utc_session(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A UTC instant must store the UTC wall clock whatever the machine's zone.
+
+    The raw datetime columns are naive TIMESTAMP and staging derives dates
+    from them (`transaction_datetime::DATE` -> trade_date;
+    `original_purchase_datetime::DATE` -> acquisition_date). Hand DuckDB a
+    tz-AWARE value and it rebases the instant into the session zone on
+    insert: in America/Los_Angeles a 2026-03-10T01:30Z trade lands as
+    2026-03-09 18:30, so trade_date comes out a day early -- misdating
+    cost-basis lots, inverting FIFO order between adjacent days, flipping an
+    anniversary sale from long to short, and desyncing trade_date from
+    holdings_date (a UTC date computed in Python).
+
+    Must go through the loader: inserting a naive string straight into raw
+    bypasses the exact coercion under test.
+    """
+    db.execute("SET TimeZone = 'America/Los_Angeles'")
+    payload = sync_data.model_copy(deep=True)
+    instant = datetime(2026, 3, 10, 1, 30, tzinfo=UTC)  # 2026-03-09 18:30 in LA
+    payload.investment_transactions[0].transaction_datetime = instant
+    payload.investment_holdings[0].tax_lots[0].original_purchase_datetime = instant
+
+    _load(db, payload, job_id="job-tz")
+
+    txn = db.execute(
+        """
+        SELECT transaction_datetime, transaction_datetime::DATE
+        FROM raw.plaid_investment_transactions
+        WHERE investment_transaction_id = 'itx_buy_1'
+        """
+    ).fetchone()
+    assert txn == (datetime(2026, 3, 10, 1, 30), date(2026, 3, 10))
+
+    lot = db.execute(
+        """
+        SELECT original_purchase_datetime, original_purchase_datetime::DATE
+        FROM raw.plaid_investment_holding_lots
+        WHERE account_id = 'acc_1' AND security_id = 'sec_aapl' AND lot_index = 0
+        """
+    ).fetchone()
+    assert lot == (datetime(2026, 3, 10, 1, 30), date(2026, 3, 10))
+
+
+def test_holdings_date_is_the_utc_date_of_the_sync_instant(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """holdings_date is the snapshot's UTC calendar date, not an offset-local one.
+
+    `int_plaid__opening_positions` compares trade_date (derived in SQL from
+    the UTC-wall-clock columns above) against holdings_date. A synced_at
+    carrying a non-UTC offset would put the two on different calendars, and
+    the bootstrap would synthesize a phantom opening lot for shares an
+    in-window buy already accounts for.
+    """
+    payload = sync_data.model_copy(deep=True)
+    # 2026-07-09T01:00+09:00 is 2026-07-08T16:00Z — the UTC date is the 8th.
+    payload.metadata.synced_at = datetime(
+        2026, 7, 9, 1, 0, tzinfo=timezone(timedelta(hours=9))
+    )
+
+    _load(db, payload, job_id="job-tz-holdings")
+
+    rows = db.execute(
+        "SELECT DISTINCT holdings_date FROM raw.plaid_investment_holdings"
+    ).fetchall()
+    assert rows == [(date(2026, 7, 8),)]
+
+
+def test_investment_transaction_for_an_unknown_account_raises(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """Plaid eventual-consistency drift must fail loudly, as it does for banking.
+
+    An investment transaction whose account_id never arrived in
+    sync_data.accounts gets no app.account_links row, so staging's
+    COALESCE(al.account_id, r.account_id) falls back to the raw Plaid id and
+    core.fct_investment_transactions carries an account_id with no
+    core.dim_accounts row.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_transactions[0].account_id = "acc_ghost"
+
+    with pytest.raises(ValueError, match="acc_ghost"):
+        _load(db, payload, job_id="job-orphan-txn")
+
+    # The guard runs before the first ingest — nothing partial lands.
+    row = db.execute(
+        "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
+    ).fetchone()
+    assert row == (0,)
+
+
+def test_investment_holding_for_an_unknown_account_raises(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """Same orphan drift on the holdings array — orphan core.dim_holdings rows."""
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].account_id = "acc_ghost"
+
+    with pytest.raises(ValueError, match="acc_ghost"):
+        _load(db, payload, job_id="job-orphan-holding")
 
 
 def test_empty_arrays_load_cleanly(db: Database) -> None:
