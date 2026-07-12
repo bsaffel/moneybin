@@ -129,6 +129,15 @@ def test_components_exist() -> None:
     assert "Icon" in names
 
 
+def test_guideline_cards_exist() -> None:
+    """Same guard for the cards: a parametrized test over an empty glob passes silently."""
+    cards = sorted(p.name for p in _GUIDELINES.glob("*.html"))
+    assert len(cards) >= 29, (
+        f"expected the full specimen set, found {len(cards)}: {cards}"
+    )
+    assert "icons-grammar.html" in cards
+
+
 @pytest.mark.parametrize("jsx", _component_jsx(), ids=lambda p: p.stem)
 def test_component_ships_the_full_quartet(jsx: Path) -> None:
     """A component needs all four artifacts or it silently drops out of the bundle.
@@ -151,6 +160,15 @@ def test_component_ships_the_full_quartet(jsx: Path) -> None:
     assert name in docs_map, (
         f"{name}: missing a docsMap entry in .design-sync/config.json — without it "
         f"{name}.prompt.md never reaches the design agent"
+    )
+    # The *value* matters, not just the key: the converter reads the mapped path to
+    # decide which docs reach the design agent, so a copy-pasted `"Icon":
+    # "components/core/Button.prompt.md"` would hand the agent the wrong API — the
+    # same silent failure, one layer down.
+    expected_docs = jsx.relative_to(_DS).with_suffix(".prompt.md").as_posix()
+    assert docs_map[name] == expected_docs, (
+        f"{name}: docsMap points at {docs_map[name]!r}, not {expected_docs!r} — the "
+        f"design agent would read the wrong component's usage docs"
     )
 
 
@@ -338,7 +356,12 @@ def test_docs_enumerate_every_component(doc: Path) -> None:
     sat missing from one of them for weeks, unnoticed.
     """
     text = doc.read_text()
-    missing = [name for name in _component_names() if name not in text]
+    # Word-boundary, not substring: `"Icon" in text` is satisfied by the prose word
+    # "Iconography" alone, so a doc could drop its real `Icon` reference and still
+    # pass — silently reintroducing the very staleness this test exists to catch.
+    missing = [
+        name for name in _component_names() if not re.search(rf"\b{name}\b", text)
+    ]
     assert not missing, (
         f"{doc.relative_to(_REPO_ROOT)} does not mention {missing}. An agent reading "
         f"this file will not know {'they exist' if len(missing) > 1 else 'it exists'}."
