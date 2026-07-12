@@ -14,6 +14,7 @@ from moneybin.cli.commands.mcp import (
     _gate_network_transport,  # pyright: ignore[reportPrivateUsage]
     app,
 )
+from moneybin.mcp.surface import VISIBLE_TOOL_COUNT
 
 runner = CliRunner()
 
@@ -430,16 +431,20 @@ class TestMCPInstallSnippetHardening:
         assert "confirmation" in result.stderr.lower()
 
     def test_windsurf_install_warns_that_moneybin_exceeds_the_tool_cap(self) -> None:
-        """Cascade holds 100 tools; MoneyBin ships 102 and hides none.
+        """Cascade holds 100 tools; MoneyBin ships more than that and hides none.
 
         Windsurf gives no signal when it drops the overflow — it just behaves as
         though MoneyBin can't do things it can. The guide says so, but the person
         running the install never reads the guide, so the install has to say it too.
+
+        Asserted against the live count, not a literal: the deliberate-bump gate
+        lives in the pinned surface-budget test, and a second copy of the number
+        here only breaks every time the surface legitimately grows.
         """
         result = runner.invoke(app, ["install", "--client", "windsurf", "--print"])
         assert result.exit_code == 0
         assert "100" in result.stderr
-        assert "102" in result.stderr
+        assert str(VISIBLE_TOOL_COUNT) in result.stderr
         assert "disable" in result.stderr.lower()
 
     def test_non_windsurf_installs_do_not_carry_the_tool_cap_warning(self) -> None:
@@ -447,7 +452,7 @@ class TestMCPInstallSnippetHardening:
         result = runner.invoke(
             app, ["install", "--client", "claude-desktop", "--print"]
         )
-        assert "102" not in result.stderr
+        assert str(VISIBLE_TOOL_COUNT) not in result.stderr
 
     @pytest.mark.parametrize(
         "client", ["claude-desktop", "cursor", "windsurf", "gemini-cli", "claude-code"]
