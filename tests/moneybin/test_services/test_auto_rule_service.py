@@ -754,3 +754,74 @@ class TestDeactivateOverriddenRules:
         assert context["reason"] == "override_threshold"
         assert context["override_count"] == 2
         assert len(context["sample_ids"]) == 2
+
+
+# --- Blast radius (F17 Layer 2) ----------------------------------------------
+
+
+def test_review_surfaces_blast_radius_and_flags_broad() -> None:
+    """review() reports how many transactions a proposal would actually hit (F17).
+
+    "TO" as an exact-match proposal against a ledger where 40 rows are literally
+    "TO" is broad: 40 matches on 1 trigger, far past 10x evidence.
+    """
+    db = MagicMock()
+    service = AutoRuleService(db)
+    proposals = [
+        {
+            "proposed_rule_id": "p_broad",
+            "merchant_pattern": "TO",
+            "match_type": "contains",
+            "category": "Transfer",
+            "subcategory": "Internal Transfer",
+            "trigger_count": 1,
+            "sample_txn_ids": ["t_1"],
+        }
+    ]
+    # 40 transactions whose descriptions all contain "TO" (the "TO" in "AUTO").
+    # NOTE: "COSTCO WHOLESALE" alone does NOT contain "TO" as a substring
+    # ("COSTCO"'s T is followed by C, not O) despite the brief's docstring
+    # listing it alongside STORE/AUTO/TOTAL — verified with a literal `in`
+    # check. Using "COSTCO AUTO CENTER" keeps the COSTCO flavor while
+    # actually exercising the `contains` blast-radius path this test names.
+    rows = [("COSTCO AUTO CENTER", None)] * 40
+    db.execute.return_value.fetchall.return_value = rows
+
+    counts = service._estimate_match_counts(proposals)
+    assert counts["p_broad"] == 40
+    assert service._is_broad(40, 1) is True
+
+
+def test_is_broad_respects_the_floor_and_the_evidence_ratio() -> None:
+    """The guard flags disproportionate blast radius, not merely large rules."""
+    service = AutoRuleService(MagicMock())
+    # Below the 20-match floor: never broad, however thin the evidence.
+    assert service._is_broad(8, 1) is False
+    # Past the floor and >10x the evidence: broad.
+    assert service._is_broad(50, 1) is True
+    # Same 50 matches, but 5 triggers of evidence: 50 <= 10*5, so not broad.
+    assert service._is_broad(50, 5) is False
+
+
+def test_estimate_match_counts_uses_exact_semantics_for_exact_patterns() -> None:
+    """An `exact` proposal only counts rows whose normalized text IS the pattern.
+
+    This is what makes the Task-2 downgrade safe: "TO" as `exact` has a blast
+    radius of 0 against a ledger of COSTCO rows, where as `contains` it had 40.
+    """
+    db = MagicMock()
+    service = AutoRuleService(db)
+    proposals = [
+        {
+            "proposed_rule_id": "p_exact",
+            "merchant_pattern": "TO",
+            "match_type": "exact",
+            "category": "Transfer",
+            "subcategory": None,
+            "trigger_count": 1,
+            "sample_txn_ids": ["t_1"],
+        }
+    ]
+    db.execute.return_value.fetchall.return_value = [("COSTCO AUTO CENTER", None)] * 40
+    counts = service._estimate_match_counts(proposals)
+    assert counts["p_exact"] == 0

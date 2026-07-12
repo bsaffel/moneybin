@@ -19,7 +19,10 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
-from moneybin.metrics.registry import AUTO_RULE_PATTERN_DOWNGRADED_TOTAL
+from moneybin.metrics.registry import (
+    AUTO_RULE_BROAD_PENDING,
+    AUTO_RULE_PATTERN_DOWNGRADED_TOTAL,
+)
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.services._text import build_match_inputs, normalize_description
@@ -39,6 +42,24 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _pattern_hits(
+    pattern: str, match_type: str, match_text: str, norm_desc: str, norm_memo: str
+) -> bool:
+    """Mirror the live matcher's field selection for a single row.
+
+    ``build_match_inputs``' contract: ``contains`` and unanchored ``regex``
+    patterns test the concatenated ``match_text`` (they may span the
+    description/memo boundary); ``exact`` tests the individual normalized fields,
+    whose semantics break once memo is appended. Diverging from this would make
+    the reviewer's blast-radius number disagree with what the rule actually does.
+    """
+    if match_type == "exact":
+        return matches_pattern(norm_desc, pattern, "exact") or matches_pattern(
+            norm_memo, pattern, "exact"
+        )
+    return matches_pattern(match_text, pattern, match_type)
 
 
 @dataclass(slots=True)
@@ -350,15 +371,94 @@ class AutoRuleService:
 
     # -- Decisions --
 
+    def _estimate_match_counts(self, proposals: list[dict[str, Any]]) -> dict[str, int]:
+        """Return ``{proposed_rule_id: estimated_match_count}``.
+
+        The blast radius a reviewer sees must be the blast radius the rule will
+        have, so this uses the matcher's own predicate (``matches_pattern`` over
+        ``build_match_inputs``) rather than an approximation.
+        ``normalize_description`` is a Python regex chain with no faithful SQL
+        equivalent, so the text is normalized here rather than in the query.
+
+        ONE scan, normalized once, then an in-memory pass per proposal. Do NOT
+        rewrite this as a per-proposal query against ``core.fct_transactions``:
+        that view is the full merge/dedup/categorization pipeline, and
+        re-evaluating it once per item is exactly what made ``system_doctor``
+        hang for >73s (F14).
+        """
+        if not proposals:
+            return {}
+        try:
+            rows = self._db.execute(
+                f"SELECT description, memo FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608  # TableRef constant
+            ).fetchall()
+        except duckdb.CatalogException:
+            # Pre-first-import: no fact table, so nothing can match.
+            return {str(p["proposed_rule_id"]): 0 for p in proposals}
+
+        match_inputs = [build_match_inputs(r[0], r[1]) for r in rows]
+        counts: dict[str, int] = {}
+        for p in proposals:
+            pid = str(p["proposed_rule_id"])
+            pattern = str(p.get("merchant_pattern") or "")
+            match_type = str(p.get("match_type") or "contains")
+            if not pattern:
+                counts[pid] = 0
+                continue
+            counts[pid] = sum(
+                1
+                for match_text, norm_desc, norm_memo in match_inputs
+                if _pattern_hits(pattern, match_type, match_text, norm_desc, norm_memo)
+            )
+        return counts
+
+    @staticmethod
+    def _is_broad(estimated_match_count: int, trigger_count: int) -> bool:
+        """Return True when a proposal's blast radius outruns its evidence.
+
+        Two conditions, both required. The floor keeps the guard from crying wolf
+        on small rules; the ratio scales the bar with the amount of evidence
+        behind the proposal, so a pattern earns a wider reach as the user
+        confirms it more often.
+        """
+        settings = get_settings().categorization
+        if estimated_match_count < settings.auto_rule_broad_match_min:
+            return False
+        return estimated_match_count > settings.auto_rule_broad_match_factor * max(
+            trigger_count, 1
+        )
+
     def review(self, *, limit: int | None = None) -> AutoReviewResult:
-        """Return pending auto-rule proposals as a typed result.
+        """Return pending auto-rule proposals, each carrying its blast radius.
 
         ``limit`` defaults to ``categorization.auto_rule_list_default_limit``
         when ``None``. ``total_count`` reflects the unbounded queue size so
         callers see ``has_more`` when truncation occurs.
+
+        Every proposal carries ``estimated_match_count`` (how many transactions
+        the rule would actually hit) and ``is_broad``. A broad proposal cannot be
+        accepted without an explicit ``allow_broad`` override — see
+        :meth:`approve`.
         """
         effective_limit = self._resolve_list_limit(limit)
-        proposals = self.list_pending_proposals(limit=effective_limit)
+        # Re-annotated Any: list_pending_proposals declares dict[str, object],
+        # but this loop reads trigger_count back out with int(); Any lets the
+        # per-field int()/str() coercions below type-check like they already
+        # do for the same dicts once they cross into AutoReviewResult.
+        proposals: list[dict[str, Any]] = self.list_pending_proposals(
+            limit=effective_limit
+        )
+        counts = self._estimate_match_counts(proposals)
+        broad_count = 0
+        for p in proposals:
+            pid = str(p["proposed_rule_id"])
+            estimated = counts.get(pid, 0)
+            broad = self._is_broad(estimated, int(p.get("trigger_count", 0) or 0))
+            p["estimated_match_count"] = estimated
+            p["is_broad"] = broad
+            if broad:
+                broad_count += 1
+        AUTO_RULE_BROAD_PENDING.set(broad_count)
         # When the queue fits under the cap, the total is just len(proposals).
         # Skip the COUNT(*) roundtrip in the common case (typical pending queues
         # are well under 100).
@@ -830,7 +930,7 @@ class AutoRuleService:
 
         ``normalize_description`` can reduce a description to a 1-2 character
         token (a truncated "TRANSFER TO ..." becomes "TO"). As a ``contains``
-        rule that matches COSTCO, STORE, AUTO, TOTAL; one accepted proposal then
+        rule that matches STORE, AUTO, TOTAL; one accepted proposal then
         relabels those rows Internal Transfer on the next categorize_run, and a
         Transfer label drops them out of spend reports entirely. Below the floor
         we propose ``exact`` instead: the user's evidence is kept, but the rule

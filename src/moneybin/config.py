@@ -604,9 +604,9 @@ class CategorizationSettings(BaseModel):
         description=(
             "Minimum length for a machine-invented 'contains' pattern. Shorter "
             "patterns are proposed as 'exact' instead: a 2-char contains rule "
-            "(e.g. 'TO', from a truncated 'TRANSFER TO ...') matches COSTCO, "
-            "STORE, AUTO and TOTAL, so one accepted proposal silently "
-            "relabels the ledger."
+            "(e.g. 'TO', from a truncated 'TRANSFER TO ...') matches STORE, "
+            "AUTO and TOTAL, so one accepted proposal silently relabels the "
+            "ledger."
         ),
     )
     auto_rule_broad_match_min: int = Field(

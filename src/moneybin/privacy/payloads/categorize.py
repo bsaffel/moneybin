@@ -188,6 +188,8 @@ class AutoReviewProposalRow:
     subcategory: Annotated[str | None, DataClass.CATEGORY]
     trigger_count: Annotated[int, DataClass.AGGREGATE]
     sample_txn_ids: Annotated[list[str], DataClass.RECORD_ID]
+    estimated_match_count: Annotated[int, DataClass.AGGREGATE]
+    is_broad: Annotated[bool, DataClass.AGGREGATE]
 
 
 @dataclass(frozen=True, slots=True)
