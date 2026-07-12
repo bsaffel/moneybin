@@ -19,8 +19,12 @@ a pointer, not a second copy; when the two disagree, `readme.md` wins.
 - **Icons come from `components/core/Icon.jsx`** — never an inline one-off SVG.
   A new glyph is a system change. The AI/ask surface is the caret `▸_`, never ✨.
 - **No emoji, no exclamation points, no superlatives.**
-- **Tokens only.** Never hardcode a hex — every color reads `var(--*)`, or the
-  asset breaks in light theme.
+- **Tokens only.** Every color reads `var(--*)` or `currentColor`, or the asset
+  freezes at one theme. The rare deliberate literal — a swatch chip that *is* the
+  value it documents, a brand plate showing dark and light at once — must be
+  declared on the element that paints it:
+  `<div data-literal-color="#C79B3B" style="background:#C79B3B">`. Undeclared
+  literals fail `tests/design_system`.
 
 ## Map
 

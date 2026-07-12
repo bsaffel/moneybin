@@ -1,11 +1,13 @@
 <!-- @dsCard group="Colors" viewport="700x150" subtitle="Brass is the only accent — the coin, never blue. Never fills large areas." name="Brass accent" -->
 <!DOCTYPE html><html><head><meta charset="utf-8"><link rel="stylesheet" href="../styles.css"><style>body{margin:0;font-family:var(--font-data);font-size:10px}</style></head>
 <body style="background:var(--bg-base);padding:16px;display:flex;gap:14px;align-items:center;">
-<div style="flex:1;text-align:center;color:var(--text-secondary)"><div style="height:56px;border-radius:4px;background:#C79B3B"></div>brass (dark)<br>#C79B3B</div>
-<div style="flex:1;text-align:center;color:var(--text-secondary)"><div style="height:56px;border-radius:4px;background:#D9B054"></div>brass-strong (dark)<br>#D9B054</div>
-<div style="flex:1;text-align:center;color:var(--text-secondary)"><div style="height:56px;border-radius:4px;background:#8A6A1C"></div>brass (light)<br>#8A6A1C</div>
+<!-- The chips paint literal values on purpose: the card documents dark AND light brass
+     side by side, and a token resolves to only one of them per theme. Declared below. -->
+<div style="flex:1;text-align:center;color:var(--text-secondary)"><div data-literal-color="#C79B3B" style="height:56px;border-radius:4px;background:#C79B3B"></div>brass (dark)<br>#C79B3B</div>
+<div style="flex:1;text-align:center;color:var(--text-secondary)"><div data-literal-color="#D9B054" style="height:56px;border-radius:4px;background:#D9B054"></div>brass-strong (dark)<br>#D9B054</div>
+<div style="flex:1;text-align:center;color:var(--text-secondary)"><div data-literal-color="#8A6A1C" style="height:56px;border-radius:4px;background:#8A6A1C"></div>brass (light)<br>#8A6A1C</div>
 <div style="flex:2;display:flex;flex-direction:column;gap:8px;align-items:center;">
-<span style="font-family:var(--font-ui);font-size:13px;font-weight:500;color:#141311;background:var(--accent-brass);border-radius:var(--r-control);padding:6px 14px;">Add widget</span>
+<span style="font-family:var(--font-ui);font-size:13px;font-weight:500;color:var(--on-accent-brass);background:var(--accent-brass);border-radius:var(--r-control);padding:6px 14px;">Add widget</span>
 <span style="font-size:10px;color:var(--accent-brass);border:1px solid var(--border-strong);border-radius:3px;padding:2px 7px;">SQL</span>
 </div>
 </body></html>
