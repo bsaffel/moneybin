@@ -246,6 +246,44 @@ def test_pull_loads_investments_and_resolves_securities(
     assert sum(result.security_resolution.values()) == 2
 
 
+def test_pull_resolves_raw_securities_left_unbound_by_an_earlier_pull(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    sync_data: SyncDataResponse,
+) -> None:
+    """Self-heal: an empty securities delta must not skip resolution.
+
+    Pull #1 loaded raw securities and then the resolver raised, so every
+    investment row landed in core with ``security_id = NULL``. Pull #2 carries
+    no securities of its own — but ``resolve_all()`` reads the whole
+    ``raw.plaid_securities`` table, so gating it on this pull's delta strands
+    the earlier rows unbound forever, and the cost-basis engine drops every
+    event on them. The ``stg_plaid__securities`` docstring's promise that "NULL
+    here ... self-heals on the next sync" only holds if resolution always runs.
+    """
+    assert not sync_data.securities  # the non-investment fixture: empty delta
+    db.execute(
+        """
+        INSERT INTO raw.plaid_securities (
+            security_id, security_name, security_type, is_cash_equivalent,
+            iso_currency_code, source_file, source_origin
+        ) VALUES ('sec_stranded', 'Obscure Widget Corp', 'equity', FALSE,
+                  'USD', 'sync_j0', 'item_1')
+        """
+    )
+
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    result = service.pull(refresh=False)
+
+    assert result.security_resolution == {"minted": 1}
+    bound = db.execute(
+        "SELECT security_id FROM app.security_links "
+        "WHERE ref_value = 'sec_stranded' AND status = 'accepted'"
+    ).fetchone()
+    assert bound is not None
+
+
 def test_pull_security_resolution_failure_reports_error_without_failing_the_pull(
     db: Database,
     loader: PlaidExtractor,

@@ -90,6 +90,39 @@ def _add_disposal(db: Database, txn_id: str, security_id: str) -> None:
     )
 
 
+def _add_manual_event(
+    db: Database, *, security_id: str, source_transaction_id: str = "manual_buy"
+) -> str:
+    """Hand-record an off-platform buy against ``security_id``.
+
+    ``investments record --security ...`` resolves free text against the whole
+    of ``app.securities`` — nothing restricts it to ``created_by='user'`` rows —
+    so a manual event can legitimately reference a plaid-minted catalog row.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, created_by
+        ) VALUES (?, 'imp_1', 'acc_1', ?, 'VTI', 'buy', DATE '2024-05-01',
+                  10, 100, -1000, 'cli')
+        """,
+        [source_transaction_id, security_id],
+    )
+    return source_transaction_id
+
+
+def _manual_security_id(
+    db: Database, source_transaction_id: str = "manual_buy"
+) -> str | None:
+    row = db.execute(
+        "SELECT security_id FROM raw.manual_investment_transactions "
+        "WHERE source_transaction_id = ?",
+        [source_transaction_id],
+    ).fetchone()
+    return None if row is None else row[0]
+
+
 def _accepted_binding(db: Database, ref_value: str = _REF_VALUE) -> str | None:
     return SecurityLinksRepo(db).lookup(
         ref_kind=_REF_KIND, ref_value=ref_value, source_type="plaid"
@@ -388,6 +421,100 @@ def test_accept_audit_chain_shares_one_parent(
         "security_link.repoint",
         "securities.delete",
     } <= actions
+
+
+# ------------------------------------------------- manual-ledger cascade
+
+
+def test_accept_repoints_manual_ledger_rows_onto_survivor(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A manual event on the provisional must move to the survivor, not be orphaned.
+
+    ``raw.manual_investment_transactions`` stores a *resolved* ``security_id``
+    and the staging view carries it verbatim — no link-table indirection — so
+    the link repoint does not move it. Deleting the provisional catalog row
+    while a manual event still points at it splits the instrument's lots and
+    cost basis across a live security and a dead one.
+    """
+    _add_manual_event(db, security_id=merge_setup["provisional"])
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _manual_security_id(db) == merge_setup["survivor"]
+
+
+def test_manual_repoint_undoes_with_the_rest_of_the_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The manual repoint rides the merge's operation_id — a partial undo is a defect."""
+    _add_manual_event(db, security_id=merge_setup["provisional"])
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+    assert _manual_security_id(db) == merge_setup["survivor"]
+
+    UndoService(db).undo(op, actor="cli")
+
+    assert _manual_security_id(db) == merge_setup["provisional"]
+
+
+def test_accept_leaves_manual_rows_on_other_securities_alone(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Only rows referencing the provisional move — a repoint is not a table sweep."""
+    other = _mint(db, name="Apple Inc.", created_by="user")
+    _add_manual_event(db, security_id=other, source_transaction_id="manual_other")
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _manual_security_id(db, "manual_other") == other
+
+
+# ---------------------------------------------------------------- redo
+
+
+def test_undo_of_a_merge_is_itself_undoable(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Redo: undoing the undo re-applies the whole merge.
+
+    The undo engine replays rows in reverse, so the re-insert of the survivor's
+    link runs before the old link is put back to 'reversed'. That transient
+    violates the at-most-one-accepted-binding invariant even though the final
+    state does not — the redo must not trip on it.
+    """
+    provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+    _add_manual_event(db, security_id=provisional)
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(merge_setup["decision_id"], into=survivor)
+    undone = UndoService(db).undo(op, actor="cli")
+
+    UndoService(db).undo(undone.undo_operation_id, actor="cli")
+
+    new_lot = compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_buy")
+    assert _accepted_binding(db) == survivor
+    assert not _security_exists(db, provisional)
+    assert _manual_security_id(db) == survivor
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (new_lot, Decimal("5"))
+    ]
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None and decision["status"] == "accepted"
 
 
 # ---------------------------------------------------------------- block

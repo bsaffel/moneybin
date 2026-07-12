@@ -493,6 +493,99 @@ def test_refresh_touches_only_plaid_minted(db: Database) -> None:
     assert (minted, "Vanguard Total Stock Market ETF") in rows
 
 
+def test_refresh_preserves_a_user_overridden_field(db: Database) -> None:
+    """A field the user edited is theirs — the provider must not revert it.
+
+    The securities-set surface upserts an EXISTING id, which by design does not
+    flip ``created_by``, so the row stays ``created_by='plaid'`` and the next
+    sync's refresh still matches it. Overwriting here would revert the user's
+    rename on every sync with no warning and no way to take ownership.
+    """
+    repo = SecuritiesRepo(db)
+    minted = _upsert(
+        repo,
+        name="VANGUARD TOTAL STK MKT IDX",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    _upsert(
+        repo,
+        security_id=minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        actor="cli",
+    )
+
+    assert (
+        repo.refresh_provider_attributes(
+            minted,
+            name="VANGUARD TOTAL STK MKT IDX",
+            security_type="etf",
+            ticker="VTI",
+            actor="system",
+        )
+        is None
+    )
+
+    row = db.conn.execute(
+        "SELECT name FROM app.securities WHERE security_id = ?", [minted]
+    ).fetchone()
+    assert row == ("Vanguard Total Stock Market ETF",)
+
+
+def test_refresh_still_updates_fields_the_user_did_not_override(
+    db: Database,
+) -> None:
+    """Ownership is per-field: a name edit must not freeze the ticker.
+
+    A ticker frozen at a stale value is the durable form of the stale-mirror
+    hazard — a later provider security carrying the recycled ticker would find a
+    unique exact-ticker hit on this row and silently merge into it.
+    """
+    repo = SecuritiesRepo(db)
+    minted = _upsert(
+        repo,
+        name="Facebook Inc",
+        security_type="equity",
+        ticker="FB",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    _upsert(
+        repo,
+        security_id=minted,
+        name="Meta (my label)",
+        security_type="equity",
+        ticker="FB",
+        exchange=None,
+        actor="cli",
+    )
+
+    event = repo.refresh_provider_attributes(
+        minted,
+        name="Meta Platforms Inc",
+        security_type="equity",
+        ticker="META",
+        actor="system",
+    )
+    assert event is not None
+
+    row = db.conn.execute(
+        "SELECT name, ticker FROM app.securities WHERE security_id = ?", [minted]
+    ).fetchone()
+    assert row == ("Meta (my label)", "META")
+
+
 def test_refresh_returns_none_for_missing_row(db: Database) -> None:
     repo = SecuritiesRepo(db)
     assert (

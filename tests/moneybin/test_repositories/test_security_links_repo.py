@@ -14,7 +14,9 @@ from typing import Any
 import duckdb
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
@@ -33,10 +35,12 @@ def _bind(repo: SecurityLinksRepo, ref: str = "sec_plaid_1", sid: str = "cat0000
 
 
 def test_second_accepted_binding_for_same_ref_rejected(db: Database) -> None:
+    """UserError, not ValueError — the guard is reachable from `system audit undo`."""
     repo = SecurityLinksRepo(db)
     _bind(repo)
-    with pytest.raises(ValueError, match="accepted binding already exists"):
+    with pytest.raises(UserError, match="accepted binding already exists") as exc:
         _bind(repo, sid="cat000000002")
+    assert exc.value.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
 
 
 def test_same_security_may_hold_many_refs(db: Database) -> None:
@@ -218,13 +222,17 @@ def test_undo_reinsert_respects_uniqueness_guard(db: Database) -> None:
     re-inserts A via BaseRepo._insert_row; without the restore-time guard in
     SecurityLinksRepo._insert_row, that leaves two accepted bindings for one
     provider ref. Mirrors AccountLinksRepo's precedent test.
+
+    This is the GENUINE conflict — a ref another live link has since claimed —
+    that survives the audit-ordering fix in ``repoint``: the intermediate state
+    a merge's own replay transits is not a conflict, but this is.
     """
     repo = SecurityLinksRepo(db)
     ev_insert = _bind(repo, ref="sec_plaid_dup", sid="cat000000001")
     ev_undo = repo.undo_event(ev_insert, actor="system")  # deletes the binding
     assert ev_undo is not None
     _bind(repo, ref="sec_plaid_dup", sid="cat000000002")  # same ref — now allowed
-    with pytest.raises(ValueError, match="accepted binding already exists"):
+    with pytest.raises(UserError, match="accepted binding already exists"):
         repo.undo_event(ev_undo, actor="system")  # re-insert must hit the guard
 
 

@@ -14,6 +14,8 @@ from typing import Any, ClassVar
 
 import duckdb
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import SECURITY_LINKS, TableRef
@@ -47,6 +49,13 @@ class SecurityLinksRepo(BaseRepo):
     def _guard_uniqueness(
         self, *, ref_kind: str, ref_value: str, source_type: str
     ) -> None:
+        """Refuse a second accepted binding for one provider ref.
+
+        Raises ``UserError``, not a bare ``ValueError``: this guard is reachable
+        from ``system audit undo`` (an undo that would restore a binding whose
+        ref another link has since claimed), and the CLI renders a ``ValueError``
+        as a stack trace rather than a message the user can act on.
+        """
         existing = self._db.execute(
             f"SELECT 1 FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
             "WHERE status = 'accepted' AND source_type = ? AND ref_kind = ? "
@@ -54,10 +63,11 @@ class SecurityLinksRepo(BaseRepo):
             [source_type, ref_kind, ref_value],
         ).fetchone()
         if existing is not None:
-            raise ValueError(
+            raise UserError(
                 "security_links: an accepted binding already exists for this "
                 f"(source_type, ref_kind, ref_value); source_type={source_type!r}, "
-                f"ref_kind={ref_kind!r}"
+                f"ref_kind={ref_kind!r}",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
             )
 
     def _insert_row(self, row: dict[str, Any]) -> None:
@@ -68,6 +78,10 @@ class SecurityLinksRepo(BaseRepo):
         _guard_uniqueness only runs on the insert path, so without this the
         undo could restore a second accepted mapping for a provider ref already
         held by another row.
+
+        This guard is row-local, so it can only stay sound if the audit log
+        replays in reverse without transiting a two-accepted state — which is
+        why :meth:`repoint` emits its audit rows in mutation order (see there).
         """
         if row.get("status") == "accepted":
             self._guard_uniqueness(
@@ -164,6 +178,16 @@ class SecurityLinksRepo(BaseRepo):
         Reverses the existing row, inserts a new accepted row for ``new_security_id``,
         and emits a paired audit for the old row's reversal. Raises ``ValueError`` when
         ``link_id`` is not found, already points to ``new_security_id``, or is not accepted.
+
+        **The two audit rows are emitted in mutation order** — the reversal
+        first, then the new row's insert — even though the reversal's ``after``
+        image is already in hand before the insert runs. The undo engine replays
+        an operation's audit rows in REVERSE order, so an audit sequence that
+        contradicts the SQL order makes the replay transit a state the forward
+        path never did: emitting the insert first would have the redo re-insert
+        the new accepted row BEFORE restoring the old one to 'reversed', which
+        trips ``_guard_uniqueness`` on two accepted rows for one ref and
+        deterministically fails the redo of every accepted security merge.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._require(self._fetch_row(link_id), "link_id", link_id)
@@ -181,6 +205,14 @@ class SecurityLinksRepo(BaseRepo):
                 [decided_by, link_id],
             )
             after_reversal = self._fetch_row(link_id)
+            event = self._emit_audit(
+                action="security_link.repoint",
+                target=(*self._audit_target, link_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after_reversal),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
             self.insert(
                 link_id=uuid.uuid4().hex[:12],
                 security_id=new_security_id,
@@ -193,14 +225,7 @@ class SecurityLinksRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,
             )
-            return self._emit_audit(
-                action="security_link.repoint",
-                target=(*self._audit_target, link_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after_reversal),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+            return event
 
     def reverse(
         self,

@@ -1,23 +1,29 @@
 """SecurityLinksService — merge decisions over security identity (M1G.4).
 
 Mirrors :mod:`moneybin.services.merchant_links_service`: a thin service that
-composes Invariant-10 repos (``SecuritiesRepo``, ``SecurityLinksRepo``,
-``SecurityLinkDecisionsRepo``, ``LotSelectionsRepo``) and coordinates their
-writes inside one ``db.begin()`` / ``db.commit()`` / ``db.rollback()``
-transaction, each repo called with ``in_outer_txn=True``.
+composes audited repos (``SecuritiesRepo``, ``SecurityLinksRepo``,
+``SecurityLinkDecisionsRepo``, ``LotSelectionsRepo``,
+``ManualInvestmentTransactionsRepo``) and coordinates their writes inside one
+``db.begin()`` / ``db.commit()`` / ``db.rollback()`` transaction, each repo
+called with ``in_outer_txn=True``.
 
 ``accept_merge`` is the app-state cascade for a provisional-security merge.
 Within ONE transaction it re-points ``app.lot_selections`` at the survivor
 (recomputing ``lot_id``, a content hash that includes ``security_id``),
-re-points every accepted provider ref off the provisional security, resolves the
-decision (auto-rejecting the ref's sibling candidates), and deletes the
-provisional catalog row. A selection that cannot be deterministically remapped
-BLOCKS the merge (``UserError``) rather than silently downgrading a specific-ID
-election to FIFO on the next rebuild.
+re-points every accepted provider ref off the provisional security, re-points
+every manual ledger row carrying the provisional's ``security_id`` directly
+(``raw.manual_investment_transactions`` — user state resolved at entry, with no
+link-table indirection), resolves the decision (auto-rejecting the ref's sibling
+candidates), and deletes the provisional catalog row. A selection that cannot be
+deterministically remapped BLOCKS the merge (``UserError``) rather than silently
+downgrading a specific-ID election to FIFO on the next rebuild.
 
-Atomicity is the correctness bar: a half-applied merge — links re-pointed but
-lot selections stranded, or vice versa — leaves cost basis silently wrong with
-no error raised. A failed merge is retryable; a half-merge is not detectable.
+The cascade's contract: after the merge, NOTHING still references the deleted
+catalog row. Atomicity is the correctness bar — a half-applied merge (links
+re-pointed but lot selections stranded, or the catalog row deleted while a
+manual event still points at it) leaves cost basis silently wrong with no error
+raised and no doctor check to catch it. A failed merge is retryable; a
+half-merge is not detectable.
 
 ``actor`` is the audit surface (``cli``/``mcp``); ``decided_by`` is the domain
 column (``user``/``auto``). The caller supplies both.
@@ -38,6 +44,9 @@ from moneybin.errors import UserError
 from moneybin.investments.cost_basis import compute_lot_id
 from moneybin.metrics.registry import SECURITY_LINK_DECISION_OUTCOMES_TOTAL
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
+from moneybin.repositories.manual_investment_transactions_repo import (
+    ManualInvestmentTransactionsRepo,
+)
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
@@ -91,6 +100,7 @@ class SecurityLinksService:
         self._decisions = SecurityLinkDecisionsRepo(db)
         self._securities = SecuritiesRepo(db)
         self._lot_selections = LotSelectionsRepo(db)
+        self._manual_events = ManualInvestmentTransactionsRepo(db)
 
     # ------------------------------------------------------------------
     # Read-only methods
@@ -234,12 +244,17 @@ class SecurityLinksService:
         4. Re-point ``app.lot_selections`` at the survivor's re-hashed lots.
         5. Re-point EVERY accepted link on the provisional (the plaid ref and the
            institution ref both) onto the survivor.
-        6. Auto-reject the ref's sibling pending candidates — accepting one answers
+        6. Re-point every ``raw.manual_investment_transactions`` row that carries
+           the provisional's ``security_id`` — the ledger's other, link-free
+           reference to the catalog (see :meth:`_repoint_manual_events`).
+        7. Auto-reject the ref's sibling pending candidates — accepting one answers
            them all, so a tie resolves in a single review action.
-        7. Delete the provisional ``created_by='plaid'`` catalog row.
+        8. Delete the provisional ``created_by='plaid'`` catalog row.
 
-        Steps 4-7 must succeed or fail together: a merge that re-points the link
-        but strands a lot selection silently corrupts cost basis.
+        Steps 4-8 must succeed or fail together: a merge that re-points the link
+        but strands a lot selection silently corrupts cost basis, and one that
+        deletes the catalog row but strands a manual event splits the
+        instrument's position across a live security and a dead one.
 
         Raises ``UserError`` when:
         - ``decision_id`` is unknown (MUTATION_NOT_FOUND) or not ``pending``
@@ -333,6 +348,9 @@ class SecurityLinksService:
                 decided_by=decided_by,
                 parent_audit_id=parent_audit_id,
             )
+            manual_repointed = self._repoint_manual_events(
+                provisional, survivor, parent_audit_id=parent_audit_id
+            )
             self._reject_pending_siblings(
                 decision,
                 exclude=decision_id,
@@ -354,7 +372,8 @@ class SecurityLinksService:
         logger.info(
             f"security merge accepted: decision={decision_id} "
             f"provisional={provisional} survivor={survivor} "
-            f"disposals_remapped={len(plan)}"
+            f"disposals_remapped={len(plan)} "
+            f"manual_events_repointed={manual_repointed}"
         )
 
         # Accepting changed the pending count (the named decision plus its
@@ -509,6 +528,45 @@ class SecurityLinksService:
             f"SELECT COUNT(*) FROM {LOT_SELECTIONS.full_name}"  # noqa: S608  # TableRef constant
         ).fetchone()
         return int(row[0]) if row else 0
+
+    def _repoint_manual_events(
+        self, provisional: str, survivor: str, *, parent_audit_id: str | None
+    ) -> int:
+        """Re-point every manual ledger row that references the provisional security.
+
+        The ledger's OTHER reference to ``security_id``, alongside the provider
+        refs ``_repoint_links`` moves. ``raw.manual_investment_transactions`` is
+        user-entered state, not provider-owned raw: ``investments record``
+        resolves the security at entry and stores the resolved id, and
+        ``stg_manual__investment_transactions`` carries it verbatim — no link
+        table sits in between, so the link repoint does not move it, and nothing
+        restricts a manual entry to ``created_by='user'`` catalog rows in the
+        first place.
+
+        Left behind, those rows would point at the catalog id step 7 deletes:
+        ``core.fct_investment_lots`` would keep building lots under a security
+        that no longer exists while the Plaid side moved to the survivor, so the
+        user's single real position is split across a live security and a dead
+        one and BOTH cost bases are computed on a partial pool. There is no FK
+        and no doctor check between the investment fact and the catalog, so
+        ``moneybin doctor`` would report clean.
+
+        Audited through a repo (Invariant 10's contract, applied to a table that
+        is nominally ``raw`` but is really user state) and threaded onto the
+        merge's ``parent_audit_id``, so the repoint undoes with the rest of the
+        cascade rather than stranding the ledger on the survivor after an undo.
+        Runs inside the caller's open transaction. Returns the row count.
+        """
+        source_ids = self._manual_events.list_ids_for_security(provisional)
+        for source_transaction_id in source_ids:
+            self._manual_events.repoint_security(
+                source_transaction_id=source_transaction_id,
+                new_security_id=survivor,
+                actor=self._actor,
+                parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+            )
+        return len(source_ids)
 
     def _repoint_links(
         self,

@@ -177,11 +177,19 @@ class SyncService:
             # roll back the pull's success accounting — but it MUST be
             # reported, not swallowed: security_resolution_error flows into
             # the CLI warning and exit code exactly like transforms_error.
+            #
+            # Runs on EVERY pull, not only one whose securities array is
+            # non-empty: resolve_all() reads the whole raw.plaid_securities
+            # table, so gating it on this pull's delta would strand securities
+            # a previous pull loaded but failed to bind (the soft-fail path
+            # right below) — permanently, since a later cash-only pull would
+            # skip resolution again. That is the self-heal stg_plaid__securities
+            # promises. The cost on a pull with no investments is one SELECT
+            # over an empty table (resolve_all returns {} immediately).
             resolution: dict[str, int] = {}
             security_resolution_error: str | None = None
             try:
-                if sync_data.securities:
-                    resolution = SecurityResolver(self.db, actor="system").resolve_all()
+                resolution = SecurityResolver(self.db, actor="system").resolve_all()
             except Exception as e:  # noqa: BLE001  # reported via security_resolution_error, not raised
                 security_resolution_error = str(e)
                 logger.warning(f"Security resolution failed after pull: {e}")

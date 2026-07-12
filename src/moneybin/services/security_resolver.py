@@ -33,7 +33,7 @@ from __future__ import annotations
 import difflib
 import logging
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import duckdb
@@ -546,17 +546,38 @@ class SecurityResolver:
 
         User-authored rows are never touched (the repo enforces this too), and
         the repo no-ops when nothing changed — so a daily sync accrues no
-        audit churn.
+        audit churn. The repo may also decline part of the refresh (a field the
+        user overrode is preserved), which is why the mirror is updated from the
+        audit event's after-image — the row the DB now actually holds — and not
+        from what was requested.
+
+        Updating ``catalog`` is not bookkeeping: it is the same refuse-to-merge
+        invariant the module docstring states. ``catalog`` is the mirror
+        ``_strong_match`` matches LATER rows in this batch against, so a mirror
+        left holding a pre-refresh ticker can hand a genuinely different security
+        that now carries the recycled ticker a UNIQUE exact-ticker hit — the
+        ladder's tie-refusal never engages, and two instruments' tax lots fuse
+        silently. ``_mint`` already keeps the mirror coherent; this is the other
+        write that must.
         """
-        entry = next((c for c in catalog if c.security_id == security_id), None)
-        if entry is None or entry.created_by != "plaid" or not raw.name:
+        index = next(
+            (i for i, c in enumerate(catalog) if c.security_id == security_id), None
+        )
+        if index is None or catalog[index].created_by != "plaid" or not raw.name:
             return
-        self._securities.refresh_provider_attributes(
+        event = self._securities.refresh_provider_attributes(
             security_id,
             name=raw.name.strip(),
             security_type=self._security_type(raw),
             ticker=raw.ticker,
             actor=self._actor,
+        )
+        if event is None or event.after_value is None:
+            return  # no write happened — the mirror already agrees with the DB
+        catalog[index] = replace(
+            catalog[index],
+            name=event.after_value["name"],
+            ticker=event.after_value["ticker"],
         )
 
     def _security_type(self, raw: _RawSecurity) -> str:

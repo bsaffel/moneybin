@@ -17,6 +17,7 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services.investment_service import InvestmentService
 from moneybin.services.security_resolver import SecurityResolver
 
 
@@ -403,6 +404,84 @@ def test_adopt_never_refreshes_user_authored_row(db: Database) -> None:
         "SELECT name FROM app.securities WHERE security_id = ?", [sid]
     ).fetchone()
     assert row == ("Apple Inc.",)
+
+
+def test_refresh_updates_the_in_batch_catalog_mirror(db: Database) -> None:
+    """A recycled ticker must not match the catalog value the refresh just replaced.
+
+    ``sec_a`` is already bound to plaid-minted X, whose ticker Plaid renamed
+    FB -> META; ``sec_b`` is a genuinely different instrument that now carries
+    the recycled FB. The resolver refreshes X in the DB but processes ``sec_b``
+    against its in-memory catalog mirror — if that mirror still says X is FB,
+    ``_strong_match`` finds a UNIQUE exact-ticker hit and silently binds two
+    distinct instruments to one security, fusing their tax lots. Same failure
+    class as a lossy normalization, arriving through a stale cache.
+    """
+    x = _catalog(db, "Facebook Inc", ticker="FB", created_by="plaid")
+    SecurityLinksRepo(db).insert(
+        security_id=x,
+        ref_kind="plaid_security_id",
+        ref_value="sec_a",
+        source_type="plaid",
+        decided_by="auto",
+        actor="system",
+    )
+    _raw_security(db, "sec_a", security_name="Meta Platforms Inc", ticker_symbol="META")
+    _raw_security(
+        db, "sec_b", security_name="Fabrinet Bermuda Holdings", ticker_symbol="FB"
+    )
+
+    counts = SecurityResolver(db).resolve_all()
+
+    assert counts == {"adopted": 1, "minted": 1}
+    bound = {ref_value: sid for _kind, ref_value, sid in _bindings(db)}
+    assert bound["sec_a"] == x
+    assert bound["sec_b"] != x
+
+
+def test_adopt_does_not_clobber_a_user_edited_name(db: Database) -> None:
+    """A rename through the securities-set surface must survive the next sync.
+
+    ``SecuritiesRepo.upsert`` deliberately never flips ``created_by``, so a
+    user-renamed plaid row stays ``created_by='plaid'`` and the provider refresh
+    still matches it. Overwriting the rename would revert the user's edit on
+    every sync, with no way to take ownership of the row.
+    """
+    _raw_security(db, "sec_1", security_name="VANGUARD TOTAL STK MKT IDX")
+    SecurityResolver(db).resolve_all()
+    minted = _bindings(db)[0][2]
+
+    InvestmentService(db).set_security(
+        minted, name="Vanguard Total Stock Market ETF", actor="cli"
+    )
+
+    assert SecurityResolver(db).resolve_all() == {"adopted": 1}
+    row = db.execute(
+        "SELECT name FROM app.securities WHERE security_id = ?", [minted]
+    ).fetchone()
+    assert row == ("Vanguard Total Stock Market ETF",)
+
+
+def test_adopt_still_refreshes_fields_the_user_did_not_edit(db: Database) -> None:
+    """Editing the name must not freeze the ticker.
+
+    A ticker frozen at a stale value is the exact hazard
+    ``test_refresh_updates_the_in_batch_catalog_mirror`` covers, made durable:
+    a later security carrying the recycled ticker would find a unique hit on
+    this row. Ownership is per-field, not per-row.
+    """
+    _raw_security(db, "sec_1", security_name="Facebook Inc", ticker_symbol="FB")
+    SecurityResolver(db).resolve_all()
+    minted = _bindings(db)[0][2]
+    InvestmentService(db).set_security(minted, name="Meta (my label)", actor="cli")
+
+    _raw_security(db, "sec_1", security_name="Meta Platforms Inc", ticker_symbol="META")
+    assert SecurityResolver(db).resolve_all() == {"adopted": 1}
+
+    row = db.execute(
+        "SELECT name, ticker FROM app.securities WHERE security_id = ?", [minted]
+    ).fetchone()
+    assert row == ("Meta (my label)", "META")
 
 
 def test_institution_composite_ref_bound_alongside(db: Database) -> None:
