@@ -83,6 +83,10 @@ class LoadResult:
     investment_transactions_loaded: int = 0
     holdings_loaded: int = 0
     holding_lots_loaded: int = 0
+    # A receipt is a durable raw write like any other, and on a liquidated
+    # broker's pull it is the ONLY one — so callers gating refresh on "did
+    # anything change" must be able to see it.
+    holdings_snapshots_loaded: int = 0
 
 
 _ACCOUNTS_SCHEMA = pl.Schema({
@@ -216,6 +220,7 @@ _INVESTMENT_HOLDINGS_SNAPSHOTS_SCHEMA = pl.Schema({
     "source_file": pl.Utf8,
     "holdings_date": pl.Date,
     "holdings_count": pl.Int32,
+    "transactions_window_start": pl.Date,
     "source_type": pl.Utf8,
     "extracted_at": pl.Datetime(time_zone="UTC"),
     "loaded_at": pl.Datetime(time_zone="UTC"),
@@ -341,7 +346,7 @@ class PlaidExtractor:
         # Deliberately NOT inside _load_investment_holdings' `if not holdings`
         # early return: the receipt's entire purpose is the pull where holdings
         # is EMPTY (see below).
-        self._load_holdings_snapshots(
+        holdings_snapshots_loaded = self._load_holdings_snapshots(
             sync_data.investment_holdings,
             sync_data.metadata.institutions,
             source_file,
@@ -356,6 +361,7 @@ class PlaidExtractor:
             investment_transactions_loaded=investment_transactions_loaded,
             holdings_loaded=holdings_loaded,
             holding_lots_loaded=holding_lots_loaded,
+            holdings_snapshots_loaded=holdings_snapshots_loaded,
         )
 
     def _validate_holdings_windows(
@@ -704,6 +710,14 @@ class PlaidExtractor:
         } | {holding.provider_item_id for holding in holdings}
         if not reported_items:
             return 0
+        # Every reported item has a window: the first set is filtered on it, and
+        # _validate_holdings_windows already raised for any item in the second
+        # set that lacks one. That is what lets the column be NOT NULL.
+        window_by_item = {
+            inst.provider_item_id: inst.transactions_window_start
+            for inst in institutions
+            if inst.transactions_window_start is not None
+        }
         counts = Counter(holding.provider_item_id for holding in holdings)
         df = pl.DataFrame(
             [
@@ -714,6 +728,7 @@ class PlaidExtractor:
                     # accounts for — one calendar, never the machine's local one.
                     "holdings_date": _utc_date(extracted_at),
                     "holdings_count": counts[item_id],
+                    "transactions_window_start": window_by_item[item_id],
                     "source_type": "plaid",
                     "extracted_at": extracted_at,
                     "loaded_at": loaded_at,

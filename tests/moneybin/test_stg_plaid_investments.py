@@ -68,12 +68,16 @@ def _raw_holding(db: Database, **overrides: object) -> None:
     # The loader never writes a holdings row without a receipt for its pull
     # (raw_plaid_investment_holdings_snapshots.sql invariant), and every
     # newest-snapshot join keys on the receipt — so the fixture must not
-    # either, or the snapshot this row belongs to is invisible.
+    # either, or the snapshot this row belongs to is invisible. The window is
+    # threaded through rather than defaulted: the loader mirrors it from the
+    # same item metadata, so a fixture that overrides it here must not leave the
+    # receipt claiming a different one.
     _raw_holdings_receipt(
         db,
         source_origin=str(row["source_origin"]),
         source_file=str(row["source_file"]),
         extracted_at=str(row["extracted_at"]),
+        transactions_window_start=str(row["transactions_window_start"]),
     )
 
 
@@ -83,6 +87,7 @@ def _raw_holdings_receipt(
     source_origin: str = "item_1",
     source_file: str = "sync_j1",
     extracted_at: str = "2026-07-08 12:00:00",
+    transactions_window_start: str = "2024-07-08",
     holdings_count: int | None = None,
 ) -> None:
     """Record that an item's holdings were fetched in one pull, as the loader does.
@@ -91,16 +96,22 @@ def _raw_holdings_receipt(
     landed for this (item, pull) so far. Pass ``0`` explicitly to model the pull
     the receipt exists for: an item that reported and holds NOTHING, which
     writes no holdings rows at all.
+
+    The receipt carries the item's window because it is the only row that exists
+    when that pull returned no holdings — matching _raw_holding's default so a
+    fixture can mix held and liquidated accounts under one item.
     """
     db.execute(
         """
         INSERT OR REPLACE INTO raw.plaid_investment_holdings_snapshots
-            (source_origin, source_file, holdings_date, holdings_count, extracted_at)
+            (source_origin, source_file, holdings_date, holdings_count,
+             transactions_window_start, extracted_at)
         SELECT ?, ?, CAST(? AS TIMESTAMP)::DATE,
                COALESCE(?, (
                    SELECT COUNT(*) FROM raw.plaid_investment_holdings
                    WHERE source_origin = ? AND source_file = ?
                )),
+               CAST(? AS DATE),
                CAST(? AS TIMESTAMP)
         """,
         [
@@ -110,6 +121,7 @@ def _raw_holdings_receipt(
             holdings_count,
             source_origin,
             source_file,
+            transactions_window_start,
             extracted_at,
         ],
     )
@@ -1227,6 +1239,42 @@ def test_sold_out_prewindow_position_routes_to_review(db: Database) -> None:
     )
     assert reasons["sec_gone"] == "sold_out_prewindow"
     assert "sec_other" not in reasons  # the held position bootstraps normally
+
+
+def test_account_liquidated_before_first_snapshot_routes_to_review(
+    db: Database,
+) -> None:
+    """An account whose FIRST snapshot is EMPTY still flags its disposals.
+
+    The test above has to plant an unrelated HELD security to establish the
+    account's window — which is the whole problem. A fully-liquidated broker
+    reports zero positions, so raw.plaid_investment_holdings has no row for the
+    account at all, and a window derived from holdings ROWS has nothing to key
+    on: every disposal the account made silently leaves the review queue and
+    lands in the ledger with zero basis. That is the largest version of exactly
+    the gap this view exists to surface, and it is the one case holdings rows
+    can never cover. The receipt is the only evidence the item reported, so the
+    window is read from there.
+    """
+    _raw_holdings_receipt(db, holdings_count=0)  # item reported; holds NOTHING
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_liquidated_sell",
+        security_id="sec_gone",
+        transaction_date="2026-07-06",  # in-window (window opens 2024-07-08)
+        quantity="-10",
+        amount="-1000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    reasons = dict(
+        db.execute(
+            "SELECT source_security_key, reason FROM prep.stg_plaid__opening_lot_review"
+        ).fetchall()
+    )
+    assert reasons["sec_gone"] == "sold_out_prewindow"
 
 
 @pytest.mark.slow

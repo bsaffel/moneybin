@@ -43,22 +43,27 @@ WITH guard_reasons AS (
   WHERE
     p.is_short_or_nonpositive OR p.has_in_window_split OR p.gap_qty < 0
 ), first_snapshot_window AS (
-  /* The first snapshot's window boundary per (account, item) — the same anchor
-     int_plaid__opening_positions.first_snapshot uses, reduced to just window_start.
-     A fully-sold-out security has no holdings row of its own to read it from, so
-     this reads it off ANY row of that account's first snapshot instead (the column
-     is constant across every row of one snapshot — raw DDL comment). */
+  /* The item's window boundary, taken from its FIRST snapshot RECEIPT — never from
+     holdings rows. transactions_window_start is item-level metadata (constant per
+     source_origin within a snapshot — raw DDL comment), but the only other table
+     carrying it is raw.plaid_investment_holdings, which holds NO row at all for an
+     account whose broker reported zero positions. Keying the window on those rows
+     therefore drops the fully-liquidated account outright, and with it every
+     disposal this view exists to flag — the largest version of the very gap being
+     checked for. The receipt is written whenever the item reported, empty or not,
+     so it is the one anchor that survives an empty snapshot.
+     int_plaid__opening_positions still anchors on holdings ROWS, correctly: it asks
+     which POSITIONS the first snapshot held, and an empty snapshot held none. This
+     asks WHEN the window opened — which an empty snapshot still knows. */
   SELECT
-    account_id AS source_account_key,
     source_origin,
     transactions_window_start AS window_start
   FROM (
     SELECT
-      account_id,
       source_origin,
       transactions_window_start,
-      ROW_NUMBER() OVER (PARTITION BY account_id, source_origin ORDER BY extracted_at, source_file) AS snapshot_rank
-    FROM raw.plaid_investment_holdings
+      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at, source_file) AS snapshot_rank
+    FROM prep.stg_plaid__investment_holdings_snapshots
   )
   WHERE
     snapshot_rank = 1
@@ -75,7 +80,7 @@ WITH guard_reasons AS (
     'sold_out_prewindow' AS reason
   FROM prep.stg_plaid__investment_transactions AS t
   JOIN first_snapshot_window AS w
-    ON w.source_account_key = t.source_account_key AND w.source_origin = t.source_origin
+    ON w.source_origin = t.source_origin
   WHERE
     t.ledger_include
     AND t.type IN ('sell', 'transfer_out')

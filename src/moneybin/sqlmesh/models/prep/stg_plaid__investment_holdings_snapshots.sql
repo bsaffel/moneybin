@@ -17,6 +17,7 @@ SELECT
   s.source_file,
   s.holdings_date,
   s.holdings_count,
+  s.transactions_window_start,
   s.source_type,
   s.extracted_at,
   s.loaded_at

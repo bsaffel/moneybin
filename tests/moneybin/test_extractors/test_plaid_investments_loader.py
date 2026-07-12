@@ -210,6 +210,35 @@ def test_snapshot_receipt_written_when_item_reports_zero_holdings(
     ]
 
 
+def test_snapshot_receipt_carries_the_items_investments_window(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """The receipt records the window, so an empty snapshot still has one.
+
+    ``transactions_window_start`` is item-level metadata, but raw.plaid_
+    investment_holdings is the only table that stores it — and that table is
+    empty for exactly the item that reported nothing. Any consumer needing
+    "when did this item's window open" for a liquidated broker has nowhere to
+    read it. The receipt is written iff the server declared a window, so it is
+    the one row that always exists when the item reported.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings = []
+
+    _load(db, payload, job_id="job-liquidated")
+
+    rows = db.execute(
+        """
+        SELECT source_origin, transactions_window_start
+        FROM raw.plaid_investment_holdings_snapshots ORDER BY source_origin
+        """
+    ).fetchall()
+    assert rows == [
+        ("item_1", date(2024, 7, 8)),
+        ("item_2", date(2025, 1, 15)),  # per-item, not one constant
+    ]
+
+
 def test_snapshot_receipt_not_written_for_a_failed_item(
     db: Database, sync_data: SyncDataResponse
 ) -> None:

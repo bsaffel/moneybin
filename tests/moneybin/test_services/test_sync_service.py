@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -755,6 +755,76 @@ class TestPullAutoRefreshes:
         assert calls == 0
         assert result.transforms_applied is False
         assert result.transforms_error is None
+
+    def test_pull_refreshes_when_only_a_holdings_receipt_landed(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Snapshot-receipt-only sync: a broker reporting NOTHING is a state change.
+
+        A liquidated broker returns no holdings, no transactions, no balances —
+        the receipt is the only durable write in the pull. It is also the sole
+        input core.dim_holdings reads to decide which snapshot is newest, so a
+        gate that ignores it skips the refresh and leaves dim_holdings showing
+        the previous, non-empty snapshot: the fully-liquidated broker still
+        reads as holding its old positions, which is precisely the phantom the
+        receipt was added to expose.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        # Nothing loadable in the payload, but the item declares an investments
+        # window on a completed result — so the loader writes its receipt.
+        receipt_only = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": [],
+                "securities": [],
+                "investment_transactions": [],
+                "investment_holdings": [],
+                "metadata": sync_data.metadata.model_copy(
+                    update={
+                        "institutions": [
+                            inst.model_copy(
+                                update={"transactions_window_start": date(2024, 7, 8)}
+                            )
+                            for inst in sync_data.metadata.institutions
+                        ]
+                    }
+                ),
+            }
+        )
+        client = MagicMock()
+        client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_liquidated", status="completed", transaction_count=0
+        )
+        client.get_data.return_value = receipt_only
+
+        service = SyncService(client=client, db=db, loader=loader)
+        result = service.pull()
+
+        receipts = db.execute(
+            "SELECT COUNT(*) FROM raw.plaid_investment_holdings_snapshots"
+        ).fetchone()
+        assert receipts is not None and receipts[0] > 0, (
+            "no receipt written — bad setup"
+        )
+        assert calls == 1
+        assert result.transforms_applied is True
 
     def test_pull_refreshes_when_only_removals_landed(
         self,

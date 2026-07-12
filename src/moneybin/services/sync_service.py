@@ -221,10 +221,16 @@ class SyncService:
             security_resolution=resolution,
             security_resolution_error=security_resolution_error,
         )
-        # Removals are a state change too: a pure-removal sync deletes from
-        # raw.plaid_transactions and the deletion must propagate through
-        # SQLMesh into core.fct_transactions. Gating only on loaded rows
-        # would leave the deleted row visible in core.
+        # Every durable raw write counts, not just loaded entity rows.
+        # Removals: a pure-removal sync deletes from raw.plaid_transactions and
+        # the deletion must propagate through SQLMesh into core.fct_transactions,
+        # or the deleted row stays visible in core.
+        # Holdings-snapshot receipts: on a liquidated broker's pull the receipt
+        # is the ONLY write — no holdings rows, by definition — and it is the
+        # sole input core.dim_holdings reads to pick the newest snapshot. Skip
+        # the refresh and dim_holdings keeps serving the previous, non-empty
+        # snapshot, so the emptied broker still reads as holding its old
+        # positions: the exact phantom the receipt exists to expose.
         rows_changed = (
             load_result.transactions_loaded
             + load_result.accounts_loaded
@@ -234,6 +240,7 @@ class SyncService:
             + load_result.investment_transactions_loaded
             + load_result.holdings_loaded
             + load_result.holding_lots_loaded
+            + load_result.holdings_snapshots_loaded
         )
         if refresh and rows_changed > 0:
             refresh_result = _refresh(self.db)

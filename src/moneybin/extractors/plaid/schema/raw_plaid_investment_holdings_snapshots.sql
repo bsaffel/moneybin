@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
     source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK), same as the holdings rows it accounts for
     holdings_date DATE,                       -- Snapshot calendar date = extracted_at::DATE (UTC); same derivation as raw.plaid_investment_holdings.holdings_date
     holdings_count INTEGER NOT NULL,          -- Positions this item returned in this snapshot; 0 = the item reported and holds NOTHING (the case this table exists to record)
+    transactions_window_start DATE NOT NULL,  -- Per-item metadata.transactions_window_start, mirrored from the holdings rows this accounts for. Also stored on raw.plaid_investment_holdings, but that table is EMPTY for exactly the item that reported nothing — so a consumer asking "when did this item's window open" for a liquidated broker has nowhere else to read it. NOT NULL holds because the receipt is written iff the server declared a window.
     source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
         DEFAULT 'plaid',
     extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
