@@ -15,6 +15,11 @@ from moneybin import config as config_module
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+from moneybin.metrics.registry import (
+    AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
+    AUTO_RULE_BROAD_PENDING,
+    AUTO_RULE_PATTERN_DOWNGRADED_TOTAL,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
@@ -71,6 +76,49 @@ def test_extract_pattern_falls_back_to_normalized_memo_when_description_empty() 
     ]
     extracted = AutoRuleService(db)._extract_pattern("t_memo_only")
     assert extracted == ("ZELLE PAYMENT TO ALICE", "contains")
+
+
+def test_extract_pattern_downgrades_short_invented_pattern_to_exact() -> None:
+    """A 2-char invented pattern becomes `exact`, not `contains` (F17).
+
+    The live repro: a Zelle/transfer row whose description normalizes to "TO".
+    As a `contains` rule it matches COSTCO, STORE, AUTO, TOTAL — accepting it
+    would silently relabel the ledger as Internal Transfer.
+    """
+    db = MagicMock()
+    db.execute.return_value.fetchone.side_effect = [
+        (None,),  # no merchant_id on the categorization row
+        ("TO", None),  # (raw description, memo)
+    ]
+    downgraded_before = AUTO_RULE_PATTERN_DOWNGRADED_TOTAL._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+    extracted = AutoRuleService(db)._extract_pattern("t_to")
+    assert extracted == ("TO", "exact")
+    assert (
+        AUTO_RULE_PATTERN_DOWNGRADED_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
+        == downgraded_before + 1
+    )
+
+
+def test_extract_pattern_keeps_contains_for_long_invented_pattern() -> None:
+    """A pattern at or above the floor stays `contains` — the guard is targeted."""
+    db = MagicMock()
+    db.execute.return_value.fetchone.side_effect = [
+        (None,),
+        ("STARBUCKS COFFEE", None),
+    ]
+    extracted = AutoRuleService(db)._extract_pattern("t_sbux")
+    assert extracted == ("STARBUCKS COFFEE", "contains")
+
+
+def test_extract_pattern_does_not_downgrade_user_authored_merchant_pattern() -> None:
+    """A short merchant raw_pattern is user-authored — the guard must not touch it.
+
+    The guard exists to check the machine's inference, not to second-guess an
+    explicit human decision.
+    """
+    db = _mock_db_with_merchant(raw_pattern="BP", match_type="contains")
+    extracted = AutoRuleService(db)._extract_pattern("t_bp")
+    assert extracted == ("BP", "contains")
 
 
 @pytest.fixture
@@ -389,6 +437,44 @@ def test_review_uses_configured_default_when_limit_omitted(real_db: Database) ->
     assert len(result.proposals) == 3
     assert result.total_count == 3
     assert auto_review_envelope(result).summary.has_more is False
+
+
+def test_review_broad_gauge_is_queue_wide_not_page_scoped(real_db: Database) -> None:
+    """AUTO_RULE_BROAD_PENDING must reflect the whole pending queue, not just the page.
+
+    Two pending proposals. "A1MERCHANT" has trigger_count=2 (two categorized
+    txns) so it sorts first (``trigger_count DESC``) and is the only one on a
+    ``limit=1`` page; its estimated match count (2) stays under the broad
+    floor. "BROADCO" has trigger_count=1 but a true blast radius of 25 rows —
+    comfortably past the floor(20)/10x-evidence ratio — so it IS broad, yet it
+    is excluded from the returned page. A page-scoped gauge (the pre-fix
+    behavior) would see only A1MERCHANT and report 0 broad proposals; the
+    gauge must report 1.
+    """
+    svc = AutoRuleService(real_db)
+    _seed_transaction(real_db, "t_a1a", description="A1MERCHANT")
+    _seed_transaction(real_db, "t_a1b", description="A1MERCHANT")
+    svc.record_categorization("t_a1a", "Food & Drink")
+    svc.record_categorization("t_a1b", "Food & Drink")
+
+    _seed_transaction(real_db, "t_broad", description="BROADCO")
+    svc.record_categorization("t_broad", "Food & Drink")
+    # 24 more BROADCO rows (uncategorized) so the pattern's true blast radius
+    # is 25 — the scan behind _estimate_match_counts only reads description/
+    # memo, not categorization state.
+    for i in range(24):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -5.00, 'BROADCO', 'csv')",
+            [f"t_broad_extra_{i}"],
+        )
+
+    result = svc.review(limit=1)
+    assert len(result.proposals) == 1
+    assert result.proposals[0]["merchant_pattern"] == "A1MERCHANT"
+    assert result.total_count == 2
+    assert AUTO_RULE_BROAD_PENDING._value.get() == 1  # type: ignore[reportPrivateUsage] — prometheus internals
 
 
 @pytest.mark.parametrize(
@@ -716,3 +802,323 @@ class TestDeactivateOverriddenRules:
         assert context["reason"] == "override_threshold"
         assert context["override_count"] == 2
         assert len(context["sample_ids"]) == 2
+
+
+# --- Blast radius (F17 Layer 2) ----------------------------------------------
+
+
+def test_review_surfaces_blast_radius_and_flags_broad() -> None:
+    """review() reports how many transactions a proposal would actually hit (F17).
+
+    "TO" as an exact-match proposal against a ledger where 40 rows are literally
+    "TO" is broad: 40 matches on 1 trigger, far past 10x evidence.
+    """
+    db = MagicMock()
+    service = AutoRuleService(db)
+    proposals = [
+        {
+            "proposed_rule_id": "p_broad",
+            "merchant_pattern": "TO",
+            "match_type": "contains",
+            "category": "Transfer",
+            "subcategory": "Internal Transfer",
+            "trigger_count": 1,
+            "sample_txn_ids": ["t_1"],
+        }
+    ]
+    # 40 transactions whose descriptions all contain "TO" (the "TO" in "AUTO").
+    # NOTE: "COSTCO WHOLESALE" alone does NOT contain "TO" as a substring
+    # ("COSTCO"'s T is followed by C, not O) despite the brief's docstring
+    # listing it alongside STORE/AUTO/TOTAL — verified with a literal `in`
+    # check. Using "COSTCO AUTO CENTER" keeps the COSTCO flavor while
+    # actually exercising the `contains` blast-radius path this test names.
+    rows = [("COSTCO AUTO CENTER", None)] * 40
+    db.execute.return_value.fetchall.return_value = rows
+
+    counts = service._estimate_match_counts(proposals)
+    assert counts["p_broad"] == 40
+    assert service._is_broad(40, 1) is True
+
+
+def test_is_broad_respects_the_floor_and_the_evidence_ratio() -> None:
+    """The guard flags disproportionate blast radius, not merely large rules."""
+    service = AutoRuleService(MagicMock())
+    # Below the 20-match floor: never broad, however thin the evidence.
+    assert service._is_broad(8, 1) is False
+    # Past the floor and >10x the evidence: broad.
+    assert service._is_broad(50, 1) is True
+    # Same 50 matches, but 5 triggers of evidence: 50 <= 10*5, so not broad.
+    assert service._is_broad(50, 5) is False
+
+
+def test_estimate_match_counts_uses_exact_semantics_for_exact_patterns() -> None:
+    """An `exact` proposal only counts rows whose normalized text IS the pattern.
+
+    This is what makes the Task-2 downgrade safe: "TO" as `exact` has a blast
+    radius of 0 against a ledger of COSTCO rows, where as `contains` it had 40.
+    """
+    db = MagicMock()
+    service = AutoRuleService(db)
+    proposals = [
+        {
+            "proposed_rule_id": "p_exact",
+            "merchant_pattern": "TO",
+            "match_type": "exact",
+            "category": "Transfer",
+            "subcategory": None,
+            "trigger_count": 1,
+            "sample_txn_ids": ["t_1"],
+        }
+    ]
+    db.execute.return_value.fetchall.return_value = [("COSTCO AUTO CENTER", None)] * 40
+    counts = service._estimate_match_counts(proposals)
+    assert counts["p_exact"] == 0
+
+
+def test_estimate_match_counts_tests_regex_against_normalized_description() -> None:
+    r"""An end-anchored ``regex`` proposal must hit what the live matcher would hit.
+
+    ``^STARBUCKS$`` fails against the concatenated ``match_text``
+    ("STARBUCKS\nCOFFEE PURCHASE" — the trailing ``$`` anchor can't match
+    mid-string once memo is appended) but DOES match the individual normalized
+    description ("STARBUCKS"). ``matcher._match_text`` tests exactly this
+    per-field candidate for every match type, including ``regex`` — so the
+    estimator must count this row too, or an end-anchored regex proposal can
+    slip past the reviewer under-counted (and a genuinely broad rule reads as
+    not-broad).
+    """
+    db = MagicMock()
+    service = AutoRuleService(db)
+    proposals = [
+        {
+            "proposed_rule_id": "p_regex_anchor",
+            "merchant_pattern": r"^STARBUCKS$",
+            "match_type": "regex",
+            "category": "Food & Drink",
+            "subcategory": "Coffee",
+            "trigger_count": 1,
+            "sample_txn_ids": ["t_1"],
+        }
+    ]
+    db.execute.return_value.fetchall.return_value = [
+        ("STARBUCKS 12345", "COFFEE PURCHASE"),
+    ]
+    counts = service._estimate_match_counts(proposals)
+    assert counts["p_regex_anchor"] == 1
+
+
+# --- Blast radius accept guard (F17 Layer 3) ---------------------------------
+
+
+def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -> None:
+    """Accept-all cannot sweep in a broad proposal (F17, the corruption path).
+
+    This is the test that closes the finding: the live session's "TO" rule was
+    one --approve-all away from relabeling every COSTCO/STORE/AUTO row as an
+    Internal Transfer, which also drops them out of spend reports.
+
+    The pattern is deliberately LONG ENOUGH to clear the specificity floor
+    ("COSTCO" is 6 chars, well over ``auto_rule_min_contains_length``). A short
+    pattern like "TO" is refused by the floor before the blast radius is ever
+    computed, so using one here would prove nothing about the broad guard —
+    the test would pass with the broad check deleted. Isolating the guards is
+    the point: this test owns the blast-radius refusal, and
+    ``test_approve_refuses_legacy_short_contains_proposal_without_allow_broad``
+    owns the specificity refusal.
+    """
+    service = AutoRuleService(real_db)
+
+    # 40 transactions a `contains "COSTCO"` rule would hit — past the broad
+    # floor (20) and >10x the single trigger behind the proposal.
+    for i in range(40):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -10.0, 'COSTCO AUTO CENTER', 'csv')",
+            [f"t_{i}"],
+        )
+    pid = service._proposed.insert(
+        merchant_pattern="COSTCO",
+        match_type="contains",
+        category="Transfer",
+        subcategory="Internal Transfer",
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    blocked_before = AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+    # The agent's accept-all path: pass every pending id.
+    blocked = service.accept(accept=[pid], reject=[], actor="test")
+    assert blocked.approved == 0
+    assert blocked.skipped == 1
+    assert blocked.rule_ids == []
+    assert (
+        AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
+        == blocked_before + 1
+    )
+
+    # The human's informed override, after seeing estimated_match_count.
+    allowed = service.accept(accept=[pid], reject=[], actor="test", allow_broad=True)
+    assert allowed.approved == 1
+
+
+def test_approve_refuses_legacy_short_contains_proposal_without_allow_broad(
+    real_db: Database,
+) -> None:
+    """The specificity floor must also gate promotion, not just proposal-time (F17).
+
+    ``_invented_match_type`` only downgrades a short pattern to ``exact`` when a
+    NEW proposal is created — it cannot retroactively fix a proposal already
+    sitting in ``app.proposed_rules`` with ``match_type='contains'`` from before
+    this guard shipped. This proposal's blast radius (5 rows) is deliberately
+    kept well under ``auto_rule_broad_match_min`` (20), so ``_is_broad`` alone
+    would wave it through unflagged — isolating the specificity check as the
+    thing that must catch it.
+    """
+    service = AutoRuleService(real_db)
+
+    # 5 transactions a `contains "TO"` rule would hit — comfortably under the
+    # broad floor (20), so the blast-radius check alone would not block this.
+    for i in range(5):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -10.0, 'COSTCO AUTO CENTER', 'csv')",
+            [f"t_{i}"],
+        )
+    pid = service._proposed.insert(
+        merchant_pattern="TO",
+        match_type="contains",
+        category="Transfer",
+        subcategory="Internal Transfer",
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    result = service.approve([pid], actor="test")
+    assert result.approved == 0
+    assert result.skipped == 1
+    assert result.rule_ids == []
+    rule_count_row = real_db.execute(
+        "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()
+    assert rule_count_row is not None and rule_count_row[0] == 0
+
+    # The human's informed override, after seeing the pattern is too short.
+    allowed = service.approve([pid], actor="test", allow_broad=True)
+    assert allowed.approved == 1
+
+
+def test_approve_skips_the_blast_radius_scan_when_every_id_is_short(
+    real_db: Database,
+) -> None:
+    """A short-pattern refusal must not pay for a blast-radius scan it can't use.
+
+    ``_estimate_match_counts`` scans all of ``core.fct_transactions`` — the full
+    merge/dedup view whose needless re-evaluation is what hung ``system_doctor``
+    for >73s. An id already refused by the length check is skipped regardless of
+    its blast radius, so estimating it buys nothing. When the whole accept set is
+    short-pattern proposals, the scan must not happen at all.
+    """
+    service = AutoRuleService(real_db)
+    pid = service._proposed.insert(
+        merchant_pattern="TO",
+        match_type="contains",
+        category="Transfer",
+        subcategory="Internal Transfer",
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    scanned: list[list[dict[str, object]]] = []
+    original = service._estimate_match_counts
+
+    def _spy(proposals: list[dict[str, object]]) -> dict[str, int]:
+        scanned.append(proposals)
+        return original(proposals)  # type: ignore[arg-type]
+
+    service._estimate_match_counts = _spy  # type: ignore[method-assign]
+    result = service.approve([pid], actor="test")
+
+    assert result.skipped == 1
+    assert result.approved == 0
+    # The estimator may be called, but it must be handed nothing to scan —
+    # _estimate_match_counts short-circuits on an empty list without touching
+    # core.fct_transactions.
+    assert all(p == [] for p in scanned), (
+        f"blast-radius scan was handed {scanned} for an all-short accept set"
+    )
+
+
+def test_estimated_match_count_agrees_with_what_approval_categorizes(
+    real_db: Database,
+) -> None:
+    """For this fixture, the estimate exactly matches what approval applies (F17).
+
+    The invariant ``_estimate_match_counts`` must uphold is ``actual <=
+    estimated``, NOT equality: the estimator counts every transaction the
+    pattern matches, while approval's ``_categorize_existing_with_rule``
+    writes only the uncategorized, priority-winning subset of those. The
+    estimate is an upper bound on blast radius by design — over-counting is
+    the fail-safe direction, since it's what a human reviewer must see
+    before accepting a proposal.
+
+    This fixture happens to produce exact equality only because every row
+    is uncategorized, so the ``==`` assertion below is valid for THIS test.
+    Do NOT read it as license to narrow the estimator to uncategorized-only
+    rows to make some other fixture's numbers "line up" — that would make it
+    UNDER-count: a ``contains`` pattern matching 500 already-categorized rows
+    would then estimate 0, sail through the ``is_broad`` gate unflagged, and
+    silently relabel all 500 on the rule's next backfill. Under-counting is
+    the one direction this guard must never move in; over-counting is safe.
+    A failure here still means ``_pattern_hits`` (the estimator) has
+    diverged from ``CategorizationService.match_first_rule`` (the matcher) —
+    investigate that divergence, don't relax the assertion to match it.
+    """
+    service = AutoRuleService(real_db)
+
+    for i in range(25):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -20.0, 'AMZN MKTP US*1A2B3C', 'csv')",
+            [f"t_{i}"],
+        )
+    for i in range(5):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -30.0, 'WHOLE FOODS MARKET', 'csv')",
+            [f"o_{i}"],
+        )
+
+    pid = service._proposed.insert(
+        merchant_pattern="AMZN",
+        match_type="contains",
+        category="Shopping",
+        subcategory=None,
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    estimated = service._estimate_match_counts(service.list_pending_proposals())[pid]
+    # allow_broad=True: 25 matches on 1 trigger clears the broad floor/ratio
+    # (20 floor, 10x factor) — this is the human's informed override after
+    # seeing estimated_match_count, not a bypass of the guard under test.
+    approved = service.approve([pid], actor="test", allow_broad=True)
+
+    assert estimated == 25
+    assert approved.newly_categorized == estimated

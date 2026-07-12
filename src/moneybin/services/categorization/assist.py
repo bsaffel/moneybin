@@ -32,16 +32,20 @@ logger = logging.getLogger(__name__)
 class RedactedTransaction:
     """LLM-safe view of an uncategorized transaction.
 
-    Type-enforces the redaction contract: no full amount, no date, no account ID.
-    The v2 contract (per categorization-matching-mechanics.md §Match input) adds
-    memo and structural-field signals. Adding any new field requires conscious
-    code review — accidental PII leakage is a compile-time impossibility enforced
-    by the frozen dataclass shape.
+    Type-enforces the privacy contract: no full amount, no date, no account ID.
+    "Redacted" here means PII-scrubbed, not description-withheld — merchant
+    text in ``description_scrubbed``/``memo_scrubbed`` is the categorization
+    signal and IS sent to the LLM in the clear; only embedded PII (e.g.
+    account-number tails in the memo) is masked by ``redact_for_llm``. The v2
+    contract (per categorization-matching-mechanics.md §Match input) adds memo
+    and structural-field signals. Adding any new field requires conscious code
+    review — accidental PII leakage is a compile-time impossibility enforced by
+    the frozen dataclass shape.
     """
 
     transaction_id: str
-    description_redacted: str
-    memo_redacted: str
+    description_scrubbed: str
+    memo_scrubbed: str
     source_type: str
     transaction_type: str | None
     check_number: str | None
@@ -54,8 +58,8 @@ class RedactedTransaction:
         """Serialize to the public wire shape (MCP/CLI envelope row)."""
         return {
             "transaction_id": self.transaction_id,
-            "description_redacted": self.description_redacted,
-            "memo_redacted": self.memo_redacted,
+            "description_scrubbed": self.description_scrubbed,
+            "memo_scrubbed": self.memo_scrubbed,
             "source_type": self.source_type,
             "transaction_type": self.transaction_type,
             "check_number": self.check_number,
@@ -96,12 +100,14 @@ class AssistBridge:
         account_filter: list[str] | None = None,
         date_range: tuple[str, str] | None = None,
     ) -> list[RedactedTransaction]:
-        """Return uncategorized transactions as redacted records for LLM review.
+        """Return uncategorized transactions as PII-scrubbed records for LLM review.
 
         Sensitivity: medium. Output is sent to the user's LLM via MCP or
-        written to disk via the CLI bridge. The redaction contract is enforced
-        by RedactedTransaction's frozen dataclass shape (v2: description + memo
-        redacted; structural fields exposed unredacted).
+        written to disk via the CLI bridge. Merchant text is preserved and
+        sent in full — it is the categorization signal. The privacy contract
+        is enforced by RedactedTransaction's frozen dataclass shape (v2:
+        description + memo scrubbed of embedded PII; structural fields
+        exposed unscrubbed).
         """
         settings = get_settings().categorization
         effective_limit = min(limit, settings.assist_max_batch_size)
@@ -150,8 +156,8 @@ class AssistBridge:
             result = [
                 RedactedTransaction(
                     transaction_id=row[0],
-                    description_redacted=redact_for_llm(row[1] or ""),
-                    memo_redacted=redact_for_llm(row[2] or ""),
+                    description_scrubbed=redact_for_llm(row[1] or ""),
+                    memo_scrubbed=redact_for_llm(row[2] or ""),
                     source_type=row[3] or "",
                     transaction_type=row[4],
                     check_number=row[5],

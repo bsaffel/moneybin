@@ -120,6 +120,7 @@ def categorize_pending(
                 memo=r.get("memo"),
                 account_id=r.get("account_id"),
                 age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+                pending_transfer_match=bool(r.get("pending_transfer_match", False)),
             )
             for r in records
         ]
@@ -373,10 +374,12 @@ def categorize_assist(
     ),
     output: OutputFormat = output_option,
 ) -> None:
-    """Return uncategorized transactions as redacted records for LLM categorization.
+    """Return uncategorized transactions as PII-scrubbed records for LLM categorization.
 
-    Outputs the same redacted shape as the MCP tool transactions_categorize_assist:
-    description and memo are redacted; no amount, date, or account ID is included.
+    Outputs the same shape as the MCP tool transactions_categorize_assist: merchant
+    text (description/memo) is sent in full — it's the categorization signal — with
+    only embedded PII (e.g. account numbers) masked. No amount, date, or account
+    ID is included.
 
       moneybin transactions categorize assist --limit 50 --output json | jq '.data[0]'
       moneybin transactions categorize assist --account-filter acct_a,acct_b --output json
@@ -423,8 +426,8 @@ def categorize_assist(
         transactions=[
             AssistRow(
                 transaction_id=r.transaction_id,
-                description_redacted=r.description_redacted,
-                memo_redacted=r.memo_redacted,
+                description_scrubbed=r.description_scrubbed,
+                memo_scrubbed=r.memo_scrubbed,
                 source_type=r.source_type,
                 transaction_type=r.transaction_type,
                 check_number=r.check_number,

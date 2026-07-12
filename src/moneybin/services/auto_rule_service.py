@@ -19,6 +19,12 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
+from moneybin.metrics.registry import (
+    AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
+    AUTO_RULE_BROAD_PENDING,
+    AUTO_RULE_PATTERN_DOWNGRADED_TOTAL,
+    AUTO_RULE_UNSELECTIVE_ACCEPT_BLOCKED_TOTAL,
+)
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.services._text import build_match_inputs, normalize_description
@@ -28,7 +34,10 @@ from moneybin.services.categorization import (
     Merchant,
     matches_pattern,
 )
-from moneybin.services.categorization._shared import resolve_category_id
+from moneybin.services.categorization._shared import (
+    is_unselective_contains,
+    resolve_category_id,
+)
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
@@ -38,6 +47,24 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _pattern_hits(
+    pattern: str, match_type: str, match_text: str, norm_desc: str, norm_memo: str
+) -> bool:
+    """Mirror ``matcher._match_text``'s candidate construction and test exactly.
+
+    Builds the same candidate list — ``[match_text, normalized_description,
+    normalized_memo]``, skipping empties and de-duplicating — and tests
+    ``any(matches_pattern(c, pattern, match_type) for c in candidates)``
+    uniformly for every match type. Diverging from this would make the
+    reviewer's blast-radius number disagree with what the rule actually does.
+    """
+    candidates: list[str] = []
+    for text in (match_text, norm_desc, norm_memo):
+        if text and text not in candidates:
+            candidates.append(text)
+    return any(matches_pattern(c, pattern, match_type) for c in candidates)
 
 
 @dataclass(slots=True)
@@ -349,24 +376,116 @@ class AutoRuleService:
 
     # -- Decisions --
 
+    def _estimate_match_counts(self, proposals: list[dict[str, Any]]) -> dict[str, int]:
+        """Return ``{proposed_rule_id: estimated_match_count}``.
+
+        The blast radius a reviewer sees must be the blast radius the rule will
+        have, so this uses the matcher's own predicate (``matches_pattern`` over
+        ``build_match_inputs``) rather than an approximation.
+        ``normalize_description`` is a Python regex chain with no faithful SQL
+        equivalent, so the text is normalized here rather than in the query.
+
+        ONE scan, normalized once, then an in-memory pass per proposal. Do NOT
+        rewrite this as a per-proposal query against ``core.fct_transactions``:
+        that view is the full merge/dedup/categorization pipeline, and
+        re-evaluating it once per item is exactly what made ``system_doctor``
+        hang for >73s (F14).
+        """
+        if not proposals:
+            return {}
+        try:
+            rows = self._db.execute(
+                f"SELECT description, memo FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608  # TableRef constant
+            ).fetchall()
+        except duckdb.CatalogException:
+            # Pre-first-import: no fact table, so nothing can match. This is a
+            # fail-CLOSED degrade, not a fail-open one, despite the visual
+            # similarity to CategorizationQueries._transactions_with_pending_matches
+            # (which also catches a missing-relation error and degrades to an
+            # empty set). That sibling is degrading a *flag* — losing the
+            # "unresolved transfer match" annotation is safe, it just loses
+            # visibility. Here we'd be degrading the *blast-radius number*
+            # that gates auto-rule promotion (_is_broad); returning 0 is only
+            # safe because it is genuinely true (no fact table ⇒ no
+            # transactions ⇒ nothing matches). Do NOT widen this except to
+            # ``duckdb.CatalogException`` — catching e.g. ``BinderException``
+            # here to "harmonise" with the sibling would let a schema-drift
+            # error silently report 0 matches and disable this safety guard.
+            return {str(p["proposed_rule_id"]): 0 for p in proposals}
+
+        match_inputs = [build_match_inputs(r[0], r[1]) for r in rows]
+        counts: dict[str, int] = {}
+        for p in proposals:
+            pid = str(p["proposed_rule_id"])
+            pattern = str(p.get("merchant_pattern") or "")
+            match_type = str(p.get("match_type") or "contains")
+            if not pattern:
+                counts[pid] = 0
+                continue
+            counts[pid] = sum(
+                1
+                for match_text, norm_desc, norm_memo in match_inputs
+                if _pattern_hits(pattern, match_type, match_text, norm_desc, norm_memo)
+            )
+        return counts
+
+    @staticmethod
+    def _is_broad(estimated_match_count: int, trigger_count: int) -> bool:
+        """Return True when a proposal's blast radius outruns its evidence.
+
+        Two conditions, both required. The floor keeps the guard from crying wolf
+        on small rules; the ratio scales the bar with the amount of evidence
+        behind the proposal, so a pattern earns a wider reach as the user
+        confirms it more often.
+        """
+        settings = get_settings().categorization
+        if estimated_match_count < settings.auto_rule_broad_match_min:
+            return False
+        return estimated_match_count > settings.auto_rule_broad_match_factor * max(
+            trigger_count, 1
+        )
+
     def review(self, *, limit: int | None = None) -> AutoReviewResult:
-        """Return pending auto-rule proposals as a typed result.
+        """Return pending auto-rule proposals, each carrying its blast radius.
 
         ``limit`` defaults to ``categorization.auto_rule_list_default_limit``
         when ``None``. ``total_count`` reflects the unbounded queue size so
         callers see ``has_more`` when truncation occurs.
+
+        Every proposal carries ``estimated_match_count`` (how many transactions
+        the rule would actually hit) and ``is_broad``. A broad proposal cannot be
+        accepted without an explicit ``allow_broad`` override — see
+        :meth:`approve`.
+
+        The broad-count gauge (``AUTO_RULE_BROAD_PENDING``) and ``total_count``
+        must both be queue-wide, not scoped to the returned page — so this
+        fetches the full pending set once (a read against the small
+        ``app.proposed_rules`` table, not the expensive scan) and estimates over
+        all of it, then slices to ``limit`` for the returned page. Do NOT split
+        this into a page-scoped estimate plus a separate full-queue estimate:
+        ``_estimate_match_counts`` must run exactly ONCE per call — it scans
+        ``core.fct_transactions``, and a second scan is what caused the >73s
+        ``system_doctor`` hang (F14).
         """
         effective_limit = self._resolve_list_limit(limit)
-        proposals = self.list_pending_proposals(limit=effective_limit)
-        # When the queue fits under the cap, the total is just len(proposals).
-        # Skip the COUNT(*) roundtrip in the common case (typical pending queues
-        # are well under 100).
-        total = (
-            len(proposals)
-            if len(proposals) < effective_limit
-            else self._count_pending_proposals()
-        )
-        return AutoReviewResult(proposals=proposals, total_count=total)
+        # Re-annotated Any: list_pending_proposals declares dict[str, object],
+        # but this loop reads trigger_count back out with int(); Any lets the
+        # per-field int()/str() coercions below type-check like they already
+        # do for the same dicts once they cross into AutoReviewResult.
+        all_proposals: list[dict[str, Any]] = self.list_pending_proposals(limit=None)
+        counts = self._estimate_match_counts(all_proposals)
+        broad_count = 0
+        for p in all_proposals:
+            pid = str(p["proposed_rule_id"])
+            estimated = counts.get(pid, 0)
+            broad = self._is_broad(estimated, int(p.get("trigger_count", 0) or 0))
+            p["estimated_match_count"] = estimated
+            p["is_broad"] = broad
+            if broad:
+                broad_count += 1
+        AUTO_RULE_BROAD_PENDING.set(broad_count)
+        proposals = all_proposals[:effective_limit]
+        return AutoReviewResult(proposals=proposals, total_count=len(all_proposals))
 
     @staticmethod
     def _resolve_list_limit(limit: int | None) -> int:
@@ -381,6 +500,7 @@ class AutoRuleService:
         reject: list[str] | None = None,
         *,
         actor: str = "system",
+        allow_broad: bool = False,
     ) -> AutoConfirmResult:
         """Accept and/or reject pending proposals; returns aggregate counts.
 
@@ -388,11 +508,15 @@ class AutoRuleService:
         reject always wins. The CLI does the same dedup before calling, but
         applying it here keeps direct service callers (MCP, scripts) safe.
         ``actor`` is threaded onto the audit rows (CLI/MCP pass their surface).
+
+        ``allow_broad`` is required to accept a proposal flagged ``is_broad``.
+        Without it those ids land in ``skipped`` — an accept-all can never sweep
+        one in unnoticed.
         """
         approve_set = set(accept or [])
         reject_set = set(reject or [])
         approve_set -= reject_set
-        a = self.approve(sorted(approve_set), actor=actor)
+        a = self.approve(sorted(approve_set), actor=actor, allow_broad=allow_broad)
         r = self.reject(sorted(reject_set), actor=actor)
         return AutoConfirmResult(
             approved=a.approved,
@@ -403,13 +527,96 @@ class AutoRuleService:
         )
 
     def approve(
-        self, proposed_rule_ids: list[str], *, actor: str = "system"
+        self,
+        proposed_rule_ids: list[str],
+        *,
+        actor: str = "system",
+        allow_broad: bool = False,
     ) -> ApproveResult:
-        """Promote pending proposals to active rules and immediately categorize matching transactions."""
+        """Promote pending proposals to active rules and immediately categorize matching transactions.
+
+        A proposal is refused (unless ``allow_broad`` is set) on either of two
+        independent grounds:
+
+        - **Broad** (``_is_broad``): blast radius outruns the evidence behind it.
+        - **Unselective** (``is_unselective_contains``): a ``contains`` pattern
+          shorter than the specificity floor. ``_invented_match_type`` only
+          downgrades this at proposal-creation time for *new* proposals — it
+          cannot retroactively fix a proposal already sitting in
+          ``app.proposed_rules`` with ``match_type='contains'`` from before that
+          guard shipped. Such a proposal can have a blast radius under
+          ``auto_rule_broad_match_min``, so ``_is_broad`` alone would wave it
+          through unflagged; this check closes that gap on the promotion path
+          itself.
+
+        The whole point of the F17 guard is that both refusals happen on the
+        *accept* path, not merely in the review envelope — an agent that never
+        reads the envelope must still be unable to promote a ledger-wrecking
+        rule.
+        """
         settings = get_settings().categorization
         result = ApproveResult()
+        broad_ids: set[str] = set()
+        unselective_ids: set[str] = set()
+        if not allow_broad and proposed_rule_ids:
+            pending: list[dict[str, Any]] = [
+                p
+                for p in self.list_pending_proposals(limit=None)
+                if str(p["proposed_rule_id"]) in set(proposed_rule_ids)
+            ]
+            # Specificity floor needs no DB scan — a pure length check against
+            # the pattern already in `pending`. Checked ahead of the scan below
+            # so a short-pattern proposal is caught without paying for it.
+            unselective_ids = {
+                str(p["proposed_rule_id"])
+                for p in pending
+                if is_unselective_contains(
+                    str(p.get("merchant_pattern") or ""),
+                    str(p.get("match_type") or ""),
+                )
+            }
+            # Estimate only what the length check hasn't already refused. An
+            # id in `unselective_ids` is skipped below no matter what its blast
+            # radius is, so scanning for it buys nothing — and the scan is a
+            # full pass over core.fct_transactions (the merge/dedup view whose
+            # needless re-evaluation is what hung system_doctor for >73s).
+            # `_estimate_match_counts` short-circuits on an empty list, so an
+            # accept set made up entirely of short-pattern proposals now costs
+            # no scan at all.
+            to_estimate = [
+                p for p in pending if str(p["proposed_rule_id"]) not in unselective_ids
+            ]
+            # ONE scan for the whole remaining set — never one per id.
+            counts = self._estimate_match_counts(to_estimate)
+            broad_ids = {
+                str(p["proposed_rule_id"])
+                for p in to_estimate
+                if self._is_broad(
+                    counts.get(str(p["proposed_rule_id"]), 0),
+                    int(p.get("trigger_count", 0) or 0),
+                )
+            }
 
         for pid in proposed_rule_ids:
+            if pid in broad_ids or pid in unselective_ids:
+                if pid in broad_ids:
+                    AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL.inc()
+                    logger.warning(
+                        f"Refusing to promote broad auto-rule proposal {pid}: its "
+                        f"match count far exceeds its trigger count. Review "
+                        f"estimated_match_count, then re-accept with allow_broad."
+                    )
+                else:
+                    AUTO_RULE_UNSELECTIVE_ACCEPT_BLOCKED_TOTAL.inc()
+                    logger.warning(
+                        f"Refusing to promote auto-rule proposal {pid}: its "
+                        f"pattern is too short to be a 'contains' rule and "
+                        f"would match unrelated merchants (e.g. a 2-char "
+                        f"pattern like 'TO' matches STORE, AUTO, TOTAL). "
+                        f"Re-accept with allow_broad to accept the risk."
+                    )
+                result.skipped += 1
+                continue
             row = self._db.execute(
                 f"""
                 SELECT merchant_pattern, match_type, category, subcategory, status
@@ -813,11 +1020,37 @@ class AutoRuleService:
         # where the merchant name is wrapped into the memo field.
         cleaned_desc = normalize_description(description) if description else ""
         if cleaned_desc:
-            return cleaned_desc, "contains"
+            return cleaned_desc, self._invented_match_type(cleaned_desc)
         cleaned_memo = normalize_description(memo) if memo else ""
         if cleaned_memo:
-            return cleaned_memo, "contains"
+            return cleaned_memo, self._invented_match_type(cleaned_memo)
         return None
+
+    @staticmethod
+    def _invented_match_type(pattern: str) -> str:
+        """Return the match type for a pattern the machine invented.
+
+        Only the description/memo fallback reaches here. A merchant's
+        ``raw_pattern`` is user-authored and returns above, untouched — this
+        guards the inference, not the human.
+
+        ``normalize_description`` can reduce a description to a 1-2 character
+        token (a truncated "TRANSFER TO ..." becomes "TO"). As a ``contains``
+        rule that matches STORE, AUTO, TOTAL; one accepted proposal then
+        relabels those rows Internal Transfer on the next categorize_run, and a
+        Transfer label drops them out of spend reports entirely. Below the floor
+        we propose ``exact`` instead: the user's evidence is kept, but the rule
+        can only fire on a description that IS the token.
+
+        Delegates the floor check to ``_shared.is_unselective_contains`` — the
+        same predicate gates direct rule creation in
+        ``MatchApplier.create_rules_core`` — so there is exactly one
+        definition of "too short to be a contains rule".
+        """
+        if is_unselective_contains(pattern, "contains"):
+            AUTO_RULE_PATTERN_DOWNGRADED_TOTAL.inc()
+            return "exact"
+        return "contains"
 
     def _active_rule_covers_transaction(
         self,

@@ -44,7 +44,7 @@ flowchart TD
     A[Import / Plaid sync<br/>writes raw rows] --> B[moneybin refresh<br/>match + transform + categorize]
     B --> C{rows still<br/>uncategorized?}
     C -->|no| END[done]
-    C -->|yes| D[transactions categorize assist<br/>returns redacted batch]
+    C -->|yes| D[transactions categorize assist<br/>returns PII-scrubbed batch]
     D --> E[LLM proposes<br/>category + merchant per row]
     E --> F[transactions categorize commit-from-file<br/>writes categorized_by='ai']
     F --> G[Snowball: categorize_pending<br/>rules then merchant exemplars<br/>fan across remaining rows]
@@ -55,7 +55,7 @@ A few things worth pinning down:
 
 - **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same pipeline: cross-source matching, SQLMesh transform, then `categorize_pending` (rules then merchants). Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
 - **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on `rules create` (or `reapply=true` on the MCP tool) and MoneyBin runs `categorize_pending` immediately after the insert.
-- **`transactions categorize assist` never writes.** It returns redacted records; an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
+- **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is sent, embedded account numbers are masked; an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
 - **`commit`, `commit-from-file`, and the MCP `transactions_categorize_commit` tool all write `categorized_by='ai'`** — see the Hazard callout above. This is by design: the LLM is a probabilistic proposer, and `ai`-source means "anything else can override this," which is the right default for a guess.
 
 ## Surfaces
@@ -66,10 +66,10 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 
 | Command | What it does |
 |---|---|
-| `assist` | Returns uncategorized transactions as redacted JSON for an LLM to annotate. Does not write. |
-| `export-uncategorized` | Same redacted shape, written to a file or stdout. Convenience wrapper for pipeline use. |
+| `assist` | Returns uncategorized transactions as PII-scrubbed JSON for an LLM to annotate. Does not write. |
+| `export-uncategorized` | Same PII-scrubbed shape, written to a file or stdout. Convenience wrapper for pipeline use. |
 | `commit` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Commits a JSON array of `{transaction_id, category, subcategory}` items. Accepts `--input <path>` or `-` for stdin. |
-| `commit-from-file` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Same as `commit` but takes the path as a positional argument; tolerant of export-shape extras like `description_redacted`. |
+| `commit-from-file` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Same as `commit` but takes the path as a positional argument; tolerant of export-shape extras like `description_scrubbed`. |
 | `run` | Re-runs the deterministic cascade (rules and merchants) over uncategorized rows. `--methods rules,merchants` controls the order. No LLM involvement. |
 | `rules list` | Lists active rules in priority order. |
 | `rules create` | Single rule: `NAME --pattern X --category Y [--match-type contains\|exact\|regex] [--priority N] [--min-amount/--max-amount] [--account-id ID]`. Batch: `--from-file rules.json`. `--reapply` re-evaluates uncategorized rows. |
@@ -106,12 +106,12 @@ Every tool returns the standard response envelope (`summary`, `data`, `actions`)
 
 1. **Import.** Drop OFX/CSV files into the inbox or run `moneybin sync pull`. Refresh runs automatically; rules and merchant exemplars from prior sessions take care of the recurring transactions.
 2. **Check the gap.** `moneybin transactions categorize stats` shows coverage and the per-source breakdown. Anything left in `Uncategorized` is what assist is for.
-3. **Export the redacted batch.**
+3. **Export the PII-scrubbed batch.**
    ```bash
    moneybin transactions categorize export-uncategorized -o proposals.json
    ```
    Or stream via stdout: `moneybin transactions categorize assist --limit 100 --output json > proposals.json`.
-4. **Have an LLM annotate.** Each row needs `category` and optionally `subcategory` and `canonical_merchant_name`. If you're driving from an MCP-aware client (Claude Code, Codex, etc.), the same loop runs via the `transactions_categorize_assist` tool; the LLM gets the redacted batch in-context and you confirm before commit.
+4. **Have an LLM annotate.** Each row needs `category` and optionally `subcategory` and `canonical_merchant_name`. If you're driving from an MCP-aware client (Claude Code, Codex, etc.), the same loop runs via the `transactions_categorize_assist` tool; the LLM gets the PII-scrubbed batch in-context and you confirm before commit.
 5. **Review.** Open `proposals.json`, scan the proposed mappings, fix anything wrong. This is a one-shot human review step — the LLM's pattern recognition is good, but it's still a probabilistic guess.
 6. **Commit.**
    ```bash
@@ -165,7 +165,7 @@ A top-level JSON array. Each item:
 | `subcategory` | string (1–100) | no | Must pair validly with `category` in the taxonomy if present. |
 | `canonical_merchant_name` | string (1–200) | no | **MCP only.** The CLI `commit` and `commit-from-file` strip this key at the boundary; only `transactions_categorize_commit` (MCP) routes it through to the exemplar accumulator. |
 
-Export rows from `export-uncategorized` carry additional keys (`description_redacted`, `memo_redacted`, `transaction_type`, `is_transfer`, etc.) for the LLM to read. The CLI `commit-from-file` silently drops keys outside `{transaction_id, category, subcategory}` at the boundary, so you can pipe the export → annotated payload back through unchanged.
+Export rows from `export-uncategorized` carry additional keys (`description_scrubbed`, `memo_scrubbed`, `transaction_type`, `is_transfer`, etc.) for the LLM to read. The CLI `commit-from-file` silently drops keys outside `{transaction_id, category, subcategory}` at the boundary, so you can pipe the export → annotated payload back through unchanged.
 
 ### `rules.json` (input to `rules create --from-file`)
 
@@ -278,7 +278,7 @@ Two design choices that matter:
 `transactions_categorize_assist` (and the matching CLI command) returns a `RedactedTransaction` per uncategorized row. The shape is frozen:
 
 - `transaction_id`
-- `description_redacted`, `memo_redacted` — both passed through `redact_for_llm()` which strips card last-fours, emails, phones, P2P recipient names, and other PII patterns
+- `description_scrubbed`, `memo_scrubbed` — merchant text preserved and sent in full (it's the categorization signal); both passed through `redact_for_llm()` which strips card last-fours, emails, phones, P2P recipient names, and other embedded-PII patterns
 - `source_type` — `csv`, `ofx`, `plaid`, etc.
 - `transaction_type` — `DEBIT` / `CREDIT` / `CHECK` / `XFER` / `ATM` / ...
 - `check_number` — for handwritten checks
@@ -288,13 +288,13 @@ Two design choices that matter:
 
 What's not in the payload: full amount, date, account identifier. Adding any new field requires modifying the frozen dataclass, which means a code review on the privacy contract.
 
-MoneyBin does not call an LLM provider itself. The CLI/MCP tool produces the redacted batch; the LLM in your MCP host (or a pipeline you build around the CLI export) does the proposing. That keeps the provider, the model, and the prompt entirely under your control. `categorization.assist_default_batch_size` (default 100) and `assist_max_batch_size` (default 200, hard cap) are the only knobs the service exposes; both live under `MoneyBinSettings.categorization`.
+MoneyBin does not call an LLM provider itself. The CLI/MCP tool produces the PII-scrubbed batch; the LLM in your MCP host (or a pipeline you build around the CLI export) does the proposing. That keeps the provider, the model, and the prompt entirely under your control. `categorization.assist_default_batch_size` (default 100) and `assist_max_batch_size` (default 200, hard cap) are the only knobs the service exposes; both live under `MoneyBinSettings.categorization`.
 
 ## Privacy posture
 
 What crosses to the LLM on `assist`:
 
-- Redacted description and memo
+- PII-scrubbed description and memo (merchant text preserved; embedded account numbers masked)
 - Structural fields: type, check number, transfer flags, channel, sign
 - `source_type` and `transaction_id`
 
@@ -303,7 +303,7 @@ What does not:
 - The full amount, the transaction date, the account ID
 - Anything matched by the PII redactor (card numbers, emails, phones, P2P recipients)
 
-What lands in the audit log: every `assist` call records `tool`, `sensitivity=medium`, `txn_count`, and `account_filter`. The redacted content is not logged — the audit confirms a session occurred, not what was discussed.
+What lands in the audit log: every `assist` call records `tool`, `sensitivity=medium`, `txn_count`, and `account_filter`. The scrubbed content is not logged — the audit confirms a session occurred, not what was discussed.
 
 See [`docs/guides/threat-model.md`](threat-model.md) for the broader threat model and [`docs/specs/privacy-data-protection.md`](../specs/privacy-data-protection.md) for the redaction spec.
 

@@ -118,3 +118,13 @@ def test_source_priority_ranks_ofx_above_tabular_family() -> None:
     assert order.index("ofx") < order.index("plaid")
     assert order.index("manual") < order.index("ofx")
     assert order.index("gsheet") < order.index("ofx")
+
+
+def test_auto_rule_guard_defaults() -> None:
+    """The F17 guard ships with safe defaults: 4-char floor, 20-match floor, 10x factor."""
+    from moneybin.config import CategorizationSettings
+
+    s = CategorizationSettings()
+    assert s.auto_rule_min_contains_length == 4
+    assert s.auto_rule_broad_match_min == 20
+    assert s.auto_rule_broad_match_factor == 10

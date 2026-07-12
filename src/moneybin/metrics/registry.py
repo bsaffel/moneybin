@@ -313,6 +313,39 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
     ["source_type", "trigger"],
 )
 
+AUTO_RULE_PATTERN_DOWNGRADED_TOTAL = Counter(
+    "moneybin_auto_rule_pattern_downgraded_total",
+    "Machine-invented auto-rule patterns proposed as 'exact' rather than "
+    "'contains' because they fell below the minimum contains length.",
+)
+
+AUTO_RULE_BROAD_PENDING = Gauge(
+    "moneybin_auto_rule_broad_pending",
+    "Pending auto-rule proposals flagged broad — blast radius disproportionate "
+    "to evidence. Set on each review() call.",
+)
+
+AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL = Counter(
+    "moneybin_auto_rule_broad_accept_blocked_total",
+    "Accept attempts on a broad auto-rule proposal refused for want of an "
+    "explicit allow_broad override.",
+)
+
+AUTO_RULE_UNSELECTIVE_ACCEPT_BLOCKED_TOTAL = Counter(
+    "moneybin_auto_rule_unselective_accept_blocked_total",
+    "Accept attempts on a proposal whose 'contains' pattern is too short to "
+    "discriminate, refused for want of an explicit allow_broad override. "
+    "Catches proposals already in app.proposed_rules from before the "
+    "proposal-time downgrade (_invented_match_type) shipped.",
+)
+
+RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL = Counter(
+    "moneybin_rule_create_unselective_contains_blocked_total",
+    "Direct rule-creation attempts refused because a 'contains' pattern was "
+    "too short to discriminate — it would match unrelated merchants. Blocked "
+    "unless the caller passes allow_broad.",
+)
+
 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
     "moneybin_categorize_skipped_confidence_total",
     "Provider-native categorizations skipped at the confidence gate. "

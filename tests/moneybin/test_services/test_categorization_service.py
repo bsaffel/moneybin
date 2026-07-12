@@ -12,7 +12,8 @@ from typing import Any
 import pytest
 import yaml
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
 from moneybin.services.categorization import (
@@ -23,6 +24,7 @@ from moneybin.services.categorization import (
 from moneybin.services.categorization.assist import (
     _amount_sign_label,  # pyright: ignore[reportPrivateUsage]  # tested directly
 )
+from moneybin.services.categorization.queries import CategorizationQueries
 from tests.moneybin.db_helpers import create_core_tables, seed_categories_view
 
 
@@ -723,6 +725,35 @@ class TestGetCategorizationStats:
         assert stats["categorized"] == 1
         assert stats["by_user"] == 1
 
+    @pytest.mark.unit
+    def test_stats_splits_merchant_map_writes_from_rule_writes(
+        self, db: Database
+    ) -> None:
+        """by_source distinguishes the two engines that both persist categorized_by='rule' (F20).
+
+        apply_merchant_categories deliberately stamps merchant-map writes as
+        'rule' (orchestrator.py) so they don't pollute override-detection.
+        That's correct storage, but it made stats report "rule: 298" against
+        an empty rules[] list, which reads to an agent as data loss.
+        """
+        # A real rule write: rule_id set.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by, rule_id, merchant_id) "
+            "VALUES ('t_1', 'Shopping', 'rule', 'r_1', NULL)"
+        )
+        # A merchant-map write: merchant_id set, no rule_id.
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by, rule_id, merchant_id) "
+            "VALUES ('t_2', 'Groceries', 'rule', NULL, 'm_1')"
+        )
+
+        stats = get_categorization_stats(db)
+
+        assert stats["by_rule"] == 1
+        assert stats["by_merchant_map"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Categories view (seeds + user, with overrides)
@@ -1263,7 +1294,7 @@ def db_with_uncategorized_txns(db: Database) -> Database:
 def test_categorize_assist_returns_redacted_uncategorized(
     db_with_uncategorized_txns: Database,
 ) -> None:
-    """categorize_assist should return uncategorized txns with redacted descriptions only."""
+    """categorize_assist should return uncategorized txns with scrubbed descriptions only."""
     from moneybin.services.categorization import (
         CategorizationService,
         RedactedTransaction,
@@ -1275,7 +1306,7 @@ def test_categorize_assist_returns_redacted_uncategorized(
     assert all(isinstance(r, RedactedTransaction) for r in result)
     for r in result:
         assert hasattr(r, "transaction_id")
-        assert hasattr(r, "description_redacted")
+        assert hasattr(r, "description_scrubbed")
         assert hasattr(r, "source_type")
         # Confirm no amount/date/account fields
         assert not hasattr(r, "amount")
@@ -3408,3 +3439,269 @@ class TestCategorizePendingPlaidPass:
             "WHERE transaction_id = 't5'"
         ).fetchone()
         assert row == ("Food & Drink", "provider_native")
+
+
+# ---------------------------------------------------------------------------
+# list_uncategorized_transactions — pending transfer match flag (F19)
+# ---------------------------------------------------------------------------
+
+# Resolve via the package's own SQLMESH_ROOT rather than walking up to the repo
+# root: the SQLMesh project lives inside the installed package, so a path built
+# from the test file's parents breaks whenever the project moves (it did — the
+# project relocated to src/moneybin/sqlmesh). SQLMESH_ROOT is what production
+# uses, so this binding cannot drift from it.
+_UNCATEGORIZED_QUEUE_MODEL_FILE = (
+    SQLMESH_ROOT / "models" / "reports" / "uncategorized_queue.sql"
+)
+
+
+def _install_uncategorized_queue_view(db: Database) -> None:
+    """Materialize reports.uncategorized_queue from the real model SQL.
+
+    core.fct_transactions / core.dim_accounts already exist as physical
+    tables via the module's autouse create_core_tables() fixture; this
+    rebuilds the actual queue view on top of them from the shipped model
+    file so the test binds to the real column contract instead of a
+    hand-typed stub that could drift from it.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    raw = _UNCATEGORIZED_QUEUE_MODEL_FILE.read_text()
+    start = raw.index("MODEL")
+    end = raw.index(");", start) + 2
+    body = raw[end:].strip()
+    db.execute(f"CREATE OR REPLACE VIEW reports.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
+
+
+def _install_matched_stub(db: Database) -> None:
+    """Minimal prep.int_transactions__matched stub for the pending-match join.
+
+    Only the columns _transactions_with_pending_matches() reads (mirrors the
+    lightweight stub pattern in test_validation/test_evaluations.py) — the
+    real recursive matched-view logic is covered separately in
+    matching/test_int_matched_model.py.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS prep.int_transactions__matched (
+            transaction_id VARCHAR,
+            source_transaction_id VARCHAR,
+            source_type VARCHAR,
+            account_id VARCHAR
+        )
+    """)
+
+
+def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
+    db: Database,
+) -> None:
+    """An unmatched transfer leg is flagged, not silently categorizable (F19).
+
+    reports.uncategorized_queue filters `NOT is_transfer`, but is_transfer only
+    becomes true AFTER matching links the pair. Pre-matching, a "BILL PAY" leg is
+    the top-impact "uncategorized" row — and categorizing it double-counts
+    against the eventual transfer pair.
+
+    The flag is driven by real app.match_decisions state, not a description
+    heuristic: a BILL PAY to an EXTERNAL biller is a genuine expense, and a
+    heuristic would hide it.
+
+    Uses a genuinely cross-account transfer (t_transfer's leg is "b", in a
+    *different* account than the match decision's primary account_id) — the
+    realistic shape of a transfer between two of the user's own accounts, and
+    the branch that requires scoping the "b" leg on
+    ``COALESCE(account_id_b, account_id)`` rather than a bare ``account_id``.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_checking', 'Checking', false), "
+        "('acct_savings', 'Savings', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_transfer', 'acct_checking', '2026-06-01', -500.00, "
+        "'BILL PAY Chase - Freedom', 'ofx', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
+        "'GROCERY STORE', 'ofx', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "(transaction_id, source_transaction_id, source_type, account_id) "
+        "VALUES ('t_transfer', 'src_transfer_leg', 'ofx', 'acct_checking')"
+    )
+    # Register a PENDING, unreversed match referencing t_transfer's source id
+    # via the real audited writer — binds the test to the true column contract
+    # (source_transaction_id_a/source_type_a, not the gold transaction_id).
+    # t_transfer is the "b" leg, in a different account (account_id_b) than
+    # the match's primary account_id (the "a" leg's savings-account deposit).
+    MatchDecisionsRepo(db).insert(
+        match_id="m_pending1",
+        source_transaction_id_a="src_deposit_leg",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="src_transfer_leg",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id="acct_savings",
+        account_id_b="acct_checking",
+        confidence_score=0.9,
+        match_signals={},
+        match_type="transfer",
+        match_status="pending",
+        decided_by="auto",
+        actor="system",
+    )
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
+
+    assert rows is not None
+    flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
+    assert flagged["t_transfer"] is True
+    assert flagged["t_expense"] is False
+
+
+def test_pending_queue_ignores_dedup_decisions_for_transfer_flag(
+    db: Database,
+) -> None:
+    """A pending DEDUP decision must NOT set pending_transfer_match.
+
+    ``app.match_decisions`` stores both dedup and transfer proposals in one
+    table, discriminated by ``match_type``. The transfer-match query
+    previously filtered only on ``match_status = 'pending' AND reversed_at
+    IS NULL`` — with no ``match_type`` filter — so a pending
+    duplicate-review proposal falsely set ``pending_transfer_match`` on its
+    transactions, routing the agent into transfer-resolution guidance
+    (transactions_matches_run / transactions_matches_set) that doesn't
+    apply to an ordinary dedup pair. Only ``match_type = 'transfer'`` rows
+    should set the flag.
+
+    Covers a dedup decision on BOTH union legs — leg "a" (t_dedup_a) and leg
+    "b" (t_dedup_b) — since the fix must add the ``match_type`` filter to
+    both halves of the UNION independently.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_checking', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_dedup_a', 'acct_checking', '2026-06-01', -12.00, "
+        "'COFFEE SHOP', 'ofx', false), "
+        "('t_dedup_b', 'acct_checking', '2026-06-02', -8.00, "
+        "'COFFEE SHOP', 'ofx', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "(transaction_id, source_transaction_id, source_type, account_id) "
+        "VALUES "
+        "('t_dedup_a', 'src_dedup_a1', 'ofx', 'acct_checking'), "
+        "('t_dedup_b', 'src_dedup_b2', 'ofx', 'acct_checking')"
+    )
+    repo = MatchDecisionsRepo(db)
+    # Leg "a": t_dedup_a is the decision's source_transaction_id_a.
+    repo.insert(
+        match_id="m_pending_dedup_a",
+        source_transaction_id_a="src_dedup_a1",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="src_dedup_a2",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id="acct_checking",
+        confidence_score=0.95,
+        match_signals={},
+        match_type="dedup",
+        match_status="pending",
+        decided_by="auto",
+        actor="system",
+    )
+    # Leg "b": t_dedup_b is the decision's source_transaction_id_b.
+    repo.insert(
+        match_id="m_pending_dedup_b",
+        source_transaction_id_a="src_dedup_b1",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="src_dedup_b2",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id="acct_checking",
+        confidence_score=0.95,
+        match_signals={},
+        match_type="dedup",
+        match_status="pending",
+        decided_by="auto",
+        actor="system",
+    )
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
+
+    assert rows is not None
+    flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
+    assert flagged["t_dedup_a"] is False
+    assert flagged["t_dedup_b"] is False
+
+
+def _install_matched_stub_missing_account_id(db: Database) -> None:
+    """prep.int_transactions__matched present but missing account_id (schema drift).
+
+    Simulates the post-upgrade, pre-re-transform window: the table exists
+    from before a migration added ``account_id``, so
+    ``_transactions_with_pending_matches()``'s reference to ``m.account_id``
+    raises ``duckdb.BinderException`` (missing column) rather than
+    ``duckdb.CatalogException`` (missing table).
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS prep.int_transactions__matched (
+            transaction_id VARCHAR,
+            source_transaction_id VARCHAR,
+            source_type VARCHAR
+        )
+    """)
+
+
+def test_pending_queue_degrades_when_matched_view_predates_a_column(
+    db: Database,
+) -> None:
+    """A BinderException from schema drift degrades to unflagged, not a crash.
+
+    ``_transactions_with_pending_matches()`` previously caught only
+    ``duckdb.CatalogException``. When ``prep.int_transactions__matched``
+    exists but predates a column the query selects (the post-upgrade,
+    pre-re-transform window — same schema-drift scenario documented on
+    ``fetch_uncategorized_rows()`` and the ``plaid_unmapped`` stats block),
+    the unhandled ``duckdb.BinderException`` would escape and crash the
+    entire pending queue for both CLI and MCP callers instead of degrading
+    to "nothing flagged."
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_checking', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
+        "'GROCERY STORE', 'ofx', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub_missing_account_id(db)
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
+
+    assert rows is not None
+    flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
+    assert flagged["t_expense"] is False

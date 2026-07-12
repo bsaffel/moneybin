@@ -18,6 +18,7 @@ from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.tables import CATEGORIES
 
@@ -122,6 +123,20 @@ def plaid_bridge_match_predicate(detailed_expr: str, primary_expr: str) -> str:
         f"b.source_type = 'plaid' "
         f"AND b.source_category_code IN ({detailed_expr}, {primary_expr})"
     )
+
+
+def is_unselective_contains(pattern: str, match_type: str) -> bool:
+    """True when a `contains` pattern is too short to discriminate.
+
+    A 2-char `contains` rule ("TO") matches STORE, AUTO, TOTAL — one such
+    rule silently relabels a large slice of the ledger. `exact` is safe at any
+    length (it can only fire on a description that IS the token), so the floor
+    applies to `contains` only.
+    """
+    if match_type != "contains":
+        return False
+    min_len = get_settings().categorization.auto_rule_min_contains_length
+    return len(pattern) < min_len
 
 
 def validate_match_type(match_type: str) -> MatchType:

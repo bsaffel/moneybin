@@ -24,6 +24,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `credit`, so it is counted as a liability in net worth. (MCP surfaces the same
   confirmation and, for now, routes it to the CLI to resolve; in-place
   confirmation is planned.)
+- **Auto-rule proposals can no longer silently mass-mislabel the ledger.** A
+  transaction description that normalizes to a 1–2 character token (e.g. "TO",
+  from a truncated "TRANSFER TO ...") previously became a `contains` rule —
+  matching any description containing that substring, including unrelated
+  merchants like STORE, AUTO, and TOTAL. Accepting the proposal would
+  recategorize all of them as Internal Transfer, which also drops those rows
+  out of every spend report. A short, machine-invented pattern is now proposed
+  as an `exact` match instead of `contains` (a user-authored merchant pattern
+  is untouched); every proposal reports how many transactions it would
+  actually recategorize (`estimated_match_count`); and a proposal whose blast
+  radius outruns its evidence (`is_broad`) is skipped on accept unless the
+  caller explicitly opts in (MCP `allow_broad`, CLI `--allow-broad`). A
+  proposal already pending from before this change keeps its original
+  `contains` pattern and won't be reinforced by further matching evidence
+  under the new `exact` lookup, so a second, `exact`-typed proposal for the
+  same evidence may appear alongside it. Both are still subject to the same
+  broad-match check before either can be promoted to a rule, so this is
+  fail-safe — just occasionally duplicative until the older proposal is
+  reviewed or ages out.
+- **Directly creating a categorization rule can no longer bypass the
+  short-`contains`-pattern guard.** The auto-rule proposer downgrades an
+  overly short machine-invented pattern (e.g. "TO") to `exact` so it can't
+  mass-mislabel the ledger, but `transactions_categorize_rules_create` (and
+  `moneybin transactions categorize rules create`) let a caller author that
+  same dangerous rule directly, with no check at all. A `contains` rule
+  whose pattern is shorter than `auto_rule_min_contains_length` (default 4)
+  is now refused rather than inserted — the item is counted in `skipped`
+  and `error_details` explains the refusal and how to proceed
+  (`match_type="exact"`, or `allow_broad=True`/`--allow-broad` to accept the
+  risk). `exact` patterns of any length are unaffected, and an ordinarily
+  broad but selective `contains` pattern (e.g. `"AMAZON"`) is never gated —
+  this is a specificity floor, not a breadth-vs-evidence check like
+  auto-rule review's `allow_broad`.
+- **The uncategorized-transactions queue no longer treats an unresolved
+  transfer leg as an ordinary row.** A transaction awaiting a transfer-match
+  decision was previously indistinguishable from any other uncategorized row;
+  categorizing it double-counts it against the eventual transfer pair once
+  matching resolves. Rows with a pending transfer match are now flagged, with
+  a hint to resolve the match first — they are still returned, never hidden.
 
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
@@ -281,6 +320,18 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **`transactions_categorize_assist` renames `description_redacted`/`memo_redacted`
+  to `description_scrubbed`/`memo_scrubbed`.** Behavior is unchanged and was
+  always correct: merchant text is the categorization signal and is sent to
+  the model in full; what is scrubbed is embedded PII such as account numbers
+  in the memo. The old field names claimed descriptions were withheld, which
+  was never true. The `categorize export` / `commit-from-file` file format
+  carries the new field names.
+- **Categorization stats split the `rule` bucket into `rule` and
+  `merchant_map`.** `transactions_categorize_stats`'s `by_source` breakdown
+  previously folded merchant-mapping writes into `by_rule`, so the count
+  didn't reconcile with the rules list. The persisted `categorized_by` value
+  is unchanged — this is a reporting-only split.
 - **Outside a repo checkout, `moneybin mcp install` now writes a config that runs
   the published package, pinned to the installed version.** The generated client
   entry uses `uv tool run --from moneybin==X.Y.Z` instead of pointing at a local

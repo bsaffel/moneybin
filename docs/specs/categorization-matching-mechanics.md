@@ -74,8 +74,8 @@ The frozen dataclass that crosses the privacy boundary in `src/moneybin/services
 @dataclass(frozen=True)
 class RedactedTransaction:
     transaction_id: str
-    description_redacted: str
-    memo_redacted: str
+    description_scrubbed: str
+    memo_scrubbed: str
     source_type: str
     transaction_type: str | None
     check_number: str | None
@@ -85,7 +85,7 @@ class RedactedTransaction:
     amount_sign: Literal["+", "-", "0"]
 ```
 
-`memo_redacted` runs through the same `redact_for_llm()` pipeline that `description_redacted` does. The existing redactor already strips P2P recipients, account-number tails, hash-prefixed refs, bare digits, embedded contact info, dates, and city/state — the patterns that memos carry. No new redaction rules are required for the v1 expansion; the contract is "run the existing redactor over both fields."
+`memo_scrubbed` runs through the same `redact_for_llm()` pipeline that `description_scrubbed` does. The existing redactor already strips P2P recipients, account-number tails, hash-prefixed refs, bare digits, embedded contact info, dates, and city/state — the patterns that memos carry. No new redaction rules are required for the v1 expansion; the contract is "run the existing redactor over both fields."
 
 ## Matcher algorithm
 
@@ -142,6 +142,10 @@ The `oneOf` lookup is `match_text IN merchant.exemplars` (set membership). DuckD
 ### What auto-merchant creation no longer does
 
 The previous behavior — creating a merchant with `raw_pattern = normalize_description(description)` and `match_type = 'contains'` — is removed. Replaced by exemplar accumulation above (now in `src/moneybin/services/categorization/orchestrator.py`). User-authored `contains` and `regex` patterns continue to work; only the *system-generated* path changes.
+
+### Invented-pattern floor (auto-rule proposals)
+
+A related but distinct machine-pattern path lives in the auto-rule proposer (`AutoRuleService`, [`categorization-auto-rules.md`](categorization-auto-rules.md)): when a categorized transaction has no associated merchant, the proposer falls back to a normalized `description`/`memo` as the rule pattern. `normalize_description()` can reduce a description to a 1–2 character token (a truncated "TRANSFER TO ..." becomes "TO"); as a `contains` pattern that token would match any description containing it — e.g. STORE, AUTO, TOTAL — not just the transactions that produced it. Below a configured floor (`auto_rule_min_contains_length`, default 4, in `CategorizationSettings`), the proposer emits `match_type='exact'` instead of `contains`: the evidence is preserved, but the rule can only fire on a description that IS the token. This floor governs only the proposer's machine-invented fallback pattern — a merchant's `raw_pattern` is always user-authored (see "What auto-merchant creation no longer does" above) and returns untouched.
 
 ## Source precedence
 
@@ -218,6 +222,10 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 
 - **Per-field locks.** A user fix to `category` does not free `subcategory` for further automation. If this becomes a real workflow, add a `locked_subcategory` boolean column or migrate to a JSONB lock map.
 - **Cross-axis locks** (e.g. lock the merchant assignment but allow category changes). Same deferral.
+
+### Reporting: the `merchant_map` stats bucket
+
+`categorized_by='rule'` is written by both the rule engine and merchant-pattern matching — the merchant-matcher path deliberately stamps `'rule'` rather than a distinct persisted value, so machine writes don't leak into the auto-rule override-detection query (`AutoRuleService.check_overrides`, which counts `'user'`/`'ai'` rows as human corrections). `transactions_categorize_stats`'s `by_source` breakdown splits these back apart for reporting only: a row is bucketed as `merchant_map` when `categorized_by='rule' AND rule_id IS NULL AND merchant_id IS NOT NULL`, and as `rule` otherwise, so the counts reconcile with `transactions_categorize_rules`' active rule list. The persisted `categorized_by` column is untouched — this is a read-time reclassification, not a new priority tier or a new `SOURCE_PRIORITY` value.
 
 ## Apply order
 

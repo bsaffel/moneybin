@@ -21,7 +21,7 @@ Tier derivation summary:
   - ``AutoReviewPayload``          → Tier.MEDIUM (via AutoReviewProposalRow)
   - ``AutoAcceptPayload``          → Tier.LOW  (AGGREGATE only — counts + IDs)
   - ``AutoStatsPayload``           → Tier.LOW  (AGGREGATE only — counts)
-  - ``AssistRow``                  → Tier.MEDIUM (description_redacted = DESCRIPTION)
+  - ``AssistRow``                  → Tier.MEDIUM (description_scrubbed = DESCRIPTION)
   - ``CatAssistPayload``           → Tier.MEDIUM (via AssistRow)
 
 ``transactions_categorize_assist`` deliberately redacts amounts and dates.
@@ -117,6 +117,10 @@ class PendingTxnRow:
     # RECORD_ID (spec D6): opaque canonical surrogate, not PII; passes through.
     account_id: Annotated[str | None, DataClass.RECORD_ID]
     age_days: Annotated[int | None, DataClass.AGGREGATE]
+    # True when an unresolved (pending, unreversed) app.match_decisions row
+    # references this transaction (F19) — categorizing it would double-count
+    # against the eventual transfer pair once matching resolves it.
+    pending_transfer_match: Annotated[bool, DataClass.AGGREGATE]
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +192,8 @@ class AutoReviewProposalRow:
     subcategory: Annotated[str | None, DataClass.CATEGORY]
     trigger_count: Annotated[int, DataClass.AGGREGATE]
     sample_txn_ids: Annotated[list[str], DataClass.RECORD_ID]
+    estimated_match_count: Annotated[int, DataClass.AGGREGATE]
+    is_broad: Annotated[bool, DataClass.AGGREGATE]
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,8 +276,8 @@ class AssistRow:
 
     transaction_id: Annotated[str, DataClass.RECORD_ID]
     # DESCRIPTION — drives CatAssistPayload to Tier.MEDIUM
-    description_redacted: Annotated[str, DataClass.DESCRIPTION]
-    memo_redacted: Annotated[str, DataClass.DESCRIPTION]
+    description_scrubbed: Annotated[str, DataClass.DESCRIPTION]
+    memo_scrubbed: Annotated[str, DataClass.DESCRIPTION]
     source_type: Annotated[str, DataClass.TXN_TYPE]
     transaction_type: Annotated[str | None, DataClass.TXN_TYPE]
     check_number: Annotated[str | None, DataClass.DESCRIPTION]

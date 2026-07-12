@@ -14,6 +14,7 @@ from moneybin.database import Database
 from moneybin.mcp.tools.transactions_categorize_assist import (
     transactions_categorize_assist,
 )
+from moneybin.services.categorization import RedactedTransaction
 
 pytestmark = pytest.mark.integration
 
@@ -89,6 +90,33 @@ def _wire_db_to_assist(monkeypatch: pytest.MonkeyPatch, db: Database) -> None:
     monkeypatch.setattr(_mod, "get_database", _db_ctx)
 
 
+def test_assist_row_names_the_scrub_honestly() -> None:
+    """The field says what it does: merchant text IS sent, account numbers are not.
+
+    The old name (`description_redacted`) claimed descriptions were withheld
+    while shipping "LOWES *", "BUC-EE'S" and "AMAZON" in the clear. The name is
+    what an agent reads at tool-selection time, so the lie lived in the
+    most-read place.
+    """
+    row = RedactedTransaction(
+        transaction_id="t_1",
+        description_scrubbed="AMAZON",
+        memo_scrubbed="ON-LINE xxxxxxxxx5648 ON 02-04",
+        source_type="ofx",
+        transaction_type=None,
+        check_number=None,
+        is_transfer=False,
+        transfer_pair_id=None,
+        payment_channel=None,
+        amount_sign="-",
+    )
+    wire = row.to_dict()
+    assert wire["description_scrubbed"] == "AMAZON"
+    assert wire["memo_scrubbed"] == "ON-LINE xxxxxxxxx5648 ON 02-04"
+    assert "description_redacted" not in wire
+    assert "memo_redacted" not in wire
+
+
 class TestCategorizeAssistMCPTool:
     """Integration tests for the transactions_categorize_assist MCP tool."""
 
@@ -107,7 +135,7 @@ class TestCategorizeAssistMCPTool:
         items = response.data.transactions
         for item in items:
             assert item.transaction_id
-            assert hasattr(item, "description_redacted")
+            assert hasattr(item, "description_scrubbed")
             assert hasattr(item, "source_type")
             # Confirm no amount/date/account fields exist on AssistRow
             assert not hasattr(item, "amount")

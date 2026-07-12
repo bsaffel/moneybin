@@ -16,7 +16,7 @@ from moneybin.errors import UserError
 logger = logging.getLogger(__name__)
 
 # Keys the CategorizationItem model accepts (extra="forbid"). Used to strip
-# export-shape extras (description_redacted, source_type) from rows fed to
+# export-shape extras (description_scrubbed, source_type) from rows fed to
 # commit-from-file.
 _ALLOWED_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
 
@@ -76,7 +76,7 @@ def categorize_commit_from_file(
         raise typer.Exit(1) from e
 
     # Map export-shape rows into CategorizationItem-shape rows. The export
-    # command emits {transaction_id, description_redacted, source_type} for the
+    # command emits {transaction_id, description_scrubbed, source_type} for the
     # LLM to annotate with category/subcategory; the service model is
     # {transaction_id, category, subcategory} with extra="forbid", so we must
     # strip the export-only keys before validation.

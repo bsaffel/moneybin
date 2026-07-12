@@ -314,7 +314,7 @@ class TestCreateRules:
         items = [
             CategorizationRuleInput(
                 name=f"R{i}",
-                merchant_pattern=f"P{i}",
+                merchant_pattern=f"PATTERN{i}",
                 category="Cat",
             )
             for i in range(3)
@@ -335,7 +335,7 @@ class TestCreateRules:
         items = [
             CategorizationRuleInput(
                 name=f"R{i}",
-                merchant_pattern=f"P{i}",
+                merchant_pattern=f"PATTERN{i}",
                 category="Cat",
             )
             for i in range(3)
@@ -480,6 +480,134 @@ class TestCreateRules:
         assert first.rule_ids != second.rule_ids
 
 
+class TestCreateRulesUnselectiveContainsGate:
+    """create_rules refuses a direct `contains "TO"`-shaped rule (rules-create-gate).
+
+    The MCP/CLI rule-creation path lets a caller author exactly the pattern
+    the auto-rule proposer downgrades to `exact` — an agent filling
+    merchant_pattern="TO", match_type="contains" would otherwise relabel
+    STORE/AUTO/TOTAL as Internal Transfer. This shares one predicate
+    (`_shared.is_unselective_contains`) with `AutoRuleService._invented_match_type`.
+    """
+
+    @pytest.mark.unit
+    def test_refuses_short_contains_pattern(self, db: Database) -> None:
+        items = [
+            CategorizationRuleInput(
+                name="Transfer TO",
+                merchant_pattern="TO",
+                category="Transfer",
+                subcategory="Internal Transfer",
+                match_type="contains",
+            )
+        ]
+        result = CategorizationService(db).create_rules(items)
+
+        assert result.created == 0
+        assert result.skipped == 1
+        assert result.rule_ids == []
+        assert len(result.error_details) == 1
+        assert result.error_details[0]["name"] == "Transfer TO"
+        assert "too short" in result.error_details[0]["reason"].lower()
+        assert "allow_broad" in result.error_details[0]["reason"]
+
+        row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
+        assert row == (0,)
+
+    @pytest.mark.unit
+    def test_allow_broad_overrides_the_refusal(self, db: Database) -> None:
+        items = [
+            CategorizationRuleInput(
+                name="Transfer TO",
+                merchant_pattern="TO",
+                category="Transfer",
+                subcategory="Internal Transfer",
+                match_type="contains",
+            )
+        ]
+        result = CategorizationService(db).create_rules(items, allow_broad=True)
+
+        assert result.created == 1
+        assert result.skipped == 0
+        assert result.error_details == []
+        assert len(result.rule_ids) == 1
+
+        row = db.execute(
+            "SELECT merchant_pattern, match_type FROM app.categorization_rules "
+            "WHERE rule_id = ?",
+            [result.rule_ids[0]],
+        ).fetchone()
+        assert row == ("TO", "contains")
+
+    @pytest.mark.unit
+    def test_exact_short_pattern_is_not_gated(self, db: Database) -> None:
+        """The floor is contains-only — `exact "TO"` needs no override."""
+        items = [
+            CategorizationRuleInput(
+                name="Transfer TO exact",
+                merchant_pattern="TO",
+                category="Transfer",
+                subcategory="Internal Transfer",
+                match_type="exact",
+            )
+        ]
+        result = CategorizationService(db).create_rules(items)
+
+        assert result.created == 1
+        assert result.skipped == 0
+        assert result.error_details == []
+
+    @pytest.mark.unit
+    def test_normal_broad_contains_pattern_is_not_gated(self, db: Database) -> None:
+        """A deliberately broad but selective pattern is never crying-wolf blocked."""
+        items = [
+            CategorizationRuleInput(
+                name="Amazon",
+                merchant_pattern="AMAZON",
+                category="Shopping",
+            )
+        ]
+        result = CategorizationService(db).create_rules(items)
+
+        assert result.created == 1
+        assert result.skipped == 0
+        assert result.error_details == []
+
+    @pytest.mark.unit
+    def test_resubmitting_existing_broad_rule_is_idempotent_not_gated(
+        self, db: Database
+    ) -> None:
+        """Re-submitting an already-active broad rule must hit the dedup path.
+
+        The gate must not run before the existing-active-rule lookup: a rule
+        created earlier with allow_broad=True (or one that predates this
+        guard) is already in app.categorization_rules — no new risky INSERT
+        would happen on resubmit, so refusing it only breaks the documented
+        idempotency contract (docs/specs/moneybin-mcp.md).
+        """
+        svc = CategorizationService(db)
+        items = [
+            CategorizationRuleInput(
+                name="Transfer TO",
+                merchant_pattern="TO",
+                category="Transfer",
+                subcategory="Internal Transfer",
+                match_type="contains",
+            )
+        ]
+        first = svc.create_rules(items, allow_broad=True)
+        assert first.created == 1
+        original_rule_id = first.rule_ids[0]
+
+        second = svc.create_rules(items)  # no allow_broad on resubmit
+
+        assert second.existing == 1
+        assert second.created == 0
+        assert second.skipped == 0
+        assert second.rule_ids == [original_rule_id]
+        assert second.error_details == []
+
+
 class TestDeactivateRule:
     """CategorizationService.deactivate_rule — soft-delete a rule."""
 
@@ -490,7 +618,7 @@ class TestDeactivateRule:
         items = [
             CategorizationRuleInput(
                 name="R1",
-                merchant_pattern="P1",
+                merchant_pattern="PATTERN1",
                 category="C",
             )
         ]
@@ -510,7 +638,7 @@ class TestDeactivateRule:
         # Ensure table exists by creating one rule, then ask for a different id.
         svc = CategorizationService(db)
         svc.create_rules([
-            CategorizationRuleInput(name="x", merchant_pattern="x", category="x"),
+            CategorizationRuleInput(name="x", merchant_pattern="xxxx", category="x"),
         ])
         assert svc.deactivate_rule("does-not-exist") is False
 
@@ -520,7 +648,7 @@ class TestDeactivateRule:
         items = [
             CategorizationRuleInput(
                 name=f"R{i}",
-                merchant_pattern=f"P{i}",
+                merchant_pattern=f"PATTERN{i}",
                 category="C",
             )
             for i in range(3)

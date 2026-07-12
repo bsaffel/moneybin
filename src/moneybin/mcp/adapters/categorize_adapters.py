@@ -36,17 +36,27 @@ def auto_review_envelope(
                 subcategory=p.get("subcategory"),
                 trigger_count=int(p.get("trigger_count", 0)),
                 sample_txn_ids=list(p.get("sample_txn_ids") or []),
+                estimated_match_count=int(p.get("estimated_match_count", 0)),
+                is_broad=bool(p.get("is_broad", False)),
             )
             for p in result.proposals
         ]
     )
+    broad = [p for p in result.proposals if p.get("is_broad")]
+    actions = [
+        "Use transactions_categorize_auto_accept to accept or reject proposals",
+    ]
+    if broad:
+        actions.append(
+            f"{len(broad)} proposal(s) are flagged is_broad — each would "
+            "recategorize far more transactions than its evidence supports. "
+            "Check estimated_match_count; accepting one requires allow_broad=true."
+        )
     return build_envelope(
         data=payload,
         sensitivity="medium",
         total_count=result.total_count,
-        actions=[
-            "Use transactions_categorize_auto_accept to accept or reject proposals",
-        ],
+        actions=actions,
     )
 
 

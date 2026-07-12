@@ -70,10 +70,18 @@ def transactions_categorize_stats(
     """Get categorization coverage statistics.
 
     Returns total transactions, categorized count, uncategorized count,
-    percentage categorized, breakdown by categorization source
-    (user, ai, rule, provider_native), and plaid_unmapped — the count of
-    Plaid transactions whose PFC code has no category-source-bridge mapping
-    yet (omitted when no Plaid data is present).
+    percentage categorized, breakdown by categorization source, and
+    plaid_unmapped — the count of Plaid transactions whose PFC code has no
+    category-source-bridge mapping yet (omitted when no Plaid data is
+    present).
+
+    The source breakdown carries one bucket per persisted ``categorized_by``
+    value (``user``, ``rule``, ``auto_rule``, ``migration``, ``ml``,
+    ``provider_native``, ``ai``) plus a reporting-only ``merchant_map``
+    bucket: rows written via merchant-pattern matching are split out of
+    ``rule`` here so the count reconciles with transactions_categorize_rules'
+    rule list, but the persisted ``categorized_by`` value on those rows is
+    still ``rule``.
 
     Args:
         include_auto: When True, also return auto-rule health metrics
@@ -165,16 +173,25 @@ def transactions_categorize_pending(
                 memo=None,
                 account_id=r.get("account_id"),
                 age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+                pending_transfer_match=bool(r.get("pending_transfer_match", False)),
             )
             for r in records
         ]
     )
+    actions = [
+        "Use transactions_categorize_commit to commit categorizations for these transactions",
+        "Use transactions_categorize_rules_create to set up automatic categorization",
+    ]
+    flagged = sum(1 for r in records if r.get("pending_transfer_match"))
+    if flagged:
+        actions.append(
+            f"{flagged} of these have an unresolved transfer match. Categorizing "
+            "a transfer leg double-counts it against the eventual pair — resolve "
+            "them first with transactions_matches_run / transactions_matches_set."
+        )
     return build_envelope(
         data=payload,
-        actions=[
-            "Use transactions_categorize_commit to commit categorizations for these transactions",
-            "Use transactions_categorize_rules_create to set up automatic categorization",
-        ],
+        actions=actions,
     )
 
 
@@ -231,7 +248,9 @@ def transactions_categorize_commit(
 
 @mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
-    rules: list[dict[str, str | float | int | None]], reapply: bool = False
+    rules: list[dict[str, str | float | int | None]],
+    reapply: bool = False,
+    allow_broad: bool = False,
 ) -> ResponseEnvelope[RulesCreatePayload]:
     """Create multiple categorization rules in one call.
 
@@ -239,16 +258,29 @@ def transactions_categorize_rules_create(
     Optional fields: ``subcategory``, ``match_type`` (default 'contains'),
     ``min_amount``, ``max_amount``, ``account_id``, ``priority`` (default 100).
 
+    A ``contains`` rule whose ``merchant_pattern`` is too short to
+    discriminate (below ``auto_rule_min_contains_length``, default 4 chars —
+    e.g. `contains "TO"` matches STORE, AUTO, TOTAL) is refused rather than
+    created: it would silently relabel unrelated transactions across the
+    ledger. The refused item is not inserted, counted in ``skipped``, and
+    explained in ``error_details``. Fix by using ``match_type="exact"`` for
+    a short pattern, or pass ``allow_broad=True`` to accept the risk.
+
     Args:
         rules: List of rule dicts.
         reapply: If True, retroactively apply the new rules to all
             uncategorized transactions after the inserts commit. Default
             False; only future categorizations are affected.
+        allow_broad: If True, bypass the unselective-``contains`` refusal
+            above. Only set this after confirming the short pattern is
+            intentional — it is not the same override as auto-rule review's
+            ``allow_broad`` (that gate is breadth-vs-evidence; this one is a
+            fixed specificity floor).
     """
     validated, parse_errors = validate_rule_items(rules)
     with get_database(read_only=False) as db:
         result = CategorizationService(db).create_rules(
-            validated, reapply=reapply, actor="mcp"
+            validated, reapply=reapply, actor="mcp", allow_broad=allow_broad
         )
     result.merge_parse_errors(parse_errors)
     return build_envelope(
@@ -309,22 +341,35 @@ def transactions_categorize_auto_review(
 
 @mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_auto_accept(
-    accept: list[str] | None = None, reject: list[str] | None = None
+    accept: list[str] | None = None,
+    reject: list[str] | None = None,
+    allow_broad: bool = False,
 ) -> ResponseEnvelope[AutoAcceptPayload]:
     """Accept or reject auto-rule proposals by ID.
 
     Accepted proposals become active rules and immediately categorize
-    matching transactions.
+    matching transactions. Writes app.categorization_rules and
+    app.transaction_categories; revert accepted rules with
+    transactions_categorize_rules_delete (rejected proposals cannot be
+    un-rejected).
 
     Args:
         accept: Proposal IDs to accept and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
+        allow_broad: Required to accept a proposal that
+            transactions_categorize_auto_review flagged ``is_broad`` — one whose
+            ``estimated_match_count`` far exceeds the evidence behind it. Without
+            this, such proposals are skipped rather than promoted. Review
+            ``estimated_match_count`` before setting it: a broad rule
+            recategorizes every matching transaction at once, and a wrong
+            Transfer label also removes those rows from spend reports.
     """
     with get_database(read_only=False) as db:
         result = AutoRuleService(db).accept(
             accept=accept or [],
             reject=reject or [],
             actor="mcp",
+            allow_broad=allow_broad,
         )
     return auto_accept_envelope(result)
 
@@ -398,7 +443,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         transactions_categorize_stats,
         "transactions_categorize_stats",
         "Get categorization coverage statistics: total, categorized, uncategorized, "
-        "percent, and breakdown by source. Pass include_auto=True to also include "
+        "percent, and breakdown by source. In by_source, 'rule' counts rows "
+        "categorized by a persisted rule and 'merchant_map' counts rows the "
+        "merchant-map engine categorized (both are stored as categorized_by='rule'; "
+        "the split is reporting-only, so 'rule' reconciles with the list from "
+        "transactions_categorize_rules). Pass include_auto=True to also include "
         "auto-rule health metrics (active rules, pending proposals, transactions "
         "categorized by auto-rules); the response data becomes "
         "{overall: {...}, auto: {...}} instead of the flat shape.",
@@ -408,7 +457,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         transactions_categorize_pending,
         "transactions_categorize_pending",
         "Find transactions that have not been categorized yet. "
-        "Excludes transfer pairs and archived accounts. "
+        "Excludes archived accounts and transfers whose pair has already been "
+        "matched. A transfer whose pair is NOT yet matched still appears here, "
+        "flagged pending_transfer_match=true — categorizing such a row "
+        "double-counts it against the eventual transfer pair, so resolve "
+        "matching first. "
         "sort='impact' ranks by ABS(amount)*age_days (largest-value/oldest first); "
         "sort='date' (default) orders by most recent first. "
         "Filter by min_amount (absolute value) and account (account_id or display_name). "
@@ -432,6 +485,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "active rules by matcher+output (merchant_pattern, match_type, "
         "min/max_amount, account_id, category, subcategory); name and "
         "priority are metadata. Retries return the existing rule_id. "
+        "A NEW 'contains' rule whose pattern is too short to discriminate "
+        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL) is refused and "
+        "reported in error_details unless allow_broad=true — use "
+        "match_type='exact' for a short pattern, or set allow_broad=true to "
+        "accept the risk. An already-active rule is returned as-is, ungated. "
         "Writes app.categorization_rules; revert with transactions_categorize_rules_delete (soft-delete sets active=False).",
     )
     register(
@@ -445,7 +503,9 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_categorize_auto_review,
         "transactions_categorize_auto_review",
-        "List pending auto-rule proposals with sample transactions and trigger counts.",
+        "List pending auto-rule proposals with sample transactions and trigger counts, "
+        "including estimated_match_count and is_broad — a proposal flagged is_broad "
+        "requires allow_broad=True on transactions_categorize_auto_accept to be accepted.",
     )
     register(
         mcp,
@@ -453,7 +513,11 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "transactions_categorize_auto_accept",
         "Batch accept/reject auto-rule proposals. Accepted "
         "proposals become active rules and immediately categorize "
-        "matching transactions. "
+        "matching transactions. Two kinds of proposal are skipped, not promoted, "
+        "unless allow_broad=True: one flagged is_broad (estimated_match_count far "
+        "exceeds its evidence — a broad rule recategorizes many transactions at "
+        "once), and one whose 'contains' pattern is too short to discriminate "
+        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL). "
         "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
     )
     register(

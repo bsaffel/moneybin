@@ -8,6 +8,7 @@ These tests verify the MCP tool wiring, envelope format, and basic end-to-end.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
@@ -22,13 +23,18 @@ from moneybin.mcp.tools.categories import (
 from moneybin.mcp.tools.merchants import register_merchants_tools
 from moneybin.mcp.tools.transactions_categorize import (
     register_transactions_categorize_tools,
+    transactions_categorize_auto_accept,
     transactions_categorize_commit,
     transactions_categorize_pending,
+    transactions_categorize_rules_create,
     transactions_categorize_stats,
 )
 from moneybin.mcp.tools.transactions_categorize_assist import (
     register_transactions_categorize_assist_tools,
 )
+from moneybin.services.auto_rule_service import AutoConfirmResult
+from moneybin.services.categorization import CategorizationRuleInput
+from moneybin.services.categorization.applier import RuleCreationResult
 from tests.moneybin.db_helpers import seed_categories_view
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -413,3 +419,104 @@ class TestCategorizePendingSortParam:
         ).to_dict()
         dates = [r["transaction_date"] for r in result["data"]["transactions"]]
         assert dates == sorted(dates, reverse=True)
+
+
+class TestAllowBroadWiring:
+    """MCP-level wiring tests for allow_broad forwarding.
+
+    Mirrors the CLI wiring tests (test_categorize_rules_commands.py::
+    test_rules_create_allow_broad_forwards_true,
+    test_categorize_auto_commands.py::test_auto_accept_allow_broad_forwards_true)
+    — the CLI got these; the MCP tools did not.
+    """
+
+    _RULE_DICT = {
+        "name": "Transfer TO",
+        "merchant_pattern": "TO",
+        "category": "Transfer",
+        "subcategory": "Internal Transfer",
+        "match_type": "contains",
+    }
+    _EXPECTED_ITEM = CategorizationRuleInput(
+        name="Transfer TO",
+        merchant_pattern="TO",
+        category="Transfer",
+        subcategory="Internal Transfer",
+        match_type="contains",
+    )
+
+    @staticmethod
+    def _rule_result() -> RuleCreationResult:
+        return RuleCreationResult(
+            created=1, existing=0, skipped=0, error_details=[], rule_ids=["r1"]
+        )
+
+    @pytest.mark.unit
+    @patch("moneybin.mcp.tools.transactions_categorize.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.create_rules")
+    async def test_rules_create_forwards_allow_broad_true(
+        self, mock_create_rules: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """allow_broad=True forwards to CategorizationService.create_rules()."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_create_rules.return_value = self._rule_result()
+
+        await transactions_categorize_rules_create(
+            rules=[self._RULE_DICT], allow_broad=True
+        )
+
+        mock_create_rules.assert_called_once_with(
+            [self._EXPECTED_ITEM], reapply=False, actor="mcp", allow_broad=True
+        )
+
+    @pytest.mark.unit
+    @patch("moneybin.mcp.tools.transactions_categorize.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.create_rules")
+    async def test_rules_create_allow_broad_defaults_to_false(
+        self, mock_create_rules: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Without allow_broad, create_rules() is called with allow_broad=False."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_create_rules.return_value = self._rule_result()
+
+        await transactions_categorize_rules_create(rules=[self._RULE_DICT])
+
+        mock_create_rules.assert_called_once_with(
+            [self._EXPECTED_ITEM], reapply=False, actor="mcp", allow_broad=False
+        )
+
+    @pytest.mark.unit
+    @patch("moneybin.mcp.tools.transactions_categorize.get_database")
+    @patch("moneybin.services.auto_rule_service.AutoRuleService.accept")
+    async def test_auto_accept_forwards_allow_broad_true(
+        self, mock_accept: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """allow_broad=True forwards to AutoRuleService.accept() (F17 Layer 3 override)."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_accept.return_value = AutoConfirmResult(
+            approved=1, rejected=0, skipped=0, newly_categorized=0, rule_ids=["r1"]
+        )
+
+        await transactions_categorize_auto_accept(accept=["a1"], allow_broad=True)
+
+        mock_accept.assert_called_once_with(
+            accept=["a1"], reject=[], actor="mcp", allow_broad=True
+        )
+
+    @pytest.mark.unit
+    @patch("moneybin.mcp.tools.transactions_categorize.get_database")
+    @patch("moneybin.services.auto_rule_service.AutoRuleService.accept")
+    async def test_auto_accept_allow_broad_defaults_to_false(
+        self, mock_accept: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Without allow_broad, accept() is called with allow_broad=False."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_accept.return_value = AutoConfirmResult(
+            approved=1, rejected=0, skipped=0, newly_categorized=0, rule_ids=["r1"]
+        )
+
+        await transactions_categorize_auto_accept(accept=["a1"])
+
+        mock_accept.assert_called_once_with(
+            accept=["a1"], reject=[], actor="mcp", allow_broad=False
+        )

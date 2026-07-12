@@ -1113,9 +1113,20 @@ Fetch transactions that haven't been categorized yet. Absorbs the former `report
 
 - **Sensitivity:** `medium` — returns transaction descriptions and amounts.
 - **Unique parameters:** `limit: int = 50`, `sort: Literal["date", "impact"] = "date"` (`impact` sorts by `ABS(amount) × age_days` descending), `min_amount: Decimal = Decimal("0")` (filter to `ABS(amount) >= min_amount`), `account: str | None = None` (filter by account ID or display name; ambiguous display names raise `account_ambiguous`).
-- **Behavior:** Returns array of `{transaction_id, account_id, account_name, txn_date, amount, description, merchant_id, merchant_normalized, age_days, priority_score, source_type, source_id}` from `reports.uncategorized_queue`. Amounts use the accounting convention: negative = expense, positive = income. Degraded response returns uncategorized count by account and time period.
+- **Behavior:** Returns array of `{transaction_id, account_id, account_name, txn_date, amount, description, merchant_id, merchant_normalized, age_days, priority_score, source_type, source_id, pending_transfer_match}` from `reports.uncategorized_queue`. `pending_transfer_match` is `true` when the row carries an unresolved (pending, unreversed) `app.match_decisions` entry — categorizing it would double-count against the eventual transfer pair once matching resolves. Rows are flagged, never hidden; when any are flagged, `actions[]` adds a hint to resolve the match first via `transactions_matches_run` / `transactions_matches_set`. Amounts use the accounting convention: negative = expense, positive = income. Degraded response returns uncategorized count by account and time period.
 - **Service:** `CategorizationService.list_uncategorized_transactions(limit, sort, min_amount, account_id)`
 - **CLI:** `moneybin transactions categorize pending [--limit N] [--sort date|impact] [--min-amount N] [--account NAME]`
+
+### `transactions_categorize_assist`
+
+Return uncategorized transactions as PII-scrubbed rows for LLM-assisted categorization.
+
+- **Sensitivity:** `medium` — descriptions leave the machine.
+- **Unique parameters:** `limit: int | None = None` (defaults to `assist_default_batch_size`, 100), `account_filter: list[str] | None = None`, `date_range: dict[str, str] | None = None`.
+- **Behavior:** Returns `RedactedTransaction` rows (see `categorization-matching-mechanics.md` §"`RedactedTransaction` schema") as `{transaction_id, description_scrubbed, memo_scrubbed, source_type, transaction_type, check_number, is_transfer, transfer_pair_id, payment_channel, amount_sign}`. Merchant text (`description`/`memo`) is sent **in full** — it is the categorization signal — with only embedded PII (e.g. account numbers in the memo) masked via `redact_for_llm()`. No amounts, dates, or account identifiers are ever sent; `amount_sign` (`'+'`/`'-'`/`'0'`) is the only direction hint. The LLM proposes `(category, subcategory, canonical_merchant_name)` per row; the user reviews; the LLM persists accepted decisions via `transactions_categorize_commit` with `categorized_by='ai'`.
+- **Field history:** `description_scrubbed`/`memo_scrubbed` were named `description_redacted`/`memo_redacted` before this rename — the old names claimed descriptions were withheld, which was never true. Behavior is unchanged.
+- **Service:** `categorize_assist()` (`src/moneybin/services/categorization/assist.py`)
+- **CLI:** `moneybin transactions categorize assist [--limit N] [--account-filter a,b]`; `moneybin transactions categorize export-uncategorized` writes the same shape to a file for pipeline use.
 
 ### `transactions_categorize_commit`
 
@@ -1156,8 +1167,8 @@ List active categorization rules.
 Create one or more categorization rules.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `rules: list[object]` (required) — list of `{name, merchant_pattern, category, subcategory?, match_type?, min_amount?, max_amount?, account_id?, priority?}`.
-- **Behavior:** Idempotent. Each item is deduped against active rules by the matcher+output tuple — `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`. `name` and `priority` are metadata and excluded from the dedup key, so renaming a rule or shuffling priorities does not create a new row. If an active rule with the same key exists, the existing `rule_id` is returned. Returns `{created, existing, skipped, errors, error_details, rule_ids}`.
+- **Unique parameters:** `rules: list[object]` (required) — list of `{name, merchant_pattern, category, subcategory?, match_type?, min_amount?, max_amount?, account_id?, priority?}`. `allow_broad: bool` (default `False`) — see Behavior.
+- **Behavior:** Idempotent. Each item is deduped against active rules by the matcher+output tuple — `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`. `name` and `priority` are metadata and excluded from the dedup key, so renaming a rule or shuffling priorities does not create a new row. If an active rule with the same key exists, the existing `rule_id` is returned. A `contains` item whose pattern is shorter than `auto_rule_min_contains_length` (default 4) is refused rather than inserted — it would match unrelated merchants (e.g. `contains "TO"` matches STORE/AUTO/TOTAL) — unless `allow_broad=True`; refused items are counted in `skipped` and explained in `error_details`. `exact` patterns are never gated. Returns `{created, existing, skipped, errors, error_details, rule_ids}`.
 - **Service:** `CategorizationService.create_rules() -> RuleCreationResult`
 - **CLI:** `moneybin transactions categorize rules create --file rules.json`
 
@@ -1243,7 +1254,7 @@ Categorization coverage statistics; optionally includes auto-rule health metrics
 
 - **Sensitivity:** `low` — counts and percentages only.
 - **Unique parameters:** `include_auto: bool = False` — when true, appends auto-rule health to the response.
-- **Behavior:** Base response: `{total_transactions, categorized, uncategorized, percent_categorized, by_source, plaid_unmapped}` where `by_source` breaks down by categorization source (user, rule, ai, provider_native) and `plaid_unmapped` counts Plaid transactions whose PFC code has no `core.bridge_category_source_map` mapping yet (omitted when no Plaid data is present). With `include_auto=True`, returns `{overall: <base>, auto: {active_auto_rules, pending_proposals, transactions_categorized}}`. The `auto` block absorbs what was previously the standalone `transactions_categorize_auto_stats` tool.
+- **Behavior:** Base response: `{total_transactions, categorized, uncategorized, percent_categorized, by_source, plaid_unmapped}` where `by_source` breaks down by categorization source — one bucket per persisted `categorized_by` value (`user`, `rule`, `auto_rule`, `migration`, `ml`, `provider_native`, `ai`) plus a reporting-only `merchant_map` bucket split out of `rule` for rows written via merchant-pattern matching (the persisted `categorized_by` value on those rows is still `rule`; this split makes `by_source` reconcile with `transactions_categorize_rules`' rule list) — and `plaid_unmapped` counts Plaid transactions whose PFC code has no `core.bridge_category_source_map` mapping yet (omitted when no Plaid data is present). With `include_auto=True`, returns `{overall: <base>, auto: {active_auto_rules, pending_proposals, transactions_categorized}}`. The `auto` block absorbs what was previously the standalone `transactions_categorize_auto_stats` tool.
 - **Service:** `CategorizationService.stats() -> CategorizationStats`; with `include_auto=True` also calls `AutoRuleService.stats() -> AutoStatsResult`.
 - **CLI:** `moneybin transactions categorize stats`
 
@@ -1257,7 +1268,7 @@ List auto-generated rules pending user approval.
 
 - **Sensitivity:** `low`
 - **Unique parameters:** None.
-- **Behavior:** Returns array of `{proposed_rule_id, merchant_pattern, category, subcategory, source, trigger_count, sample_transactions}` where `source` indicates how the rule was generated (ml, pattern_detection).
+- **Behavior:** Returns array of `{proposed_rule_id, merchant_pattern, match_type, category, subcategory, trigger_count, sample_txn_ids, estimated_match_count, is_broad}`. `estimated_match_count` is how many transactions the proposed pattern would actually match today, computed with the live matcher's own predicate (not an approximation). `is_broad` is `true` when the blast radius outruns the evidence behind the proposal (both an absolute floor and a ratio against `trigger_count` — see `auto_rule_broad_match_min` / `auto_rule_broad_match_factor` in `config.py`). A broad proposal cannot be promoted via `transactions_categorize_auto_accept` without an explicit `allow_broad` override. When any returned proposal is broad, `actions[]` adds a hint naming the count and pointing at `estimated_match_count`.
 - **Service:** `AutoRuleService.review() -> AutoReviewResult`
 - **CLI:** `moneybin transactions categorize auto review`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
@@ -1267,11 +1278,11 @@ List auto-generated rules pending user approval.
 Accept or reject proposed auto-generated rules. Takes two parallel ID lists.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `accept: list[str]` (proposed_rule_ids to promote), `reject: list[str]` (proposed_rule_ids to refuse).
-- **Behavior:** Accepted rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. Returns `{accepted, rejected, errors}`.
+- **Unique parameters:** `accept: list[str]` (proposed_rule_ids to promote), `reject: list[str]` (proposed_rule_ids to refuse), `allow_broad: bool = False` — required to accept a proposal that `transactions_categorize_auto_review` flagged `is_broad`; without it, such ids are skipped rather than promoted (they count toward the response's `skipped`, not `accepted`).
+- **Behavior:** Accepted rules are promoted to active categorization rules in `app.categorization_rules` with `created_by='auto_rule'` and immediately evaluated against uncategorized transactions. Rejected rules are not re-proposed for the same pattern. IDs appearing in both `accept` and `reject` are dropped from `accept` — an explicit reject always wins. Returns `{approved, rejected, skipped, newly_categorized, rule_ids}`.
 - **Mutation surface:** writes to `app.categorization_rules` (accept path) and `app.proposed_rules` (status transitions). Revert via `transactions_categorize_rules_delete` for promoted rules.
-- **Service:** `AutoRuleService.accept(accept=..., reject=...) -> ActionResult`
-- **CLI:** `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...]`
+- **Service:** `AutoRuleService.accept(accept=..., reject=..., allow_broad=...) -> AutoConfirmResult`
+- **CLI:** `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...] [--allow-broad]`
 - **Dependency:** [Categorization overview](categorization-overview.md) (Pillar E: auto-rule generation), [Auto-rule generation](categorization-auto-rules.md).
 
 ### `transactions_categorize_auto_stats`

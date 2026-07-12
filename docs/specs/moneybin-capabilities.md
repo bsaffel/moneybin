@@ -74,7 +74,7 @@ not-yet-built.
 | 13| Soft-delete a categorization rule by ID                          | `transactions_categorize_rules_delete` | `transactions categorize rules delete` | —          | live                  |
 | 14| Commit externally-decided categorizations (LLM workflow's terminal step) | `transactions_categorize_commit`        | `transactions categorize commit`        | —          | live                  |
 | 15| Run the categorization engine cascade (rules + merchants)        | `transactions_categorize_run`            | `transactions categorize run`            | —          | live                  |
-| 16| Get redacted batch for LLM categorization                        | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
+| 16| Get PII-scrubbed batch for LLM categorization                    | `transactions_categorize_assist`         | `transactions categorize assist`         | —          | live                  |
 | 17| Categorization coverage statistics (with optional auto-rule health) | `transactions_categorize_stats` *(`include_auto=True` for auto metrics)* | `transactions categorize stats` | — | live |
 | 18| Fetch uncategorized transactions queue (sortable by date or impact) | `transactions_categorize_pending` *(`sort`, `min_amount`, `account`)* | `transactions categorize pending` | — | live |
 | 19| Check auto-rule health metrics in isolation                      | absorbed into row 17 (`include_auto=True`) | `transactions categorize auto stats` *(CLI-only after MCP tool retired)* | — | live |
@@ -132,6 +132,8 @@ not-yet-built.
 | 69| List pending security-link merge decisions grouped by provider ref | `investments_securities_links_pending` | `investments securities links pending` *(`--output json`)* | — | live |
 | 70| Accept (merge) or reject one pending security-link merge decision | `investments_securities_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `into: str\|null`; accept requires `into` = the decision's own `candidate_security_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `investments securities links set <decision_id> --accept --into <candidate_security_id>` (merge) / `--reject` (keep as distinct instrument) | — | live |
 | 71| Show recent security-link decisions (all statuses) | `investments_securities_links_history` *(`limit=50`)* | `investments securities links history` *(`--limit`, `--output json`)* | — | live |
+| 72| Review pending auto-rule proposals with each proposal's estimated blast radius | `transactions_categorize_auto_review` *(returns `estimated_match_count` + `is_broad` per proposal)* | `transactions categorize auto review` | — | live |
+| 73| Accept or reject pending auto-rule proposals (a broad proposal requires an explicit override) | `transactions_categorize_auto_accept` *(`accept`, `reject`, `allow_broad` — required to promote an `is_broad` proposal)* | `transactions categorize auto accept --accept/--reject [--allow-broad]` | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -235,7 +237,18 @@ accept behind the shared MCP elicitation (`mcp/elicitation.py::confirm_or_raise`
 an agent can no longer read a candidate id out of `*_links_pending` and merge
 in the same turn with no human involved. `decided_by` now tracks reality —
 `"user"` only when a human ratified the accept at the elicitation, `"auto"` on
-an agent-driven MCP reject. CLI behavior is unchanged.)*
+an agent-driven MCP reject. CLI behavior is unchanged.
+Rows 72–73 added 2026-07-12 with the auto-rule blast-radius guard PR:
+`transactions_categorize_auto_review` (MCP) / `moneybin transactions categorize
+auto review` (CLI) now surface `estimated_match_count` and `is_broad` per
+proposal; `transactions_categorize_auto_accept` (MCP) /
+`moneybin transactions categorize auto accept` (CLI) gain `allow_broad` /
+`--allow-broad`, required to promote a proposal flagged `is_broad`. Row 16's
+capability description is corrected from "redacted" to "PII-scrubbed" in the
+same PR — the `transactions_categorize_assist` fields are renamed
+`description_scrubbed`/`memo_scrubbed` (were `description_redacted`/
+`memo_redacted`); merchant text was always sent in full, only embedded PII
+was ever masked.)*
 
 ## Exemption categories
 

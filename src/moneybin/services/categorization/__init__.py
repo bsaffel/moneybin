@@ -308,6 +308,7 @@ class CategorizationService:
         *,
         reapply: bool = False,
         actor: str = "system",
+        allow_broad: bool = False,
     ) -> RuleCreationResult:
         """Create multiple categorization rules in one call (idempotent).
 
@@ -317,8 +318,14 @@ class CategorizationService:
         ``categorize_pending`` runs so the new rules fan out to uncategorized
         rows immediately. ``actor`` is threaded to the audit rows (CLI/MCP pass
         their surface; default ``"system"``).
+
+        ``allow_broad`` overrides the unselective-``contains`` refusal (a
+        pattern too short to discriminate) — see ``create_rules_core`` for
+        why this differs from the auto-rule "broad" test.
         """
-        result = self._applier.create_rules_core(items, actor=actor)
+        result = self._applier.create_rules_core(
+            items, actor=actor, allow_broad=allow_broad
+        )
         if reapply and result.created > 0:
             self.categorize_pending()
         return result

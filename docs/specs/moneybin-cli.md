@@ -302,12 +302,13 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |   +-- list
 |   |   |   +-- create <name> [--pattern --category --subcategory --match-type
 |   |   |   |                  --priority --min-amount --max-amount --account-id
-|   |   |   |                  --from-file --reapply]
+|   |   |   |                  --from-file --reapply --allow-broad]
 |   |   |   +-- apply               -- Run rules against uncategorized
 |   |   |   +-- delete <rule_id> [--reapply]
 |   |   +-- auto                    -- Auto-rule proposals workflow
 |   |   |   +-- review [--limit N]
 |   |   |   +-- accept [--accept ID ...] [--reject ID ...] [--accept-all] [--reject-all]
+|   |   |   |          [--allow-broad]
 |   |   |   +-- rules [--limit N]
 |   |   |   +-- stats
 |   |   +-- ml                      -- ML-assisted categorization (stub)
