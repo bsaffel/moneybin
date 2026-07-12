@@ -105,6 +105,9 @@ PLAID_SECURITIES = TableRef("raw", "plaid_securities")
 PLAID_INVESTMENT_TRANSACTIONS = TableRef("raw", "plaid_investment_transactions")
 PLAID_INVESTMENT_HOLDINGS = TableRef("raw", "plaid_investment_holdings")
 PLAID_INVESTMENT_HOLDING_LOTS = TableRef("raw", "plaid_investment_holding_lots")
+PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS = TableRef(
+    "raw", "plaid_investment_holdings_snapshots"
+)
 SECURITY_LINKS = TableRef("app", "security_links")
 SECURITY_LINK_DECISIONS = TableRef("app", "security_link_decisions")
 DIM_SECURITIES = TableRef("core", "dim_securities", audience="interface")

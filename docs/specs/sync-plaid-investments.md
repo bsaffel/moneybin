@@ -386,6 +386,58 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
 );
 ```
 
+#### `raw.plaid_investment_holdings_snapshots`
+
+The **receipt** that an item's holdings were fetched, written on every pull —
+**including the pull that returns zero positions**. `raw.plaid_investment_holdings`
+records holding *rows*, so it cannot distinguish "this item reported nothing
+(every position sold)" from "this item never reported / the pull didn't cover
+it": an item whose holdings array comes back empty writes no rows at all, and a
+newest-snapshot join keyed on those rows silently keeps the last **non-empty**
+snapshot from an earlier pull. The fully-liquidated broker — MoneyBin claiming
+every position while the broker claims none, the largest possible net-worth
+overstatement — is then exactly the case that evades reconciliation: `dim_holdings`
+reports the stale quantity as the broker's current claim, and the doctor's
+phantom-holdings check reads that non-NULL claim as "still held" and passes.
+
+Every consumer that needs *"the newest holdings snapshot for this item"*
+(`core.dim_holdings`, the doctor's holdings checks) derives it from **here**, never
+from the presence of holdings rows. An item that reported nothing then has an
+**empty** newest snapshot (no holdings row joins to it → `provider_reported_*` NULL
+→ its lots surface as phantoms); an item that never reported has **no** newest
+snapshot (its positions stay out of scope, so a disconnected broker is not read as
+liquidated). Absence of evidence stops being read as evidence of absence.
+
+An item counts as having reported iff the server declared an investments window
+for it (`metadata.institutions[].transactions_window_start`, its
+`/investments/transactions/get` start boundary) on a `completed` result — the only
+wire signal that the server ran that item's investments flow. A **failed** item and
+a **cash-only** item (no window) get no receipt: claiming either "was asked and
+answered nothing" would flag every lot at that institution as a phantom. Items that
+*did* deliver holdings are included unconditionally, which holds the invariant every
+newest-snapshot consumer depends on: **no holdings row exists whose
+`(source_origin, source_file)` has no receipt.**
+
+```sql
+/* Receipt that an item's holdings were FETCHED, one row per (item, pull) — written even when the item returns ZERO positions. */
+CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; the item that reported (part of the PK)
+    source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK), same as the holdings rows it accounts for
+    holdings_date DATE,                       -- Snapshot calendar date = extracted_at::DATE (UTC); same derivation as raw.plaid_investment_holdings.holdings_date
+    holdings_count INTEGER NOT NULL,          -- Positions this item returned in this snapshot; 0 = the item reported and holds NOTHING (the case this table exists to record)
+    source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
+        DEFAULT 'plaid',
+    extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
+        DEFAULT CURRENT_TIMESTAMP,
+    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+        DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_origin, source_file)
+);
+```
+
+Staged as `prep.stg_plaid__investment_holdings_snapshots` (passthrough — the grain
+is the item and the snapshot, so there is no account or security id to resolve).
+
 #### `raw.plaid_investment_holding_lots`
 
 Plaid's `Holding.tax_lots[]` is a per-lot array — one `HoldingTaxLot` entry per
@@ -987,7 +1039,7 @@ exact for held shares and flagged only where genuinely unrecoverable.
 |---|---|
 | `core.dim_securities` | **None** (stays a catalog view over `app.securities`). The v1 model's `-- Future: UNION ALL resolved securities from prep.stg_plaid__securities` comment is superseded — minting puts every synced security *in* the catalog, so a union would double-count. Update the comment in place. |
 | `core.fct_investment_transactions` | Add **two** Plaid CTEs — `plaid_investment_transactions` (from `prep.stg_plaid__investment_transactions`) **and** `plaid_opening_lots` (from `prep.stg_plaid__opening_lots`, the Requirement 13 bootstrap `transfer_in`s) — both `UNION ALL`'d with the manual staging model (the extension point foundation Requirement 7 reserved). Without the `plaid_opening_lots` branch the bootstrap model is built but never reaches the ledger, so pre-window sells still take the oversold zero-basis path. **New nullable columns** `provider_type VARCHAR`, `provider_subtype VARCHAR` (NULL for manual rows). Plaid transaction rows use Plaid's `investment_transaction_id` as the canonical id; bootstrap rows use their content-hash id (both source-provided, per the column contract). |
-| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot*** (the `source_file` with `MAX(extracted_at)` per `source_origin`), never "latest row per position" or "latest holdings_date". Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
+| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot***, never "latest row per position" or "latest holdings_date". Which snapshot is newest comes from `prep.stg_plaid__investment_holdings_snapshots` (the `source_file` with `MAX(extracted_at)` per `source_origin`), **not** from the holdings rows themselves — a pull that returns zero positions writes no holdings rows, so a row-derived newest snapshot cannot see it and would keep serving the last non-empty one (see that table). Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day, and including the empty snapshot of a fully-liquidated item — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
 | `core.fct_investment_lots` / `core.fct_realized_gains` | **No changes.** Derived from the unioned ledger; Plaid rows flow through the existing four-method engine automatically. |
 
 **Cross-source dedup is out of scope here (deferred, with a guard).** The
@@ -1099,11 +1151,13 @@ transactions), which also seed the golden files.
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_transactions.sql` | DDL — provider-owned raw |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql` | DDL — provider-owned raw |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holding_lots.sql` | DDL — provider-owned raw (per-lot `tax_lots[]` — basis/acquisition source for bootstrap) |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql` | DDL — provider-owned raw; per-item, per-pull holdings receipt, written even when the item reports ZERO positions (the sole source of "which snapshot is newest") |
 | `src/moneybin/sql/schema/app_security_links.sql` | DDL — cross-cutting `app.*`, registered in `_NON_PROVIDER_SCHEMA_FILES` |
 | `src/moneybin/sql/schema/app_security_link_decisions.sql` | DDL — cross-cutting `app.*` |
 | `sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
 | `sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
 | `sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
+| `sqlmesh/models/prep/stg_plaid__investment_holdings_snapshots.sql` | Staging view (passthrough) — the newest-snapshot source for `core.dim_holdings` and the doctor's holdings checks |
 | `sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the **first** snapshot per `(account, source_origin)` (`MIN(extracted_at)`): draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
 | `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
@@ -1166,7 +1220,12 @@ contract above is its specification.
   survive as history *and* a full snapshot's omission of a position is
   faithfully represented — the newest-snapshot join then shows the broker's
   claim beside ledger-derived numbers on `dim_holdings`, NULL where the broker
-  dropped the position, never blended into the ledger figures. This matches the
+  dropped the position, never blended into the ledger figures. The snapshot's
+  *identity* is recorded independently of its rows
+  (`raw.plaid_investment_holdings_snapshots`), because the one pull that carries
+  no rows — an item whose every account is liquidated — is the one whose omission
+  matters most; keying "which snapshot is newest" on the rows themselves would
+  make that pull invisible and its stale predecessor look current. This matches the
   best-in-class pattern from a survey of shipped brokerage-sync tools (dated
   immutable snapshots); the alternative some ship — overwrite-in-place +
   hard-delete of absent positions — forces fragile "did the broker sell it or

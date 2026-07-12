@@ -1276,6 +1276,38 @@ def test_unresolved_securities_pass_when_resolved(
     assert result.affected_ids == []
 
 
+def _create_snapshot_receipts_table(db: Database) -> None:
+    """Create the per-item, per-pull holdings-snapshot receipts staging view.
+
+    Both holdings checks read "the newest snapshot for this item" from HERE,
+    not from the presence of holdings rows: an item whose pull returned zero
+    positions writes no holdings rows at all, so a row-derived newest snapshot
+    silently stays the last NON-EMPTY one.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_holdings_snapshots "
+        "(source_origin VARCHAR, source_file VARCHAR, holdings_date DATE, "
+        "holdings_count INTEGER, extracted_at TIMESTAMP)"
+    )
+
+
+def _receipt(
+    db: Database,
+    source_origin: str,
+    source_file: str,
+    extracted_at: str,
+    holdings_count: int,
+) -> None:
+    """Record that ``source_origin`` reported its holdings in pull ``source_file``."""
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings_snapshots "
+        "(source_origin, source_file, holdings_date, holdings_count, extracted_at) "
+        "VALUES (?, ?, CAST(? AS TIMESTAMP)::DATE, ?, CAST(? AS TIMESTAMP))",
+        [source_origin, source_file, extracted_at, holdings_count, extracted_at],
+    )
+
+
 @pytest.mark.unit
 def test_unreported_holdings_warn(
     db: Database, monkeypatch: pytest.MonkeyPatch
@@ -1301,6 +1333,8 @@ def test_unreported_holdings_warn(
         "('acc1', NULL, 'plaid_sec_unbound', 3, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
+    _create_snapshot_receipts_table(db)
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 2)
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
         "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
@@ -1337,6 +1371,8 @@ def test_unreported_holdings_ignores_closed_position_at_broker(
         "('acc1', NULL, 'plaid_sec_closed', 0, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
+    _create_snapshot_receipts_table(db)
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
         "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
@@ -1370,6 +1406,9 @@ def test_unreported_holdings_only_considers_newest_snapshot(
         "('acc1', 'sec_current', 'plaid_sec_current', 5, 'item1', 'sync_2', "
         "'2026-02-01 00:00:00')"
     )
+    _create_snapshot_receipts_table(db)
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    _receipt(db, "item1", "sync_2", "2026-02-01 00:00:00", 1)
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
         "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
@@ -1387,7 +1426,9 @@ def _create_phantom_holdings_tables(db: Database) -> None:
     The check keys its stale-item guard on the ITEM (``source_origin``), so it
     reads BOTH Plaid investment staging views: an account whose item reported
     but which holds nothing is absent from the newest holdings snapshot and is
-    only discoverable through the transactions view.
+    only discoverable through the transactions view. "Which snapshot is newest"
+    comes from the snapshot RECEIPTS view, never from the presence of holdings
+    rows — see ``_create_snapshot_receipts_table``.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
@@ -1401,6 +1442,7 @@ def _create_phantom_holdings_tables(db: Database) -> None:
         "(investment_transaction_id VARCHAR, account_id VARCHAR, "
         "source_origin VARCHAR)"
     )
+    _create_snapshot_receipts_table(db)
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
         "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
@@ -1428,6 +1470,7 @@ def test_phantom_holdings_warn_when_account_in_snapshot_but_position_isnt(
         "('acc1', 'sec_other', 'plaid_sec_other', 5, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
     db.execute(
         "INSERT INTO core.dim_holdings VALUES "
         "('acc1', 'sec_phantom', NULL), "
@@ -1465,6 +1508,8 @@ def test_phantom_holdings_warn_when_account_fully_liquidated(
         "('acc2', 'sec_live', 'plaid_sec_live', 7, 'item1', 'sync_2', "
         "'2026-02-01 00:00:00')"
     )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    _receipt(db, "item1", "sync_2", "2026-02-01 00:00:00", 1)
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
         "('itx_1', 'acc1', 'item1'), ('itx_2', 'acc2', 'item1')"
@@ -1498,6 +1543,7 @@ def test_phantom_holdings_warn_when_account_never_in_any_snapshot_but_item_repor
         "('acc2', 'sec_live', 'plaid_sec_live', 7, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
         "('itx_1', 'acc1', 'item1')"
@@ -1506,6 +1552,74 @@ def test_phantom_holdings_warn_when_account_never_in_any_snapshot_but_item_repor
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
     assert result.status == "warn"
     assert result.affected_ids == ["acc1:sec_never"]
+
+
+@pytest.mark.unit
+def test_phantom_holdings_warn_when_item_reports_zero_holdings(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The residual blind spot: an item whose pull returns NO holdings at all.
+
+    Every account at the broker is liquidated, so Plaid returns an empty
+    holdings array and the loader writes ZERO holdings rows for that pull.
+    A newest-snapshot derived from the presence of holdings ROWS therefore
+    cannot see this pull at all — the item either drops out of the guard
+    entirely (no rows ever) or silently keeps an earlier NON-EMPTY snapshot.
+    Either way the largest possible net-worth overstatement — a broker where
+    MoneyBin claims every position and the broker claims none — reads as
+    `pass`.
+
+    The snapshot RECEIPT is the missing evidence: item1 reported (receipt for
+    sync_1), and what it reported was nothing (``holdings_count = 0``). Its
+    accounts are in scope, and every lot MoneyBin still holds for them is a
+    phantom.
+    """
+    _create_phantom_holdings_tables(db)
+    # No holdings rows for item1 in ANY snapshot — the pull came back empty.
+    # The accounts are known only through the transactions view.
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 0)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1'), ('itx_2', 'acc2', 'item1')"
+    )
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES "
+        "('acc1', 'sec_gone', NULL), "
+        "('acc2', 'sec_also_gone', NULL)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec_gone", "acc2:sec_also_gone"]
+
+
+@pytest.mark.unit
+def test_phantom_holdings_pass_when_item_has_no_receipt(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No receipt = the item never reported. Absence of evidence, not evidence of absence.
+
+    The twin of ``test_phantom_holdings_warn_when_item_reports_zero_holdings``,
+    and the reason the receipt exists rather than a bare "treat every missing
+    snapshot as empty" rule. item1 has holdings rows from an earlier pull but
+    NO receipt for any pull — it never reported under the receipt regime (a
+    disconnected item, or rows that predate the receipt). Trading the false
+    negative for a false positive here would flag every position at a
+    disconnected broker as sold.
+    """
+    _create_phantom_holdings_tables(db)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_held', 'plaid_sec_held', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1')"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_phantom', NULL)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 @pytest.mark.unit
@@ -1526,6 +1640,7 @@ def test_phantom_holdings_pass_when_item_stale_or_absent(
         "('acc2', 'sec_other', 'plaid_sec_other', 5, 'item2', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
+    _receipt(db, "item2", "sync_1", "2026-01-01 00:00:00", 1)
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
         "('itx_1', 'acc1', 'item1')"
@@ -1552,6 +1667,7 @@ def test_phantom_holdings_pass_when_account_is_manual_only(
         "('acc_plaid', 'sec_live', 'plaid_sec_live', 5, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
     db.execute("INSERT INTO core.dim_holdings VALUES ('acc_manual', 'sec_m', NULL)")
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
     assert result.status == "pass"
@@ -1574,6 +1690,7 @@ def test_phantom_holdings_pass_when_freshly_bootstrapped(
         "('acc1', 'sec_ok', 'plaid_sec_ok', 10, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
     db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_ok', 10)")
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
     assert result.status == "pass"

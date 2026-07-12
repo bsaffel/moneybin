@@ -158,6 +158,116 @@ def test_window_start_stamped_per_item(
     ]
 
 
+def test_snapshot_receipt_written_per_item(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """One receipt per (item, pull), carrying what that item reported.
+
+    ``holdings_count`` is the fixture's own distribution: item_1 holds
+    acc_1/sec_aapl and acc_dup/sec_dup (2), item_2 holds acc_dup/sec_dup (1).
+    """
+    _load(db, sync_data)
+    rows = db.execute(
+        """
+        SELECT source_origin, source_file, holdings_date, holdings_count, source_type
+        FROM raw.plaid_investment_holdings_snapshots ORDER BY source_origin
+        """
+    ).fetchall()
+    assert rows == [
+        ("item_1", "sync_job-inv-1", date(2026, 7, 8), 2, "plaid"),
+        ("item_2", "sync_job-inv-1", date(2026, 7, 8), 1, "plaid"),
+    ]
+
+
+def test_snapshot_receipt_written_when_item_reports_zero_holdings(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """The whole point of the receipt: an EMPTY holdings array still records the pull.
+
+    Every account at the broker is liquidated, so Plaid returns no holding
+    entries and the loader writes no holdings ROWS. Without a receipt, "the
+    newest snapshot for this item" silently stays the last NON-EMPTY pull, and
+    the doctor's phantom-holdings check compares MoneyBin's still-open lots
+    against stale data and reports `pass` on a 100%-overstated broker. The
+    receipt is written outside any `if holdings:` guard precisely so this pull
+    leaves evidence.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings = []
+
+    result = _load(db, payload, job_id="job-liquidated")
+
+    assert result.holdings_loaded == 0
+    rows = db.execute(
+        """
+        SELECT source_origin, source_file, holdings_count
+        FROM raw.plaid_investment_holdings_snapshots ORDER BY source_origin
+        """
+    ).fetchall()
+    assert rows == [
+        ("item_1", "sync_job-liquidated", 0),
+        ("item_2", "sync_job-liquidated", 0),
+    ]
+
+
+def test_snapshot_receipt_not_written_for_a_failed_item(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A failed item did NOT report — a receipt would claim it holds nothing.
+
+    The false-positive twin of the zero-holdings case: writing a receipt for an
+    item whose pull errored would read as "the broker reports no positions" and
+    flag every lot at that institution as a phantom.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings = []
+    payload.metadata.institutions[0].status = "failed"
+    payload.metadata.institutions[0].error_code = "ITEM_LOGIN_REQUIRED"
+
+    _load(db, payload, job_id="job-failed-item")
+
+    rows = db.execute(
+        "SELECT source_origin FROM raw.plaid_investment_holdings_snapshots"
+    ).fetchall()
+    assert rows == [("item_2",)]
+
+
+def test_snapshot_receipt_skips_an_item_with_no_investments_window(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """No ``transactions_window_start`` = the server ran no investments flow for the item.
+
+    A cash-only item is not an investments item that reported nothing; it never
+    reported at all. Its accounts hold no securities, so a receipt would be
+    harmless today — but it would encode the wrong claim in the raw layer, and
+    `holdings_count = 0` would say the broker was asked and answered.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings = []
+    payload.metadata.institutions[1].transactions_window_start = None
+
+    _load(db, payload, job_id="job-cash-only-item")
+
+    rows = db.execute(
+        "SELECT source_origin FROM raw.plaid_investment_holdings_snapshots"
+    ).fetchall()
+    assert rows == [("item_1",)]
+
+
+def test_snapshot_receipt_replay_replaces_and_new_job_retains(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """PK (source_origin, source_file): a replay upserts; a new pull is a new snapshot."""
+    _load(db, sync_data, job_id="job-inv-1")
+    _load(db, sync_data, job_id="job-inv-1")  # replay of the same job
+    _load(db, sync_data, job_id="job-inv-2")  # a genuinely new pull
+    row = db.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT source_file) "
+        "FROM raw.plaid_investment_holdings_snapshots"
+    ).fetchone()
+    assert row == (4, 2)  # 2 items x 2 snapshots; the replay replaced in place
+
+
 def test_colliding_provider_ids_stay_distinct(
     db: Database, sync_data: SyncDataResponse
 ) -> None:

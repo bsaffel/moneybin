@@ -77,6 +77,16 @@ _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
 # would let a stale survivor from an earlier pull mask an omission in the
 # newest one). Mirrors the identical CTE in `dim_holdings.sql`. No leading
 # `WITH` — callers splice this into their own `WITH <this>, ...` clause.
+#
+# Derived from the snapshot RECEIPTS (one row per item per pull, written even
+# when the item reports zero positions), NOT from the presence of holdings rows.
+# Plaid returns no holding entries for an item holding nothing, so the pull
+# where a broker's every account is liquidated writes no holdings rows at all —
+# a row-derived newest snapshot cannot see it, and silently keeps the last
+# NON-EMPTY snapshot from an earlier pull. Keyed on the receipt, an item that
+# reported nothing has an EMPTY newest snapshot (its positions are phantoms) and
+# an item that never reported has NO newest snapshot (its positions are out of
+# scope) — the distinction the raw holdings rows cannot express.
 _NEWEST_HOLDINGS_SNAPSHOT_CTE = """
 newest_snapshot AS (
     SELECT source_origin, source_file
@@ -88,10 +98,7 @@ newest_snapshot AS (
                 PARTITION BY source_origin
                 ORDER BY extracted_at DESC, source_file DESC
             ) AS snapshot_rank
-        FROM (
-            SELECT DISTINCT source_origin, source_file, extracted_at
-            FROM prep.stg_plaid__investment_holdings
-        )
+        FROM prep.stg_plaid__investment_holdings_snapshots
     )
     WHERE snapshot_rank = 1
 )
@@ -1054,11 +1061,16 @@ class DoctorService:
         Plaid investment staging view — a liquidated account is absent from
         holdings but still present in transactions.
 
-        (Residual gap, not fixable here: an item pull that returns zero
-        holdings writes no rows, so ``newest_snapshot`` silently keeps the last
-        NON-EMPTY snapshot. An item whose every account is liquidated therefore
-        still reads as "reporting the old positions." Closing that needs a
-        per-pull snapshot receipt in raw, i.e. a loader change.)
+        "The item delivered a snapshot" is read from the snapshot RECEIPTS
+        (``_NEWEST_HOLDINGS_SNAPSHOT_CTE``), not from the presence of holdings
+        rows — the same distinction one level up. An item whose entire pull
+        comes back empty (every account at the broker liquidated) writes no
+        holdings rows, so a row-derived guard reads the last NON-EMPTY pull as
+        current and ``dim_holdings`` hands this check the STALE quantity the
+        broker no longer claims — a `pass` on the largest overstatement there
+        is. With the receipt, that pull IS the newest snapshot, no holdings row
+        joins to it, ``provider_reported_quantity`` is NULL, and every lot the
+        ledger never closed surfaces here.
 
         A row surfaced here is a lot the ledger never closed: an option
         assignment/exercise mapped to ``other`` with no ledger quantity (see

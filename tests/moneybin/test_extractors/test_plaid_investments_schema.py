@@ -7,6 +7,7 @@ _TABLES = [
     "raw.plaid_investment_transactions",
     "raw.plaid_investment_holdings",
     "raw.plaid_investment_holding_lots",
+    "raw.plaid_investment_holdings_snapshots",
 ]
 
 

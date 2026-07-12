@@ -44,7 +44,18 @@ WITH positions AS (
      never "the latest row per position" and never "the latest holdings_date"
      (holdings_date is extracted_at::DATE, so two pulls on one UTC day tie on it).
      Scoping to a whole snapshot is what makes an omitted position read as NULL
-     below instead of as a stale survivor from an earlier pull. */
+     below instead of as a stale survivor from an earlier pull.
+
+     Read from the snapshot RECEIPTS, never from the holdings rows themselves.
+     Plaid returns no holding entries for an item that holds nothing, so a pull
+     where every account is liquidated writes ZERO holdings rows — and a
+     row-derived newest snapshot cannot see that pull at all, silently keeping
+     the last NON-EMPTY one. The provider claim below would then come back as
+     the STALE quantity the broker no longer reports, on the position most
+     overstated (all of it). The receipt exists for exactly that pull; joining
+     the holdings rows to it leaves an item that reported nothing with an EMPTY
+     newest snapshot (claim NULL — correct) and an item that never reported with
+     NO newest snapshot (no rows to join — also correct). */
   SELECT
     source_origin,
     source_file
@@ -53,13 +64,7 @@ WITH positions AS (
       source_origin,
       source_file,
       ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at DESC, source_file DESC) AS snapshot_rank
-    FROM (
-      SELECT DISTINCT
-        source_origin,
-        source_file,
-        extracted_at
-      FROM prep.stg_plaid__investment_holdings
-    )
+    FROM prep.stg_plaid__investment_holdings_snapshots
   )
   WHERE
     snapshot_rank = 1

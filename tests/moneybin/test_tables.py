@@ -31,6 +31,7 @@ from moneybin.tables import (
     OFX_TRANSACTIONS,
     PLAID_INVESTMENT_HOLDING_LOTS,
     PLAID_INVESTMENT_HOLDINGS,
+    PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
     REPORTS_BALANCE_DRIFT,
@@ -139,6 +140,10 @@ def test_investment_table_refs() -> None:
     assert PLAID_INVESTMENT_HOLDINGS.full_name == "raw.plaid_investment_holdings"
     assert (
         PLAID_INVESTMENT_HOLDING_LOTS.full_name == "raw.plaid_investment_holding_lots"
+    )
+    assert (
+        PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name
+        == "raw.plaid_investment_holdings_snapshots"
     )
     # M1G.4 Plaid investment sync app tables (placeholders for later schema creation)
     assert SECURITY_LINKS.full_name == "app.security_links"

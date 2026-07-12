@@ -15,6 +15,7 @@ import pytest
 from moneybin.database import Database, sqlmesh_context
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services.doctor_service import DoctorService
 from moneybin.services.investment_service import (
     _PIPELINE_EMITTED_SUBTYPES,  # pyright: ignore[reportPrivateUsage]
     _SUBTYPE_VOCAB,  # pyright: ignore[reportPrivateUsage]
@@ -64,6 +65,54 @@ def _raw_holding(db: Database, **overrides: object) -> None:
     }
     row.update(overrides)
     _insert(db, "raw.plaid_investment_holdings", row)
+    # The loader never writes a holdings row without a receipt for its pull
+    # (raw_plaid_investment_holdings_snapshots.sql invariant), and every
+    # newest-snapshot join keys on the receipt — so the fixture must not
+    # either, or the snapshot this row belongs to is invisible.
+    _raw_holdings_receipt(
+        db,
+        source_origin=str(row["source_origin"]),
+        source_file=str(row["source_file"]),
+        extracted_at=str(row["extracted_at"]),
+    )
+
+
+def _raw_holdings_receipt(
+    db: Database,
+    *,
+    source_origin: str = "item_1",
+    source_file: str = "sync_j1",
+    extracted_at: str = "2026-07-08 12:00:00",
+    holdings_count: int | None = None,
+) -> None:
+    """Record that an item's holdings were fetched in one pull, as the loader does.
+
+    ``holdings_count`` defaults to however many holdings rows the fixture has
+    landed for this (item, pull) so far. Pass ``0`` explicitly to model the pull
+    the receipt exists for: an item that reported and holds NOTHING, which
+    writes no holdings rows at all.
+    """
+    db.execute(
+        """
+        INSERT OR REPLACE INTO raw.plaid_investment_holdings_snapshots
+            (source_origin, source_file, holdings_date, holdings_count, extracted_at)
+        SELECT ?, ?, CAST(? AS TIMESTAMP)::DATE,
+               COALESCE(?, (
+                   SELECT COUNT(*) FROM raw.plaid_investment_holdings
+                   WHERE source_origin = ? AND source_file = ?
+               )),
+               CAST(? AS TIMESTAMP)
+        """,
+        [
+            source_origin,
+            source_file,
+            extracted_at,
+            holdings_count,
+            source_origin,
+            source_file,
+            extracted_at,
+        ],
+    )
 
 
 def _raw_lot(
@@ -1674,6 +1723,53 @@ def test_position_absent_from_newest_snapshot_shows_null(db: Database) -> None:
     ).fetchone()
     # NULL is itself the reconciliation signal — never a stale survivor.
     assert row == (Decimal("10"), None, None, None, None)
+
+
+@pytest.mark.slow
+def test_item_reporting_zero_holdings_nulls_the_claim_and_surfaces_the_phantom(
+    db: Database,
+) -> None:
+    """An item whose newest pull returns ZERO holdings: the claim goes NULL, doctor warns.
+
+    The fully-liquidated broker. Plaid returns no holding entries for an item
+    holding nothing, so the pull writes no holdings ROWS — only a receipt. A
+    newest-snapshot join keyed on the presence of holdings rows therefore never
+    sees the pull: it silently keeps sync_j1, and ``provider_reported_quantity``
+    comes back as the STALE 10 the broker no longer claims. dim_holdings then
+    tells the user MoneyBin's 10 shares are broker-confirmed, and the doctor's
+    phantom check (which reads that NULL as its signal) reports `pass` on the
+    largest possible net-worth overstatement — MoneyBin claims every position,
+    the broker claims none.
+
+    Keyed on the receipt, the empty pull IS the newest snapshot: no holdings row
+    joins to it, the claim is NULL, and the lot the ledger never closed surfaces.
+    """
+    _raw_investment_txn(db, transaction_date="2025-01-10")  # in-window buy of 10
+    _raw_holding(db, quantity="10", cost_basis="1980.00")  # sync_j1 confirms it
+    _link_security(db, "sec_1", "cat000000001")
+    # sync_j2: the account is liquidated. The item reported — and reported
+    # nothing. Zero holdings rows; the receipt is the only evidence of the pull.
+    _raw_holdings_receipt(
+        db,
+        source_file="sync_j2",
+        extracted_at="2026-08-01 12:00:00",
+        holdings_count=0,
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT quantity, provider_reported_quantity, provider_reported_as_of
+        FROM core.dim_holdings WHERE security_id = 'cat000000001'
+        """
+    ).fetchone()
+    # NULL, not the stale 10 from the superseded sync_j1 snapshot.
+    assert row == (Decimal("10"), None, None)
+
+    result = DoctorService(db)._run_investment_phantom_holdings()  # pyright: ignore[reportPrivateUsage]
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc_1:cat000000001"]
 
 
 @pytest.mark.slow

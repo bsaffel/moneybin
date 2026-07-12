@@ -10,6 +10,7 @@ aggregations.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -18,6 +19,7 @@ from pathlib import Path
 import polars as pl
 
 from moneybin.connectors.sync_models import (
+    InstitutionResult,
     SyncAccount,
     SyncBalance,
     SyncDataResponse,
@@ -36,6 +38,7 @@ from moneybin.metrics.registry import (
 from moneybin.tables import (
     PLAID_INVESTMENT_HOLDING_LOTS,
     PLAID_INVESTMENT_HOLDINGS,
+    PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
 )
@@ -208,6 +211,16 @@ _INVESTMENT_HOLDINGS_SCHEMA = pl.Schema({
     "loaded_at": pl.Datetime(time_zone="UTC"),
 })
 
+_INVESTMENT_HOLDINGS_SNAPSHOTS_SCHEMA = pl.Schema({
+    "source_origin": pl.Utf8,
+    "source_file": pl.Utf8,
+    "holdings_date": pl.Date,
+    "holdings_count": pl.Int32,
+    "source_type": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
 _INVESTMENT_HOLDING_LOTS_SCHEMA = pl.Schema({
     "account_id": pl.Utf8,
     "security_id": pl.Utf8,
@@ -321,6 +334,16 @@ class PlaidExtractor:
         holdings_loaded, holding_lots_loaded = self._load_investment_holdings(
             sync_data.investment_holdings,
             window_by_item,
+            source_file,
+            extracted_at,
+            loaded_at,
+        )
+        # Deliberately NOT inside _load_investment_holdings' `if not holdings`
+        # early return: the receipt's entire purpose is the pull where holdings
+        # is EMPTY (see below).
+        self._load_holdings_snapshots(
+            sync_data.investment_holdings,
+            sync_data.metadata.institutions,
             source_file,
             extracted_at,
             loaded_at,
@@ -642,6 +665,71 @@ class PlaidExtractor:
             f"Loaded {len(df_holdings)} Plaid holdings rows, {lots_loaded} tax lots"
         )
         return len(df_holdings), lots_loaded
+
+    def _load_holdings_snapshots(
+        self,
+        holdings: list[SyncHolding],
+        institutions: list[InstitutionResult],
+        source_file: str,
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> int:
+        """Record that each item's holdings were fetched — EVEN WHEN it reported none.
+
+        raw.plaid_investment_holdings stores holding ROWS, so it cannot tell
+        "this item reported nothing (every position sold)" from "this item never
+        reported." An item whose pull returns an empty holdings array writes no
+        rows at all, so a newest-snapshot join keyed on those rows silently
+        keeps the last NON-EMPTY snapshot from an earlier pull — and the
+        fully-liquidated broker, the largest possible net-worth overstatement,
+        reads as "still holding the old positions." This receipt is the missing
+        evidence, and it is why the write sits outside the holdings loop and
+        outside any `if holdings:` guard.
+
+        An item is treated as having reported iff the server declared an
+        investments window for it (`transactions_window_start`, its
+        /investments/transactions/get start boundary) on a `completed` result —
+        the only signal on the wire that the server ran the item's investments
+        flow at all. A cash-only item (no window) never reported; neither did a
+        FAILED item, and a receipt for either would falsely claim the broker
+        was asked and answered "nothing," flagging every lot there as a phantom.
+        Items that DID deliver holdings are unioned in unconditionally, which
+        holds the invariant every newest-snapshot consumer depends on: no
+        holdings row exists whose (source_origin, source_file) has no receipt.
+        """
+        reported_items = {
+            inst.provider_item_id
+            for inst in institutions
+            if inst.status == "completed" and inst.transactions_window_start is not None
+        } | {holding.provider_item_id for holding in holdings}
+        if not reported_items:
+            return 0
+        counts = Counter(holding.provider_item_id for holding in holdings)
+        df = pl.DataFrame(
+            [
+                {
+                    "source_origin": item_id,
+                    "source_file": source_file,
+                    # Same UTC-date derivation as the holdings rows this
+                    # accounts for — one calendar, never the machine's local one.
+                    "holdings_date": _utc_date(extracted_at),
+                    "holdings_count": counts[item_id],
+                    "source_type": "plaid",
+                    "extracted_at": extracted_at,
+                    "loaded_at": loaded_at,
+                }
+                for item_id in sorted(reported_items)
+            ],
+            schema=_INVESTMENT_HOLDINGS_SNAPSHOTS_SCHEMA,
+        )
+        self.db.ingest_dataframe(
+            PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name, df, on_conflict="upsert"
+        )
+        SYNC_INVESTMENTS_RECORDS_LOADED.labels(
+            table="plaid_investment_holdings_snapshots"
+        ).inc(len(df))
+        logger.info(f"Recorded {len(df)} Plaid holdings-snapshot receipt(s)")
+        return len(df)
 
     def _warn_amount_drift(self, transactions: list[SyncInvestmentTransaction]) -> None:
         """Count buy/sell rows failing |amount| ~ |q*p| under BOTH fee conventions.
