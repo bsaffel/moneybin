@@ -45,13 +45,17 @@ WITH classified AS (
      branches, so they route to `other` rather than opening a spurious long lot.
 
      transfer/{transfer, send, merger, spin off, trade} splits on security
-     presence: a security-bearing leg keeps transfer_in/transfer_out, direction
-     from quantity -- falling back to the amount sign via NULLIF only when
-     quantity is exactly 0, because Plaid sends 0 (not NULL) for a cash-only
-     leg, so a bare COALESCE would silently treat every cash-only transfer as
-     an inflow. A cash-only leg is a cash movement, not a share movement, so it
-     maps to deposit/withdrawal instead, with direction from the amount sign
-     alone -- quantity is never consulted on that arm. */
+     presence. A cash-only leg (no security_id) is a cash movement, not a share
+     movement, so it maps to deposit/withdrawal with direction from the amount
+     sign alone -- quantity is never consulted on that arm. A security-bearing
+     leg takes its direction from the quantity SIGN and nothing else: the amount
+     sign is NOT a proxy for it, since cash coming in accompanies shares going
+     OUT. A security-bearing leg carrying no share delta (Plaid sends quantity 0,
+     not NULL) therefore has no derivable direction at all, and is routed to
+     review via is_underivable_transfer rather than guessed -- guessing it
+     transfer_in makes it an _ACQUISITION_TYPE (cost_basis.py), which opens a
+     phantom zero-share lot carrying a merger's cash-in-lieu as its basis while
+     the proceeds never realize. */
   SELECT
     *,
     (
@@ -63,6 +67,12 @@ WITH classified AS (
         ptype = 'transfer' AND psub = 'request'
       )
     ) AS is_lifecycle,
+    (
+      ptype = 'transfer'
+      AND psub IN ('transfer', 'send', 'merger', 'spin off', 'trade')
+      AND NOT security_id IS NULL
+      AND COALESCE(quantity, 0) = 0
+    ) AS is_underivable_transfer,
     CASE
       WHEN ptype = 'buy' AND psub IN ('buy', 'contribution')
       THEN 'buy'
@@ -118,9 +128,11 @@ WITH classified AS (
         THEN (
           CASE WHEN amount > 0 THEN 'withdrawal' ELSE 'deposit' END
         )
-        WHEN COALESCE(NULLIF(quantity, 0), -1 * amount) >= 0
+        WHEN quantity > 0
         THEN 'transfer_in'
-        ELSE 'transfer_out'
+        WHEN quantity < 0
+        THEN 'transfer_out'
+        ELSE 'other'
       END
       WHEN psub IN ('adjustment', 'loan payment', 'rebalance')
       THEN 'other'
@@ -174,18 +186,26 @@ WITH classified AS (
      `basis_incomplete` on exactly `event.amount is None`, so a false zero-basis lot
      would look complete and a later sale would realize a fully-taxed phantom gain.
 
-     Also here: rows explicitly mapped to `other` (option legs, short legs,
-     adjustment/loan payment/rebalance) never carry a ledger quantity. MoneyBin
-     models no short-position or options book, so the raw share count on those
-     legs is not lot-affecting and must not masquerade as one -- mirrors the
-     ledger's own `_QTY_NULL` invariant (investment_service.py). A row that
+     Also here: ledger_quantity is NULL on every cash-only / basis-only type --
+     the closed `_QTY_NULL` set the ledger's own writer enforces
+     (investment_service.py) and core.fct_investment_transactions.quantity
+     contracts ("Signed units: + acquire, - dispose, NULL cash-only"). Plaid
+     sends 0, not NULL, on those legs, and a literal 0 makes every dividend and
+     fee read as a share-moving event to any consumer keying on
+     `quantity IS NULL` (prep.int_plaid__opening_positions does). The same NULL
+     covers `other` (option legs, short legs, adjustment/loan payment/rebalance):
+     MoneyBin models no short-position or options book, so the raw share count on
+     those legs is not lot-affecting and must not masquerade as one. A row that
      instead falls to `other` via the unmapped-subtype review path below keeps
-     its raw quantity, since that value is exactly what routes it to review. */
+     its raw quantity -- mapped_type is NULL there, not 'other' -- since that
+     value is exactly what routes it to review. */
   SELECT
     *,
     CASE
       WHEN mapped_type = 'split'
       THEN 'split_underivable'
+      WHEN is_underivable_transfer
+      THEN 'transfer_direction_underivable'
       WHEN mapped_type IS NULL AND NOT security_id IS NULL AND COALESCE(quantity, 0) <> 0
       THEN 'unmapped_subtype'
       ELSE NULL
@@ -198,7 +218,20 @@ WITH classified AS (
         -1 * amount
       )::DECIMAL(18, 2)
     END AS ledger_amount,
-    CASE WHEN mapped_type = 'other' THEN NULL::DECIMAL(28, 10) ELSE quantity END AS ledger_quantity
+    CASE
+      WHEN mapped_type IN (
+        'dividend',
+        'interest',
+        'capital_gain_distribution',
+        'deposit',
+        'withdrawal',
+        'fee',
+        'return_of_capital',
+        'other'
+      )
+      THEN NULL::DECIMAL(28, 10)
+      ELSE quantity
+    END AS ledger_quantity
   FROM mapped
   WHERE
     NOT is_lifecycle

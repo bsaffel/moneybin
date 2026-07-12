@@ -502,7 +502,9 @@ def test_cash_only_transfer_direction_from_amount_sign(db: Database) -> None:
     and silently record every cash-out transfer as an inflow (the shipped bug).
     Both quantity representations -- Plaid's real "0" and a hypothetical NULL --
     must land identically, since the view keys the cash-only branch on
-    `security_id IS NULL`, never on quantity.
+    `security_id IS NULL`, never on quantity. Both also land with a NULL ledger
+    quantity: deposit/withdrawal are cash-only types, and Plaid's literal 0 is
+    not a share movement.
     """
     cases = [
         ("itx_0", "send", "0", "100.00"),  # Plaid cash OUT -> withdrawal
@@ -529,37 +531,95 @@ def test_cash_only_transfer_direction_from_amount_sign(db: Database) -> None:
             "FROM prep.stg_plaid__investment_transactions"
         ).fetchall()
     }
-    assert rows["itx_0"] == ("withdrawal", Decimal("-100.00"), Decimal("0"), True)
-    assert rows["itx_1"] == ("deposit", Decimal("100.00"), Decimal("0"), True)
+    assert rows["itx_0"] == ("withdrawal", Decimal("-100.00"), None, True)
+    assert rows["itx_1"] == ("deposit", Decimal("100.00"), None, True)
     assert rows["itx_2"] == ("withdrawal", Decimal("-100.00"), None, True)
     assert rows["itx_3"] == ("deposit", Decimal("100.00"), None, True)
 
 
 @pytest.mark.slow
-def test_security_bearing_transfer_zero_quantity_falls_back_to_amount_sign(
+def test_security_bearing_zero_quantity_transfer_routes_to_review(
     db: Database,
 ) -> None:
-    """A zero-quantity security transfer is meaningless as a share count.
+    """A security-bearing transfer with no share delta has NO derivable direction.
 
-    The NULLIF guard must treat Plaid's `quantity = 0` the same as NULL and
-    fall back to the amount sign -- never silently default to `transfer_in`
-    via a bare `COALESCE(quantity, ...)` reading the literal 0 as "non-NULL,
-    so inbound" (the exact bug this view shipped with).
+    The amount sign is not a proxy for the share direction: cash coming IN
+    accompanies shares going OUT, so inferring `transfer_in` from a credit is
+    backwards -- and either guess is a fabrication, because the row carries no
+    share movement to begin with. The concrete shape is a merger / spin-off
+    cash-in-lieu leg (security_id set, quantity 0, amount negative because cash
+    was credited): guessed as `transfer_in` it is an _ACQUISITION_TYPE, so
+    cost_basis.py opens a lot with original_quantity 0 carrying the cash-in-lieu
+    as its basis -- a phantom zero-share lot, and the proceeds never realize.
+
+    So the model refuses, exactly as it refuses on splits: no ledger event, a
+    review_reason instead.
     """
-    _raw_investment_txn(
-        db,
-        quantity="0",
-        amount="100.00",  # Plaid cash OUT
-        investment_transaction_type="transfer",
-        investment_transaction_subtype="transfer",
-    )
+    for txn_id, psub, amount in (
+        ("itx_lieu", "merger", "-100.00"),  # Plaid credit: cash IN
+        ("itx_xfer", "transfer", "100.00"),  # Plaid debit: cash OUT
+    ):
+        _raw_investment_txn(
+            db,
+            investment_transaction_id=txn_id,
+            quantity="0",  # Plaid ships 0, never NULL
+            amount=amount,
+            investment_transaction_type="transfer",
+            investment_transaction_subtype=psub,
+        )
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
-    row = db.execute(
-        "SELECT type, amount FROM prep.stg_plaid__investment_transactions"
-    ).fetchone()
-    # Falls back to the correctly-flipped amount sign -- must NOT be transfer_in.
-    assert row == ("transfer_out", Decimal("-100.00"))
+    rows = {
+        r[0]: (r[1], r[2], r[3])
+        for r in db.execute(
+            "SELECT investment_transaction_id, type, ledger_include, review_reason "
+            "FROM prep.stg_plaid__investment_transactions"
+        ).fetchall()
+    }
+    assert rows["itx_lieu"] == ("other", False, "transfer_direction_underivable")
+    assert rows["itx_xfer"] == ("other", False, "transfer_direction_underivable")
+
+
+@pytest.mark.slow
+def test_cash_only_legs_carry_no_ledger_quantity(db: Database) -> None:
+    """Plaid ships `quantity = 0` (not NULL) on a cash-only leg; the ledger wants NULL.
+
+    core.fct_investment_transactions.quantity is contracted as "Signed units:
+    + acquire, - dispose, NULL cash-only", and InvestmentService._validate rejects
+    a non-NULL quantity on exactly these types (_QTY_NULL). A literal 0 reaching
+    core makes every dividend and fee read as a share-moving event to any consumer
+    that keys on `quantity IS NULL` (prep.int_plaid__opening_positions does), and
+    renders "0.00000000 shares" on a dividend where the schema promised NULL.
+    """
+    cases = [
+        ("itx_div", "cash", "dividend"),
+        ("itx_int", "cash", "interest"),
+        ("itx_cgd", "cash", "long-term capital gain"),
+        ("itx_dep", "cash", "deposit"),
+        ("itx_wdr", "cash", "withdrawal"),
+        ("itx_fee", "fee", "management fee"),
+        ("itx_roc", "fee", "return of principal"),
+    ]
+    for txn_id, ptype, psub in cases:
+        _raw_investment_txn(
+            db,
+            investment_transaction_id=txn_id,
+            security_id=None,
+            quantity="0",  # Plaid's cash-only representation
+            price=None,
+            amount="-25.00",
+            investment_transaction_type=ptype,
+            investment_transaction_subtype=psub,
+        )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = db.execute(
+        "SELECT investment_transaction_id, type, quantity "
+        "FROM prep.stg_plaid__investment_transactions ORDER BY 1"
+    ).fetchall()
+    assert len(rows) == len(cases)
+    for txn_id, type_, quantity in rows:
+        assert quantity is None, f"{txn_id} ({type_}) carries quantity {quantity!r}"
 
 
 @pytest.mark.slow
