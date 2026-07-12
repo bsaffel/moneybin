@@ -19,6 +19,7 @@ import duckdb
 
 from moneybin.config import get_settings
 from moneybin.database import Database
+from moneybin.metrics.registry import AUTO_RULE_PATTERN_DOWNGRADED_TOTAL
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.services._text import build_match_inputs, normalize_description
@@ -813,11 +814,33 @@ class AutoRuleService:
         # where the merchant name is wrapped into the memo field.
         cleaned_desc = normalize_description(description) if description else ""
         if cleaned_desc:
-            return cleaned_desc, "contains"
+            return cleaned_desc, self._invented_match_type(cleaned_desc)
         cleaned_memo = normalize_description(memo) if memo else ""
         if cleaned_memo:
-            return cleaned_memo, "contains"
+            return cleaned_memo, self._invented_match_type(cleaned_memo)
         return None
+
+    @staticmethod
+    def _invented_match_type(pattern: str) -> str:
+        """Return the match type for a pattern the machine invented.
+
+        Only the description/memo fallback reaches here. A merchant's
+        ``raw_pattern`` is user-authored and returns above, untouched — this
+        guards the inference, not the human.
+
+        ``normalize_description`` can reduce a description to a 1-2 character
+        token (a truncated "TRANSFER TO ..." becomes "TO"). As a ``contains``
+        rule that matches COSTCO, STORE, AUTO, TOTAL; one accepted proposal then
+        relabels those rows Internal Transfer on the next categorize_run, and a
+        Transfer label drops them out of spend reports entirely. Below the floor
+        we propose ``exact`` instead: the user's evidence is kept, but the rule
+        can only fire on a description that IS the token.
+        """
+        min_len = get_settings().categorization.auto_rule_min_contains_length
+        if len(pattern) < min_len:
+            AUTO_RULE_PATTERN_DOWNGRADED_TOTAL.inc()
+            return "exact"
+        return "contains"
 
     def _active_rule_covers_transaction(
         self,

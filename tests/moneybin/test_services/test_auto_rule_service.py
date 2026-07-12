@@ -73,6 +73,44 @@ def test_extract_pattern_falls_back_to_normalized_memo_when_description_empty() 
     assert extracted == ("ZELLE PAYMENT TO ALICE", "contains")
 
 
+def test_extract_pattern_downgrades_short_invented_pattern_to_exact() -> None:
+    """A 2-char invented pattern becomes `exact`, not `contains` (F17).
+
+    The live repro: a Zelle/transfer row whose description normalizes to "TO".
+    As a `contains` rule it matches COSTCO, STORE, AUTO, TOTAL — accepting it
+    would silently relabel the ledger as Internal Transfer.
+    """
+    db = MagicMock()
+    db.execute.return_value.fetchone.side_effect = [
+        (None,),  # no merchant_id on the categorization row
+        ("TO", None),  # (raw description, memo)
+    ]
+    extracted = AutoRuleService(db)._extract_pattern("t_to")
+    assert extracted == ("TO", "exact")
+
+
+def test_extract_pattern_keeps_contains_for_long_invented_pattern() -> None:
+    """A pattern at or above the floor stays `contains` — the guard is targeted."""
+    db = MagicMock()
+    db.execute.return_value.fetchone.side_effect = [
+        (None,),
+        ("STARBUCKS COFFEE", None),
+    ]
+    extracted = AutoRuleService(db)._extract_pattern("t_sbux")
+    assert extracted == ("STARBUCKS COFFEE", "contains")
+
+
+def test_extract_pattern_does_not_downgrade_user_authored_merchant_pattern() -> None:
+    """A short merchant raw_pattern is user-authored — the guard must not touch it.
+
+    The guard exists to check the machine's inference, not to second-guess an
+    explicit human decision.
+    """
+    db = _mock_db_with_merchant(raw_pattern="BP", match_type="contains")
+    extracted = AutoRuleService(db)._extract_pattern("t_bp")
+    assert extracted == ("BP", "contains")
+
+
 @pytest.fixture
 def real_db(db: Database) -> Database:
     """A real DB with schema initialized."""
