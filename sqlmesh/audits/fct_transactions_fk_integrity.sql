@@ -1,5 +1,6 @@
 AUDIT (
-  name fct_transactions_fk_integrity
+  name fct_transactions_fk_integrity,
+  standalone TRUE
 );
 
 /* Returns orphaned transaction_ids — any transaction whose account_id has

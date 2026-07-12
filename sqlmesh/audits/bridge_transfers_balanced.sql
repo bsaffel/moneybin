@@ -1,5 +1,6 @@
 AUDIT (
-  name bridge_transfers_balanced
+  name bridge_transfers_balanced,
+  standalone TRUE
 );
 
 /* Returns the debit_transaction_id of any transfer pair whose debit+credit

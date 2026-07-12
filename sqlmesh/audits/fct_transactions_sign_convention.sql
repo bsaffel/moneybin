@@ -1,5 +1,6 @@
 AUDIT (
-  name fct_transactions_sign_convention
+  name fct_transactions_sign_convention,
+  standalone TRUE
 );
 
 /* Returns transaction_ids where amount is zero or NULL — both violate the
