@@ -331,6 +331,14 @@ AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL = Counter(
     "explicit allow_broad override.",
 )
 
+AUTO_RULE_UNSELECTIVE_ACCEPT_BLOCKED_TOTAL = Counter(
+    "moneybin_auto_rule_unselective_accept_blocked_total",
+    "Accept attempts on a proposal whose 'contains' pattern is too short to "
+    "discriminate, refused for want of an explicit allow_broad override. "
+    "Catches proposals already in app.proposed_rules from before the "
+    "proposal-time downgrade (_invented_match_type) shipped.",
+)
+
 RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL = Counter(
     "moneybin_rule_create_unselective_contains_blocked_total",
     "Direct rule-creation attempts refused because a 'contains' pattern was "

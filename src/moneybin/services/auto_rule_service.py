@@ -23,6 +23,7 @@ from moneybin.metrics.registry import (
     AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
     AUTO_RULE_BROAD_PENDING,
     AUTO_RULE_PATTERN_DOWNGRADED_TOTAL,
+    AUTO_RULE_UNSELECTIVE_ACCEPT_BLOCKED_TOTAL,
 )
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
@@ -534,24 +535,49 @@ class AutoRuleService:
     ) -> ApproveResult:
         """Promote pending proposals to active rules and immediately categorize matching transactions.
 
-        A proposal whose blast radius outruns its evidence (``_is_broad``) is
-        skipped unless ``allow_broad`` is set. The whole point of the F17 guard
-        is that this refusal happens on the *accept* path, not merely in the
-        review envelope — an agent that never reads the envelope must still be
-        unable to promote a ledger-wrecking rule.
+        A proposal is refused (unless ``allow_broad`` is set) on either of two
+        independent grounds:
+
+        - **Broad** (``_is_broad``): blast radius outruns the evidence behind it.
+        - **Unselective** (``is_unselective_contains``): a ``contains`` pattern
+          shorter than the specificity floor. ``_invented_match_type`` only
+          downgrades this at proposal-creation time for *new* proposals — it
+          cannot retroactively fix a proposal already sitting in
+          ``app.proposed_rules`` with ``match_type='contains'`` from before that
+          guard shipped. Such a proposal can have a blast radius under
+          ``auto_rule_broad_match_min``, so ``_is_broad`` alone would wave it
+          through unflagged; this check closes that gap on the promotion path
+          itself.
+
+        The whole point of the F17 guard is that both refusals happen on the
+        *accept* path, not merely in the review envelope — an agent that never
+        reads the envelope must still be unable to promote a ledger-wrecking
+        rule.
         """
         settings = get_settings().categorization
         result = ApproveResult()
         broad_ids: set[str] = set()
+        unselective_ids: set[str] = set()
         if not allow_broad and proposed_rule_ids:
-            # ONE scan (_estimate_match_counts), not one per id — see its own
-            # docstring for why a repeated scan of core.fct_transactions is a
-            # hang risk (F14).
             pending: list[dict[str, Any]] = [
                 p
                 for p in self.list_pending_proposals(limit=None)
                 if str(p["proposed_rule_id"]) in set(proposed_rule_ids)
             ]
+            # Specificity floor needs no DB scan — a pure length check against
+            # the pattern already in `pending`. Checked ahead of the scan below
+            # so a short-pattern proposal is caught without paying for it.
+            unselective_ids = {
+                str(p["proposed_rule_id"])
+                for p in pending
+                if is_unselective_contains(
+                    str(p.get("merchant_pattern") or ""),
+                    str(p.get("match_type") or ""),
+                )
+            }
+            # ONE scan (_estimate_match_counts), not one per id — see its own
+            # docstring for why a repeated scan of core.fct_transactions is a
+            # hang risk (F14).
             counts = self._estimate_match_counts(pending)
             broad_ids = {
                 str(p["proposed_rule_id"])
@@ -563,13 +589,23 @@ class AutoRuleService:
             }
 
         for pid in proposed_rule_ids:
-            if pid in broad_ids:
-                AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL.inc()
-                logger.warning(
-                    f"Refusing to promote broad auto-rule proposal {pid}: its "
-                    f"match count far exceeds its trigger count. Review "
-                    f"estimated_match_count, then re-accept with allow_broad."
-                )
+            if pid in broad_ids or pid in unselective_ids:
+                if pid in broad_ids:
+                    AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL.inc()
+                    logger.warning(
+                        f"Refusing to promote broad auto-rule proposal {pid}: its "
+                        f"match count far exceeds its trigger count. Review "
+                        f"estimated_match_count, then re-accept with allow_broad."
+                    )
+                else:
+                    AUTO_RULE_UNSELECTIVE_ACCEPT_BLOCKED_TOTAL.inc()
+                    logger.warning(
+                        f"Refusing to promote auto-rule proposal {pid}: its "
+                        f"pattern is too short to be a 'contains' rule and "
+                        f"would match unrelated merchants (e.g. a 2-char "
+                        f"pattern like 'TO' matches STORE, AUTO, TOTAL). "
+                        f"Re-accept with allow_broad to accept the risk."
+                    )
                 result.skipped += 1
                 continue
             row = self._db.execute(

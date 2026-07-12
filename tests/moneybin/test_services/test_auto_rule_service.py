@@ -18,6 +18,7 @@ from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
 from moneybin.metrics.registry import (
     AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
     AUTO_RULE_BROAD_PENDING,
+    AUTO_RULE_PATTERN_DOWNGRADED_TOTAL,
 )
 from moneybin.services.audit_service import AuditService
 from moneybin.services.auto_rule_service import AutoRuleService
@@ -89,8 +90,13 @@ def test_extract_pattern_downgrades_short_invented_pattern_to_exact() -> None:
         (None,),  # no merchant_id on the categorization row
         ("TO", None),  # (raw description, memo)
     ]
+    downgraded_before = AUTO_RULE_PATTERN_DOWNGRADED_TOTAL._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
     extracted = AutoRuleService(db)._extract_pattern("t_to")
     assert extracted == ("TO", "exact")
+    assert (
+        AUTO_RULE_PATTERN_DOWNGRADED_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
+        == downgraded_before + 1
+    )
 
 
 def test_extract_pattern_keeps_contains_for_long_invented_pattern() -> None:
@@ -953,6 +959,56 @@ def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -
 
     # The human's informed override, after seeing estimated_match_count.
     allowed = service.accept(accept=[pid], reject=[], actor="test", allow_broad=True)
+    assert allowed.approved == 1
+
+
+def test_approve_refuses_legacy_short_contains_proposal_without_allow_broad(
+    real_db: Database,
+) -> None:
+    """The specificity floor must also gate promotion, not just proposal-time (F17).
+
+    ``_invented_match_type`` only downgrades a short pattern to ``exact`` when a
+    NEW proposal is created — it cannot retroactively fix a proposal already
+    sitting in ``app.proposed_rules`` with ``match_type='contains'`` from before
+    this guard shipped. This proposal's blast radius (5 rows) is deliberately
+    kept well under ``auto_rule_broad_match_min`` (20), so ``_is_broad`` alone
+    would wave it through unflagged — isolating the specificity check as the
+    thing that must catch it.
+    """
+    service = AutoRuleService(real_db)
+
+    # 5 transactions a `contains "TO"` rule would hit — comfortably under the
+    # broad floor (20), so the blast-radius check alone would not block this.
+    for i in range(5):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -10.0, 'COSTCO AUTO CENTER', 'csv')",
+            [f"t_{i}"],
+        )
+    pid = service._proposed.insert(
+        merchant_pattern="TO",
+        match_type="contains",
+        category="Transfer",
+        subcategory="Internal Transfer",
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    result = service.approve([pid], actor="test")
+    assert result.approved == 0
+    assert result.skipped == 1
+    assert result.rule_ids == []
+    rule_count_row = real_db.execute(
+        "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()
+    assert rule_count_row is not None and rule_count_row[0] == 0
+
+    # The human's informed override, after seeing the pattern is too short.
+    allowed = service.approve([pid], actor="test", allow_broad=True)
     assert allowed.approved == 1
 
 
