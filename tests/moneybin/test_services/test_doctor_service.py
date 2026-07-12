@@ -192,9 +192,9 @@ _FK_SQL = """
 _SIGN_SQL = """
     SELECT transaction_id
     FROM core.fct_transactions
-    WHERE amount = 0 OR amount IS NULL
+    WHERE amount IS NULL
     ORDER BY transaction_id
-"""  # noqa: S608 — test SQL
+"""  # noqa: S608 — test SQL; mirrors fct_transactions_sign_convention.sql (zero is a modeled direction, not a violation)
 
 _TRANSFER_SQL = """
     SELECT bt.debit_transaction_id
@@ -281,7 +281,7 @@ def test_fk_integrity_fails_orphaned_account(
 
 
 @pytest.mark.unit
-def test_sign_convention_fails_zero_amount(
+def test_sign_convention_fails_null_amount(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     doctor_db.execute("""
@@ -293,7 +293,7 @@ def test_sign_convention_fails_zero_amount(
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month, transaction_year_quarter
         ) VALUES
-        ('ZERO', 'ACC1', '2026-03-01', 0.00, 0.00, 'expense', 'Zero',
+        ('NULL_AMT', 'ACC1', '2026-03-01', NULL, NULL, 'expense', 'Unresolved',
          'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 3, 1, 6, '2026-03', '2026-Q1')
     """)  # noqa: S608 — test input, not user data
@@ -310,7 +310,46 @@ def test_sign_convention_fails_zero_amount(
         r for r in report.invariants if r.name == "fct_transactions_sign_convention"
     )
     assert sign.status == "fail"
-    assert "ZERO" in sign.affected_ids
+    assert "NULL_AMT" in sign.affected_ids
+
+
+@pytest.mark.unit
+def test_sign_convention_passes_zero_amount(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A $0.00 transaction is a modeled 'zero' direction, not a defect.
+
+    Regression pin for the audit-revival fix: core.fct_transactions models
+    zero as a legitimate third transaction_direction (a waived fee, a $0
+    authorization), so the sign-convention audit must not flag it.
+    """
+    doctor_db.execute("""
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description,
+            transaction_type, is_pending, currency_code, source_type,
+            source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month, transaction_year_quarter
+        ) VALUES
+        ('ZERO', 'ACC1', '2026-03-01', 0.00, 0.00, 'zero', 'Waived fee',
+         'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         2026, 3, 1, 6, '2026-03', '2026-Q1')
+    """)  # noqa: S608 — test input, not user data
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all(verbose=True)
+    sign = next(
+        r for r in report.invariants if r.name == "fct_transactions_sign_convention"
+    )
+    assert sign.status == "pass"
+    assert sign.affected_ids == []
 
 
 @pytest.mark.unit

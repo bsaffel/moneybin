@@ -41,7 +41,7 @@ Adding a new invariant in the future: add a `.sql` file to `sqlmesh/audits/` —
 | Audit file | Name | What it checks | Fails when |
 |---|---|---|---|
 | `fct_transactions_fk_integrity.sql` | `fct_transactions_fk_integrity` | Every `fct_transactions.account_id` resolves to `dim_accounts` | Any orphaned account_id |
-| `fct_transactions_sign_convention.sql` | `fct_transactions_sign_convention` | No amount is 0 or NULL | Any zero or NULL amount |
+| `fct_transactions_sign_convention.sql` | `fct_transactions_sign_convention` | No amount is NULL (zero is a modeled 'zero' direction, not a violation) | Any NULL amount |
 | `bridge_transfers_balanced.sql` | `bridge_transfers_balanced` | Every transfer pair sums to within $0.01 | Any pair with `ABS(SUM(amount)) > 0.01` |
 
 Each audit returns the offending `transaction_id` (or `debit_transaction_id` for transfers) as the first column. `DoctorService` uses this column for `--verbose` affected-ID output.

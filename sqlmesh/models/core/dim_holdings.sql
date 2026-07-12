@@ -10,7 +10,12 @@
    blended into the ledger-derived figures above them. They exist to be
    reconciled against (system doctor warns on divergence), not to be read as
    MoneyBin's position. A position MoneyBin holds but the broker's newest
-   snapshot omits shows NULL — that NULL is itself the signal. */
+   snapshot omits shows NULL — that NULL is itself the signal. The converse is
+   NOT covered: a position the broker reports but MoneyBin has no open lot
+   for (unbound security, a declined bootstrap, or a holdings snapshot that
+   landed before its transactions) produces no row here at all — a doctor
+   check for that direction must scan prep.stg_plaid__investment_holdings
+   directly, not this view. */
 MODEL (
   name core.dim_holdings,
   kind VIEW,
@@ -63,14 +68,18 @@ WITH positions AS (
      bind two provider security ids in one account onto one canonical id, and a
      canonical security can be held at several institutions. Summing here — not
      joining row-per-row — is what keeps the LEFT JOIN below from fanning the
-     position out. */
+     position out. provider_reported_as_of takes MIN, not MAX: when one item's
+     connection breaks and its snapshot goes stale, the summed quantity/cost
+     basis above still carries that stale contributor at full weight, so the
+     honest freshness is "as fresh as the stalest contributor," not the newest
+     one — MAX would let a healthy item's fresh timestamp mask a broken one. */
   SELECT
     h.account_id,
     h.security_id,
     SUM(h.quantity)::DECIMAL(28, 10) AS provider_reported_quantity,
     SUM(h.cost_basis)::DECIMAL(18, 2) AS provider_reported_cost_basis,
     SUM(h.institution_value)::DECIMAL(18, 2) AS provider_reported_value,
-    MAX(h.extracted_at) AS provider_reported_as_of
+    MIN(h.extracted_at) AS provider_reported_as_of
   FROM prep.stg_plaid__investment_holdings AS h
   JOIN newest_snapshot AS ns
     ON ns.source_file = h.source_file AND ns.source_origin = h.source_origin
@@ -90,7 +99,7 @@ SELECT
   pr.provider_reported_quantity, /* NON-AUTHORITATIVE: the broker's claimed open units in its newest snapshot. Reconciliation reference only — `quantity` above is MoneyBin's figure. NULL = the broker's newest snapshot does not report this position */
   pr.provider_reported_cost_basis, /* NON-AUTHORITATIVE: the broker's claimed cost basis. Never overwrites or feeds `cost_basis` above; system doctor warns when the two diverge */
   pr.provider_reported_value, /* NON-AUTHORITATIVE: the broker's claimed market value (MoneyBin computes no market value until price feeds land) */
-  pr.provider_reported_as_of, /* When the broker snapshot behind the three columns above was fetched (extracted_at); NULL when the broker no longer reports this position */
+  pr.provider_reported_as_of, /* Oldest extracted_at among the snapshots summed into the three columns above (MIN, not MAX) — a canonical position spanning multiple broker connections is only as fresh as its stalest contributor; NULL when the broker no longer reports this position */
   p.updated_at /* Latest of all per-row input timestamps contributing to this row's current values (MAX over the position's open lots). Provider-reported columns do not advance it — they are a reference, not an input. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM positions AS p
 LEFT JOIN provider_reported AS pr
