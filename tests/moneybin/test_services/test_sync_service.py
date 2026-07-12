@@ -826,6 +826,138 @@ class TestPullAutoRefreshes:
         assert calls == 1
         assert result.transforms_applied is True
 
+    def test_pull_refreshes_when_only_security_resolution_wrote(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Self-heal-only sync: a binding the resolver lands is a state change.
+
+        ``resolve_all()`` deliberately sweeps the WHOLE raw.plaid_securities
+        table on every pull, so it can bind rows an earlier pull left stranded
+        (the resolver raised, or the catalog has since grown a matching CUSIP).
+        That self-heal is the only durable write in such a pull: no securities
+        came down, no transactions changed, nothing was loaded.
+
+        A gate that counts only LOADED rows skips the refresh on exactly that
+        pull, so the binding never reaches core and every investment leg on the
+        security keeps its NULL ``security_id`` — the cost-basis engine goes on
+        dropping it — until some unrelated future pull happens to change other
+        rows. The self-heal the resolver promises is only real if the refresh
+        it depends on actually runs.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        # Stranded by an earlier pull: raw row present, never bound.
+        db.execute(
+            """
+            INSERT INTO raw.plaid_securities (
+                security_id, security_name, security_type, is_cash_equivalent,
+                iso_currency_code, source_file, source_origin
+            ) VALUES ('sec_stranded', 'Obscure Widget Corp', 'equity', FALSE,
+                      'USD', 'sync_j0', 'item_1')
+            """
+        )
+
+        empty_client = MagicMock()
+        empty_client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_selfheal", status="completed", transaction_count=0
+        )
+        empty_client.get_data.return_value = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": [],
+                "securities": [],
+                "investment_transactions": [],
+                "investment_holdings": [],
+            }
+        )
+
+        service = SyncService(client=empty_client, db=db, loader=loader)
+        result = service.pull()
+
+        assert result.security_resolution == {"minted": 1}, "bad setup: no bind"
+        assert calls == 1
+        assert result.transforms_applied is True
+
+    def test_pull_skips_refresh_when_resolution_bound_nothing_new(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The converse: a re-resolve that writes nothing must NOT refresh.
+
+        ``adopted`` is the steady state — every ref already bound, so the
+        resolver re-derives the same answer and inserts nothing. Counting the
+        OUTCOME rather than the WRITE would fire a full transform run on every
+        cash-only pull for the rest of the database's life, which is the exact
+        cost the rows-changed gate exists to avoid.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        db.execute(
+            """
+            INSERT INTO raw.plaid_securities (
+                security_id, security_name, security_type, is_cash_equivalent,
+                iso_currency_code, source_file, source_origin
+            ) VALUES ('sec_stranded', 'Obscure Widget Corp', 'equity', FALSE,
+                      'USD', 'sync_j0', 'item_1')
+            """
+        )
+
+        empty_payload = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": [],
+                "securities": [],
+                "investment_transactions": [],
+                "investment_holdings": [],
+            }
+        )
+        empty_client = MagicMock()
+        empty_client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_selfheal", status="completed", transaction_count=0
+        )
+        empty_client.get_data.return_value = empty_payload
+
+        service = SyncService(client=empty_client, db=db, loader=loader)
+        service.pull()  # first pull binds it
+        assert calls == 1, "bad setup: the binding pull must refresh"
+
+        result = service.pull()  # second pull re-derives the same binding
+
+        assert result.security_resolution == {"adopted": 1}
+        assert calls == 1, "re-resolving an already-bound security wrote nothing"
+        assert result.transforms_applied is False
+
     def test_pull_refreshes_when_only_removals_landed(
         self,
         db: Database,

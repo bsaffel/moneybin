@@ -300,14 +300,23 @@ def test_snapshot_receipt_replay_replaces_and_new_job_retains(
 def test_colliding_provider_ids_stay_distinct(
     db: Database, sync_data: SyncDataResponse
 ) -> None:
+    """One provider security token, reported by two items, stays two rows.
+
+    Plaid re-uses a security_id across the items that hold it (sec_dup arrives
+    from item_1 as ALPHA-VTI and from item_2 as BETA-VTI), so a key that ignores
+    source_origin would collapse the two brokerages' positions into one and
+    silently drop a holding. The collision axis is the security token, not the
+    account: an account_id is scoped to its item, so the same account cannot
+    appear under two — the loader rejects that payload outright.
+    """
     _load(db, sync_data)
-    row = db.execute(
+    rows = db.execute(
         """
-        SELECT COUNT(*) FROM raw.plaid_investment_holdings
-        WHERE account_id = 'acc_dup' AND security_id = 'sec_dup'
+        SELECT source_origin, account_id FROM raw.plaid_investment_holdings
+        WHERE security_id = 'sec_dup' ORDER BY source_origin
         """
-    ).fetchone()
-    assert row is not None and row[0] == 2  # one per item, never conflated
+    ).fetchall()
+    assert rows == [("item_1", "acc_1"), ("item_2", "acc_dup")]
 
 
 def test_missing_window_start_raises(db: Database, sync_data: SyncDataResponse) -> None:
@@ -505,6 +514,47 @@ def test_investment_holding_for_an_unknown_account_raises(
 
     with pytest.raises(ValueError, match="acc_ghost"):
         _load(db, payload, job_id="job-orphan-holding")
+
+
+def test_investment_row_whose_item_disagrees_with_its_account_raises(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """Cross-item drift is orphaning by another route, and it is SILENT in core.
+
+    The account exists, so the orphan guard is satisfied — but the row stamps
+    source_origin from its OWN provider_item_id while app.account_links is
+    stamped from the account's item. Staging joins on (source_origin,
+    account_id), so the two never meet: COALESCE falls back to the raw Plaid
+    account_id, and a cross-source-merged account has no core.dim_accounts row
+    under that id. Nothing raises, nothing logs — the holding just lands
+    attributed to an account that doesn't exist.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].provider_item_id = "item_other"
+
+    with pytest.raises(ValueError, match="item_other"):
+        _load(db, payload, job_id="job-item-drift")
+
+    row = db.execute("SELECT COUNT(*) FROM raw.plaid_investment_holdings").fetchone()
+    assert row == (0,), "guard must run before the first ingest"
+
+
+def test_holding_for_an_item_absent_from_metadata_names_the_accounts_real_item(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """An item that never reported is caught as drift, before the window check.
+
+    The window check can only see "this item reported, but without a window" —
+    an item absent from the metadata entirely never reaches it, because a
+    holding can only carry an item its own account belongs to. The error names
+    both sides, which is what an operator needs to tell a payload bug from a
+    server that answered without a window.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.investment_holdings[0].provider_item_id = "item_never_reported"
+
+    with pytest.raises(ValueError, match="item_never_reported"):
+        _load(db, payload, job_id="job-missing-item")
 
 
 def test_empty_arrays_load_cleanly(db: Database) -> None:

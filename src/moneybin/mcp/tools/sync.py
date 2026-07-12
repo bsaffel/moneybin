@@ -411,7 +411,13 @@ def register_sync_tools(mcp: FastMCP) -> None:
             "pull's investment transactions were not attributed to securities "
             "(cost basis incomplete until retried) and transforms_error means "
             "core.* is stale — surface both to the user rather than reporting a "
-            "clean sync.",
+            "clean sync. Mutation surface: writes raw.plaid_*, and resolves "
+            "security identity on every pull — binding a security to the catalog "
+            "(app.security_links), minting a provisional one it has never seen "
+            "(app.securities), or filing an ambiguous match for human review "
+            "(app.security_link_decisions). Review what it filed with "
+            "investments_securities_links_pending; reverse a binding with "
+            "system_audit_undo(operation_id).",
         ),
         (sync_status, "Connected institutions, last-sync times, and errors."),
         (

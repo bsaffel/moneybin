@@ -26,6 +26,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 
@@ -61,10 +62,20 @@ _cached_encryption_key: str | None = None
 
 _active_write_conn: "Database | None" = None
 _active_write_lock: threading.Lock = threading.Lock()
-# Per-thread holder populated by the MCP decorator so the timeout handler
-# can interrupt the specific connection opened for *this* tool call rather
-# than whatever is currently in the process-global slot.
-_write_conn_thread_local: threading.local = threading.local()
+# Per-call holder populated by the MCP decorator so the timeout handler can
+# interrupt the specific connection opened for *this* tool call rather than
+# whatever is currently in the process-global slot.
+#
+# A ContextVar, not a threading.local: an async tool body dispatches its write
+# through its own asyncio.to_thread, which runs on a fresh worker thread. A
+# thread-local set by the decorator is invisible there, so the connection never
+# registers and a timeout cannot interrupt the write — it commits after the
+# caller already got a timed_out envelope. asyncio.to_thread copies the calling
+# context, so a ContextVar reaches the worker thread (and any thread nested
+# below it), which is what makes the async write tools interruptible at all.
+_write_conn_holder: ContextVar[list[Any] | None] = ContextVar(
+    "_write_conn_holder", default=None
+)
 
 _migration_check_done: set[Path] = set()
 _database_accessed: bool = False
@@ -1196,12 +1207,12 @@ def get_database(
         _migration_check_done.add(db_path)
         with _active_write_lock:
             _active_write_conn = db
-        # If the MCP decorator registered a per-call holder on this
-        # thread, store the connection there too. The timeout handler
-        # reads from the holder to interrupt the *specific* connection
-        # it dispatched rather than whatever is currently in the global
-        # slot (which may belong to a different concurrent tool call).
-        _holder = getattr(_write_conn_thread_local, "conn_holder", None)
+        # If the MCP decorator registered a per-call holder for this call,
+        # store the connection there too. The timeout handler reads from the
+        # holder to interrupt the *specific* connection it dispatched rather
+        # than whatever is currently in the global slot (which may belong to a
+        # different concurrent tool call).
+        _holder = _write_conn_holder.get()
         if _holder is not None:
             _holder[0] = db
         return db

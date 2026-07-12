@@ -121,7 +121,11 @@ investment_holdings:
         quantity: "4.0"
         cost_basis: "1254.00"
         position_type: long
-  - account_id: acc_dup
+  # Same security (VTI) held at BOTH brokerages — the security-dedup scenario.
+  # The Alpha-side position sits on the ALPHA account: a Plaid account_id is
+  # scoped to its item, so acc_dup (Beta/item_2) cannot also be reported under
+  # item_1. Attributing it that way is the cross-item drift the loader rejects.
+  - account_id: acc_1
     provider_item_id: item_1
     security_id: sec_dup
     quantity: "5.0"

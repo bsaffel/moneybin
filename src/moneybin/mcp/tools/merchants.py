@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Literal
 
 from fastmcp import FastMCP
 
@@ -276,7 +277,7 @@ def _apply_merchant_reject(decision_id: str) -> None:
 )
 async def merchants_links_set(
     decision_id: str,
-    action: str,
+    action: Literal["accept", "reject"],
     target_merchant_id: str | None = None,
 ) -> ResponseEnvelope[MerchantLinksSetPayload]:
     """Accept (bind) or reject one pending merchant-link decision.

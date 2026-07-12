@@ -187,9 +187,12 @@ class SyncService:
             # promises. The cost on a pull with no investments is one SELECT
             # over an empty table (resolve_all returns {} immediately).
             resolution: dict[str, int] = {}
+            resolution_writes = 0
             security_resolution_error: str | None = None
             try:
-                resolution = SecurityResolver(self.db, actor="system").resolve_all()
+                resolver = SecurityResolver(self.db, actor="system")
+                resolution = resolver.resolve_all()
+                resolution_writes = resolver.writes
             except Exception as e:  # noqa: BLE001  # reported via security_resolution_error, not raised
                 security_resolution_error = str(e)
                 logger.warning(f"Security resolution failed after pull: {e}")
@@ -231,6 +234,13 @@ class SyncService:
         # the refresh and dim_holdings keeps serving the previous, non-empty
         # snapshot, so the emptied broker still reads as holding its old
         # positions: the exact phantom the receipt exists to expose.
+        # Security-resolution writes: resolve_all() sweeps the whole raw
+        # securities table, not this pull's delta, so a pull that loads nothing
+        # can still bind a security an earlier pull stranded. That binding is
+        # what core reads for security_id — skip the refresh and the leg keeps
+        # its NULL and the cost-basis engine goes on dropping it. Counted by
+        # actual writes, not by outcome: a steady-state re-resolve adopts every
+        # ref and writes nothing, and must not refresh.
         rows_changed = (
             load_result.transactions_loaded
             + load_result.accounts_loaded
@@ -241,6 +251,7 @@ class SyncService:
             + load_result.holdings_loaded
             + load_result.holding_lots_loaded
             + load_result.holdings_snapshots_loaded
+            + resolution_writes
         )
         if refresh and rows_changed > 0:
             refresh_result = _refresh(self.db)

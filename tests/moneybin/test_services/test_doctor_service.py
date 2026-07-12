@@ -744,11 +744,11 @@ def test_run_all_returns_expected_invariants(
     # pdf_formats recipe-validity / bounds / fingerprint-shape) +
     # orphan_app_state (PR4: scans transaction_notes / transaction_tags vs
     # core) + account_links / account_link_decisions / transaction_id_aliases
-    # audit coverage (M1S) + 8 investment reconciliation checks (T17: staging
+    # audit coverage (M1S) + 9 investment reconciliation checks (T17: staging
     # rejects, opening-lot review, unmodeled legs, holdings divergence,
-    # source overlap, unresolved securities, unreported holdings, phantom
-    # holdings).
-    assert len(report.invariants) == 44
+    # source overlap, unresolved securities, conflicting security refs,
+    # unreported holdings, phantom holdings).
+    assert len(report.invariants) == 45
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -979,6 +979,93 @@ def test_opening_lot_review_unbound_security_shows_provider_key(
 
 
 @pytest.mark.unit
+def test_conflicting_security_refs_warn(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two securities claiming one provider ref = one instrument held as two.
+
+    The resolver will not repoint either binding (a repoint is a reviewed merge,
+    never a sync-time side effect), so it logs and moves on. Nobody reads server
+    logs; without this check the split is invisible while both securities quietly
+    understate their lots.
+    """
+    db.execute(
+        "INSERT INTO raw.plaid_securities "
+        "(security_id, institution_id, institution_security_id, source_file, "
+        "source_origin) VALUES ('p_vti', 'ins_1', 'ALPHA-VTI', 'f', 'item_1')"
+    )
+    # The row's OWN two refs disagree: its plaid id says sec_a, its institution
+    # ref says sec_b. Each binding is individually unique and legal — only
+    # grouping them back to the provider row exposes the split.
+    db.execute(
+        "INSERT INTO app.security_links "
+        "(link_id, security_id, ref_kind, ref_value, source_type, status, decided_by, "
+        "decided_at) VALUES "
+        "('l1', 'sec_a', 'plaid_security_id', 'p_vti', 'plaid', 'accepted', 'auto', NOW()), "
+        "('l2', 'sec_b', 'institution_security_id', 'ins_1:ALPHA-VTI', 'plaid', "
+        "'accepted', 'auto', NOW())"
+    )
+    result = _investment_result(db, monkeypatch, "investment_conflicting_security_refs")
+    assert result.status == "warn"
+    assert result.affected_ids == ["p_vti"]
+
+
+@pytest.mark.unit
+def test_conflicting_security_refs_pass_when_each_ref_binds_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The steady state, including the case most likely to be a false positive.
+
+    One fund held at TWO brokerages is one security_id with two institution refs
+    — three refs, all correctly bound to the same security. That is healthy and
+    routine, and a check that flagged it would warn on every multi-brokerage
+    database. Only a row whose refs land on DIFFERENT securities is a conflict.
+    """
+    db.execute(
+        "INSERT INTO raw.plaid_securities "
+        "(security_id, institution_id, institution_security_id, source_file, "
+        "source_origin) VALUES "
+        "('p_vti', 'ins_1', 'ALPHA-VTI', 'f', 'item_1'), "
+        "('p_vti', 'ins_2', 'BETA-VTI', 'f', 'item_2')"
+    )
+    db.execute(
+        "INSERT INTO app.security_links "
+        "(link_id, security_id, ref_kind, ref_value, source_type, status, decided_by, "
+        "decided_at) VALUES "
+        "('l1', 'sec_a', 'plaid_security_id', 'p_vti', 'plaid', 'accepted', 'auto', NOW()), "
+        "('l2', 'sec_a', 'institution_security_id', 'ins_1:ALPHA-VTI', 'plaid', "
+        "'accepted', 'auto', NOW()), "
+        "('l3', 'sec_a', 'institution_security_id', 'ins_2:BETA-VTI', 'plaid', "
+        "'accepted', 'auto', NOW())"
+    )
+    result = _investment_result(db, monkeypatch, "investment_conflicting_security_refs")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_opening_lot_review_pass_when_nothing_needs_review(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty review queue must read `pass` — not warn on zero rows.
+
+    The check exists to surface positions the bootstrap REFUSED to synthesize;
+    a healthy database has none, and that is the state it spends most of its
+    life in. Without this, a query that silently matched everything would look
+    identical to one that correctly matched nothing.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
 def test_unmodeled_legs_surface_short_option_and_catchall(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1044,6 +1131,31 @@ def test_unmodeled_legs_match_subtype_case_insensitively(
     result = _investment_result(db, monkeypatch, "investment_unmodeled_legs")
     assert result.status == "warn"
     assert result.affected_ids == ["itx_assign", "itx_short"]
+
+
+@pytest.mark.unit
+def test_unmodeled_legs_pass_when_every_leg_is_modeled(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ordinary legs must read `pass` — the check's IN-list has to be selective.
+
+    The sibling case-insensitivity test proves the check CATCHES what it should;
+    this proves it does not catch what it shouldn't. A predicate broadened until
+    it matched every subtype would still satisfy every warn test on this check
+    while making the doctor cry wolf on a perfectly healthy ledger.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(investment_transaction_id VARCHAR, provider_subtype VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES "
+        "('itx_buy', 'buy'), ('itx_sell', 'sell'), ('itx_div', 'dividend')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unmodeled_legs")
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 @pytest.mark.unit

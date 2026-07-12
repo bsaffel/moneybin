@@ -183,6 +183,19 @@ class SecurityResolver:
         self._decisions = SecurityLinkDecisionsRepo(db)
         self._securities = SecuritiesRepo(db)
         self._mic_by_alias = self._load_mic_registry()
+        self._writes = 0
+
+    @property
+    def writes(self) -> int:
+        """Rows the last ``resolve_all()`` actually wrote to the app catalog.
+
+        Distinct from the outcome counts, and the sync gate needs BOTH. An
+        ``adopted`` row usually writes nothing (every ref already bound), so
+        counting outcomes would refresh on every cash-only pull forever; but a
+        pull that loads no rows and only self-heals a stranded binding writes
+        something core must see. Only an actual insert/update counts.
+        """
+        return self._writes
 
     # ------------------------------- entry -------------------------------
 
@@ -193,6 +206,7 @@ class SecurityResolver:
         ``pending``. Sparse — an outcome that did not occur is absent, and an
         empty raw table yields ``{}``.
         """
+        self._writes = 0
         rows = self._load_raw_securities()
         if not rows:
             return {}
@@ -546,10 +560,15 @@ class SecurityResolver:
             )
             if bound is not None:
                 if bound != security_id:
+                    # Not filed as a review decision: accepting one merges the
+                    # bound security away, and that path refuses a user-authored
+                    # row — it would enqueue a decision the user cannot action.
+                    # The doctor's investment_conflicting_security_refs check is
+                    # the surface; this log is just the breadcrumb.
                     logger.warning(
                         f"security ref conflict: ref_kind={ref_kind} is bound to "
                         f"security_id={bound}, not {security_id}; left as-is "
-                        "(resolve via the security-link review queue)"
+                        "(surfaced by `moneybin system doctor`)"
                     )
                 continue
             self._links.insert(
@@ -560,6 +579,7 @@ class SecurityResolver:
                 decided_by="auto",
                 actor=self._actor,
             )
+            self._writes += 1
 
     def _refresh_if_minted(
         self, raw: _RawSecurity, security_id: str, catalog: list[_CatalogEntry]
@@ -596,6 +616,7 @@ class SecurityResolver:
         )
         if event is None or event.after_value is None:
             return  # no write happened — the mirror already agrees with the DB
+        self._writes += 1
         catalog[index] = replace(
             catalog[index],
             name=event.after_value["name"],

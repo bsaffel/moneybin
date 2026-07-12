@@ -1129,6 +1129,20 @@ def bootstrap_cases(db: Database) -> Database:
         cost_basis="100.00",
         position_type="short",
     )
+    # Short, reported the way Plaid actually documents the enum: UPPERCASE. The
+    # value is prose, not schema-enforced, so the guard must not depend on its
+    # casing — a missed 'SHORT' synthesizes a LONG opening lot for a short
+    # position, inverting the sign of the whole cost basis.
+    _raw_holding(db, security_id="sec_shup", quantity="10", cost_basis="100.00")
+    _raw_lot(
+        db,
+        "sec_shup",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="10",
+        cost_basis="100.00",
+        position_type="SHORT",
+    )
     # NULL held quantity: unknowable position → review, never a silent drop.
     _raw_holding(db, security_id="sec_nq", quantity=None, cost_basis="100.00")
     with sqlmesh_context(db) as ctx:
@@ -1200,8 +1214,9 @@ def test_case_e_split_and_guards_route_to_review(bootstrap_cases: Database) -> N
     assert reasons["sec_e"] == "in_window_split"
     assert reasons["sec_neg"] == "negative_gap"
     assert reasons["sec_sh"] == "short_or_nonpositive"
+    assert reasons["sec_shup"] == "short_or_nonpositive"  # 'SHORT', not 'short'
     assert reasons["sec_nq"] == "short_or_nonpositive"
-    for sec in ("sec_e", "sec_neg", "sec_sh", "sec_nq"):
+    for sec in ("sec_e", "sec_neg", "sec_sh", "sec_shup", "sec_nq"):
         assert _opening(bootstrap_cases, sec) == [], sec
     # Bootstrappable and no-gap positions never appear in review.
     assert not {"sec_a", "sec_b", "sec_c", "sec_d", "sec_ng"} & set(reasons)

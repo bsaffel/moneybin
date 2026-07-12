@@ -30,7 +30,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import date as _date
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 
@@ -662,7 +662,7 @@ def _apply_reject(decision_id: str) -> None:
 )
 async def investments_securities_links_set(
     decision_id: str,
-    action: str,
+    action: Literal["accept", "reject"],
     into: str | None = None,
 ) -> ResponseEnvelope[SecurityLinksSetPayload]:
     """Accept (merge) or reject one pending security merge decision.

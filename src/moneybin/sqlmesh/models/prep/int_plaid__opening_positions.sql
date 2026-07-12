@@ -89,7 +89,13 @@ WITH first_snapshot AS (
 /* The three guards. Each routes the position to review and synthesizes nothing —
    a visible gap, never a plausible-looking guess. held_qty is COALESCEd to 0 so an
    absent broker quantity lands in review rather than evaporating from both views
-   (NULL > 0 and NULL < 0 are both false). */
+   (NULL > 0 and NULL < 0 are both false).
+
+   position_type is compared through LOWER(): Plaid's is a prose enum, not
+   schema-enforced, and it documents the values uppercase. An exact lowercase
+   compare would miss 'SHORT' and synthesize a LONG opening lot for a short
+   position — inverting the basis on the one case that must never be auto-derived.
+   The sibling staging model already normalizes every other Plaid enum this way. */
 SELECT
   p.*,
   COALESCE(iw.net_qty, 0) AS in_window_net,
@@ -105,7 +111,7 @@ SELECT
         AND gl.security_id = p.source_security_key
         AND gl.source_origin = p.source_origin
         AND gl.source_file = p.source_file
-        AND gl.position_type = 'short'
+        AND LOWER(COALESCE(gl.position_type, '')) = 'short'
     )
   ) AS is_short_or_nonpositive,
   EXISTS(

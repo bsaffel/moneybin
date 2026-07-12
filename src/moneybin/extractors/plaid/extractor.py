@@ -14,6 +14,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from itertools import chain
 from pathlib import Path
 
 import polars as pl
@@ -375,6 +376,9 @@ class PlaidExtractor:
         payload fails all-or-nothing — no partial raw write and no inflated
         records-loaded counter from tables ingested ahead of holdings.
         """
+        # Only the null-window case is reachable: build_account_to_item_map runs
+        # first and rejects any holding whose item disagrees with its account's,
+        # so by here every provider_item_id is one metadata reported.
         for holding in holdings:
             if window_by_item.get(holding.provider_item_id) is None:
                 raise ValueError(
@@ -451,6 +455,31 @@ class PlaidExtractor:
                 f"if it persists, the server's account_id stream is out of sync "
                 f"with its transaction stream."
             )
+
+        # Investment rows carry their OWN provider_item_id and stamp source_origin
+        # from it, while app.account_links is stamped from this mapping. Staging
+        # joins the two on (source_origin, account_id), so a row whose item
+        # disagrees with its account's item misses that join, COALESCE falls back
+        # to the raw Plaid account_id, and the fact/holding lands under an
+        # account_id that has no core.dim_accounts row when that account was
+        # cross-source merged. The mismatch is silent in core, so catch it here.
+        for row, kind in chain(
+            (
+                (itx, "investment transaction")
+                for itx in sync_data.investment_transactions
+            ),
+            ((hold, "investment holding") for hold in sync_data.investment_holdings),
+        ):
+            expected = mapping[row.account_id]
+            if row.provider_item_id != expected:
+                raise ValueError(
+                    f"{kind} for account {row.account_id} carries provider_item_id "
+                    f"{row.provider_item_id!r}, but that account belongs to item "
+                    f"{expected!r} per sync_data.accounts. Attributing the row to "
+                    f"its stated item would orphan it from its account — retry the "
+                    f"sync, and if it persists the server's item attribution is "
+                    f"inconsistent across arrays."
+                )
         return mapping
 
     def _load_accounts(

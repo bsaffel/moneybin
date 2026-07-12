@@ -38,8 +38,10 @@ from moneybin.tables import (
     MATCH_DECISIONS,
     PDF_FORMATS,
     PLAID_INVESTMENT_TRANSACTIONS,
+    PLAID_SECURITIES,
     PROPOSED_RULES,
     SECURITIES,
+    SECURITY_LINKS,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -207,6 +209,7 @@ class DoctorService:
             self._run_holdings_snapshot_divergence(),
             self._run_investment_source_overlap(),
             self._run_investment_unresolved_securities(),
+            self._run_investment_conflicting_security_refs(),
             self._run_investment_unreported_holdings(),
             self._run_investment_phantom_holdings(),
         ]
@@ -969,6 +972,84 @@ class DoctorService:
                     "understating lots and gains; run "
                     "`moneybin investments securities links pending` to review "
                     "and resolve them"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_conflicting_security_refs(self) -> InvariantResult:
+        """One provider security, bound to two different canonical securities.
+
+        A Plaid security row carries several refs (its plaid_security_id plus an
+        institution ref per institution holding it). They describe ONE instrument,
+        so they must resolve to one security. When they don't, MoneyBin is holding
+        the same instrument as two — its lots and gains are split across both, and
+        every report understates each.
+
+        The resolver refuses to repoint either binding on its own: a repoint is a
+        reviewed merge, never a sync-time side effect, and rewriting the wrong one
+        fuses two real instruments' tax lots irreversibly. So it logs and moves on
+        — which made the conflict invisible to everyone not reading server logs.
+        This is that missing surface.
+
+        Deliberately NOT filed into the security-link review queue: accepting such
+        a decision merges the bound security away, and that path refuses a
+        user-authored row outright — it would enqueue a decision the user cannot
+        action. The conflict needs a human to decide which security is real, so
+        report it and name both.
+        """
+        name = "investment_conflicting_security_refs"
+        try:
+            # Reconstruct each provider row's refs exactly as SecurityResolver
+            # binds them (plaid_security_id, plus one namespaced institution ref
+            # per institution reporting it), then ask how many securities they
+            # landed on. A single (ref_kind, ref_value) can only be bound once —
+            # the conflict is BETWEEN a row's own refs, so it is invisible to any
+            # query that doesn't group them back together.
+            rows = self._db.execute(
+                f"""
+                WITH provider_refs AS (
+                    SELECT security_id AS provider_key,
+                           'plaid_security_id' AS ref_kind,
+                           security_id AS ref_value
+                    FROM {PLAID_SECURITIES.full_name}
+                    UNION
+                    SELECT security_id,
+                           'institution_security_id',
+                           institution_id || ':' || institution_security_id
+                    FROM {PLAID_SECURITIES.full_name}
+                    WHERE institution_id IS NOT NULL
+                      AND institution_security_id IS NOT NULL
+                )
+                SELECT r.provider_key
+                FROM provider_refs AS r
+                JOIN {SECURITY_LINKS.full_name} AS l
+                  ON l.ref_kind = r.ref_kind
+                 AND l.ref_value = r.ref_value
+                 AND l.source_type = 'plaid'
+                 AND l.status = 'accepted'
+                GROUP BY r.provider_key
+                HAVING COUNT(DISTINCT l.security_id) > 1
+                ORDER BY r.provider_key
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — raw/app tables absent before first sync
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"security links unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} provider security row(s) have refs bound to more "
+                    "than one canonical security — the same instrument is held as "
+                    "two, so its lots and gains are split across both and each is "
+                    "understated; decide which security is real and merge the "
+                    "other away"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )
