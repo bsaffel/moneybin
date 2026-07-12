@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -111,6 +113,81 @@ def _applied_hex(html: str) -> list[str]:
         applied += _HEX.findall(body)
     applied += [hex_value for _quote, hex_value in _PRESENTATION_ATTR.findall(html)]
     return applied
+
+
+@dataclass
+class _Frame:
+    """One open element: the hexes it applies, and whether it carries text."""
+
+    tag: str
+    hexes: set[str]
+    has_text: bool = False
+
+
+class _SwatchAudit(HTMLParser):
+    """Attribute each applied hex to the element applying it, and note if it has text.
+
+    A swatch *chip* paints the literal value it documents and carries no text of its
+    own — the label lives beside it. So a hex applied to an element that has text is
+    UI chrome, no matter what the rest of the card prints.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._stack: list[_Frame] = []
+        self.chip_hexes: set[str] = set()  # applied by an element with no text
+        self.chrome_hexes: set[str] = set()  # applied by an element that has text
+        self.printed: set[str] = set()  # rendered as visible text
+
+    def _hexes(self, attrs: list[tuple[str, str | None]]) -> set[str]:
+        values = " ".join(v for _k, v in attrs if v)
+        return {h.upper() for h in _HEX.findall(values)}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._stack.append(_Frame(tag=tag, hexes=self._hexes(attrs)))
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # Self-closing (SVG <line/>, <rect/>) can never hold text, so it is a chip.
+        self.chip_hexes |= self._hexes(attrs)
+
+    def handle_data(self, data: str) -> None:
+        if not self._stack:
+            return
+        # A <style>/<script> body is code, not a printed label — and a hex in there
+        # styles the whole card, so it is chrome by definition.
+        if any(f.tag in {"style", "script"} for f in self._stack):
+            self.chrome_hexes |= {h.upper() for h in _HEX.findall(data)}
+            return
+        if data.strip():
+            self._stack[-1].has_text = True
+            self.printed |= {h.upper() for h in _HEX.findall(data)}
+
+    def _close_frame(self, frame: _Frame) -> None:
+        if frame.has_text:
+            self.chrome_hexes |= frame.hexes
+        else:
+            self.chip_hexes |= frame.hexes
+
+    def handle_endtag(self, tag: str) -> None:
+        while self._stack:
+            frame = self._stack.pop()
+            self._close_frame(frame)
+            if frame.tag == tag:
+                break
+
+    def finish(self) -> None:
+        """Drain any unclosed tags (void elements like <br>) — none of them hold text."""
+        self.close()
+        while self._stack:
+            self._close_frame(self._stack.pop())
+
+
+def _swatch_violations(html: str) -> tuple[set[str], set[str]]:
+    """(chrome, undocumented) — hexes on a text-bearing element, and chips never printed."""
+    audit = _SwatchAudit()
+    audit.feed(html)
+    audit.finish()
+    return audit.chrome_hexes, audit.chip_hexes - audit.printed
 
 
 def _component_jsx() -> list[Path]:
@@ -321,8 +398,13 @@ def test_swatch_card_only_hardcodes_the_value_it_documents(card: Path) -> None:
     contradicted the very ``Button`` it demonstrates (which reads
     ``--on-accent-brass``).
 
-    So a swatch card's applied hex is legitimate only when the card also *prints*
-    that hex — that is what makes it the subject rather than a hardcoded style.
+    The exemption is bound to the swatch *chip*, not to the file. A file-wide rule
+    ("this hex is printed somewhere in the card") is still too loose: the swatches
+    print ``#C79B3B``, so a CTA sample doing ``background:#C79B3B`` would inherit
+    their documentation and freeze to one theme anyway. A chip is an element that
+    paints the literal value and carries no text of its own; anything with text is
+    chrome and must use tokens.
+
     Dual-plate brand cards are the one true whole-file exemption.
     """
     if card.name in _DUAL_PLATE_CARDS:
@@ -330,19 +412,15 @@ def test_swatch_card_only_hardcodes_the_value_it_documents(card: Path) -> None:
             "renders the dark and light plates together; no token expresses both"
         )
 
-    html = card.read_text()
-    applied = {h.upper() for h in _applied_hex(html)}
-    if not applied:
-        return
-
-    printed = {
-        h.upper() for text in re.findall(r">([^<]+)<", html) for h in _HEX.findall(text)
-    }
-    undocumented = applied - printed
+    chrome, undocumented = _swatch_violations(card.read_text())
+    assert not chrome, (
+        f"{card.name}: {sorted(chrome)} is applied to an element that has text, so it "
+        f"is UI chrome, not a swatch chip. Use var(--*) — a hardcoded value freezes it "
+        f'under [data-theme="light"].'
+    )
     assert not undocumented, (
         f"{card.name}: applies {sorted(undocumented)} without printing it, so it is "
-        f"styling, not a swatch. Use var(--*) — a hardcoded value here freezes the "
-        f'card under [data-theme="light"].'
+        f"styling, not a swatch. Use var(--*)."
     )
 
 
