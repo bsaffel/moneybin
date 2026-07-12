@@ -44,4 +44,4 @@ def test_rejects_a_non_pep440_tag(files: Path) -> None:
     problems = check_release_metadata(
         "release-2", files / "pyproject.toml", files / "CHANGELOG.md"
     )
-    assert problems
+    assert any("PEP 440" in p for p in problems)
