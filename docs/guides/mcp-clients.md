@@ -150,7 +150,7 @@ moneybin mcp install --client windsurf -y
 - **Server lifecycle:** One server process per Windsurf instance.
 - **Confirmation UI:** Tool-call approval is shown in the Cascade chat panel. Like Cursor, Windsurf reads `readOnlyHint` but doesn't currently distinguish `destructiveHint` in its UI.
 
-> **⚠️ MoneyBin exceeds Windsurf's tool limit.** Cascade holds a maximum of **100 tools at any one time**, across *all* your MCP servers combined. MoneyBin registers **102** and hides none of them, so a MoneyBin install alone is already over the ceiling — and any other MCP server you run competes for the same budget.
+> **⚠️ MoneyBin exceeds Windsurf's tool limit.** Cascade holds a maximum of **100 tools at any one time**, across *all* your MCP servers combined. MoneyBin registers **105** and hides none of them, so a MoneyBin install alone is already over the ceiling — and any other MCP server you run competes for the same budget.
 >
 > Windsurf gives you no warning when you cross the line; tools past the limit simply aren't available to Cascade, and it will act as though MoneyBin can't do things it can. Open **Settings → MCP Servers** and toggle off the tools you don't need until you're under 100. Turning off namespaces you aren't using (for example `investments_*` or `tax_*` if you don't track those) is the quickest way down.
 >

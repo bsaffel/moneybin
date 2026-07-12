@@ -295,7 +295,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   M3B), and documents two failures that look like bugs but aren't: Cowork's *remote*
   sessions can never see a local MCP server, and managed-org policy flags
   (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`) can disable local MCP
-  outright. The Windsurf section now warns that **MoneyBin's 102 tools exceed
+  outright. The Windsurf section now warns that **MoneyBin's 105 tools exceed
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
   dropped, so users must disable some by hand. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and

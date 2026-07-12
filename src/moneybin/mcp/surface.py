@@ -15,4 +15,4 @@ WINDSURF_ACTIVE_TOOL_CAP = 100
 # Tools a client receives at connect. MoneyBin retired client-driven progressive
 # disclosure (`mcp-architecture.md` §3), so every registered tool is visible and
 # "registered" and "visible" are the same number.
-VISIBLE_TOOL_COUNT = 102
+VISIBLE_TOOL_COUNT = 105
