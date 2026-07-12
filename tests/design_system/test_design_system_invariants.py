@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -56,10 +57,12 @@ _ENUMERATING_DOCS = (
 # `color:#141311` on a brass fill, which stays near-black on light theme's darker
 # brass instead of following --on-accent-brass).
 
-# 1. Swatch cards: a chip painted with the literal value it is documenting. The
-#    hex is the *subject*, so the card must also print it — that is what makes it
-#    a swatch rather than a hardcoded style. Anything applied but NOT printed is
-#    ordinary UI chrome and must use tokens like any other card.
+# 1. Swatch cards: a chip painted with the literal value it documents. The binding
+#    is to the chip's own CELL, not to the file — the chip renders no text and its
+#    label sits beside it in the parent. A file-wide "is this hex printed anywhere?"
+#    rule is too loose: the swatches print #C79B3B, so unrelated chrome could reuse
+#    that value and inherit their documentation. Anything that renders text, or
+#    paints a value its own cell never prints, is chrome and must use tokens.
 _SWATCH_CARDS = frozenset({
     "colors-brass.html",
     "colors-chart.html",
@@ -115,79 +118,117 @@ def _applied_hex(html: str) -> list[str]:
     return applied
 
 
+_VOID_TAGS = frozenset({
+    "br",
+    "hr",
+    "img",
+    "input",
+    "meta",
+    "link",
+    "area",
+    "base",
+    "col",
+    "embed",
+    "wbr",
+})
+
+
 @dataclass
-class _Frame:
-    """One open element: the hexes it applies, and whether it carries text."""
+class _El:
+    """One element in the card, with the hexes it paints and its place in the tree."""
 
     tag: str
     hexes: set[str]
-    has_text: bool = False
+    parent: _El | None = None
+    children: list[_El] = field(default_factory=list)
+    text: list[str] = field(default_factory=list)
+
+    def own_text(self) -> str:
+        return " ".join(self.text)
+
+    def subtree_text(self) -> str:
+        return self.own_text() + " " + " ".join(c.subtree_text() for c in self.children)
+
+    def has_text(self) -> bool:
+        """True if this element renders text anywhere beneath it, not just directly."""
+        return bool(self.subtree_text().strip())
+
+    def walk(self) -> Iterator[_El]:
+        yield self
+        for child in self.children:
+            yield from child.walk()
 
 
-class _SwatchAudit(HTMLParser):
-    """Attribute each applied hex to the element applying it, and note if it has text.
-
-    A swatch *chip* paints the literal value it documents and carries no text of its
-    own — the label lives beside it. So a hex applied to an element that has text is
-    UI chrome, no matter what the rest of the card prints.
-    """
+class _CardTree(HTMLParser):
+    """Parse a specimen card into a tree so a hex can be bound to the element painting it."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self._stack: list[_Frame] = []
-        self.chip_hexes: set[str] = set()  # applied by an element with no text
-        self.chrome_hexes: set[str] = set()  # applied by an element that has text
-        self.printed: set[str] = set()  # rendered as visible text
+        self.root = _El(tag="#root", hexes=set())
+        self._cursor = self.root
 
     def _hexes(self, attrs: list[tuple[str, str | None]]) -> set[str]:
-        values = " ".join(v for _k, v in attrs if v)
-        return {h.upper() for h in _HEX.findall(values)}
+        return {h.upper() for h in _HEX.findall(" ".join(v for _k, v in attrs if v))}
+
+    def _add(self, tag: str, attrs: list[tuple[str, str | None]]) -> _El:
+        el = _El(tag=tag, hexes=self._hexes(attrs), parent=self._cursor)
+        self._cursor.children.append(el)
+        return el
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._stack.append(_Frame(tag=tag, hexes=self._hexes(attrs)))
+        el = self._add(tag, attrs)
+        if tag not in _VOID_TAGS:
+            self._cursor = el
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        # Self-closing (SVG <line/>, <rect/>) can never hold text, so it is a chip.
-        self.chip_hexes |= self._hexes(attrs)
+        self._add(
+            tag, attrs
+        )  # self-closing (SVG <line/>): a leaf, never descended into
 
     def handle_data(self, data: str) -> None:
-        if not self._stack:
-            return
-        # A <style>/<script> body is code, not a printed label — and a hex in there
-        # styles the whole card, so it is chrome by definition.
-        if any(f.tag in {"style", "script"} for f in self._stack):
-            self.chrome_hexes |= {h.upper() for h in _HEX.findall(data)}
-            return
-        if data.strip():
-            self._stack[-1].has_text = True
-            self.printed |= {h.upper() for h in _HEX.findall(data)}
-
-    def _close_frame(self, frame: _Frame) -> None:
-        if frame.has_text:
-            self.chrome_hexes |= frame.hexes
-        else:
-            self.chip_hexes |= frame.hexes
+        self._cursor.text.append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        while self._stack:
-            frame = self._stack.pop()
-            self._close_frame(frame)
-            if frame.tag == tag:
-                break
-
-    def finish(self) -> None:
-        """Drain any unclosed tags (void elements like <br>) — none of them hold text."""
-        self.close()
-        while self._stack:
-            self._close_frame(self._stack.pop())
+        node: _El | None = self._cursor
+        while node is not None and node.tag != tag:
+            node = node.parent
+        if node is not None and node.parent is not None:
+            self._cursor = node.parent
 
 
 def _swatch_violations(html: str) -> tuple[set[str], set[str]]:
-    """(chrome, undocumented) — hexes on a text-bearing element, and chips never printed."""
-    audit = _SwatchAudit()
-    audit.feed(html)
-    audit.finish()
-    return audit.chrome_hexes, audit.chip_hexes - audit.printed
+    """Audit a swatch card: (chrome hexes, chip hexes its own cell never documents).
+
+    A swatch *chip* paints the literal value it documents and renders no text — the
+    label sits beside it, in the parent cell. Two ways to be illegitimate:
+
+    - **chrome**: the painted element renders text (anywhere beneath it). Then it is
+      UI, not a swatch, and must use tokens. A hex inside a ``<style>`` block styles
+      the whole card, so it is chrome by definition.
+    - **undocumented**: a textless element paints a value its *own cell* never prints.
+      Binding to the cell — not to the whole file — is the point: the swatches print
+      ``#C79B3B``, so a file-wide rule would let unrelated chrome reuse that value and
+      inherit their documentation.
+    """
+    tree = _CardTree()
+    tree.feed(html)
+    tree.close()
+
+    chrome: set[str] = set()
+    undocumented: set[str] = set()
+    for el in tree.root.walk():
+        if el.tag in {"style", "script"}:
+            chrome |= {h.upper() for h in _HEX.findall(el.subtree_text())}
+            continue
+        if not el.hexes:
+            continue
+        if el.has_text():
+            chrome |= el.hexes
+            continue
+        cell = el.parent if el.parent is not None else tree.root
+        documented = {h.upper() for h in _HEX.findall(cell.subtree_text())}
+        undocumented |= el.hexes - documented
+    return chrome, undocumented
 
 
 def _component_jsx() -> list[Path]:
@@ -284,6 +325,17 @@ def test_icon_names_match_the_typed_union() -> None:
     # Strip `//` comments first: a comment in the union reads "disclosure; rotate via
     # direction", and that semicolon would end the match early, silently truncating it.
     dts = re.sub(r"//[^\n]*", "", (_COMPONENTS / "core" / "Icon.d.ts").read_text())
+
+    # Pin the PUBLIC export, not just the vetted list behind it. `Icon.names` is what
+    # callers read; if that assignment regressed to `Object.keys(GLYPHS)` while
+    # CORE_NAMES stayed correct, the runtime would hand back all 44 glyphs again and
+    # a CORE_NAMES-only check would sail through — the original bug, returning green.
+    export = re.search(r"Icon\.names\s*=\s*([^;\n]+)", jsx)
+    assert export, "Icon.jsx: no `Icon.names = ...` export found"
+    assert export.group(1).strip() == "CORE_NAMES", (
+        f"Icon.names is assigned {export.group(1).strip()!r}, not CORE_NAMES — the "
+        f"public vocabulary must be the vetted list, not every drawn glyph"
+    )
 
     core_block = re.search(r"const CORE_NAMES\s*=\s*\[(.*?)\]", jsx, re.S)
     assert core_block, "Icon.jsx: CORE_NAMES not found"
