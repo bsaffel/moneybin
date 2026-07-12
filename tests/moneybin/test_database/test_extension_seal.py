@@ -21,10 +21,14 @@ from unittest.mock import MagicMock
 import duckdb
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import (
+    _DISABLED_FILESYSTEMS,  # pyright: ignore[reportPrivateUsage]  # security constant under test
+    Database,
+)
 
 # Every URL DuckDB would route through a filesystem httpfs registers.
-# gcs://, gs:// and r2:// are all served by S3FileSystem.
+# gcs://, gs:// and r2:// are all served by S3FileSystem; hf:// by
+# HuggingFaceFileSystem — the third remote filesystem httpfs registers.
 REMOTE_URLS = [
     "https://example.com/statements.csv",
     "http://example.com/statements.csv",
@@ -32,6 +36,7 @@ REMOTE_URLS = [
     "gcs://bucket/statements.parquet",
     "gs://bucket/statements.parquet",
     "r2://bucket/statements.parquet",
+    "hf://datasets/user/repo/data.csv",
 ]
 
 # The ways a session could try to lift the seal. `SET GLOBAL` and `RESET` are
@@ -112,6 +117,37 @@ def test_encrypted_write_succeeds_under_seal(write_db: Database) -> None:
 
     rows = write_db.execute("SELECT id, note FROM app.seal_probe").fetchall()
     assert rows == [(1, "written under seal")]
+
+
+def test_disabled_filesystems_covers_every_registered_fs(write_db: Database) -> None:
+    """The disable list must name every remote filesystem httpfs registers.
+
+    `_DISABLED_FILESYSTEMS` is a hand-maintained constant; this is the tripwire
+    that keeps it honest. `conn.list_filesystems()` returns exactly the
+    extension-registered filesystems (the remote ones httpfs brings — HTTP, S3,
+    HuggingFace today) and never the built-in LocalFileSystem the encrypted DB
+    file needs. If a future DuckDB/httpfs registers a fourth remote filesystem,
+    this set grows and the assertion fails in CI — a red build instead of a
+    silently-open scheme reaching the network. This is why the seal can keep an
+    explicit, reviewable constant rather than clever runtime logic that might
+    accidentally disable local access.
+    """
+    registered = set(write_db.conn.list_filesystems())
+    disabled = set(_DISABLED_FILESYSTEMS.split(","))
+
+    # Guard the guard: if httpfs stopped registering filesystems the assertion
+    # below would pass vacuously and hide a regression in the fixture or seal.
+    assert registered, "httpfs registered no filesystems — seal/fixture changed"
+    # The local filesystem must never appear here — disabling it would block the
+    # encrypted DB file. It doesn't (list_filesystems omits built-ins), but pin it.
+    assert "LocalFileSystem" not in registered
+
+    missing = registered - disabled
+    assert not missing, (
+        f"httpfs registers filesystem(s) absent from _DISABLED_FILESYSTEMS: "
+        f"{sorted(missing)}. Add each to the constant in database.py — an "
+        f"undisabled remote filesystem is open network egress on the agent handle."
+    )
 
 
 def test_write_connection_has_crypto_extension_loaded(write_db: Database) -> None:

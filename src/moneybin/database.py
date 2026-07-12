@@ -104,6 +104,11 @@ _database_written: bool = False
 # load httpfs. That buys it nothing: `disabled_filesystems` is enforced at
 # filesystem-lookup time, so the remote schemes stay refused.
 #
+# `enable_external_access=false` was considered as a blunter seal and rejected:
+# it blocks the local encrypted DB file itself (the ATTACH can't open it), so it
+# is unusable here. `disabled_filesystems` is the right tool — it revokes the
+# remote filesystems by name while leaving LocalFileSystem intact.
+#
 # Watch item: if a future DuckDB restores built-in write crypto without httpfs,
 # all of this — the LOAD, the disable, the lock, and test_extension_seal.py —
 # can be deleted.
@@ -111,10 +116,19 @@ _database_written: bool = False
 # The extension whose OpenSSL crypto module makes encrypted writes possible.
 _CRYPTO_EXTENSION = "httpfs"
 
-# Every remote filesystem httpfs registers. S3FileSystem also serves gcs://,
-# gs:// and r2://. Other remote backends (azure://) live in extensions that
-# autoinstall=false + allow_community=false + the lock prevent loading at all.
-_DISABLED_FILESYSTEMS = "HTTPFileSystem,S3FileSystem"
+# Every remote filesystem httpfs registers, kept in lockstep with what the
+# extension actually exposes: HTTPFileSystem (http/https), S3FileSystem (which
+# also serves gcs://, gs:// and r2://), and HuggingFaceFileSystem (hf://).
+# Other remote backends (azure://) live in extensions that autoinstall=false +
+# allow_community=false + the lock prevent loading at all. This list is a hand-
+# maintained allowlist-of-denies precisely because it must NOT include
+# LocalFileSystem — disabling that would block the encrypted DB file itself. Its
+# completeness is guarded by test_disabled_filesystems_covers_every_registered_fs
+# in test_extension_seal.py, which loads httpfs, enumerates conn.list_filesystems()
+# (which returns only extension-registered remote filesystems, never the local
+# one), and fails CI the moment DuckDB registers a fourth we haven't disabled —
+# so a silently-missed filesystem is a red build, not open egress.
+_DISABLED_FILESYSTEMS = "HTTPFileSystem,S3FileSystem,HuggingFaceFileSystem"
 
 # Set before anything else so nothing can be silently fetched or loaded, and
 # so an agent's SQL can't pull in an extension by merely referencing it.
