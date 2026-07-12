@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
@@ -3445,9 +3445,13 @@ class TestCategorizePendingPlaidPass:
 # list_uncategorized_transactions — pending transfer match flag (F19)
 # ---------------------------------------------------------------------------
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+# Resolve via the package's own SQLMESH_ROOT rather than walking up to the repo
+# root: the SQLMesh project lives inside the installed package, so a path built
+# from the test file's parents breaks whenever the project moves (it did — the
+# project relocated to src/moneybin/sqlmesh). SQLMESH_ROOT is what production
+# uses, so this binding cannot drift from it.
 _UNCATEGORIZED_QUEUE_MODEL_FILE = (
-    _REPO_ROOT / "sqlmesh" / "models" / "reports" / "uncategorized_queue.sql"
+    SQLMESH_ROOT / "models" / "reports" / "uncategorized_queue.sql"
 )
 
 
