@@ -219,7 +219,7 @@ class TestInvestmentsSecuritiesLinksSet:
         ctx = _fake_ctx(
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -236,7 +236,7 @@ class TestInvestmentsSecuritiesLinksSet:
         ctx = _fake_ctx(
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             data = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -274,7 +274,7 @@ class TestInvestmentsSecuritiesLinksSet:
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
 
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"], action="accept", into=other
@@ -330,7 +330,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         setup = _merge_setup()
         ctx = _fake_ctx(supports_elicit=False)
 
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -357,7 +357,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         setup = _merge_setup()
 
         with patch(
-            "moneybin.mcp.tools.investments.get_context",
+            "moneybin.mcp.elicitation.get_context",
             side_effect=RuntimeError("No active context found."),
         ):
             parsed = (
@@ -378,7 +378,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         setup = _merge_setup()
         ctx = _fake_ctx(supports_elicit=True, elicit_result=DeclinedElicitation())
 
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -398,7 +398,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         setup = _merge_setup()
         ctx = _fake_ctx(supports_elicit=True, elicit_result=CancelledElicitation())
 
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -420,7 +420,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
 
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             await investments_securities_links_set(
                 decision_id=setup["decision_id"],
                 action="accept",
@@ -447,7 +447,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
 
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             await investments_securities_links_set(
                 decision_id=setup["decision_id"],
                 action="accept",
@@ -475,7 +475,7 @@ class TestInvestmentsSecuritiesLinksSetActionInput:
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
 
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"], action="accept", into=""
@@ -534,7 +534,7 @@ class TestInvestmentsSecuritiesLinksSetActionInput:
         ctx = _fake_ctx(
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id="dnotthere01", action="accept", into="whatever"
@@ -570,7 +570,7 @@ class TestInvestmentsSecuritiesLinksHistory:
         ctx = _fake_ctx(
             supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
-        with patch("moneybin.mcp.tools.investments.get_context", return_value=ctx):
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
             await investments_securities_links_set(
                 decision_id=setup["decision_id"],
                 action="accept",

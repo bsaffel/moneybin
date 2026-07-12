@@ -110,13 +110,13 @@ not-yet-built.
 | 47| List available import formats (tabular + PDF) for selection / introspection | `import_formats` *(returns `formats` + `pdf_formats` arrays)* | `import formats list [--type tabular\|pdf\|all]` *(text or JSON; agent can also `import formats show <name>` for either kind)* | —          | live                  |
 | 48| Import a native-text PDF an agent must help extract (bridge round-trip) | `import_preview`/`import_files` *(return `confirmation_required` with a `bridge_payload` when the deterministic rung can't crack the layout)* → `import_confirm` *(`bridge_response={recipe, rows}`; re-runs the recipe, reconciles, persists, loads)* | *deferred — the CLI keeps the seed fallback until the agent-aware CLI escalation signal lands* | —          | live (MCP)            |
 | 49| List pending account-link decisions grouped by provisional account | `accounts_links_pending` | `accounts links pending` | — | live |
-| 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `target_account_id: str\|null` — no default; null = standalone-reject)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
+| 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `target_account_id: str\|null`; accept requires `target_account_id` = the decision's own `candidate_account_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
 | 51| Show recent account-link decisions (all statuses) | `accounts_links_history` *(`limit=50`)* | `accounts links history` *(`--limit`, `--output json`)* | — | live |
 | 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
 | 53| "What needs my attention?" — pending counts across all five review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, merchant_links_pending, security_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
 | 54| Confirm account identity at import time (which account is this file?) | `import_confirm` *(`account_bindings={source_key: account_id\|"new"}` ratifies an `account_confirmation`; `account_metadata` captures display_name/subtype/last_four/currency for `"new"` accounts; interactive-human imports gate on weak candidates, agents load + queue; a single-account file with no account identity also returns `account_confirmation` — a 1-entry no-candidate proposal — for both human and agent callers)* | `import confirm <file> --account-binding source_key=ACCOUNT_ID\|new [--account-meta source_key:field=value]` | — | live |
 | 55| List pending merchant-link decisions grouped by provider entity id | `merchants_links_pending` | `merchants links pending` *(`--output json`)* | — | live |
-| 56| Accept (bind) or reject one pending merchant-link decision | `merchants_links_set` *(`decision_id`, `target_merchant_id: str\|null` — no default; null = reject)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next categorization pass) | — | live |
+| 56| Accept (bind) or reject one pending merchant-link decision | `merchants_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `target_merchant_id: str\|null`; accept requires `target_merchant_id` = the decision's own `candidate_merchant_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next categorization pass) | — | live |
 | 57| Show recent merchant-link decisions (all statuses) | `merchants_links_history` *(`limit=50`)* | `merchants links history` *(`--limit`, `--output json`)* | — | live |
 | 58| Harvest pending merchant-link proposals from existing categorization facts | `merchants_links_run` *(returns `data.bound` + `data.conflicts`)* | `merchants links run` *(`--output json`; returns `data.bound` + `data.conflicts`)* | — | live |
 | 59| Upgrade AI-guessed transactions to confident provider-native (Plaid) categories | `transactions_categorize_improve_ai` | `transactions categorize improve-ai` | — | live |
@@ -211,7 +211,19 @@ header showed ticker OR name, never both; `set --accept` now requires
 `--into <candidate_security_id>` (MCP: `into`) as a confirming safety check,
 mirroring `merchants_links_set`'s `target_merchant_id` guard — a tied group
 files one decision per candidate, so an unconfirmed accept could merge into
-the wrong security and auto-reject the right one.)*
+the wrong security and auto-reject the right one.
+Rows 50 and 56 updated 2026-07-12: `accounts_links_set` and
+`merchants_links_set` are brought onto the same shape as row 68's
+`investments_securities_links_set` — the three tools do the same job on three
+entity types, so a defect in one is a defect in all three. Both gain an
+explicit `action` parameter (accept/reject is no longer inferred from the
+truthiness of the target id — an empty-string target was silently becoming a
+permanent reject, and a rejected proposal is never re-proposed), and both gate
+accept behind the shared MCP elicitation (`mcp/elicitation.py::confirm_or_raise`):
+an agent can no longer read a candidate id out of `*_links_pending` and merge
+in the same turn with no human involved. `decided_by` now tracks reality —
+`"user"` only when a human ratified the accept at the elicitation, `"auto"` on
+an agent-driven MCP reject. CLI behavior is unchanged.)*
 
 ## Exemption categories
 

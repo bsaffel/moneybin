@@ -33,15 +33,13 @@ from decimal import Decimal
 from typing import Any
 
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_context
-from fastmcp.server.elicitation import AcceptedElicitation
 
 from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.elicitation import supports_elicitation
+from moneybin.mcp.elicitation import confirm_or_raise
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
     InvestmentGainsPayload,
@@ -613,44 +611,20 @@ def _confirm_message(p: _MergeProposal) -> str:
     )
 
 
-def _confirmation_unavailable(p: _MergeProposal, reason: str, detail: str) -> UserError:
-    return UserError(
-        f"This merge needs explicit confirmation and {detail}. Nothing was "
-        f"written; decision '{p.decision_id}' is still pending.",
-        code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
-        hint=(
-            "Accept it from a terminal instead: "
-            f"`{_cli_equivalent(p.decision_id, p.candidate_security_id)}`"
-        ),
-        details={"decision_id": p.decision_id, "reason": reason},
-    )
-
-
 async def _confirm_merge_or_raise(p: _MergeProposal) -> None:
     """Obtain explicit human agreement for a merge, or raise — never fall through.
 
-    Every pending decision is by construction a weak inference (the resolver
-    proposes only when ambiguous), so it is never eligible for agent
-    self-accept regardless of confidence score
-    (`.claude/rules/design-principles.md`, "Magic stays visible"). Without a
-    human on the other end of an elicitation there is no way to accept from
-    MCP at all — the CLI is the way through.
+    Delegates the gate itself to the shared ``confirm_or_raise`` helper (one
+    elicitation pattern across every accept gate); only the prompt and the CLI
+    equivalent are security-specific.
     """
-    try:
-        ctx = get_context()
-    except RuntimeError as exc:
-        raise _confirmation_unavailable(
-            p, "no_session", "there is no active MCP session to ask"
-        ) from exc
-    if not supports_elicitation(ctx):
-        raise _confirmation_unavailable(
-            p, "client_unsupported", "this client cannot prompt you (no elicitation)"
-        )
-    result = await ctx.elicit(_confirm_message(p), response_type=None)
-    if not isinstance(result, AcceptedElicitation):
-        raise _confirmation_unavailable(
-            p, "declined", "the confirmation was declined or cancelled"
-        )
+    await confirm_or_raise(
+        _confirm_message(p),
+        subject="This merge",
+        unchanged=f"decision '{p.decision_id}' is still pending",
+        cli_equivalent=_cli_equivalent(p.decision_id, p.candidate_security_id),
+        details={"decision_id": p.decision_id},
+    )
 
 
 def _apply_accept(decision_id: str, into: str) -> None:
