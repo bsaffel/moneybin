@@ -3568,6 +3568,91 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
     assert flagged["t_expense"] is False
 
 
+def test_pending_queue_ignores_dedup_decisions_for_transfer_flag(
+    db: Database,
+) -> None:
+    """A pending DEDUP decision must NOT set pending_transfer_match.
+
+    ``app.match_decisions`` stores both dedup and transfer proposals in one
+    table, discriminated by ``match_type``. The transfer-match query
+    previously filtered only on ``match_status = 'pending' AND reversed_at
+    IS NULL`` — with no ``match_type`` filter — so a pending
+    duplicate-review proposal falsely set ``pending_transfer_match`` on its
+    transactions, routing the agent into transfer-resolution guidance
+    (transactions_matches_run / transactions_matches_set) that doesn't
+    apply to an ordinary dedup pair. Only ``match_type = 'transfer'`` rows
+    should set the flag.
+
+    Covers a dedup decision on BOTH union legs — leg "a" (t_dedup_a) and leg
+    "b" (t_dedup_b) — since the fix must add the ``match_type`` filter to
+    both halves of the UNION independently.
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_checking', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_dedup_a', 'acct_checking', '2026-06-01', -12.00, "
+        "'COFFEE SHOP', 'ofx', false), "
+        "('t_dedup_b', 'acct_checking', '2026-06-02', -8.00, "
+        "'COFFEE SHOP', 'ofx', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub(db)
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "(transaction_id, source_transaction_id, source_type, account_id) "
+        "VALUES "
+        "('t_dedup_a', 'src_dedup_a1', 'ofx', 'acct_checking'), "
+        "('t_dedup_b', 'src_dedup_b2', 'ofx', 'acct_checking')"
+    )
+    repo = MatchDecisionsRepo(db)
+    # Leg "a": t_dedup_a is the decision's source_transaction_id_a.
+    repo.insert(
+        match_id="m_pending_dedup_a",
+        source_transaction_id_a="src_dedup_a1",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="src_dedup_a2",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id="acct_checking",
+        confidence_score=0.95,
+        match_signals={},
+        match_type="dedup",
+        match_status="pending",
+        decided_by="auto",
+        actor="system",
+    )
+    # Leg "b": t_dedup_b is the decision's source_transaction_id_b.
+    repo.insert(
+        match_id="m_pending_dedup_b",
+        source_transaction_id_a="src_dedup_b1",
+        source_type_a="ofx",
+        source_origin_a="bank",
+        source_transaction_id_b="src_dedup_b2",
+        source_type_b="ofx",
+        source_origin_b="bank",
+        account_id="acct_checking",
+        confidence_score=0.95,
+        match_signals={},
+        match_type="dedup",
+        match_status="pending",
+        decided_by="auto",
+        actor="system",
+    )
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
+
+    assert rows is not None
+    flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
+    assert flagged["t_dedup_a"] is False
+    assert flagged["t_dedup_b"] is False
+
+
 def _install_matched_stub_missing_account_id(db: Database) -> None:
     """prep.int_transactions__matched present but missing account_id (schema drift).
 

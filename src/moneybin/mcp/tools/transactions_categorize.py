@@ -490,7 +490,9 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_categorize_auto_review,
         "transactions_categorize_auto_review",
-        "List pending auto-rule proposals with sample transactions and trigger counts.",
+        "List pending auto-rule proposals with sample transactions and trigger counts, "
+        "including estimated_match_count and is_broad — a proposal flagged is_broad "
+        "requires allow_broad=True on transactions_categorize_auto_accept to be accepted.",
     )
     register(
         mcp,
@@ -498,7 +500,9 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         "transactions_categorize_auto_accept",
         "Batch accept/reject auto-rule proposals. Accepted "
         "proposals become active rules and immediately categorize "
-        "matching transactions. "
+        "matching transactions. A proposal flagged is_broad (estimated_match_count far "
+        "exceeds its evidence) is skipped, not promoted, unless allow_broad=True — a broad "
+        "rule recategorizes many transactions at once. "
         "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
     )
     register(

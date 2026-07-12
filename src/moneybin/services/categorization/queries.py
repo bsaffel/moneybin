@@ -302,6 +302,13 @@ class CategorizationQueries:
         for same-account dedup matches and populated only for cross-account
         transfers (``app_match_decisions.sql``), so a bare ``account_id``
         would mis-scope every transfer's second leg.
+
+        Both legs filter ``d.match_type = 'transfer'`` — ``app.match_decisions``
+        stores dedup *and* transfer proposals in the same table
+        (``match_type`` CHECK), and this result only feeds the
+        ``pending_transfer_match`` flag. Without the filter, a pending dedup
+        decision would falsely flag its transactions as an unresolved
+        transfer.
         """
         try:
             rows = self._db.execute(
@@ -313,6 +320,7 @@ class CategorizationQueries:
                   AND d.source_transaction_id_a = m.source_transaction_id
                   AND d.account_id = m.account_id
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
+                  AND d.match_type = 'transfer'
 
                 UNION
 
@@ -323,6 +331,7 @@ class CategorizationQueries:
                   AND d.source_transaction_id_b = m.source_transaction_id
                   AND COALESCE(d.account_id_b, d.account_id) = m.account_id
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
+                  AND d.match_type = 'transfer'
                 """  # noqa: S608  # TableRef constants + literal predicates, no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
