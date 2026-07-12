@@ -332,10 +332,10 @@ class MerchantLinksService:
                         status="accepted",
                         in_outer_txn=True,
                     )
-                except ValueError as exc:
+                except UserError as exc:
                     # _guard_uniqueness: the entity id is already bound to a
-                    # different merchant. Surface a clean UserError (no
-                    # ref_value / PII in the message).
+                    # different merchant. Restate without the provider ref, which
+                    # the repo's message carries and this surface must not.
                     raise UserError(
                         "This provider entity id is already bound to a merchant.",
                         code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
