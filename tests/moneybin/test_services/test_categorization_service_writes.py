@@ -573,6 +573,40 @@ class TestCreateRulesUnselectiveContainsGate:
         assert result.skipped == 0
         assert result.error_details == []
 
+    @pytest.mark.unit
+    def test_resubmitting_existing_broad_rule_is_idempotent_not_gated(
+        self, db: Database
+    ) -> None:
+        """Re-submitting an already-active broad rule must hit the dedup path.
+
+        The gate must not run before the existing-active-rule lookup: a rule
+        created earlier with allow_broad=True (or one that predates this
+        guard) is already in app.categorization_rules — no new risky INSERT
+        would happen on resubmit, so refusing it only breaks the documented
+        idempotency contract (docs/specs/moneybin-mcp.md).
+        """
+        svc = CategorizationService(db)
+        items = [
+            CategorizationRuleInput(
+                name="Transfer TO",
+                merchant_pattern="TO",
+                category="Transfer",
+                subcategory="Internal Transfer",
+                match_type="contains",
+            )
+        ]
+        first = svc.create_rules(items, allow_broad=True)
+        assert first.created == 1
+        original_rule_id = first.rule_ids[0]
+
+        second = svc.create_rules(items)  # no allow_broad on resubmit
+
+        assert second.existing == 1
+        assert second.created == 0
+        assert second.skipped == 0
+        assert second.rule_ids == [original_rule_id]
+        assert second.error_details == []
+
 
 class TestDeactivateRule:
     """CategorizationService.deactivate_rule — soft-delete a rule."""

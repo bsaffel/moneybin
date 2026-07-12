@@ -1,6 +1,6 @@
 # Auto-Rule Generation
 
-> Last updated: 2026-05-17
+> Last updated: 2026-07-12
 > Status: Implemented
 > Parent: [`categorization-overview.md`](categorization-overview.md) (pillar E)
 > Companions: [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (algorithm contract: source-precedence enforcement on write, snowball auto-apply, `match_text` and exemplar accumulator that auto-rule writes interoperate with), [`archived/transaction-categorization.md`](archived/transaction-categorization.md) (existing rule engine this builds on), [`moneybin-mcp.md`](moneybin-mcp.md) (tool signatures), `CLAUDE.md` "Architecture: Data Layers"
@@ -39,27 +39,28 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 3. The proposal threshold is configurable (`categorization.auto_rule_proposal_threshold`, default 1). A value of 1 means propose on first categorization; a value of 3 means propose after three matching categorizations.
 4. Pattern extraction uses the merchant-first strategy: canonical merchant name when a `merchant_id` exists, cleaned description otherwise.
 5. Proposals are stored in `app.proposed_rules` with `status = 'pending'`.
+6. **Specificity floor on invented patterns.** A `contains` pattern the description-fallback path invents (not a user-authored merchant pattern) is only proposed as `contains` when it meets a minimum length (`auto_rule_min_contains_length`, default 4); shorter patterns are proposed as `exact` instead. See "Specificity floor" under Pattern Extraction.
 
 ### Proposal lifecycle
 
-6. Proposals have four states: `pending`, `approved`, `rejected`, `superseded`.
-7. Approved proposals are promoted to active rules in `app.categorization_rules` with `created_by = 'auto_rule'` and `priority = 200`.
-8. On promotion, the new rule is immediately run against existing uncategorized transactions so approval has instant effect.
-9. Rejected proposals are not re-proposed for the same pattern unless the user later categorizes a transaction with that pattern differently (which creates a new proposal).
-10. When the same pattern is categorized differently, the existing proposal is marked `superseded` and a new proposal is created with the new category.
+7. Proposals have four states: `pending`, `approved`, `rejected`, `superseded`.
+8. Approved proposals are promoted to active rules in `app.categorization_rules` with `created_by = 'auto_rule'` and `priority = 200` — **unless** the proposal is flagged broad (see "Blast-radius review" below), in which case promotion is refused without an explicit `allow_broad` override.
+9. On promotion, the new rule is immediately run against existing uncategorized transactions so approval has instant effect.
+10. Rejected proposals are not re-proposed for the same pattern unless the user later categorizes a transaction with that pattern differently (which creates a new proposal).
+11. When the same pattern is categorized differently, the existing proposal is marked `superseded` and a new proposal is created with the new category.
 
 ### Correction handling
 
-11. A single user override of an auto-rule-categorized transaction does not affect the rule. `categorized_by = 'user'` outranks the rule per the priority hierarchy.
-12. After `auto_rule_override_threshold` (default 2) user overrides of the same auto-rule, the system deactivates the rule, marks the proposal `superseded`, and creates a new proposal with the most common correction category.
-13. Override counting is query-based: count transactions where `categorized_by = 'user'` AND the transaction matches the auto-rule's pattern and has a different category. No stored counter needed.
+12. A single user override of an auto-rule-categorized transaction does not affect the rule. `categorized_by = 'user'` outranks the rule per the priority hierarchy.
+13. After `auto_rule_override_threshold` (default 2) user overrides of the same auto-rule, the system deactivates the rule, marks the proposal `superseded`, and creates a new proposal with the most common correction category.
+14. Override counting is query-based: count transactions where `categorized_by = 'user'` AND the transaction matches the auto-rule's pattern and has a different category. No stored counter needed.
 
 ### Priority hierarchy integration
 
-14. Auto-rules sit at priority level 3 in the categorization hierarchy (user > user-rules > auto-rules > ML > provider_native > ai). They use `categorized_by = 'auto_rule'`.
-15. Auto-rules are never evaluated for transactions already categorized by a higher-priority source.
-16. Auto-rules at `priority = 200` are evaluated after user-created rules at default `priority = 100`. Two auto-rules are ordered by their own priority values (first-created wins at equal priority).
-17. Auto-rule writes route through the `write_categorization` helper, which enforces the source-priority ladder defined in [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Source precedence. A user manual categorization (`'user'`) or user-authored rule (`'rule'`) categorization is never overwritten by an `'auto_rule'` write — the write is skipped at the SQL level, not after the fact.
+15. Auto-rules sit at priority level 3 in the categorization hierarchy (user > user-rules > auto-rules > ML > provider_native > ai). They use `categorized_by = 'auto_rule'`.
+16. Auto-rules are never evaluated for transactions already categorized by a higher-priority source.
+17. Auto-rules at `priority = 200` are evaluated after user-created rules at default `priority = 100`. Two auto-rules are ordered by their own priority values (first-created wins at equal priority).
+18. Auto-rule writes route through the `write_categorization` helper, which enforces the source-priority ladder defined in [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) §Source precedence. A user manual categorization (`'user'`) or user-authored rule (`'rule'`) categorization is never overwritten by an `'auto_rule'` write — the write is skipped at the SQL level, not after the fact.
 
 ## Data Model
 
@@ -128,6 +129,19 @@ Has merchant_id in app.transaction_categories?
 
 The cleaning regex list is a simple ordered set of strip rules — not a general NLP pipeline. Good enough for v1; real-world data informs whether it needs to be smarter.
 
+### Specificity floor on invented patterns
+
+`normalize_description` can reduce a description to a 1–2 character token — a truncated "TRANSFER TO ..." becomes "TO". As a `contains` rule, that token matches STORE, AUTO, TOTAL; one accepted proposal then relabels those rows on the next categorize run, and a Transfer label drops them out of spend reports entirely.
+
+To guard against this, the description/memo fallback path checks the invented pattern's length before choosing `match_type`:
+
+- **Pattern length ≥ `auto_rule_min_contains_length`** (default 4): proposed as `contains`, as before.
+- **Pattern length < `auto_rule_min_contains_length`**: proposed as `exact` instead. The user's evidence (the trigger transaction) is kept, but the rule can only fire on a description that IS the token — it no longer silently sweeps up unrelated merchants.
+
+This floor applies **only to machine-invented patterns** from the description/memo fallback. A user-authored `app.user_merchants.raw_pattern` is never touched — the guard protects the inference, not the human's own judgment.
+
+The floor is implemented once (`_shared.is_unselective_contains`) and shared by two call sites: this pattern-extraction step (`AutoRuleService._invented_match_type`) and direct rule creation via `transactions_categorize_rules_create` / `moneybin transactions categorize rules create` (`MatchApplier.create_rules_core`) — an agent or user creating a rule directly is refused the same short `contains` pattern unless it passes `allow_broad=True`. See [`moneybin-mcp.md`](moneybin-mcp.md) §`transactions_categorize_rules_create`.
+
 ### Deduplication
 
 | Scenario | Behavior |
@@ -135,6 +149,16 @@ The cleaning regex list is a simple ordered set of strip rules — not a general
 | Same `merchant_pattern` + same `category` | Increment `trigger_count`, append to `sample_txn_ids` (capped at 5). No duplicate proposal. |
 | Same `merchant_pattern` + different `category` | Mark existing proposal `superseded`. Create new proposal with the new category. User sees both in review history. |
 | Overlapping patterns (e.g., "STARBUCKS" and "STARBUCKS RESERVE") | Both proposals survive independently. User decides during review. |
+
+## Blast-Radius Review
+
+`trigger_count` (how many times a proposal was reinforced) is evidence of user intent, not a bound on the rule's actual reach — a pattern extracted from one transaction can still match hundreds of others already in the ledger. The review and promotion surfaces close that gap:
+
+- **`estimated_match_count`.** Every proposal returned by `transactions_categorize_auto_review` (MCP) / `moneybin transactions categorize auto review` (CLI) carries `estimated_match_count` — how many transactions the proposed pattern would actually match today, computed with the live matcher's own predicate (not an approximation).
+- **`is_broad`.** `True` when the blast radius is disproportionate to the evidence behind it: `estimated_match_count` exceeds both an absolute floor (`auto_rule_broad_match_min`, default 20) and `auto_rule_broad_match_factor` (default 10) times `trigger_count`. A proposal with thin evidence (`trigger_count = 1`) that would already match 25 transactions is flagged; a proposal reinforced 30 times that matches 25 transactions is not — the guard only fires when the reach outruns what the user has actually confirmed.
+- **`allow_broad` override.** A proposal flagged `is_broad` cannot be promoted via `transactions_categorize_auto_accept` / `moneybin transactions categorize auto accept` without an explicit `allow_broad=True`. Without it, the proposal is skipped (counted in the response's `skipped`, not `accepted`) rather than silently promoted. The CLI review table marks broad proposals with a `⚠️  BROAD, requires --allow-broad to accept` warning line.
+
+`allow_broad` is a deliberate opt-in per "Magic stays visible" (`.claude/rules/design-principles.md`): the system surfaces its own uncertainty about a proposal's reach instead of promoting it silently, and the human (or an agent acting on explicit instruction) has to say so before a wide-reaching rule goes active.
 
 ## Integration Hook
 
@@ -166,10 +190,11 @@ The hook is lightweight: one SELECT each against rules, merchants, and proposals
 
 | Command | Description |
 |---|---|
-| `moneybin transactions categorize auto review` | Table of pending proposals with sample transactions, trigger counts, and pattern details |
+| `moneybin transactions categorize auto review` | Table of pending proposals with sample transactions, trigger counts, pattern details, and blast-radius (`estimated_match_count`, flagged `⚠️  BROAD` when `is_broad`) |
 | `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...]` | Batch accept/reject proposals (renamed from `confirm` / `--approve` in PR #171) |
 | `moneybin transactions categorize auto accept --accept-all` | Accept all pending proposals |
 | `moneybin transactions categorize auto accept --reject-all` | Reject all pending proposals |
+| `moneybin transactions categorize auto accept ... --allow-broad` | Required to promote a proposal flagged `is_broad`; see Blast-Radius Review |
 | `moneybin transactions categorize auto stats` | Auto-rule health: active count, proposal count, override rate, top-performing rules |
 | `moneybin transactions categorize auto rules` | List active auto-rules (equivalent to `list-rules --created-by auto_rule`) |
 
@@ -205,8 +230,8 @@ Imported 120 transactions from chase_checking.csv
 
 | Tool | Type | Description |
 |---|---|---|
-| `transactions_categorize_auto_review` | Read | List pending proposals with sample transactions, trigger counts, and pattern details |
-| `transactions_categorize_auto_accept` | Write | Batch accept/reject proposals by ID. Accepted proposals are promoted to active rules. (Renamed from `_auto_confirm` in PR #171.) |
+| `transactions_categorize_auto_review` | Read | List pending proposals with sample transactions, trigger counts, pattern details, and blast-radius (`estimated_match_count`, `is_broad`) |
+| `transactions_categorize_auto_accept` | Write | Batch accept/reject proposals by ID. Accepted proposals are promoted to active rules. `allow_broad=True` is required to promote a proposal flagged `is_broad` — see Blast-Radius Review. (Renamed from `_auto_confirm` in PR #171.) |
 | `transactions_categorize_auto_stats` | Read | Auto-rule health: active count, proposal count, override rate, top-performing rules by match count |
 
 ### Prompt
@@ -242,12 +267,18 @@ class CategorizationSettings(BaseModel):
     auto_rule_proposal_threshold: int = 1  # Propose after N matching categorizations
     auto_rule_override_threshold: int = 2  # Deactivate rule after N user overrides
     auto_rule_default_priority: int = 200  # Priority for promoted auto-rules
+    auto_rule_min_contains_length: int = 4  # Shorter invented pattern -> 'exact'
+    auto_rule_broad_match_min: int = 20  # Below this, is_broad never fires
+    auto_rule_broad_match_factor: int = 10  # Broad when matches > factor x triggers
 ```
 
 Env var overrides:
 
 - `MONEYBIN_CATEGORIZATION__AUTO_RULE_PROPOSAL_THRESHOLD=3`
 - `MONEYBIN_CATEGORIZATION__AUTO_RULE_OVERRIDE_THRESHOLD=5`
+- `MONEYBIN_CATEGORIZATION__AUTO_RULE_MIN_CONTAINS_LENGTH=3`
+- `MONEYBIN_CATEGORIZATION__AUTO_RULE_BROAD_MATCH_MIN=50`
+- `MONEYBIN_CATEGORIZATION__AUTO_RULE_BROAD_MATCH_FACTOR=5`
 
 ## Testing Strategy
 

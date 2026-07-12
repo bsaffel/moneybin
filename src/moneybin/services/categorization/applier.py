@@ -393,22 +393,6 @@ class MatchApplier:
         rule_ids: list[str] = []
 
         for item in items:
-            if not allow_broad and is_unselective_contains(
-                item.merchant_pattern, item.match_type
-            ):
-                RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL.inc()
-                skipped += 1
-                error_details.append({
-                    "name": item.name,
-                    "reason": (
-                        f"Pattern {item.merchant_pattern!r} is too short to be a "
-                        "'contains' rule — it would match unrelated merchants "
-                        "(e.g. a 2-char pattern like 'TO' matches STORE, AUTO, "
-                        "TOTAL). Use match_type='exact' for a short pattern, or "
-                        "re-run with allow_broad=True to accept the risk."
-                    ),
-                })
-                continue
             try:
                 # DuckDB IS NOT DISTINCT FROM treats NULL = NULL as true,
                 # so optional fields (min/max_amount, account_id, subcategory)
@@ -439,6 +423,28 @@ class MatchApplier:
                 if found is not None:
                     existing += 1
                     rule_ids.append(found[0])
+                    continue
+                # The specificity gate only guards the INSERT path: an
+                # already-active rule with this exact matcher+output found
+                # above short-circuits to `existing` before we ever get
+                # here, so re-submitting a previously allow_broad'd (or
+                # pre-guard) rule stays idempotent instead of being refused
+                # (docs/specs/moneybin-mcp.md "Idempotent" contract).
+                if not allow_broad and is_unselective_contains(
+                    item.merchant_pattern, item.match_type
+                ):
+                    RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL.inc()
+                    skipped += 1
+                    error_details.append({
+                        "name": item.name,
+                        "reason": (
+                            f"Pattern {item.merchant_pattern!r} is too short to be a "
+                            "'contains' rule — it would match unrelated merchants "
+                            "(e.g. a 2-char pattern like 'TO' matches STORE, AUTO, "
+                            "TOTAL). Use match_type='exact' for a short pattern, or "
+                            "re-run with allow_broad=True to accept the risk."
+                        ),
+                    })
                     continue
                 # Phase 1 dual-write: resolve the FK alongside the text snapshot
                 # (read; stays in the service per Req 2). `None` is a permitted
