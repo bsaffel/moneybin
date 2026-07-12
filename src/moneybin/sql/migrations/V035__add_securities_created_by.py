@@ -42,7 +42,7 @@ SELECT
     security_id, name, security_type, ticker, exchange, cusip, isin, figi,
     coingecko_id, is_cash_equivalent, cost_basis_method, currency_code,
     'user', created_at, updated_at
-FROM app.__v035_securities_tmp
+FROM app.securities__v035_tmp
 """
 
 _CREATED_BY_COMMENT = (
@@ -66,10 +66,10 @@ def migrate(conn: object) -> None:
         return
     logger.debug("V035: rebuilding app.securities with created_by")
     conn.execute(  # type: ignore[union-attr]
-        "CREATE TABLE app.__v035_securities_tmp AS SELECT * FROM app.securities"
+        "CREATE TABLE app.securities__v035_tmp AS SELECT * FROM app.securities"
     )
     conn.execute("DROP TABLE app.securities")  # type: ignore[union-attr]
     conn.execute(_NEW_SECURITIES_SQL)  # type: ignore[union-attr]
     conn.execute(_RESTORE_SQL)  # type: ignore[union-attr]
-    conn.execute("DROP TABLE app.__v035_securities_tmp")  # type: ignore[union-attr]
+    conn.execute("DROP TABLE app.securities__v035_tmp")  # type: ignore[union-attr]
     conn.execute(_CREATED_BY_COMMENT)  # type: ignore[union-attr]

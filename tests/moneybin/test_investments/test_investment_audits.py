@@ -34,6 +34,7 @@ from tests.moneybin.db_helpers import (
 _AUDITS_DIR = SQLMESH_ROOT / "audits"
 _AUDIT_PATH = _AUDITS_DIR / "fct_investment_transactions_sign_convention.sql"
 _FK_AUDIT_PATH = _AUDITS_DIR / "fct_investment_transactions_fk_integrity.sql"
+_UNIQUENESS_AUDIT_PATH = _AUDITS_DIR / "fct_investment_transactions_uniqueness.sql"
 
 
 def _body(path: Path) -> str:
@@ -50,6 +51,11 @@ def _audit_query() -> str:
 def _fk_audit_query() -> str:
     """The FK-integrity audit's query body."""
     return _body(_FK_AUDIT_PATH)
+
+
+def _uniqueness_audit_query() -> str:
+    """The grain/uniqueness audit's query body."""
+    return _body(_UNIQUENESS_AUDIT_PATH)
 
 
 def _seed(db: Database, txn_id: str, type_: str, amount: str | None) -> None:
@@ -165,6 +171,33 @@ def test_fk_audit_catches_an_orphan_account_id(db: Database) -> None:
         """  # noqa: S608 — test input, not user data
     )
     assert db.execute(_fk_audit_query()).fetchall() == [("buy_orphan",)]
+
+
+def test_uniqueness_audit_passes_on_distinct_ids(db: Database) -> None:
+    create_core_tables(db)
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _seed(db, "buy_1", "buy", "-2145.50")
+    _seed(db, "sell_1", "sell", "6000.00")
+    assert db.execute(_uniqueness_audit_query()).fetchall() == []
+
+
+def test_uniqueness_audit_catches_a_duplicated_id(db: Database) -> None:
+    """The grain contract, held mechanically rather than by construction.
+
+    core.fct_investment_transactions is three UNION ALL branches with no dedup,
+    and DuckDB enforces no PK — so a duplicated investment_transaction_id would
+    silently double that lot's quantity and cost basis in the cost-basis engine.
+    Without this fail case the audit's only coverage is the generic
+    "all audits pass on clean data" sweep, which never seeds a duplicate: an
+    inverted predicate (COUNT(*) > 1 flipped to < 1) would ship green and the
+    audit would report `pass` on every ledger while catching nothing.
+    """
+    create_core_tables(db)
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
+    _seed(db, "buy_unique", "buy", "-100.00")  # untouched control
+    _seed(db, "buy_dup", "buy", "-2145.50")
+    _seed(db, "buy_dup", "buy", "-2145.50")  # same id from a second branch
+    assert db.execute(_uniqueness_audit_query()).fetchall() == [("buy_dup",)]
 
 
 @pytest.mark.integration

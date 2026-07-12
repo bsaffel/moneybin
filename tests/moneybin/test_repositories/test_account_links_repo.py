@@ -18,7 +18,10 @@ import pytest
 from prometheus_client import REGISTRY
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.services.mutation_context import operation
+from moneybin.services.undo_service import UndoService
 
 
 def _audit_rows_for(db: Database, target_id: str) -> list[tuple[Any, ...]]:
@@ -42,6 +45,17 @@ def _metric(action: str) -> float:
         )
         or 0.0
     )
+
+
+def _accepted_account_id(db: Database) -> str | None:
+    """The single accepted binding for _insert's ref coordinates, if any."""
+    row = db.conn.execute(
+        "SELECT account_id FROM app.account_links "
+        "WHERE status = 'accepted' AND ref_kind = 'source_native' "
+        "AND ref_value = 'checking' AND source_type = 'ofx' "
+        "AND source_origin = 'wells_fargo'",
+    ).fetchone()
+    return None if row is None else str(row[0])
 
 
 def _insert(repo: AccountLinksRepo, **overrides: Any) -> Any:
@@ -106,7 +120,7 @@ def test_insert_rejects_duplicate_accepted_source_native(db: Database) -> None:
     """One accepted source_native per (source_type, source_origin, ref_value)."""
     repo = AccountLinksRepo(db)
     _insert(repo, link_id="l1")
-    with pytest.raises(ValueError, match="source_native"):
+    with pytest.raises(UserError, match="source_native"):
         _insert(repo, link_id="l2", account_id="acct_other")
 
 
@@ -126,7 +140,7 @@ def test_insert_rejects_duplicate_accepted_strong_ref(db: Database, kind: str) -
     """One strong ref (full_number OR persistent_token) -> one canonical account."""
     repo = AccountLinksRepo(db)
     _insert(repo, link_id="l1", ref_kind=kind, ref_value="wells_fargo:123456")
-    with pytest.raises(ValueError, match="strong"):
+    with pytest.raises(UserError, match="strong"):
         _insert(
             repo,
             link_id="l2",
@@ -186,7 +200,7 @@ def test_undo_reinsert_respects_uniqueness_guard(db: Database) -> None:
     ev_undo = repo.undo_event(ev_insert, actor="system")  # deletes A
     assert ev_undo is not None
     _insert(repo, link_id="B")  # same source_type/origin/ref_value — now allowed
-    with pytest.raises(ValueError, match="source_native"):
+    with pytest.raises(UserError, match="source_native"):
         repo.undo_event(ev_undo, actor="system")  # re-insert A must hit the guard
 
 
@@ -294,3 +308,30 @@ def test_repoint_emits_both_audit_rows(db: Database) -> None:
     assert new_link_id is not None
     new_audits = _audit_rows_for(db, new_link_id[0])
     assert any(r[0] == "account_link.insert" for r in new_audits)
+
+
+def test_undo_of_a_repoint_is_itself_undoable(db: Database) -> None:
+    """Redo: undoing the undo re-applies the repoint.
+
+    The undo engine replays rows in reverse, so the re-insert of the new binding
+    runs before the old one is put back to 'reversed'. That transient violates
+    the at-most-one-accepted-binding invariant even though the final state does
+    not — the redo must not trip on it. Guarded by emitting repoint's audit rows
+    in mutation order; the merchant and security twins carry the identical
+    contract.
+    """
+    repo = AccountLinksRepo(db)
+    _insert(repo, link_id="lnk00000001", account_id="acct_canonical_1")
+
+    with operation() as op:
+        repo.repoint(
+            link_id="lnk00000001",
+            new_account_id="acct_canonical_2",
+            decided_by="user",
+            actor="cli",
+        )
+    undone = UndoService(db).undo(op, actor="cli")
+    assert _accepted_account_id(db) == "acct_canonical_1"
+
+    UndoService(db).undo(undone.undo_operation_id, actor="cli")
+    assert _accepted_account_id(db) == "acct_canonical_2"

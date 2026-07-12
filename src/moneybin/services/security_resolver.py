@@ -324,7 +324,7 @@ class SecurityResolver:
         if cusip:
             hits = [c for c in catalog if _norm(c.cusip) == cusip]
             if len(hits) > 1:
-                return _Match(flagged=tuple(hits), reason="identifier_tie")
+                return self._tie(raw, hits)
             if len(hits) == 1 and not self._contradicts(raw, hits[0]):
                 return _Match(bindable=hits[0])
             # A lone CUSIP hit that contradicts on ISIN is not this instrument;
@@ -334,7 +334,7 @@ class SecurityResolver:
         if isin:
             hits = [c for c in catalog if _norm(c.isin) == isin]
             if len(hits) > 1:
-                return _Match(flagged=tuple(hits), reason="identifier_tie")
+                return self._tie(raw, hits)
             if len(hits) == 1 and not self._contradicts(raw, hits[0]):
                 return _Match(bindable=hits[0])
 
@@ -343,7 +343,7 @@ class SecurityResolver:
             return _Match()
         hits = [c for c in catalog if _norm(c.ticker) == ticker]
         if len(hits) > 1:
-            return _Match(flagged=tuple(hits), reason="identifier_tie")
+            return self._tie(raw, hits)
         if not hits:
             return self._suffix_strip_match(raw, ticker, catalog)
         candidate = hits[0]
@@ -382,6 +382,28 @@ class SecurityResolver:
         if not hits:
             return _Match()
         return _Match(flagged=hits, reason="ticker_suffix_strip")
+
+    def _tie(self, raw: _RawSecurity, hits: list[_CatalogEntry]) -> _Match:
+        """An ambiguous identifier: propose the viable candidates, bind none.
+
+        Both refusals apply, and they are independent. The *tie* is decided on
+        the raw hit count — an identifier that matched more than one catalog row
+        was ambiguous, and this always returns ``flagged``, never ``bindable``.
+        The *contradiction* filter then narrows what a human is asked to accept:
+        a candidate whose CUSIP or ISIN contradicts the provider's is a different
+        instrument, and proposing it would invite the user to ratify a merge the
+        data already rules out — fusing two instruments' tax lots.
+
+        Filtering must not promote the survivor to an auto-bind. Two hits where
+        one contradicts leaves one viable candidate, but the identifier was still
+        ambiguous: binding it would manufacture uniqueness by discarding a
+        candidate, which is exactly the false-uniqueness this ladder refuses. If
+        every tied candidate contradicts, nothing is proposed and the row mints a
+        provisional (the caller falls through to the fuzzy rung, which applies the
+        same filter).
+        """
+        viable = tuple(c for c in hits if not self._contradicts(raw, c))
+        return _Match(flagged=viable, reason="identifier_tie")
 
     def _contradicts(self, raw: _RawSecurity, candidate: _CatalogEntry) -> bool:
         """True when a strong identifier proves these are DIFFERENT instruments.

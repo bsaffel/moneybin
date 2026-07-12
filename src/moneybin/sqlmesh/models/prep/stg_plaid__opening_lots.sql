@@ -171,9 +171,9 @@ WITH bootstrappable AS (
       MIN(acquisition_date) AS oldest_acquisition
     FROM drawn_rows
     GROUP BY
-      1,
-      2,
-      3
+      source_account_key,
+      source_security_key,
+      source_origin
   ) AS d
     ON d.source_account_key = b.source_account_key
     AND d.source_security_key = b.source_security_key

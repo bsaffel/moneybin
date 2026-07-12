@@ -209,6 +209,45 @@ def test_ticker_tie_surfaces_every_candidate(db: Database, n_tied: int) -> None:
     assert _bindings(db)[0][2] not in sids
 
 
+def test_tied_candidate_that_contradicts_is_never_proposed(db: Database) -> None:
+    """A tie proposes only candidates a strong id has NOT ruled out.
+
+    Two catalog rows share the provider's CUSIP, but one carries a different
+    ISIN — a hard signal that it is a different instrument. Proposing it would
+    invite the user to accept a merge the data already contradicts, fusing two
+    instruments' tax lots. The contradiction rule ("never bound, never even
+    proposed") applies to tied candidates exactly as it does to the lone-hit and
+    fuzzy rungs.
+
+    The tie itself still refuses to bind: dropping the contradicting candidate
+    leaves ONE viable hit, and that must NOT become an auto-bind — an identifier
+    that matched two rows was ambiguous, and manufacturing uniqueness by
+    discarding a candidate is the very false-uniqueness the ladder exists to
+    refuse.
+    """
+    viable = _catalog(db, "Apple Inc.", ticker="AAPL", cusip="037833100")
+    contradicting = _catalog(
+        db,
+        "Not Apple",
+        ticker="NOTAPL",
+        cusip="037833100",  # same CUSIP as the provider's...
+        isin="US9999999999",  # ...but a strong id says it is a different instrument
+    )
+    _raw_security(
+        db, "sec_1", security_name="Apple", cusip="037833100", isin="US0378331005"
+    )
+
+    assert SecurityResolver(db).resolve_all() == {"proposed": 1}
+
+    proposed = {
+        p["candidate_security_id"] for p in SecurityLinkDecisionsRepo(db).list_pending()
+    }
+    assert proposed == {viable}
+    assert contradicting not in proposed
+    # Still a tie: the surviving candidate is proposed, never auto-bound.
+    assert _bindings(db)[0][2] not in (viable, contradicting)
+
+
 def test_contradicting_cusip_disqualifies_ticker_automatch(db: Database) -> None:
     """A ticker+MIC agreement never overrides a CUSIP that says 'different instrument'."""
     _seed_mic_registry(db)

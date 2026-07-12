@@ -82,9 +82,9 @@ WITH first_snapshot AS (
     AND s.trade_date >= p.window_start
     AND s.trade_date <= p.snapshot_date
   GROUP BY
-    1,
-    2,
-    3
+    p.source_account_key,
+    p.source_security_key,
+    p.source_origin
 )
 /* The three guards. Each routes the position to review and synthesizes nothing —
    a visible gap, never a plausible-looking guess. held_qty is COALESCEd to 0 so an
