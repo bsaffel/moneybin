@@ -34,7 +34,10 @@ if TYPE_CHECKING:
     from moneybin.database import Database
     from moneybin.extractors.tabular.formats import TabularFormat
     from moneybin.repositories.pdf_formats_repo import PdfFormat
-    from moneybin.services.import_confirmation import ConfirmationRequired
+    from moneybin.services.import_confirmation import (
+        ConfirmationRequired,
+        SignConventionProposal,
+    )
 
 
 class _FormatTypeFilter(StrEnum):
@@ -510,38 +513,55 @@ def import_files_command(
             file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
             envelope_data = _confirmation_envelope_data(outcome)
             confirm_actions: list[str] = []
-            if outcome.error_message:
-                confirm_actions.append(f"Validation failed: {outcome.error_message}")
-            if outcome.reason == "account_confirmation":
-                # The layout is settled; only the account identity needs
-                # ratifying. The --mapping/--confirm hints below are irrelevant
-                # here (and following --accept without a binding loops back to
-                # this gate), so surface ONLY the binding + preview hints.
-                confirm_actions.append(
-                    f"Run 'moneybin import confirm {file_path_str} --accept "
-                    "--account-binding <source_key>=<account_id|new>' to bind each "
-                    "proposed account (adopt an existing id, or 'new' to keep distinct)."
-                )
+            if outcome.reason == "sign_convention":
+                # A card statement proposes inverting every amount. The agent must
+                # NOT blind-accept it, and there's no column mapping to preview —
+                # so name the two honest recoveries, not the tabular
+                # accept/mapping/preview hints. error_message is self-contained
+                # (it already names the commands) and leads instead of the generic
+                # "Validation failed" prefix (this is a proposal, not a failure).
+                if outcome.error_message:
+                    confirm_actions.append(outcome.error_message)
+                confirm_actions.extend(_sign_recovery_commands(file_path_str))
             else:
-                # resolve_or_confirm refuses Accept on low-tier proposals (the
-                # detector couldn't form a complete one); suggesting --confirm
-                # there would just bounce back with the same outcome. Only
-                # surface the accept hint when the tier permits acceptance.
-                if outcome.confidence.tier != "low":
+                if outcome.error_message:
                     confirm_actions.append(
-                        "Re-run with --confirm to accept the proposed mapping as-is."
+                        f"Validation failed: {outcome.error_message}"
                     )
+                if outcome.reason == "account_confirmation":
+                    # The layout is settled; only the account identity needs
+                    # ratifying. The --mapping/--confirm hints below are irrelevant
+                    # here (and following --accept without a binding loops back to
+                    # this gate), so surface ONLY the binding + preview hints.
+                    confirm_actions.append(
+                        f"Run 'moneybin import confirm {file_path_str} --accept "
+                        "--account-binding <source_key>=<account_id|new>' to bind each "
+                        "proposed account (adopt an existing id, or 'new' to keep "
+                        "distinct)."
+                    )
+                else:
+                    # resolve_or_confirm refuses Accept on low-tier proposals (the
+                    # detector couldn't form a complete one); suggesting --confirm
+                    # there would just bounce back with the same outcome. Only
+                    # surface the accept hint when the tier permits acceptance.
+                    if outcome.confidence.tier != "low":
+                        confirm_actions.append(
+                            "Re-run with --confirm to accept the proposed mapping "
+                            "as-is."
+                        )
+                    confirm_actions.append(
+                        "Re-run with --mapping <field>=<column> to override specific "
+                        "fields."
+                    )
+                    if outcome.confidence.tier != "low":
+                        confirm_actions.append(
+                            f"Run 'moneybin import confirm {file_path_str} --accept' "
+                            "as a subcommand."
+                        )
                 confirm_actions.append(
-                    "Re-run with --mapping <field>=<column> to override specific fields."
+                    f"Run 'moneybin import preview {file_path_str}' to inspect the "
+                    "proposal."
                 )
-                if outcome.confidence.tier != "low":
-                    confirm_actions.append(
-                        f"Run 'moneybin import confirm {file_path_str} --accept' "
-                        "as a subcommand."
-                    )
-            confirm_actions.append(
-                f"Run 'moneybin import preview {file_path_str}' to inspect the proposal."
-            )
             if output == OutputFormat.JSON or not sys.stdout.isatty():
                 # Non-TTY / --output json: emit the full ResponseEnvelope so
                 # CLI --output json matches the MCP envelope shape (same
@@ -667,6 +687,60 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
             )
 
 
+def _sign_recovery_commands(file_path_str: str) -> list[str]:
+    """The two honest recoveries for a card sign-convention confirmation.
+
+    A card statement proposes inverting every amount (charges → expenses,
+    payments → credits). The user decides by re-running with the convention they
+    intend, never by blind-accepting a proposed mapping — there is no mapping.
+    Shared by the JSON ``actions[]`` and the interactive prompt so the CLI never
+    drifts from the terminal command the gate's ``error_message`` already names.
+    Mirrors the MCP ``_sign_confirm_actions`` recovery.
+    """
+    import shlex  # noqa: PLC0415
+
+    quoted = shlex.quote(file_path_str)
+    return [
+        f"If it IS a credit card: moneybin import files {quoted} --confirm "
+        "(records charges as expenses, payments as credits).",
+        f"If it is NOT a credit card: moneybin import files {quoted} "
+        "--sign negative_is_expense (records amounts exactly as printed).",
+    ]
+
+
+def _render_sign_convention_prompt(
+    proposed: SignConventionProposal, file_path_str: str
+) -> None:
+    """Print the interactive prompt for a card sign-convention confirmation.
+
+    "magic stays visible": a whole-ledger sign inversion the user can't see the
+    evidence for must never be applied. Show the matched card disclosures and the
+    printed-vs-recorded sample rows so the flip is concrete, then name the two
+    honest recoveries — never "Validation failed" (this is a proposal, not a
+    failure) or the --mapping hint (a dead-end loop for a PDF).
+    """
+    typer.echo("\n👀  This looks like a credit-card statement")
+    typer.echo(f"   File: {file_path_str}")
+    typer.echo(
+        "   Recording it as a card inverts every amount's sign — charges become "
+        "expenses, payments become credits."
+    )
+    if proposed.evidence:
+        typer.echo(f"\n   Matched card disclosures: {', '.join(proposed.evidence)}")
+    if proposed.sample_rows:
+        typer.echo("\n   Printed on statement → recorded by MoneyBin:")
+        for row in proposed.sample_rows:
+            desc = row.get("description", "")
+            printed = row.get("as_printed", "")
+            recorded = row.get("as_recorded", "")
+            label = f"{desc}: " if desc else ""
+            typer.echo(f"     {label}{printed} → {recorded}")
+    typer.echo("\n   To proceed:")
+    for line in _sign_recovery_commands(file_path_str):
+        typer.echo(f"     {line}")
+    typer.echo()
+
+
 def _render_confirmation_prompt(
     outcome: ConfirmationRequired, file_path_str: str
 ) -> None:
@@ -678,7 +752,20 @@ def _render_confirmation_prompt(
     """
     import shlex  # noqa: PLC0415
 
-    from moneybin.services.import_confirmation import ProposedMapping  # noqa: PLC0415
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+        ProposedMapping,
+        SignConventionProposal,
+    )
+
+    # A card sign-convention proposal is not an unknown-layout / validation
+    # encounter — it has its own honest rendering (evidence + printed-vs-recorded
+    # rows + --confirm/--sign recovery), so short-circuit before the tabular
+    # mapping/validation prose below.
+    if outcome.reason == "sign_convention" and isinstance(
+        outcome.proposed, SignConventionProposal
+    ):
+        _render_sign_convention_prompt(outcome.proposed, file_path_str)
+        return
 
     quoted_path = shlex.quote(file_path_str)
     tier = outcome.confidence.tier

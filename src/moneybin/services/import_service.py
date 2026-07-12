@@ -2844,9 +2844,13 @@ class ImportService:
                 if decision.metadata.account_id
                 else None
             )
-            # A confirmed negative_is_income recipe means the user ratified "this is
-            # a credit card" — a fact about the account, not a guess. 'credit' matches
-            # the vocabulary core.fct_balances keys its liability negation on.
+            # A negative_is_income recipe carries a "this is a credit card" verdict:
+            # either human-confirmed on the deterministic rung (the --confirm sign
+            # gate) or agent-authored via the bridge recipe (this method is shared
+            # with apply_pdf_bridge_response → route_forced_recipe, which does NOT
+            # run the sign gate). Either way 'credit' follows from the recipe's own
+            # convention — a fact about the account, not a guess — and matches the
+            # vocabulary core.fct_balances keys its liability negation on.
             # on_conflict="ignore" below means a type Plaid/OFX already set is never
             # clobbered. decision.recipe is narrowed non-None by the raise at the
             # top of this method (mirrors sign_conv above).
