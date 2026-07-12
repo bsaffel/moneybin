@@ -350,22 +350,36 @@ class TestImportFilesCommand:
         """--output json emits the envelope shape with batch fields under data."""
         import json
 
+        # A replayed sign override on the imported file: the JSON must carry the
+        # signal's VALUE, not merely the key. A key that is always present and
+        # always False would satisfy a presence check while telling a scripted
+        # caller nothing.
+        mock_import_file.return_value = ImportResult(
+            file_path="test.ofx",
+            file_type="ofx",
+            accounts=2,
+            transactions=15,
+            sign_override_replayed=True,
+        )
         test_file = tmp_path / "test.ofx"
         test_file.touch()
         result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        # stdout, not output: the replay note goes to stderr, and parsing here
+        # doubles as the proof that it stays out of the JSON document.
+        payload = json.loads(result.stdout)
         assert payload["data"]["imported_count"] == 1
         assert payload["data"]["total_count"] == 1
         assert "files" in payload["data"]
         assert payload["summary"]["sensitivity"] == "low"
-        # The single-file success entry must include both sign signals, matching
+        # The single-file success entry must carry both sign signals, matching
         # the batch path — JSON-output agents see the same shape regardless of
         # single-vs-multi-file invocation. sign_override_replayed is the only
         # channel a scripted caller has for "a saved --sign override replayed and
-        # the card detector was skipped"; the TTY path echoes it to stderr.
-        assert "sign_correction_suggested" in payload["data"]["files"][0]
-        assert "sign_override_replayed" in payload["data"]["files"][0]
+        # the card detector was skipped"; the TTY path echoes it to stderr. The
+        # two signals are distinct — the False proves they aren't crossed.
+        assert payload["data"]["files"][0]["sign_override_replayed"] is True
+        assert payload["data"]["files"][0]["sign_correction_suggested"] is False
 
     def test_batch_envelope_sensitivity_medium_when_confirmation_payload_present(
         self,

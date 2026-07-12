@@ -7,7 +7,7 @@
 CREATE TABLE IF NOT EXISTS app.audit_log (
     audit_id        VARCHAR PRIMARY KEY,                          -- Full UUID4 hex (32 chars). Audit log row count grows with every mutation, plus per-row tag.rename_row children — sized for >100K rows per identifiers.md.
     occurred_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the event happened
-    actor           VARCHAR NOT NULL,                             -- 'cli', 'mcp', 'auto_rule', 'system', 'ai:<provider>:<model>'
+    actor           VARCHAR NOT NULL,                             -- Who drove the mutation. Surface: 'cli', 'mcp'. Internal driver: 'import' (an import-pipeline side-effect on app state), 'auto_rule_service', 'system' (auto-detected/programmatic). AI call: 'ai:<provider>:<model>'
     action          VARCHAR NOT NULL,                             -- e.g. 'manual.create', 'note.add', 'tag.rename', 'split.add', 'category.set', 'ai.external_call'
     target_schema   VARCHAR,                                      -- e.g. 'app', 'core'
     target_table    VARCHAR,                                      -- e.g. 'transaction_categories', 'transaction_tags'
