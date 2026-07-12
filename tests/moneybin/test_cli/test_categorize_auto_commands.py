@@ -90,7 +90,9 @@ def test_auto_accept_explicit_accept(
 
     result = runner.invoke(app, ["auto", "accept", "--accept", "a1", "--accept", "a2"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=["a1", "a2"], reject=[], actor="cli")
+    svc.accept.assert_called_once_with(
+        accept=["a1", "a2"], reject=[], actor="cli", allow_broad=False
+    )
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -106,7 +108,9 @@ def test_auto_accept_explicit_reject(
 
     result = runner.invoke(app, ["auto", "accept", "--reject", "r1"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=[], reject=["r1"], actor="cli")
+    svc.accept.assert_called_once_with(
+        accept=[], reject=["r1"], actor="cli", allow_broad=False
+    )
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -126,7 +130,9 @@ def test_auto_accept_accept_all_expands_pending(
 
     result = runner.invoke(app, ["auto", "accept", "--accept-all"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=["p1", "p2"], reject=[], actor="cli")
+    svc.accept.assert_called_once_with(
+        accept=["p1", "p2"], reject=[], actor="cli", allow_broad=False
+    )
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -146,7 +152,9 @@ def test_auto_accept_reject_all_expands_pending(
 
     result = runner.invoke(app, ["auto", "accept", "--reject-all"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=[], reject=["p1", "p2"], actor="cli")
+    svc.accept.assert_called_once_with(
+        accept=[], reject=["p1", "p2"], actor="cli", allow_broad=False
+    )
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
@@ -167,7 +175,35 @@ def test_auto_accept_accept_all_with_explicit_reject_excludes_id(
 
     result = runner.invoke(app, ["auto", "accept", "--accept-all", "--reject", "p2"])
     assert result.exit_code == 0
-    svc.accept.assert_called_once_with(accept=["p1", "p3"], reject=["p2"], actor="cli")
+    svc.accept.assert_called_once_with(
+        accept=["p1", "p3"], reject=["p2"], actor="cli", allow_broad=False
+    )
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_accept_allow_broad_forwards_true(
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """--allow-broad forwards allow_broad=True to accept() (F17 Layer 3 override)."""
+    mock_db_ctx.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.accept.return_value = _confirm_result(approved=1)
+
+    result = runner.invoke(app, ["auto", "accept", "--accept", "a1", "--allow-broad"])
+    assert result.exit_code == 0
+    svc.accept.assert_called_once_with(
+        accept=["a1"], reject=[], actor="cli", allow_broad=True
+    )
+
+
+def test_auto_accept_help_mentions_allow_broad() -> None:
+    """Auto accept --help documents --allow-broad and its blast-radius caution."""
+    result = runner.invoke(app, ["auto", "accept", "--help"])
+    assert result.exit_code == 0
+    out = _plain(result.stdout)
+    assert "--allow-broad" in out
 
 
 def test_auto_accept_rejects_both_all_flags() -> None:

@@ -20,6 +20,7 @@ import duckdb
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.metrics.registry import (
+    AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
     AUTO_RULE_BROAD_PENDING,
     AUTO_RULE_PATTERN_DOWNGRADED_TOTAL,
 )
@@ -483,6 +484,7 @@ class AutoRuleService:
         reject: list[str] | None = None,
         *,
         actor: str = "system",
+        allow_broad: bool = False,
     ) -> AutoConfirmResult:
         """Accept and/or reject pending proposals; returns aggregate counts.
 
@@ -490,11 +492,15 @@ class AutoRuleService:
         reject always wins. The CLI does the same dedup before calling, but
         applying it here keeps direct service callers (MCP, scripts) safe.
         ``actor`` is threaded onto the audit rows (CLI/MCP pass their surface).
+
+        ``allow_broad`` is required to accept a proposal flagged ``is_broad``.
+        Without it those ids land in ``skipped`` — an accept-all can never sweep
+        one in unnoticed.
         """
         approve_set = set(accept or [])
         reject_set = set(reject or [])
         approve_set -= reject_set
-        a = self.approve(sorted(approve_set), actor=actor)
+        a = self.approve(sorted(approve_set), actor=actor, allow_broad=allow_broad)
         r = self.reject(sorted(reject_set), actor=actor)
         return AutoConfirmResult(
             approved=a.approved,
@@ -505,13 +511,52 @@ class AutoRuleService:
         )
 
     def approve(
-        self, proposed_rule_ids: list[str], *, actor: str = "system"
+        self,
+        proposed_rule_ids: list[str],
+        *,
+        actor: str = "system",
+        allow_broad: bool = False,
     ) -> ApproveResult:
-        """Promote pending proposals to active rules and immediately categorize matching transactions."""
+        """Promote pending proposals to active rules and immediately categorize matching transactions.
+
+        A proposal whose blast radius outruns its evidence (``_is_broad``) is
+        skipped unless ``allow_broad`` is set. The whole point of the F17 guard
+        is that this refusal happens on the *accept* path, not merely in the
+        review envelope — an agent that never reads the envelope must still be
+        unable to promote a ledger-wrecking rule.
+        """
         settings = get_settings().categorization
         result = ApproveResult()
+        broad_ids: set[str] = set()
+        if not allow_broad and proposed_rule_ids:
+            # ONE scan (_estimate_match_counts), not one per id — see its own
+            # docstring for why a repeated scan of core.fct_transactions is a
+            # hang risk (F14).
+            pending: list[dict[str, Any]] = [
+                p
+                for p in self.list_pending_proposals(limit=None)
+                if str(p["proposed_rule_id"]) in set(proposed_rule_ids)
+            ]
+            counts = self._estimate_match_counts(pending)
+            broad_ids = {
+                str(p["proposed_rule_id"])
+                for p in pending
+                if self._is_broad(
+                    counts.get(str(p["proposed_rule_id"]), 0),
+                    int(p.get("trigger_count", 0) or 0),
+                )
+            }
 
         for pid in proposed_rule_ids:
+            if pid in broad_ids:
+                AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL.inc()
+                logger.warning(
+                    f"Refusing to promote broad auto-rule proposal {pid}: its "
+                    f"match count far exceeds its trigger count. Review "
+                    f"estimated_match_count, then re-accept with allow_broad."
+                )
+                result.skipped += 1
+                continue
             row = self._db.execute(
                 f"""
                 SELECT merchant_pattern, match_type, category, subcategory, status

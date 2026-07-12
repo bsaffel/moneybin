@@ -79,6 +79,15 @@ def categorize_auto_accept(
     reject_all: bool = typer.Option(
         False, "--reject-all", help="Reject all pending proposals"
     ),
+    allow_broad: bool = typer.Option(
+        False,
+        "--allow-broad",
+        help=(
+            "Accept proposals flagged broad (match count far exceeds evidence). "
+            "Review the estimated match count first — a broad rule recategorizes "
+            "many transactions at once."
+        ),
+    ),
 ) -> None:
     """Batch accept/reject auto-rule proposals."""
     from moneybin.services.auto_rule_service import AutoRuleService
@@ -106,7 +115,10 @@ def categorize_auto_accept(
             reject_set = set(reject or [])
             accept_set -= reject_set
             result = svc.accept(
-                accept=sorted(accept_set), reject=sorted(reject_set), actor="cli"
+                accept=sorted(accept_set),
+                reject=sorted(reject_set),
+                actor="cli",
+                allow_broad=allow_broad,
             )
 
     logger.info(

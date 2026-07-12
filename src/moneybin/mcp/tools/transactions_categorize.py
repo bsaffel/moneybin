@@ -309,22 +309,35 @@ def transactions_categorize_auto_review(
 
 @mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_auto_accept(
-    accept: list[str] | None = None, reject: list[str] | None = None
+    accept: list[str] | None = None,
+    reject: list[str] | None = None,
+    allow_broad: bool = False,
 ) -> ResponseEnvelope[AutoAcceptPayload]:
     """Accept or reject auto-rule proposals by ID.
 
     Accepted proposals become active rules and immediately categorize
-    matching transactions.
+    matching transactions. Writes app.categorization_rules and
+    app.transaction_categories; revert accepted rules with
+    transactions_categorize_rules_delete (rejected proposals cannot be
+    un-rejected).
 
     Args:
         accept: Proposal IDs to accept and promote to active rules.
         reject: Proposal IDs to reject and dismiss.
+        allow_broad: Required to accept a proposal that
+            transactions_categorize_auto_review flagged ``is_broad`` — one whose
+            ``estimated_match_count`` far exceeds the evidence behind it. Without
+            this, such proposals are skipped rather than promoted. Review
+            ``estimated_match_count`` before setting it: a broad rule
+            recategorizes every matching transaction at once, and a wrong
+            Transfer label also removes those rows from spend reports.
     """
     with get_database(read_only=False) as db:
         result = AutoRuleService(db).accept(
             accept=accept or [],
             reject=reject or [],
             actor="mcp",
+            allow_broad=allow_broad,
         )
     return auto_accept_envelope(result)
 

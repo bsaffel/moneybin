@@ -15,7 +15,10 @@ from moneybin import config as config_module
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
-from moneybin.metrics.registry import AUTO_RULE_BROAD_PENDING
+from moneybin.metrics.registry import (
+    AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
+    AUTO_RULE_BROAD_PENDING,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
@@ -896,3 +899,58 @@ def test_estimate_match_counts_tests_regex_against_normalized_description() -> N
     ]
     counts = service._estimate_match_counts(proposals)
     assert counts["p_regex_anchor"] == 1
+
+
+# --- Blast radius accept guard (F17 Layer 3) ---------------------------------
+
+
+def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -> None:
+    """Accept-all cannot sweep in a broad proposal (F17, the corruption path).
+
+    This is the test that closes the finding: the live session's "TO" rule was
+    one --approve-all away from relabeling every COSTCO/STORE/AUTO row as an
+    Internal Transfer, which also drops them out of spend reports.
+
+    Uses "COSTCO AUTO CENTER" rather than bare "COSTCO WHOLESALE" — the latter
+    does not actually contain the substring "TO" (verified with a literal
+    ``in`` check; see the correction already made in
+    ``test_review_surfaces_blast_radius_and_flags_broad`` above), so it would
+    not exercise the `contains "TO"` blast radius this test names.
+    """
+    service = AutoRuleService(real_db)
+
+    # 40 transactions that a `contains "TO"` rule would hit.
+    for i in range(40):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -10.0, 'COSTCO AUTO CENTER', 'csv')",
+            [f"t_{i}"],
+        )
+    pid = service._proposed.insert(
+        merchant_pattern="TO",
+        match_type="contains",
+        category="Transfer",
+        subcategory="Internal Transfer",
+        category_id=None,
+        status="pending",
+        sample_txn_ids=["t_0"],
+        actor="test",
+    ).target_id
+    assert pid is not None
+
+    blocked_before = AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+    # The agent's accept-all path: pass every pending id.
+    blocked = service.accept(accept=[pid], reject=[], actor="test")
+    assert blocked.approved == 0
+    assert blocked.skipped == 1
+    assert blocked.rule_ids == []
+    assert (
+        AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL._value.get()  # type: ignore[reportPrivateUsage]
+        == blocked_before + 1
+    )
+
+    # The human's informed override, after seeing estimated_match_count.
+    allowed = service.accept(accept=[pid], reject=[], actor="test", allow_broad=True)
+    assert allowed.approved == 1
