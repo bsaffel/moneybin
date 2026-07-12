@@ -434,6 +434,99 @@ def test_basis_unknown_transfer_maps_amount_to_null(db: Database) -> None:
 
 
 @pytest.mark.slow
+def test_cash_only_transfer_direction_from_amount_sign(db: Database) -> None:
+    """Cash-only transfer/{send, transfer} legs have no security to key on.
+
+    Direction must come from the (already-flipped-elsewhere) amount sign, not
+    quantity -- Plaid ships `quantity = 0` (never NULL) for a cash-only leg, so
+    a bare `COALESCE(quantity, ...)` would read that 0 as "non-NULL, so inbound"
+    and silently record every cash-out transfer as an inflow (the shipped bug).
+    Both quantity representations -- Plaid's real "0" and a hypothetical NULL --
+    must land identically, since the view keys the cash-only branch on
+    `security_id IS NULL`, never on quantity.
+    """
+    cases = [
+        ("itx_0", "send", "0", "100.00"),  # Plaid cash OUT -> withdrawal
+        ("itx_1", "transfer", "0", "-100.00"),  # Plaid cash IN -> deposit
+        ("itx_2", "send", None, "100.00"),  # same direction, quantity NULL
+        ("itx_3", "transfer", None, "-100.00"),  # same direction, quantity NULL
+    ]
+    for txn_id, psub, qty, amount in cases:
+        _raw_investment_txn(
+            db,
+            investment_transaction_id=txn_id,
+            security_id=None,
+            quantity=qty,
+            amount=amount,
+            investment_transaction_type="transfer",
+            investment_transaction_subtype=psub,
+        )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = {
+        r[0]: (r[1], r[2], r[3], r[4])
+        for r in db.execute(
+            "SELECT investment_transaction_id, type, amount, quantity, ledger_include "
+            "FROM prep.stg_plaid__investment_transactions"
+        ).fetchall()
+    }
+    assert rows["itx_0"] == ("withdrawal", Decimal("-100.00"), Decimal("0"), True)
+    assert rows["itx_1"] == ("deposit", Decimal("100.00"), Decimal("0"), True)
+    assert rows["itx_2"] == ("withdrawal", Decimal("-100.00"), None, True)
+    assert rows["itx_3"] == ("deposit", Decimal("100.00"), None, True)
+
+
+@pytest.mark.slow
+def test_security_bearing_transfer_zero_quantity_falls_back_to_amount_sign(
+    db: Database,
+) -> None:
+    """A zero-quantity security transfer is meaningless as a share count.
+
+    The NULLIF guard must treat Plaid's `quantity = 0` the same as NULL and
+    fall back to the amount sign -- never silently default to `transfer_in`
+    via a bare `COALESCE(quantity, ...)` reading the literal 0 as "non-NULL,
+    so inbound" (the exact bug this view shipped with).
+    """
+    _raw_investment_txn(
+        db,
+        quantity="0",
+        amount="100.00",  # Plaid cash OUT
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="transfer",
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    row = db.execute(
+        "SELECT type, amount FROM prep.stg_plaid__investment_transactions"
+    ).fetchone()
+    # Falls back to the correctly-flipped amount sign -- must NOT be transfer_in.
+    assert row == ("transfer_out", Decimal("-100.00"))
+
+
+@pytest.mark.slow
+def test_short_leg_quantity_is_nulled(db: Database) -> None:
+    """`other` rows never carry a ledger quantity -- MoneyBin models no shorts.
+
+    buy/buy to cover ships a real Plaid quantity (e.g. +1.0), but the engine
+    has no short-position model; a nonzero quantity on an `other` row would
+    masquerade as a lot-affecting one.
+    """
+    _raw_investment_txn(
+        db,
+        quantity="1.0",
+        investment_transaction_type="buy",
+        investment_transaction_subtype="buy to cover",
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    row = db.execute(
+        "SELECT type, quantity, provider_subtype "
+        "FROM prep.stg_plaid__investment_transactions"
+    ).fetchone()
+    assert row == ("other", None, "buy to cover")
+
+
+@pytest.mark.slow
 def test_lifecycle_rows_excluded_entirely(db: Database) -> None:
     _raw_investment_txn(
         db, investment_transaction_type="cancel", investment_transaction_subtype="buy"

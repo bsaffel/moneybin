@@ -649,7 +649,7 @@ The heaviest view in this spec. In order:
    | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source (`dividend`/`interest`/`capital_gain`); the paired Plaid income row maps to its own income type, linked by `event_group_id` |
    | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
    | sell/sell | `sell` | |
-   | buy/buy to cover, sell/sell short | `other` | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids |
+   | buy/buy to cover, sell/sell short | `other`, `quantity` NULLed | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids. MoneyBin models no short positions, so the share count is not a ledger quantity — see the `other`-quantity guard below |
    | sell/distribution | `transfer_out` | in-kind outflow from tax-advantaged account |
    | transfer/stock distribution | `transfer_in` | in-kind **inflow** of shares (stock dividend / distribution) — opens a lot carrying supplied basis, or a `basis_incomplete` lot when none is given. **Must not fall to `other`**: `other` is not an acquisition type, so the engine would skip it and the shares would never enter holdings |
    | cash-or-fee/{account, legal, management, transfer, trust, fund, miscellaneous} fee, margin expense | `fee` | |
@@ -660,10 +660,18 @@ The heaviest view in this spec. In order:
    | fee/return of principal | `return_of_capital` | |
    | cash/{contribution, deposit} | `deposit` | NULL security |
    | cash/withdrawal | `withdrawal` | NULL security |
-   | transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign |
+   | transfer/{transfer, send} | `transfer_in`/`transfer_out` (security present) or `deposit`/`withdrawal` (cash-only) | direction by sign — `quantity` when a security is present (falling back to the amount sign only when `quantity = 0`, since Plaid never sends NULL for that field), the Plaid `amount` sign alone for cash-only. A cash-only transfer is a cash movement, not a share movement, so it takes the cash vocabulary instead of leaving a NULL-security `transfer_in`/`transfer_out` |
    | transfer/split | `split` | **quantity must be converted to a multiplier** — see the split-normalization note below; a raw passthrough corrupts every lot |
    | transfer/{merger, spin off, trade} | decomposed leg pairs | Plaid delivers each leg as its own row; `event_group_id` **links** them (same mechanism as reinvest pairs, below) — staging never fabricates a leg |
    | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
+
+   **`other`-quantity guard.** Every row explicitly mapped to `other` (option
+   legs, short legs, adjustment/loan payment/rebalance) carries a NULL
+   `quantity` — `other` is excluded from the lot engine by construction, so a
+   raw share count must never masquerade as a ledger-affecting one (mirrors
+   the ledger's own `_QTY_NULL` invariant in `investment_service.py`). A row
+   that instead falls to `other` via the unlisted-subtype default below keeps
+   its raw quantity, since that value is exactly what routes it to review.
 
    **Unlisted-subtype guard.** Plaid may add subtype enum values over time.
    A subtype with no explicit branch defaults to `other` **only when it is

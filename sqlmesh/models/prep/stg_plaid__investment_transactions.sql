@@ -42,7 +42,16 @@ WITH classified AS (
      only in provider_type / provider_subtype). Branch order is load-bearing:
      the option legs (assignment/exercise/expire) and the short legs (buy to
      cover / sell short) are matched on subtype BEFORE the ptype-gated buy/sell
-     branches, so they route to `other` rather than opening a spurious long lot. */
+     branches, so they route to `other` rather than opening a spurious long lot.
+
+     transfer/{transfer, send, merger, spin off, trade} splits on security
+     presence: a security-bearing leg keeps transfer_in/transfer_out, direction
+     from quantity -- falling back to the amount sign via NULLIF only when
+     quantity is exactly 0, because Plaid sends 0 (not NULL) for a cash-only
+     leg, so a bare COALESCE would silently treat every cash-only transfer as
+     an inflow. A cash-only leg is a cash movement, not a share movement, so it
+     maps to deposit/withdrawal instead, with direction from the amount sign
+     alone -- quantity is never consulted on that arm. */
   SELECT
     *,
     (
@@ -105,7 +114,11 @@ WITH classified AS (
       WHEN ptype = 'transfer'
       AND psub IN ('transfer', 'send', 'merger', 'spin off', 'trade')
       THEN CASE
-        WHEN COALESCE(quantity, -1 * amount) >= 0
+        WHEN security_id IS NULL
+        THEN (
+          CASE WHEN amount > 0 THEN 'withdrawal' ELSE 'deposit' END
+        )
+        WHEN COALESCE(NULLIF(quantity, 0), -1 * amount) >= 0
         THEN 'transfer_in'
         ELSE 'transfer_out'
       END
@@ -159,7 +172,15 @@ WITH classified AS (
      Also here: basis-unknown in-kind movements (transfer with amount = 0) map to
      a NULL ledger amount, never a literal 0 -- cost_basis.py flags an acquisition
      `basis_incomplete` on exactly `event.amount is None`, so a false zero-basis lot
-     would look complete and a later sale would realize a fully-taxed phantom gain. */
+     would look complete and a later sale would realize a fully-taxed phantom gain.
+
+     Also here: rows explicitly mapped to `other` (option legs, short legs,
+     adjustment/loan payment/rebalance) never carry a ledger quantity. MoneyBin
+     models no short-position or options book, so the raw share count on those
+     legs is not lot-affecting and must not masquerade as one -- mirrors the
+     ledger's own `_QTY_NULL` invariant (investment_service.py). A row that
+     instead falls to `other` via the unmapped-subtype review path below keeps
+     its raw quantity, since that value is exactly what routes it to review. */
   SELECT
     *,
     CASE
@@ -176,7 +197,8 @@ WITH classified AS (
       ELSE (
         -1 * amount
       )::DECIMAL(18, 2)
-    END AS ledger_amount
+    END AS ledger_amount,
+    CASE WHEN mapped_type = 'other' THEN NULL::DECIMAL(28, 10) ELSE quantity END AS ledger_quantity
   FROM mapped
   WHERE
     NOT is_lifecycle
@@ -193,7 +215,7 @@ SELECT
   COALESCE(r.mapped_type, 'other') AS type,
   r.mapped_subtype AS subtype,
   r.ledger_event_group_id AS event_group_id,
-  r.quantity,
+  r.ledger_quantity AS quantity,
   r.price,
   r.ledger_amount AS amount,
   r.fees,
