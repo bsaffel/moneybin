@@ -1,6 +1,7 @@
 name: Scenarios
 
 on:
+  workflow_call:
   pull_request:
     paths-ignore:
       - "**/*.md"

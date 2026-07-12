@@ -3,11 +3,16 @@
 import csv
 import pathlib
 
-SEED = pathlib.Path("sqlmesh/models/seeds/category_source_map.csv")
-REF = pathlib.Path("tests/moneybin/fixtures/plaid_pfc_v2_taxonomy.csv")
-CATS = pathlib.Path("sqlmesh/models/seeds/categories.csv")
-ORPHAN_ALLOWLIST = pathlib.Path("tests/moneybin/fixtures/category_orphan_allowlist.csv")
-ROLLUP_ALLOWLIST = pathlib.Path("tests/moneybin/fixtures/category_rollup_allowlist.csv")
+from moneybin.database import SQLMESH_ROOT
+
+_SEEDS = SQLMESH_ROOT / "models" / "seeds"
+_FIXTURES = pathlib.Path(__file__).resolve().parents[1] / "fixtures"
+
+SEED = _SEEDS / "category_source_map.csv"
+REF = _FIXTURES / "plaid_pfc_v2_taxonomy.csv"
+CATS = _SEEDS / "categories.csv"
+ORPHAN_ALLOWLIST = _FIXTURES / "category_orphan_allowlist.csv"
+ROLLUP_ALLOWLIST = _FIXTURES / "category_rollup_allowlist.csv"
 
 VALID_CLASSES = {"income", "expense", "transfer", "debt"}
 

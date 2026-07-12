@@ -1,6 +1,6 @@
 ---
 description: "Identifier generation AND propagation: content hashes, truncated UUIDs, source-provided IDs, semantic slugs; carrying the canonical ID through views, filters, and cross-table relationships"
-paths: ["src/moneybin/**/*.py", "sqlmesh/models/**"]
+paths: ["src/moneybin/**/*.py", "src/moneybin/sqlmesh/models/**"]
 ---
 
 # Identifiers

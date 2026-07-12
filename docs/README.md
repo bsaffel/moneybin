@@ -39,10 +39,11 @@ Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- La
 
 ### AI and agent workflows
 
-For builders. The first two links are the developer surface; the third is for end-user client setup.
+For builders. The first two links are the developer surface; the last two are for end-user client setup.
 
 - **[MCP server](guides/mcp-server.md)** — The builder doc. Tool catalog, response envelope, sensitivity tiers, latency and cost guidance for planning tool budgets.
 - **[Example prompts and workflows](reference/prompts/)** — Ready-to-use prompts (monthly review, anomaly detection, tax prep, transaction search) you can adapt for your own agent.
+- **[Setting up Claude Desktop](guides/setting-up-claude-desktop.md)** — The end-user happy path: install, one `mcp install` command, restart, ask a first question.
 - **[MCP clients](guides/mcp-clients.md)** — Per-client setup for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex, and the ChatGPT desktop app (plus why ChatGPT on the web can't connect yet).
 - **Extending the server** — See [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) for the recipe (service, decorator, CLI peer, tests).
 

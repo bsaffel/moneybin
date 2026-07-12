@@ -18,10 +18,10 @@ This spec covers pillars A (same-record dedup) and C (golden-record merge rules)
 ### Relevant prior art
 
 - [matching-overview.md](matching-overview.md) — umbrella vision, scope, build order
-- [fct_transactions.sql](../../sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no dedup)
+- [fct_transactions.sql](../../src/moneybin/sqlmesh/models/core/fct_transactions.sql) — current core model (VIEW, no dedup)
 - [smart-import-tabular.md](smart-import-tabular.md) — universal tabular importer that produces `raw.tabular_*` records with `source_transaction_id`, per-format `source_type` values, and `source_origin` (institution/format identifier)
-- [stg_tabular__transactions.sql](../../sqlmesh/models/tabular/stg_tabular__transactions.sql) — tabular staging (replaces CSV staging) with within-source dedup
-- [stg_ofx__transactions.sql](../../sqlmesh/models/prep/stg_ofx__transactions.sql) — OFX staging without within-source dedup (gap)
+- [stg_tabular__transactions.sql](../../src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql) — tabular staging (replaces CSV staging) with within-source dedup
+- [stg_ofx__transactions.sql](../../src/moneybin/sqlmesh/models/prep/stg_ofx__transactions.sql) — OFX staging without within-source dedup (gap)
 
 ## Requirements
 
@@ -392,7 +392,7 @@ Env var overrides follow the `MONEYBIN_` convention:
 
 When a new source is added to MoneyBin, the following must be updated for matching to work correctly:
 
-1. Create staging model in `sqlmesh/models/prep/` with tier 2 dedup (`ROW_NUMBER`)
+1. Create staging model in `src/moneybin/sqlmesh/models/prep/` with tier 2 dedup (`ROW_NUMBER`)
 2. Add a CTE to `int_transactions__unioned` and `UNION ALL` into the combined set — include `source_origin` column
 3. Insert the new `source_type` into `MatchingSettings.source_priority` at the appropriate position
 4. Define `source_origin` population logic (format name, institution ID, item ID, etc.)

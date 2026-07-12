@@ -227,8 +227,8 @@ Each provider gets a loader class that owns the translation from server JSON to 
 | Raw table DDL | `src/moneybin/sql/schema/raw_{provider}_*.sql` |
 | JSON → raw table loading | `src/moneybin/loaders/{provider}_loader.py` |
 | Provider-specific semantics | Loader class (sign conventions, removed records, etc.) |
-| Staging views | `sqlmesh/models/prep/stg_{provider}__*.sql` |
-| Core integration | New CTEs + `UNION ALL` in `sqlmesh/models/core/` |
+| Staging views | `src/moneybin/sqlmesh/models/prep/stg_{provider}__*.sql` |
+| Core integration | New CTEs + `UNION ALL` in `src/moneybin/sqlmesh/models/core/` |
 
 The `SyncClient` doesn't know about raw tables or DuckDB. The loader doesn't know about HTTP. Clean separation — each component is testable independently.
 
@@ -567,7 +567,7 @@ Parses provider-shaped JSON from `SyncClient.download_data()` and loads into raw
 - Dedup on re-load (primary key constraints, `INSERT OR REPLACE`)
 - Client-side metadata generation (`source_file = 'sync_{job_id}'`, `extracted_at = metadata.synced_at`, `loaded_at = CURRENT_TIMESTAMP`)
 
-**3. Staging views** — `sqlmesh/models/prep/stg_{provider}__*.sql`
+**3. Staging views** — `src/moneybin/sqlmesh/models/prep/stg_{provider}__*.sql`
 
 Normalize column names and types to be core-compatible. Apply sign convention flips. Output schema must match what the core models expect for `UNION ALL`. Per database conventions, `stg_` views get no column comments (internal layer).
 

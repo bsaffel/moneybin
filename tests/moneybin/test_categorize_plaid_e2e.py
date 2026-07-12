@@ -5,7 +5,7 @@ coverage in ``test_categorization_service.py`` (which stubs the gold-keyed
 ``prep.int_transactions__merged`` with the carried PFC columns and seeds one
 synthetic ``seeds.category_source_map`` row per case) by proving the WHOLE
 chain works against a REAL SQLMesh transform and the REAL curated bridge data
-(``sqlmesh/models/seeds/category_source_map.csv`` + ``categories.csv``):
+(``src/moneybin/sqlmesh/models/seeds/category_source_map.csv`` + ``categories.csv``):
 
     raw.plaid_transactions -> prep.stg_plaid__transactions (sign-flip view)
     -> prep.int_transactions__{unioned,matched,merged} (gold id + carried PFC codes)
@@ -45,8 +45,8 @@ def _build_sync_data() -> SyncDataResponse:
     """Four PFC-coded transactions, hand-picked against the real seed CSV.
 
     Expectations below are derived by reading
-    ``sqlmesh/models/seeds/category_source_map.csv`` and
-    ``sqlmesh/models/seeds/categories.csv`` directly, not by observing what
+    ``src/moneybin/sqlmesh/models/seeds/category_source_map.csv`` and
+    ``src/moneybin/sqlmesh/models/seeds/categories.csv`` directly, not by observing what
     the categorizer produces:
 
     - ``txn_pfc_detailed``: ``category_detailed='FOOD_AND_DRINK_GROCERIES'``

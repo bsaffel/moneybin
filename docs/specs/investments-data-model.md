@@ -309,7 +309,7 @@ Implemented as a **Python SQLMesh model** (Key Decision 13) — the consumption 
 (FIFO cursor, average-cost running pool, specific-ID override lookup) is awkward in
 pure SQL. The pure engine lives in `moneybin.investments.cost_basis`
 (`compute_lots_and_gains`), fed by `moneybin.investments.sqlmesh_loader`; the
-`sqlmesh/models/core/fct_investment_lots.py` model itself is a thin wrapper that
+`src/moneybin/sqlmesh/models/core/fct_investment_lots.py` model itself is a thin wrapper that
 runs the engine and types the output. Lot identity is a content hash so it is
 stable across rebuilds and referenceable by `app.lot_selections`.
 
@@ -905,14 +905,14 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `src/moneybin/sql/schema/app_securities.sql` — DDL for `app.securities`
 - `src/moneybin/sql/schema/raw_manual_investment_transactions.sql` — DDL for the manual-entry raw table
 - `src/moneybin/sql/schema/app_lot_selections.sql` — DDL for `app.lot_selections`
-- `sqlmesh/models/core/dim_securities.sql` — securities VIEW
-- `sqlmesh/models/prep/stg_manual__investment_transactions.sql` — staging VIEW (per-provider naming convention)
-- `sqlmesh/models/core/fct_investment_transactions.sql` — canonical ledger
+- `src/moneybin/sqlmesh/models/core/dim_securities.sql` — securities VIEW
+- `src/moneybin/sqlmesh/models/prep/stg_manual__investment_transactions.sql` — staging VIEW (per-provider naming convention)
+- `src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql` — canonical ledger
 - `src/moneybin/investments/cost_basis.py` — the pure cost-basis engine (FIFO/HIFO/specific/average consumption, corporate actions, oversold handling)
 - `src/moneybin/investments/sqlmesh_loader.py` — loads ledger events + method/selection resolvers from the SQLMesh `ExecutionContext` for the engine
-- `sqlmesh/models/core/fct_investment_lots.py` — thin SQLMesh wrapper running the engine; derived lots
-- `sqlmesh/models/core/fct_realized_gains.py` — thin SQLMesh wrapper; derived realized gains
-- `sqlmesh/models/core/dim_holdings.sql` — derived positions VIEW
+- `src/moneybin/sqlmesh/models/core/fct_investment_lots.py` — thin SQLMesh wrapper running the engine; derived lots
+- `src/moneybin/sqlmesh/models/core/fct_realized_gains.py` — thin SQLMesh wrapper; derived realized gains
+- `src/moneybin/sqlmesh/models/core/dim_holdings.sql` — derived positions VIEW
 - `src/moneybin/sql/migrations/V034__add_investment_tables.py` — create the three new tables and apply the `app.account_settings` ALTER for existing databases
 - `src/moneybin/repositories/securities_repo.py` — `SecuritiesRepo` for `app.securities` mutation (Invariant 10: paired audit rows via `BaseRepo`)
 - `src/moneybin/repositories/lot_selections_repo.py` — `LotSelectionsRepo` for `app.lot_selections` mutation

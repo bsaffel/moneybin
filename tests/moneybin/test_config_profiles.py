@@ -22,6 +22,7 @@ from moneybin.config import (
     reload_settings,
     set_current_profile,
 )
+from moneybin.database import SQLMESH_ROOT
 from tests.moneybin.conftest import temp_profile
 
 
@@ -505,27 +506,26 @@ def test_legacy_data_tabular_dotenv_lowercase_key_fails_loudly(
 
 
 class TestSqlmeshConfigProfileGating:
-    """Regression tests for the profile gate in ``sqlmesh/config.py``.
+    """Regression tests for the profile gate in ``src/moneybin/sqlmesh/config.py``.
 
-    SQLMesh re-executes ``sqlmesh/config.py`` on every ``Context`` creation
+    SQLMesh re-executes ``src/moneybin/sqlmesh/config.py`` on every ``Context`` creation
     (it clears the module from ``sys.modules``). The file must therefore
     initialize a profile only when none is already set — otherwise it
     would clobber the CLI's ``--profile`` selection back to ``default``
     mid-process and invalidate the encryption-key cache.
 
-    Tests load ``sqlmesh/config.py`` via ``importlib`` so the actual file
+    Tests load ``src/moneybin/sqlmesh/config.py`` via ``importlib`` so the actual file
     is exercised. Side effects (log dir mkdir, SQLMesh ``Config`` build)
     are bounded by the configured profile.
     """
 
     @staticmethod
     def _load_sqlmesh_config() -> None:
-        """Execute sqlmesh/config.py fresh in this process."""
+        """Execute the SQLMesh project's config.py fresh in this process."""
         import importlib.util
         import sys
 
-        repo_root = Path(__file__).resolve().parents[2]
-        config_path = repo_root / "sqlmesh" / "config.py"
+        config_path = SQLMESH_ROOT / "config.py"
         # Discard any cached prior load so the file's top-level statements re-run.
         sys.modules.pop("_sqlmesh_config_under_test", None)
         spec = importlib.util.spec_from_file_location(
@@ -539,7 +539,7 @@ class TestSqlmeshConfigProfileGating:
         """Re-execution must preserve an in-process profile.
 
         When the CLI has set a profile (e.g. ``--profile alice``),
-        SQLMesh re-loading ``sqlmesh/config.py`` must not reset it to
+        SQLMesh re-loading ``src/moneybin/sqlmesh/config.py`` must not reset it to
         ``default`` or to ``MONEYBIN_PROFILE``.
         """
         with temp_profile("alice"):

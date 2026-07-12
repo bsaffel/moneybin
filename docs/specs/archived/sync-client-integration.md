@@ -265,7 +265,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
 );
 ```
 
-#### 4. SQLMesh staging models -- `sqlmesh/models/prep/`
+#### 4. SQLMesh staging models -- `src/moneybin/sqlmesh/models/prep/`
 
 **`stg_plaid__accounts.sql`**
 ```sql
@@ -354,8 +354,8 @@ sync.connect    Initiate a bank connection (returns link token and URL)
 
 | File | Change |
 |------|--------|
-| `sqlmesh/models/core/dim_accounts.sql` | Add `plaid_accounts` CTE + UNION ALL into `all_accounts` |
-| `sqlmesh/models/core/fct_transactions.sql` | Add `plaid_transactions` CTE + UNION ALL into `all_transactions` |
+| `src/moneybin/sqlmesh/models/core/dim_accounts.sql` | Add `plaid_accounts` CTE + UNION ALL into `all_accounts` |
+| `src/moneybin/sqlmesh/models/core/fct_transactions.sql` | Add `plaid_transactions` CTE + UNION ALL into `all_transactions` |
 | `src/moneybin/cli/commands/sync.py` | Replace stub with working login, link, run, status commands |
 | `src/moneybin/mcp/write_tools.py` | Add sync.trigger, sync.status, sync.connect tools |
 | `src/moneybin/config.py` | No changes needed; `SyncConfig` already has required fields |

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 # Must stay in lockstep with ``_MANUAL_SOURCE_TYPE`` /
 # ``_predict_manual_gold_key`` in ``src/moneybin/services/transaction_service.py``
-# and the unmatched-row branch of ``sqlmesh/models/int/int_transactions__matched.sql``.
+# and the unmatched-row branch of ``src/moneybin/sqlmesh/models/int/int_transactions__matched.sql``.
 # A drift here re-introduces the false-positive this migration fixes.
 _MANUAL_SOURCE_TYPE = "manual"
 

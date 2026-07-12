@@ -86,7 +86,7 @@ Update flow: prototype and spec visually in the claude.ai **Design Kit** project
 - **Type checking**: `uv run pyright` on modified files (not mypy).
 - **Tests**: Dev `uv run pytest <path> -v`; pre-commit `make test`. Always `uv run pytest`; wrong interpreter → `uv sync --reinstall`.
 - **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing.
-- **SQL formatting**: `make format-sql` (sets `MAX_FORK_WORKERS=1`; the bare `uv run sqlmesh -p sqlmesh format` forks a worker pool the encrypted-DB design disallows and the sandbox blocks).
+- **SQL formatting**: `make format-sql` (sets `MAX_FORK_WORKERS=1`; the bare `uv run sqlmesh -p src/moneybin/sqlmesh format` forks a worker pool the encrypted-DB design disallows and the sandbox blocks).
 - **Check library docs first**: Before implementing patterns with SQLMesh, DuckDB, Pydantic, etc., verify the correct API in official docs. Training knowledge may be outdated.
 
 ## Key Abstractions

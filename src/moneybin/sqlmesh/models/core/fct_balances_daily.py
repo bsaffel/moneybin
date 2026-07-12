@@ -36,7 +36,6 @@ from decimal import Decimal
 
 import pandas as pd
 import pyarrow as pa
-
 from sqlmesh import (  # type: ignore[import-untyped] — sqlmesh has no type stubs
     ExecutionContext,
     model,

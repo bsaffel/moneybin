@@ -15,9 +15,9 @@ The app needs first-class SQL management (column-level lineage, smart rebuilds, 
 
 Replace dbt with SQLMesh as the transform engine:
 
-- SQLMesh project lives in `sqlmesh/` (`sqlmesh/config.yaml`, `sqlmesh/models/`)
+- SQLMesh project lives in `src/moneybin/sqlmesh/` (`src/moneybin/sqlmesh/config.yaml`, `src/moneybin/sqlmesh/models/`)
 - Transforms run automatically on import via the Python API (`Context.plan(auto_apply=True)`)
-- Prep views are added for the full medallion pipeline (`sqlmesh/models/prep/` maps to the `prep` schema)
+- Prep views are added for the full medallion pipeline (`src/moneybin/sqlmesh/models/prep/` maps to the `prep` schema)
 - CLI commands (`moneybin data transform plan/apply/ui`) wrap SQLMesh for development and exploration
 
 ## Alternatives Considered

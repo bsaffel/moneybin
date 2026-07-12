@@ -419,8 +419,8 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 - `src/moneybin/sql/schema/app_assets.sql` — DDL for `app.assets`
 - `src/moneybin/sql/schema/app_asset_valuations.sql` — DDL for `app.asset_valuations`
-- `sqlmesh/models/core/fct_asset_valuations.sql` — VIEW unioning all valuation sources
-- `sqlmesh/models/core/fct_asset_valuations_daily.sql` — TABLE with daily carry-forward logic (may be Python model)
+- `src/moneybin/sqlmesh/models/core/fct_asset_valuations.sql` — VIEW unioning all valuation sources
+- `src/moneybin/sqlmesh/models/core/fct_asset_valuations_daily.sql` — TABLE with daily carry-forward logic (may be Python model)
 - `src/moneybin/services/asset_service.py` — business logic for asset CRUD and valuation management
 - `src/moneybin/cli/commands/asset.py` — `assets` command group
 - `tests/test_asset_service.py` — unit tests for asset service
@@ -431,7 +431,7 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 - `src/moneybin/cli/main.py` — register `assets` command group
 - `src/moneybin/sql/schema.py` — register new DDL files for `app.assets` and `app.asset_valuations`
 - `src/moneybin/config.py` — add `asset_staleness_default_days` to `MoneyBinSettings`
-- `sqlmesh/models/reports/net_worth.sql` — extend to include asset valuations (created by net worth spec, modified here)
+- `src/moneybin/sqlmesh/models/reports/net_worth.sql` — extend to include asset valuations (created by net worth spec, modified here)
 - `src/moneybin/mcp/tools/` — add `assets.list`, `assets.detail`, `assets.summary` tools
 - `docs/specs/INDEX.md` — add entry for this spec
 

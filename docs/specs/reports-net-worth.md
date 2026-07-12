@@ -10,7 +10,7 @@ implemented
 > `reports.net_worth`; `TableRef.AGG_NET_WORTH` was replaced by
 > `TableRef.REPORTS_NET_WORTH`. Original section text below preserved for
 > historical context; the live model lives at
-> `sqlmesh/models/reports/net_worth.sql`.
+> `src/moneybin/sqlmesh/models/reports/net_worth.sql`.
 
 ## Goal
 
@@ -362,10 +362,10 @@ Schema + migrations:
 - `src/moneybin/sql/schema/app_balance_assertions.sql` — DDL for `app.balance_assertions` (idempotent re-init)
 - `src/moneybin/sql/migrations/V00N__create_app_balance_assertions.sql` — first-time creation in existing databases (next available version)
 
-SQLMesh models (under existing `sqlmesh/models/core/` — no new subdirs):
-- `sqlmesh/models/core/fct_balances.sql` — VIEW unioning all balance sources
-- `sqlmesh/models/core/fct_balances_daily.sql` — TABLE (FULL kind) with daily carry-forward logic (may be a Python model — see Implementation note in §`fct_balances_daily`)
-- `sqlmesh/models/core/agg_net_worth.sql` — VIEW aggregating across accounts
+SQLMesh models (under existing `src/moneybin/sqlmesh/models/core/` — no new subdirs):
+- `src/moneybin/sqlmesh/models/core/fct_balances.sql` — VIEW unioning all balance sources
+- `src/moneybin/sqlmesh/models/core/fct_balances_daily.sql` — TABLE (FULL kind) with daily carry-forward logic (may be a Python model — see Implementation note in §`fct_balances_daily`)
+- `src/moneybin/sqlmesh/models/core/agg_net_worth.sql` — VIEW aggregating across accounts
 
 Services (flat module layout — matches existing `src/moneybin/services/`):
 - `src/moneybin/services/balance_service.py` — `BalanceService`: balance queries, assertion CRUD, reconciliation

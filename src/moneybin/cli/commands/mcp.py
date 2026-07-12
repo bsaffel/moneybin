@@ -256,9 +256,10 @@ def mcp_install(
         logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
         raise typer.Exit(2)  # usage error — matches `mcp config path` convention
 
+    from moneybin.cli.main import get_version
+
     resolved_profile = profile or get_current_profile()
 
-    args: list[str] = ["run"]
     env: dict[str, str] = {}
 
     # os.getenv used intentionally: get_settings().base_dir cannot distinguish
@@ -271,13 +272,26 @@ def mcp_install(
     if moneybin_home:
         # Explicit override — pin the home so it survives the client's launch context.
         env["MONEYBIN_HOME"] = str(Path(moneybin_home).expanduser().resolve())
-        if repo_root is not None:
-            args += ["--directory", str(repo_root)]
-    elif repo_root is not None:
-        # Repo checkout: anchor uv at the repo root so repo detection resolves
-        # the local .moneybin/ at server-launch time.
-        args += ["--directory", str(repo_root)]
-    # else: default ~/.moneybin/ — omit --directory; rely on a global install on PATH.
+
+    if repo_root is not None:
+        # Repo checkout (the dev path): anchor uv at the repo root so repo
+        # detection resolves the local .moneybin/ at server-launch time.
+        args: list[str] = ["run", "--directory", str(repo_root)]
+    else:
+        # Installed path: run the PUBLISHED package, pinned. Unpinned would let
+        # a new release auto-install on the client's next restart and migrate
+        # the user's encrypted database with no user action.
+        #
+        # Accepted pre-launch gap: until the first tag publishes moneybin to
+        # PyPI, this pinned `--from moneybin==X.Y.Z` config is unresolvable, so a
+        # user who runs `mcp install` from outside the repo checkout during the
+        # pre-launch window gets a config `uv tool run` can't satisfy. Narrow and
+        # self-resolving — the documented pre-launch install is the git-clone dev
+        # path (which takes the repo_root branch above), and README/
+        # ai-client-compatibility.md present the published path as arriving with
+        # the first release. No fallback is added: once published the pin is
+        # correct, and a permanent warning would be post-launch noise.
+        args = ["tool", "run", "--from", f"moneybin=={get_version()}"]
 
     args += ["moneybin", "--profile", resolved_profile, "mcp", "serve"]
 

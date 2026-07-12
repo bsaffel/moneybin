@@ -1,0 +1,211 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Least privilege by default; jobs opt in to what they need.
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Guard release metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # need main's history for the ancestry check
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Tag, pyproject and CHANGELOG must agree
+        if: github.event_name == 'push'
+        run: uv run python scripts/check_release_metadata.py --tag "${GITHUB_REF_NAME}"
+
+      # A tag on an unmerged branch would publish code that never landed.
+      - name: Tag must be an ancestor of main
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+            || { echo "::error::Tag $GITHUB_REF_NAME is not on main."; exit 1; }
+
+  verify:
+    name: Verify
+    needs: [guard]
+    uses: ./.github/workflows/ci.yml
+
+  scenarios:
+    name: Scenarios
+    needs: [guard]
+    uses: ./.github/workflows/scenarios.yml
+
+  build:
+    name: Build distributions
+    needs: [verify, scenarios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      # Fresh checkout, no tree mutation before this: include-package-data
+      # globs are only load-bearing on a clean tree.
+      - name: Build sdist + wheel
+        run: uv build --out-dir dist
+
+      # Everything downstream consumes THIS artifact. Nothing rebuilds — a
+      # rebuild would publish something that was never smoke-tested.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  audit:
+    name: Audit shipped dependencies
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      # `make audit` — the SAME invocation security.yml runs, including its
+      # accepted-vuln ignore list. A second copy of that list here would drift.
+      - name: pip-audit the resolved dependency set
+        run: make audit
+
+  smoke:
+    name: Smoke (${{ matrix.os }}, py${{ matrix.python }})
+    needs: [build]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.12", "3.13"]
+    steps:
+      # Checkout for scripts/smoke_install.sh — the one shared definition of
+      # "does the installed wheel run the real user path". Reusing it here is
+      # what keeps this release matrix from drifting off the PR smoke guard.
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the built wheel and run the real user path
+        run: WORK_DIR="$RUNNER_TEMP/smoke" scripts/smoke_install.sh dist
+
+  publish:
+    name: Publish to PyPI
+    needs: [audit, smoke]
+    runs-on: ubuntu-latest
+    # The one-way door. The `pypi` environment carries a required reviewer, so
+    # this job pauses for a human at execution time. Do not remove.
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
+      url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/p/moneybin' || 'https://pypi.org/p/moneybin' }}
+    permissions:
+      id-token: write  # Trusted Publishing (OIDC) — no API token anywhere
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true  # PEP 740 provenance
+          repository-url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/legacy/' || '' }}
+          # Only for the TestPyPI rehearsal: TestPyPI rejects a duplicate version,
+          # so without this a second dry-run of the same pyproject version 409s at
+          # upload. The real PyPI push (tag) keeps skip-existing off — a duplicate
+          # there must fail loudly, never be silently skipped.
+          skip-existing: ${{ github.event_name == 'workflow_dispatch' }}
+
+  verify-live:
+    name: Verify published (${{ matrix.os }})
+    needs: [publish]
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      # Resolve from the real index, exactly as a user's client will.
+      - name: uvx the published version
+        env:
+          MONEYBIN_HOME: ${{ runner.temp }}/moneybin-home
+          PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # PyPI's CDN + uv's resolver cache lag behind a fresh upload, so the
+          # first `uv tool run` against a just-published version is near-certain
+          # to 404. Retry the resolution probe with a fixed backoff instead of
+          # failing the release.
+          retry() {
+            attempt=1
+            max_attempts=5
+            until "$@"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "::error::Giving up after $attempt attempts: $*"
+                return 1
+              fi
+              echo "Attempt $attempt/$max_attempts failed; retrying in 15s..."
+              attempt=$((attempt + 1))
+              sleep 15
+            done
+          }
+
+          # Retry ONLY the resolution/version probe — once it succeeds the
+          # package is cached, so `demo` cannot 404 and is run once, not retried.
+          # Retrying demo would be wrong: a genuine demo failure must fail the
+          # release, and a retry after demo already wrote data would block on its
+          # non-interactive rebuild confirm. `--yes` auto-accepts that rebuild.
+          retry uv tool run --from "moneybin==$VERSION" --with keyrings.alt \
+            moneybin --version
+          uv tool run --from "moneybin==$VERSION" --with keyrings.alt \
+            moneybin demo --persona basic --yes
+
+  github-release:
+    name: GitHub Release
+    needs: [verify-live]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" \
+            --notes "See CHANGELOG.md for this release's changes."

@@ -11,6 +11,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from moneybin.database import (
+    SQLMESH_ROOT,
     Database,
     DatabaseKeyError,
     DatabaseLockError,
@@ -419,7 +420,7 @@ class TestRunSqlmeshMigrate:
     ) -> None:
         """Returns True and skips when sqlmesh is not importable."""
         # Ensure sqlmesh_root exists so we get past the dir check
-        sqlmesh_root = Path(__file__).resolve().parents[2] / "sqlmesh"
+        sqlmesh_root = SQLMESH_ROOT
         assert sqlmesh_root.is_dir()  # project has sqlmesh dir
 
         # Evict sqlmesh from module cache so __import__ is actually called.
