@@ -140,6 +140,15 @@ def rules_create(
         "--reapply",
         help="Apply newly-created rules to uncategorized rows after insert",
     ),
+    allow_broad: bool = typer.Option(
+        False,
+        "--allow-broad",
+        help=(
+            "Allow a 'contains' rule whose pattern is too short to "
+            "discriminate (e.g. 'TO', which matches STORE/AUTO/TOTAL). "
+            "Without this flag such rules are refused, not created."
+        ),
+    ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -147,6 +156,9 @@ def rules_create(
 
     Single rule: pass NAME positionally with --pattern and --category.
     Batch: pass --from-file pointing at a JSON list of rule dicts.
+
+    A 'contains' rule whose pattern is too short to discriminate is refused
+    unless --allow-broad is passed — see --allow-broad help.
     """
     from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
         CategorizationService,
@@ -215,7 +227,7 @@ def rules_create(
         validated, parse_errors = validate_rule_items(rules)
         with get_database(read_only=False) as db:
             result = CategorizationService(db).create_rules(
-                validated, reapply=reapply, actor="cli"
+                validated, reapply=reapply, actor="cli", allow_broad=allow_broad
             )
         result.merge_parse_errors(parse_errors)
 

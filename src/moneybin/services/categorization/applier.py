@@ -36,6 +36,7 @@ from moneybin.errors import UserError
 from moneybin.metrics.registry import (
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
     MERCHANT_EXEMPLAR_COUNT,
+    RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL,
 )
 from moneybin.privacy.payloads.categorize import RulesCreatePayload
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
@@ -52,6 +53,7 @@ from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
     CategorizationRuleInput,
     InternalMatchType,
+    is_unselective_contains,
     resolve_category_id,
 )
 from moneybin.tables import (
@@ -349,6 +351,7 @@ class MatchApplier:
         items: Sequence[CategorizationRuleInput],
         *,
         actor: str = "system",
+        allow_broad: bool = False,
     ) -> RuleCreationResult:
         """Insert categorization rules (idempotent on matcher + output shape).
 
@@ -372,6 +375,16 @@ class MatchApplier:
 
         Per-row insertion failures are caught so a single bad row does
         not abort the batch — they appear in ``error_details``.
+
+        Direct rule creation has no accumulated evidence (no trigger count),
+        so the auto-rule "broad" test (blast radius vs. evidence) does not
+        apply here — a legitimate ``contains "AMAZON"`` rule matching 200
+        transactions would be flagged for no reason. What *does* transfer is
+        the specificity floor: a ``contains`` pattern too short to
+        discriminate (``is_unselective_contains``, shared with the auto-rule
+        proposer's ``_invented_match_type`` guard) is refused unless the
+        caller passes ``allow_broad=True`` — an agent must not be able to
+        promote a ledger-wrecking rule just by calling this tool directly.
         """
         created = 0
         existing = 0
@@ -380,6 +393,22 @@ class MatchApplier:
         rule_ids: list[str] = []
 
         for item in items:
+            if not allow_broad and is_unselective_contains(
+                item.merchant_pattern, item.match_type
+            ):
+                RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL.inc()
+                skipped += 1
+                error_details.append({
+                    "name": item.name,
+                    "reason": (
+                        f"Pattern {item.merchant_pattern!r} is too short to be a "
+                        "'contains' rule — it would match unrelated merchants "
+                        "(e.g. a 2-char pattern like 'TO' matches STORE, AUTO, "
+                        "TOTAL). Use match_type='exact' for a short pattern, or "
+                        "re-run with allow_broad=True to accept the risk."
+                    ),
+                })
+                continue
             try:
                 # DuckDB IS NOT DISTINCT FROM treats NULL = NULL as true,
                 # so optional fields (min/max_amount, account_id, subcategory)

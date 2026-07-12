@@ -1237,7 +1237,7 @@ class TestCategorizeRulesCreateCLI:
             json.dumps([
                 {
                     "name": "good-quiet-rule",
-                    "merchant_pattern": "GQ",
+                    "merchant_pattern": "GOODQ",
                     "category": "Other",
                 },
                 {"name": "bad-quiet-rule", "category": "Other"},
@@ -1277,7 +1277,7 @@ class TestCategorizeRulesDeleteCLI:
             "create",
             "delete-target",
             "--pattern",
-            "DEL",
+            "DELTARGET",
             "--category",
             "Other",
             "--output",

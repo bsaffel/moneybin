@@ -248,7 +248,9 @@ def transactions_categorize_commit(
 
 @mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
-    rules: list[dict[str, str | float | int | None]], reapply: bool = False
+    rules: list[dict[str, str | float | int | None]],
+    reapply: bool = False,
+    allow_broad: bool = False,
 ) -> ResponseEnvelope[RulesCreatePayload]:
     """Create multiple categorization rules in one call.
 
@@ -256,16 +258,29 @@ def transactions_categorize_rules_create(
     Optional fields: ``subcategory``, ``match_type`` (default 'contains'),
     ``min_amount``, ``max_amount``, ``account_id``, ``priority`` (default 100).
 
+    A ``contains`` rule whose ``merchant_pattern`` is too short to
+    discriminate (below ``auto_rule_min_contains_length``, default 4 chars —
+    e.g. `contains "TO"` matches STORE, AUTO, TOTAL) is refused rather than
+    created: it would silently relabel unrelated transactions across the
+    ledger. The refused item is not inserted, counted in ``skipped``, and
+    explained in ``error_details``. Fix by using ``match_type="exact"`` for
+    a short pattern, or pass ``allow_broad=True`` to accept the risk.
+
     Args:
         rules: List of rule dicts.
         reapply: If True, retroactively apply the new rules to all
             uncategorized transactions after the inserts commit. Default
             False; only future categorizations are affected.
+        allow_broad: If True, bypass the unselective-``contains`` refusal
+            above. Only set this after confirming the short pattern is
+            intentional — it is not the same override as auto-rule review's
+            ``allow_broad`` (that gate is breadth-vs-evidence; this one is a
+            fixed specificity floor).
     """
     validated, parse_errors = validate_rule_items(rules)
     with get_database(read_only=False) as db:
         result = CategorizationService(db).create_rules(
-            validated, reapply=reapply, actor="mcp"
+            validated, reapply=reapply, actor="mcp", allow_broad=allow_broad
         )
     result.merge_parse_errors(parse_errors)
     return build_envelope(

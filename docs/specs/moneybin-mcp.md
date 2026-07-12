@@ -1116,8 +1116,8 @@ List active categorization rules.
 Create one or more categorization rules.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `rules: list[object]` (required) — list of `{name, merchant_pattern, category, subcategory?, match_type?, min_amount?, max_amount?, account_id?, priority?}`.
-- **Behavior:** Idempotent. Each item is deduped against active rules by the matcher+output tuple — `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`. `name` and `priority` are metadata and excluded from the dedup key, so renaming a rule or shuffling priorities does not create a new row. If an active rule with the same key exists, the existing `rule_id` is returned. Returns `{created, existing, skipped, errors, error_details, rule_ids}`.
+- **Unique parameters:** `rules: list[object]` (required) — list of `{name, merchant_pattern, category, subcategory?, match_type?, min_amount?, max_amount?, account_id?, priority?}`. `allow_broad: bool` (default `False`) — see Behavior.
+- **Behavior:** Idempotent. Each item is deduped against active rules by the matcher+output tuple — `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`. `name` and `priority` are metadata and excluded from the dedup key, so renaming a rule or shuffling priorities does not create a new row. If an active rule with the same key exists, the existing `rule_id` is returned. A `contains` item whose pattern is shorter than `auto_rule_min_contains_length` (default 4) is refused rather than inserted — it would match unrelated merchants (e.g. `contains "TO"` matches STORE/AUTO/TOTAL) — unless `allow_broad=True`; refused items are counted in `skipped` and explained in `error_details`. `exact` patterns are never gated. Returns `{created, existing, skipped, errors, error_details, rule_ids}`.
 - **Service:** `CategorizationService.create_rules() -> RuleCreationResult`
 - **CLI:** `moneybin transactions categorize rules create --file rules.json`
 

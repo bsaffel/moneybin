@@ -316,7 +316,7 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
 AUTO_RULE_PATTERN_DOWNGRADED_TOTAL = Counter(
     "moneybin_auto_rule_pattern_downgraded_total",
     "Machine-invented auto-rule patterns proposed as 'exact' rather than "
-    "'contains' because they fell below the minimum contains length (F17 guard).",
+    "'contains' because they fell below the minimum contains length.",
 )
 
 AUTO_RULE_BROAD_PENDING = Gauge(
@@ -328,7 +328,14 @@ AUTO_RULE_BROAD_PENDING = Gauge(
 AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL = Counter(
     "moneybin_auto_rule_broad_accept_blocked_total",
     "Accept attempts on a broad auto-rule proposal refused for want of an "
-    "explicit allow_broad override (the F17 guard firing).",
+    "explicit allow_broad override.",
+)
+
+RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL = Counter(
+    "moneybin_rule_create_unselective_contains_blocked_total",
+    "Direct rule-creation attempts refused because a 'contains' pattern was "
+    "too short to discriminate — it would match unrelated merchants. Blocked "
+    "unless the caller passes allow_broad.",
 )
 
 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(

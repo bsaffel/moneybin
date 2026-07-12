@@ -43,6 +43,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   broad-match check before either can be promoted to a rule, so this is
   fail-safe — just occasionally duplicative until the older proposal is
   reviewed or ages out.
+- **Directly creating a categorization rule can no longer bypass the
+  short-`contains`-pattern guard.** The auto-rule proposer downgrades an
+  overly short machine-invented pattern (e.g. "TO") to `exact` so it can't
+  mass-mislabel the ledger, but `transactions_categorize_rules_create` (and
+  `moneybin transactions categorize rules create`) let a caller author that
+  same dangerous rule directly, with no check at all. A `contains` rule
+  whose pattern is shorter than `auto_rule_min_contains_length` (default 4)
+  is now refused rather than inserted — the item is counted in `skipped`
+  and `error_details` explains the refusal and how to proceed
+  (`match_type="exact"`, or `allow_broad=True`/`--allow-broad` to accept the
+  risk). `exact` patterns of any length are unaffected, and an ordinarily
+  broad but selective `contains` pattern (e.g. `"AMAZON"`) is never gated —
+  this is a specificity floor, not a breadth-vs-evidence check like
+  auto-rule review's `allow_broad`.
 - **The uncategorized-transactions queue no longer treats an unresolved
   transfer leg as an ordinary row.** A transaction awaiting a transfer-match
   decision was previously indistinguishable from any other uncategorized row;

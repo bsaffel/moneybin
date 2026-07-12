@@ -33,7 +33,10 @@ from moneybin.services.categorization import (
     Merchant,
     matches_pattern,
 )
-from moneybin.services.categorization._shared import resolve_category_id
+from moneybin.services.categorization._shared import (
+    is_unselective_contains,
+    resolve_category_id,
+)
 from moneybin.tables import (
     CATEGORIZATION_RULES,
     FCT_TRANSACTIONS,
@@ -394,7 +397,19 @@ class AutoRuleService:
                 f"SELECT description, memo FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608  # TableRef constant
             ).fetchall()
         except duckdb.CatalogException:
-            # Pre-first-import: no fact table, so nothing can match.
+            # Pre-first-import: no fact table, so nothing can match. This is a
+            # fail-CLOSED degrade, not a fail-open one, despite the visual
+            # similarity to CategorizationQueries._transactions_with_pending_matches
+            # (which also catches a missing-relation error and degrades to an
+            # empty set). That sibling is degrading a *flag* — losing the
+            # "unresolved transfer match" annotation is safe, it just loses
+            # visibility. Here we'd be degrading the *blast-radius number*
+            # that gates auto-rule promotion (_is_broad); returning 0 is only
+            # safe because it is genuinely true (no fact table ⇒ no
+            # transactions ⇒ nothing matches). Do NOT widen this except to
+            # ``duckdb.CatalogException`` — catching e.g. ``BinderException``
+            # here to "harmonise" with the sibling would let a schema-drift
+            # error silently report 0 matches and disable this safety guard.
             return {str(p["proposed_rule_id"]): 0 for p in proposals}
 
         match_inputs = [build_match_inputs(r[0], r[1]) for r in rows]
@@ -981,9 +996,13 @@ class AutoRuleService:
         Transfer label drops them out of spend reports entirely. Below the floor
         we propose ``exact`` instead: the user's evidence is kept, but the rule
         can only fire on a description that IS the token.
+
+        Delegates the floor check to ``_shared.is_unselective_contains`` — the
+        same predicate gates direct rule creation in
+        ``MatchApplier.create_rules_core`` — so there is exactly one
+        definition of "too short to be a contains rule".
         """
-        min_len = get_settings().categorization.auto_rule_min_contains_length
-        if len(pattern) < min_len:
+        if is_unselective_contains(pattern, "contains"):
             AUTO_RULE_PATTERN_DOWNGRADED_TOTAL.inc()
             return "exact"
         return "contains"
