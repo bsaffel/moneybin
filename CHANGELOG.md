@@ -15,7 +15,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 ### Added
 - **Plaid Investments sync (M1G.4).** Securities, investment transactions, and
   dated holdings snapshots (with per-lot tax data) now ride the existing
-  `sync pull` job into four new `raw.plaid_*` tables and flow into the
+  `sync pull` job into five new `raw.plaid_*` tables and flow into the
   investment ledger — the shipped cost-basis engine derives lots, realized
   gains, and holdings with no engine changes. Security identity resolves
   through an adopt-or-mint ladder (`SecurityResolver`): adopt an existing
@@ -24,15 +24,23 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   identifier tie, or a fuzzy name match mints a provisional security and
   files one pending merge decision per candidate for review
   (`investments securities links pending/set/history` on CLI and MCP, also
-  surfaced in the `review` sweep and `system_status`). An opening-lot
+  surfaced in the `review` sweep and `system_status`). Accepting a merge
+  fuses two instruments' tax lots, so it always requires a human confirm —
+  over MCP the accept is gated behind an elicitation naming both securities,
+  and a client that cannot elicit is directed to the CLI rather than allowed
+  to proceed. An opening-lot
   bootstrap seeds pre-window positions from the first holdings snapshot so a
   long-held position doesn't realize a phantom oversold gain on its first
   Plaid-reported sale. `system doctor` gains eight investment reconciliation
-  checks: staging rows held for review (splits, unmapped subtypes),
+  checks: staging rows held for review (splits, underivable transfer
+  directions, unmapped subtypes),
   opening-lot-bootstrap gaps, unmodeled short/option legs,
   holdings-vs-ledger divergence, manual-and-Plaid source overlap, unresolved
   securities, and positions the broker or the ledger reports that the other
-  side doesn't. Three
+  side doesn't. A per-pull holdings-snapshot receipt records that an item
+  reported even when it returns zero positions, so a fully-liquidated broker
+  is visible as liquidated rather than read as still holding its last
+  reported positions. Three
   behaviors ship a conservative default pending Plaid Sandbox golden
   validation: reinvest/corporate-action pairing (`event_group_id`) is not yet
   linked, fee inclusion in `amount` is assumed (with a drift guard), and
@@ -243,6 +251,16 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **Accepting a link merge now requires a human confirm on every surface.** The
+  account, merchant, and security link tools (`accounts_links_set`,
+  `merchants_links_set`, `investments_securities_links_set`) gate the accept
+  branch behind an MCP elicitation naming both entities being fused; a client
+  that cannot elicit is directed to the CLI rather than allowed to proceed.
+  These proposals are raised precisely *because* identity resolution could not
+  bind unambiguously, so accepting one is never a decision an agent should make
+  alone. Accept and reject are now explicit rather than inferred from whether a
+  target id was supplied.
+
 - **`core.dim_categories` gains an accounting `class` (M1V).** Every category
   now carries `class` (`income` | `expense` | `transfer` | `debt`), assigned
   at curation time for seed categories and defaulting to `expense` for user
@@ -330,6 +348,19 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **An empty target no longer silently rejects a link-merge proposal forever.**
+  On the account, merchant, and security link tools, an empty-string target id
+  fell through a truthiness test and was recorded as a permanent REJECT, which
+  identity resolution never re-proposes — so a malformed argument could
+  permanently suppress a correct merge with no error to the user. Empty targets
+  are now an input error.
+- **Undoing the undo of an accepted link merge no longer fails.**
+  `MerchantLinksRepo.repoint` and `SecurityLinksRepo.repoint` emitted their two
+  audit rows in the reverse of their SQL order, so the undo engine's reverse
+  replay re-inserted the new binding before restoring the old one — tripping the
+  at-most-one-accepted-binding guard on a state the forward path never produces.
+  Every merge redo failed deterministically, with a stack trace rather than a
+  message.
 - **Reversing a pending review decision no longer silently discards it.**
   `reverse()` on all four review-queue decision repos (`security_link`,
   `account_link`, `match`, `merchant_link`) checked only `reversed_at IS
