@@ -5,6 +5,25 @@ package** — it's a pre-authored "Design Composer" kit (hand-written `.jsx`
 components + hand-authored `.d.ts`/`.prompt.md` + token CSS). It runs the
 package shape in **synth-entry mode**.
 
+## Gate: run the invariants BEFORE you build or publish
+
+```sh
+uv run pytest tests/design_system -q        # from the repo root
+```
+
+Green is a precondition for `/design-sync` and for landing a `/design-import`.
+It is fast (no DB, no network) and it fails on the things that are invisible in
+a browser: a component missing its preview or `docsMap` entry (silently dropped
+from the bundle), a `.jsx` that registers on a window global instead of
+exporting (bundles, never resolves), an `Icon.names` list that disagrees with
+its own `.d.ts`, a CDN fetch, a card frozen to one theme by a hardcoded hex, and
+a doc surface that forgot to list a component.
+
+**Why it exists:** every one of those shipped to `main` and survived — one of
+them for weeks — because this directory is authored by hand and verified by eye,
+and nothing checked. Do not publish on a red suite; a component that renders
+wrong here renders wrong in *every* design the agent builds with it.
+
 ## How it builds
 
 Run from `design-system/` (the config home):

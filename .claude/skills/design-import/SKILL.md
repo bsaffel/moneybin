@@ -108,8 +108,21 @@ shadow, SQL provenance chip on data widgets, no emoji, no exclamation points.
 
 ## Step 3 — Verify
 
-Build the bundle, stage the cards, and check them in the Playwright MCP browser —
-mechanics in `NOTES.md` (serve unsandboxed; `file://` is blocked).
+**Run the invariants first — they are the gate:**
+
+```sh
+uv run pytest tests/design_system -q        # from the repo root
+```
+
+They catch what a browser cannot show you: a component missing its preview or
+`docsMap` entry (silently dropped from the bundle), a `.jsx` that registers on a
+window global instead of exporting (bundles, never resolves), an exported name
+list that disagrees with its own `.d.ts`, a CDN fetch, a card frozen to one theme
+by a hardcoded hex, and a doc surface that forgot to list a component. Every one
+of those shipped to `main` before this suite existed. Don't import on red.
+
+Then build the bundle, stage the cards, and check them in the Playwright MCP
+browser — mechanics in `NOTES.md` (serve unsandboxed; `file://` is blocked).
 
 **Assert properties, don't just eyeball a screenshot.** The MCP screenshot file can
 land somewhere you can't read, and "it looked right in dark" is exactly the bug that
