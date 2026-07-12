@@ -57,11 +57,21 @@ def review(
         sub = f" / {p['subcategory']}" if p["subcategory"] else ""
         samples = cast(list[str], p["sample_txn_ids"])
         sample_str = f" samples: {','.join(samples)}" if samples else ""
-        logger.info(
-            f"  [{p['proposed_rule_id']}] '{p['merchant_pattern']}' "
+        estimated = p["estimated_match_count"]
+        line = (
+            f"[{p['proposed_rule_id']}] '{p['merchant_pattern']}' "
             f"({p['match_type']}) -> {p['category']}{sub} "
-            f"(×{p['trigger_count']}){sample_str}"
+            f"(×{p['trigger_count']}, ~{estimated} matches){sample_str}"
         )
+        if p["is_broad"]:
+            # A broad proposal is the one the reviewer must NOT rubber-stamp —
+            # escalate to logger.warning (not .info) so it's visually
+            # unmistakable, mirroring the accept-path refusal in
+            # AutoRuleService.approve(). Matches the field names it names
+            # ("estimated_match_count", "allow_broad") to what's printed above.
+            logger.warning(f"  ⚠️  {line} — BROAD, requires --allow-broad to accept")
+        else:
+            logger.info(f"  {line}")
     if not quiet and result.total_count > len(proposals):
         logger.info(
             f"💡 Showing {len(proposals)} of {result.total_count} pending proposals "

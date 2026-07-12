@@ -959,14 +959,27 @@ def test_approve_refuses_broad_proposal_without_allow_broad(real_db: Database) -
 def test_estimated_match_count_agrees_with_what_approval_categorizes(
     real_db: Database,
 ) -> None:
-    """The blast radius shown to the reviewer is the blast radius they get (F17).
+    """For this fixture, the estimate exactly matches what approval applies (F17).
 
-    If this drifts, estimated_match_count becomes a decorative number and the
-    whole guard is theater — the reviewer would be consenting to the wrong
-    thing. Do NOT weaken this assertion or adjust it to match observed
-    behavior: a failure here means ``_pattern_hits`` (the estimator) has
-    diverged from ``CategorizationService.match_first_rule`` (the matcher),
-    which is the exact bug this test exists to catch.
+    The invariant ``_estimate_match_counts`` must uphold is ``actual <=
+    estimated``, NOT equality: the estimator counts every transaction the
+    pattern matches, while approval's ``_categorize_existing_with_rule``
+    writes only the uncategorized, priority-winning subset of those. The
+    estimate is an upper bound on blast radius by design — over-counting is
+    the fail-safe direction, since it's what a human reviewer must see
+    before accepting a proposal.
+
+    This fixture happens to produce exact equality only because every row
+    is uncategorized, so the ``==`` assertion below is valid for THIS test.
+    Do NOT read it as license to narrow the estimator to uncategorized-only
+    rows to make some other fixture's numbers "line up" — that would make it
+    UNDER-count: a ``contains`` pattern matching 500 already-categorized rows
+    would then estimate 0, sail through the ``is_broad`` gate unflagged, and
+    silently relabel all 500 on the rule's next backfill. Under-counting is
+    the one direction this guard must never move in; over-counting is safe.
+    A failure here still means ``_pattern_hits`` (the estimator) has
+    diverged from ``CategorizationService.match_first_rule`` (the matcher) —
+    investigate that divergence, don't relax the assertion to match it.
     """
     service = AutoRuleService(real_db)
 

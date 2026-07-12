@@ -3562,3 +3562,57 @@ def test_pending_queue_flags_rows_with_an_unresolved_transfer_match(
     flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
     assert flagged["t_transfer"] is True
     assert flagged["t_expense"] is False
+
+
+def _install_matched_stub_missing_account_id(db: Database) -> None:
+    """prep.int_transactions__matched present but missing account_id (schema drift).
+
+    Simulates the post-upgrade, pre-re-transform window: the table exists
+    from before a migration added ``account_id``, so
+    ``_transactions_with_pending_matches()``'s reference to ``m.account_id``
+    raises ``duckdb.BinderException`` (missing column) rather than
+    ``duckdb.CatalogException`` (missing table).
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS prep.int_transactions__matched (
+            transaction_id VARCHAR,
+            source_transaction_id VARCHAR,
+            source_type VARCHAR
+        )
+    """)
+
+
+def test_pending_queue_degrades_when_matched_view_predates_a_column(
+    db: Database,
+) -> None:
+    """A BinderException from schema drift degrades to unflagged, not a crash.
+
+    ``_transactions_with_pending_matches()`` previously caught only
+    ``duckdb.CatalogException``. When ``prep.int_transactions__matched``
+    exists but predates a column the query selects (the post-upgrade,
+    pre-re-transform window — same schema-drift scenario documented on
+    ``fetch_uncategorized_rows()`` and the ``plaid_unmapped`` stats block),
+    the unhandled ``duckdb.BinderException`` would escape and crash the
+    entire pending queue for both CLI and MCP callers instead of degrading
+    to "nothing flagged."
+    """
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+        "VALUES ('acct_checking', 'Checking', false)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, "
+        "source_type, is_transfer) VALUES "
+        "('t_expense', 'acct_checking', '2026-06-02', -42.00, "
+        "'GROCERY STORE', 'ofx', false)"
+    )
+    _install_uncategorized_queue_view(db)
+    _install_matched_stub_missing_account_id(db)
+
+    rows = CategorizationQueries(db).list_uncategorized_transactions(limit=10)
+
+    assert rows is not None
+    flagged = {r["transaction_id"]: r["pending_transfer_match"] for r in rows}
+    assert flagged["t_expense"] is False

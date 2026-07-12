@@ -325,8 +325,15 @@ class CategorizationQueries:
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
                 """  # noqa: S608  # TableRef constants + literal predicates, no user input
             ).fetchall()
-        except duckdb.CatalogException:
-            # Pre-matching (no matches run yet) or pre-migration: nothing to flag.
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # CatalogException: pre-matching (no matches run yet) or
+            # pre-migration — the table doesn't exist yet. BinderException:
+            # the table exists but predates a column this query selects
+            # (post-upgrade, pre-re-transform) — same schema-drift window
+            # documented in fetch_uncategorized_rows() above and
+            # categorization_stats()'s plaid_unmapped block. Either way,
+            # nothing can be flagged yet — degrade to empty rather than
+            # crashing the whole pending queue.
             return set()
         return {str(r[0]) for r in rows}
 

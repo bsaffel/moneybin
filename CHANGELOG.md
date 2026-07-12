@@ -35,7 +35,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is untouched); every proposal reports how many transactions it would
   actually recategorize (`estimated_match_count`); and a proposal whose blast
   radius outruns its evidence (`is_broad`) is skipped on accept unless the
-  caller explicitly opts in (MCP `allow_broad`, CLI `--allow-broad`).
+  caller explicitly opts in (MCP `allow_broad`, CLI `--allow-broad`). A
+  proposal already pending from before this change keeps its original
+  `contains` pattern and won't be reinforced by further matching evidence
+  under the new `exact` lookup, so a second, `exact`-typed proposal for the
+  same evidence may appear alongside it. Both are still subject to the same
+  broad-match check before either can be promoted to a rule, so this is
+  fail-safe — just occasionally duplicative until the older proposal is
+  reviewed or ages out.
 - **The uncategorized-transactions queue no longer treats an unresolved
   transfer leg as an ordinary row.** A transaction awaiting a transfer-match
   decision was previously indistinguishable from any other uncategorized row;

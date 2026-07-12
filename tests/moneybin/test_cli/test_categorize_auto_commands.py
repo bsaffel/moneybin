@@ -3,6 +3,7 @@
 Business logic is tested via auto_rule_service tests.
 """
 
+import logging
 import re
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.transactions.categorize import app
-from moneybin.services.auto_rule_service import AutoConfirmResult
+from moneybin.services.auto_rule_service import AutoConfirmResult, AutoReviewResult
 
 runner = CliRunner()
 
@@ -63,6 +64,69 @@ def test_auto_subgroup_help_lists_all_actions() -> None:
     assert result.exit_code == 0
     for action in ("review", "accept", "stats", "rules"):
         assert action in result.stdout
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_review_text_output_shows_match_count_and_flags_broad(
+    mock_handle_errors: MagicMock,
+    _mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Text `auto review` prints estimated_match_count and marks a broad proposal.
+
+    Regression guard: the text loop used to print pattern/match_type/category/
+    trigger_count/samples but never estimated_match_count or is_broad — only
+    ``--output json`` carried them, so a human running ``auto review`` had no
+    visibility into blast radius before accepting a proposal that would
+    recategorize hundreds of rows.
+    """
+    mock_handle_errors.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.review.return_value = AutoReviewResult(
+        proposals=[
+            {
+                "proposed_rule_id": "safe1",
+                "merchant_pattern": "AMZN",
+                "match_type": "contains",
+                "category": "Shopping",
+                "subcategory": None,
+                "trigger_count": 3,
+                "sample_txn_ids": [],
+                "estimated_match_count": 3,
+                "is_broad": False,
+            },
+            {
+                "proposed_rule_id": "broad1",
+                "merchant_pattern": "TO",
+                "match_type": "exact",
+                "category": "Internal Transfer",
+                "subcategory": None,
+                "trigger_count": 1,
+                "sample_txn_ids": [],
+                "estimated_match_count": 400,
+                "is_broad": True,
+            },
+        ],
+        total_count=2,
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="moneybin.cli.commands.transactions.categorize.auto"
+    ):
+        result = runner.invoke(app, ["auto", "review"])
+
+    assert result.exit_code == 0, result.output
+    messages = [r.message for r in caplog.records]
+    safe_line = next(m for m in messages if "safe1" in m)
+    broad_line = next(m for m in messages if "broad1" in m)
+    assert "~3 matches" in safe_line
+    assert "BROAD" not in safe_line
+    assert "~400 matches" in broad_line
+    assert "BROAD" in broad_line
+    assert "--allow-broad" in broad_line
 
 
 def _confirm_result(
