@@ -120,6 +120,7 @@ def categorize_pending(
                 memo=r.get("memo"),
                 account_id=r.get("account_id"),
                 age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+                pending_transfer_match=bool(r.get("pending_transfer_match", False)),
             )
             for r in records
         ]
