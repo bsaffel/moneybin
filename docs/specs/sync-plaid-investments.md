@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-in-progress
+implemented
 
 ## Goal
 
@@ -634,6 +634,17 @@ The heaviest view in this spec. In order:
    resolver binds on every rung (adopt / auto-bind / provisional-mint / mint),
    every security-bearing row resolves — NULL reaches core only for cash-only
    events, which is exactly the set the cost-basis engine is designed to skip.
+   **Deliberately asymmetric with `account_id`.** `account_id` falls back to
+   the unresolved source-native id when no binding exists (the
+   `stg_plaid__balances` precedent) — an unresolved account is still a valid
+   identifier for downstream account-scoped joins. `security_id` carries no
+   equivalent fallback: a Plaid provider id sitting in the canonical column
+   would sail straight past `cost_basis.py`'s `if security_id is None:
+   continue` guard, get treated as a real canonical security, and silently
+   corrupt basis. Since the resolver binds on every rung this fallback is
+   unreachable in practice, so NULL-passthrough costs nothing — it just keeps
+   the one path that matters (a genuinely cash-only event) honest and
+   detectable instead of masked.
 2. **Exclude** lifecycle rows: `cancel` (any subtype), `cash/pending credit`,
    `cash/pending debit`, `transfer/request`. (`cancel_transaction_id` is a
    deprecated dead field — never build on it.)
@@ -1109,7 +1120,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
-| `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), engine-derived held lots diverging from the `tax_lots` snapshot, and **short-leg activity** (`buy to cover`/`sell short` mapped to `other`) surfaced as unmodeled |
+| `src/moneybin/services/doctor_service.py` | **Eight** investment reconciliation checks: staging rows held out of the ledger for review (`split_underivable` / `unmapped_subtype`); opening-lot-bootstrap positions the bootstrap declined to synthesize (short/split/negative-gap); unmodeled legs stripped of ledger quantity (short/option/adjustment); engine-derived held lots diverging from the `tax_lots` snapshot; manual-and-Plaid source overlap on one account; unresolved (pending-review) securities; positions Plaid reports holding but the ledger never opened; and phantom holdings the ledger carries but the newest snapshot no longer reports |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | `src/moneybin/connectors/sync_models.py` | `PullResult`: carry the per-outcome security-resolution counts (adopted / auto-bound / proposed / minted / pending) in the pull envelope — resolution is a reported stage, not a silent side effect |
 | `src/moneybin/cli/commands/sync.py` | `sync pull` output: render those counts, naming the pending-decision command whenever an identity is awaiting review |

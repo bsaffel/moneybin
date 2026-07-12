@@ -13,6 +13,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Plaid Investments sync (M1G.4).** Securities, investment transactions, and
+  dated holdings snapshots (with per-lot tax data) now ride the existing
+  `sync pull` job into four new `raw.plaid_*` tables and flow into the
+  investment ledger — the shipped cost-basis engine derives lots, realized
+  gains, and holdings with no engine changes. Security identity resolves
+  through an adopt-or-mint ladder (`SecurityResolver`): adopt an existing
+  binding, auto-bind on an unambiguous strong identifier (CUSIP/ISIN/exact
+  ticker), or refuse to merge on any ambiguity — a stripped-ticker hit, an
+  identifier tie, or a fuzzy name match mints a provisional security and
+  files one pending merge decision per candidate for review
+  (`investments securities links pending/set/history` on CLI and MCP, also
+  surfaced in the `review` sweep and `system_status`). An opening-lot
+  bootstrap seeds pre-window positions from the first holdings snapshot so a
+  long-held position doesn't realize a phantom oversold gain on its first
+  Plaid-reported sale. `system doctor` gains eight investment reconciliation
+  checks: staging rows held for review (splits, unmapped subtypes),
+  opening-lot-bootstrap gaps, unmodeled short/option legs,
+  holdings-vs-ledger divergence, manual-and-Plaid source overlap, unresolved
+  securities, and positions the broker or the ledger reports that the other
+  side doesn't. Three
+  behaviors ship a conservative default pending Plaid Sandbox golden
+  validation: reinvest/corporate-action pairing (`event_group_id`) is not yet
+  linked, fee inclusion in `amount` is assumed (with a drift guard), and
+  every stock split routes to manual review instead of auto-deriving a
+  multiplier. (#TBD)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an
   investment-transaction ledger (`investments add` — buy, sell, reinvest,
@@ -305,6 +330,25 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **Reversing a pending review decision no longer silently discards it.**
+  `reverse()` on all four review-queue decision repos (`security_link`,
+  `account_link`, `match`, `merchant_link`) checked only `reversed_at IS
+  NULL`, so calling it on a still-`pending` row dequeued the item from the
+  review queue with no accept or reject ever recorded — defeating the
+  human-review guarantee those queues exist to provide. All four now refuse
+  to reverse anything but an already-decided (`accepted`/`rejected`) row.
+  `SecurityLinksRepo` also gained `repoint()` (replacing an in-place
+  `rebind()`), preserving append-only binding history the same way
+  `MerchantLinksRepo.repoint` already does. (#TBD)
+- **`moneybin system doctor` now actually runs its SQLMesh invariant
+  checks.** Every audit file under `sqlmesh/audits/` was missing `standalone
+  TRUE`, so SQLMesh loaded them as generic audits — which only run when a
+  model references them in its `audits (...)` property, and none did.
+  `system doctor` had therefore been silently reporting zero SQLMesh
+  invariants since they shipped, and three audits never executed. All
+  audits are now `standalone TRUE` and run on every check; one revived audit
+  (`fct_transactions_sign_convention`) was also corrected to stop flagging
+  legitimate `$0.00` transactions. (#TBD)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
