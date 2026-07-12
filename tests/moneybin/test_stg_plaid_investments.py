@@ -56,6 +56,27 @@ def _raw_holding(db: Database, **overrides: object) -> None:
     _insert(db, "raw.plaid_investment_holdings", row)
 
 
+def _raw_lot(
+    db: Database, security_id: str, lot_index: int, **overrides: object
+) -> None:
+    row: dict[str, object] = {
+        "account_id": "acc_1",
+        "security_id": security_id,
+        "lot_index": lot_index,
+        "institution_lot_id": None,
+        "original_purchase_datetime": None,
+        "quantity": None,
+        "purchase_price": None,
+        "cost_basis": None,
+        "current_value": None,
+        "position_type": "long",
+        "source_file": "sync_j1",
+        "source_origin": "item_1",
+    }
+    row.update(overrides)
+    _insert(db, "raw.plaid_investment_holding_lots", row)
+
+
 def _raw_investment_txn(db: Database, **overrides: object) -> None:
     row: dict[str, object] = {
         "investment_transaction_id": "itx_1",
@@ -786,3 +807,509 @@ def test_taxonomy_emits_only_closed_vocabulary(db: Database) -> None:
         assert subtype in valid_subtypes, f"{txn_id}: leaked subtype {subtype!r}"
     # itx_0 proves case-insensitivity; the rest fall to the closed fallback.
     assert rows[0][1] == "buy"
+
+
+# ── prep.stg_plaid__opening_lots / __opening_lot_review ─────────────────────
+#
+# W (transactions_window_start) = 2024-07-08 throughout; the first (and only)
+# snapshot is source_file 'sync_j1', extracted_at 2026-07-08 12:00:00. Every
+# case gets its own security_id so ONE sqlmesh plan covers all of them.
+
+
+@pytest.fixture
+def bootstrap_cases(db: Database) -> Database:
+    """The spec's reconciliation cases A–H plus the no-gap and guard cases."""
+    # A: pre-window buy, untouched. 100 shares @ 2021-03-11, basis 1000.
+    _raw_holding(db, security_id="sec_a", quantity="100", cost_basis="1000.00")
+    _raw_lot(
+        db,
+        "sec_a",
+        0,
+        institution_lot_id="lot_a",
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="100",
+        cost_basis="1000.00",
+    )
+    # B: pre-window 100 @ basis 800 + in-window buy 50 (150 held).
+    _raw_holding(db, security_id="sec_b", quantity="150", cost_basis="1400.00")
+    _raw_lot(
+        db,
+        "sec_b",
+        0,
+        original_purchase_datetime="2020-05-01 00:00:00",
+        quantity="100",
+        cost_basis="800.00",
+    )
+    _raw_lot(
+        db,
+        "sec_b",
+        1,
+        original_purchase_datetime="2025-01-10 00:00:00",
+        quantity="50",
+        cost_basis="600.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_b_buy",
+        security_id="sec_b",
+        transaction_date="2025-01-10",
+        quantity="50",
+        amount="600.00",
+    )
+    # C: pre-window buy 100, in-window sell 60, survivor lot 40 @ basis 400.
+    _raw_holding(db, security_id="sec_c", quantity="40", cost_basis="400.00")
+    _raw_lot(
+        db,
+        "sec_c",
+        0,
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="40",
+        cost_basis="400.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_c_sell",
+        security_id="sec_c",
+        transaction_date="2025-02-01",
+        quantity="-60",
+        amount="-6000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+    )
+    # D: sell-then-rebuy — the snapshot holds only the in-window replacement lot.
+    _raw_holding(db, security_id="sec_d", quantity="50", cost_basis="2500.00")
+    _raw_lot(
+        db,
+        "sec_d",
+        0,
+        original_purchase_datetime="2025-02-01 00:00:00",
+        quantity="50",
+        cost_basis="2500.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_d_sell",
+        security_id="sec_d",
+        transaction_date="2025-01-20",
+        quantity="-80",
+        amount="-8000.00",
+        investment_transaction_type="sell",
+        investment_transaction_subtype="sell",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_d_buy",
+        security_id="sec_d",
+        transaction_date="2025-02-01",
+        quantity="50",
+        amount="2500.00",
+    )
+    # E: in-window split → review.
+    _raw_holding(db, security_id="sec_e", quantity="200", cost_basis="1000.00")
+    _raw_lot(
+        db,
+        "sec_e",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="200",
+        cost_basis="1000.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_e_split",
+        security_id="sec_e",
+        transaction_date="2025-03-01",
+        quantity="100",
+        amount="0",
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="split",
+    )
+    # F1: empty tax_lots, no in-window activity (G = H).
+    _raw_holding(db, security_id="sec_f1", quantity="30", cost_basis="900.00")
+    # F2: empty tax_lots, in-window buy 10 (G < H).
+    _raw_holding(db, security_id="sec_f2", quantity="30", cost_basis="900.00")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_f2_buy",
+        security_id="sec_f2",
+        transaction_date="2025-04-01",
+        quantity="10",
+        amount="300.00",
+    )
+    # G: lot with a real basis but a NULL acquisition date.
+    _raw_holding(db, security_id="sec_g", quantity="25", cost_basis="500.00")
+    _raw_lot(db, "sec_g", 0, quantity="25", cost_basis="500.00")
+    # No-gap: the in-window buy fully explains the position.
+    _raw_holding(db, security_id="sec_ng", quantity="10", cost_basis="300.00")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_ng_buy",
+        security_id="sec_ng",
+        transaction_date="2025-05-01",
+        quantity="10",
+        amount="300.00",
+    )
+    # Negative gap: the ledger shows MORE than is held → review.
+    _raw_holding(db, security_id="sec_neg", quantity="5", cost_basis="150.00")
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_neg_buy",
+        security_id="sec_neg",
+        transaction_date="2025-05-01",
+        quantity="10",
+        amount="300.00",
+    )
+    # Short: position_type='short' → review.
+    _raw_holding(db, security_id="sec_sh", quantity="10", cost_basis="100.00")
+    _raw_lot(
+        db,
+        "sec_sh",
+        0,
+        original_purchase_datetime="2021-01-01 00:00:00",
+        quantity="10",
+        cost_basis="100.00",
+        position_type="short",
+    )
+    # NULL held quantity: unknowable position → review, never a silent drop.
+    _raw_holding(db, security_id="sec_nq", quantity=None, cost_basis="100.00")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    return db
+
+
+def _opening(db: Database, security_id: str) -> list[tuple[object, ...]]:
+    return db.execute(
+        """
+        SELECT quantity, amount, original_acquisition_date::VARCHAR,
+               trade_date::VARCHAR, investment_transaction_id
+        FROM prep.stg_plaid__opening_lots
+        WHERE source_security_key = ?
+        ORDER BY original_acquisition_date
+        """,
+        [security_id],
+    ).fetchall()
+
+
+@pytest.mark.slow
+def test_case_a_untouched_prewindow_lot(bootstrap_cases: Database) -> None:
+    rows = _opening(bootstrap_cases, "sec_a")
+    assert len(rows) == 1
+    qty, amount, acq, trade, txn_id = rows[0]
+    assert (qty, amount, acq, trade) == (
+        Decimal("100"),
+        Decimal("-1000.00"),
+        "2021-03-11",
+        "2024-07-07",
+    )
+    assert isinstance(txn_id, str)
+    assert txn_id.startswith("plaid_opening_")
+    assert len(txn_id) == len("plaid_opening_") + 16
+
+
+@pytest.mark.slow
+def test_case_b_inwindow_lot_excluded(bootstrap_cases: Database) -> None:
+    """The 2025 lot belongs to the window — drawing it would double-count the buy."""
+    rows = _opening(bootstrap_cases, "sec_b")
+    assert len(rows) == 1
+    assert rows[0][:2] == (Decimal("100"), Decimal("-800.00"))
+
+
+@pytest.mark.slow
+def test_case_c_survivors_plus_oldest_residual(bootstrap_cases: Database) -> None:
+    rows = _opening(bootstrap_cases, "sec_c")  # gap = 40 - (-60) = 100
+    assert len(rows) == 2
+    residual, drawn = rows[0], rows[1]  # the residual is dated OLDEST
+    assert residual[:3] == (Decimal("60"), None, "2021-03-10")
+    assert drawn[:3] == (Decimal("40"), Decimal("-400.00"), "2021-03-11")
+
+
+@pytest.mark.slow
+def test_case_d_residual_only_never_wrong_lot_basis(bootstrap_cases: Database) -> None:
+    """The in-window replacement lot is excluded; the sold sliver is flagged, not guessed."""
+    rows = _opening(bootstrap_cases, "sec_d")  # gap = 50 - (-30) = 80
+    assert len(rows) == 1
+    assert rows[0][:3] == (Decimal("80"), None, "2024-07-07")
+
+
+@pytest.mark.slow
+def test_case_e_split_and_guards_route_to_review(bootstrap_cases: Database) -> None:
+    reasons = dict(
+        bootstrap_cases.execute(
+            "SELECT source_security_key, reason FROM prep.stg_plaid__opening_lot_review"
+        ).fetchall()
+    )
+    assert reasons["sec_e"] == "in_window_split"
+    assert reasons["sec_neg"] == "negative_gap"
+    assert reasons["sec_sh"] == "short_or_nonpositive"
+    assert reasons["sec_nq"] == "short_or_nonpositive"
+    for sec in ("sec_e", "sec_neg", "sec_sh", "sec_nq"):
+        assert _opening(bootstrap_cases, sec) == [], sec
+    # Bootstrappable and no-gap positions never appear in review.
+    assert not {"sec_a", "sec_b", "sec_c", "sec_d", "sec_ng"} & set(reasons)
+
+
+@pytest.mark.slow
+def test_case_f_empty_lots_position_fallback(bootstrap_cases: Database) -> None:
+    f1 = _opening(bootstrap_cases, "sec_f1")  # G = H → whole-position basis
+    assert len(f1) == 1
+    assert f1[0][:2] == (Decimal("30"), Decimal("-900.00"))
+    f2 = _opening(bootstrap_cases, "sec_f2")  # G < H → basis not attributable
+    assert len(f2) == 1
+    assert f2[0][:2] == (Decimal("20"), None)
+
+
+@pytest.mark.slow
+def test_case_g_null_date_keeps_basis_dated_at_window(
+    bootstrap_cases: Database,
+) -> None:
+    rows = _opening(bootstrap_cases, "sec_g")
+    assert len(rows) == 1
+    assert rows[0][:3] == (Decimal("25"), Decimal("-500.00"), "2024-07-08")
+
+
+@pytest.mark.slow
+def test_no_gap_no_row(bootstrap_cases: Database) -> None:
+    assert _opening(bootstrap_cases, "sec_ng") == []
+
+
+@pytest.mark.slow
+def test_bootstrap_row_carries_the_ledger_shape(bootstrap_cases: Database) -> None:
+    """A bootstrap row is a plain transfer_in the unchanged engine can consume."""
+    row = bootstrap_cases.execute(
+        """
+        SELECT type, subtype, settlement_date, event_group_id, price, fees,
+               provider_type, provider_subtype, currency_code, source_type,
+               source_origin, description, created_at::VARCHAR
+        FROM prep.stg_plaid__opening_lots
+        WHERE source_security_key = 'sec_a'
+        """
+    ).fetchone()
+    assert row == (
+        "transfer_in",
+        "opening_bootstrap",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "USD",
+        "plaid",
+        "item_1",
+        "Opening lot bootstrap (pre-window position)",
+        "2026-07-08 12:00:00",  # created_at = the FIRST snapshot's extracted_at
+    )
+
+
+@pytest.mark.slow
+def test_bootstrap_ids_stable_across_rebuild_and_later_snapshots(
+    bootstrap_cases: Database,
+) -> None:
+    """A later snapshot must never rewrite (or duplicate) a frozen bootstrap lot."""
+    before = _opening(bootstrap_cases, "sec_a")
+    _raw_holding(
+        bootstrap_cases,
+        security_id="sec_a",
+        quantity="0",  # the position was sold off after first connect
+        cost_basis="0",
+        source_file="sync_j2",
+        extracted_at="2026-08-01 12:00:00",
+    )
+    with sqlmesh_context(bootstrap_cases) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    after = _opening(bootstrap_cases, "sec_a")
+    assert len(after) == 1  # re-sync seeds no second opening lot
+    assert before == after  # id, quantity, basis and both dates all frozen
+
+
+@pytest.mark.slow
+def test_lot_dated_exactly_on_the_window_start_is_not_drawn(db: Database) -> None:
+    """The pre-window test is STRICT (< W), and that boundary is load-bearing.
+
+    Plaid's transaction window is inclusive of W, so a lot dated exactly on W belongs
+    to the window — its acquiring transaction is Plaid's to supply. Drawing it would
+    claim its basis a second time the moment that transaction shows up. The gap opens
+    as basis_incomplete instead: conservative, and visible.
+    """
+    _raw_holding(db, security_id="sec_w", quantity="50", cost_basis="500.00")
+    _raw_lot(
+        db,
+        "sec_w",
+        0,
+        original_purchase_datetime="2024-07-08 00:00:00",  # exactly W
+        quantity="50",
+        cost_basis="500.00",
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = _opening(db, "sec_w")
+    assert len(rows) == 1
+    # A `<=` boundary would emit (50, -500.00, "2024-07-08") — the double-count.
+    assert rows[0][:3] == (Decimal("50"), None, "2024-07-07")
+
+
+@pytest.mark.slow
+def test_boundary_lot_prorates_basis_and_full_draws_stay_exact(db: Database) -> None:
+    """Spec case H: several pre-window lots, non-uniform basis, drawn oldest-first.
+
+    The gap falls short of the eligible lots' total (an in-window ACATS transfer_in
+    whose shares Plaid folds into a lot carrying its ORIGINAL, pre-window purchase
+    date), so the boundary lot is only partially drawn and prorates its basis. The
+    fully-drawn lot must keep its basis to the cent — DuckDB has no decimal division,
+    so `basis * drawn / qty` detours through DOUBLE; only the boundary row may pay
+    that, never a full draw.
+    """
+    _raw_holding(db, security_id="sec_h", quantity="130", cost_basis="3333.33")
+    _raw_lot(
+        db,
+        "sec_h",
+        0,
+        original_purchase_datetime="2019-01-01 00:00:00",
+        quantity="30",
+        cost_basis="333.33",  # an odd basis: float noise would show up here
+    )
+    _raw_lot(
+        db,
+        "sec_h",
+        1,
+        original_purchase_datetime="2020-01-01 00:00:00",
+        quantity="100",
+        cost_basis="3000.00",
+    )
+    _raw_investment_txn(
+        db,
+        investment_transaction_id="itx_h_xfer",
+        security_id="sec_h",
+        transaction_date="2025-01-05",
+        quantity="60",
+        amount="0",
+        investment_transaction_type="transfer",
+        investment_transaction_subtype="transfer",
+    )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = _opening(db, "sec_h")  # gap = 130 - 60 = 70
+    assert len(rows) == 2  # 30 drawn in full, 40 of 100 drawn from the boundary lot
+    assert rows[0][:3] == (Decimal("30"), Decimal("-333.33"), "2019-01-01")
+    assert rows[1][:3] == (Decimal("40"), Decimal("-1200.00"), "2020-01-01")
+
+
+@pytest.mark.slow
+def test_bootstrap_id_cannot_collide_across_securities_in_one_account(
+    db: Database,
+) -> None:
+    """Two securities, one account, identical lot shape — ids MUST still differ.
+
+    lot_id in the cost-basis engine hashes (account, security, acquisition_date,
+    source_transaction_id). An account-scoped synthetic id would give these two
+    positions the same investment_transaction_id, and once a security merge
+    collapses them onto one canonical security_id the derived lot_ids collide
+    into a PRIMARY KEY violation. The id must be (origin, account, security)-scoped.
+    """
+    for sec in ("sec_x", "sec_y"):
+        _raw_holding(db, security_id=sec, quantity="100", cost_basis="1000.00")
+        _raw_lot(
+            db,
+            sec,
+            0,  # same lot_index → same positional lot_key fallback
+            original_purchase_datetime="2021-03-11 00:00:00",
+            quantity="100",
+            cost_basis="1000.00",  # same basis, same date, same account
+        )
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    ids = db.execute(
+        "SELECT source_security_key, investment_transaction_id "
+        "FROM prep.stg_plaid__opening_lots ORDER BY 1"
+    ).fetchall()
+    assert len(ids) == 2
+    assert ids[0][1] != ids[1][1]
+
+
+@pytest.mark.slow
+def test_same_security_at_two_institutions_does_not_fan_out(db: Database) -> None:
+    """One canonical security bound from two items must not double the rows."""
+    _raw_holding(
+        db,
+        account_id="acc_1",
+        security_id="sec_p",
+        source_origin="item_1",
+        quantity="100",
+        cost_basis="1000.00",
+    )
+    _raw_lot(
+        db,
+        "sec_p",
+        0,
+        account_id="acc_1",
+        source_origin="item_1",
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="100",
+        cost_basis="1000.00",
+    )
+    _raw_holding(
+        db,
+        account_id="acc_2",
+        security_id="sec_q",
+        source_origin="item_2",
+        quantity="40",
+        cost_basis="500.00",
+    )
+    _raw_lot(
+        db,
+        "sec_q",
+        0,
+        account_id="acc_2",
+        source_origin="item_2",
+        original_purchase_datetime="2022-06-01 00:00:00",
+        quantity="40",
+        cost_basis="500.00",
+    )
+    # Both provider refs resolve to the SAME canonical security.
+    _link_security(db, "sec_p", "cat000000001")
+    _link_security(db, "sec_q", "cat000000001")
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = db.execute(
+        "SELECT source_security_key, security_id, quantity, investment_transaction_id "
+        "FROM prep.stg_plaid__opening_lots ORDER BY 1"
+    ).fetchall()
+    assert len(rows) == 2  # exactly one row per (account, security) — no fan-out
+    assert rows[0][:3] == ("sec_p", "cat000000001", Decimal("100"))
+    assert rows[1][:3] == ("sec_q", "cat000000001", Decimal("40"))
+    assert rows[0][3] != rows[1][3]
+
+
+@pytest.mark.slow
+def test_bootstrap_resolves_canonical_ids(db: Database) -> None:
+    """Canonical account/security ids resolve; the security has NO provider fallback."""
+    _raw_holding(db, security_id="sec_a", quantity="100", cost_basis="1000.00")
+    _raw_lot(
+        db,
+        "sec_a",
+        0,
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="100",
+        cost_basis="1000.00",
+    )
+    _raw_holding(db, security_id="sec_u", quantity="10", cost_basis="100.00")
+    _raw_lot(
+        db,
+        "sec_u",
+        0,
+        original_purchase_datetime="2021-03-11 00:00:00",
+        quantity="10",
+        cost_basis="100.00",
+    )
+    _link_account(db, "acc_1", "canonical_acc")
+    _link_security(db, "sec_a", "cat000000001")  # sec_u is deliberately unbound
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+    rows = db.execute(
+        "SELECT source_security_key, account_id, source_account_key, security_id "
+        "FROM prep.stg_plaid__opening_lots ORDER BY 1"
+    ).fetchall()
+    assert rows == [
+        ("sec_a", "canonical_acc", "acc_1", "cat000000001"),
+        ("sec_u", "canonical_acc", "acc_1", None),  # NULL, never 'sec_u'
+    ]
