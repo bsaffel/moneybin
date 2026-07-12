@@ -65,16 +65,40 @@ _LITERAL_COLOR_CARDS = frozenset({
 _CDN_HOSTS = (
     "unpkg.com",
     "fonts.googleapis.com",
+    # Google Fonts serves its CSS from googleapis and the font binaries from
+    # gstatic — a regression could reach the asset host without naming the other.
+    "fonts.gstatic.com",
     "cdn.jsdelivr.net",
     "cdnjs.cloudflare.com",
 )
 
-# A hex color applied as a CSS/SVG value, e.g. stroke="#A39C90" or fill:#6E685E.
-# A bare hex in text (a swatch label) is fine — it is the applied value that
-# freezes a card to one theme.
-_APPLIED_HEX = re.compile(
-    r"(?:background|stroke|fill|color|border[a-z-]*)\s*[:=]\s*\"?#[0-9A-Fa-f]{3,8}"
+# A hex is "applied" when it is *rendered* — inside a style attribute, a <style>
+# block, or an SVG presentation attribute. A hex that is merely displayed (a
+# swatch's own text label) is fine; it is the applied value that freezes a card
+# to one theme.
+#
+# Match on structure, not on a property-name list: `border:1px solid #2A2723`
+# puts the hex three tokens after the colon, and attributes may be single-quoted,
+# so a "property, then colon, then hex" pattern silently misses both.
+_STYLE_ATTR = re.compile(r"""style\s*=\s*(["'])(.*?)\1""", re.I | re.S)
+_STYLE_BLOCK = re.compile(r"<style[^>]*>(.*?)</style>", re.I | re.S)
+_PRESENTATION_ATTR = re.compile(
+    r"""\b(?:stroke|fill|color|stop-color|flood-color|lighting-color)\s*=\s*"""
+    r"""(["'])\s*(#[0-9A-Fa-f]{3,8})\s*\1""",
+    re.I,
 )
+_HEX = re.compile(r"#[0-9A-Fa-f]{3,8}\b")
+
+
+def _applied_hex(html: str) -> list[str]:
+    """Every hex color the card actually renders with (not ones it merely prints)."""
+    applied: list[str] = []
+    for _quote, body in _STYLE_ATTR.findall(html):
+        applied += _HEX.findall(body)
+    for body in _STYLE_BLOCK.findall(html):
+        applied += _HEX.findall(body)
+    applied += [hex_value for _quote, hex_value in _PRESENTATION_ATTR.findall(html)]
+    return applied
 
 
 def _component_jsx() -> list[Path]:
@@ -129,9 +153,12 @@ def test_component_is_an_esm_export(jsx: Path) -> None:
     source = jsx.read_text()
     name = jsx.stem
 
-    assert re.search(rf"export\s+(?:default\s+)?function\s+{name}\b", source), (
-        f"{name}: no `export function {name}` — a component that only attaches to a "
-        f"window global bundles but never resolves as MoneyBinDS.{name}"
+    # Named export specifically: the converter promotes PascalCase *named* exports
+    # onto the bundled global, so `export default function Icon` would land at
+    # MoneyBinDS.default — the same "bundles but never resolves" failure.
+    assert re.search(rf"export\s+function\s+{name}\b", source), (
+        f"{name}: no `export function {name}` — a default export or a window-global "
+        f"registration bundles but never resolves as MoneyBinDS.{name}"
     )
     assert "window.MoneyBin" not in source, (
         f"{name}: registers on a window global; the bundler wraps globals itself"
@@ -175,7 +202,13 @@ def test_no_cdn_fetches() -> None:
     """
     offenders: list[str] = []
     for path in _DS.rglob("*"):
-        if not path.is_file() or "ds-bundle" in path.parts or ".ds-sync" in path.parts:
+        # Skip build output and vendored converter tooling. `ds-bundle*` (not an
+        # exact name) because the build falls back to `ds-bundle-out/` when the
+        # primary dir is locked, and the vendored React in there is full of CDN
+        # strings that are not ours.
+        if not path.is_file() or ".ds-sync" in path.parts:
+            continue
+        if any(part.startswith("ds-bundle") for part in path.parts):
             continue
         if path.suffix not in {
             ".html",
@@ -235,10 +268,10 @@ def test_guideline_card_uses_tokens_not_hardcoded_hex(card: Path) -> None:
     ``[data-theme="light"]``. Cards whose subject is literal color are exempt
     (see ``_LITERAL_COLOR_CARDS``).
     """
-    applied = _APPLIED_HEX.findall(card.read_text())
+    applied = _applied_hex(card.read_text())
     assert not applied, (
-        f"{card.name}: applies hardcoded hex {applied} — use var(--*) or currentColor, "
-        f'or the card breaks under [data-theme="light"]'
+        f"{card.name}: applies hardcoded hex {sorted(set(applied))} — use var(--*) or "
+        f'currentColor, or the card breaks under [data-theme="light"]'
     )
 
 
