@@ -2299,12 +2299,20 @@ class ImportService:
                     sample_rows=_sign_sample_rows(decision.rows),
                 ),
                 reason="sign_convention",
+                # Recovery is the CLI on both surfaces: the CLI confirms natively
+                # (--confirm / --sign), and MCP cannot ratify a sign inversion in
+                # place yet (elicitation-based confirm is planned), so its agent is
+                # directed to the same terminal command. No literal path here — the
+                # path isn't in scope at the gate; each surface fills in the concrete
+                # command from the file it holds.
                 error_message=(
                     "This looks like a credit-card statement "
                     f"(matched: {', '.join(decision.card_markers)}). Charges will be "
                     "recorded as expenses and payments as credits — every amount's "
-                    "sign is inverted. Confirm with import_confirm(accept=True), or "
-                    "override with sign='negative_is_expense' if this is not a card."
+                    "sign is inverted. Re-run the import in a terminal to confirm: "
+                    "`moneybin import files <path> --confirm` if it IS a credit card, "
+                    "or `moneybin import files <path> --sign negative_is_expense` if "
+                    "it is not."
                 ),
             )
         )

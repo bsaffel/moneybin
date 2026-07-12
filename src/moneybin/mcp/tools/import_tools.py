@@ -13,6 +13,7 @@ Tools:
 from __future__ import annotations
 
 import logging
+import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -131,21 +132,24 @@ def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
 def _sign_confirm_actions(file_path: str, error_message: str) -> list[str]:
     """The agent-facing hints for a PDF sign-convention confirmation_required.
 
-    Both branches are named explicitly because the agent must NOT pick one on its
-    own: ratifying inverts every amount in the statement, and getting it wrong
-    corrupts the ledger on this import and on every future replay of the format.
-    Show the user `sign_sample_rows` (printed vs recorded) and let them decide.
+    Ratifying a card statement inverts every amount, and a wrong flip corrupts the
+    ledger on this import and on every future replay of the format — so the agent
+    must NOT ratify it. MCP has no in-place path to confirm a sign inversion yet
+    (elicitation-based confirm is planned); until then the human resolves it in a
+    terminal, where inverting every amount is a deliberate, visible act. The hints
+    therefore point at the CLI, not at an `import_confirm` call that cannot ratify
+    a sign flip.
     """
+    quoted = shlex.quote(file_path)
     return [
         error_message,
         "Show the user sign_sample_rows — what the statement printed vs what "
-        "MoneyBin would record — and have THEM confirm the inversion. Do not "
-        "self-accept: a wrong flip silently reverses every amount.",
-        f"Once the user confirms it is a credit card, call import_confirm("
-        f"file_path={file_path!r}, accept=True) to import with charges recorded "
-        "as expenses.",
-        f"If it is NOT a credit card, call import_confirm(file_path={file_path!r}, "
-        "sign='negative_is_expense') to import the amounts exactly as printed.",
+        "MoneyBin would record — so THEY decide. MCP cannot ratify a sign "
+        "inversion in place yet; resolve it in a terminal:",
+        f"If it IS a credit card: moneybin import files {quoted} --confirm "
+        "(records charges as expenses).",
+        f"If it is NOT a credit card: moneybin import files {quoted} "
+        "--sign negative_is_expense (records amounts exactly as printed).",
     ]
 
 
@@ -372,6 +376,14 @@ def import_files(
         tier = raw_tier if isinstance(raw_tier, str) else "low"
         raw_err = payload.get("error_message")
         err_msg = raw_err if isinstance(raw_err, str) else ""
+        # PDF sign-convention channel (credit-card inversion): the agent must NOT
+        # ratify it — a wrong flip reverses every amount. MCP can't confirm the
+        # inversion in place yet, so _sign_confirm_actions points at the terminal
+        # recovery. It owns err_msg as its lead line, so skip the generic
+        # "Validation failed" prefix (this is a proposal, not a validation error).
+        if payload.get("reason") == "sign_convention":
+            actions.extend(_sign_confirm_actions(pending.path, err_msg))
+            continue
         if err_msg:
             actions.append(f"Validation failed: {err_msg}")
         # PDF bridge channel: the agent must read confirmation_payload's
@@ -970,16 +982,29 @@ def import_confirm(
 
     if path.suffix.lower() == ".pdf":
         # A PDF reached the tabular confirm channel (bridge_response is None here
-        # but accept=/mapping= may be set). There is no valid tabular confirm for
-        # a PDF: re-importing with actor_kind="agent" would re-raise the bridge
-        # escalation, but this tool's catch below only serializes ProposedMapping
-        # — the agent would get accept/mapping actions again and loop. Direct it
-        # to the bridge channel instead of running the tabular path.
+        # but accept=/mapping= may be set). accept=/mapping= never ratify a PDF —
+        # two kinds of PDF confirmation land here, each with a different recovery,
+        # and both are surfaced honestly rather than routing-to-detect (which would
+        # re-extract the document and, for a bridge PDF, write a spurious egress
+        # audit row):
+        #   * Bridge (native-text extraction) — re-call with bridge_response=.
+        #   * Sign convention (credit-card inversion) — MCP cannot ratify a sign
+        #     flip in place yet (elicitation-based confirm is planned); the human
+        #     resolves it in a terminal, where inverting every amount is a
+        #     deliberate, visible act. accept=True must never silently invert the
+        #     ledger, and the tabular catch below only serializes ProposedMapping,
+        #     so running the tabular path here would loop the agent instead.
+        quoted = shlex.quote(str(path))
         raise UserError(
-            "PDF confirmations use the bridge channel, not accept=/mapping=. "
-            "Read the confirmation_required bridge_payload and call "
-            "import_confirm(file_path=..., bridge_response={'recipe': ..., "
-            "'rows': [...]}).",
+            "A PDF confirmation cannot be ratified with accept=/mapping= over MCP. "
+            "If import_files/import_preview returned a bridge_payload (native-text "
+            "extraction), call import_confirm(file_path=..., bridge_response="
+            "{'recipe': ..., 'rows': [...]}). If it returned a sign-convention "
+            "confirmation (a credit-card statement — confirming inverts every "
+            "amount's sign), MCP cannot ratify the inversion in place yet; resolve "
+            f"it in a terminal: `moneybin import files {quoted} --confirm` if it IS "
+            f"a credit card, or `moneybin import files {quoted} --sign "
+            "negative_is_expense` if it is not.",
             code="confirm_channel_conflict",
         )
 

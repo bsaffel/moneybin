@@ -24,6 +24,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
 )
+from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
 
 
 def test_valid_path_within_home_returns_resolved_path(
@@ -839,6 +840,61 @@ class TestImportFilesPdfBridge:
         assert not any("mapping={" in a for a in result.actions)
 
 
+class TestImportFilesPdfSign:
+    """import_files surfaces the credit-card sign confirmation with CLI recovery."""
+
+    async def test_card_statement_action_directs_to_cli_not_import_confirm(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A card through the import path gets the honest terminal recovery.
+
+        The service raises a sign_convention confirmation (exactly what a real
+        card statement produces — see test_import_pdf_transactions). MCP cannot
+        ratify a sign inversion in place yet, so the actions[] must point at the
+        CLI, not at the broken Task 6 hints (`import_confirm(sign=...)` /
+        `import_confirm(accept=True)`) that cannot ratify a sign flip.
+        """
+        pdf = tmp_path / "statements" / "chase_card.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = _sign_error()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_files(paths=[str(pdf)])
+
+        from moneybin.privacy.payloads.imports import ImportFilesPayload
+
+        data = result.data
+        assert isinstance(data, ImportFilesPayload)
+        row = data.files[0]
+        assert row.status == "confirmation_required"
+        payload = row.confirmation_payload
+        assert payload is not None
+        assert payload["reason"] == "sign_convention"
+        assert payload["sign_convention"] == "negative_is_income"
+
+        actions = " ".join(result.actions)
+        # Corrected recovery: the terminal CLI command, both branches named.
+        assert "moneybin import files" in actions
+        assert "--confirm" in actions
+        assert "--sign negative_is_expense" in actions
+        # The broken hints must be gone — and a sign confirmation is NOT a bridge,
+        # so the bridge_response hint must not leak in either.
+        assert "import_confirm(" not in actions
+        assert "sign='negative_is_expense'" not in actions
+        assert "bridge_response" not in actions
+        # A sign proposal is not a validation failure — no misleading prefix.
+        assert "Validation failed" not in actions
+
+
 class TestImportPreviewTabular:
     """import_preview surfaces header/reconciliation transparency for tabular files.
 
@@ -986,11 +1042,16 @@ class TestImportPreviewPdf:
         assert data["sign_sample_rows"][0]["as_printed"] == "150.00"
         assert data["sign_sample_rows"][0]["as_recorded"] == "-150.00"
 
-        # The agent is told both branches — and told not to pick one itself.
+        # The agent is told both branches — and told to resolve them in a
+        # terminal, because MCP cannot ratify a sign inversion in place yet.
         actions = " ".join(result.actions)
-        assert "accept=True" in actions
-        assert "sign='negative_is_expense'" in actions
-        assert "Do not self-accept" in actions
+        assert "moneybin import files" in actions
+        assert "--confirm" in actions
+        assert "--sign negative_is_expense" in actions
+        # The broken Task 6 hints must be gone: import_confirm has no sign= param
+        # and rejects accept= for a .pdf, so advertising either is a dead end.
+        assert "import_confirm(" not in actions
+        assert "sign='negative_is_expense'" not in actions
 
 
 class TestImportConfirmBridge:
@@ -1276,3 +1337,41 @@ class TestImportConfirmBridge:
         result = await import_confirm(file_path=str(pdf), accept=True)
         assert result.error is not None
         assert result.error.code == "confirm_channel_conflict"
+
+    async def test_card_sign_confirm_directs_to_cli_and_loads_nothing(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """accept=True on a real card statement refuses with terminal recovery.
+
+        import_confirm cannot ratify a sign inversion in place (elicitation is the
+        planned path). A card statement confirmed via accept= must therefore get
+        the honest CLI recovery, never crash with a TypeError, and never run the
+        import path (no inverted rows land). Uses the committed card fixture so the
+        file on disk is genuinely a credit-card statement.
+        """
+        pdf = write_card_statement_pdf(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        mock_service = MagicMock()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(file_path=str(pdf), accept=True)
+
+        # A clean UserError envelope — not a crash / TypeError.
+        assert result.error is not None
+        assert result.error.code == "confirm_channel_conflict"
+        message = result.error.message
+        # Honest terminal recovery, both branches named.
+        assert "moneybin import files" in message
+        assert "--confirm" in message
+        assert "--sign negative_is_expense" in message
+        # Honest that MCP cannot ratify the inversion in place yet.
+        assert "in place" in message
+        # Refused before any import ran — nothing loaded, inverted or otherwise.
+        mock_service.import_file.assert_not_called()
+        mock_service.pdf_preview.assert_not_called()
