@@ -664,11 +664,15 @@ class DoctorService:
     def _run_investment_staging_rejects(self) -> InvariantResult:
         """Plaid investment rows staging routed to review instead of the ledger.
 
-        Every Plaid ``transfer``/``split`` row is excluded from the ledger with
-        ``review_reason = 'split_underivable'`` (MoneyBin refuses to derive a
-        possibly-wrong split multiplier) and every unmapped security-bearing
-        subtype carries ``review_reason = 'unmapped_subtype'``. Both are
-        deliberate refusals, not silent drops — this is where they surface.
+        Staging refuses to guess, and files the row here instead. Three reasons
+        today: ``split_underivable`` (a ``split`` whose multiplier MoneyBin
+        will not derive), ``transfer_direction_underivable`` (a security-bearing
+        ``transfer`` leg whose in/out direction cannot be inferred from
+        quantity), and ``unmapped_subtype`` (an unmapped security-bearing
+        subtype). All are deliberate refusals, not silent drops — this is where
+        they surface. The query is deliberately open (``review_reason IS NOT
+        NULL``), so a NEW reason added upstream surfaces here without a code
+        change; only this list needs the follow-up.
         """
         name = "investment_staging_rejects"
         try:
@@ -763,6 +767,13 @@ class DoctorService:
         exercises away a covered-call position disposes of real shares, but
         with no ledger quantity to consume, the held lot never closes — a
         phantom position that overstates net worth until reconciled.
+
+        Matched on ``LOWER(provider_subtype)`` because staging classifies on
+        ``LOWER(COALESCE(subtype, ''))`` while preserving the provider's raw
+        casing in ``provider_subtype``: a case-sensitive list here would miss
+        an ``'Assignment'`` that staging still routed to NULL-quantity
+        ``other``, and the check would report ``pass`` on exactly the row it
+        exists to surface. Normalize identically on both sides.
         """
         name = "investment_unmodeled_legs"
         try:
@@ -770,7 +781,7 @@ class DoctorService:
                 f"""
                 SELECT investment_transaction_id
                 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
-                WHERE provider_subtype IN (
+                WHERE LOWER(provider_subtype) IN (
                     'buy to cover', 'sell short',
                     'assignment', 'exercise', 'expire',
                     'adjustment', 'loan payment', 'rebalance'
@@ -1030,11 +1041,24 @@ class DoctorService:
         position MoneyBin holds a lot for (``dim_holdings.sql`` — "that NULL
         is itself the signal") — this check is what actually reads it.
 
-        Scoped to accounts whose item's newest snapshot reports SOMETHING
-        (any position, for that account) — the guard that keeps a stale or
-        disconnected item, whose snapshot never arrived at all, from flooding
-        this check with every position on the account as a false "phantom."
-        Only a LIVE snapshot that positively omits the security counts.
+        The stale-item guard keys on whether the ITEM (``source_origin``)
+        delivered a snapshot, NOT on whether the ACCOUNT appears in it. An
+        account-keyed guard drops the worst phantom of all: Plaid returns no
+        holding entries for an account holding nothing, so a fully-liquidated
+        account whose sells never reached the ledger has ZERO rows in the
+        newest snapshot — the 100%-overstated account is exactly the one an
+        account-keyed guard filters out. Keying on the item still rules out the
+        case the guard exists for: an item that never delivered a snapshot
+        (never synced, disconnected) has no ``newest_snapshot`` row at all, so
+        none of its accounts are checked. An account's item is read from either
+        Plaid investment staging view — a liquidated account is absent from
+        holdings but still present in transactions.
+
+        (Residual gap, not fixable here: an item pull that returns zero
+        holdings writes no rows, so ``newest_snapshot`` silently keeps the last
+        NON-EMPTY snapshot. An item whose every account is liquidated therefore
+        still reads as "reporting the old positions." Closing that needs a
+        per-pull snapshot receipt in raw, i.e. a loader change.)
 
         A row surfaced here is a lot the ledger never closed: an option
         assignment/exercise mapped to ``other`` with no ledger quantity (see
@@ -1046,12 +1070,18 @@ class DoctorService:
             rows = self._db.execute(
                 f"""
                 WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE},
+                account_items AS (
+                    SELECT DISTINCT account_id, source_origin
+                    FROM prep.stg_plaid__investment_holdings
+                    UNION
+                    SELECT DISTINCT account_id, source_origin
+                    FROM prep.stg_plaid__investment_transactions
+                ),
                 reported_accounts AS (
-                    SELECT DISTINCT h.account_id
-                    FROM prep.stg_plaid__investment_holdings AS h
+                    SELECT DISTINCT ai.account_id
+                    FROM account_items AS ai
                     JOIN newest_snapshot AS ns
-                      ON ns.source_file = h.source_file
-                      AND ns.source_origin = h.source_origin
+                      ON ns.source_origin = ai.source_origin
                 )
                 SELECT d.account_id, d.security_id
                 FROM {DIM_HOLDINGS.full_name} AS d

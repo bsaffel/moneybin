@@ -1026,6 +1026,34 @@ def test_unmodeled_legs_surface_short_option_and_catchall(
 
 
 @pytest.mark.unit
+def test_unmodeled_legs_match_subtype_case_insensitively(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check must normalize provider_subtype the way staging does (LOWER()).
+
+    ``stg_plaid__investment_transactions`` classifies on
+    ``LOWER(COALESCE(subtype, ''))`` but preserves the raw string verbatim in
+    ``provider_subtype``. A case-sensitive IN-list here misses exactly the rows
+    the check exists to surface: an 'Assignment' still maps through the
+    LOWER-based branch to NULL-quantity 'other' with no review_reason, so this
+    check is its only surface — and it would report `pass`.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(investment_transaction_id VARCHAR, provider_subtype VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES "
+        "('itx_assign', 'Assignment'), ('itx_short', 'SELL SHORT'), "
+        "('itx_buy', 'Buy')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unmodeled_legs")
+    assert result.status == "warn"
+    assert result.affected_ids == ["itx_assign", "itx_short"]
+
+
+@pytest.mark.unit
 def test_holdings_divergence_warn(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1353,6 +1381,33 @@ def test_unreported_holdings_only_considers_newest_snapshot(
     assert result.affected_ids == []
 
 
+def _create_phantom_holdings_tables(db: Database) -> None:
+    """Create the staging + core tables ``investment_phantom_holdings`` reads.
+
+    The check keys its stale-item guard on the ITEM (``source_origin``), so it
+    reads BOTH Plaid investment staging views: an account whose item reported
+    but which holds nothing is absent from the newest holdings snapshot and is
+    only discoverable through the transactions view.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_holdings "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "quantity DECIMAL(28,10), "
+        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
+    )
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "source_origin VARCHAR)"
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "provider_reported_quantity DECIMAL(28,10))"
+    )
+
+
 @pytest.mark.unit
 def test_phantom_holdings_warn_when_account_in_snapshot_but_position_isnt(
     db: Database, monkeypatch: pytest.MonkeyPatch
@@ -1365,24 +1420,13 @@ def test_phantom_holdings_warn_when_account_in_snapshot_but_position_isnt(
     fresh snapshot — which DOES report other positions for this account —
     no longer reports this one.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_holdings "
-        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
-        "quantity DECIMAL(28,10), "
-        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
-    )
+    _create_phantom_holdings_tables(db)
     # acc1's newest snapshot reports sec_other — the account IS live and
     # synced — but says nothing about sec_phantom.
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
         "('acc1', 'sec_other', 'plaid_sec_other', 5, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
-    )
-    db.execute("CREATE SCHEMA IF NOT EXISTS core")
-    db.execute(
-        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
-        "provider_reported_quantity DECIMAL(28,10))"
     )
     db.execute(
         "INSERT INTO core.dim_holdings VALUES "
@@ -1397,35 +1441,118 @@ def test_phantom_holdings_warn_when_account_in_snapshot_but_position_isnt(
 
 
 @pytest.mark.unit
+def test_phantom_holdings_warn_when_account_fully_liquidated(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worst phantom — an account the broker now reports as holding NOTHING.
+
+    Plaid returns no holding entries for an account with no positions, so a
+    fully-liquidated account has ZERO rows in the item's newest snapshot while
+    MoneyBin still shows every lot open (the sells were option
+    assignment/exercise rows staging maps to NULL-quantity 'other'). An
+    account-keyed stale-item guard filters that account out entirely and
+    reports `pass` on a 100%-overstated account. The guard must key on whether
+    the ITEM reported, not whether the ACCOUNT did.
+    """
+    _create_phantom_holdings_tables(db)
+    # item1 covers acc1 and acc2. Its newest snapshot (sync_2) reports acc2
+    # only — acc1 was liquidated, so the broker returns nothing for it. acc1's
+    # positions appear only in the superseded sync_1 snapshot.
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_gone', 'plaid_sec_gone', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00'), "
+        "('acc2', 'sec_live', 'plaid_sec_live', 7, 'item1', 'sync_2', "
+        "'2026-02-01 00:00:00')"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1'), ('itx_2', 'acc2', 'item1')"
+    )
+    # MoneyBin never closed acc1's lot: dim_holdings still carries it, with a
+    # NULL provider_reported_quantity (the broker's newest snapshot omits it).
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES "
+        "('acc1', 'sec_gone', NULL), "
+        "('acc2', 'sec_live', 7)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec_gone"]
+
+
+@pytest.mark.unit
+def test_phantom_holdings_warn_when_account_never_in_any_snapshot_but_item_reported(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An account known only from the transactions view still counts as reported.
+
+    The item delivered a live snapshot (for a sibling account), so its
+    accounts are covered by a live pull. An account that has never appeared in
+    ANY holdings snapshot while MoneyBin holds open lots for it is a phantom,
+    not a stale item.
+    """
+    _create_phantom_holdings_tables(db)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc2', 'sec_live', 'plaid_sec_live', 7, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1')"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_never', NULL)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec_never"]
+
+
+@pytest.mark.unit
 def test_phantom_holdings_pass_when_item_stale_or_absent(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A held lot must NOT be flagged when its account never appears in ANY snapshot.
+    """A held lot must NOT be flagged when its ITEM never delivered a snapshot.
 
     A stale/disconnected item whose snapshot never arrived would otherwise
-    make every position on the account look like a phantom — the
-    "account appears in the newest snapshot" guard exists precisely to rule
-    this out.
+    make every position on the account look like a phantom — the item-liveness
+    guard exists precisely to rule this out.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_holdings "
-        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
-        "quantity DECIMAL(28,10), "
-        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
-    )
-    # Only acc2 has any snapshot row at all — acc1's item never synced.
+    _create_phantom_holdings_tables(db)
+    # Only item2 ever delivered a snapshot. acc1 belongs to item1, which has
+    # investment transactions but no holdings snapshot at all.
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
         "('acc2', 'sec_other', 'plaid_sec_other', 5, 'item2', 'sync_1', "
         "'2026-01-01 00:00:00')"
     )
-    db.execute("CREATE SCHEMA IF NOT EXISTS core")
     db.execute(
-        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
-        "provider_reported_quantity DECIMAL(28,10))"
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1')"
     )
     db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_x', NULL)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_phantom_holdings_pass_when_account_is_manual_only(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual-only account has no Plaid item at all — never a phantom.
+
+    ``core.dim_holdings.provider_reported_quantity`` is NULL for every
+    manually-recorded position (no broker ever claimed it), so an unguarded
+    check would flag the entire manual ledger.
+    """
+    _create_phantom_holdings_tables(db)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc_plaid', 'sec_live', 'plaid_sec_live', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc_manual', 'sec_m', NULL)")
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
     assert result.status == "pass"
     assert result.affected_ids == []
@@ -1441,22 +1568,11 @@ def test_phantom_holdings_pass_when_freshly_bootstrapped(
     newest snapshot DOES report this exact position — the ordinary,
     healthy case.
     """
-    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-    db.execute(
-        "CREATE TABLE prep.stg_plaid__investment_holdings "
-        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
-        "quantity DECIMAL(28,10), "
-        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
-    )
+    _create_phantom_holdings_tables(db)
     db.execute(
         "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
         "('acc1', 'sec_ok', 'plaid_sec_ok', 10, 'item1', 'sync_1', "
         "'2026-01-01 00:00:00')"
-    )
-    db.execute("CREATE SCHEMA IF NOT EXISTS core")
-    db.execute(
-        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
-        "provider_reported_quantity DECIMAL(28,10))"
     )
     db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_ok', 10)")
     result = _investment_result(db, monkeypatch, "investment_phantom_holdings")

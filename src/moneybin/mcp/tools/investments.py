@@ -26,17 +26,22 @@ accounts_links_*).
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import date as _date
 from decimal import Decimal
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_context
+from fastmcp.server.elicitation import AcceptedElicitation
 
 from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.elicitation import supports_elicitation
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
     InvestmentGainsPayload,
@@ -526,61 +531,255 @@ def investments_securities_links_pending() -> ResponseEnvelope[
         data=payload,
         total_count=n_pending,
         actions=[
-            "Use investments_securities_links_set to merge (pass "
-            "candidate_security_id as into) or reject (pass null) each decision",
+            "Use investments_securities_links_set(decision_id, action='accept', "
+            "into=<candidate_security_id>) to merge — the user is prompted to "
+            "confirm the merge before anything is written",
+            "Use investments_securities_links_set(decision_id, action='reject') "
+            "to keep the provider's security as its own distinct instrument",
         ],
     )
 
 
-@mcp_tool(domain="links", read_only=False, idempotent=False)
-def investments_securities_links_set(
+@dataclass(frozen=True, slots=True)
+class _MergeProposal:
+    """One pending merge decision, flattened for the confirmation prompt."""
+
+    decision_id: str
+    ref_kind: str
+    ref_value: str
+    provider_ticker: str | None
+    provider_name: str | None
+    candidate_security_id: str
+    candidate_ticker: str | None
+    candidate_name: str | None
+    match_reason: str | None
+
+
+def _cli_equivalent(decision_id: str, into: str) -> str:
+    return (
+        f"moneybin investments securities links set {decision_id} "
+        f"--accept --into {into}"
+    )
+
+
+def _load_pending_proposal(decision_id: str) -> _MergeProposal:
+    """Read the decision out of the live review queue, or raise if it isn't there."""
+    with get_database(read_only=True) as db:
+        groups = SecurityLinksService(db, actor="mcp").pending()
+    for group in groups:
+        for candidate in group.candidates:
+            if candidate.decision_id == decision_id:
+                return _MergeProposal(
+                    decision_id=decision_id,
+                    ref_kind=group.ref_kind,
+                    ref_value=group.ref_value,
+                    provider_ticker=group.provider_ticker,
+                    provider_name=group.provider_name,
+                    candidate_security_id=candidate.candidate_security_id,
+                    candidate_ticker=candidate.candidate_ticker,
+                    candidate_name=candidate.candidate_name,
+                    match_reason=candidate.match_reason,
+                )
+    raise UserError(
+        f"No pending security merge decision '{decision_id}'.",
+        code=error_codes.MUTATION_NOT_FOUND,
+        hint="List open decisions with investments_securities_links_pending.",
+    )
+
+
+def _confirm_message(p: _MergeProposal) -> str:
+    """Prompt text a human reads before two instruments' tax lots are fused.
+
+    Names BOTH sides — the provisional is identified by its provider ref (the
+    catalog id it will be deleted under is an implementation detail the review
+    queue does not surface) — plus the reason the resolver refused to decide.
+    """
+    return (
+        "Confirm a security merge (this fuses two instruments' tax lots).\n\n"
+        f"MERGE AWAY — provisional, provider ref {p.ref_kind}={p.ref_value}:\n"
+        f"  ticker {p.provider_ticker or '(none)'} · "
+        f"name {p.provider_name or '(none)'}\n\n"
+        f"INTO — survivor, security_id {p.candidate_security_id}:\n"
+        f"  ticker {p.candidate_ticker or '(none)'} · "
+        f"name {p.candidate_name or '(none)'}\n\n"
+        f"Proposed on: {p.match_reason or 'unspecified'}. The resolver proposes a "
+        "merge ONLY when it cannot decide on its own — this is an ambiguous "
+        "match, not a certain one.\n\n"
+        "Accepting re-points every accepted provider ref and tax-lot selection "
+        "onto the survivor and deletes the provisional catalog row. If these are "
+        "not the same instrument, cost basis and every later realized gain will "
+        "be wrong. Reversible via system_audit_undo(operation_id).\n\n"
+        "Accept this merge?"
+    )
+
+
+def _confirmation_unavailable(p: _MergeProposal, reason: str, detail: str) -> UserError:
+    return UserError(
+        f"This merge needs explicit confirmation and {detail}. Nothing was "
+        f"written; decision '{p.decision_id}' is still pending.",
+        code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+        hint=(
+            "Accept it from a terminal instead: "
+            f"`{_cli_equivalent(p.decision_id, p.candidate_security_id)}`"
+        ),
+        details={"decision_id": p.decision_id, "reason": reason},
+    )
+
+
+async def _confirm_merge_or_raise(p: _MergeProposal) -> None:
+    """Obtain explicit human agreement for a merge, or raise — never fall through.
+
+    Every pending decision is by construction a weak inference (the resolver
+    proposes only when ambiguous), so it is never eligible for agent
+    self-accept regardless of confidence score
+    (`.claude/rules/design-principles.md`, "Magic stays visible"). Without a
+    human on the other end of an elicitation there is no way to accept from
+    MCP at all — the CLI is the way through.
+    """
+    try:
+        ctx = get_context()
+    except RuntimeError as exc:
+        raise _confirmation_unavailable(
+            p, "no_session", "there is no active MCP session to ask"
+        ) from exc
+    if not supports_elicitation(ctx):
+        raise _confirmation_unavailable(
+            p, "client_unsupported", "this client cannot prompt you (no elicitation)"
+        )
+    result = await ctx.elicit(_confirm_message(p), response_type=None)
+    if not isinstance(result, AcceptedElicitation):
+        raise _confirmation_unavailable(
+            p, "declined", "the confirmation was declined or cancelled"
+        )
+
+
+def _apply_accept(decision_id: str, into: str) -> None:
+    # decided_by="user" is truthful only on this path: a human just ratified the
+    # merge through the elicitation gate above.
+    with get_database(read_only=False) as db:
+        SecurityLinksService(db, actor="mcp").accept_merge(
+            decision_id, into=into, decided_by="user"
+        )
+
+
+def _apply_reject(decision_id: str) -> None:
+    # decided_by="auto": no human ratified this reject — the agent called it.
+    # The column's CHECK admits only 'auto' | 'user', and recording 'user' for a
+    # decision no human made is precisely the falsehood the accept gate exists to
+    # prevent. The MCP channel itself is preserved in app.audit_log (actor='mcp').
+    with get_database(read_only=False) as db:
+        SecurityLinksService(db, actor="mcp").reject_merge(
+            decision_id, decided_by="auto"
+        )
+
+
+@mcp_tool(
+    domain="links",
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+    # The accept path blocks on a human reading a merge confirmation (two
+    # securities + the reason they're ambiguous). The 30s default would routinely
+    # fire first — and a cap that expires mid-decision means the user "accepts"
+    # into a coroutine that was already cancelled. Same headroom as gsheet_auth's
+    # interactive OAuth wait. Timing out is still safe (nothing is written), just
+    # confusing.
+    timeout_seconds=180.0,
+)
+async def investments_securities_links_set(
     decision_id: str,
-    into: str | None,
+    action: str,
+    into: str | None = None,
 ) -> ResponseEnvelope[SecurityLinksSetPayload]:
     """Accept (merge) or reject one pending security merge decision.
 
-    Mutates app.security_link_decisions (sets status) and, on accept,
-    re-points every accepted provider ref and tax lot from the provisional
-    security onto `into` in one transaction.
+    `action` is explicit — accept vs reject is never inferred from whether
+    `into` has a value:
 
-    `into` MUST be passed explicitly — there is no default:
-    - Pass the decision's own `candidate_security_id` to MERGE. `into` is a
-      confirming safety check: it must equal the decision's own candidate,
-      not just be A valid security id — on a tied group the resolver files
-      one decision per candidate, so this stops a mistyped or stale
-      decision_id from merging into the wrong security (and auto-rejecting
-      the right one). Mismatches raise mutation_invalid_input.
-    - Pass null to REJECT — keeps the provisional security as its own
-      distinct instrument. Only THIS decision is rejected; sibling
+    - `action="accept"` + `into=<the decision's own candidate_security_id>`
+      MERGES. This REQUIRES explicit human confirmation: the tool prompts the
+      user through an MCP elicitation naming both securities and the reason,
+      and merges only if they agree. On a client that cannot prompt (no
+      elicitation capability), accept HARD-FAILS with
+      mutation_confirmation_required and points at the CLI — an agent cannot
+      accept a merge on its own, at any confidence. `into` is also a
+      confirming safety check: it must equal the decision's own candidate (on
+      a tied group the resolver files one decision per candidate), so a
+      mistyped or stale decision_id cannot merge into the wrong security.
+      Mismatched, empty, or missing `into` raises mutation_invalid_input —
+      it is never treated as a reject.
+    - `action="reject"` (pass no `into`) REJECTS — keeps the provisional
+      security as its own distinct instrument. Cheap and reversible, so no
+      confirmation is required. Only THIS decision is rejected; sibling
       candidates for the same provider ref remain pending (rejecting one
       candidate answers only that pairing, not whether another candidate is
       the correct match).
 
+    A merge fuses two instruments' tax lots: it re-points every accepted
+    provider ref and lot selection onto the survivor and DELETES the
+    provisional catalog row. If they are not the same instrument, cost basis
+    and every later realized gain are wrong.
+
     Mutation surface: writes app.security_link_decisions + app.security_links
     + app.lot_selections + app.securities (deletes the merged-away
-    provisional row on accept). Revert is via the audit log in
-    app.audit_log (no undo tool yet; undo is deferred to the M1L
-    audit-undo consumer). Find pending decisions with
+    provisional row on accept). Revert with system_audit_undo(operation_id) —
+    the whole cascade is one audited operation and reverses atomically; find
+    the operation_id via system_audit. Find pending decisions with
     investments_securities_links_pending.
 
     Args:
         decision_id: The decision id to act on (from
             investments_securities_links_pending).
-        into: The candidate_security_id to merge into (must equal the
-            decision's own candidate_security_id), or null to reject.
+        action: "accept" (merge, requires `into` + human confirmation) or
+            "reject" (keep the provisional security; pass no `into`).
+        into: With action="accept", the candidate_security_id to merge into —
+            must equal the decision's own candidate_security_id. Invalid with
+            action="reject".
     """
-    with get_database(read_only=False) as db:
-        svc = SecurityLinksService(db, actor="mcp")
-        if into:
-            svc.accept_merge(decision_id, into=into, decided_by="user")
-        else:
-            svc.reject_merge(decision_id, decided_by="user")
-    status = "accepted" if into else "rejected"
+    if action not in ("accept", "reject"):
+        raise UserError(
+            f"action must be 'accept' or 'reject' (got {action!r}).",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if action == "reject":
+        if into is not None:
+            raise UserError(
+                "'into' is only valid with action='accept'. To reject, pass "
+                "action='reject' with no 'into'.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        # DB work off the event loop: this tool is a coroutine (it awaits the
+        # elicitation), so a blocking DuckDB write here would stall the server.
+        await asyncio.to_thread(_apply_reject, decision_id)
+        status = "rejected"
+    else:
+        if not into:
+            raise UserError(
+                "action='accept' requires 'into' = the decision's own "
+                "candidate_security_id (see investments_securities_links_pending). "
+                "An empty 'into' is not a reject — pass action='reject' for that.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        proposal = await asyncio.to_thread(_load_pending_proposal, decision_id)
+        if into != proposal.candidate_security_id:
+            # Refuse BEFORE prompting: a doomed merge must not cost the user a
+            # confirmation. The service re-checks this; this is the boundary copy.
+            raise UserError(
+                f"'into' does not match decision '{decision_id}' — it must be that "
+                "decision's own candidate_security_id.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint="Re-read the decision with investments_securities_links_pending.",
+            )
+        await _confirm_merge_or_raise(proposal)
+        await asyncio.to_thread(_apply_accept, decision_id, into)
+        status = "accepted"
     return build_envelope(
         data=SecurityLinksSetPayload(decision_id=decision_id, status=status),
         actions=[
             "Use investments_securities_links_pending to review remaining "
             "pending decisions",
+            "Reverse this decision with system_audit_undo(operation_id) — find "
+            "the operation_id with system_audit",
         ],
     )
 
@@ -711,16 +910,20 @@ def register_investments_tools(mcp: FastMCP) -> None:
         investments_securities_links_set,
         "investments_securities_links_set",
         "Accept (merge) or reject one pending security merge decision. "
-        "Pass into = the decision's own candidate_security_id to MERGE — a "
-        "confirming safety check (into must equal the decision's candidate, "
-        "not just be A valid security id; mismatches raise "
-        "mutation_invalid_input). Pass null to REJECT — only this decision "
-        "is rejected; sibling candidates for the same provider ref remain "
-        "pending. into has no default: pass it explicitly to avoid "
-        "accidental rejection. Writes app.security_link_decisions + "
-        "app.security_links + app.lot_selections + app.securities; revert "
-        "via app.audit_log (no undo tool yet). Discover pending decisions "
-        "with investments_securities_links_pending.",
+        "action='accept' + into=<the decision's own candidate_security_id> "
+        "MERGES: it prompts the user to confirm (MCP elicitation naming both "
+        "securities and the match reason) and merges only on their explicit "
+        "agreement — a merge fuses two instruments' tax lots, so the agent "
+        "cannot accept one on its own. On a client without elicitation, "
+        "accept fails with mutation_confirmation_required and names the CLI "
+        "equivalent. into must equal the decision's own candidate (mismatched, "
+        "empty, or missing into raises mutation_invalid_input — it is NEVER "
+        "read as a reject). action='reject' (no into) keeps the provider's "
+        "security as its own instrument; only this decision is rejected, "
+        "sibling candidates stay pending. Writes app.security_link_decisions "
+        "+ app.security_links + app.lot_selections + app.securities; reverse "
+        "the whole cascade with system_audit_undo(operation_id). Discover "
+        "pending decisions with investments_securities_links_pending.",
     )
     register(
         mcp,

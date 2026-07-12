@@ -13,7 +13,7 @@ import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 
@@ -34,6 +34,9 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
+
+if TYPE_CHECKING:
+    from moneybin.connectors.sync_models import PullResult
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +96,15 @@ def sync_pull(
     (raw rows still land durably; derived models become stale until the next refresh).
     High-frequency callers should pass refresh=False and schedule refresh separately —
     SQLMesh apply dominates pull latency (typically 5–30s).
+
+    A pull can partially fail while still returning: `security_resolution_error`
+    non-null means this pull's investment transactions were NOT attributed to
+    securities (cost basis is incomplete until a retry — the pull is idempotent),
+    and `transforms_error` non-null means raw rows landed but core.* is stale.
+    Report those to the user; do not summarize such a pull as a clean success.
+    `security_resolution` carries the per-outcome counts (adopted / auto_bound /
+    minted / proposed / pending); a non-zero proposed/pending count means
+    security identities are awaiting the user's review.
     """
     with _build_sync_service() as service:
         result = service.pull(institution=institution, force=force, refresh=refresh)
@@ -118,9 +130,59 @@ def sync_pull(
             transforms_applied=result.transforms_applied,
             transforms_duration_seconds=result.transforms_duration_seconds,
             transforms_error=result.transforms_error,
+            securities_loaded=result.securities_loaded,
+            investment_transactions_loaded=result.investment_transactions_loaded,
+            holdings_loaded=result.holdings_loaded,
+            holding_lots_loaded=result.holding_lots_loaded,
+            opening_bootstrap_rows=result.opening_bootstrap_rows,
+            investment_source_overlap_accounts=list(
+                result.investment_source_overlap_accounts
+            ),
+            security_resolution=dict(result.security_resolution),
+            security_resolution_error=result.security_resolution_error,
         ),
-        actions=["Use sync_status to see connection health going forward."],
+        actions=_pull_actions(result),
     )
+
+
+def _pull_actions(result: PullResult) -> list[str]:
+    """Next-step hints, including every partial-failure the CLI surfaces.
+
+    The CLI warns and exits non-zero on ``security_resolution_error``; MCP has no
+    exit code, so the equivalent signal has to be prose the agent will actually
+    read — hence a leading, unambiguous action rather than a quiet payload field.
+    """
+    actions: list[str] = []
+    if result.security_resolution_error:
+        actions.append(
+            "WARNING: security resolution failed — this pull's investment "
+            "transactions are NOT attributed to securities, so cost basis, "
+            "holdings and realized gains are incomplete. Raw data already "
+            "landed; retry with sync_pull (idempotent). Report this to the "
+            "user rather than reporting a successful sync."
+        )
+    if result.transforms_error:
+        actions.append(
+            "WARNING: transforms failed — raw rows landed but core.* models are "
+            "stale. Retry with refresh_run."
+        )
+    resolution = result.security_resolution or {}
+    awaiting = resolution.get("proposed", 0) + resolution.get("pending", 0)
+    if awaiting:
+        actions.append(
+            f"{awaiting} security identity(ies) await review — use "
+            "investments_securities_links_pending to see them "
+            "(unresolved securities are dropped from cost basis)."
+        )
+    if result.investment_source_overlap_accounts:
+        actions.append(
+            f"{len(result.investment_source_overlap_accounts)} account(s) have "
+            "both manual and Plaid investment history — lots and gains "
+            "double-count until one source is chosen per account "
+            "(see system_doctor)."
+        )
+    actions.append("Use sync_status to see connection health going forward.")
+    return actions
 
 
 @mcp_tool()
@@ -343,7 +405,13 @@ def register_sync_tools(mcp: FastMCP) -> None:
         (sync_disconnect, "Remove a bank connection."),
         (
             sync_pull,
-            "Pull transactions, accounts, and balances. Amounts use MoneyBin convention (negative = expense).",
+            "Pull transactions, accounts, balances, and investment data. Amounts "
+            "use MoneyBin convention (negative = expense). A pull can partially "
+            "fail while still returning: security_resolution_error means this "
+            "pull's investment transactions were not attributed to securities "
+            "(cost basis incomplete until retried) and transforms_error means "
+            "core.* is stale — surface both to the user rather than reporting a "
+            "clean sync.",
         ),
         (sync_status, "Connected institutions, last-sync times, and errors."),
         (
