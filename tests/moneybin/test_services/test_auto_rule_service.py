@@ -15,6 +15,7 @@ from moneybin import config as config_module
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
+from moneybin.metrics.registry import AUTO_RULE_BROAD_PENDING
 from moneybin.services.audit_service import AuditService
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
@@ -429,6 +430,44 @@ def test_review_uses_configured_default_when_limit_omitted(real_db: Database) ->
     assert auto_review_envelope(result).summary.has_more is False
 
 
+def test_review_broad_gauge_is_queue_wide_not_page_scoped(real_db: Database) -> None:
+    """AUTO_RULE_BROAD_PENDING must reflect the whole pending queue, not just the page.
+
+    Two pending proposals. "A1MERCHANT" has trigger_count=2 (two categorized
+    txns) so it sorts first (``trigger_count DESC``) and is the only one on a
+    ``limit=1`` page; its estimated match count (2) stays under the broad
+    floor. "BROADCO" has trigger_count=1 but a true blast radius of 25 rows —
+    comfortably past the floor(20)/10x-evidence ratio — so it IS broad, yet it
+    is excluded from the returned page. A page-scoped gauge (the pre-fix
+    behavior) would see only A1MERCHANT and report 0 broad proposals; the
+    gauge must report 1.
+    """
+    svc = AutoRuleService(real_db)
+    _seed_transaction(real_db, "t_a1a", description="A1MERCHANT")
+    _seed_transaction(real_db, "t_a1b", description="A1MERCHANT")
+    svc.record_categorization("t_a1a", "Food & Drink")
+    svc.record_categorization("t_a1b", "Food & Drink")
+
+    _seed_transaction(real_db, "t_broad", description="BROADCO")
+    svc.record_categorization("t_broad", "Food & Drink")
+    # 24 more BROADCO rows (uncategorized) so the pattern's true blast radius
+    # is 25 — the scan behind _estimate_match_counts only reads description/
+    # memo, not categorization state.
+    for i in range(24):
+        real_db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+            "VALUES (?, 'a1', DATE '2026-01-01', -5.00, 'BROADCO', 'csv')",
+            [f"t_broad_extra_{i}"],
+        )
+
+    result = svc.review(limit=1)
+    assert len(result.proposals) == 1
+    assert result.proposals[0]["merchant_pattern"] == "A1MERCHANT"
+    assert result.total_count == 2
+    assert AUTO_RULE_BROAD_PENDING._value.get() == 1  # type: ignore[reportPrivateUsage] — prometheus internals
+
+
 @pytest.mark.parametrize(
     "cls_name",
     ["AutoReviewResult", "AutoConfirmResult", "AutoStatsResult"],
@@ -825,3 +864,35 @@ def test_estimate_match_counts_uses_exact_semantics_for_exact_patterns() -> None
     db.execute.return_value.fetchall.return_value = [("COSTCO AUTO CENTER", None)] * 40
     counts = service._estimate_match_counts(proposals)
     assert counts["p_exact"] == 0
+
+
+def test_estimate_match_counts_tests_regex_against_normalized_description() -> None:
+    r"""An end-anchored ``regex`` proposal must hit what the live matcher would hit.
+
+    ``^STARBUCKS$`` fails against the concatenated ``match_text``
+    ("STARBUCKS\nCOFFEE PURCHASE" — the trailing ``$`` anchor can't match
+    mid-string once memo is appended) but DOES match the individual normalized
+    description ("STARBUCKS"). ``matcher._match_text`` tests exactly this
+    per-field candidate for every match type, including ``regex`` — so the
+    estimator must count this row too, or an end-anchored regex proposal can
+    slip past the reviewer under-counted (and a genuinely broad rule reads as
+    not-broad).
+    """
+    db = MagicMock()
+    service = AutoRuleService(db)
+    proposals = [
+        {
+            "proposed_rule_id": "p_regex_anchor",
+            "merchant_pattern": r"^STARBUCKS$",
+            "match_type": "regex",
+            "category": "Food & Drink",
+            "subcategory": "Coffee",
+            "trigger_count": 1,
+            "sample_txn_ids": ["t_1"],
+        }
+    ]
+    db.execute.return_value.fetchall.return_value = [
+        ("STARBUCKS 12345", "COFFEE PURCHASE"),
+    ]
+    counts = service._estimate_match_counts(proposals)
+    assert counts["p_regex_anchor"] == 1

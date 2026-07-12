@@ -47,19 +47,19 @@ logger = logging.getLogger(__name__)
 def _pattern_hits(
     pattern: str, match_type: str, match_text: str, norm_desc: str, norm_memo: str
 ) -> bool:
-    """Mirror the live matcher's field selection for a single row.
+    """Mirror ``matcher._match_text``'s candidate construction and test exactly.
 
-    ``build_match_inputs``' contract: ``contains`` and unanchored ``regex``
-    patterns test the concatenated ``match_text`` (they may span the
-    description/memo boundary); ``exact`` tests the individual normalized fields,
-    whose semantics break once memo is appended. Diverging from this would make
-    the reviewer's blast-radius number disagree with what the rule actually does.
+    Builds the same candidate list — ``[match_text, normalized_description,
+    normalized_memo]``, skipping empties and de-duplicating — and tests
+    ``any(matches_pattern(c, pattern, match_type) for c in candidates)``
+    uniformly for every match type. Diverging from this would make the
+    reviewer's blast-radius number disagree with what the rule actually does.
     """
-    if match_type == "exact":
-        return matches_pattern(norm_desc, pattern, "exact") or matches_pattern(
-            norm_memo, pattern, "exact"
-        )
-    return matches_pattern(match_text, pattern, match_type)
+    candidates: list[str] = []
+    for text in (match_text, norm_desc, norm_memo):
+        if text and text not in candidates:
+            candidates.append(text)
+    return any(matches_pattern(c, pattern, match_type) for c in candidates)
 
 
 @dataclass(slots=True)
@@ -439,18 +439,26 @@ class AutoRuleService:
         the rule would actually hit) and ``is_broad``. A broad proposal cannot be
         accepted without an explicit ``allow_broad`` override — see
         :meth:`approve`.
+
+        The broad-count gauge (``AUTO_RULE_BROAD_PENDING``) and ``total_count``
+        must both be queue-wide, not scoped to the returned page — so this
+        fetches the full pending set once (a read against the small
+        ``app.proposed_rules`` table, not the expensive scan) and estimates over
+        all of it, then slices to ``limit`` for the returned page. Do NOT split
+        this into a page-scoped estimate plus a separate full-queue estimate:
+        ``_estimate_match_counts`` must run exactly ONCE per call — it scans
+        ``core.fct_transactions``, and a second scan is what caused the >73s
+        ``system_doctor`` hang (F14).
         """
         effective_limit = self._resolve_list_limit(limit)
         # Re-annotated Any: list_pending_proposals declares dict[str, object],
         # but this loop reads trigger_count back out with int(); Any lets the
         # per-field int()/str() coercions below type-check like they already
         # do for the same dicts once they cross into AutoReviewResult.
-        proposals: list[dict[str, Any]] = self.list_pending_proposals(
-            limit=effective_limit
-        )
-        counts = self._estimate_match_counts(proposals)
+        all_proposals: list[dict[str, Any]] = self.list_pending_proposals(limit=None)
+        counts = self._estimate_match_counts(all_proposals)
         broad_count = 0
-        for p in proposals:
+        for p in all_proposals:
             pid = str(p["proposed_rule_id"])
             estimated = counts.get(pid, 0)
             broad = self._is_broad(estimated, int(p.get("trigger_count", 0) or 0))
@@ -459,15 +467,8 @@ class AutoRuleService:
             if broad:
                 broad_count += 1
         AUTO_RULE_BROAD_PENDING.set(broad_count)
-        # When the queue fits under the cap, the total is just len(proposals).
-        # Skip the COUNT(*) roundtrip in the common case (typical pending queues
-        # are well under 100).
-        total = (
-            len(proposals)
-            if len(proposals) < effective_limit
-            else self._count_pending_proposals()
-        )
-        return AutoReviewResult(proposals=proposals, total_count=total)
+        proposals = all_proposals[:effective_limit]
+        return AutoReviewResult(proposals=proposals, total_count=len(all_proposals))
 
     @staticmethod
     def _resolve_list_limit(limit: int | None) -> int:
