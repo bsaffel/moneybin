@@ -6,7 +6,7 @@
 
 **Signature element: trust as furniture.** Every number can show its work — brass `SQL` chips on every widget, dotted underlines on auditable figures, a persistent vault status bar in the app chrome. Trust is a UI affordance, not a marketing claim.
 
-Sources: authored from scratch in this project (no external Figma/codebase). The full argued spec — with the hi-fi dashboard mockup and the design rationale — is `MoneyBin Brand Kit.dc.html` at the design-system root.
+Sources: authored from scratch in this project (no external Figma/codebase). The argued spec behind these rules — the hi-fi dashboard mockup and the design rationale — lives in the claude.ai **Design Kit** project, where it renders against the design runtime. This tree carries the binding artifacts: tokens, components, specimen cards, and `charts.md`.
 
 ## Content fundamentals
 - Numbers first, verbs second: "Synced 4 min ago · 214 new transactions".
@@ -38,7 +38,6 @@ Sources: authored from scratch in this project (no external Figma/codebase). The
 - `charts.md` — binding chart grammar (prose companion to the 12 `guidelines/charts-*.html` specimens)
 - `components/core/` — Button, Chip, Icon · `components/data/` — Amount, WidgetCard · `components/chrome/` — VaultStatusBar · `components/brand/` — Mark, DuckKey, Wordmark
 - `ui_kits/web_app/` — dashboard home (static reference extraction of the brand kit §09)
-- `MoneyBin Brand Kit.dc.html` — the full argued spec (sections 01–10 incl. rationale)
 
 ### Intentional additions
 - `Amount` — not a visual primitive in a source kit, but the money-formatting hard rules (mono, tabular, redundant sign) need a single enforcement point.
