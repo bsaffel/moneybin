@@ -106,6 +106,7 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 - **Structured error envelopes** — Runtime errors emit a machine-readable envelope to stdout when `--output json` is active.
 - **Field projection** — `--json-fields` on `moneybin transactions list` selects a subset of fields; other read-only commands will adopt progressively.
 - **Shell completion** — `moneybin --install-completion` / `--show-completion`.
+- **Version** — `moneybin --version` prints the installed MoneyBin version.
 
 ## SQL access
 

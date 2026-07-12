@@ -184,6 +184,34 @@ so it lives at rung 7's gate, not rung 2's.
 | 6 | **Hosted remote MCP + OAuth** | claude.ai, ChatGPT web/mobile, Cowork remote, mobile | n/a (our own infra) | **M3D** |
 | 7 | **Directory listings** (Claude Connectors Directory; ChatGPT Apps SDK → "Plugins"; `.mcpb` directory submission) | ordinary consumer users | **human review** | **M3O — gated on the first public release** |
 
+### Rung 1 (PyPI / `uvx`) — build state and durable decisions
+
+The rung-1 release machinery has **merged but not yet published** (#316): the
+wheel builds with every runtime resource, and a Trusted-Publishing pipeline
+publishes on a tagged release, gated by a clean-install smoke test (macOS + Linux
+× Python 3.12/3.13) and a post-publish install-from-the-real-index check. Rung 1
+stays **in progress** until the first tag lands on PyPI — "shipped" here means
+merged *and* released, not merged alone.
+
+Two one-way-door decisions were locked getting the wheel installable. Both apply
+existing patterns, so they live here rather than in a new spec:
+
+- **The SQLMesh project ships inside the package** (`src/moneybin/sqlmesh/`), not
+  at the repo root. A repo-root project located by walking up from the module
+  (`parents[2]`) resolves from a source checkout but cannot resolve inside an
+  installed wheel, where there is no repo above the package. Relocating it into
+  the package gives one resolution rule that holds in both layouts; a
+  source-vs-wheel fallback branch would leave two rules to keep in sync.
+- **The emitted MCP config pins the installed version**
+  (`uv tool run --from moneybin==X.Y.Z`) when `mcp install` runs outside a repo
+  checkout. MoneyBin runs forward-only schema migrations when it opens an
+  encrypted database, so an unpinned config would let a newly released version
+  install itself on the client's next restart and migrate the user's ledger with
+  no action from them. Pinning makes every upgrade deliberate: the user re-runs
+  `moneybin mcp install`, which re-pins to the now-current version. **Deferred
+  follow-up:** a startup version-check nudge that surfaces when a newer MoneyBin
+  is available, so pinning doesn't silently strand a user on an old version.
+
 Existing strengths this plan builds on (do not regress): per-tool
 `readOnlyHint`/`destructiveHint`/`idempotentHint`/`openWorldHint` annotations
 already ship (`src/moneybin/mcp/_registration.py`) — a hard requirement for

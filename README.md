@@ -47,7 +47,7 @@ graph LR
 
 ## Quick Start
 
-> **Today's install is for developers.** A `brew install` path is in flight. Until then, `git clone` + [uv](https://docs.astral.sh/uv/) is the path. Not comfortable with a CLI checkout? [Bookmark the project](https://github.com/bsaffel/moneybin) and check back.
+> **Today's install is from source.** The published `uvx moneybin` / `pip install moneybin` path lands with MoneyBin's first tagged release (a `brew install` path follows). Until then, `git clone` + [uv](https://docs.astral.sh/uv/) is the way in — the commands below work today. Not comfortable with a CLI checkout? [Bookmark the project](https://github.com/bsaffel/moneybin) and check back.
 >
 > **Platform:** macOS is the primary target; Linux works via PyPI; Windows is untested. MoneyBin runs on demand — no daemon, no container, no open network ports (the MCP server speaks stdio).
 
@@ -96,7 +96,7 @@ moneybin sql query "SELECT category, SUM(amount) FROM core.fct_transactions GROU
 
 **Working today:** the CLI and MCP server (≈70 tools across nine AI clients), encrypted multi-profile storage, file imports (CSV/OFX/QFX/QBO/Excel/Parquet), native-text PDF statement import with saved replayable per-format recipes, a watched-folder inbox, Plaid sync (cash + credit cards), live Google Sheets sync, cross-source dedup and transfer detection, rule-based categorization with an opt-in LLM-assist step, investment tracking (buys, sells, dividends, four cost-basis methods, tax lots, realized gain/loss), eight curated reports, privacy-safe ad-hoc SQL, reversible edits with a full audit trail, and `moneybin system doctor` integrity checks.
 
-**In flight:** a `brew install` path and first-run onboarding, AI-assisted import for scanned and other hard-to-parse PDFs, an extensible report framework, Plaid production approval, and the contributor extension contract.
+**In flight:** a published `pip install` / `brew install` path and first-run onboarding, AI-assisted import for scanned and other hard-to-parse PDFs, an extensible report framework, non-author validation of Plaid sync (the link → sync → reconcile round-trip is built and author-tested against Production), and the contributor extension contract.
 
 **Planned:** investment price feeds and net-worth integration, multi-currency, budgets, a web UI dashboard, and an opt-in hosted tier — same code you can self-host.
 

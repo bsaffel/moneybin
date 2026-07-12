@@ -13,6 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`moneybin --version`** prints the installed MoneyBin version. (#316)
+- **PyPI release pipeline with Trusted Publishing.** A tagged release builds the
+  wheel and publishes it to PyPI over OIDC Trusted Publishing (no stored token),
+  gated on a clean-install smoke test across macOS and Linux on Python 3.12 and
+  3.13 and a post-publish check that installs MoneyBin from the real index. (#316)
 - **`moneybin demo` evaluator preset (M3A).** One command sets up an isolated
   `demo` profile, generates synthetic data (`--persona
   basic`/`family`/`freelancer`), runs the full pipeline — match, and categorization
@@ -228,6 +233,14 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Changed
+- **Outside a repo checkout, `moneybin mcp install` now writes a config that runs
+  the published package, pinned to the installed version.** The generated client
+  entry uses `uv tool run --from moneybin==X.Y.Z` instead of pointing at a local
+  checkout. The pin is deliberate: MoneyBin runs forward-only schema migrations
+  when it opens your database, so an unpinned config would let a newly released
+  version install itself on the client's next restart and migrate your encrypted
+  ledger with no action from you. Re-run `moneybin mcp install` to move to a newer
+  version. (#316)
 - **MCP client guide corrected against what the clients actually do.** The Claude
   Desktop section now leads with `.mcpb` desktop extensions as the vendor-blessed
   path (config-file JSON is legacy-but-supported; MoneyBin's own bundle is still
@@ -326,6 +339,13 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **An installed MoneyBin could not create a profile or run a transform.** The
+  built wheel shipped none of the SQL schema, migrations, SQLMesh models, or
+  synthetic demo data it needs at runtime — the `package-data` globs pointed
+  outside the package directory, which setuptools silently ignores. The SQLMesh
+  project now lives inside the package (`src/moneybin/sqlmesh/`), every runtime
+  resource ships in the wheel, and the packaged contents are verified against the
+  real built wheel. (#316)
 - **PDF statements with no ruled table no longer import zero transactions.**
   Recipe derivation picked its transaction table from `pdfplumber`'s table
   detection, which only fires on *drawn ruling lines* — while the recipe
@@ -573,6 +593,15 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   is actionable signal for users or agents driving the CLI/MCP.
 
 ### Security
+- **The agent-facing SQL connection can no longer reach remote filesystems.**
+  Since DuckDB 1.4.1, the only supported encrypted-write path is the OpenSSL
+  crypto inside the `httpfs` extension, which DuckDB silently auto-loads on the
+  first encrypted write — leaving a live, unrestricted http/s3 filesystem on
+  every MoneyBin connection, including the read-only handle MCP agents run SQL
+  against, with nothing disabling it. MoneyBin now loads `httpfs` explicitly only
+  where its crypto is needed, disables the HTTP and S3 filesystems on every
+  connection, and locks that configuration on read-only connections so agent SQL
+  cannot re-enable extension loading to pull in another remote filesystem. (#316)
 - **The unauthenticated HTTP MCP transport is now gated behind `--insecure`.**
   `moneybin mcp serve` refuses to start any non-stdio transport (`sse`,
   `streamable-http`) unless `--insecure` is passed, exiting with a usage error
