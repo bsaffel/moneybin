@@ -90,6 +90,7 @@ RECOVERY_NO_PATH = "recovery_no_path"
 # Infra — database, migrations, encryption (existing codes retained)
 # ---------------------------------------------------------------------------
 
+INFRA_CRYPTO_UNAVAILABLE = "infra_crypto_unavailable"
 INFRA_DATABASE_LOCKED = "infra_database_locked"
 INFRA_DATABASE_NOT_INITIALIZED = "infra_database_not_initialized"
 INFRA_FILE_NOT_FOUND = "infra_file_not_found"

@@ -24,6 +24,8 @@ import pytest
 from moneybin.database import (
     _DISABLED_FILESYSTEMS,  # pyright: ignore[reportPrivateUsage]  # security constant under test
     Database,
+    DatabaseCryptoError,
+    _load_crypto_extension,  # pyright: ignore[reportPrivateUsage]  # failure branch under test
 )
 
 # Every URL DuckDB would route through a filesystem httpfs registers.
@@ -253,3 +255,20 @@ def test_write_connection_runs_ddl_with_default_inside_a_transaction(
     ).fetchone()
     assert rows is not None
     assert rows[0] == 1
+
+
+def test_load_crypto_extension_failure_raises_database_crypto_error() -> None:
+    """A failed INSTALL/LOAD httpfs is wrapped, not leaked raw.
+
+    The documented failure path — a machine with no cached httpfs and no network
+    on its first encrypted write — must surface as ``DatabaseCryptoError`` (which
+    ``classify_user_error`` maps to a clean CLI/MCP message), and the half-open
+    connection must be closed so it can't leak.
+    """
+    conn = MagicMock()
+    conn.execute.side_effect = duckdb.Error("HTTP 404 fetching httpfs")
+
+    with pytest.raises(DatabaseCryptoError, match="httpfs"):
+        _load_crypto_extension(conn)
+
+    conn.close.assert_called_once()

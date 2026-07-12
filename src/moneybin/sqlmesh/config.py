@@ -19,15 +19,42 @@ from sqlmesh.core.config.format import (  # type: ignore[import-untyped] — sql
     FormatConfig,
 )
 
-# Add project root to path so moneybin is importable
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _project_root not in sys.path:
-    sys.path.insert(0, os.path.join(_project_root, "src"))
 
-# Anchor MONEYBIN_HOME to the project root so get_base_dir() resolves paths
-# correctly regardless of the working directory SQLMesh was invoked from.
-if "MONEYBIN_HOME" not in os.environ:
-    os.environ["MONEYBIN_HOME"] = _project_root
+def _repo_root_or_none(config_file: Path) -> Path | None:
+    """The source-checkout repo root to anchor MONEYBIN_HOME to, or None.
+
+    SQLMesh re-executes this config on every ``Context`` creation — including
+    the in-process ``sqlmesh_context()`` path every transform/demo run uses — so
+    whatever this module writes to ``os.environ`` runs on every such call.
+
+    In a source checkout, ``<repo>/src/moneybin/sqlmesh/config.py`` sits four
+    levels below the repo root; anchoring MONEYBIN_HOME there lets a bare
+    ``sqlmesh`` CLI invoked from any CWD resolve the repo's data. In an
+    installed wheel the package lives under ``site-packages`` with no repo root
+    above it, so return None and leave MONEYBIN_HOME to ``get_base_dir()``'s
+    ``~/.moneybin`` default. (The pre-fix code walked up too few levels after
+    the package move and anchored MONEYBIN_HOME to the *package* directory,
+    scattering profile/log/DB state under ``src/moneybin`` / ``site-packages``.)
+    """
+    repo_root = config_file.resolve().parents[3]
+    looks_like_checkout = (repo_root / "pyproject.toml").is_file() and (
+        repo_root / "src" / "moneybin"
+    ).is_dir()
+    return repo_root if looks_like_checkout else None
+
+
+_repo_root = _repo_root_or_none(Path(__file__))
+if _repo_root is not None:
+    # Bare `sqlmesh` / LSP invocations in a checkout may run without moneybin
+    # installed; put <repo>/src on the path so the import below resolves. In a
+    # wheel moneybin is already importable, so _repo_root is None and this is
+    # skipped.
+    _src_dir = str(_repo_root / "src")
+    if _src_dir not in sys.path:
+        sys.path.insert(0, _src_dir)
+    # Anchor MONEYBIN_HOME to the repo root so get_base_dir() resolves the
+    # repo's data dir regardless of CWD. Never override an explicit value.
+    os.environ.setdefault("MONEYBIN_HOME", str(_repo_root))
 
 from moneybin.config import (  # noqa: E402 — must follow sys.path setup above
     get_current_profile,

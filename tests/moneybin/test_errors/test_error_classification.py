@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from moneybin import error_codes
-from moneybin.database import DatabaseKeyError
+from moneybin.database import DatabaseCryptoError, DatabaseKeyError
 from moneybin.errors import UserError, classify_user_error
 
 
@@ -22,6 +22,24 @@ def test_classify_database_key_error_returns_user_error() -> None:
     assert result.code == error_codes.INFRA_WRONG_KEY
     assert "locked" in result.message
     assert result.hint == "Run: moneybin db unlock"
+
+
+def test_classify_database_crypto_error_returns_user_error() -> None:
+    """DatabaseCryptoError maps to a UserError instead of an unclassified crash.
+
+    Raised when the OpenSSL crypto module (httpfs) can't be installed/loaded on
+    a write connection — reachable on a machine with no cached httpfs and no
+    network on its first encrypted write. Like its Database*Error siblings it
+    must reach the CLI/MCP structured-error contract, not surface as a raw
+    traceback (CLI) or a generic masked envelope (MCP).
+    """
+    result = classify_user_error(
+        DatabaseCryptoError("needs httpfs for OpenSSL crypto; no network")
+    )
+    assert result is not None
+    assert result.code == error_codes.INFRA_CRYPTO_UNAVAILABLE
+    # The exception's own crafted message survives to the surface.
+    assert "httpfs" in result.message
 
 
 def test_classify_file_not_found_returns_user_error() -> None:

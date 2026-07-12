@@ -14,8 +14,51 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.privacy.sql_query import execute_sql_query
+from moneybin.privacy.sql_query import execute_sql_query, validate_read_only_query
 from moneybin.privacy.taxonomy import Tier
+
+# Every remote URL scheme the read-only validator must reject. Kept in lockstep
+# with the filesystems the connection seal disables (`_DISABLED_FILESYSTEMS` in
+# database.py) — this validator is the earlier, clearer-message layer of that
+# defense-in-depth pair. gs/r2/hf were added alongside the seal's HuggingFace +
+# S3-served schemes; https/s3/az/gcs predate it.
+_REMOTE_URL_SCHEMES = [
+    "https://evil.example/x.parquet",
+    "http://evil.example/x.parquet",
+    "s3://bucket/x.parquet",
+    "az://container/x.parquet",
+    "gcs://bucket/x.parquet",
+    "gs://bucket/x.parquet",
+    "r2://bucket/x.parquet",
+    "hf://datasets/user/repo/x.csv",
+]
+
+
+@pytest.mark.parametrize("url", _REMOTE_URL_SCHEMES)
+def test_url_scheme_literal_is_rejected(url: str) -> None:
+    """A remote URL literal anywhere in the query is refused before execution.
+
+    Guards `_URL_SCHEME_PATTERNS`, including the gs/r2/hf schemes added with the
+    extension seal. The query is otherwise a valid read-only SELECT, so the URL
+    scheme — not the prefix, a file-access function, or a quoted-path scan — is
+    what trips the gate.
+    """
+    error = validate_read_only_query(
+        f"SELECT account_id FROM core.dim_accounts WHERE note = '{url}'"  # noqa: S608  # parametrized test URLs, not user input; asserting the validator rejects them
+    )
+    assert error is not None
+    assert "URL literals" in error
+
+
+def test_url_scheme_rejection_surfaces_as_user_error(populated_db: Database) -> None:
+    """End-to-end: the primitive raises UserError(sql_invalid_query) on a remote scheme."""
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT account_id FROM core.dim_accounts WHERE note = 'hf://a/b/c.csv'",
+            max_rows=10,
+        )
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
 def _seed_account(db: Database) -> None:
