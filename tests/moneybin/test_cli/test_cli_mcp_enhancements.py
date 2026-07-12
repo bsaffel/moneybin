@@ -319,6 +319,42 @@ class TestMCPInstall:
         assert "web" in result.stderr.lower()
         assert "restart" in result.stderr.lower()
 
+    def test_install_emits_pinned_uvx_when_not_in_a_repo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Outside a checkout, the config must point at the published package."""
+        monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+
+        assert result.exit_code == 0
+        from moneybin.cli.main import get_version
+
+        assert f"moneybin=={get_version()}" in result.stdout
+        assert "--from" in result.stdout
+        assert "--directory" not in result.stdout
+
+    def test_install_keeps_the_repo_dev_path_in_a_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inside a checkout, keep `uv run --directory <repo>` — the dev path."""
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.find_repo_root", lambda: tmp_path
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+
+        assert result.exit_code == 0
+        assert "--directory" in result.stdout
+        assert str(tmp_path) in result.stdout
+        assert "--from" not in result.stdout
+
 
 class TestMCPInstallSnippetHardening:
     """The generated snippet must survive the launch context clients actually use."""
