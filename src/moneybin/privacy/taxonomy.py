@@ -349,6 +349,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "coingecko_id": DataClass.TXN_TYPE,
         "cost_basis_method": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        # Catalog provenance flag (user vs plaid) — closed enum, not PII.
+        "created_by": DataClass.TXN_TYPE,
         "currency_code": DataClass.CURRENCY,
         # Public-instrument reference data (what an instrument IS), not user
         # PII — that the user HOLDS it, and how much, lives in the lots and
@@ -363,6 +365,43 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "security_type": DataClass.TXN_TYPE,
         "ticker": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("app", "security_link_decisions"): {
+        "decision_id": DataClass.RECORD_ID,
+        "ref_kind": DataClass.TXN_TYPE,
+        # Opaque provider security ref (plaid security_id, or
+        # institution_id:institution_security_id) — never an account number.
+        "ref_value": DataClass.RECORD_ID,
+        "source_type": DataClass.TXN_TYPE,
+        # Public-instrument reference data, same as securities.ticker/name.
+        "provider_ticker": DataClass.TXN_TYPE,
+        "provider_name": DataClass.TXN_TYPE,
+        "candidate_security_id": DataClass.RECORD_ID,
+        "confidence_score": DataClass.AGGREGATE,
+        # Match-basis signals echo ticker/name — LOW tier, same as the
+        # provider_ticker/provider_name columns they're derived from.
+        "match_signals": DataClass.TXN_TYPE,
+        "status": DataClass.TXN_TYPE,
+        "decided_by": DataClass.TXN_TYPE,
+        "match_reason": DataClass.USER_NOTE,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_by": DataClass.TXN_TYPE,
+    },
+    ("app", "security_links"): {
+        "link_id": DataClass.RECORD_ID,
+        "security_id": DataClass.RECORD_ID,
+        "ref_kind": DataClass.TXN_TYPE,
+        # Opaque provider security ref, never an account number — RECORD_ID
+        # (LOW), matching merchant_links.ref_value's rationale, not the
+        # ACCOUNT_IDENTIFIER exception account_links.ref_value carries.
+        "ref_value": DataClass.RECORD_ID,
+        "source_type": DataClass.TXN_TYPE,
+        "status": DataClass.TXN_TYPE,
+        "decided_by": DataClass.TXN_TYPE,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "reversed_by": DataClass.TXN_TYPE,
     },
     ("app", "seed_source_priority"): {
         "priority": DataClass.AGGREGATE,
@@ -540,6 +579,14 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "cost_basis": DataClass.BALANCE,
         "average_cost": DataClass.BALANCE,
         "currency_code": DataClass.CURRENCY,
+        # The broker's non-authoritative claim about the same position. Being a
+        # reference rather than MoneyBin's own figure changes nothing about its
+        # sensitivity — it discloses the identical holding, so each column
+        # carries the same class as the ledger-derived column it mirrors.
+        "provider_reported_quantity": DataClass.TXN_AMOUNT,
+        "provider_reported_cost_basis": DataClass.BALANCE,
+        "provider_reported_value": DataClass.BALANCE,
+        "provider_reported_as_of": DataClass.TIMESTAMP_OBSERVABILITY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("core", "dim_merchants"): {
@@ -623,6 +670,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "amount": DataClass.TXN_AMOUNT,
         "fees": DataClass.TXN_AMOUNT,
         "currency_code": DataClass.CURRENCY,
+        # The provider's original type/subtype strings, preserved for audit — a
+        # closed-vocabulary routing tag from the source, like `type`/`subtype`.
+        "provider_type": DataClass.TXN_TYPE,
+        "provider_subtype": DataClass.TXN_TYPE,
         "source_type": DataClass.TXN_TYPE,
         "source_origin": DataClass.TXN_TYPE,
         "description": DataClass.DESCRIPTION,

@@ -26,32 +26,37 @@ async def test_review_returns_envelope(mcp_db: object) -> None:
 
 @pytest.mark.unit
 async def test_review_data_shape(mcp_db: object) -> None:
-    """Data carries the four queue counts and a total equal to their sum."""
+    """Data carries the five queue counts and a total equal to their sum."""
     data = (await review()).to_dict()["data"]
     assert "matches_pending" in data
     assert "categorize_pending" in data
     assert "account_links_pending" in data
     assert "merchant_links_pending" in data
+    assert "security_links_pending" in data
     assert "total" in data
     assert isinstance(data["account_links_pending"], int)
     assert isinstance(data["merchant_links_pending"], int)
+    assert isinstance(data["security_links_pending"], int)
     assert data["total"] == (
         data["matches_pending"]
         + data["categorize_pending"]
         + data["account_links_pending"]
         + data["merchant_links_pending"]
+        + data["security_links_pending"]
     )
 
 
 @pytest.mark.unit
 async def test_review_actions_mention_drill_down_queues(mcp_db: object) -> None:
-    """actions[] guides the agent to all four queues, each with a drill-down tool.
+    """actions[] guides the agent to all five MCP-drillable queues, each with a drill-down tool.
 
-    All four review queues now have dedicated drill-down tools:
+    All five review queues have dedicated drill-down tools:
     - transactions_matches_pending for the matches queue
     - transactions_categorize_pending for the categorize queue
     - accounts_links_pending for the account-links queue
     - merchants_links_pending for the merchant-links queue (added in M1T)
+    - investments_securities_links_pending for the security-links queue
+      (added M1G.4)
     """
     parsed = (await review()).to_dict()
     actions_text = " ".join(parsed["actions"])
@@ -59,6 +64,7 @@ async def test_review_actions_mention_drill_down_queues(mcp_db: object) -> None:
     assert "transactions_categorize_pending" in actions_text
     assert "accounts_links_pending" in actions_text
     assert "merchants_links_pending" in actions_text
+    assert "investments_securities_links_pending" in actions_text
 
 
 @pytest.mark.unit
@@ -69,6 +75,7 @@ async def test_transactions_review_alias_returns_same_shape(mcp_db: object) -> N
     assert "categorize_pending" in data
     assert "account_links_pending" in data
     assert "merchant_links_pending" in data
+    assert "security_links_pending" in data
     assert "total" in data
 
 

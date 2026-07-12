@@ -12,17 +12,12 @@ from __future__ import annotations
 import importlib.util
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 
 import pandas as pd
 
-_MODEL_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "sqlmesh"
-    / "models"
-    / "core"
-    / "fct_balances_daily.py"
-)
+from moneybin.database import SQLMESH_ROOT
+
+_MODEL_PATH = SQLMESH_ROOT / "models" / "core" / "fct_balances_daily.py"
 _spec = importlib.util.spec_from_file_location("fct_balances_daily_mod", _MODEL_PATH)
 assert _spec is not None and _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)

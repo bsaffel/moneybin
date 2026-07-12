@@ -24,11 +24,11 @@ Related specs:
 
 ### Invariant execution: SQLMesh named audits + DoctorService extras
 
-Row-level invariants are defined as SQLMesh standalone named audits in `sqlmesh/audits/`. Each audit is a `SELECT` query that returns violation rows — SQLMesh's convention. `DoctorService` auto-discovers all named audits via `ctx.standalone_audits`, renders each query with `audit.render_audit_query().sql(dialect="duckdb")`, and executes it against the open database connection.
+Row-level invariants are defined as SQLMesh standalone named audits in `src/moneybin/sqlmesh/audits/`. Each audit is a `SELECT` query that returns violation rows — SQLMesh's convention. `DoctorService` auto-discovers all named audits via `ctx.standalone_audits`, renders each query with `audit.render_audit_query().sql(dialect="duckdb")`, and executes it against the open database connection.
 
 Two additional checks that don't fit the "return violation rows" model (percentage thresholds, cross-layer counts) live as direct SQL in `DoctorService`.
 
-Adding a new invariant in the future: add a `.sql` file to `sqlmesh/audits/` — `DoctorService` picks it up automatically with no Python changes.
+Adding a new invariant in the future: add a `.sql` file to `src/moneybin/sqlmesh/audits/` — `DoctorService` picks it up automatically with no Python changes.
 
 ### Connection model
 
@@ -41,16 +41,38 @@ Adding a new invariant in the future: add a `.sql` file to `sqlmesh/audits/` —
 | Audit file | Name | What it checks | Fails when |
 |---|---|---|---|
 | `fct_transactions_fk_integrity.sql` | `fct_transactions_fk_integrity` | Every `fct_transactions.account_id` resolves to `dim_accounts` | Any orphaned account_id |
-| `fct_transactions_sign_convention.sql` | `fct_transactions_sign_convention` | No amount is 0 or NULL | Any zero or NULL amount |
+| `fct_transactions_sign_convention.sql` | `fct_transactions_sign_convention` | No amount is NULL (zero is a modeled 'zero' direction, not a violation) | Any NULL amount |
 | `bridge_transfers_balanced.sql` | `bridge_transfers_balanced` | Every transfer pair sums to within $0.01 | Any pair with `ABS(SUM(amount)) > 0.01` |
+| `fct_investment_transactions_fk_integrity.sql` | `fct_investment_transactions_fk_integrity` | Every `fct_investment_transactions.account_id` resolves to `dim_accounts` | Any orphaned account_id |
+| `fct_investment_transactions_sign_convention.sql` | `fct_investment_transactions_sign_convention` | The investment ledger obeys the accounting sign convention | Any violation of the convention |
+| `fct_investment_transactions_uniqueness.sql` | `fct_investment_transactions_uniqueness` | Every `investment_transaction_id` appears once | Any duplicate id |
 
-Each audit returns the offending `transaction_id` (or `debit_transaction_id` for transfers) as the first column. `DoctorService` uses this column for `--verbose` affected-ID output.
+Each audit returns the offending `transaction_id` (or `debit_transaction_id` for transfers, `investment_transaction_id` for the investment ledger) as the first column. `DoctorService` uses this column for `--verbose` affected-ID output.
+
+**Every audit file must declare `standalone TRUE`.** Without it SQLMesh loads the file as a *generic* `ModelAudit` that only executes when a model names it in an `audits (...)` property — so it silently never runs, and the suite stays green while the invariant goes unchecked. Standalone audits are also structurally non-blocking (a failure warns rather than raising), so a passing test run is never evidence that an audit holds.
 
 ### DoctorService extras (hardcoded)
 
 **`dedup_reconciliation`** — Cross-layer count check that every imported row which disappears between the unioned staging layer and the core fact table is explained by recorded dedup decisions. The invariant is `raw_total - core_count == dedup_absorbed`, where `raw_total` is the row count of `prep.int_transactions__unioned`, `core_count` is the distinct `transaction_id` count of `core.fct_transactions`, and `dedup_absorbed` is `Σ(group_size - 1)` over every connected component in `prep.int_transactions__matched` — computed as `COUNT(*) - COUNT(DISTINCT match_group_id)` over rows where `match_group_id IS NOT NULL`. This formula is exact for any group topology: N-way merges, cyclic accepted-edge sets (e.g. three edges over a 3-node group still absorbs only 2 rows), and the common 1:1 pair case. `fail` when the counts disagree (a leak: rows vanished without a decision; or an un-applied match: a recorded decision didn't collapse its rows); `skipped` before the first transform (prep/core views absent). See `_run_dedup_reconciliation()` in `src/moneybin/services/doctor_service.py`.
 
 **`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
+
+### Investment reconciliation (M1G.4)
+
+Eight checks covering the Plaid investment ledger. They split into two families: **refusals surfaced** (staging declined to guess and filed the row for review — these must be visible, not silently dropped) and **divergence from the broker** (MoneyBin's derived position disagrees with what the provider reports).
+
+| Name | What it checks |
+|---|---|
+| `investment_staging_rejects` | Rows staging routed to review rather than the ledger. Three reasons today — `split_underivable`, `transfer_direction_underivable`, `unmapped_subtype` — all deliberate refusals. The query is deliberately open (`review_reason IS NOT NULL`), so a new reason added upstream surfaces without a code change. |
+| `investment_opening_lot_review` | Positions the opening-lot bootstrap refused to synthesize: short/non-positive quantity, NULL basis, and `sold_out_prewindow` gaps it declined to reconstruct rather than guess. |
+| `investment_unmodeled_legs` | Legs in the ledger stripped of lot-affecting quantity (option and short legs MoneyBin models no book for). An assignment that exercises away a covered-call position disposes of real shares; the held lot never closes. |
+| `investment_holdings_divergence` | Engine-derived held lots that disagree with the broker's newest snapshot, on positions MoneyBin *does* hold a lot for. |
+| `investment_unreported_holdings` | Broker-reported positions with no `core.dim_holdings` row — the opposite direction, and the more dangerous one. |
+| `investment_phantom_holdings` | Open lots MoneyBin holds that the broker's newest snapshot no longer reports. Keyed on the per-pull holdings-snapshot receipt (below), not on the presence of holdings rows. |
+| `investment_unresolved_securities` | Ledger rows whose provider security key never resolved to a canonical security. These are dropped from cost basis entirely, so they must not stay silent. |
+| `investment_source_overlap` | Accounts carrying both manual and Plaid investment history, where double-counting is possible. |
+
+**The phantom check depends on `raw.plaid_investment_holdings_snapshots`.** Holdings *rows* cannot distinguish "this item reported and holds nothing" from "this item never reported" — an item whose pull returns an empty holdings array writes no rows at all, so a newest-snapshot join keyed on those rows silently keeps the last non-empty snapshot from an earlier pull. That reads a fully-liquidated broker as still holding its old positions: the largest possible net-worth overstatement, and precisely the phantom this check exists to catch. The receipt is written per (item, pull) **even when zero positions come back**, and both `core.dim_holdings` and this check derive "newest snapshot" from it.
 
 ### Dropped invariant
 
@@ -147,15 +169,15 @@ Always runs with `verbose=False` — affected IDs are omitted (agents can query 
 
 **`dedup_reconciliation` SQL:** Three queries inside one `try/except` — `raw_total` from `prep.int_transactions__unioned`, `core_count` as `COUNT(DISTINCT transaction_id)` from `core.fct_transactions`, and `dedup_absorbed` as `COUNT(*) - COUNT(DISTINCT match_group_id)` from `prep.int_transactions__matched` where `match_group_id IS NOT NULL`. This equals `Σ(group_size - 1)` over every connected component and is exact for any group topology including N-way merges and cyclic accepted-edge sets. All three queries are wrapped in one `try/except` so the invariant reports `skipped` (not errored) before the first transform, when the `prep`/`core` views don't yet exist.
 
-**Audit SQL column contract:** Each named audit's SELECT must return the violation entity's ID as the first column (e.g., `transaction_id`, `debit_transaction_id`). `DoctorService` uses `row[0]` for `affected_ids` — this is a convention, not schema-enforced. Document it in `sqlmesh/audits/README.md` or a comment in `DoctorService`.
+**Audit SQL column contract:** Each named audit's SELECT must return the violation entity's ID as the first column (e.g., `transaction_id`, `debit_transaction_id`). `DoctorService` uses `row[0]` for `affected_ids` — this is a convention, not schema-enforced. Document it in `src/moneybin/sqlmesh/audits/README.md` or a comment in `DoctorService`.
 
 **SQLMesh context in tests:** Unit tests mock `sqlmesh_context()` and inject pre-rendered SQL to avoid loading the full SQLMesh project. E2E tests use a real profile with a test database.
 
 ## Files to Create
 
-- `sqlmesh/audits/fct_transactions_fk_integrity.sql`
-- `sqlmesh/audits/fct_transactions_sign_convention.sql`
-- `sqlmesh/audits/bridge_transfers_balanced.sql`
+- `src/moneybin/sqlmesh/audits/fct_transactions_fk_integrity.sql`
+- `src/moneybin/sqlmesh/audits/fct_transactions_sign_convention.sql`
+- `src/moneybin/sqlmesh/audits/bridge_transfers_balanced.sql`
 - `src/moneybin/services/doctor_service.py` — `InvariantResult`, `DoctorService`
 - `src/moneybin/cli/commands/system/doctor.py` — Typer command under the `system` group
 - `tests/moneybin/test_services/test_doctor_service.py`

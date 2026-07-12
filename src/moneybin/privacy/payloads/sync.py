@@ -19,7 +19,7 @@ Tier derivation summary:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Annotated
 
 from moneybin.privacy.taxonomy import DataClass
@@ -48,7 +48,16 @@ class SyncPullInstitutionRow:
 
 @dataclass(frozen=True, slots=True)
 class SyncPullPayload:
-    """Payload for ``sync_pull`` — pull result envelope."""
+    """Payload for ``sync_pull`` — pull result envelope.
+
+    The investment fields mirror ``PullResult`` one-for-one: the CLI reports
+    them (and exits non-zero on ``security_resolution_error``), so MCP must
+    report the same outcome or the agent calls a partially-failed pull a clean
+    success. A failed security resolution is not cosmetic — there is no
+    source-native fallback for ``security_id`` and ``cost_basis.py`` skips
+    every NULL-security event, so the pull's buys/sells silently vanish from
+    lots and realized gains.
+    """
 
     job_id: Annotated[str, DataClass.RECORD_ID]
     transactions_loaded: Annotated[int, DataClass.AGGREGATE]
@@ -59,6 +68,21 @@ class SyncPullPayload:
     transforms_applied: Annotated[bool, DataClass.TXN_TYPE]
     transforms_duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
+    securities_loaded: Annotated[int, DataClass.AGGREGATE] = 0
+    investment_transactions_loaded: Annotated[int, DataClass.AGGREGATE] = 0
+    holdings_loaded: Annotated[int, DataClass.AGGREGATE] = 0
+    holding_lots_loaded: Annotated[int, DataClass.AGGREGATE] = 0
+    opening_bootstrap_rows: Annotated[int, DataClass.AGGREGATE] = 0
+    # Canonical account ids carrying BOTH manual and Plaid investment history —
+    # lots and gains double-count until one source is chosen per account.
+    investment_source_overlap_accounts: Annotated[list[str], DataClass.RECORD_ID] = (
+        field(default_factory=list)
+    )
+    # Per-outcome counts: adopted / auto_bound / minted / proposed / pending.
+    security_resolution: Annotated[dict[str, int], DataClass.AGGREGATE] = field(
+        default_factory=dict
+    )
+    security_resolution_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------

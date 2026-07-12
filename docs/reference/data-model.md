@@ -3,7 +3,7 @@
 
 The user-facing data model. Tables in `core.*`, `reports.*`, `app.*`, `meta.*`, and `seeds.*` are the surfaces consumers (CLI, MCP, your own SQL) read from. This page covers each table's grain, key columns, and what they mean. For the pipeline that fills them, see [`docs/guides/data-pipeline.md`](../guides/data-pipeline.md).
 
-Schema is stable but not yet frozen — see [`docs/architecture.md`](../architecture.md) for the pre-v1 evolution posture. Tables here are verified against their SQLMesh model in [`sqlmesh/models/`](../../sqlmesh/models/) (`core.*`, `reports.*`, `meta.*`, `seeds.*`) or DDL in [`src/moneybin/sql/schema/`](../../src/moneybin/sql/schema/) (`app.*`, `raw.*`); per-table file links are omitted since file names match table names.
+Schema is stable but not yet frozen — see [`docs/architecture.md`](../architecture.md) for the pre-v1 evolution posture. Tables here are verified against their SQLMesh model in [`src/moneybin/sqlmesh/models/`](../../src/moneybin/sqlmesh/models/) (`core.*`, `reports.*`, `meta.*`, `seeds.*`) or DDL in [`src/moneybin/sql/schema/`](../../src/moneybin/sql/schema/) (`app.*`, `raw.*`); per-table file links are omitted since file names match table names.
 
 ## Schema layers
 
@@ -581,8 +581,8 @@ MCP-visible app tables are tagged `audience="interface"` in [`src/moneybin/table
 
 | Table | Grain | Backing |
 |---|---|---|
-| `seeds.categories` | One row per `category_id` | CSV-backed (`sqlmesh/models/seeds/categories.csv`). 16 primary categories with ~100 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `class`. SQLMesh detects CSV changes automatically. |
-| `seeds.category_source_map` | One row per `(source_type, source_category_code)` | CSV-backed (`sqlmesh/models/seeds/category_source_map.csv`). Default provider-code → `category_id` mappings (Plaid PFC). Surfaced via `core.bridge_category_source_map`. |
+| `seeds.categories` | One row per `category_id` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/categories.csv`). 16 primary categories with ~100 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `class`. SQLMesh detects CSV changes automatically. |
+| `seeds.category_source_map` | One row per `(source_type, source_category_code)` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/category_source_map.csv`). Default provider-code → `category_id` mappings (Plaid PFC). Surfaced via `core.bridge_category_source_map`. |
 
 `seeds.categories` is surfaced via `core.dim_categories` alongside `app.user_categories`; `seeds.category_source_map` via `core.bridge_category_source_map` alongside `app.category_source_map`.
 

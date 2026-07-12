@@ -10,8 +10,9 @@ def _make_review_service(
     categorize: int = 0,
     account_links: int = 0,
     merchant_links: int = 0,
+    security_links: int = 0,
 ) -> ReviewService:
-    """Factory that wires four mock services into a ReviewService."""
+    """Factory that wires five mock services into a ReviewService."""
     match_service = MagicMock()
     match_service.count_pending.return_value = matches
     cat_service = MagicMock()
@@ -20,12 +21,15 @@ def _make_review_service(
     links_service.count_pending.return_value = account_links
     merchant_links_service = MagicMock()
     merchant_links_service.count_pending.return_value = merchant_links
+    security_links_service = MagicMock()
+    security_links_service.count_pending.return_value = security_links
 
     return ReviewService(
         match_service=match_service,
         categorize_service=cat_service,
         account_links_service=links_service,
         merchant_links_service=merchant_links_service,
+        security_links_service=security_links_service,
     )
 
 
@@ -40,6 +44,7 @@ def test_review_status_counts_all_queues() -> None:
     assert status.categorize_pending == 12
     assert status.account_links_pending == 0
     assert status.merchant_links_pending == 0
+    assert status.security_links_pending == 0
     assert status.total == 15
 
 
@@ -52,6 +57,7 @@ def test_review_status_zero_queues() -> None:
     assert status.categorize_pending == 0
     assert status.account_links_pending == 0
     assert status.merchant_links_pending == 0
+    assert status.security_links_pending == 0
 
 
 def test_review_status_delegates_to_services() -> None:
@@ -64,12 +70,15 @@ def test_review_status_delegates_to_services() -> None:
     links_service.count_pending.return_value = 2
     merchant_links_service = MagicMock()
     merchant_links_service.count_pending.return_value = 1
+    security_links_service = MagicMock()
+    security_links_service.count_pending.return_value = 6
 
     svc = ReviewService(
         match_service=match_service,
         categorize_service=cat_service,
         account_links_service=links_service,
         merchant_links_service=merchant_links_service,
+        security_links_service=security_links_service,
     )
     svc.status()
 
@@ -77,6 +86,7 @@ def test_review_status_delegates_to_services() -> None:
     cat_service.count_uncategorized.assert_called_once()
     links_service.count_pending.assert_called_once()
     merchant_links_service.count_pending.assert_called_once()
+    security_links_service.count_pending.assert_called_once()
 
 
 def test_review_status_includes_account_links_pending() -> None:
@@ -97,11 +107,20 @@ def test_review_status_includes_merchant_links_pending() -> None:
     assert status.total == 7
 
 
-def test_review_status_total_sums_all_four_queues() -> None:
-    """Total = matches_pending + categorize_pending + account_links_pending + merchant_links_pending."""
+def test_review_status_includes_security_links_pending() -> None:
+    """security_links_pending is counted and included in total."""
+    svc = _make_review_service(security_links=3)
+    status = svc.status()
+
+    assert status.security_links_pending == 3
+    assert status.total == 3
+
+
+def test_review_status_total_sums_all_five_queues() -> None:
+    """Total sums matches + categorize + account_links + merchant_links + security_links pending."""
     svc = _make_review_service(
-        matches=2, categorize=3, account_links=5, merchant_links=4
+        matches=2, categorize=3, account_links=5, merchant_links=4, security_links=6
     )
     status = svc.status()
 
-    assert status.total == 14  # 2 + 3 + 5 + 4
+    assert status.total == 20  # 2 + 3 + 5 + 4 + 6

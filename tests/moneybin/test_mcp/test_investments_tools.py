@@ -226,6 +226,9 @@ class TestRegistration:
             "investments_record",
             "investments_securities_set",
             "investments_lots_select",
+            "investments_securities_links_pending",
+            "investments_securities_links_set",
+            "investments_securities_links_history",
         }
 
 

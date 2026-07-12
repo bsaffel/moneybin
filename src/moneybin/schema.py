@@ -96,6 +96,8 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_securities.sql",
     "raw_manual_investment_transactions.sql",
     "app_lot_selections.sql",
+    "app_security_links.sql",
+    "app_security_link_decisions.sql",
 ]
 
 

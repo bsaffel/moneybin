@@ -67,6 +67,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **`moneybin --version`** prints the installed MoneyBin version. (#316)
+- **PyPI release pipeline with Trusted Publishing.** A tagged release builds the
+  wheel and publishes it to PyPI over OIDC Trusted Publishing (no stored token),
+  gated on a clean-install smoke test across macOS and Linux on Python 3.12 and
+  3.13 and a post-publish check that installs MoneyBin from the real index. (#316)
 - **`moneybin demo` evaluator preset (M3A).** One command sets up an isolated
   `demo` profile, generates synthetic data (`--persona
   basic`/`family`/`freelancer`), runs the full pipeline — match, and categorization
@@ -77,6 +82,39 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   never be pointed at a real one), and re-running rebuilds that profile's database
   from scratch and regenerates (deterministic by default); `--yes` for
   non-interactive use. (#310)
+- **Plaid Investments sync (M1G.4).** Securities, investment transactions, and
+  dated holdings snapshots (with per-lot tax data) now ride the existing
+  `sync pull` job into five new `raw.plaid_*` tables and flow into the
+  investment ledger — the shipped cost-basis engine derives lots, realized
+  gains, and holdings with no engine changes. Security identity resolves
+  through an adopt-or-mint ladder (`SecurityResolver`): adopt an existing
+  binding, auto-bind on an unambiguous strong identifier (CUSIP/ISIN/exact
+  ticker), or refuse to merge on any ambiguity — a stripped-ticker hit, an
+  identifier tie, or a fuzzy name match mints a provisional security and
+  files one pending merge decision per candidate for review
+  (`investments securities links pending/set/history` on CLI and MCP, also
+  surfaced in the `review` sweep and `system_status`). Accepting a merge
+  fuses two instruments' tax lots, so it always requires a human confirm —
+  over MCP the accept is gated behind an elicitation naming both securities,
+  and a client that cannot elicit is directed to the CLI rather than allowed
+  to proceed. An opening-lot
+  bootstrap seeds pre-window positions from the first holdings snapshot so a
+  long-held position doesn't realize a phantom oversold gain on its first
+  Plaid-reported sale. `system doctor` gains eight investment reconciliation
+  checks: staging rows held for review (splits, underivable transfer
+  directions, unmapped subtypes),
+  opening-lot-bootstrap gaps, unmodeled short/option legs,
+  holdings-vs-ledger divergence, manual-and-Plaid source overlap, unresolved
+  securities, and positions the broker or the ledger reports that the other
+  side doesn't. A per-pull holdings-snapshot receipt records that an item
+  reported even when it returns zero positions, so a fully-liquidated broker
+  is visible as liquidated rather than read as still holding its last
+  reported positions. Three
+  behaviors ship a conservative default pending Plaid Sandbox golden
+  validation: reinvest/corporate-action pairing (`event_group_id`) is not yet
+  linked, fee inclusion in `amount` is assumed (with a drift guard), and
+  every stock split routes to manual review instead of auto-deriving a
+  multiplier. (#318)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an
   investment-transaction ledger (`investments add` — buy, sell, reinvest,
@@ -294,17 +332,35 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   previously folded merchant-mapping writes into `by_rule`, so the count
   didn't reconcile with the rules list. The persisted `categorized_by` value
   is unchanged — this is a reporting-only split.
+- **Outside a repo checkout, `moneybin mcp install` now writes a config that runs
+  the published package, pinned to the installed version.** The generated client
+  entry uses `uv tool run --from moneybin==X.Y.Z` instead of pointing at a local
+  checkout. The pin is deliberate: MoneyBin runs forward-only schema migrations
+  when it opens your database, so an unpinned config would let a newly released
+  version install itself on the client's next restart and migrate your encrypted
+  ledger with no action from you. Re-run `moneybin mcp install` to move to a newer
+  version. (#316)
 - **MCP client guide corrected against what the clients actually do.** The Claude
   Desktop section now leads with `.mcpb` desktop extensions as the vendor-blessed
   path (config-file JSON is legacy-but-supported; MoneyBin's own bundle is still
   M3B), and documents two failures that look like bugs but aren't: Cowork's *remote*
   sessions can never see a local MCP server, and managed-org policy flags
   (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`) can disable local MCP
-  outright. The Windsurf section now warns that **MoneyBin's 102 tools exceed
+  outright. The Windsurf section now warns that **MoneyBin's 105 tools exceed
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
   dropped, so users must disable some by hand. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
   our surface includes write tools). (#315)
+- **Accepting a link merge now requires a human confirm on every surface.** The
+  account, merchant, and security link tools (`accounts_links_set`,
+  `merchants_links_set`, `investments_securities_links_set`) gate the accept
+  branch behind an MCP elicitation naming both entities being fused; a client
+  that cannot elicit is directed to the CLI rather than allowed to proceed.
+  These proposals are raised precisely *because* identity resolution could not
+  bind unambiguously, so accepting one is never a decision an agent should make
+  alone. Accept and reject are now explicit rather than inferred from whether a
+  target id was supplied. (#318)
+
 - **`core.dim_categories` gains an accounting `class` (M1V).** Every category
   now carries `class` (`income` | `expense` | `transfer` | `debt`), assigned
   at curation time for seed categories and defaulting to `expense` for user
@@ -392,6 +448,13 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   key is ignored).
 
 ### Fixed
+- **An installed MoneyBin could not create a profile or run a transform.** The
+  built wheel shipped none of the SQL schema, migrations, SQLMesh models, or
+  synthetic demo data it needs at runtime — the `package-data` globs pointed
+  outside the package directory, which setuptools silently ignores. The SQLMesh
+  project now lives inside the package (`src/moneybin/sqlmesh/`), every runtime
+  resource ships in the wheel, and the packaged contents are verified against the
+  real built wheel. (#316)
 - **PDF statements with no ruled table no longer import zero transactions.**
   Recipe derivation picked its transaction table from `pdfplumber`'s table
   detection, which only fires on *drawn ruling lines* — while the recipe
@@ -492,6 +555,38 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   an existing database is never touched or rolled back) and reports that it
   completed rather than created it. `ProfileExistsError` now means "a *registered*
   profile exists", so re-creating a real profile still refuses. (#315)
+- **An empty target no longer silently rejects a link-merge proposal forever.**
+  On the account, merchant, and security link tools, an empty-string target id
+  fell through a truthiness test and was recorded as a permanent REJECT, which
+  identity resolution never re-proposes — so a malformed argument could
+  permanently suppress a correct merge with no error to the user. Empty targets
+  are now an input error. (#318)
+- **Undoing the undo of an accepted link merge no longer fails.**
+  `MerchantLinksRepo.repoint` and `SecurityLinksRepo.repoint` emitted their two
+  audit rows in the reverse of their SQL order, so the undo engine's reverse
+  replay re-inserted the new binding before restoring the old one — tripping the
+  at-most-one-accepted-binding guard on a state the forward path never produces.
+  Every merge redo failed deterministically, with a stack trace rather than a
+  message. (#318)
+- **Reversing a pending review decision no longer silently discards it.**
+  `reverse()` on all four review-queue decision repos (`security_link`,
+  `account_link`, `match`, `merchant_link`) checked only `reversed_at IS
+  NULL`, so calling it on a still-`pending` row dequeued the item from the
+  review queue with no accept or reject ever recorded — defeating the
+  human-review guarantee those queues exist to provide. All four now refuse
+  to reverse anything but an already-decided (`accepted`/`rejected`) row.
+  `SecurityLinksRepo` also gained `repoint()` (replacing an in-place
+  `rebind()`), preserving append-only binding history the same way
+  `MerchantLinksRepo.repoint` already does. (#318)
+- **`moneybin system doctor` now actually runs its SQLMesh invariant
+  checks.** Every audit file under `sqlmesh/audits/` was missing `standalone
+  TRUE`, so SQLMesh loaded them as generic audits — which only run when a
+  model references them in its `audits (...)` property, and none did.
+  `system doctor` had therefore been silently reporting zero SQLMesh
+  invariants since they shipped, and three audits never executed. All
+  audits are now `standalone TRUE` and run on every check; one revived audit
+  (`fct_transactions_sign_convention`) was also corrected to stop flagging
+  legitimate `$0.00` transactions. (#318)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its
@@ -639,6 +734,15 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   is actionable signal for users or agents driving the CLI/MCP.
 
 ### Security
+- **The agent-facing SQL connection can no longer reach remote filesystems.**
+  Since DuckDB 1.4.1, the only supported encrypted-write path is the OpenSSL
+  crypto inside the `httpfs` extension, which DuckDB silently auto-loads on the
+  first encrypted write — leaving a live, unrestricted http/s3 filesystem on
+  every MoneyBin connection, including the read-only handle MCP agents run SQL
+  against, with nothing disabling it. MoneyBin now loads `httpfs` explicitly only
+  where its crypto is needed, disables the HTTP and S3 filesystems on every
+  connection, and locks that configuration on read-only connections so agent SQL
+  cannot re-enable extension loading to pull in another remote filesystem. (#316)
 - **The unauthenticated HTTP MCP transport is now gated behind `--insecure`.**
   `moneybin mcp serve` refuses to start any non-stdio transport (`sse`,
   `streamable-http`) unless `--insecure` is passed, exiting with a usage error

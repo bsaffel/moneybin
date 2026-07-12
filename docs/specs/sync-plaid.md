@@ -302,9 +302,9 @@ No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CS
 | `src/moneybin/sql/schema/raw_plaid_accounts.sql` | DDL for `raw.plaid_accounts` |
 | `src/moneybin/sql/schema/raw_plaid_transactions.sql` | DDL for `raw.plaid_transactions` |
 | `src/moneybin/sql/schema/raw_plaid_balances.sql` | DDL for `raw.plaid_balances` |
-| `sqlmesh/models/prep/stg_plaid__accounts.sql` | Staging view |
-| `sqlmesh/models/prep/stg_plaid__transactions.sql` | Staging view |
-| `sqlmesh/models/prep/stg_plaid__balances.sql` | Staging view |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__accounts.sql` | Staging view |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__transactions.sql` | Staging view |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__balances.sql` | Staging view |
 | `tests/test_plaid_loader.py` | Unit tests for PlaidLoader |
 | `tests/test_stg_plaid.py` | SQL tests for staging views |
 | `tests/fixtures/plaid_sync_response.json` | Golden-file test fixture |
@@ -313,8 +313,8 @@ No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CS
 
 | File | Change |
 |---|---|
-| `sqlmesh/models/core/dim_accounts.sql` | Add `plaid_accounts` CTE + `UNION ALL` |
-| `sqlmesh/models/core/fct_transactions.sql` | Add `plaid_transactions` CTE + `UNION ALL` |
+| `src/moneybin/sqlmesh/models/core/dim_accounts.sql` | Add `plaid_accounts` CTE + `UNION ALL` |
+| `src/moneybin/sqlmesh/models/core/fct_transactions.sql` | Add `plaid_transactions` CTE + `UNION ALL` |
 | `src/moneybin/sql/schema/schema.py` | Register new raw table DDL files |
 
 ### Files created by the umbrella spec (shared infrastructure)

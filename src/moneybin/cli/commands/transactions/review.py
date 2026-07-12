@@ -31,7 +31,14 @@ from ..stubs import _not_implemented
 
 logger = logging.getLogger(__name__)
 
-_VALID_TYPES = {"all", "matches", "categorize", "account-links", "merchant-links"}
+_VALID_TYPES = {
+    "all",
+    "matches",
+    "categorize",
+    "account-links",
+    "merchant-links",
+    "security-links",
+}
 
 
 def review_impl(
@@ -77,7 +84,7 @@ def transactions_review(
     type_: str = typer.Option(
         "all",
         "--type",
-        help="all | matches | categorize | account-links | merchant-links",
+        help="all | matches | categorize | account-links | merchant-links | security-links",
     ),
     status: bool = typer.Option(
         False, "--status", help="Show queue counts only, no interactive loop"
@@ -162,6 +169,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
     from moneybin.services.matching_service import MatchingService
     from moneybin.services.merchant_links_service import MerchantLinksService
     from moneybin.services.review_service import ReviewService
+    from moneybin.services.security_links_service import SecurityLinksService
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
@@ -170,6 +178,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
                 categorize_service=CategorizationService(db),
                 account_links_service=AccountLinksService(db),
                 merchant_links_service=MerchantLinksService(db),
+                security_links_service=SecurityLinksService(db),
             )
             s = review_svc.status()
 
@@ -184,6 +193,7 @@ def _print_status(type_: str, output: OutputFormat) -> None:
                 categorize_pending=s.categorize_pending,
                 account_links_pending=s.account_links_pending,
                 merchant_links_pending=s.merchant_links_pending,
+                security_links_pending=s.security_links_pending,
                 total=s.total,
             )
         elif type_ == "matches":
@@ -192,8 +202,10 @@ def _print_status(type_: str, output: OutputFormat) -> None:
             data = {"categorize_pending": s.categorize_pending}
         elif type_ == "account-links":
             data = {"account_links_pending": s.account_links_pending}
-        else:  # type_ == "merchant-links"
+        elif type_ == "merchant-links":
             data = {"merchant_links_pending": s.merchant_links_pending}
+        else:  # type_ == "security-links"
+            data = {"security_links_pending": s.security_links_pending}
         render_or_json(
             build_envelope(data=data, sensitivity="low"),
             output,
@@ -209,9 +221,12 @@ def _print_status(type_: str, output: OutputFormat) -> None:
         typer.echo(f"Account-link decisions pending: {s.account_links_pending}")
     elif type_ == "merchant-links":
         typer.echo(f"Merchant-link decisions pending: {s.merchant_links_pending}")
+    elif type_ == "security-links":
+        typer.echo(f"Security-link decisions pending: {s.security_links_pending}")
     else:
         typer.echo(f"Matches pending: {s.matches_pending}")
         typer.echo(f"Uncategorized transactions: {s.categorize_pending}")
         typer.echo(f"Account-link decisions pending: {s.account_links_pending}")
         typer.echo(f"Merchant-link decisions pending: {s.merchant_links_pending}")
+        typer.echo(f"Security-link decisions pending: {s.security_links_pending}")
         typer.echo(f"Total: {s.total}")

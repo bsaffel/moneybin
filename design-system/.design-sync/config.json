@@ -10,6 +10,7 @@
   "docsMap": {
     "Button": "components/core/Button.prompt.md",
     "Chip": "components/core/Chip.prompt.md",
+    "Icon": "components/core/Icon.prompt.md",
     "Amount": "components/data/Amount.prompt.md",
     "WidgetCard": "components/data/WidgetCard.prompt.md",
     "VaultStatusBar": "components/chrome/VaultStatusBar.prompt.md",

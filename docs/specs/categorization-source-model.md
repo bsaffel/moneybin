@@ -236,7 +236,7 @@ A new categorizer in `services/categorization/`, wired into `categorize_pending`
 `category_confidence` for uncategorized transactions.
 **Joins:** `core.dim_categories` on `plaid_detailed = category_detailed` → yields
 `category_id`, `category`, `subcategory` (the seed
-`sqlmesh/models/seeds/categories.csv` already carries subcategory).
+`src/moneybin/sqlmesh/models/seeds/categories.csv` already carries subcategory).
 
 > **As built:** the `plaid_detailed` join was replaced by a reverse lookup
 > against `core.bridge_category_source_map` (M1V) keyed on **both** the

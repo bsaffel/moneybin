@@ -29,6 +29,11 @@ from moneybin.tables import (
     MANUAL_INVESTMENT_TRANSACTIONS,
     MERCHANTS,
     OFX_TRANSACTIONS,
+    PLAID_INVESTMENT_HOLDING_LOTS,
+    PLAID_INVESTMENT_HOLDINGS,
+    PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
+    PLAID_INVESTMENT_TRANSACTIONS,
+    PLAID_SECURITIES,
     REPORTS_BALANCE_DRIFT,
     REPORTS_CASH_FLOW,
     REPORTS_LARGE_TRANSACTIONS,
@@ -38,6 +43,9 @@ from moneybin.tables import (
     REPORTS_SPENDING_TREND,
     REPORTS_UNCATEGORIZED_QUEUE,
     SECURITIES,
+    SECURITY_LINK_DECISIONS,
+    SECURITY_LINKS,
+    SEED_EXCHANGE_MIC_MAP,
     TRANSACTION_CATEGORIES,
     TRANSACTION_NOTES,
     TRANSACTION_SPLITS,
@@ -124,6 +132,24 @@ def test_investment_table_refs() -> None:
     assert FCT_INVESTMENT_LOTS.full_name == "core.fct_investment_lots"
     assert FCT_REALIZED_GAINS.full_name == "core.fct_realized_gains"
     assert DIM_HOLDINGS.full_name == "core.dim_holdings"
+    # M1G.4 Plaid investment sync raw tables
+    assert PLAID_SECURITIES.full_name == "raw.plaid_securities"
+    assert (
+        PLAID_INVESTMENT_TRANSACTIONS.full_name == "raw.plaid_investment_transactions"
+    )
+    assert PLAID_INVESTMENT_HOLDINGS.full_name == "raw.plaid_investment_holdings"
+    assert (
+        PLAID_INVESTMENT_HOLDING_LOTS.full_name == "raw.plaid_investment_holding_lots"
+    )
+    assert (
+        PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name
+        == "raw.plaid_investment_holdings_snapshots"
+    )
+    # M1G.4 Plaid investment sync app tables (placeholders for later schema creation)
+    assert SECURITY_LINKS.full_name == "app.security_links"
+    assert SECURITY_LINK_DECISIONS.full_name == "app.security_link_decisions"
+    # M1G.4 Seed table for MIC normalization
+    assert SEED_EXCHANGE_MIC_MAP.full_name == "seeds.exchange_mic_map"
     # The five core investment models are audience="interface" (SQLMesh models +
     # schema-catalog examples have landed, satisfying the INTERFACE_TABLES live
     # catalog contract). app.* and raw.* investment tables stay internal —

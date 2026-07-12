@@ -538,7 +538,7 @@ List pending account-link decisions grouped by provisional account.
 
 - **Sensitivity:** `medium` — surfaces account `display_name` (classified `USER_NOTE`, matching `accounts_summary`/`accounts_get`), so the proposal labels sit behind the same consent bar; opaque IDs, signal strings, and confidence scores otherwise. Never surfaces `ref_value` (which can be a full account number). Without consent the response degrades to counts.
 - **Unique parameters:** None.
-- **Behavior:** Returns all provisional accounts that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_account_id`, `candidate_display_name`, `confidence`, and `signal`. Use `accounts_links_set` with the candidate's `account_id` as `target_account_id` to merge, or `null` to standalone-reject.
+- **Behavior:** Returns all provisional accounts that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_account_id`, `candidate_display_name`, `confidence`, and `signal`. Use `accounts_links_set(decision_id, action="accept", target_account_id=<candidate_account_id>)` to merge (the user is prompted to confirm) or `action="reject"` to keep the provisional account standalone.
 - **Service:** `AccountLinksService.pending()` + `AccountLinksService.count_pending()`
 - **CLI:** `moneybin accounts links pending`
 
@@ -547,9 +547,13 @@ List pending account-link decisions grouped by provisional account.
 Accept (merge) or standalone-reject one pending account-link decision.
 
 - **Sensitivity:** `low`
-- **Unique parameters:** `decision_id: str` (required); `target_account_id: str | None` (required — no Python default; pass the candidate's `account_id` to merge, `null` to standalone-reject). The absence of a default prevents accidental rejection when the argument is omitted.
-- **Mutation surface:** writes `app.account_links` and `app.account_link_decisions`. Revert via `system_audit_undo`.
-- **Service:** `AccountLinksService.set()`
+- **Unique parameters:** `decision_id: str` (required); `action: "accept" | "reject"` (required); `target_account_id: str | None = None` (required with `action="accept"` — the decision's own `candidate_account_id`; invalid with `action="reject"`).
+- **Behavior:** Accept/reject is **explicit** in `action` — never inferred from the truthiness of `target_account_id` (an empty-string target from a malformed agent call must not become a permanent reject that suppresses a correct merge proposal forever; a rejected proposal is never re-proposed). `action="accept"` requires `target_account_id` = the decision's own `candidate_account_id` (confirming safety check; `MUTATION_INVALID_INPUT` on mismatch, on an empty target, or on a missing one) **and** explicit human agreement through an MCP elicitation → MERGE (re-points every accepted source reference from the provisional onto the survivor; auto-rejects every other pending decision touching the provisional). `action="reject"` (no target; passing one raises `MUTATION_INVALID_INPUT`) → STANDALONE-REJECT (rejects every pending decision for the provisional account; it stays its own canonical account).
+- **Accept is gated by an MCP elicitation; there is no agent self-accept.** Same rule and same shared helper as `investments_securities_links_set` (§5d): a pending decision is by construction a weak inference — the resolver proposes a merge *only* when it cannot bind unambiguously — and a weak inference is "never eligible for agent self-accept, regardless of confidence score" (`.claude/rules/design-principles.md`, "Magic stays visible"). Accepting fuses two accounts' transaction histories and balances, so a wrong accept corrupts both the merged ledger and net worth. The confirmation names **both** accounts (id + display name) and the weak signal + confidence the resolver fired on. The confirming safety check is applied *before* the prompt, so a doomed merge never costs the user a confirmation. Reject stays agent-callable without a confirm — it is cheap and reversible.
+- **Confirmation contract:** three paths, no fourth. **Accepted elicitation** → merge, `decided_by="user"`. **Declined / cancelled** → nothing written, decision stays `pending`, `MUTATION_CONFIRMATION_REQUIRED`. **Client cannot elicit / no active session** → nothing written, `MUTATION_CONFIRMATION_REQUIRED` whose `hint` carries the CLI command (`moneybin accounts links set <id> --into <account_id>`) and whose `details.reason` is `client_unsupported` / `no_session` / `declined`.
+- **`decided_by` reflects reality:** `"user"` on accept (a human ratified it at the elicitation); `"auto"` on an MCP reject (the agent decided — no human ratified it; the column's CHECK admits only `auto`/`user`, and the MCP channel itself is recorded as `actor="mcp"` in `app.audit_log`). The CLI records `"user"` on both, because a human ran the command.
+- **Mutation surface:** writes `app.account_links` and `app.account_link_decisions`. Reverse with `system_audit_undo(operation_id)`.
+- **Service:** `AccountLinksService.set(decision_id, target_account_id=..., decided_by="user")` on accept / `.set(decision_id, target_account_id=None, decided_by="auto")` on reject
 - **CLI:** `moneybin accounts links set <decision_id> --into <account_id>` (merge) or `--standalone` (standalone-reject)
 
 ### `accounts_links_history`
@@ -590,7 +594,7 @@ These four tools implement the merchant-link review surface: the agent-facing pe
 
 - **Sensitivity:** `medium` — `ref_value` and `candidate_merchant_id` are `RECORD_ID` (low); `provider_merchant_name` and `candidate_canonical_name` are `MERCHANT_NAME` (medium).
 - **Unique parameters:** None.
-- **Behavior:** Returns all provider entity ids that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_merchant_id`, `candidate_canonical_name`, and `confidence`. Use `merchants_links_set` with the candidate's `merchant_id` as `target_merchant_id` to bind, or `null` to reject.
+- **Behavior:** Returns all provider entity ids that have pending merge candidates, each grouped with their candidate list. Each candidate carries `decision_id`, `candidate_merchant_id`, `candidate_canonical_name`, and `confidence`. Use `merchants_links_set(decision_id, action="accept", target_merchant_id=<candidate_merchant_id>)` to bind (the user is prompted to confirm) or `action="reject"` to leave the entity id unbound.
 - **Service:** `MerchantLinksService(db, actor="mcp").pending()` + `.count_pending()`
 - **CLI:** `moneybin merchants links pending`
 - **read_only:** true
@@ -598,10 +602,13 @@ These four tools implement the merchant-link review surface: the agent-facing pe
 ### `merchants_links_set`
 
 - **Sensitivity:** `low` — returns `decision_id` (RECORD_ID) and `status` (TXN_TYPE) only.
-- **Parameters:** `decision_id: str`, `target_merchant_id: str | None`
-- **Behavior:** Accepts (binds) or rejects one pending merchant-link decision. `target_merchant_id` must equal the decision's own `candidate_merchant_id` (a confirming safety check; raises `MUTATION_INVALID_INPUT` on mismatch) → BIND (writes accepted binding in `app.merchant_links`; auto-rejects sibling candidates for the same `(source_type, ref_value)`). `target_merchant_id = null` → REJECT (marks this decision rejected; the declined pairing is not re-proposed, and the resolver mints a new merchant for the id on its next categorization pass).
-- **Mutation surface:** writes `app.merchant_link_decisions` + `app.merchant_links`; revert via `app.audit_log` (no undo tool; deferred to M1L).
-- **Service:** `MerchantLinksService(db, actor="mcp").set(decision_id, target_merchant_id=..., decided_by="user")`
+- **Parameters:** `decision_id: str`, `action: "accept" | "reject"`, `target_merchant_id: str | None = None`
+- **Behavior:** Accept/reject is **explicit** in `action` — never inferred from the truthiness of `target_merchant_id` (an empty-string target from a malformed agent call must not become a permanent reject that suppresses a correct binding forever; a rejected pairing is never re-proposed). `action="accept"` requires `target_merchant_id` = the decision's own `candidate_merchant_id` (confirming safety check; `MUTATION_INVALID_INPUT` on mismatch, on an empty target, or on a missing one) **and** explicit human agreement through an MCP elicitation → BIND (writes the accepted binding in `app.merchant_links`; auto-rejects sibling candidates for the same `(source_type, ref_value)`). `action="reject"` (no target; passing one raises `MUTATION_INVALID_INPUT`) → REJECT (marks this decision and every pending sibling rejected; the declined pairing is not re-proposed, and the resolver mints a new merchant for the id on its next categorization pass).
+- **Accept is gated by an MCP elicitation; there is no agent self-accept.** Same rule and same shared helper as `investments_securities_links_set` (§5d): a decision only reaches this queue because one provider entity id pointed at more than one canonical merchant — a weak inference, "never eligible for agent self-accept, regardless of confidence score" (`.claude/rules/design-principles.md`, "Magic stays visible"). Accepting attributes every transaction carrying that entity id to the chosen merchant, which also drives their categorization. The confirmation names **both** sides (provider entity id + provider name; canonical merchant id + canonical name) and the confidence the resolver could not clear. The confirming safety check is applied *before* the prompt. Reject stays agent-callable without a confirm.
+- **Confirmation contract:** three paths, no fourth. **Accepted elicitation** → bind, `decided_by="user"`. **Declined / cancelled** → nothing written, decision stays `pending`, `MUTATION_CONFIRMATION_REQUIRED`. **Client cannot elicit / no active session** → nothing written, `MUTATION_CONFIRMATION_REQUIRED` whose `hint` carries the CLI command (`moneybin merchants links set <id> --into <merchant_id>`) and whose `details.reason` is `client_unsupported` / `no_session` / `declined`.
+- **`decided_by` reflects reality:** `"user"` on accept (a human ratified it at the elicitation); `"auto"` on an MCP reject (the agent decided — no human ratified it; the column's CHECK admits only `auto`/`user`, and the MCP channel itself is recorded as `actor="mcp"` in `app.audit_log`). The CLI records `"user"` on both, because a human ran the command.
+- **Mutation surface:** writes `app.merchant_link_decisions` + `app.merchant_links`; reverse with `system_audit_undo(operation_id)`.
+- **Service:** `MerchantLinksService(db, actor="mcp").set(decision_id, target_merchant_id=..., decided_by="user")` on accept / `.set(decision_id, target_merchant_id=None, decided_by="auto")` on reject
 - **CLI:** `moneybin merchants links set`
 - **read_only:** false
 
@@ -727,6 +734,50 @@ Set (or clear) the full specific-identification lot selection for a disposal (Sh
 
 ---
 
+## 5d. `investments_securities_links_*` — Security-identity merge review workflow (M1G.4)
+
+**Service class:** `SecurityLinksService`
+
+These three tools implement the security-identity review surface: the agent-facing peer to the `investments securities links` CLI (Task 12), mirroring `merchants_links_*` (§5b). `SecurityResolver` refuses to auto-merge two securities when their identity is ambiguous (an identifier tie, a stripped ticker, a cross-exchange contradiction, a fuzzy name match) — it files one pending decision per candidate instead.
+
+**Accept is gated by an MCP elicitation; there is no agent self-accept.** Every pending decision is by construction a weak inference — the resolver proposes a merge *only* when it cannot decide — and a weak inference is "never eligible for agent self-accept, regardless of confidence score" (`.claude/rules/design-principles.md`, "Magic stays visible"). Accepting fuses two instruments' tax lots: it re-points every accepted provider ref and lot selection onto the survivor and deletes the provisional catalog row, so a wrong accept corrupts cost basis and every later realized gain. `investments_securities_links_set(action="accept")` therefore prompts the user through `ctx.elicit` — naming both securities and the `match_reason` — and merges only on explicit agreement (`.claude/rules/mcp.md`: "Destructive — use a `confirm` parameter or elicitation"). On a client that cannot elicit, or with no active session, accept **hard-fails** with `MUTATION_CONFIRMATION_REQUIRED` naming the CLI equivalent; it never falls through to accepting. A declined or cancelled elicitation likewise writes nothing. The confirming safety check (`into` must equal the decision's own `candidate_security_id`, mirroring `merchants_links_set`'s `target_merchant_id` guard) is applied *before* the prompt, so a doomed merge never costs the user a confirmation. Reject stays agent-callable without a confirm — it is cheap and reversible.
+
+**The elicitation gate is shared, not per-tool.** `moneybin/mcp/elicitation.py` owns the whole pattern — `supports_elicitation` (the capability probe) and `confirm_or_raise` (resolve the session → probe the capability → `ctx.elicit` → raise `MUTATION_CONFIRMATION_REQUIRED` with the CLI equivalent on every ungranted path). All three link-merge accept gates (`investments_securities_links_set`, `accounts_links_set`, `merchants_links_set`) call it, and the first-run profile bootstrap (`mcp/first_run.py`) uses the capability probe. There is one elicitation pattern in the codebase, not one per tool: a new confirm-gated mutation calls `confirm_or_raise` with its own prompt and CLI equivalent, and inherits the contract. The three link tools are deliberately identical in shape — same `action` parameter, same accept gate, same `decided_by` semantics — because they do the same job on three entity types; a defect found in one is a defect in all three.
+
+> **Note:** No dedicated undo variant (`investments_securities_links_undo`) exists — none is needed. `accept_merge` writes its whole cascade under one audited operation, so `system_audit_undo(operation_id)` reverses it atomically; the tool description names that as the recovery path.
+
+### `investments_securities_links_pending`
+
+- **Sensitivity:** derived from payload fields — `ref_value`/`decision_id`/`candidate_security_id` are `RECORD_ID`; `provider_ticker`/`provider_name`/`candidate_ticker`/`candidate_name` are `TXN_TYPE`; `match_reason` is `USER_NOTE`; `confidence` is `AGGREGATE`.
+- **Unique parameters:** None.
+- **Behavior:** Returns all provider refs (`plaid_security_id` or `institution_security_id`) with pending merge-survivor candidates, grouped by ref. Each group carries BOTH sides of the proposed merge — `provider_ticker`/`provider_name` (what's being merged) alongside each candidate's `candidate_ticker`/`candidate_name` (what it would merge into) — and each candidate carries `match_reason` (`identifier_tie`, `exchange_contradiction`, `fuzzy_name`, ...), the field that conveys how risky accepting is. Use `investments_securities_links_set` to decide each group.
+- **Service:** `SecurityLinksService(db, actor="mcp").pending()` + `.count_pending()`
+- **CLI:** `moneybin investments securities links pending`
+- **read_only:** true
+
+### `investments_securities_links_set`
+
+- **Sensitivity:** `low` — returns `decision_id` (RECORD_ID) and `status` (TXN_TYPE) only.
+- **Parameters:** `decision_id: str`, `action: "accept" | "reject"`, `into: str | None = None`
+- **Behavior:** Accept/reject is **explicit** in `action` — never inferred from the truthiness of `into` (an empty-string `into` from a malformed agent call must not become a permanent reject that suppresses a correct merge proposal forever). `action="accept"` requires `into` = the decision's own `candidate_security_id` (confirming safety check; `MUTATION_INVALID_INPUT` on mismatch, on an empty `into`, or on a missing one) **and** explicit human agreement through an MCP elicitation → MERGE (re-points every accepted provider ref and tax lot from the provisional security onto the survivor in one transaction; auto-rejects sibling candidates for the same ref). `action="reject"` (no `into`; passing one raises `MUTATION_INVALID_INPUT`) → REJECT (marks only this decision rejected; sibling candidates for the same provider ref remain pending — unlike `merchants_links_set`'s reject-all, rejecting one security candidate does not answer whether another candidate is the correct match).
+- **Confirmation contract:** three paths, no fourth. **Accepted elicitation** → merge, `decided_by="user"` (a human did decide). **Declined / cancelled** → nothing written, decision stays `pending`, `MUTATION_CONFIRMATION_REQUIRED`. **Client cannot elicit / no active session** → nothing written, `MUTATION_CONFIRMATION_REQUIRED` whose `hint` carries the CLI command (`moneybin investments securities links set <id> --accept --into <security_id>`) and whose `details.reason` is `client_unsupported` / `no_session` / `declined`.
+- **`decided_by` reflects reality:** `"user"` on accept (a human ratified it at the elicitation); `"auto"` on an MCP reject (the agent decided — no human ratified it; the column's CHECK admits only `auto`/`user`, and the MCP channel itself is recorded as `actor="mcp"` in `app.audit_log`). The CLI records `"user"` on both, because a human ran the command.
+- **Mutation surface:** writes `app.security_link_decisions` + `app.security_links` + `app.lot_selections` + `app.securities` (deletes the merged-away provisional row on accept); reverse the whole cascade with `system_audit_undo(operation_id)`.
+- **Service:** `SecurityLinksService(db, actor="mcp").accept_merge(decision_id, into=..., decided_by="user")` / `.reject_merge(decision_id, decided_by="auto")`
+- **CLI:** `moneybin investments securities links set <decision_id> --accept --into <candidate_security_id>` / `--reject`
+- **read_only:** false; **destructive:** true
+
+### `investments_securities_links_history`
+
+- **Sensitivity:** derived from payload fields (same classification as `_pending`, plus `decided_at` as `TIMESTAMP_OBSERVABILITY`).
+- **Parameters:** `limit: int = 50`
+- **Behavior:** Returns all security-link decisions (any status), newest first. Filter by `limit`.
+- **Service:** `SecurityLinksService(db, actor="mcp").history(limit=limit)`
+- **CLI:** `moneybin investments securities links history`
+- **read_only:** true
+
+---
+
 ## 6. `transactions.*` — Transaction-level operations (matches and categorize workflows nested)
 
 **Service class:** `TransactionService` (search, correct, annotate), `MatchService` (matches sub-domain)
@@ -745,12 +796,12 @@ Primary transaction read tool. Returns full transaction records with curation me
 
 ### `review`
 
-Orientation tool: pending counts across **all four** review queues (matches + categorize + account-links + merchant-links).
+Orientation tool: pending counts across **all five** review queues (matches + categorize + account-links + merchant-links + security-links).
 
 - **Sensitivity:** `low` — counts only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, `accounts_links_pending` for account-link decisions, and `merchants_links_pending` for merchant-link decisions.
-- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService, MerchantLinksService).status()`
+- **Behavior:** Returns `{matches_pending: int, categorize_pending: int, account_links_pending: int, merchant_links_pending: int, security_links_pending: int, total: int}` so the agent can answer "what needs my attention?" in one sweep. Drill into `transactions_categorize_pending` for categorization items, `transactions_matches_pending` for match proposals, `accounts_links_pending` for account-link decisions, `merchants_links_pending` for merchant-link decisions, and `investments_securities_links_pending` for security-link decisions (see §5d).
+- **Service:** `ReviewService(MatchingService, CategorizationService, AccountLinksService, MerchantLinksService, SecurityLinksService).status()`
 - **CLI:** `moneybin review`
 
 ### `transactions_review` *(deprecated — removed after one minor release)*
@@ -1361,7 +1412,7 @@ Query recent privacy-log events.
 
 ## 12. `system_*`, `reports_*`, `refresh_run` — Data status, reports projections, and the refresh umbrella
 
-**Service class:** `OverviewService`
+**Service class:** `SystemService`
 
 ### `system_status`
 
@@ -1369,8 +1420,8 @@ Data status dashboard — what data exists, how fresh it is, what's pending acti
 
 - **Sensitivity:** `low` — counts and dates only.
 - **Unique parameters:** None.
-- **Behavior:** Returns `{accounts, transactions, categorization, imports, matching, budgets}` where each section has relevant counts and dates. E.g., `transactions: {total: 4230, date_range: "2024-01 to 2026-04", last_import: "2026-04-15"}`, `categorization: {categorized: 3890, uncategorized: 340, percent: 92}`, `matching: {pending_review: 5}`. This is the tool version of the `moneybin://status` resource with richer detail.
-- **Service:** `OverviewService.status() -> SystemStatus`
+- **Behavior:** Returns `{accounts: {count}, transactions: {count, date_range, last_import_at}, matches: {pending_review}, account_links: {pending_review}, merchant_links: {pending_review}, security_links: {pending_review}, categorization: {uncategorized}, transforms: {pending, last_apply_at}, schema_drift: {tables[], remediation} | null, gsheet: {total_connections, by_status, needs_attention[]}, database_connections: {writers[], readers[]}}`. `security_links` was added M1G.4 Task 12 (2026-07-11), covering the fifth review queue alongside `system status`/`review`. Degrades to a zero-filled envelope with `summary.degraded=true` when a writer holds the database lock — `database_connections` still names the holder in that case (see `DatabaseLockError` recovery). This is the tool version of the `moneybin://status` resource with richer detail.
+- **Service:** `SystemService.status() -> SystemStatus`
 - **CLI:** `moneybin system status`
 
 ### `system_doctor`
@@ -1617,7 +1668,7 @@ Per the MCP exposure principle, sync is fully MCP-exposed except for credential-
 | `sync_link [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
 | `sync_link_status <session_id>` | low | Single-shot check of a link session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
 | `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
-| `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads `raw.plaid_*` and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure). |
+| `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads `raw.plaid_*` and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure) **and the investment outcome the CLI reports**: `securities_loaded`, `investment_transactions_loaded`, `holdings_loaded`, `holding_lots_loaded`, `opening_bootstrap_rows`, `investment_source_overlap_accounts`, `security_resolution` (per-outcome counts: adopted / auto_bound / minted / proposed / pending) and `security_resolution_error`. A pull that soft-failed resolution MUST NOT be reported as a clean success — there is no source-native fallback for `security_id` and `cost_basis.py` skips every NULL-security event, so those buys/sells silently vanish from lots and realized gains. The CLI warns and exits non-zero; MCP has no exit code, so the same signal leads the envelope's `actions[]`. |
 | `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
 
 **CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security-model violation); `sync_rotate_key` — passphrase material through LLM context is a security-model violation.

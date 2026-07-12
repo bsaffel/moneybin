@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -28,6 +28,13 @@ FIXTURE = (
     / "plaid_sync_response.yaml"
 )
 
+INVESTMENTS_FIXTURE = (
+    Path(__file__).parent.parent
+    / "test_extractors"
+    / "fixtures"
+    / "plaid_investments_sync_response.yaml"
+)
+
 
 @pytest.fixture
 def sync_data() -> SyncDataResponse:
@@ -49,6 +56,24 @@ def mock_client(sync_data: SyncDataResponse) -> MagicMock:
         transaction_count=3,
     )
     client.get_data.return_value = sync_data
+    return client
+
+
+@pytest.fixture
+def investments_sync_data() -> SyncDataResponse:
+    with INVESTMENTS_FIXTURE.open() as f:
+        return SyncDataResponse.model_validate(yaml.safe_load(f))
+
+
+@pytest.fixture
+def mock_investments_client(investments_sync_data: SyncDataResponse) -> MagicMock:
+    client = MagicMock()
+    client.trigger_sync.return_value = SyncTriggerResponse(
+        job_id=investments_sync_data.metadata.job_id,
+        status="completed",
+        transaction_count=0,
+    )
+    client.get_data.return_value = investments_sync_data
     return client
 
 
@@ -179,6 +204,162 @@ def test_pull_with_force_passes_reset_cursor(
         provider_item_id=None,
         reset_cursor=True,
     )
+
+
+def test_pull_loads_investments_and_resolves_securities(
+    db: Database,
+    loader: PlaidExtractor,
+    mock_investments_client: MagicMock,
+) -> None:
+    """A pull that carries investment arrays loads them and resolves securities.
+
+    Resolution is a distinct, reviewable stage (R12) — its per-outcome counts
+    must appear in the envelope, not just a bindings side effect.
+    """
+    service = SyncService(client=mock_investments_client, db=db, loader=loader)
+    result = service.pull(refresh=False)
+
+    # Counts from the Task 4 loader (plaid_investments_sync_response.yaml):
+    # 3 distinct provider-scoped securities, 4 investment transactions, 3
+    # holdings — established independently by test_plaid_investments_loader.py.
+    assert result.securities_loaded == 3
+    assert result.investment_transactions_loaded == 4
+    assert result.holdings_loaded == 3
+    bindings = db.execute(
+        "SELECT COUNT(*) FROM app.security_links WHERE status = 'accepted'"
+    ).fetchone()
+    assert bindings is not None and bindings[0] >= 2  # resolver ran post-load
+    # Stage-one (identity) outcomes are first-class in the envelope (R12).
+    # SecurityResolver explicitly coalesces every raw.plaid_securities row
+    # sharing one security_id into ONE resolver candidate (merging ticker/
+    # name/cusip/isin so a non-null value from either institution's row
+    # wins) — so the fixture's two "sec_dup" rows (same security_id, but
+    # DIFFERENT institution_id/institution_security_id per institution, per
+    # test_colliding_provider_ids_stay_distinct in the loader tests) collapse
+    # to ONE candidate for identity resolution, even though both raw rows
+    # persist distinctly in raw.plaid_securities and their institution refs
+    # are realistically populated (Plaid's normal shape for a security held
+    # at two brokerages) — collapse holds regardless of whether those fields
+    # are null, because the resolver groups by security_id, not because
+    # DISTINCT happens to dedup an all-null projection. 3 raw rows -> 2
+    # resolver candidates (sec_aapl, sec_dup).
+    assert sum(result.security_resolution.values()) == 2
+
+
+def test_pull_resolves_raw_securities_left_unbound_by_an_earlier_pull(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    sync_data: SyncDataResponse,
+) -> None:
+    """Self-heal: an empty securities delta must not skip resolution.
+
+    Pull #1 loaded raw securities and then the resolver raised, so every
+    investment row landed in core with ``security_id = NULL``. Pull #2 carries
+    no securities of its own — but ``resolve_all()`` reads the whole
+    ``raw.plaid_securities`` table, so gating it on this pull's delta strands
+    the earlier rows unbound forever, and the cost-basis engine drops every
+    event on them. The ``stg_plaid__securities`` docstring's promise that "NULL
+    here ... self-heals on the next sync" only holds if resolution always runs.
+    """
+    assert not sync_data.securities  # the non-investment fixture: empty delta
+    db.execute(
+        """
+        INSERT INTO raw.plaid_securities (
+            security_id, security_name, security_type, is_cash_equivalent,
+            iso_currency_code, source_file, source_origin
+        ) VALUES ('sec_stranded', 'Obscure Widget Corp', 'equity', FALSE,
+                  'USD', 'sync_j0', 'item_1')
+        """
+    )
+
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    result = service.pull(refresh=False)
+
+    assert result.security_resolution == {"minted": 1}
+    bound = db.execute(
+        "SELECT security_id FROM app.security_links "
+        "WHERE ref_value = 'sec_stranded' AND status = 'accepted'"
+    ).fetchone()
+    assert bound is not None
+
+
+def test_pull_security_resolution_failure_reports_error_without_failing_the_pull(
+    db: Database,
+    loader: PlaidExtractor,
+    mock_investments_client: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A resolver failure keeps raw rows durable but must be REPORTED, not swallowed.
+
+    Mirrors the established best-effort pattern for account resolution
+    (`_resolve_accounts`) ONLY in that the SERVICE call itself must not raise
+    or roll back the pull's success accounting — the load already committed,
+    and retrying the pull is idempotent. But unlike account resolution, which
+    has a staging COALESCE fallback that keeps an unresolved account usable
+    in core, there is NO such fallback for securities: an unresolved
+    security_id reaches core.fct_investment_transactions as NULL and the
+    cost-basis engine silently drops every event carrying it, understating
+    lots and gains with no other signal anywhere. So `security_resolution_error`
+    must be populated (not swallowed into an indistinguishable empty dict) —
+    the CLI turns it into a warning and a non-zero exit, exactly like
+    `transforms_error` (see test_cli_sync.py).
+    """
+    with patch(
+        "moneybin.services.sync_service.SecurityResolver",
+        side_effect=RuntimeError("boom"),
+    ):
+        service = SyncService(client=mock_investments_client, db=db, loader=loader)
+        with caplog.at_level("WARNING"):
+            result = service.pull(refresh=False)
+
+    assert result.securities_loaded == 3
+    assert result.security_resolution == {}
+    assert result.security_resolution_error == "boom"
+    assert any("Security resolution failed" in r.message for r in caplog.records)
+    count = db.execute("SELECT COUNT(*) FROM raw.plaid_securities").fetchone()
+    assert count is not None and count[0] == 3
+
+
+def test_pull_flags_manual_plaid_overlap(
+    db: Database,
+    loader: PlaidExtractor,
+    mock_investments_client: MagicMock,
+) -> None:
+    """An account carrying both manual and Plaid investment rows is flagged.
+
+    Drives the real sequence: a first pull resolves Plaid's provider-native
+    account_id to a canonical one in `app.account_links`; the user then
+    hand-records a trade against that canonical account; the next pull sees
+    both sources on one account. Manual rows store canonical ids and raw Plaid
+    rows store provider-native ids, so the overlap join only matches once the
+    link exists — which is why the manual row must be keyed on the canonical
+    id, not on Plaid's 'acc_1'.
+    """
+    service = SyncService(client=mock_investments_client, db=db, loader=loader)
+    service.pull(refresh=False)
+
+    link = db.execute(
+        """
+        SELECT account_id FROM app.account_links
+        WHERE status = 'accepted' AND ref_kind = 'source_native'
+          AND source_type = 'plaid' AND ref_value = 'acc_1'
+        """
+    ).fetchone()
+    assert link is not None, "first pull must resolve acc_1 to a canonical account"
+    canonical_account_id = link[0]
+
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ["manual_test1", "imp_test1", canonical_account_id, "buy", "2026-07-01", "cli"],
+    )
+
+    result = service.pull(refresh=False)
+    assert result.investment_source_overlap_accounts == [canonical_account_id]
 
 
 def test_link_new_institution_auto_pulls(
@@ -574,6 +755,208 @@ class TestPullAutoRefreshes:
         assert calls == 0
         assert result.transforms_applied is False
         assert result.transforms_error is None
+
+    def test_pull_refreshes_when_only_a_holdings_receipt_landed(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Snapshot-receipt-only sync: a broker reporting NOTHING is a state change.
+
+        A liquidated broker returns no holdings, no transactions, no balances —
+        the receipt is the only durable write in the pull. It is also the sole
+        input core.dim_holdings reads to decide which snapshot is newest, so a
+        gate that ignores it skips the refresh and leaves dim_holdings showing
+        the previous, non-empty snapshot: the fully-liquidated broker still
+        reads as holding its old positions, which is precisely the phantom the
+        receipt was added to expose.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        # Nothing loadable in the payload, but the item declares an investments
+        # window on a completed result — so the loader writes its receipt.
+        receipt_only = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": [],
+                "securities": [],
+                "investment_transactions": [],
+                "investment_holdings": [],
+                "metadata": sync_data.metadata.model_copy(
+                    update={
+                        "institutions": [
+                            inst.model_copy(
+                                update={"transactions_window_start": date(2024, 7, 8)}
+                            )
+                            for inst in sync_data.metadata.institutions
+                        ]
+                    }
+                ),
+            }
+        )
+        client = MagicMock()
+        client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_liquidated", status="completed", transaction_count=0
+        )
+        client.get_data.return_value = receipt_only
+
+        service = SyncService(client=client, db=db, loader=loader)
+        result = service.pull()
+
+        receipts = db.execute(
+            "SELECT COUNT(*) FROM raw.plaid_investment_holdings_snapshots"
+        ).fetchone()
+        assert receipts is not None and receipts[0] > 0, (
+            "no receipt written — bad setup"
+        )
+        assert calls == 1
+        assert result.transforms_applied is True
+
+    def test_pull_refreshes_when_only_security_resolution_wrote(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Self-heal-only sync: a binding the resolver lands is a state change.
+
+        ``resolve_all()`` deliberately sweeps the WHOLE raw.plaid_securities
+        table on every pull, so it can bind rows an earlier pull left stranded
+        (the resolver raised, or the catalog has since grown a matching CUSIP).
+        That self-heal is the only durable write in such a pull: no securities
+        came down, no transactions changed, nothing was loaded.
+
+        A gate that counts only LOADED rows skips the refresh on exactly that
+        pull, so the binding never reaches core and every investment leg on the
+        security keeps its NULL ``security_id`` — the cost-basis engine goes on
+        dropping it — until some unrelated future pull happens to change other
+        rows. The self-heal the resolver promises is only real if the refresh
+        it depends on actually runs.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        # Stranded by an earlier pull: raw row present, never bound.
+        db.execute(
+            """
+            INSERT INTO raw.plaid_securities (
+                security_id, security_name, security_type, is_cash_equivalent,
+                iso_currency_code, source_file, source_origin
+            ) VALUES ('sec_stranded', 'Obscure Widget Corp', 'equity', FALSE,
+                      'USD', 'sync_j0', 'item_1')
+            """
+        )
+
+        empty_client = MagicMock()
+        empty_client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_selfheal", status="completed", transaction_count=0
+        )
+        empty_client.get_data.return_value = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": [],
+                "securities": [],
+                "investment_transactions": [],
+                "investment_holdings": [],
+            }
+        )
+
+        service = SyncService(client=empty_client, db=db, loader=loader)
+        result = service.pull()
+
+        assert result.security_resolution == {"minted": 1}, "bad setup: no bind"
+        assert calls == 1
+        assert result.transforms_applied is True
+
+    def test_pull_skips_refresh_when_resolution_bound_nothing_new(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The converse: a re-resolve that writes nothing must NOT refresh.
+
+        ``adopted`` is the steady state — every ref already bound, so the
+        resolver re-derives the same answer and inserts nothing. Counting the
+        OUTCOME rather than the WRITE would fire a full transform run on every
+        cash-only pull for the rest of the database's life, which is the exact
+        cost the rows-changed gate exists to avoid.
+        """
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        db.execute(
+            """
+            INSERT INTO raw.plaid_securities (
+                security_id, security_name, security_type, is_cash_equivalent,
+                iso_currency_code, source_file, source_origin
+            ) VALUES ('sec_stranded', 'Obscure Widget Corp', 'equity', FALSE,
+                      'USD', 'sync_j0', 'item_1')
+            """
+        )
+
+        empty_payload = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": [],
+                "securities": [],
+                "investment_transactions": [],
+                "investment_holdings": [],
+            }
+        )
+        empty_client = MagicMock()
+        empty_client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_selfheal", status="completed", transaction_count=0
+        )
+        empty_client.get_data.return_value = empty_payload
+
+        service = SyncService(client=empty_client, db=db, loader=loader)
+        service.pull()  # first pull binds it
+        assert calls == 1, "bad setup: the binding pull must refresh"
+
+        result = service.pull()  # second pull re-derives the same binding
+
+        assert result.security_resolution == {"adopted": 1}
+        assert calls == 1, "re-resolving an already-bound security wrote nothing"
+        assert result.transforms_applied is False
 
     def test_pull_refreshes_when_only_removals_landed(
         self,

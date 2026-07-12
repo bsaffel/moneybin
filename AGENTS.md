@@ -75,7 +75,7 @@ Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, sim
 
 ## Design System
 
-MoneyBin's visual language lives in `design-system/` — the source of truth (it also backs the `/moneybin-design` skill and the synced claude.ai/design project). Before any UI, artifact, or frontend work, read `design-system/readme.md`, `design-system/tokens/`, and `design-system/guidelines/`. Non-negotiables: dark theme leads; brass (`--accent-brass`) is the only accent, never blue; money is always JetBrains Mono via the `Amount` component, with explicit +/− signs on income/expense flows (balances stay unsigned); hairline borders, no resting shadows; every data widget carries a SQL provenance chip; linear chart interpolation only; no emoji, no exclamation points.
+MoneyBin's visual language lives in `design-system/` — the source of truth (it also backs the `/moneybin-design` skill and the synced claude.ai/design project). Before any UI, artifact, or frontend work, read `design-system/readme.md`, `design-system/tokens/`, and `design-system/guidelines/`. Non-negotiables: dark theme leads; brass (`--accent-brass`) is the only accent, never blue; money is always JetBrains Mono via the `Amount` component, with explicit +/− signs on income/expense flows (balances stay unsigned); icons always come from the `Icon` component, never a one-off inline SVG; hairline borders, no resting shadows; every data widget carries a SQL provenance chip; linear chart interpolation only; no emoji, no exclamation points.
 
 Update flow: prototype and spec visually in the claude.ai **Design Kit** project, promote into `design-system/` via `/design-import` (with PR review), then publish the repo → the claude.ai **Design System** project via `/design-sync`. The repo is canonical; the Design System project is a generated mirror — never hand-edit it as the source. See `design-system/readme.md` → "Updating the design system".
 
@@ -86,7 +86,7 @@ Update flow: prototype and spec visually in the claude.ai **Design Kit** project
 - **Type checking**: `uv run pyright` on modified files (not mypy).
 - **Tests**: Dev `uv run pytest <path> -v`; pre-commit `make test`. Always `uv run pytest`; wrong interpreter → `uv sync --reinstall`.
 - **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing.
-- **SQL formatting**: `make format-sql` (sets `MAX_FORK_WORKERS=1`; the bare `uv run sqlmesh -p sqlmesh format` forks a worker pool the encrypted-DB design disallows and the sandbox blocks).
+- **SQL formatting**: `make format-sql` (sets `MAX_FORK_WORKERS=1`; the bare `uv run sqlmesh -p src/moneybin/sqlmesh format` forks a worker pool the encrypted-DB design disallows and the sandbox blocks).
 - **Check library docs first**: Before implementing patterns with SQLMesh, DuckDB, Pydantic, etc., verify the correct API in official docs. Training knowledge may be outdated.
 
 ## Key Abstractions

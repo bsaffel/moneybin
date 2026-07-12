@@ -9,6 +9,7 @@ Cold-start cost is kept down by deferring heavy transitive imports
 that need them — see `.claude/rules/cli.md` → "Cold-Start Hygiene".
 """
 
+import importlib.metadata
 import logging
 import os
 from typing import Annotated
@@ -63,6 +64,17 @@ app = typer.Typer(
 )
 
 
+def get_version() -> str:
+    """Installed moneybin distribution version."""
+    return importlib.metadata.version("moneybin")
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(get_version())
+        raise typer.Exit()
+
+
 @app.callback()
 def main_callback(
     ctx: typer.Context,
@@ -81,6 +93,15 @@ def main_callback(
             "--verbose",
             "-v",
             help="Enable verbose debug logging",
+        ),
+    ] = False,
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show the installed MoneyBin version and exit.",
         ),
     ] = False,
 ) -> None:
@@ -166,7 +187,10 @@ app.add_typer(
 )
 app.command(
     name="review",
-    help="Pending counts across all review queues (matches, categorize, account-links)",
+    help=(
+        "Pending counts across all review queues (matches, categorize, "
+        "account-links, merchant-links, security-links)"
+    ),
 )(review.review_command)
 app.add_typer(transactions.app, name="transactions")
 app.add_typer(assets.app, name="assets")

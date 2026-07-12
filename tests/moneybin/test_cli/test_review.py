@@ -24,11 +24,12 @@ def test_review_status_flag(
     result = runner.invoke(app, ["review", "--status"])
     assert result.exit_code == 0
     out = result.output.lower()
-    # All four queues should appear in text output
+    # All five queues should appear in text output
     assert "match" in out or "matches" in out
     assert "categori" in out
     assert "account-link" in out
     assert "merchant-link" in out
+    assert "security-link" in out
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
@@ -36,7 +37,7 @@ def test_review_status_flag(
 def test_review_json_output(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
-    """`moneybin review --status --output json` emits a four-way envelope."""
+    """`moneybin review --status --output json` emits a five-way envelope."""
     mock_db = MagicMock()
     mock_get_db.return_value.__enter__.return_value = mock_db
     mock_get_settings.return_value = MagicMock()
@@ -50,12 +51,14 @@ def test_review_json_output(
     assert "categorize_pending" in payload
     assert "account_links_pending" in payload
     assert "merchant_links_pending" in payload
+    assert "security_links_pending" in payload
     assert "total" in payload
     assert payload["total"] == (
         payload["matches_pending"]
         + payload["categorize_pending"]
         + payload["account_links_pending"]
         + payload["merchant_links_pending"]
+        + payload["security_links_pending"]
     )
 
 
@@ -140,6 +143,49 @@ def test_review_type_account_links_status_json(
     envelope = json.loads(result.stdout)
     payload = envelope["data"]
     assert "account_links_pending" in payload
+    # Per-type JSON must NOT include the other queue fields
+    assert "matches_pending" not in payload
+    assert "categorize_pending" not in payload
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_type_security_links_status_text(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`moneybin review --type security-links --status` shows only the security-link count (text)."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(app, ["review", "--type", "security-links", "--status"])
+    assert result.exit_code == 0
+    out = result.output.lower()
+    assert "security-link" in out
+    # The other queues must NOT appear when --type filters to security-links
+    assert "match" not in out
+    assert "categori" not in out
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
+def test_review_type_security_links_status_json(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """`moneybin review --type security-links --status --output json` returns only security_links_pending."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(
+        app, ["review", "--type", "security-links", "--status", "--output", "json"]
+    )
+    assert result.exit_code == 0
+    envelope = json.loads(result.stdout)
+    payload = envelope["data"]
+    assert "security_links_pending" in payload
     # Per-type JSON must NOT include the other queue fields
     assert "matches_pending" not in payload
     assert "categorize_pending" not in payload

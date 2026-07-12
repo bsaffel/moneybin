@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+import duckdb
+
 from moneybin.connectors.sync_client import SyncClient
 from moneybin.connectors.sync_models import (
     ConnectedInstitution,
@@ -36,6 +38,13 @@ from moneybin.metrics.registry import (
 from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.refresh import refresh as _refresh
+from moneybin.services.security_resolver import SecurityResolver
+from moneybin.tables import (
+    ACCOUNT_LINKS,
+    FCT_INVESTMENT_TRANSACTIONS,
+    MANUAL_INVESTMENT_TRANSACTIONS,
+    PLAID_INVESTMENT_TRANSACTIONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +58,9 @@ _ERROR_GUIDANCE: dict[str, str] = {
     "INSTITUTION_DOWN": "{institution} is down for maintenance. Try again later.",
     "RATE_LIMIT_EXCEEDED": "Rate limit reached. Sync will resume on the next scheduled run.",
     "PRODUCTS_NOT_READY": "{institution} is still processing initial data. Try again in a few minutes.",
+    "PRODUCT_NOT_READY": "{institution} is still processing investment data. Try again in a few minutes.",
+    "PRODUCTS_NOT_SUPPORTED": "{institution} doesn't provide investment data through Plaid. Cash accounts still sync normally.",
+    "INVALID_PRODUCT": "{institution} was linked before investment access — run `moneybin sync link` to re-consent.",
 }
 
 
@@ -150,6 +162,48 @@ class SyncService:
                 self._resolve_accounts(sync_data)
             except Exception as e:  # noqa: BLE001  # best-effort post-load metadata
                 logger.warning(f"Account resolution failed after pull: {e}")
+            # Security identity resolution. Unlike account resolution above,
+            # there is NO staging COALESCE fallback for securities — B1's
+            # fallback (COALESCE(links.account_id, b.account_id)) exists only
+            # for accounts, whose source-native id is still usable in core
+            # even unresolved. security_id resolves ONLY through
+            # app.security_links; a row this run couldn't bind reaches
+            # core.fct_investment_transactions with security_id = NULL, and
+            # the cost-basis engine silently `continue`s past every
+            # NULL-security event (investments/cost_basis.py) — every buy/sell
+            # on that security is dropped from lots and gains, understating
+            # them, with no error surfaced anywhere else. Raw rows stay
+            # durable and retrying is idempotent, so this must not raise or
+            # roll back the pull's success accounting — but it MUST be
+            # reported, not swallowed: security_resolution_error flows into
+            # the CLI warning and exit code exactly like transforms_error.
+            #
+            # Runs on EVERY pull, not only one whose securities array is
+            # non-empty: resolve_all() reads the whole raw.plaid_securities
+            # table, so gating it on this pull's delta would strand securities
+            # a previous pull loaded but failed to bind (the soft-fail path
+            # right below) — permanently, since a later cash-only pull would
+            # skip resolution again. That is the self-heal stg_plaid__securities
+            # promises. The cost on a pull with no investments is one SELECT
+            # over an empty table (resolve_all returns {} immediately).
+            resolution: dict[str, int] = {}
+            resolution_writes = 0
+            security_resolution_error: str | None = None
+            try:
+                resolver = SecurityResolver(self.db, actor="system")
+                resolution = resolver.resolve_all()
+                resolution_writes = resolver.writes
+            except Exception as e:  # noqa: BLE001  # reported via security_resolution_error, not raised
+                security_resolution_error = str(e)
+                logger.warning(f"Security resolution failed after pull: {e}")
+            overlap = self._investment_source_overlap()
+            if overlap:
+                logger.warning(
+                    f"{len(overlap)} account(s) carry BOTH manual and Plaid "
+                    "investment rows; lots and gains will double-count until one "
+                    "source is chosen per account (investment dedup is a future "
+                    "matching child)"
+                )
             for inst in sync_data.metadata.institutions:
                 if inst.status == "failed" and inst.error_code:
                     SYNC_INSTITUTION_ERRORS_TOTAL.labels(
@@ -161,23 +215,51 @@ class SyncService:
             accounts_loaded=load_result.accounts_loaded,
             balances_loaded=load_result.balances_loaded,
             transactions_removed=removed_count,
+            securities_loaded=load_result.securities_loaded,
+            investment_transactions_loaded=load_result.investment_transactions_loaded,
+            holdings_loaded=load_result.holdings_loaded,
+            holding_lots_loaded=load_result.holding_lots_loaded,
             institutions=sync_data.metadata.institutions,
+            investment_source_overlap_accounts=overlap,
+            security_resolution=resolution,
+            security_resolution_error=security_resolution_error,
         )
-        # Removals are a state change too: a pure-removal sync deletes from
-        # raw.plaid_transactions and the deletion must propagate through
-        # SQLMesh into core.fct_transactions. Gating only on loaded rows
-        # would leave the deleted row visible in core.
+        # Every durable raw write counts, not just loaded entity rows.
+        # Removals: a pure-removal sync deletes from raw.plaid_transactions and
+        # the deletion must propagate through SQLMesh into core.fct_transactions,
+        # or the deleted row stays visible in core.
+        # Holdings-snapshot receipts: on a liquidated broker's pull the receipt
+        # is the ONLY write — no holdings rows, by definition — and it is the
+        # sole input core.dim_holdings reads to pick the newest snapshot. Skip
+        # the refresh and dim_holdings keeps serving the previous, non-empty
+        # snapshot, so the emptied broker still reads as holding its old
+        # positions: the exact phantom the receipt exists to expose.
+        # Security-resolution writes: resolve_all() sweeps the whole raw
+        # securities table, not this pull's delta, so a pull that loads nothing
+        # can still bind a security an earlier pull stranded. That binding is
+        # what core reads for security_id — skip the refresh and the leg keeps
+        # its NULL and the cost-basis engine goes on dropping it. Counted by
+        # actual writes, not by outcome: a steady-state re-resolve adopts every
+        # ref and writes nothing, and must not refresh.
         rows_changed = (
             load_result.transactions_loaded
             + load_result.accounts_loaded
             + load_result.balances_loaded
             + removed_count
+            + load_result.securities_loaded
+            + load_result.investment_transactions_loaded
+            + load_result.holdings_loaded
+            + load_result.holding_lots_loaded
+            + load_result.holdings_snapshots_loaded
+            + resolution_writes
         )
         if refresh and rows_changed > 0:
             refresh_result = _refresh(self.db)
             result.transforms_applied = refresh_result.applied
             result.transforms_duration_seconds = refresh_result.duration_seconds
             result.transforms_error = refresh_result.error
+            if not refresh_result.error:
+                result.opening_bootstrap_rows = self._count_bootstrap_rows()
         return result
 
     def _resolve_accounts(self, sync_data: SyncDataResponse) -> None:
@@ -220,6 +302,56 @@ class SyncService:
                 )
             )
             ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
+
+    def _investment_source_overlap(self) -> list[str]:
+        """Canonical account ids carrying BOTH manual and Plaid investment rows.
+
+        Manual rows store canonical account ids; raw Plaid rows store
+        provider-native ids — the join resolves the Plaid side through
+        ``app.account_links`` first (falling back to the raw id when no link
+        exists yet), since a raw-to-raw join would never match. The manual
+        side is a ``WHERE EXISTS`` semi-join, not an inner join: this runs on
+        every pull (including cash-only ones), and an inner join would cross
+        N Plaid rows by M manual rows for the same account before the
+        DISTINCT collapsed them back down — EXISTS only checks presence.
+        """
+        try:
+            rows = self.db.execute(
+                f"""
+                SELECT DISTINCT COALESCE(al.account_id, p.account_id) AS account_id
+                FROM {PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
+                LEFT JOIN {ACCOUNT_LINKS.full_name} AS al
+                  ON al.status = 'accepted' AND al.ref_kind = 'source_native'
+                  AND al.source_type = 'plaid' AND al.source_origin = p.source_origin
+                  AND al.ref_value = p.account_id
+                WHERE EXISTS (
+                  SELECT 1 FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
+                  WHERE m.account_id = COALESCE(al.account_id, p.account_id)
+                )
+                ORDER BY account_id
+                """  # noqa: S608  # TableRef constants
+            ).fetchall()
+        except duckdb.CatalogException:  # tables may not exist on fresh DBs
+            return []
+        return [str(r[0]) for r in rows]
+
+    def _count_bootstrap_rows(self) -> int:
+        """Count synthetic opening-lot bootstrap rows (spec: counted in the sync envelope).
+
+        Cumulative across all history, not scoped to this pull — bootstrap
+        writes once per (account, source_origin), so a later sync with zero
+        new bootstrap activity still reports every lot seeded on any earlier
+        pull. The CLI wording must read as a standing count, not a per-pull
+        delta (see sync.py's "opening lot(s) seeded" line).
+        """
+        try:
+            row = self.db.execute(
+                f"SELECT COUNT(*) FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
+                "WHERE subtype = 'opening_bootstrap'"
+            ).fetchone()
+        except duckdb.CatalogException:  # core view absent before first transform
+            return 0
+        return int(row[0]) if row else 0
 
     # ------------------------------ Link ------------------------------
 

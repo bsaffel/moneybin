@@ -14,6 +14,7 @@ from moneybin.cli.commands.mcp import (
     _gate_network_transport,  # pyright: ignore[reportPrivateUsage]
     app,
 )
+from moneybin.mcp.surface import VISIBLE_TOOL_COUNT
 
 runner = CliRunner()
 
@@ -319,6 +320,64 @@ class TestMCPInstall:
         assert "web" in result.stderr.lower()
         assert "restart" in result.stderr.lower()
 
+    def test_install_emits_pinned_uvx_when_not_in_a_repo(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Outside a checkout, the config must point at the published package."""
+        monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+
+        assert result.exit_code == 0
+        from moneybin.cli.main import get_version
+
+        assert f"moneybin=={get_version()}" in result.stdout
+        assert "--from" in result.stdout
+        assert "--directory" not in result.stdout
+
+    def test_install_keeps_the_repo_dev_path_in_a_checkout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inside a checkout, keep `uv run --directory <repo>` — the dev path."""
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.find_repo_root", lambda: tmp_path
+        )
+        monkeypatch.delenv("MONEYBIN_HOME", raising=False)
+
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+
+        assert result.exit_code == 0
+        assert "--directory" in result.stdout
+        assert str(tmp_path) in result.stdout
+        assert "--from" not in result.stdout
+
+    def test_install_pins_moneybin_home_in_the_published_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MONEYBIN_HOME pinning is orthogonal to package location.
+
+        The published (non-repo) branch changed how args are built; this guards
+        that MONEYBIN_HOME still lands in the emitted env there, so a future
+        refactor cannot silently re-couple home-pinning to the repo branch.
+        """
+        monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+
+        assert result.exit_code == 0
+        # Still the pinned published path...
+        assert "--from" in result.stdout
+        # ...and the home is pinned into the config's env block.
+        assert str(tmp_path.resolve()) in result.stdout
+
 
 class TestMCPInstallSnippetHardening:
     """The generated snippet must survive the launch context clients actually use."""
@@ -372,16 +431,20 @@ class TestMCPInstallSnippetHardening:
         assert "confirmation" in result.stderr.lower()
 
     def test_windsurf_install_warns_that_moneybin_exceeds_the_tool_cap(self) -> None:
-        """Cascade holds 100 tools; MoneyBin ships 102 and hides none.
+        """Cascade holds 100 tools; MoneyBin ships more than that and hides none.
 
         Windsurf gives no signal when it drops the overflow — it just behaves as
         though MoneyBin can't do things it can. The guide says so, but the person
         running the install never reads the guide, so the install has to say it too.
+
+        Asserted against the live count, not a literal: the deliberate-bump gate
+        lives in the pinned surface-budget test, and a second copy of the number
+        here only breaks every time the surface legitimately grows.
         """
         result = runner.invoke(app, ["install", "--client", "windsurf", "--print"])
         assert result.exit_code == 0
         assert "100" in result.stderr
-        assert "102" in result.stderr
+        assert str(VISIBLE_TOOL_COUNT) in result.stderr
         assert "disable" in result.stderr.lower()
 
     def test_non_windsurf_installs_do_not_carry_the_tool_cap_warning(self) -> None:
@@ -389,7 +452,7 @@ class TestMCPInstallSnippetHardening:
         result = runner.invoke(
             app, ["install", "--client", "claude-desktop", "--print"]
         )
-        assert "102" not in result.stderr
+        assert str(VISIBLE_TOOL_COUNT) not in result.stderr
 
     @pytest.mark.parametrize(
         "client", ["claude-desktop", "cursor", "windsurf", "gemini-cli", "claude-code"]

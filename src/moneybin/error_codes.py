@@ -46,6 +46,11 @@ IMPORT_SUPERSEDED = "import_superseded"
 # classifier. The per-domain retrofits in PRs 9a-N migrate write-site
 # raise ValueError/LookupError to explicit UserError(code=MUTATION_*) calls.
 MUTATION_AMBIGUOUS = "mutation_ambiguous"
+# The mutation needs explicit human agreement the caller could not obtain: the
+# client cannot elicit, there is no active session to ask, or the human
+# declined. Raised INSTEAD of mutating — never alongside a partial write. The
+# `hint` names the CLI equivalent so the user always has a way through.
+MUTATION_CONFIRMATION_REQUIRED = "mutation_confirmation_required"
 MUTATION_CONSTRAINT_VIOLATION = "mutation_constraint_violation"
 MUTATION_INVALID_INPUT = "mutation_invalid_input"
 MUTATION_NOT_FOUND = "mutation_not_found"
@@ -90,6 +95,7 @@ RECOVERY_NO_PATH = "recovery_no_path"
 # Infra — database, migrations, encryption (existing codes retained)
 # ---------------------------------------------------------------------------
 
+INFRA_CRYPTO_UNAVAILABLE = "infra_crypto_unavailable"
 INFRA_DATABASE_LOCKED = "infra_database_locked"
 INFRA_DATABASE_NOT_INITIALIZED = "infra_database_not_initialized"
 INFRA_FILE_NOT_FOUND = "infra_file_not_found"

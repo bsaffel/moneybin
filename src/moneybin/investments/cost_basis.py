@@ -194,6 +194,12 @@ def _lot_id(
     return "lot_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+# Public alias: SecurityLinksService re-derives lot ids when a merge re-keys a
+# disposal's security_id. The hash must stay identical to the engine's own — a
+# second implementation would silently strand every specific-ID election.
+compute_lot_id = _lot_id
+
+
 def _realized_gain_id(disposal_txn_id: str, lot_id: str) -> str:
     raw = f"{disposal_txn_id}|{lot_id}"
     return "rg_" + hashlib.sha256(raw.encode()).hexdigest()[:16]

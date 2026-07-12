@@ -10,23 +10,67 @@ aggregations.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
+from itertools import chain
 from pathlib import Path
 
 import polars as pl
 
 from moneybin.connectors.sync_models import (
+    InstitutionResult,
     SyncAccount,
     SyncBalance,
     SyncDataResponse,
+    SyncHolding,
+    SyncInvestmentTransaction,
+    SyncSecurity,
     SyncTransaction,
 )
 from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, ProviderSource, SyncResponse
 from moneybin.extractors.plaid.config import PlaidProviderConfig
+from moneybin.metrics.registry import (
+    INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL,
+    SYNC_INVESTMENTS_RECORDS_LOADED,
+)
+from moneybin.tables import (
+    PLAID_INVESTMENT_HOLDING_LOTS,
+    PLAID_INVESTMENT_HOLDINGS,
+    PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
+    PLAID_INVESTMENT_TRANSACTIONS,
+    PLAID_SECURITIES,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_naive(value: datetime | None) -> datetime | None:
+    """Rebase an instant onto UTC and drop the tzinfo.
+
+    The raw.plaid_* datetime columns are naive ``TIMESTAMP``, and DuckDB
+    rebases a tz-AWARE value into the machine's session zone on insert — so a
+    tz-aware column would store the LOCAL wall clock, and every ``::DATE``
+    staging derives from it (``trade_date``, ``acquisition_date``) would be the
+    local calendar date, off by a day outside UTC. Storing the UTC wall clock
+    makes those casts the UTC calendar date on any machine, and keeps them on
+    the same calendar as ``holdings_date`` (also a UTC date, below) — a
+    mismatch between the two synthesizes phantom opening lots.
+
+    A naive input is taken as already-UTC: the sync server's contract is UTC.
+    """
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _utc_date(value: datetime) -> date:
+    """The instant's UTC calendar date — never the machine's or the offset's."""
+    if value.tzinfo is None:
+        return value.date()
+    return value.astimezone(UTC).date()
 
 
 @dataclass(frozen=True)
@@ -36,6 +80,14 @@ class LoadResult:
     accounts_loaded: int
     transactions_loaded: int
     balances_loaded: int
+    securities_loaded: int = 0
+    investment_transactions_loaded: int = 0
+    holdings_loaded: int = 0
+    holding_lots_loaded: int = 0
+    # A receipt is a durable raw write like any other, and on a liquidated
+    # broker's pull it is the ONLY one — so callers gating refresh on "did
+    # anything change" must be able to see it.
+    holdings_snapshots_loaded: int = 0
 
 
 _ACCOUNTS_SCHEMA = pl.Schema({
@@ -89,6 +141,104 @@ _BALANCES_SCHEMA = pl.Schema({
     "balance_date": pl.Date,
     "current_balance": pl.Decimal(18, 2),
     "available_balance": pl.Decimal(18, 2),
+    "source_file": pl.Utf8,
+    "source_type": pl.Utf8,
+    "source_origin": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
+_SECURITIES_SCHEMA = pl.Schema({
+    "security_id": pl.Utf8,
+    "institution_security_id": pl.Utf8,
+    "institution_id": pl.Utf8,
+    "ticker_symbol": pl.Utf8,
+    "market_identifier_code": pl.Utf8,
+    "security_name": pl.Utf8,
+    "security_type": pl.Utf8,
+    "close_price": pl.Decimal(28, 10),
+    "close_price_as_of": pl.Date,
+    "iso_currency_code": pl.Utf8,
+    "unofficial_currency_code": pl.Utf8,
+    "cusip": pl.Utf8,
+    "isin": pl.Utf8,
+    "is_cash_equivalent": pl.Boolean,
+    "source_file": pl.Utf8,
+    "source_type": pl.Utf8,
+    "source_origin": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
+_INVESTMENT_TRANSACTIONS_SCHEMA = pl.Schema({
+    "investment_transaction_id": pl.Utf8,
+    "account_id": pl.Utf8,
+    "security_id": pl.Utf8,
+    "transaction_date": pl.Date,
+    # Naive on purpose — carries a UTC wall clock via _utc_naive(). A tz-aware
+    # dtype here would make DuckDB rebase the instant into the machine's local
+    # zone on insert (the raw column is naive TIMESTAMP), misdating trade_date.
+    "transaction_datetime": pl.Datetime("us"),
+    "transaction_name": pl.Utf8,
+    "quantity": pl.Decimal(28, 10),
+    "amount": pl.Decimal(18, 2),
+    "price": pl.Decimal(28, 10),
+    "fees": pl.Decimal(18, 2),
+    "iso_currency_code": pl.Utf8,
+    "unofficial_currency_code": pl.Utf8,
+    "investment_transaction_type": pl.Utf8,
+    "investment_transaction_subtype": pl.Utf8,
+    "source_file": pl.Utf8,
+    "source_type": pl.Utf8,
+    "source_origin": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
+_INVESTMENT_HOLDINGS_SCHEMA = pl.Schema({
+    "account_id": pl.Utf8,
+    "security_id": pl.Utf8,
+    "holdings_date": pl.Date,
+    "institution_price": pl.Decimal(28, 10),
+    "institution_price_as_of": pl.Date,
+    "institution_value": pl.Decimal(18, 2),
+    "cost_basis": pl.Decimal(18, 2),
+    "quantity": pl.Decimal(28, 10),
+    "iso_currency_code": pl.Utf8,
+    "unofficial_currency_code": pl.Utf8,
+    "vested_quantity": pl.Decimal(28, 10),
+    "vested_value": pl.Decimal(18, 2),
+    "transactions_window_start": pl.Date,
+    "source_file": pl.Utf8,
+    "source_type": pl.Utf8,
+    "source_origin": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
+_INVESTMENT_HOLDINGS_SNAPSHOTS_SCHEMA = pl.Schema({
+    "source_origin": pl.Utf8,
+    "source_file": pl.Utf8,
+    "holdings_date": pl.Date,
+    "holdings_count": pl.Int32,
+    "transactions_window_start": pl.Date,
+    "source_type": pl.Utf8,
+    "extracted_at": pl.Datetime(time_zone="UTC"),
+    "loaded_at": pl.Datetime(time_zone="UTC"),
+})
+
+_INVESTMENT_HOLDING_LOTS_SCHEMA = pl.Schema({
+    "account_id": pl.Utf8,
+    "security_id": pl.Utf8,
+    "lot_index": pl.Int32,
+    "institution_lot_id": pl.Utf8,
+    # Naive on purpose — see _utc_naive() and _INVESTMENT_TRANSACTIONS_SCHEMA.
+    "original_purchase_datetime": pl.Datetime("us"),
+    "quantity": pl.Decimal(28, 10),
+    "purchase_price": pl.Decimal(28, 10),
+    "cost_basis": pl.Decimal(18, 2),
+    "current_value": pl.Decimal(18, 2),
+    "position_type": pl.Utf8,
     "source_file": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
@@ -154,6 +304,11 @@ class PlaidExtractor:
         extracted_at = sync_data.metadata.synced_at
         loaded_at = datetime.now(UTC)
         item_by_account = self.build_account_to_item_map(sync_data)
+        window_by_item = {
+            inst.provider_item_id: inst.transactions_window_start
+            for inst in sync_data.metadata.institutions
+        }
+        self._validate_holdings_windows(sync_data.investment_holdings, window_by_item)
 
         accounts_loaded = self._load_accounts(
             sync_data.accounts,
@@ -176,11 +331,61 @@ class PlaidExtractor:
             extracted_at,
             loaded_at,
         )
+        securities_loaded = self._load_securities(
+            sync_data.securities, source_file, extracted_at, loaded_at
+        )
+        investment_transactions_loaded = self._load_investment_transactions(
+            sync_data.investment_transactions, source_file, extracted_at, loaded_at
+        )
+        holdings_loaded, holding_lots_loaded = self._load_investment_holdings(
+            sync_data.investment_holdings,
+            window_by_item,
+            source_file,
+            extracted_at,
+            loaded_at,
+        )
+        # Deliberately NOT inside _load_investment_holdings' `if not holdings`
+        # early return: the receipt's entire purpose is the pull where holdings
+        # is EMPTY (see below).
+        holdings_snapshots_loaded = self._load_holdings_snapshots(
+            sync_data.investment_holdings,
+            sync_data.metadata.institutions,
+            source_file,
+            extracted_at,
+            loaded_at,
+        )
         return LoadResult(
             accounts_loaded=accounts_loaded,
             transactions_loaded=transactions_loaded,
             balances_loaded=balances_loaded,
+            securities_loaded=securities_loaded,
+            investment_transactions_loaded=investment_transactions_loaded,
+            holdings_loaded=holdings_loaded,
+            holding_lots_loaded=holding_lots_loaded,
+            holdings_snapshots_loaded=holdings_snapshots_loaded,
         )
+
+    def _validate_holdings_windows(
+        self,
+        holdings: list[SyncHolding],
+        window_by_item: dict[str, date | None],
+    ) -> None:
+        """Raise before any table is ingested if a holdings item lacks its window.
+
+        Called at the top of load(), before the first ingest, so a bad
+        payload fails all-or-nothing — no partial raw write and no inflated
+        records-loaded counter from tables ingested ahead of holdings.
+        """
+        # Only the null-window case is reachable: build_account_to_item_map runs
+        # first and rejects any holding whose item disagrees with its account's,
+        # so by here every provider_item_id is one metadata reported.
+        for holding in holdings:
+            if window_by_item.get(holding.provider_item_id) is None:
+                raise ValueError(
+                    "metadata institution result for item "
+                    f"{holding.provider_item_id} is missing transactions_window_start; "
+                    "the opening-lot bootstrap cannot classify lots without it"
+                )
 
     def build_account_to_item_map(self, sync_data: SyncDataResponse) -> dict[str, str]:
         """Map each account_id to its provider_item_id (its ``source_origin``).
@@ -198,10 +403,18 @@ class PlaidExtractor:
         and break downstream joins. Server should structure responses with per-
         institution account groupings to make this unambiguous (followup).
 
-        Also raises if `sync_data.transactions` or `sync_data.balances` reference
-        an `account_id` not present in `sync_data.accounts` — eventual-consistency
-        on Plaid's side surfaces this occasionally, and a KeyError during the
-        per-row dict lookup leaves no useful context. Loud and explicit is better.
+        Also raises if any data array — `transactions`, `balances`,
+        `investment_transactions` or `investment_holdings` — references an
+        `account_id` not present in `sync_data.accounts`. Eventual-consistency on
+        Plaid's side surfaces this occasionally, and a KeyError during the per-row
+        dict lookup leaves no useful context. Loud and explicit is better.
+
+        The investment arrays need the guard even though they stamp `source_origin`
+        from their own `provider_item_id` (never this mapping): an account missing
+        from `sync_data.accounts` gets no `app.account_links` row, so staging's
+        `COALESCE(al.account_id, r.account_id)` falls back to the raw Plaid id and
+        `core.fct_investment_transactions` / `core.dim_holdings` carry an
+        `account_id` with no `core.dim_accounts` row.
         """
         institutions = sync_data.metadata.institutions
         if len(institutions) == 1:
@@ -227,18 +440,46 @@ class PlaidExtractor:
                     )
                 mapping[acc.account_id] = name_to_item[acc.institution_name]
 
-        referenced = {txn.account_id for txn in sync_data.transactions} | {
-            bal.account_id for bal in sync_data.balances
-        }
+        referenced = (
+            {txn.account_id for txn in sync_data.transactions}
+            | {bal.account_id for bal in sync_data.balances}
+            | {itx.account_id for itx in sync_data.investment_transactions}
+            | {hold.account_id for hold in sync_data.investment_holdings}
+        )
         orphans = referenced - mapping.keys()
         if orphans:
             raise ValueError(
-                f"transactions/balances reference account_id(s) not present in "
+                f"sync payload references account_id(s) not present in "
                 f"sync_data.accounts: {sorted(orphans)}. This typically indicates "
                 f"eventual-consistency drift on the server — retry the sync, and "
                 f"if it persists, the server's account_id stream is out of sync "
                 f"with its transaction stream."
             )
+
+        # Investment rows carry their OWN provider_item_id and stamp source_origin
+        # from it, while app.account_links is stamped from this mapping. Staging
+        # joins the two on (source_origin, account_id), so a row whose item
+        # disagrees with its account's item misses that join, COALESCE falls back
+        # to the raw Plaid account_id, and the fact/holding lands under an
+        # account_id that has no core.dim_accounts row when that account was
+        # cross-source merged. The mismatch is silent in core, so catch it here.
+        for row, kind in chain(
+            (
+                (itx, "investment transaction")
+                for itx in sync_data.investment_transactions
+            ),
+            ((hold, "investment holding") for hold in sync_data.investment_holdings),
+        ):
+            expected = mapping[row.account_id]
+            if row.provider_item_id != expected:
+                raise ValueError(
+                    f"{kind} for account {row.account_id} carries provider_item_id "
+                    f"{row.provider_item_id!r}, but that account belongs to item "
+                    f"{expected!r} per sync_data.accounts. Attributing the row to "
+                    f"its stated item would orphan it from its account — retry the "
+                    f"sync, and if it persists the server's item attribution is "
+                    f"inconsistent across arrays."
+                )
         return mapping
 
     def _load_accounts(
@@ -326,6 +567,262 @@ class PlaidExtractor:
         self.db.ingest_dataframe("raw.plaid_balances", df, on_conflict="upsert")
         logger.info(f"Loaded {len(df)} Plaid balance snapshots")
         return len(df)
+
+    def _load_securities(
+        self,
+        securities: list[SyncSecurity],
+        source_file: str,
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> int:
+        if not securities:
+            return 0
+        df = pl.DataFrame(
+            [
+                {
+                    **sec.model_dump(exclude={"provider_item_id"}),
+                    "source_file": source_file,
+                    "source_type": "plaid",
+                    "source_origin": sec.provider_item_id,
+                    "extracted_at": extracted_at,
+                    "loaded_at": loaded_at,
+                }
+                for sec in securities
+            ],
+            schema=_SECURITIES_SCHEMA,
+        )
+        self.db.ingest_dataframe(PLAID_SECURITIES.full_name, df, on_conflict="upsert")
+        SYNC_INVESTMENTS_RECORDS_LOADED.labels(table="plaid_securities").inc(len(df))
+        logger.info(f"Loaded {len(df)} Plaid securities")
+        return len(df)
+
+    def _load_investment_transactions(
+        self,
+        transactions: list[SyncInvestmentTransaction],
+        source_file: str,
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> int:
+        if not transactions:
+            return 0
+        self._warn_amount_drift(transactions)
+        # DO NOT NEGATE amount here. Plaid convention (positive = cash out)
+        # is preserved in raw; the flip lives in stg_plaid__investment_transactions.
+        df = pl.DataFrame(
+            [
+                {
+                    **txn.model_dump(exclude={"provider_item_id"}),
+                    "transaction_datetime": _utc_naive(txn.transaction_datetime),
+                    "source_file": source_file,
+                    "source_type": "plaid",
+                    "source_origin": txn.provider_item_id,
+                    "extracted_at": extracted_at,
+                    "loaded_at": loaded_at,
+                }
+                for txn in transactions
+            ],
+            schema=_INVESTMENT_TRANSACTIONS_SCHEMA,
+        )
+        self.db.ingest_dataframe(
+            PLAID_INVESTMENT_TRANSACTIONS.full_name, df, on_conflict="upsert"
+        )
+        SYNC_INVESTMENTS_RECORDS_LOADED.labels(
+            table="plaid_investment_transactions"
+        ).inc(len(df))
+        logger.info(f"Loaded {len(df)} Plaid investment transactions")
+        return len(df)
+
+    def _load_investment_holdings(
+        self,
+        holdings: list[SyncHolding],
+        window_by_item: dict[str, date | None],
+        source_file: str,
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> tuple[int, int]:
+        if not holdings:
+            return (0, 0)
+        holding_rows: list[dict[str, object]] = []
+        lot_rows: list[dict[str, object]] = []
+        for holding in holdings:
+            # _validate_holdings_windows() already confirmed every item here
+            # has a window before load() ingested anything.
+            window_start = window_by_item[holding.provider_item_id]
+            holding_rows.append({
+                **holding.model_dump(exclude={"provider_item_id", "tax_lots"}),
+                # UTC calendar date of the snapshot instant — never the
+                # machine's local date. int_plaid__opening_positions compares
+                # this against trade_date, which SQL derives as a UTC date from
+                # the UTC-wall-clock columns; different calendars there push a
+                # snapshot-day buy outside the in-window net and synthesize a
+                # phantom opening lot.
+                "holdings_date": _utc_date(extracted_at),
+                "transactions_window_start": window_start,
+                "source_file": source_file,
+                "source_type": "plaid",
+                "source_origin": holding.provider_item_id,
+                "extracted_at": extracted_at,
+                "loaded_at": loaded_at,
+            })
+            for lot_index, lot in enumerate(holding.tax_lots):
+                lot_rows.append({
+                    "account_id": holding.account_id,
+                    "security_id": holding.security_id,
+                    "lot_index": lot_index,
+                    **lot.model_dump(),
+                    "original_purchase_datetime": _utc_naive(
+                        lot.original_purchase_datetime
+                    ),
+                    "source_file": source_file,
+                    "source_type": "plaid",
+                    "source_origin": holding.provider_item_id,
+                    "extracted_at": extracted_at,
+                    "loaded_at": loaded_at,
+                })
+        df_holdings = pl.DataFrame(holding_rows, schema=_INVESTMENT_HOLDINGS_SCHEMA)
+        self.db.ingest_dataframe(
+            PLAID_INVESTMENT_HOLDINGS.full_name, df_holdings, on_conflict="upsert"
+        )
+        SYNC_INVESTMENTS_RECORDS_LOADED.labels(table="plaid_investment_holdings").inc(
+            len(df_holdings)
+        )
+        lots_loaded = 0
+        if lot_rows:
+            df_lots = pl.DataFrame(lot_rows, schema=_INVESTMENT_HOLDING_LOTS_SCHEMA)
+            self.db.ingest_dataframe(
+                PLAID_INVESTMENT_HOLDING_LOTS.full_name, df_lots, on_conflict="upsert"
+            )
+            SYNC_INVESTMENTS_RECORDS_LOADED.labels(
+                table="plaid_investment_holding_lots"
+            ).inc(len(df_lots))
+            lots_loaded = len(df_lots)
+        logger.info(
+            f"Loaded {len(df_holdings)} Plaid holdings rows, {lots_loaded} tax lots"
+        )
+        return len(df_holdings), lots_loaded
+
+    def _load_holdings_snapshots(
+        self,
+        holdings: list[SyncHolding],
+        institutions: list[InstitutionResult],
+        source_file: str,
+        extracted_at: datetime,
+        loaded_at: datetime,
+    ) -> int:
+        """Record that each item's holdings were fetched — EVEN WHEN it reported none.
+
+        raw.plaid_investment_holdings stores holding ROWS, so it cannot tell
+        "this item reported nothing (every position sold)" from "this item never
+        reported." An item whose pull returns an empty holdings array writes no
+        rows at all, so a newest-snapshot join keyed on those rows silently
+        keeps the last NON-EMPTY snapshot from an earlier pull — and the
+        fully-liquidated broker, the largest possible net-worth overstatement,
+        reads as "still holding the old positions." This receipt is the missing
+        evidence, and it is why the write sits outside the holdings loop and
+        outside any `if holdings:` guard.
+
+        An item is treated as having reported iff the server declared an
+        investments window for it (`transactions_window_start`, its
+        /investments/transactions/get start boundary) on a `completed` result —
+        the only signal on the wire that the server ran the item's investments
+        flow at all. A cash-only item (no window) never reported; neither did a
+        FAILED item, and a receipt for either would falsely claim the broker
+        was asked and answered "nothing," flagging every lot there as a phantom.
+        Items that DID deliver holdings are unioned in unconditionally, which
+        holds the invariant every newest-snapshot consumer depends on: no
+        holdings row exists whose (source_origin, source_file) has no receipt.
+        """
+        reported_items = {
+            inst.provider_item_id
+            for inst in institutions
+            if inst.status == "completed" and inst.transactions_window_start is not None
+        } | {holding.provider_item_id for holding in holdings}
+        if not reported_items:
+            return 0
+        # Every reported item has a window: the first set is filtered on it, and
+        # _validate_holdings_windows already raised for any item in the second
+        # set that lacks one. That is what lets the column be NOT NULL.
+        window_by_item = {
+            inst.provider_item_id: inst.transactions_window_start
+            for inst in institutions
+            if inst.transactions_window_start is not None
+        }
+        counts = Counter(holding.provider_item_id for holding in holdings)
+        df = pl.DataFrame(
+            [
+                {
+                    "source_origin": item_id,
+                    "source_file": source_file,
+                    # Same UTC-date derivation as the holdings rows this
+                    # accounts for — one calendar, never the machine's local one.
+                    "holdings_date": _utc_date(extracted_at),
+                    "holdings_count": counts[item_id],
+                    "transactions_window_start": window_by_item[item_id],
+                    "source_type": "plaid",
+                    "extracted_at": extracted_at,
+                    "loaded_at": loaded_at,
+                }
+                for item_id in sorted(reported_items)
+            ],
+            schema=_INVESTMENT_HOLDINGS_SNAPSHOTS_SCHEMA,
+        )
+        self.db.ingest_dataframe(
+            PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name, df, on_conflict="upsert"
+        )
+        SYNC_INVESTMENTS_RECORDS_LOADED.labels(
+            table="plaid_investment_holdings_snapshots"
+        ).inc(len(df))
+        logger.info(f"Recorded {len(df)} Plaid holdings-snapshot receipt(s)")
+        return len(df)
+
+    def _warn_amount_drift(self, transactions: list[SyncInvestmentTransaction]) -> None:
+        """Count buy/sell rows failing |amount| ~ |q*p| under BOTH fee conventions.
+
+        GOLDEN-GATED: Sandbox goldens settle whether Plaid amount is
+        fee-inclusive; until then the staging flip assumes inclusive and this
+        guard makes violations visible (log + metric, never a load failure).
+
+        Per-row tolerance is a cent plus half the unit-in-last-place of
+        Plaid's reported `price`, scaled by `quantity` — the largest
+        rounding error the wire price's own precision can hide. A price
+        rounded to 2dp on a 10,000-share position can hide up to ~$50 of
+        true gross; an absolute-cent tolerance would flag that row as
+        drifted even though the reconciliation is sound. Whoever settles
+        the fee-convention question from Sandbox goldens should read this
+        as "reconciles within reported-price rounding," not "reconciles
+        exactly."
+
+        `INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL` counts drift OCCURRENCES per
+        load() call, not distinct drifted rows — replaying the same job
+        re-counts the same row every time.
+        """
+        drifted = 0
+        for txn in transactions:
+            if txn.investment_transaction_type not in ("buy", "sell"):
+                continue
+            if txn.quantity is None or txn.price is None:
+                continue
+            gross = abs(txn.quantity * txn.price)
+            exponent = txn.price.as_tuple().exponent
+            if not isinstance(exponent, int):
+                # Non-int exponent means a non-finite Decimal (NaN/Inf).
+                # SyncInvestmentTransaction.price has no allow_inf_nan=False,
+                # so a malformed payload could reach here; skip it from
+                # drift-checking only -- the row itself still loads.
+                continue
+            ulp = Decimal(1).scaleb(exponent)
+            tolerance = Decimal("0.01") + abs(txn.quantity) * ulp / 2
+            fees = txn.fees or Decimal("0")
+            amount = abs(txn.amount)
+            candidates = (gross, gross + fees, gross - fees)
+            if all(abs(amount - c) > tolerance for c in candidates):
+                drifted += 1
+        if drifted:
+            INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL.inc(drifted)
+            logger.warning(
+                f"{drifted} Plaid investment transaction(s) failed amount "
+                "reconciliation under both fee conventions"
+            )
 
     def handle_removed_transactions(self, removed_ids: list[str]) -> int:
         """Delete transactions Plaid has removed; return the rowcount actually deleted.

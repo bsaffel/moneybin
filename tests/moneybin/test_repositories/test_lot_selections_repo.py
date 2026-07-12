@@ -161,12 +161,42 @@ def test_set_for_disposal_returns_audit_event(db: Database) -> None:
     assert event.target_id == "txn_1"
 
 
-def test_undo_of_set_event_raises_user_error(db: Database) -> None:
-    """The generic reverser can't reverse a collection-shaped audit row.
+def test_undo_of_set_restores_prior_selections(db: Database) -> None:
+    """Undoing a replace restores the exact prior (non-empty) set.
 
-    ``before``/``after`` here are ``{"investment_transaction_id", "selections"}``
-    dicts, not row-shaped by ``pk_columns`` — so ``_require_capture`` correctly
-    refuses to synthesize an inverse (no ``lot_id`` key to locate a row by).
+    ``before_value["selections"]`` is the complete prior list — undo replays
+    it through the same whole-set-replace path ``set_for_disposal`` uses.
+    """
+    repo = LotSelectionsRepo(db)
+    repo.set_for_disposal(
+        investment_transaction_id="txn_1",
+        selections=[("lot_a", Decimal("5")), ("lot_b", Decimal("2"))],
+        actor="cli",
+    )
+    event = repo.set_for_disposal(
+        investment_transaction_id="txn_1",
+        selections=[("lot_c", Decimal("7"))],
+        actor="cli",
+    )
+
+    inverse = repo.undo_event(event, actor="cli")
+
+    assert repo.list_for_disposal("txn_1") == [
+        ("lot_a", Decimal("5")),
+        ("lot_b", Decimal("2")),
+    ]
+    assert inverse is not None
+    assert inverse.action == "lot_selections.set.undo"
+    assert inverse.is_undo is True
+    assert inverse.undoes_operation_id == event.operation_id
+    assert inverse.target_id == "txn_1"
+
+
+def test_undo_of_first_set_clears_back_to_fifo(db: Database) -> None:
+    """Undoing the very first ``set`` for a disposal clears it, not a special case.
+
+    ``before_value["selections"]`` is simply an empty list here — the same
+    replay path used for a non-empty restore naturally clears the set.
     """
     repo = LotSelectionsRepo(db)
     event = repo.set_for_disposal(
@@ -174,8 +204,48 @@ def test_undo_of_set_event_raises_user_error(db: Database) -> None:
         selections=[("lot_a", Decimal("5"))],
         actor="cli",
     )
+
+    repo.undo_event(event, actor="cli")
+
+    assert repo.list_for_disposal("txn_1") == []
+
+
+def test_undo_of_noop_set_returns_none(db: Database) -> None:
+    """A ``set`` that leaves the set unchanged (before == after) has no inverse."""
+    repo = LotSelectionsRepo(db)
+    repo.set_for_disposal(
+        investment_transaction_id="txn_1",
+        selections=[("lot_a", Decimal("5"))],
+        actor="cli",
+    )
+    event = repo.set_for_disposal(
+        investment_transaction_id="txn_1",
+        selections=[("lot_a", Decimal("5"))],
+        actor="cli",
+    )
+
+    assert repo.undo_event(event, actor="cli") is None
+    assert repo.list_for_disposal("txn_1") == [("lot_a", Decimal("5"))]
+
+
+def test_undo_of_malformed_capture_raises_user_error(db: Database) -> None:
+    """A before/after image missing entirely (malformed capture) refuses cleanly."""
+    repo = LotSelectionsRepo(db)
+    malformed = AuditEvent(
+        audit_id="a1",
+        occurred_at="2024-01-01T00:00:00",
+        actor="cli",
+        action="lot_selections.set",
+        target_schema="app",
+        target_table="lot_selections",
+        target_id="txn_1",
+        before_value=None,
+        after_value={"investment_transaction_id": "txn_1", "selections": []},
+        parent_audit_id=None,
+        operation_id="op_1",
+    )
     with pytest.raises(UserError):
-        repo.undo_event(event, actor="cli")
+        repo.undo_event(malformed, actor="cli")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from moneybin import error_codes
 from moneybin.connectors.sync_errors import SyncError
 from moneybin.database import (
+    DatabaseCryptoError,
     DatabaseKeyError,
     DatabaseLockError,
     DatabaseNotInitializedError,
@@ -179,6 +180,18 @@ def classify_user_error(exc: BaseException) -> UserError | None:
             str(exc),
             code=error_codes.INFRA_WRONG_KEY,
             hint=database_key_error_hint(),
+        )
+    if isinstance(exc, DatabaseCryptoError):
+        # The exception already carries a crafted, actionable message (which
+        # extension is missing and why the first write needs network). Preserve
+        # it and add the one-line recovery hint the other Database*Errors carry.
+        return UserError(
+            str(exc),
+            code=error_codes.INFRA_CRYPTO_UNAVAILABLE,
+            hint=(
+                "💡 Run one write while online so DuckDB can fetch its crypto "
+                "extension from extensions.duckdb.org, then retry offline."
+            ),
         )
     if isinstance(exc, SchemaDriftError):
         return UserError(

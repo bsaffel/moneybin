@@ -8,10 +8,16 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
+from fastmcp.server.elicitation import (
+    AcceptedElicitation,
+    CancelledElicitation,
+    DeclinedElicitation,
+)
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.accounts import (
@@ -29,6 +35,83 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 # ---------------------------------------------------------------------------
 
 _NOW = datetime.now(tz=UTC).isoformat()
+
+
+def _fake_ctx(*, supports_elicit: bool, elicit_result: Any = None) -> MagicMock:
+    """Build a fake fastmcp Context with session + elicit wired.
+
+    Mirrors test_investments_securities_links_tools.py: the only elicitation
+    contract the tool depends on is check_client_capability + elicit.
+    """
+    ctx = MagicMock()
+    ctx.session.check_client_capability.return_value = supports_elicit
+    ctx.elicit = AsyncMock(return_value=elicit_result)
+    return ctx
+
+
+def _decision_row(decision_id: str) -> tuple[str, str]:
+    """Return (status, decided_by) for one decision."""
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT status, decided_by FROM app.account_link_decisions "
+            "WHERE decision_id = ?",
+            [decision_id],
+        ).fetchone()
+    assert row is not None
+    return str(row[0]), str(row[1])
+
+
+def _decision_status(decision_id: str) -> str:
+    return _decision_row(decision_id)[0]
+
+
+def _seed_account(account_id: str, display_name: str) -> None:
+    """Make ``account_id`` resolvable (with a display name) in core.dim_accounts."""
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO core.dim_accounts "
+            "(account_id, account_type, institution_name, display_name) "
+            "VALUES (?, 'CHECKING', 'Test Bank', ?)",
+            [account_id, display_name],
+        )
+
+
+def _seed_source_native_link(account_id: str, link_id: str) -> None:
+    """Accepted source_native link — without one the merge has nothing to re-point."""
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.account_links
+                (link_id, account_id, ref_kind, ref_value,
+                 source_type, source_origin, status, decided_by, decided_at)
+            VALUES (?, ?, 'source_native', ?, 'csv', 'bank_a', 'accepted', 'auto', ?)
+            """,  # noqa: S608  # test input, not executing SQL
+            [link_id, account_id, f"key_{account_id}", _NOW],
+        )
+
+
+def _merge_setup(
+    *,
+    decision_id: str = "dg001",
+    provisional: str = "PROV_GATE",
+    candidate: str = "ACC_GATE",
+) -> dict[str, str]:
+    """A mergeable pending proposal: both accounts named, provisional re-pointable."""
+    _seed_account(provisional, "Chase Checking (imported)")
+    _seed_account(candidate, "Chase Checking")
+    _seed_source_native_link(provisional, f"lnk_{decision_id}")
+    _insert_decision(
+        decision_id=decision_id,
+        provisional_account_id=provisional,
+        candidate_account_id=candidate,
+        confidence=0.62,
+        signal="name",
+    )
+    return {
+        "decision_id": decision_id,
+        "provisional": provisional,
+        "candidate": candidate,
+    }
 
 
 def _insert_decision(
@@ -188,45 +271,41 @@ class TestAccountsLinksSet:
 
     async def test_accept_returns_envelope(self, mcp_db: object) -> None:
         """accounts_links_set (accept) returns a valid ResponseEnvelope."""
-        _insert_decision(
-            decision_id="ds001",
-            provisional_account_id="PROV_S1",
-            candidate_account_id="ACC001",
+        setup = _merge_setup(decision_id="ds001")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
-        parsed = (
-            await accounts_links_set(decision_id="ds001", target_account_id="ACC001")
-        ).to_dict()
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id=setup["candidate"],
+                )
+            ).to_dict()
         assert "summary" in parsed
         assert "data" in parsed
 
     async def test_accept_payload_status_accepted(self, mcp_db: object) -> None:
-        """Accepting a decision returns status='accepted' in payload."""
-        _insert_decision(
-            decision_id="ds010",
-            provisional_account_id="PROV_S2",
-            candidate_account_id="ACC001",
+        """Accepting a decision (after a confirmed elicitation) returns status='accepted'."""
+        setup = _merge_setup(decision_id="ds010", provisional="PROV_S2")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
-        # Also need an account_links row so the repoint doesn't error
-        with get_database(read_only=False) as db:
-            db.execute(
-                """
-                INSERT INTO app.account_links
-                    (link_id, account_id, ref_kind, ref_value,
-                     source_type, source_origin, status, decided_by, decided_at)
-                VALUES ('lnk001', 'PROV_S2', 'source_native', 'key_s2',
-                        'csv', 'bank_a', 'accepted', 'auto', ?)
-                """,  # noqa: S608  # test input, not executing SQL
-                [_NOW],
-            )
-
-        data = (
-            await accounts_links_set(decision_id="ds010", target_account_id="ACC001")
-        ).to_dict()["data"]
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            data = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id=setup["candidate"],
+                )
+            ).to_dict()["data"]
         assert data["decision_id"] == "ds010"
         assert data["status"] == "accepted"
+        assert _decision_status("ds010") == "accepted"
 
-    async def test_standalone_null_returns_rejected(self, mcp_db: object) -> None:
-        """Passing target_account_id=None returns status='rejected'."""
+    async def test_reject_returns_rejected(self, mcp_db: object) -> None:
+        """action='reject' returns status='rejected' with no elicitation."""
         _insert_decision(
             decision_id="ds020",
             provisional_account_id="PROV_S3",
@@ -234,9 +313,33 @@ class TestAccountsLinksSet:
         )
 
         data = (
-            await accounts_links_set(decision_id="ds020", target_account_id=None)
+            await accounts_links_set(decision_id="ds020", action="reject")
         ).to_dict()["data"]
         assert data["status"] == "rejected"
+
+    async def test_wrong_target_refuses_before_prompting(self, mcp_db: object) -> None:
+        """A mismatched target must refuse, not merge into the wrong account.
+
+        The refusal must land BEFORE the human is asked — a doomed merge is
+        never worth a confirmation.
+        """
+        setup = _merge_setup(decision_id="ds025", provisional="PROV_S25")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id="ACC002",
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+        ctx.elicit.assert_not_called()
 
     async def test_set_sensitivity_is_low(self, mcp_db: object) -> None:
         """accounts_links_set response carries low sensitivity."""
@@ -246,7 +349,7 @@ class TestAccountsLinksSet:
             candidate_account_id="ACC001",
         )
         parsed = (
-            await accounts_links_set(decision_id="ds030", target_account_id=None)
+            await accounts_links_set(decision_id="ds030", action="reject")
         ).to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
 
@@ -258,10 +361,250 @@ class TestAccountsLinksSet:
             candidate_account_id="ACC001",
         )
         result = (
-            await accounts_links_set(decision_id="ds040", target_account_id=None)
+            await accounts_links_set(decision_id="ds040", action="reject")
         ).to_dict()
         actions_text = " ".join(result["actions"])
         assert "accounts_links_pending" in actions_text
+
+
+# ---------------------------------------------------------------------------
+# accounts_links_set — accept gating + explicit action
+# ---------------------------------------------------------------------------
+
+
+class TestAccountsLinksSetAcceptGate:
+    """Accepting an account merge requires explicit human agreement via elicitation.
+
+    Every pending decision is BY CONSTRUCTION a weak inference (the resolver
+    only proposes when it cannot bind unambiguously), and accepting one fuses
+    two accounts' transaction histories and balances.
+    `.claude/rules/design-principles.md` ("Magic stays visible") forbids agent
+    self-accept of a weak inference at any confidence score.
+    """
+
+    async def test_accept_hard_fails_when_client_cannot_elicit(
+        self, mcp_db: object
+    ) -> None:
+        """A tools-only client MUST NOT be able to accept — no fall-through."""
+        setup = _merge_setup(decision_id="dg010", provisional="PROV_G10")
+        ctx = _fake_ctx(supports_elicit=False)
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id=setup["candidate"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        hint = parsed["error"]["hint"]
+        assert "moneybin accounts links set" in hint
+        assert "--into" in hint
+        assert _decision_status(setup["decision_id"]) == "pending"
+        ctx.elicit.assert_not_called()
+
+    async def test_accept_hard_fails_when_no_active_context(
+        self, mcp_db: object
+    ) -> None:
+        """No MCP request context at all (no client to confirm) must not accept."""
+        setup = _merge_setup(decision_id="dg020", provisional="PROV_G20")
+
+        with patch(
+            "moneybin.mcp.elicitation.get_context",
+            side_effect=RuntimeError("No active context found."),
+        ):
+            parsed = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id=setup["candidate"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_declined_elicitation_does_not_accept(self, mcp_db: object) -> None:
+        """A declined confirmation leaves the decision pending — never accepts."""
+        setup = _merge_setup(decision_id="dg030", provisional="PROV_G30")
+        ctx = _fake_ctx(supports_elicit=True, elicit_result=DeclinedElicitation())
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id=setup["candidate"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert _decision_status(setup["decision_id"]) == "pending"
+        ctx.elicit.assert_awaited_once()
+
+    async def test_cancelled_elicitation_does_not_accept(self, mcp_db: object) -> None:
+        """A cancelled confirmation is not agreement either."""
+        setup = _merge_setup(decision_id="dg040", provisional="PROV_G40")
+        ctx = _fake_ctx(supports_elicit=True, elicit_result=CancelledElicitation())
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id=setup["candidate"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_elicitation_message_names_both_accounts_and_reason(
+        self, mcp_db: object
+    ) -> None:
+        """The human must see BOTH accounts being fused and why it was proposed."""
+        setup = _merge_setup(decision_id="dg050", provisional="PROV_G50")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            await accounts_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                target_account_id=setup["candidate"],
+            )
+
+        message = ctx.elicit.await_args.args[0]
+        # Provisional (merged away): id + display name.
+        assert setup["provisional"] in message
+        assert "Chase Checking (imported)" in message
+        # Survivor (merged into): id + display name.
+        assert setup["candidate"] in message
+        assert "Chase Checking" in message
+        # Why the resolver could not decide on its own.
+        assert "name" in message
+        assert "0.62" in message
+
+    async def test_accept_after_confirmation_records_decided_by_user(
+        self, mcp_db: object
+    ) -> None:
+        """decided_by='user' is only truthful once a human actually confirmed."""
+        setup = _merge_setup(decision_id="dg060", provisional="PROV_G60")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            await accounts_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                target_account_id=setup["candidate"],
+            )
+
+        assert _decision_row(setup["decision_id"]) == ("accepted", "user")
+
+    async def test_reject_records_decided_by_auto(self, mcp_db: object) -> None:
+        """An MCP reject no human ratified must NOT be recorded as decided_by='user'."""
+        _insert_decision(
+            decision_id="dg070",
+            provisional_account_id="PROV_G70",
+            candidate_account_id="ACC001",
+        )
+
+        await accounts_links_set(decision_id="dg070", action="reject")
+
+        assert _decision_row("dg070") == ("rejected", "auto")
+
+
+class TestAccountsLinksSetActionInput:
+    """`action` is explicit; accept/reject is never inferred from the target."""
+
+    async def test_empty_target_is_an_input_error_not_a_reject(
+        self, mcp_db: object
+    ) -> None:
+        """An empty-string target must NOT silently become a permanent reject."""
+        setup = _merge_setup(decision_id="di010", provisional="PROV_I10")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id="",
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_accept_without_target_is_an_input_error(
+        self, mcp_db: object
+    ) -> None:
+        """action='accept' with no target is an input error, never a reject."""
+        setup = _merge_setup(decision_id="di020", provisional="PROV_I20")
+        parsed = (
+            await accounts_links_set(decision_id=setup["decision_id"], action="accept")
+        ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_reject_with_target_is_an_input_error(self, mcp_db: object) -> None:
+        """A target alongside action='reject' is contradictory input, not a reject."""
+        setup = _merge_setup(decision_id="di030", provisional="PROV_I30")
+        parsed = (
+            await accounts_links_set(
+                decision_id=setup["decision_id"],
+                action="reject",
+                target_account_id=setup["candidate"],
+            )
+        ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_unknown_action_is_an_input_error_listing_valid_values(
+        self, mcp_db: object
+    ) -> None:
+        """An unrecognized action names the valid values instead of guessing."""
+        setup = _merge_setup(decision_id="di040", provisional="PROV_I40")
+        parsed = (
+            await accounts_links_set(decision_id=setup["decision_id"], action="merge")
+        ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert "accept" in parsed["error"]["message"]
+        assert "reject" in parsed["error"]["message"]
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_unknown_decision_id_is_not_found(self, mcp_db: object) -> None:
+        """A decision_id with no pending decision cannot be accepted."""
+        _merge_setup(decision_id="di050", provisional="PROV_I50")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await accounts_links_set(
+                    decision_id="dnotthere01",
+                    action="accept",
+                    target_account_id="ACC001",
+                )
+            ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_not_found"
+        ctx.elicit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -448,12 +791,17 @@ class TestAccountsLinksActor:
     async def test_set_uses_mcp_actor(
         self, mock_set: MagicMock, mock_get_db: MagicMock
     ) -> None:
-        """accounts_links_set calls AccountLinksService with actor='mcp'."""
+        """accounts_links_set calls AccountLinksService with actor='mcp'.
+
+        The reject path records decided_by='auto': no human ratified it, and
+        the column's CHECK admits only 'auto' | 'user'. The MCP channel itself
+        is preserved in app.audit_log (actor='mcp').
+        """
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__.return_value = mock_db
 
-        await accounts_links_set(decision_id="d_actor", target_account_id=None)
+        await accounts_links_set(decision_id="d_actor", action="reject")
 
         mock_set.assert_called_once_with(
-            "d_actor", target_account_id=None, decided_by="user"
+            "d_actor", target_account_id=None, decided_by="auto"
         )

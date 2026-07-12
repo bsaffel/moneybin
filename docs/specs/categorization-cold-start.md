@@ -227,7 +227,7 @@ CREATE TABLE IF NOT EXISTS app.user_merchants (
 
 ### View: `core.dim_merchants`
 
-A thin SELECT over `app.user_merchants`. Defined in `sqlmesh/models/core/dim_merchants.sql`; the equivalent view is built directly in `src/moneybin/seeds.py:refresh_views` for fresh test DBs so the dim is available before the first SQLMesh transform run.
+A thin SELECT over `app.user_merchants`. Defined in `src/moneybin/sqlmesh/models/core/dim_merchants.sql`; the equivalent view is built directly in `src/moneybin/seeds.py:refresh_views` for fresh test DBs so the dim is available before the first SQLMesh transform run.
 
 ### Enum additions
 
@@ -442,13 +442,13 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 
 ## Implementation Plan
 
-> **Implementation Plan (historical record — superseded 2026-05-15).** The original plan provisioned seed merchant CSVs (`sqlmesh/models/seeds/merchants_{global,us,ca}.*`), the `app.merchant_overrides` schema, and view assembly that unioned seeds into `app.merchants`. Those artifacts shipped, were never populated, and were retired in the seed-removal cleanup. The remaining infrastructure (`app.user_merchants` schema, `redact_for_llm`, `transactions_categorize_assist`, the rename to `categorize_commit` / `auto_accept`, the CLI bridge) is in place. The lists below are kept for traceability of what shipped, not as a forward plan.
+> **Implementation Plan (historical record — superseded 2026-05-15).** The original plan provisioned seed merchant CSVs (`src/moneybin/sqlmesh/models/seeds/merchants_{global,us,ca}.*`), the `app.merchant_overrides` schema, and view assembly that unioned seeds into `app.merchants`. Those artifacts shipped, were never populated, and were retired in the seed-removal cleanup. The remaining infrastructure (`app.user_merchants` schema, `redact_for_llm`, `transactions_categorize_assist`, the rename to `categorize_commit` / `auto_accept`, the CLI bridge) is in place. The lists below are kept for traceability of what shipped, not as a forward plan.
 
 ### Files to Create
 
-- ~~`sqlmesh/models/seeds/merchants_global.sql` + `.csv`~~ (retired 2026-05-15)
-- ~~`sqlmesh/models/seeds/merchants_us.sql` + `.csv`~~ (retired 2026-05-15)
-- ~~`sqlmesh/models/seeds/merchants_ca.sql` + `.csv`~~ (retired 2026-05-15)
+- ~~`src/moneybin/sqlmesh/models/seeds/merchants_global.sql` + `.csv`~~ (retired 2026-05-15)
+- ~~`src/moneybin/sqlmesh/models/seeds/merchants_us.sql` + `.csv`~~ (retired 2026-05-15)
+- ~~`src/moneybin/sqlmesh/models/seeds/merchants_ca.sql` + `.csv`~~ (retired 2026-05-15)
 - `src/moneybin/sql/schema/app_user_merchants.sql`
 - ~~`src/moneybin/sql/schema/app_merchant_overrides.sql`~~ (retired 2026-05-15)
 - `src/moneybin/mcp/tools/transactions_categorize_assist.py` — new MCP tool

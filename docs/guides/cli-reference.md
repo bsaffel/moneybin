@@ -192,7 +192,7 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 | `sync link [<institution>]` | Link a new institution via Plaid Hosted Link. Prints URL to stderr and (optionally) opens the browser. | `--no-browser` |
 | `sync link-status` | Show pending link state (after `sync link` started). | — |
 | `sync disconnect <item-id>` | Disconnect a linked institution. | `-y, --yes` |
-| `sync pull [<item-id>]` | Pull new transactions and run the refresh pipeline. Use without an item-id to pull every connected institution. | `--refresh/--no-refresh`, `--since`, `--full` |
+| `sync pull [<item-id>]` | Pull new transactions (and, for brokerage/retirement accounts, securities, investment transactions, and holdings) and run the refresh pipeline. Use without an item-id to pull every connected institution. | `--refresh/--no-refresh`, `--since`, `--full` |
 | `sync status` | Show last-sync timestamps and pending-cursor state per linked institution. | — |
 | `sync key rotate` | Rotate the sync server's encryption key. | — |
 | `sync schedule set <cron>` | Configure a scheduled sync job. | — |
@@ -370,10 +370,13 @@ Investment ledger, positions, tax lots, realized gains, and the manually-maintai
 | `investments securities list` | List the securities catalog. | `--type` |
 | `investments securities add` | Add one security to the catalog. | `--name`, `--type`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--cash-equivalent`, `--method`, `--currency` |
 | `investments securities set <security-id>` | Partial update of one security. At least one field flag required. | `--name`, `--ticker`, `--exchange`, `--cusip`, `--isin`, `--figi`, `--coingecko-id`, `--method`, `--currency` |
+| `investments securities links pending` | List pending security merge decisions the Plaid sync resolver couldn't auto-bind (identifier tie, stripped ticker, fuzzy name), grouped by provider ref. | — |
+| `investments securities links set <decision-id>` | Accept (merge) or reject one pending decision. `--into` is a confirming check — it must equal the decision's own candidate security id. | `--accept --into <candidate-security-id>`, `--reject` |
+| `investments securities links history` | Show recent security-link decisions of any status. | `--limit` |
 
 The per-account cost-basis default is a field on `accounts set --default-cost-basis-method`; the per-security override is `investments securities set --method`.
 
-**Related guides:** [`investments-data-model.md`](../specs/investments-data-model.md).
+**Related guides:** [`investments-data-model.md`](../specs/investments-data-model.md), [`sync-plaid-investments.md`](../specs/sync-plaid-investments.md).
 
 ## Reports
 

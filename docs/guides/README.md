@@ -35,6 +35,7 @@ Running MoneyBin unattended — cron, containers, multiple machines. No standalo
 
 The MCP server and the chat clients that talk to it.
 
+- **[Setting up Claude Desktop](setting-up-claude-desktop.md)** — The fastest path from install to asking Claude about your own money: one command, a restart, a first question.
 - **[MCP Server](mcp-server.md)** — Tool catalog, response envelope, sensitivity tiers, and the action-hint chaining model.
 - **[MCP Clients](mcp-clients.md)** — Install and configure the chat clients MoneyBin is tested against.
 

@@ -320,7 +320,7 @@ Tests:
 - `src/moneybin/services/account_service.py` — add settings CRUD, soft-validation classifier, summary aggregator; extend list / show / get with new fields
 - `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`reports-net-worth.md`](reports-net-worth.md) hasn't already (the two specs split the cleanup)
 - `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `moneybin-cli.md` v2)
-- `sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
+- `src/moneybin/sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
 - `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary` and `accounts_set` (single write tool covering structural + behavioral fields after the Group 13 collapse); extend `accounts` with `redacted` param and revised sensitivity
 - `src/moneybin/mcp/resources/` — add `accounts://summary` resource
 - `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers

@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+implemented
 
 ## Goal
 
@@ -386,6 +386,59 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings (
 );
 ```
 
+#### `raw.plaid_investment_holdings_snapshots`
+
+The **receipt** that an item's holdings were fetched, written on every pull —
+**including the pull that returns zero positions**. `raw.plaid_investment_holdings`
+records holding *rows*, so it cannot distinguish "this item reported nothing
+(every position sold)" from "this item never reported / the pull didn't cover
+it": an item whose holdings array comes back empty writes no rows at all, and a
+newest-snapshot join keyed on those rows silently keeps the last **non-empty**
+snapshot from an earlier pull. The fully-liquidated broker — MoneyBin claiming
+every position while the broker claims none, the largest possible net-worth
+overstatement — is then exactly the case that evades reconciliation: `dim_holdings`
+reports the stale quantity as the broker's current claim, and the doctor's
+phantom-holdings check reads that non-NULL claim as "still held" and passes.
+
+Every consumer that needs *"the newest holdings snapshot for this item"*
+(`core.dim_holdings`, the doctor's holdings checks) derives it from **here**, never
+from the presence of holdings rows. An item that reported nothing then has an
+**empty** newest snapshot (no holdings row joins to it → `provider_reported_*` NULL
+→ its lots surface as phantoms); an item that never reported has **no** newest
+snapshot (its positions stay out of scope, so a disconnected broker is not read as
+liquidated). Absence of evidence stops being read as evidence of absence.
+
+An item counts as having reported iff the server declared an investments window
+for it (`metadata.institutions[].transactions_window_start`, its
+`/investments/transactions/get` start boundary) on a `completed` result — the only
+wire signal that the server ran that item's investments flow. A **failed** item and
+a **cash-only** item (no window) get no receipt: claiming either "was asked and
+answered nothing" would flag every lot at that institution as a phantom. Items that
+*did* deliver holdings are included unconditionally, which holds the invariant every
+newest-snapshot consumer depends on: **no holdings row exists whose
+`(source_origin, source_file)` has no receipt.**
+
+```sql
+/* Receipt that an item's holdings were FETCHED, one row per (item, pull) — written even when the item returns ZERO positions. */
+CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
+    source_origin VARCHAR NOT NULL,           -- Plaid item_id; the item that reported (part of the PK)
+    source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK), same as the holdings rows it accounts for
+    holdings_date DATE,                       -- Snapshot calendar date = extracted_at::DATE (UTC); same derivation as raw.plaid_investment_holdings.holdings_date
+    holdings_count INTEGER NOT NULL,          -- Positions this item returned in this snapshot; 0 = the item reported and holds NOTHING (the case this table exists to record)
+    transactions_window_start DATE NOT NULL,  -- Per-item metadata.transactions_window_start, mirrored from the holdings rows this accounts for. Also stored on raw.plaid_investment_holdings, but that table is EMPTY for exactly the item that reported nothing — so a consumer asking "when did this item's window open" for a liquidated broker has nowhere else to read it. NOT NULL holds because the receipt is written iff the server declared a window.
+    source_type VARCHAR NOT NULL              -- Always 'plaid' for this table
+        DEFAULT 'plaid',
+    extracted_at TIMESTAMP                    -- When the server fetched this snapshot from Plaid; orders snapshots for the newest-snapshot join
+        DEFAULT CURRENT_TIMESTAMP,
+    loaded_at TIMESTAMP                       -- When this record was inserted into the local database
+        DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (source_origin, source_file)
+);
+```
+
+Staged as `prep.stg_plaid__investment_holdings_snapshots` (passthrough — the grain
+is the item and the snapshot, so there is no account or security id to resolve).
+
 #### `raw.plaid_investment_holding_lots`
 
 Plaid's `Holding.tax_lots[]` is a per-lot array — one `HoldingTaxLot` entry per
@@ -531,8 +584,8 @@ security:
 | Rung | Condition | Action | Visibility |
 |---|---|---|---|
 | 1 | provider ref already in `security_links` (`accepted`) | **adopt** that `security_id` | silent — near-certain |
-| 2 | unbound; **strong identifier** matches exactly one catalog entry: CUSIP or ISIN equality (when present) auto-binds outright — exchange is irrelevant at this rung. Absent CUSIP/ISIN, an exact ticker match (foundation resolution chain, incl. the `BRK.B`-first / suffix-strip-second rule) auto-binds only with **exchange agreement on normalized MIC** (see below). A ticker match whose normalized exchanges *contradict* (both resolve to different MICs) → **falls to rung 3** rather than silently binding a possibly-wrong `security_id`. **Refuse-to-merge on ambiguity:** one identifier (CUSIP, ISIN, or ticker) matching **more than one** catalog entry is a genuine ambiguity — typically a catalog duplicate — and **falls to rung 3 with every tied candidate**; the resolver never auto-picks among ties (a wrong silent merge corrupts cost basis irreversibly) | **auto-bind** (`decided_by='auto'`) | silent, reversible |
-| 3 | unbound; flagged candidate(s) from rung 2 (identifier tie, exchange contradiction) or a name-fuzzy match (no contradicting strong identifier — Guard 2) | **provisional-mint + propose merge**: mint into `app.securities` (`created_by='plaid'`) and bind — then file a pending `security_link_decisions` row **per flagged candidate** (`match_reason` = `identifier_tie` / `exchange_contradiction` / `fuzzy_name`) proposing a **merge** of the minted security into that candidate. Sibling decisions for one ref auto-reject on accept, so a tie resolves with a single review action | **surfaced** for review |
+| 2 | unbound; **strong identifier** matches exactly one catalog entry: CUSIP or ISIN equality (when present) auto-binds outright — exchange is irrelevant at this rung. Absent CUSIP/ISIN, an **exact** ticker match auto-binds only with **exchange agreement on normalized MIC** (see below). A ticker match whose normalized exchanges *contradict* (both resolve to different MICs) → **falls to rung 3** rather than silently binding a possibly-wrong `security_id`. **Only an exact ticker binds here** — a hit found by stripping a suffix (`VOD.L` → `VOD`) falls to rung 3, never auto-binds (see below). **Refuse-to-merge on ambiguity:** one identifier (CUSIP, ISIN, or ticker) matching **more than one** catalog entry is a genuine ambiguity — typically a catalog duplicate — and **falls to rung 3 with every tied candidate**; the resolver never auto-picks among ties (a wrong silent merge corrupts cost basis irreversibly) | **auto-bind** (`decided_by='auto'`) | silent, reversible |
+| 3 | unbound; flagged candidate(s) from rung 2 (identifier tie, exchange contradiction, **stripped-ticker hit**) or a name-fuzzy match (no contradicting strong identifier — Guard 2) | **provisional-mint + propose merge**: mint into `app.securities` (`created_by='plaid'`) and bind — then file a pending `security_link_decisions` row **per flagged candidate** (`match_reason` = `identifier_tie` / `exchange_contradiction` / `ticker_suffix_strip` / `fuzzy_name`) proposing a **merge** of the minted security into that candidate. Sibling decisions for one ref auto-reject on accept, so a tie resolves with a single review action | **surfaced** for review |
 | 4 | no candidate | **mint** into `app.securities` (`created_by='plaid'`, defensive type mapping below) + bind | silent; visible via `created_by` |
 
 **Exchange agreement is on normalized MIC, never raw strings.** `app.securities.exchange`
@@ -565,6 +618,17 @@ unchanged either way. Comparison rules on the normalized value:
 This is the whole fix for the round-4/round-5 exchange tension: the signal is
 compared in one vocabulary, so real matches agree and only true cross-listing
 ambiguity falls to review.
+
+**A stripped ticker is a proposal, never a bind** (`match_reason =
+'ticker_suffix_strip'`). Stripping cannot distinguish an exchange suffix
+(`VOD.L`) from a share-class (`HEI.A`) or preferred-series (`BAC-PL`) one, and
+those list on the *same* exchange as their stem — so MIC agreement confirms
+rather than discriminates, and Plaid's license-gated CUSIP/ISIN (NULL in
+practice) leave no stronger signal to catch the error. Worse than a tie: the
+strip *manufactures* a unique hit, so refuse-to-merge-on-ambiguity never engages
+and the row auto-binds — fusing two instruments' tax lots irreversibly. Every
+stem hit is flagged instead. The cost is bounded: the user confirms `VOD.L` →
+`VOD` once, and rung 1 adopts that binding silently on every later sync.
 
 Rung 3 mints *before* review (the account-identity precedent: mint-now,
 merge-later) because holding rows out of the ledger until review is a silent
@@ -623,6 +687,17 @@ The heaviest view in this spec. In order:
    resolver binds on every rung (adopt / auto-bind / provisional-mint / mint),
    every security-bearing row resolves — NULL reaches core only for cash-only
    events, which is exactly the set the cost-basis engine is designed to skip.
+   **Deliberately asymmetric with `account_id`.** `account_id` falls back to
+   the unresolved source-native id when no binding exists (the
+   `stg_plaid__balances` precedent) — an unresolved account is still a valid
+   identifier for downstream account-scoped joins. `security_id` carries no
+   equivalent fallback: a Plaid provider id sitting in the canonical column
+   would sail straight past `cost_basis.py`'s `if security_id is None:
+   continue` guard, get treated as a real canonical security, and silently
+   corrupt basis. Since the resolver binds on every rung this fallback is
+   unreachable in practice, so NULL-passthrough costs nothing — it just keeps
+   the one path that matters (a genuinely cash-only event) honest and
+   detectable instead of masked.
 2. **Exclude** lifecycle rows: `cancel` (any subtype), `cash/pending credit`,
    `cash/pending debit`, `transfer/request`. (`cancel_transaction_id` is a
    deprecated dead field — never build on it.)
@@ -638,7 +713,7 @@ The heaviest view in this spec. In order:
    | buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source (`dividend`/`interest`/`capital_gain`); the paired Plaid income row maps to its own income type, linked by `event_group_id` |
    | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
    | sell/sell | `sell` | |
-   | buy/buy to cover, sell/sell short | `other` | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids |
+   | buy/buy to cover, sell/sell short | `other`, `quantity` NULLed | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids. MoneyBin models no short positions, so the share count is not a ledger quantity — see the `other`-quantity guard below |
    | sell/distribution | `transfer_out` | in-kind outflow from tax-advantaged account |
    | transfer/stock distribution | `transfer_in` | in-kind **inflow** of shares (stock dividend / distribution) — opens a lot carrying supplied basis, or a `basis_incomplete` lot when none is given. **Must not fall to `other`**: `other` is not an acquisition type, so the engine would skip it and the shares would never enter holdings |
    | cash-or-fee/{account, legal, management, transfer, trust, fund, miscellaneous} fee, margin expense | `fee` | |
@@ -649,10 +724,18 @@ The heaviest view in this spec. In order:
    | fee/return of principal | `return_of_capital` | |
    | cash/{contribution, deposit} | `deposit` | NULL security |
    | cash/withdrawal | `withdrawal` | NULL security |
-   | transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign |
+   | transfer/{transfer, send} | `transfer_in`/`transfer_out` (security present) or `deposit`/`withdrawal` (cash-only) | direction by sign — `quantity` when a security is present (falling back to the amount sign only when `quantity = 0`, since Plaid never sends NULL for that field), the Plaid `amount` sign alone for cash-only. A cash-only transfer is a cash movement, not a share movement, so it takes the cash vocabulary instead of leaving a NULL-security `transfer_in`/`transfer_out` |
    | transfer/split | `split` | **quantity must be converted to a multiplier** — see the split-normalization note below; a raw passthrough corrupts every lot |
    | transfer/{merger, spin off, trade} | decomposed leg pairs | Plaid delivers each leg as its own row; `event_group_id` **links** them (same mechanism as reinvest pairs, below) — staging never fabricates a leg |
    | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
+
+   **`other`-quantity guard.** Every row explicitly mapped to `other` (option
+   legs, short legs, adjustment/loan payment/rebalance) carries a NULL
+   `quantity` — `other` is excluded from the lot engine by construction, so a
+   raw share count must never masquerade as a ledger-affecting one (mirrors
+   the ledger's own `_QTY_NULL` invariant in `investment_service.py`). A row
+   that instead falls to `other` via the unlisted-subtype default below keeps
+   its raw quantity, since that value is exactly what routes it to review.
 
    **Unlisted-subtype guard.** Plaid may add subtype enum values over time.
    A subtype with no explicit branch defaults to `other` **only when it is
@@ -851,8 +934,10 @@ for a security with zero transactions in that first window.
    date to just before `W`** (so the opening lot is processed *before* every
    in-window disposal; otherwise an in-window sell runs first and goes oversold).
 5. **Known basis, unknown date.** A lot with a real `cost_basis` but NULL
-   `original_purchase_datetime` still opens with that basis (dated at `W`, term
-   flagged) — its basis is never discarded to the residual.
+   `original_purchase_datetime` still opens with that basis, dated at `W` — a
+   **synthetic** acquisition date, not a recovered one, so the holding-period term
+   computed from it is understated by design (nothing downstream marks the term
+   itself uncertain). Its basis is never discarded to the residual.
 6. **Residual (`amount = NULL`).** Any part of `G` the eligible lots cannot
    cover — the pre-window-sold sliver, or an institution reporting no lot for
    part of the position — opens as a single `basis_incomplete` row, **dated
@@ -876,20 +961,51 @@ security has an in-window `split`: that `(account, security)` is routed to
 `system doctor` review instead of synthesizing a row. A documented, visible v1
 limitation — like the cancel/removal boundary above — not silent corruption.
 
+**Fully-sold pre-window positions route to review, too.** Plaid never reports a
+*closed* position, so a pre-window position that was fully sold before the first
+snapshot leaves **no** `raw.plaid_investment_holdings` row at all — it never
+reaches the guards above (they all key off a holdings row) and, without an
+explicit check, would sail past both `stg_plaid__opening_lots` and
+`stg_plaid__opening_lot_review` invisibly: the in-window sell finds no lot to
+consume and realizes a fully-taxed zero-basis phantom gain that `basis_incomplete`
+flags but nothing explains. `prep.stg_plaid__opening_lot_review` closes this gap
+directly: any in-window `sell`/`transfer_out` for an `(account, security)` with
+no holdings row in **any** snapshot is flagged `sold_out_prewindow`.
+
+The window bound that makes "in-window" meaningful is read from the item's first
+snapshot **receipt**, never from its holdings rows. `transactions_window_start` is
+item-level metadata, but the only other table carrying it is
+`raw.plaid_investment_holdings` — which has no row at all for an account whose
+broker reported zero positions. Keying the window on those rows would drop the
+*fully-liquidated* account outright, taking every disposal it ever made out of the
+review queue: the largest possible instance of precisely the gap being checked for.
+The receipt is written whenever the item reported, empty or not, so it is the one
+anchor that survives an empty snapshot. (`int_plaid__opening_positions` still
+anchors on holdings rows, correctly — it asks which *positions* the first snapshot
+held, and an empty snapshot held none. This asks *when* the window opened, which an
+empty snapshot still knows.)
+
 **Determinism & idempotence.** Each synthetic row carries a
 `plaid_opening_`-prefixed content-hash `investment_transaction_id` (the
 source-specific prefix `identifiers.md` requires, matching `lot_`/`manual_`
-elsewhere) over `(account_id, security_id, lot_key,
-original_acquisition_date, cost_basis, 'opening_bootstrap')`, where `lot_key` is
-the lot's `institution_lot_id` when the broker supplies one, else its position
-**within the frozen first snapshot** (§ Inputs); the residual uses a reserved
+elsewhere) over `(source_origin, account_id, security_id, lot_key,
+original_acquisition_date, cost_basis, 'opening_bootstrap')`. `source_origin` is
+included because `(account_id, security_id)` is only unique **within** a Plaid
+item (§ raw PK). `lot_key` **always** carries the lot's position within the
+frozen first snapshot (§ Inputs) — `institution_lot_id`, when the broker
+supplies one, is appended to that positional key, never substituted for it, so
+two lots sharing one broker-supplied `institution_lot_id` still hash to distinct
+ids instead of colliding onto one engine `lot_id`; the residual uses a reserved
 sentinel. Because the bootstrap reads only that immutable first snapshot, even
-the positional fallback is stable across syncs though Plaid may reorder
-`tax_lots[]` later — so the synthetic `investment_transaction_id`, the engine
-`lot_id` hashed from it, and any `app.lot_selections` pointing at those lots
-never churn on a re-sync. Because the rows live in the ledger, lots/gains/
-holdings derive from them through the unchanged engine — no special-casing
-downstream.
+the positional component is stable across syncs though Plaid may reorder
+`tax_lots[]` later — but that freezes only the holdings side (`lot_key`,
+`original_acquisition_date`); `cost_basis` on a boundary lot derives from
+`gap_qty`, which reads the transaction window and is **not** frozen. So the
+synthetic `investment_transaction_id`, the engine `lot_id` hashed from it, and
+any `app.lot_selections` pointing at those lots are stable against a **later
+snapshot** — never against an in-window transaction correction landing after the
+fact. Because the rows live in the ledger, lots/gains/holdings derive from them
+through the unchanged engine — no special-casing downstream.
 
 **Snapshot is authoritative; the ledger is reconciled to it.** `tax_lots[]` are
 the *survivors* of any in-window disposal, and the engine elects its own
@@ -937,7 +1053,7 @@ exact for held shares and flagged only where genuinely unrecoverable.
 |---|---|
 | `core.dim_securities` | **None** (stays a catalog view over `app.securities`). The v1 model's `-- Future: UNION ALL resolved securities from prep.stg_plaid__securities` comment is superseded — minting puts every synced security *in* the catalog, so a union would double-count. Update the comment in place. |
 | `core.fct_investment_transactions` | Add **two** Plaid CTEs — `plaid_investment_transactions` (from `prep.stg_plaid__investment_transactions`) **and** `plaid_opening_lots` (from `prep.stg_plaid__opening_lots`, the Requirement 13 bootstrap `transfer_in`s) — both `UNION ALL`'d with the manual staging model (the extension point foundation Requirement 7 reserved). Without the `plaid_opening_lots` branch the bootstrap model is built but never reaches the ledger, so pre-window sells still take the oversold zero-basis path. **New nullable columns** `provider_type VARCHAR`, `provider_subtype VARCHAR` (NULL for manual rows). Plaid transaction rows use Plaid's `investment_transaction_id` as the canonical id; bootstrap rows use their content-hash id (both source-provided, per the column contract). |
-| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot*** (the `source_file` with `MAX(extracted_at)` per `source_origin`), never "latest row per position" or "latest holdings_date". Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
+| `core.dim_holdings` | **New nullable reconciliation columns** — `provider_reported_quantity`, `provider_reported_cost_basis`, `provider_reported_value`, `provider_reported_as_of` (= the joined snapshot's `extracted_at`) — LEFT JOINed from `prep.stg_plaid__investment_holdings` **bounded to each item's newest *snapshot***, never "latest row per position" or "latest holdings_date". Which snapshot is newest comes from `prep.stg_plaid__investment_holdings_snapshots` (the `source_file` with `MAX(extracted_at)` per `source_origin`), **not** from the holdings rows themselves — a pull that returns zero positions writes no holdings rows, so a row-derived newest snapshot cannot see it and would keep serving the last non-empty one (see that table). Because the join scopes to one whole snapshot, a position present in an earlier snapshot but omitted from the newest full snapshot — even one pulled the same UTC day, and including the empty snapshot of a fully-liquidated item — has no row in it and correctly shows NULL `provider_reported_*` (itself the reconciliation signal against a nonzero ledger position), instead of a stale survivor masquerading as current. Column comments mark all four explicitly non-authoritative. |
 | `core.fct_investment_lots` / `core.fct_realized_gains` | **No changes.** Derived from the unioned ledger; Plaid rows flow through the existing four-method engine automatically. |
 
 **Cross-source dedup is out of scope here (deferred, with a guard).** The
@@ -1009,7 +1125,7 @@ data still loads.
 |---|---|
 | `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Re-load dedup: same payload twice AND the same provider row re-delivered under a **different** `job_id` both replace, never duplicate (PK scoped by `source_origin`). |
 | `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
-| `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; fuzzy → provisional mint + bind + pending **merge** decision; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
+| `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; **stripped-ticker hit** (`VOD.L`→`VOD`, share-class `HEI.A`→`HEI`, preferred `BAC-PL`→`BAC`) never auto-binds — provisional mint + `ticker_suffix_strip` decision per stem candidate, and a batch carrying both stem and share class mints **two** securities regardless of `security_id` order; fuzzy → provisional mint + bind + pending **merge** decision **per** equally-named catalog entry (a duplicate name never collapses to one); an in-batch provisional mint is an auto-bind target but is **never offered as a merge candidate** to a later row; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
 | `doctor_service` — short-leg surface | Golden payload with `buy to cover`/`sell short` legs: they map to `other` (recorded, kept out of the lot engine — no spurious long lot, no oversold phantom gain), and `system doctor` reports them as unmodeled short activity — surfaced, never silently dropped. |
 
@@ -1049,12 +1165,14 @@ transactions), which also seed the golden files.
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_transactions.sql` | DDL — provider-owned raw |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql` | DDL — provider-owned raw |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holding_lots.sql` | DDL — provider-owned raw (per-lot `tax_lots[]` — basis/acquisition source for bootstrap) |
+| `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql` | DDL — provider-owned raw; per-item, per-pull holdings receipt, written even when the item reports ZERO positions (the sole source of "which snapshot is newest") |
 | `src/moneybin/sql/schema/app_security_links.sql` | DDL — cross-cutting `app.*`, registered in `_NON_PROVIDER_SCHEMA_FILES` |
 | `src/moneybin/sql/schema/app_security_link_decisions.sql` | DDL — cross-cutting `app.*` |
-| `sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
-| `sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
-| `sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
-| `sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the **first** snapshot per `(account, source_origin)` (`MIN(extracted_at)`): draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__securities.sql` | Staging view |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_transactions.sql` | Staging view (incl. split-multiplier conversion, basis→NULL) |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_holdings.sql` | Staging view |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__investment_holdings_snapshots.sql` | Staging view (passthrough) — the newest-snapshot source for `core.dim_holdings` and the doctor's holdings checks |
+| `src/moneybin/sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the **first** snapshot per `(account, source_origin)` (`MIN(extracted_at)`): draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
 | `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
 | `tests/fixtures/plaid_investments_sync_response.json` | Golden file (captured from Sandbox) |
@@ -1064,13 +1182,13 @@ transactions), which also seed the golden files.
 
 | File | Change |
 |---|---|
-| `sqlmesh/models/core/fct_investment_transactions.sql` | Plaid transaction CTE **and** `stg_plaid__opening_lots` CTE, both `UNION ALL`'d; `provider_type`/`provider_subtype` columns |
-| `sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
-| `sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
+| `src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql` | Plaid transaction CTE **and** `stg_plaid__opening_lots` CTE, both `UNION ALL`'d; `provider_type`/`provider_subtype` columns |
+| `src/moneybin/sqlmesh/models/core/dim_holdings.sql` | Reconciliation columns (LEFT JOIN latest snapshot) |
+| `src/moneybin/sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
-| `src/moneybin/services/doctor_service.py` | Bootstrap reconciliation checks: negative holdings-vs-ledger gap, `(account, security)` routed to review (short/`H≤0`/in-window split), engine-derived held lots diverging from the `tax_lots` snapshot, and **short-leg activity** (`buy to cover`/`sell short` mapped to `other`) surfaced as unmodeled |
+| `src/moneybin/services/doctor_service.py` | **Eight** investment reconciliation checks: staging rows held out of the ledger for review (`split_underivable` / `unmapped_subtype`); opening-lot-bootstrap positions the bootstrap declined to synthesize (short/split/negative-gap); unmodeled legs stripped of ledger quantity (short/option/adjustment); engine-derived held lots diverging from the `tax_lots` snapshot; manual-and-Plaid source overlap on one account; unresolved (pending-review) securities; positions Plaid reports holding but the ledger never opened; and phantom holdings the ledger carries but the newest snapshot no longer reports |
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | `src/moneybin/connectors/sync_models.py` | `PullResult`: carry the per-outcome security-resolution counts (adopted / auto-bound / proposed / minted / pending) in the pull envelope — resolution is a reported stage, not a silent side effect |
 | `src/moneybin/cli/commands/sync.py` | `sync pull` output: render those counts, naming the pending-decision command whenever an identity is awaiting review |
@@ -1116,7 +1234,12 @@ contract above is its specification.
   survive as history *and* a full snapshot's omission of a position is
   faithfully represented — the newest-snapshot join then shows the broker's
   claim beside ledger-derived numbers on `dim_holdings`, NULL where the broker
-  dropped the position, never blended into the ledger figures. This matches the
+  dropped the position, never blended into the ledger figures. The snapshot's
+  *identity* is recorded independently of its rows
+  (`raw.plaid_investment_holdings_snapshots`), because the one pull that carries
+  no rows — an item whose every account is liquidated — is the one whose omission
+  matters most; keying "which snapshot is newest" on the rows themselves would
+  make that pull invisible and its stale predecessor look current. This matches the
   best-in-class pattern from a survey of shipped brokerage-sync tools (dated
   immutable snapshots); the alternative some ship — overwrite-in-place +
   hard-delete of absent positions — forces fragile "did the broker sell it or

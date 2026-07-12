@@ -30,7 +30,7 @@ via a resolution step every import/sync runs through, backed by a durable
 Today each loader mints its **own** `account_id`, so one real account becomes one
 `account_id` *per source*. There is **no reconciliation layer** (grep finds no
 `account_link` / `canonical_account` / account-alias concept anywhere in `src/`,
-`sqlmesh/`, or `docs/specs/`).
+`src/moneybin/sqlmesh/`, or `docs/specs/`).
 
 Live test on real Wells Fargo data: the same 5 WF accounts imported as **both**
 `.qfx` (279 txns) and `.csv` (279 exact twins). Expected cross-source dedup to
@@ -500,7 +500,7 @@ transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
 | Operation | CLI | MCP |
 |---|---|---|
 | List pending link proposals (grouped by provisional account) | `accounts links pending` | `accounts_links_pending` |
-| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | `accounts_links_set(decision_id, target_account_id=…\|None)` |
+| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | `accounts_links_set(decision_id, action="accept", target_account_id=…)` — the merge is gated by an MCP elicitation (no agent self-accept) / `accounts_links_set(decision_id, action="reject")` |
 | Reverse a prior decision | `accounts links undo <id>` | (CLI-only, matching today's `matches undo`) |
 | Decision history | `accounts links history` | `accounts_links_history` |
 | Run resolution over unlinked accounts (backfill) | `accounts links run` | `accounts_links_run` |

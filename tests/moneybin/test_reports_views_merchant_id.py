@@ -11,13 +11,13 @@ the SQLMesh pipeline — behavioral correctness is covered by scenarios.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
+
+from moneybin.database import SQLMESH_ROOT
 
 pytestmark = pytest.mark.unit
 
-_MODELS_DIR = Path(__file__).resolve().parents[2] / "sqlmesh" / "models" / "reports"
+_MODELS_DIR = SQLMESH_ROOT / "models" / "reports"
 
 
 def _read(name: str) -> str:

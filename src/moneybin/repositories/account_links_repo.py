@@ -17,6 +17,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_LINKS
@@ -63,6 +65,12 @@ class AccountLinksRepo(BaseRepo):
         guards (consistent with the repo-enforced-invariant pattern). Error
         messages deliberately omit ``ref_value`` — it can be a full account number
         (``security.md``: no PII in errors/logs).
+
+        Raises ``UserError``, not a bare ``ValueError``: this guard is reachable
+        from ``system audit undo`` (an undo that would restore a binding whose ref
+        another link has since claimed), and the CLI renders a ``ValueError`` as a
+        stack trace rather than a message the user can act on. The merchant and
+        security twins carry the identical contract.
         """
         if ref_kind == "source_native":
             existing = self._db.execute(
@@ -72,10 +80,11 @@ class AccountLinksRepo(BaseRepo):
                 [source_type, source_origin, ref_value],
             ).fetchone()
             if existing is not None:
-                raise ValueError(
+                raise UserError(
                     "account_links: an accepted source_native mapping already "
                     "exists for this (source_type, source_origin, ref_value); "
-                    f"source_type={source_type!r}, source_origin={source_origin!r}"
+                    f"source_type={source_type!r}, source_origin={source_origin!r}",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                 )
         elif ref_kind in ("full_number", "persistent_token"):
             existing = self._db.execute(
@@ -84,9 +93,10 @@ class AccountLinksRepo(BaseRepo):
                 [ref_kind, ref_value],
             ).fetchone()
             if existing is not None:
-                raise ValueError(
+                raise UserError(
                     f"account_links: an accepted {ref_kind} strong-ref already "
-                    "exists for this ref_value"
+                    "exists for this ref_value",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                 )
 
     def _insert_row(self, row: dict[str, Any]) -> None:
@@ -178,11 +188,22 @@ class AccountLinksRepo(BaseRepo):
         Within one transaction:
         1. Reverses the existing row (status='reversed') so ``_guard_uniqueness``
            no longer sees it as accepted.
-        2. Inserts a new accepted row for ``new_account_id`` with the same ref
-           coordinates — the guard now passes because the old row is reversed.
-        3. Emits a paired audit for the OLD row's reversal (action
-           ``"account_link.repoint"``). The nested ``insert`` emits its own audit
-           for the new row (Invariant 10 — each mutation audited independently).
+        2. Emits the audit for that reversal (action ``"account_link.repoint"``).
+        3. Inserts a new accepted row for ``new_account_id`` with the same ref
+           coordinates — the guard now passes because the old row is reversed. The
+           nested ``insert`` emits its own audit (Invariant 10 — each mutation
+           audited independently).
+
+        **The two audit rows are emitted in mutation order** — the reversal first,
+        then the new row's insert — even though the reversal's ``after`` image is
+        already in hand before the insert runs. The undo engine replays an
+        operation's audit rows in REVERSE order, so an audit sequence that
+        contradicts the SQL order makes the replay transit a state the forward path
+        never did: emitting the insert first would have the redo re-insert the new
+        accepted row BEFORE restoring the old one to 'reversed', which trips
+        ``_guard_uniqueness`` on two accepted rows for one ref and deterministically
+        fails the redo of every accepted account merge. The merchant and security
+        twins carry the identical contract.
 
         Raises ``ValueError`` when ``link_id`` is not found, already points to
         ``new_account_id`` (caller bug), or is not in ``accepted`` status.
@@ -210,12 +231,22 @@ class AccountLinksRepo(BaseRepo):
                 [decided_by, link_id],
             )
             after_reversal = self._fetch_row(link_id)
+            # Audit the OLD row's reversal BEFORE the insert — see the docstring:
+            # the undo engine replays in reverse, so this order is what makes the
+            # redo of an accepted merge work.
+            event = self._emit_audit(
+                action="account_link.repoint",
+                target=(*self._audit_target, link_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after_reversal),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
             # Insert a new accepted row for new_account_id (same ref coordinates).
             # Uses in_outer_txn=True to join the enclosing transaction; the insert
             # emits its own audit row (Invariant 10).
-            new_link_id = uuid.uuid4().hex[:12]
             self.insert(
-                link_id=new_link_id,
+                link_id=uuid.uuid4().hex[:12],
                 account_id=new_account_id,
                 ref_kind=before["ref_kind"],
                 ref_value=before["ref_value"],
@@ -227,12 +258,4 @@ class AccountLinksRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,
             )
-            # Audit the OLD row's reversal as the repoint action.
-            return self._emit_audit(
-                action="account_link.repoint",
-                target=(*self._audit_target, link_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after_reversal),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+            return event

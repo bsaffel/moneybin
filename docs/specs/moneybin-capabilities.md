@@ -110,13 +110,13 @@ not-yet-built.
 | 47| List available import formats (tabular + PDF) for selection / introspection | `import_formats` *(returns `formats` + `pdf_formats` arrays)* | `import formats list [--type tabular\|pdf\|all]` *(text or JSON; agent can also `import formats show <name>` for either kind)* | —          | live                  |
 | 48| Import a native-text PDF an agent must help extract (bridge round-trip) | `import_preview`/`import_files` *(return `confirmation_required` with a `bridge_payload` when the deterministic rung can't crack the layout)* → `import_confirm` *(`bridge_response={recipe, rows}`; re-runs the recipe, reconciles, persists, loads)* | *deferred — the CLI keeps the seed fallback until the agent-aware CLI escalation signal lands* | —          | live (MCP)            |
 | 49| List pending account-link decisions grouped by provisional account | `accounts_links_pending` | `accounts links pending` | — | live |
-| 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `target_account_id: str\|null` — no default; null = standalone-reject)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
+| 50| Accept (merge) or standalone-reject one pending account-link decision | `accounts_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `target_account_id: str\|null`; accept requires `target_account_id` = the decision's own `candidate_account_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `accounts links set <decision_id> --into <account_id>` (merge) / `--standalone` (reject) | — | live |
 | 51| Show recent account-link decisions (all statuses) | `accounts_links_history` *(`limit=50`)* | `accounts links history` *(`--limit`, `--output json`)* | — | live |
 | 52| Backfill pending account-link proposals for existing accounts (cross-source twin discovery) | `accounts_links_run` *(returns `data.new_proposals`)* | `accounts links run` *(`--output json`)* | — | live |
-| 53| "What needs my attention?" — pending counts across all four review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, merchant_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
+| 53| "What needs my attention?" — pending counts across all five review queues in one sweep | `review` *(returns `{matches_pending, categorize_pending, account_links_pending, merchant_links_pending, security_links_pending, total}`)* | `moneybin review --status` *(`--type`, `--output json`)* | — | live |
 | 54| Confirm account identity at import time (which account is this file?) | `import_confirm` *(`account_bindings={source_key: account_id\|"new"}` ratifies an `account_confirmation`; `account_metadata` captures display_name/subtype/last_four/currency for `"new"` accounts; interactive-human imports gate on weak candidates, agents load + queue; a single-account file with no account identity also returns `account_confirmation` — a 1-entry no-candidate proposal — for both human and agent callers)* | `import confirm <file> --account-binding source_key=ACCOUNT_ID\|new [--account-meta source_key:field=value]` | — | live |
 | 55| List pending merchant-link decisions grouped by provider entity id | `merchants_links_pending` | `merchants links pending` *(`--output json`)* | — | live |
-| 56| Accept (bind) or reject one pending merchant-link decision | `merchants_links_set` *(`decision_id`, `target_merchant_id: str\|null` — no default; null = reject)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next categorization pass) | — | live |
+| 56| Accept (bind) or reject one pending merchant-link decision | `merchants_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `target_merchant_id: str\|null`; accept requires `target_merchant_id` = the decision's own `candidate_merchant_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `merchants links set <decision_id> --into <merchant_id>` (bind) / `--new` (reject; mints new merchant on next categorization pass) | — | live |
 | 57| Show recent merchant-link decisions (all statuses) | `merchants_links_history` *(`limit=50`)* | `merchants links history` *(`--limit`, `--output json`)* | — | live |
 | 58| Harvest pending merchant-link proposals from existing categorization facts | `merchants_links_run` *(returns `data.bound` + `data.conflicts`)* | `merchants links run` *(`--output json`; returns `data.bound` + `data.conflicts`)* | — | live |
 | 59| Upgrade AI-guessed transactions to confident provider-native (Plaid) categories | `transactions_categorize_improve_ai` | `transactions categorize improve-ai` | — | live |
@@ -129,8 +129,11 @@ not-yet-built.
 | 66| List or create/update entries in the manually-maintained securities catalog | `investments_securities` *(read)* / `investments_securities_set` *(`security_id=None` creates; existing id partially updates)* | `investments securities list` / `investments securities add` / `investments securities set <id>` | — | live |
 | 67| Set up the evaluator demo profile (synthetic data → pipeline → clean doctor → first answer) | — *(cat 2 — dev/evaluator tooling)* | `demo` *(`--persona`, `--seed`, `--yes`; always targets the dedicated `demo` profile — no arbitrary `--profile` target)* | — | live (CLI-only) |
 | 68| Confirm a credit-card PDF's inverted sign convention (charges → expenses) | `import_files`/`import_preview` *(return `confirmation_required` with `reason="sign_convention"` + `sign_sample_rows` when a PDF names itself a credit card; `actions[]` direct to the CLI — MCP cannot ratify a sign inversion in place yet, elicitation-based confirm planned)* | `import files <path> --confirm` *(confirm the inversion)* / `import files <path> --sign negative_is_expense` *(overrule a false card detection)* | — | live (CLI ratifies; MCP surfaces + defers) |
-| 69| Review pending auto-rule proposals with each proposal's estimated blast radius | `transactions_categorize_auto_review` *(returns `estimated_match_count` + `is_broad` per proposal)* | `transactions categorize auto review` | — | live |
-| 70| Accept or reject pending auto-rule proposals (a broad proposal requires an explicit override) | `transactions_categorize_auto_accept` *(`accept`, `reject`, `allow_broad` — required to promote an `is_broad` proposal)* | `transactions categorize auto accept --accept/--reject [--allow-broad]` | — | live |
+| 69| List pending security-link merge decisions grouped by provider ref | `investments_securities_links_pending` | `investments securities links pending` *(`--output json`)* | — | live |
+| 70| Accept (merge) or reject one pending security-link merge decision | `investments_securities_links_set` *(`decision_id`, `action: "accept"\|"reject"`, `into: str\|null`; accept requires `into` = the decision's own `candidate_security_id` (confirming safety check) AND explicit user agreement via MCP elicitation — a client that cannot elicit hard-fails with `mutation_confirmation_required` and is pointed at the CLI; reject needs no confirm)* | `investments securities links set <decision_id> --accept --into <candidate_security_id>` (merge) / `--reject` (keep as distinct instrument) | — | live |
+| 71| Show recent security-link decisions (all statuses) | `investments_securities_links_history` *(`limit=50`)* | `investments securities links history` *(`--limit`, `--output json`)* | — | live |
+| 72| Review pending auto-rule proposals with each proposal's estimated blast radius | `transactions_categorize_auto_review` *(returns `estimated_match_count` + `is_broad` per proposal)* | `transactions categorize auto review` | — | live |
+| 73| Accept or reject pending auto-rule proposals (a broad proposal requires an explicit override) | `transactions_categorize_auto_accept` *(`accept`, `reject`, `allow_broad` — required to promote an `is_broad` proposal)* | `transactions categorize auto accept --accept/--reject [--allow-broad]` | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering
@@ -192,7 +195,7 @@ child, Pillars A+B): five `investments_*` read tools and three write tools
 register alongside the top-level `investments` CLI group. Sensitivity is derived
 per tool from payload field classification rather than declared statically —
 `high` for the ledger/holdings/lots/gains tools (cost basis and proceeds are
-`BALANCE`-classified), `low` for the securities catalog (reference data only).)*
+`BALANCE`-classified), `low` for the securities catalog (reference data only).
 Row 68 added 2026-07-11 with the credit-card sign-convention PR: a PDF that names
 itself a credit card derives a `negative_is_income` recipe that inverts every
 amount, gated behind a `reason="sign_convention"` confirmation. The CLI ratifies
@@ -203,7 +206,39 @@ in-place ratify path (no `sign=` param; `accept=`/`mapping=` on a `.pdf` returns
 `confirm_channel_conflict`), because inverting a whole statement is a decision the
 agent must never self-accept. In-place confirm is deferred to an elicitation-based
 flow (the server asks the human directly).
-Rows 69–70 added 2026-07-12 with the auto-rule blast-radius guard PR:
+Row 53 updated 2026-07-11 with the security-link review-surface PR (M1G.4
+Task 12): `review`'s payload gains `security_links_pending`, covering a fifth
+queue alongside matches/categorize/account-links/merchant-links.
+Rows 69–71 added 2026-07-11 with the same PR: `investments securities links
+{pending,set,history}` CLI commands wired over `SecurityLinksService` (Task
+10), grouped by provider ref the same way `merchants links pending` groups by
+provider entity id, with candidates enriched with the catalog's ticker/name
+(a bare `candidate_security_id` tells the reviewer nothing about the merge).
+Rows 69–71 updated 2026-07-11 with the follow-up review-surface fix wave:
+`investments_securities_links_{pending,set,history}` MCP tools ship,
+mirroring `merchants_links_*` (§5b/§5d of `moneybin-mcp.md`); `review`'s
+`actions[]` now routes the agent to the MCP tool instead of the CLI. The
+CLI's `pending` text output also gained a `Reason` column (`match_reason`)
+and both provider fields (`provider_ticker` AND `provider_name`) in the
+group header — previously only `history` showed the reason, and the group
+header showed ticker OR name, never both; `set --accept` now requires
+`--into <candidate_security_id>` (MCP: `into`) as a confirming safety check,
+mirroring `merchants_links_set`'s `target_merchant_id` guard — a tied group
+files one decision per candidate, so an unconfirmed accept could merge into
+the wrong security and auto-reject the right one.
+Rows 50 and 56 updated 2026-07-12: `accounts_links_set` and
+`merchants_links_set` are brought onto the same shape as row 70's
+`investments_securities_links_set` — the three tools do the same job on three
+entity types, so a defect in one is a defect in all three. Both gain an
+explicit `action` parameter (accept/reject is no longer inferred from the
+truthiness of the target id — an empty-string target was silently becoming a
+permanent reject, and a rejected proposal is never re-proposed), and both gate
+accept behind the shared MCP elicitation (`mcp/elicitation.py::confirm_or_raise`):
+an agent can no longer read a candidate id out of `*_links_pending` and merge
+in the same turn with no human involved. `decided_by` now tracks reality —
+`"user"` only when a human ratified the accept at the elicitation, `"auto"` on
+an agent-driven MCP reject. CLI behavior is unchanged.
+Rows 72–73 added 2026-07-12 with the auto-rule blast-radius guard PR:
 `transactions_categorize_auto_review` (MCP) / `moneybin transactions categorize
 auto review` (CLI) now surface `estimated_match_count` and `is_broad` per
 proposal; `transactions_categorize_auto_accept` (MCP) /
@@ -213,7 +248,7 @@ capability description is corrected from "redacted" to "PII-scrubbed" in the
 same PR — the `transactions_categorize_assist` fields are renamed
 `description_scrubbed`/`memo_scrubbed` (were `description_redacted`/
 `memo_redacted`); merchant text was always sent in full, only embedded PII
-was ever masked.
+was ever masked.)*
 
 ## Exemption categories
 

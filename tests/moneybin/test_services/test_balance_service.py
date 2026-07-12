@@ -40,7 +40,7 @@ def _seed_fct_balances_daily(
     """Manually CREATE TABLE + INSERT rows into core.fct_balances_daily.
 
     Bypasses SQLMesh for unit-test speed. The schema below MUST match the
-    `columns=` dict in @model() at `sqlmesh/models/core/fct_balances_daily.py`
+    `columns=` dict in @model() at `src/moneybin/sqlmesh/models/core/fct_balances_daily.py`
     (lines 43-50). When that model adds a column, this CREATE must follow.
     """
     db.execute(

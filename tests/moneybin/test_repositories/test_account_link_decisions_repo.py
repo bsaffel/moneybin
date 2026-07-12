@@ -197,8 +197,27 @@ def test_reverse_raises_when_already_reversed(db: Database) -> None:
     repo = AccountLinkDecisionsRepo(db)
     _insert(repo, status="accepted")
     repo.reverse("dec00000001", reversed_by="user", actor="cli")
-    with pytest.raises(ValueError, match="already reversed"):
+    with pytest.raises(ValueError, match="accepted/rejected decisions can be reversed"):
         repo.reverse("dec00000001", reversed_by="user", actor="cli")
+
+
+def test_reverse_raises_when_pending(db: Database) -> None:
+    """A pending decision has no accept/reject decision yet to undo.
+
+    Reversing it would silently dequeue a review item with no decision ever
+    recorded — the guarantee the account-link review queue exists to enforce.
+    """
+    repo = AccountLinkDecisionsRepo(db)
+    _insert(repo, status="pending")
+
+    with pytest.raises(ValueError, match="accepted/rejected decisions can be reversed"):
+        repo.reverse("dec00000001", reversed_by="user", actor="cli")
+
+    assert [r["decision_id"] for r in repo.list_pending()] == ["dec00000001"]
+    still_pending = repo.fetch_by_id("dec00000001")
+    assert still_pending is not None
+    assert still_pending["status"] == "pending"
+    assert still_pending["reversed_at"] is None
 
 
 # -- list_pending --
@@ -209,15 +228,16 @@ def test_list_pending_returns_only_active_pending(db: Database) -> None:
     _insert(repo, decision_id="d_pending", status="pending")
     _insert(repo, decision_id="d_accepted", status="accepted")
     _insert(repo, decision_id="d_rejected", status="rejected")
-    # Reverse a pending decision — it drops from the queue (reversed_at set, status=reversed)
-    repo.reverse("d_pending", reversed_by="user", actor="cli")
+    # A decided (rejected) decision may be reversed — reopening it does not
+    # resurrect it in list_pending (status becomes 'reversed', not 'pending').
+    repo.reverse("d_rejected", reversed_by="user", actor="cli")
     # A fresh pending decision should appear
     _insert(repo, decision_id="d_pending2", status="pending")
 
     result = repo.list_pending()
     ids = [r["decision_id"] for r in result]
+    assert "d_pending" in ids
     assert "d_pending2" in ids
-    assert "d_pending" not in ids  # reversed
     assert "d_accepted" not in ids
     assert "d_rejected" not in ids
 

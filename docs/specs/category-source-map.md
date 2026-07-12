@@ -11,7 +11,7 @@ Give MoneyBin a durable, aggregator-agnostic data model for mapping **any** prov
 ## Problem
 
 The seed taxonomy carries a single `plaid_detailed` tag per category
-(`sqlmesh/models/seeds/categories.csv` → exposed as
+(`src/moneybin/sqlmesh/models/seeds/categories.csv` → exposed as
 `core.dim_categories.plaid_detailed`). It was built as a *descriptive tag*
 ("which Plaid bucket is this category?"), not a reverse-lookup key. Three
 defects follow:
@@ -183,8 +183,8 @@ The row-by-row curation table is produced in the implementation plan.
 
 **Hard-cut `plaid_detailed`** (pre-launch — the cheapest moment for a
 one-way-door core-schema change). Remove it from every definition and
-consumer in the same PR: `sqlmesh/models/core/dim_categories.sql`,
-`sqlmesh/models/seeds/categories.sql`, `src/moneybin/seeds.py`
+consumer in the same PR: `src/moneybin/sqlmesh/models/core/dim_categories.sql`,
+`src/moneybin/sqlmesh/models/seeds/categories.sql`, `src/moneybin/seeds.py`
 (`refresh_views` + `_ensure_seed_tables_exist` — the Python bootstrap twin),
 `src/moneybin/services/categorization/queries.py`,
 `src/moneybin/privacy/taxonomy.py`, `src/moneybin/privacy/payloads/categories.py`,

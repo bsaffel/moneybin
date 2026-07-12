@@ -9,10 +9,16 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
+from fastmcp.server.elicitation import (
+    AcceptedElicitation,
+    CancelledElicitation,
+    DeclinedElicitation,
+)
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.merchants import (
@@ -31,6 +37,57 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 # ---------------------------------------------------------------------------
 
 _NOW = datetime.now(tz=UTC).isoformat()
+
+
+def _fake_ctx(*, supports_elicit: bool, elicit_result: Any = None) -> MagicMock:
+    """Build a fake fastmcp Context with session + elicit wired.
+
+    Mirrors test_investments_securities_links_tools.py: the only elicitation
+    contract the tool depends on is check_client_capability + elicit.
+    """
+    ctx = MagicMock()
+    ctx.session.check_client_capability.return_value = supports_elicit
+    ctx.elicit = AsyncMock(return_value=elicit_result)
+    return ctx
+
+
+def _decision_row(decision_id: str) -> tuple[str, str]:
+    """Return (status, decided_by) for one decision."""
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT status, decided_by FROM app.merchant_link_decisions "
+            "WHERE decision_id = ?",
+            [decision_id],
+        ).fetchone()
+    assert row is not None
+    return str(row[0]), str(row[1])
+
+
+def _decision_status(decision_id: str) -> str:
+    return _decision_row(decision_id)[0]
+
+
+def _bind_setup(
+    *,
+    decision_id: str = "mg001",
+    ref_value: str = "entity_gate",
+    merchant_id: str = "merch000001",
+    provider_merchant_name: str = "STARBUCKS #4412",
+) -> dict[str, str]:
+    """A pending bind proposal with both sides named and the target resolvable."""
+    _seed_merchant(merchant_id)
+    _insert_decision(
+        decision_id=decision_id,
+        ref_value=ref_value,
+        provider_merchant_name=provider_merchant_name,
+        candidate_merchant_id=merchant_id,
+        confidence_score=0.62,
+    )
+    return {
+        "decision_id": decision_id,
+        "ref_value": ref_value,
+        "merchant_id": merchant_id,
+    }
 
 
 def _insert_decision(
@@ -198,41 +255,73 @@ class TestMerchantsLinksSet:
 
     async def test_accept_returns_envelope(self, mcp_db: object) -> None:
         """merchants_links_set (accept) returns a valid ResponseEnvelope."""
-        _insert_decision(decision_id="ms001", ref_value="entity_S1")
-        _seed_merchant("merch000001")
-        parsed = (
-            await merchants_links_set(
-                decision_id="ms001", target_merchant_id="merch000001"
-            )
-        ).to_dict()
+        setup = _bind_setup(decision_id="ms001", ref_value="entity_S1")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id=setup["merchant_id"],
+                )
+            ).to_dict()
         assert "summary" in parsed
         assert "data" in parsed
 
     async def test_accept_payload_status_accepted(self, mcp_db: object) -> None:
-        """Accepting a decision returns status='accepted' in payload."""
-        _insert_decision(decision_id="ms010", ref_value="entity_S2")
-        _seed_merchant("merch000001")
-        data = (
-            await merchants_links_set(
-                decision_id="ms010", target_merchant_id="merch000001"
-            )
-        ).to_dict()["data"]
+        """Accepting a decision (after a confirmed elicitation) returns status='accepted'."""
+        setup = _bind_setup(decision_id="ms010", ref_value="entity_S2")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            data = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id=setup["merchant_id"],
+                )
+            ).to_dict()["data"]
         assert data["decision_id"] == "ms010"
         assert data["status"] == "accepted"
+        assert _decision_status("ms010") == "accepted"
 
-    async def test_reject_null_returns_rejected(self, mcp_db: object) -> None:
-        """Passing target_merchant_id=None returns status='rejected'."""
+    async def test_reject_returns_rejected(self, mcp_db: object) -> None:
+        """action='reject' returns status='rejected' with no elicitation."""
         _insert_decision(decision_id="ms020", ref_value="entity_S3")
         data = (
-            await merchants_links_set(decision_id="ms020", target_merchant_id=None)
+            await merchants_links_set(decision_id="ms020", action="reject")
         ).to_dict()["data"]
         assert data["status"] == "rejected"
+
+    async def test_wrong_target_refuses_before_prompting(self, mcp_db: object) -> None:
+        """A mismatched target must refuse, not bind the entity to the wrong merchant."""
+        setup = _bind_setup(decision_id="ms025", ref_value="entity_S25")
+        _seed_merchant("merch000009")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id="merch000009",
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+        ctx.elicit.assert_not_called()
 
     async def test_set_sensitivity_is_low(self, mcp_db: object) -> None:
         """merchants_links_set response carries low sensitivity (ids + status only)."""
         _insert_decision(decision_id="ms030", ref_value="entity_S4")
         parsed = (
-            await merchants_links_set(decision_id="ms030", target_merchant_id=None)
+            await merchants_links_set(decision_id="ms030", action="reject")
         ).to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
 
@@ -240,38 +329,249 @@ class TestMerchantsLinksSet:
         """actions[] after set points back at merchants_links_pending."""
         _insert_decision(decision_id="ms040", ref_value="entity_S5")
         result = (
-            await merchants_links_set(decision_id="ms040", target_merchant_id=None)
+            await merchants_links_set(decision_id="ms040", action="reject")
         ).to_dict()
         actions_text = " ".join(result["actions"])
         assert "merchants_links_pending" in actions_text
 
-    async def test_empty_string_target_returns_rejected_and_db_rejected(
+
+# ---------------------------------------------------------------------------
+# merchants_links_set — accept gating + explicit action
+# ---------------------------------------------------------------------------
+
+
+class TestMerchantsLinksSetAcceptGate:
+    """Accepting a merchant bind requires explicit human agreement via elicitation.
+
+    A pending decision is BY CONSTRUCTION a weak inference (the resolver only
+    queues a conflict it cannot resolve), and accepting one attributes every
+    transaction carrying that provider entity id to the chosen merchant.
+    `.claude/rules/design-principles.md` ("Magic stays visible") forbids agent
+    self-accept of a weak inference at any confidence score.
+    """
+
+    async def test_accept_hard_fails_when_client_cannot_elicit(
         self, mcp_db: object
     ) -> None:
-        """Empty-string target_merchant_id must return status='rejected' in the envelope.
+        """A tools-only client MUST NOT be able to accept — no fall-through."""
+        setup = _bind_setup(decision_id="mg010", ref_value="entity_G10")
+        ctx = _fake_ctx(supports_elicit=False)
 
-        The service treats falsy target_merchant_id (None OR '') as REJECT. The
-        MCP tool must derive status with truthiness (``if target_merchant_id``)
-        so an empty-string call reports 'rejected', matching the service outcome.
-        Also verifies the DB decision is actually rejected — the service did
-        reject it, and the tool must report that faithfully.
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id=setup["merchant_id"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        hint = parsed["error"]["hint"]
+        assert "moneybin merchants links set" in hint
+        assert "--into" in hint
+        assert _decision_status(setup["decision_id"]) == "pending"
+        ctx.elicit.assert_not_called()
+
+    async def test_accept_hard_fails_when_no_active_context(
+        self, mcp_db: object
+    ) -> None:
+        """No MCP request context at all (no client to confirm) must not accept."""
+        setup = _bind_setup(decision_id="mg020", ref_value="entity_G20")
+
+        with patch(
+            "moneybin.mcp.elicitation.get_context",
+            side_effect=RuntimeError("No active context found."),
+        ):
+            parsed = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id=setup["merchant_id"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_declined_elicitation_does_not_accept(self, mcp_db: object) -> None:
+        """A declined confirmation leaves the decision pending — never accepts."""
+        setup = _bind_setup(decision_id="mg030", ref_value="entity_G30")
+        ctx = _fake_ctx(supports_elicit=True, elicit_result=DeclinedElicitation())
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id=setup["merchant_id"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert _decision_status(setup["decision_id"]) == "pending"
+        ctx.elicit.assert_awaited_once()
+
+    async def test_cancelled_elicitation_does_not_accept(self, mcp_db: object) -> None:
+        """A cancelled confirmation is not agreement either."""
+        setup = _bind_setup(decision_id="mg040", ref_value="entity_G40")
+        ctx = _fake_ctx(supports_elicit=True, elicit_result=CancelledElicitation())
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id=setup["merchant_id"],
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_elicitation_message_names_both_sides_and_reason(
+        self, mcp_db: object
+    ) -> None:
+        """The human must see BOTH the provider entity and the merchant, plus why."""
+        setup = _bind_setup(decision_id="mg050", ref_value="entity_G50")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            await merchants_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                target_merchant_id=setup["merchant_id"],
+            )
+
+        message = ctx.elicit.await_args.args[0]
+        # Provider side: the entity id + the provider's merchant name.
+        assert setup["ref_value"] in message
+        assert "STARBUCKS #4412" in message
+        # Canonical side: merchant id + canonical name.
+        assert setup["merchant_id"] in message
+        assert f"Name {setup['merchant_id']}" in message
+        # Why the resolver could not decide on its own.
+        assert "0.62" in message
+
+    async def test_accept_after_confirmation_records_decided_by_user(
+        self, mcp_db: object
+    ) -> None:
+        """decided_by='user' is only truthful once a human actually confirmed."""
+        setup = _bind_setup(decision_id="mg060", ref_value="entity_G60")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+        )
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            await merchants_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                target_merchant_id=setup["merchant_id"],
+            )
+
+        assert _decision_row(setup["decision_id"]) == ("accepted", "user")
+
+    async def test_reject_records_decided_by_auto(self, mcp_db: object) -> None:
+        """An MCP reject no human ratified must NOT be recorded as decided_by='user'."""
+        _insert_decision(decision_id="mg070", ref_value="entity_G70")
+
+        await merchants_links_set(decision_id="mg070", action="reject")
+
+        assert _decision_row("mg070") == ("rejected", "auto")
+
+
+class TestMerchantsLinksSetActionInput:
+    """`action` is explicit; accept/reject is never inferred from the target."""
+
+    async def test_empty_target_is_an_input_error_not_a_reject(
+        self, mcp_db: object
+    ) -> None:
+        """An empty-string target must NOT silently become a permanent reject.
+
+        A rejected proposal is never re-proposed, so a malformed argument would
+        permanently suppress a correct binding with no error to the user.
         """
-        _insert_decision(decision_id="ms050", ref_value="entity_S6")
-        data = (
-            await merchants_links_set(decision_id="ms050", target_merchant_id="")
-        ).to_dict()["data"]
-        assert data["status"] == "rejected", (
-            "empty-string target_merchant_id must report 'rejected', not 'accepted'"
+        setup = _bind_setup(decision_id="mi010", ref_value="entity_I10")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
-        # Verify the DB reflects the rejection — the service rejected it.
-        with get_database(read_only=True) as db:
-            row = db.execute(
-                "SELECT status FROM app.merchant_link_decisions "
-                "WHERE decision_id = 'ms050'"
-            ).fetchone()
-        assert row is not None and row[0] == "rejected", (
-            "DB decision must be 'rejected' after empty-string set"
+
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await merchants_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_merchant_id="",
+                )
+            ).to_dict()
+
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_accept_without_target_is_an_input_error(
+        self, mcp_db: object
+    ) -> None:
+        """action='accept' with no target is an input error, never a reject."""
+        setup = _bind_setup(decision_id="mi020", ref_value="entity_I20")
+        parsed = (
+            await merchants_links_set(decision_id=setup["decision_id"], action="accept")
+        ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_reject_with_target_is_an_input_error(self, mcp_db: object) -> None:
+        """A target alongside action='reject' is contradictory input, not a reject."""
+        setup = _bind_setup(decision_id="mi030", ref_value="entity_I30")
+        parsed = (
+            await merchants_links_set(
+                decision_id=setup["decision_id"],
+                action="reject",
+                target_merchant_id=setup["merchant_id"],
+            )
+        ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_unknown_action_is_an_input_error_listing_valid_values(
+        self, mcp_db: object
+    ) -> None:
+        """An unrecognized action names the valid values instead of guessing."""
+        setup = _bind_setup(decision_id="mi040", ref_value="entity_I40")
+        parsed = (
+            await merchants_links_set(decision_id=setup["decision_id"], action="bind")
+        ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+        assert "accept" in parsed["error"]["message"]
+        assert "reject" in parsed["error"]["message"]
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_unknown_decision_id_is_not_found(self, mcp_db: object) -> None:
+        """A decision_id with no pending decision cannot be accepted."""
+        _bind_setup(decision_id="mi050", ref_value="entity_I50")
+        ctx = _fake_ctx(
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
         )
+        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+            parsed = (
+                await merchants_links_set(
+                    decision_id="mnotthere01",
+                    action="accept",
+                    target_merchant_id="merch000001",
+                )
+            ).to_dict()
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_not_found"
+        ctx.elicit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -428,12 +728,17 @@ class TestMerchantsLinksActor:
     async def test_set_uses_mcp_actor(
         self, mock_set: MagicMock, mock_get_db: MagicMock
     ) -> None:
-        """merchants_links_set calls MerchantLinksService with actor='mcp'."""
+        """merchants_links_set calls MerchantLinksService with actor='mcp'.
+
+        The reject path records decided_by='auto': no human ratified it, and
+        the column's CHECK admits only 'auto' | 'user'. The MCP channel itself
+        is preserved in app.audit_log (actor='mcp').
+        """
         mock_db = MagicMock()
         mock_get_db.return_value.__enter__.return_value = mock_db
 
-        await merchants_links_set(decision_id="d_actor", target_merchant_id=None)
+        await merchants_links_set(decision_id="d_actor", action="reject")
 
         mock_set.assert_called_once_with(
-            "d_actor", target_merchant_id=None, decided_by="user"
+            "d_actor", target_merchant_id=None, decided_by="auto"
         )

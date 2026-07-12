@@ -247,7 +247,7 @@ noun. CLI + MCP for parity (functional, not nominal).
 | Operation | CLI | MCP |
 |---|---|---|
 | List pending link proposals (grouped by provider id) | `merchants links pending` | `merchants_links_pending` |
-| Resolve one — bind to a candidate, or mint **new** | `merchants links set <id> --into <merchant_id>` / `--new` | `merchants_links_set(decision_id, target_merchant_id=…\|None)` |
+| Resolve one — bind to a candidate, or mint **new** | `merchants links set <id> --into <merchant_id>` / `--new` | `merchants_links_set(decision_id, action="accept", target_merchant_id=…)` — the bind is gated by an MCP elicitation (no agent self-accept) / `merchants_links_set(decision_id, action="reject")` |
 | Reverse a prior decision | `merchants links undo <id>` | (CLI-only, matching `matches undo` / `accounts links undo`) — **deferred to M1L** (audit-undo consumer) |
 | Decision history | `merchants links history` | `merchants_links_history` |
 | Run resolution / backfill over unbound ids | `merchants links run` | `merchants_links_run` |

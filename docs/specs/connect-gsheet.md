@@ -458,7 +458,7 @@ One column. NULL for every existing row, every future CSV/Excel/Parquet import, 
 ### Prep view update
 
 ```sql
--- sqlmesh/models/prep/stg_tabular__transactions.sql gains:
+-- src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql gains:
 SELECT ...
 FROM raw.tabular_transactions
 WHERE deleted_from_source_at IS NULL;
@@ -533,7 +533,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 |---|---|
 | `src/moneybin/services/refresh.py` | Add `"gsheet"` to default steps, call `GSheetPullService.pull_all_healthy()` |
 | `src/moneybin/sql/schema/raw_tabular_transactions.sql` | Add `deleted_from_source_at` column |
-| `sqlmesh/models/prep/stg_tabular__transactions.sql` | Add `WHERE deleted_from_source_at IS NULL` filter |
+| `src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql` | Add `WHERE deleted_from_source_at IS NULL` filter |
 | `src/moneybin/cli/__init__.py` | Register `gsheet` subgroup |
 | `src/moneybin/mcp/server.py` (or equivalent registry) | Register `gsheet_*` tools |
 | `src/moneybin/mcp/system_status.py` | Add `gsheet` block to status response |

@@ -18,7 +18,7 @@ The dedup matcher collapses at most **one pair per transaction**. Verified again
 
 - `src/moneybin/matching/assignment.py::assign_greedy` — greedy best-score-first 1:1: once a row is claimed by a winning pair it cannot join another pair.
 - `src/moneybin/matching/engine.py::TransactionMatcher.run` — runs Tier 2b (within-source) then Tier 3 (cross-source); `already_matched.update(...)` (lines 135, 150) excludes rows matched in an earlier tier from later tiers. A row therefore lands in **at most one** dedup edge across all tiers and re-runs.
-- `sqlmesh/models/prep/int_transactions__matched.sql` — a two-pass connected-component fold whose NOTE states it is "correct only when each transaction participates in at most one match… if multi-hop matches are added, replace with a recursive CTE label-propagation." Verified: the two-pass is correct for a 3-node chain but **splits a 4-node chain** (A–B–C–D) into two groups. The matcher never produces the multi-edge components that would exercise this, so the latent bug is currently dormant.
+- `src/moneybin/sqlmesh/models/prep/int_transactions__matched.sql` — a two-pass connected-component fold whose NOTE states it is "correct only when each transaction participates in at most one match… if multi-hop matches are added, replace with a recursive CTE label-propagation." Verified: the two-pass is correct for a 3-node chain but **splits a 4-node chain** (A–B–C–D) into two groups. The matcher never produces the multi-edge components that would exercise this, so the latent bug is currently dormant.
 
 ### Worked example (3 sources)
 

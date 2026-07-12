@@ -232,3 +232,424 @@ def test_upsert_rolls_back_when_audit_raises(db: Database) -> None:
         "SELECT 1 FROM app.securities WHERE security_id = ?", ["ghost"]
     ).fetchall()
     assert rows == []
+
+
+def test_upsert_defaults_created_by_to_user(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    event = _upsert(repo)
+    row = db.conn.execute(
+        "SELECT created_by FROM app.securities WHERE security_id = ?",
+        [event.target_id],
+    ).fetchone()
+    assert row == ("user",)
+
+
+def test_upsert_records_created_by(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    event = _upsert(repo, created_by="plaid", actor="system")
+    row = db.conn.execute(
+        "SELECT created_by FROM app.securities WHERE security_id = ?",
+        [event.target_id],
+    ).fetchone()
+    assert row == ("plaid",)
+
+
+def test_upsert_conflict_does_not_flip_provenance(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    event = _upsert(repo, name="Apple", actor="user")
+    security_id = event.target_id
+    assert security_id is not None
+    _upsert(
+        repo,
+        security_id=security_id,
+        name="Apple Inc.",
+        created_by="plaid",
+        actor="system",
+    )
+    row = db.conn.execute(
+        "SELECT created_by, name FROM app.securities WHERE security_id = ?",
+        [security_id],
+    ).fetchone()
+    assert row == ("user", "Apple Inc.")
+
+
+def test_refresh_updates_plaid_minted_row_and_audits(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    before_metric = _metric("securities.refresh")
+    minted = _upsert(
+        repo,
+        name="Vangard Total",
+        security_type="other",
+        ticker=None,
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    event = repo.refresh_provider_attributes(
+        minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        actor="system",
+    )
+    assert event is not None
+
+    row = db.conn.execute(
+        "SELECT name, security_type, ticker FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert row == ("Vanguard Total Stock Market ETF", "etf", "VTI")
+
+    audit = _audit_rows_for(db, minted)
+    refresh_rows = [r for r in audit if r[0] == "securities.refresh"]
+    assert len(refresh_rows) == 1
+    _action, schema, table, target_id, before, after, actor, _parent = refresh_rows[0]
+    assert (schema, table, target_id) == ("app", "securities", minted)
+    assert json.loads(before)["name"] == "Vangard Total"
+    assert json.loads(after)["name"] == "Vanguard Total Stock Market ETF"
+    assert actor == "system"
+
+    assert _metric("securities.refresh") - before_metric == 1.0
+
+
+def test_refresh_is_noop_when_values_already_match(db: Database) -> None:
+    """A sync that resubmits identical provider attributes must not write or audit.
+
+    Guards against the omitted-field trap in reverse: the UPDATE always bumps
+    ``updated_at``, so without an explicit unchanged-values check every daily
+    resolver sync would accrue a no-op ``securities.refresh`` audit row per
+    security, forever.
+    """
+    repo = SecuritiesRepo(db)
+    before_metric = _metric("securities.refresh")
+    minted = _upsert(
+        repo,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    before_row = db.conn.execute(
+        "SELECT updated_at FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert before_row is not None
+    before_audit_count = len(_audit_rows_for(db, minted))
+
+    time.sleep(0.01)
+    event = repo.refresh_provider_attributes(
+        minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        actor="system",
+    )
+    assert event is None
+
+    after_row = db.conn.execute(
+        "SELECT updated_at FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert after_row == before_row
+
+    assert len(_audit_rows_for(db, minted)) == before_audit_count
+    assert _metric("securities.refresh") - before_metric == 0.0
+
+
+def test_refresh_writes_when_one_field_genuinely_differs(db: Database) -> None:
+    """A single-field diff (not all three) must still write and audit."""
+    repo = SecuritiesRepo(db)
+    before_metric = _metric("securities.refresh")
+    minted = _upsert(
+        repo,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    event = repo.refresh_provider_attributes(
+        minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI2",
+        actor="system",
+    )
+    assert event is not None
+
+    row = db.conn.execute(
+        "SELECT ticker FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert row == ("VTI2",)
+    assert _metric("securities.refresh") - before_metric == 1.0
+
+
+def test_refresh_leaves_other_columns_untouched(db: Database) -> None:
+    """Guards the omitted-column trap: refresh must not NULL provider-untouched fields."""
+    repo = SecuritiesRepo(db)
+    minted = _upsert(
+        repo,
+        name="Vangard Total",
+        security_type="other",
+        ticker=None,
+        exchange="NASDAQ",
+        cusip="922908769",
+        isin="US9229087690",
+        figi="BBG000BDTBL9",
+        coingecko_id=None,
+        is_cash_equivalent=False,
+        cost_basis_method="fifo",
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    created_at = db.conn.execute(
+        "SELECT created_at FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert created_at is not None
+
+    repo.refresh_provider_attributes(
+        minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        actor="system",
+    )
+
+    row = db.conn.execute(
+        "SELECT exchange, cusip, isin, figi, coingecko_id, is_cash_equivalent, "
+        "cost_basis_method, currency_code, created_by, created_at "
+        "FROM app.securities WHERE security_id = ?",
+        [minted],
+    ).fetchone()
+    assert row == (
+        "NASDAQ",
+        "922908769",
+        "US9229087690",
+        "BBG000BDTBL9",
+        None,
+        False,
+        "fifo",
+        "USD",
+        "plaid",
+        created_at[0],
+    )
+
+
+def test_refresh_touches_only_plaid_minted(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    minted = _upsert(
+        repo,
+        name="Vangard Total",
+        security_type="other",
+        ticker=None,
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    authored = _upsert(
+        repo, name="My Fund", security_type="etf", ticker=None, exchange=None
+    ).target_id
+    assert minted is not None
+    assert authored is not None
+
+    assert (
+        repo.refresh_provider_attributes(
+            minted,
+            name="Vanguard Total Stock Market ETF",
+            security_type="etf",
+            ticker="VTI",
+            actor="system",
+        )
+        is not None
+    )
+    assert (
+        repo.refresh_provider_attributes(
+            authored,
+            name="HIJACKED",
+            security_type="other",
+            ticker=None,
+            actor="system",
+        )
+        is None
+    )
+
+    rows = db.conn.execute(
+        "SELECT security_id, name FROM app.securities ORDER BY name"
+    ).fetchall()
+    assert (authored, "My Fund") in rows
+    assert (minted, "Vanguard Total Stock Market ETF") in rows
+
+
+def test_refresh_preserves_a_user_overridden_field(db: Database) -> None:
+    """A field the user edited is theirs — the provider must not revert it.
+
+    The securities-set surface upserts an EXISTING id, which by design does not
+    flip ``created_by``, so the row stays ``created_by='plaid'`` and the next
+    sync's refresh still matches it. Overwriting here would revert the user's
+    rename on every sync with no warning and no way to take ownership.
+    """
+    repo = SecuritiesRepo(db)
+    minted = _upsert(
+        repo,
+        name="VANGUARD TOTAL STK MKT IDX",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    _upsert(
+        repo,
+        security_id=minted,
+        name="Vanguard Total Stock Market ETF",
+        security_type="etf",
+        ticker="VTI",
+        exchange=None,
+        actor="cli",
+    )
+
+    assert (
+        repo.refresh_provider_attributes(
+            minted,
+            name="VANGUARD TOTAL STK MKT IDX",
+            security_type="etf",
+            ticker="VTI",
+            actor="system",
+        )
+        is None
+    )
+
+    row = db.conn.execute(
+        "SELECT name FROM app.securities WHERE security_id = ?", [minted]
+    ).fetchone()
+    assert row == ("Vanguard Total Stock Market ETF",)
+
+
+def test_refresh_still_updates_fields_the_user_did_not_override(
+    db: Database,
+) -> None:
+    """Ownership is per-field: a name edit must not freeze the ticker.
+
+    A ticker frozen at a stale value is the durable form of the stale-mirror
+    hazard — a later provider security carrying the recycled ticker would find a
+    unique exact-ticker hit on this row and silently merge into it.
+    """
+    repo = SecuritiesRepo(db)
+    minted = _upsert(
+        repo,
+        name="Facebook Inc",
+        security_type="equity",
+        ticker="FB",
+        exchange=None,
+        created_by="plaid",
+        actor="system",
+    ).target_id
+    assert minted is not None
+
+    _upsert(
+        repo,
+        security_id=minted,
+        name="Meta (my label)",
+        security_type="equity",
+        ticker="FB",
+        exchange=None,
+        actor="cli",
+    )
+
+    event = repo.refresh_provider_attributes(
+        minted,
+        name="Meta Platforms Inc",
+        security_type="equity",
+        ticker="META",
+        actor="system",
+    )
+    assert event is not None
+
+    row = db.conn.execute(
+        "SELECT name, ticker FROM app.securities WHERE security_id = ?", [minted]
+    ).fetchone()
+    assert row == ("Meta (my label)", "META")
+
+
+def test_refresh_returns_none_for_missing_row(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    assert (
+        repo.refresh_provider_attributes(
+            "does-not-exist",
+            name="Whatever",
+            security_type="other",
+            ticker=None,
+            actor="system",
+        )
+        is None
+    )
+
+
+def test_delete_removes_plaid_minted_row_and_audits(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    before_metric = _metric("securities.delete")
+    minted = _upsert(
+        repo, name="Dup", security_type="equity", created_by="plaid", actor="system"
+    ).target_id
+    assert minted is not None
+
+    event = repo.delete(minted, actor="user")
+
+    rows = db.conn.execute(
+        "SELECT 1 FROM app.securities WHERE security_id = ?", [minted]
+    ).fetchall()
+    assert rows == []
+
+    audit = _audit_rows_for(db, minted)
+    delete_rows = [r for r in audit if r[0] == "securities.delete"]
+    assert len(delete_rows) == 1
+    _action, schema, table, target_id, before, after, actor, _parent = delete_rows[0]
+    assert (schema, table, target_id) == ("app", "securities", minted)
+    assert json.loads(before)["name"] == "Dup"
+    assert after is None
+    assert actor == "user"
+    assert event.target_id == minted
+
+    assert _metric("securities.delete") - before_metric == 1.0
+
+
+def test_delete_refuses_user_authored(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    minted = _upsert(
+        repo, name="Dup", security_type="equity", created_by="plaid", actor="system"
+    ).target_id
+    authored = _upsert(
+        repo, name="Mine", security_type="equity", actor="user"
+    ).target_id
+    assert minted is not None
+    assert authored is not None
+
+    repo.delete(minted, actor="user")
+    with pytest.raises(ValueError, match="user-authored"):
+        repo.delete(authored, actor="user")
+
+    row = db.conn.execute(
+        "SELECT 1 FROM app.securities WHERE security_id = ?", [authored]
+    ).fetchall()
+    assert row != []
+
+
+def test_delete_raises_for_missing_row(db: Database) -> None:
+    repo = SecuritiesRepo(db)
+    with pytest.raises(ValueError, match="security_id"):
+        repo.delete("does-not-exist", actor="user")

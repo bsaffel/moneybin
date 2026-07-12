@@ -2,8 +2,8 @@
 
 Engraved print ledger fused with terminal precision: exact, calm, auditable.
 Dark theme leads; light is first-class. Components render from
-`window.MoneyBinDS.*` (Button, Chip, Amount, WidgetCard, VaultStatusBar, Mark,
-DuckKey).
+`window.MoneyBinDS.*` (Button, Chip, Icon, Amount, WidgetCard, VaultStatusBar,
+Mark, Wordmark, DuckKey).
 
 ## Setup — no provider, but set a token surface
 
@@ -46,6 +46,13 @@ props**. Real names:
   **explicit +/− sign always** (income +, expense −; negative = expense).
 - **Every data widget carries a SQL provenance chip** — `<WidgetCard sql="…">`
   (brass chip reveals the exact query) or `<Chip variant="sql" />`.
+- **Icons → `<Icon name="…" />`**, never an inline one-off `<svg>`. 19 glyphs:
+  `home accounts transactions reports investments budgets console settings`
+  (nav) · `vault key` (trust) · `search add close chevron pin sync import export
+  sidebar` (actions). Size 16 in controls/table rows, 20 in nav rails; color
+  inherits `currentColor`. An icon never appears without a visible label except
+  in a collapsed rail or an icon-only control, where `title` is required. The
+  AI/ask surface is the caret `▸_` (`--font-data`), never an icon, never ✨.
 - Brass is the only accent. Hairline borders, no resting shadows. **No emoji, no
   exclamation points, no superlatives.** Sentence case; overline labels are
   ALL-CAPS mono, tracked `--text-overline-tracking`.

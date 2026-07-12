@@ -125,6 +125,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
     from moneybin.services.categorization import CategorizationService
     from moneybin.services.merchant_links_service import MerchantLinksService
     from moneybin.services.review_service import ReviewService
+    from moneybin.services.security_links_service import SecurityLinksService
 
     with get_database(read_only=True) as db:
         status = ReviewService(
@@ -132,6 +133,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             categorize_service=CategorizationService(db=db),
             account_links_service=AccountLinksService(db=db),
             merchant_links_service=MerchantLinksService(db=db),
+            security_links_service=SecurityLinksService(db=db),
         ).status()
 
     return build_envelope(
@@ -140,6 +142,7 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             categorize_pending=status.categorize_pending,
             account_links_pending=status.account_links_pending,
             merchant_links_pending=status.merchant_links_pending,
+            security_links_pending=status.security_links_pending,
             total=status.total,
         ),
         actions=[
@@ -147,17 +150,19 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             "Use transactions_matches_pending to fetch the matches queue",
             "Use accounts_links_pending to fetch the account-links queue",
             "Use merchants_links_pending to fetch the merchant-links queue",
+            "Use investments_securities_links_pending to fetch the security-links queue",
         ],
     )
 
 
 @mcp_tool()
 def review() -> ResponseEnvelope[ReviewStatusPayload]:
-    """Return counts of pending reviews across all four queues.
+    """Return counts of pending reviews across all five queues.
 
     Orientation tool: call this to answer "what needs my attention?" in one call.
-    Surfaces matches_pending, categorize_pending, account_links_pending, and
-    merchant_links_pending so the agent can decide which queue to drain first.
+    Surfaces matches_pending, categorize_pending, account_links_pending,
+    merchant_links_pending, and security_links_pending so the agent can decide
+    which queue to drain first.
     For categorize, fetch items via ``transactions_categorize_pending``.
     For matches, fetch the queue via ``transactions_matches_pending`` and
     decide each pair with ``transactions_matches_set``.
@@ -165,6 +170,9 @@ def review() -> ResponseEnvelope[ReviewStatusPayload]:
     decide each group with ``accounts_links_set``.
     For merchant links, fetch the queue via ``merchants_links_pending`` and
     decide each group with ``merchants_links_set``.
+    For security links, fetch the queue via
+    ``investments_securities_links_pending`` and decide each group with
+    ``investments_securities_links_set``.
     """
     return _build_review_envelope()
 
