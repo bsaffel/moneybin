@@ -252,7 +252,7 @@ class MerchantLinksService:
     ) -> None:
         """Accept or reject a pending merchant-link decision atomically.
 
-        ``target_merchant_id`` truthy (accept):
+        ``target_merchant_id`` is not None (accept):
           1. Validates ``target_merchant_id`` equals the decision's
              ``candidate_merchant_id`` — a confirming safety check (mirrors
              :class:`~moneybin.services.account_links_service.AccountLinksService`);
@@ -266,13 +266,19 @@ class MerchantLinksService:
           5. Auto-rejects every other pending, non-reversed decision for the
              same ``(source_type, ref_value)`` (sibling candidates).
 
-        ``target_merchant_id`` falsy — ``None`` or ``""`` (reject):
+        ``target_merchant_id`` is ``None`` (reject):
           Marks the named decision AND every sibling pending decision for the
           same ``(source_type, ref_value)`` ``rejected`` — ``--new`` means
           "reject ALL candidates". The declined pairing is not re-proposed; the
           resolver mints a new merchant for the id on its next categorization
-          pass (spec Decision 6). An empty-string ``target_merchant_id`` rejects
-          (it never binds).
+          pass (spec Decision 6).
+
+          ``""`` is NOT a reject — it takes the accept path and fails the
+          confirming safety check as MUTATION_INVALID_INPUT, matching
+          ``AccountLinksService``. Inferring "reject" from an empty string
+          would let a caller that meant to accept, but computed its target
+          into an empty value, silently discard the pairing instead — a
+          reject is a decision the user has to actually make.
 
         All writes run inside one ``db.begin()`` / ``db.commit()`` transaction.
         Each repo method is called with ``in_outer_txn=True`` so it joins the
@@ -304,7 +310,7 @@ class MerchantLinksService:
 
             ref_value = decision["ref_value"]
 
-            if target_merchant_id:
+            if target_merchant_id is not None:
                 # Accept path: confirming safety check, then validate the target,
                 # bind ref_value → target_merchant_id, accept the named decision,
                 # auto-reject sibling pending decisions.
@@ -332,10 +338,10 @@ class MerchantLinksService:
                         status="accepted",
                         in_outer_txn=True,
                     )
-                except ValueError as exc:
+                except UserError as exc:
                     # _guard_uniqueness: the entity id is already bound to a
-                    # different merchant. Surface a clean UserError (no
-                    # ref_value / PII in the message).
+                    # different merchant. Restate without the provider ref, which
+                    # the repo's message carries and this surface must not.
                     raise UserError(
                         "This provider entity id is already bound to a merchant.",
                         code=error_codes.MUTATION_CONSTRAINT_VIOLATION,

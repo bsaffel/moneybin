@@ -1,4 +1,8 @@
-"""``investments securities`` sub-group: list, add, and partial-update the catalog."""
+"""``investments securities`` sub-group: list, add, and partial-update the catalog.
+
+Also mounts the ``links`` sub-subgroup (``security_links.py``) — review-queue
+commands for security identity merge proposals filed by ``SecurityResolver``.
+"""
 
 from __future__ import annotations
 
@@ -19,10 +23,13 @@ from moneybin.privacy.payloads.investments import (
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.investment_service import InvestmentService
 
+from . import security_links
+
 app = typer.Typer(
     help="Manually-maintained securities catalog",
     no_args_is_help=True,
 )
+app.add_typer(security_links.app, name="links")
 
 
 @app.command("list")

@@ -1,0 +1,1001 @@
+"""Tests for ``SecurityLinksService`` — merge accept/reject.
+
+Accept is the app-state cascade for a provisional-security merge: repoint every
+accepted provider ref onto the survivor, migrate ``app.lot_selections`` (whose
+``lot_id`` hashes ``security_id``), auto-reject sibling candidates, delete the
+provisional catalog row — all in ONE transaction. An unremappable selection
+blocks the merge rather than silently downgrading a specific-ID election to FIFO.
+
+Core tables don't exist in a unit-test DB (SQLMesh owns them), so the two the
+remap reads are fabricated here.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+from typing import Any
+
+import pytest
+
+from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.investments.cost_basis import compute_lot_id
+from moneybin.metrics.registry import SECURITY_LINK_REVIEW_PENDING
+from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
+from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services.mutation_context import operation
+from moneybin.services.security_links_service import SecurityLinksService
+from moneybin.services.undo_service import UndoService
+
+_REF_VALUE = "sec_1"
+_REF_KIND = "plaid_security_id"
+
+
+def _create_core_tables(db: Database) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS core.fct_investment_lots (
+            lot_id VARCHAR, account_id VARCHAR, security_id VARCHAR,
+            acquisition_date DATE, source_transaction_id VARCHAR
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS core.fct_investment_transactions (
+            investment_transaction_id VARCHAR, security_id VARCHAR
+        )
+        """
+    )
+
+
+def _mint(db: Database, *, name: str, created_by: str) -> str:
+    event = SecuritiesRepo(db).upsert(
+        security_id=None,
+        name=name,
+        security_type="etf",
+        created_by=created_by,
+        actor="system" if created_by == "plaid" else "cli",
+    )
+    assert event.target_id is not None
+    return event.target_id
+
+
+def _add_lot(
+    db: Database,
+    *,
+    security_id: str,
+    account_id: str = "acc_1",
+    acquisition_date: date = date(2024, 3, 1),
+    source_transaction_id: str = "itx_buy",
+) -> str:
+    lot_id = compute_lot_id(
+        account_id, security_id, acquisition_date, source_transaction_id
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_lots VALUES (?, ?, ?, ?, ?)",
+        [lot_id, account_id, security_id, acquisition_date, source_transaction_id],
+    )
+    return lot_id
+
+
+def _add_disposal(db: Database, txn_id: str, security_id: str) -> None:
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES (?, ?)",
+        [txn_id, security_id],
+    )
+
+
+def _add_manual_event(
+    db: Database, *, security_id: str, source_transaction_id: str = "manual_buy"
+) -> str:
+    """Hand-record an off-platform buy against ``security_id``.
+
+    ``investments record --security ...`` resolves free text against the whole
+    of ``app.securities`` — nothing restricts it to ``created_by='user'`` rows —
+    so a manual event can legitimately reference a plaid-minted catalog row.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, created_by
+        ) VALUES (?, 'imp_1', 'acc_1', ?, 'VTI', 'buy', DATE '2024-05-01',
+                  10, 100, -1000, 'cli')
+        """,
+        [source_transaction_id, security_id],
+    )
+    return source_transaction_id
+
+
+def _manual_security_id(
+    db: Database, source_transaction_id: str = "manual_buy"
+) -> str | None:
+    row = db.execute(
+        "SELECT security_id FROM raw.manual_investment_transactions "
+        "WHERE source_transaction_id = ?",
+        [source_transaction_id],
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def _accepted_binding(db: Database, ref_value: str = _REF_VALUE) -> str | None:
+    return SecurityLinksRepo(db).lookup(
+        ref_kind=_REF_KIND, ref_value=ref_value, source_type="plaid"
+    )
+
+
+def _security_exists(db: Database, security_id: str) -> bool:
+    row = db.execute(
+        "SELECT COUNT(*) FROM app.securities WHERE security_id = ?", [security_id]
+    ).fetchone()
+    return row is not None and row[0] == 1
+
+
+@pytest.fixture
+def merge_setup(db: Database) -> dict[str, str]:
+    """Provisional (plaid-minted) security bound to ``sec_1``, proposed to merge."""
+    _create_core_tables(db)
+    survivor = _mint(db, name="Vanguard Total Stock Market ETF", created_by="user")
+    provisional = _mint(db, name="Vanguard Total Stock Mkt ETF", created_by="plaid")
+    SecurityLinksRepo(db).insert(
+        security_id=provisional,
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        decided_by="auto",
+        actor="system",
+    )
+    event = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=survivor,
+        actor="system",
+    )
+    assert event.target_id is not None
+    return {
+        "survivor": survivor,
+        "provisional": provisional,
+        "decision_id": event.target_id,
+    }
+
+
+# ---------------------------------------------------------------- accept
+
+
+def test_accept_rebinds_deletes_and_accepts(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _accepted_binding(db) == merge_setup["survivor"]
+    assert not _security_exists(db, merge_setup["provisional"])
+    assert _security_exists(db, merge_setup["survivor"])
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None
+    assert decision["status"] == "accepted"
+    assert decision["decided_by"] == "user"
+
+
+def test_accept_repoints_every_accepted_ref(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The institution ref rides along — leaving it on a deleted security orphans it."""
+    SecurityLinksRepo(db).insert(
+        security_id=merge_setup["provisional"],
+        ref_kind="institution_security_id",
+        ref_value="ins_1|VTI",
+        source_type="plaid",
+        decided_by="auto",
+        actor="system",
+    )
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _accepted_binding(db) == merge_setup["survivor"]
+    assert (
+        SecurityLinksRepo(db).lookup(
+            ref_kind="institution_security_id",
+            ref_value="ins_1|VTI",
+            source_type="plaid",
+        )
+        == merge_setup["survivor"]
+    )
+    orphaned = db.execute(
+        "SELECT COUNT(*) FROM app.security_links "
+        "WHERE security_id = ? AND status = 'accepted'",
+        [merge_setup["provisional"]],
+    ).fetchone()
+    assert orphaned is not None and orphaned[0] == 0
+
+
+def test_accept_migrates_lot_selection(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    provisional = merge_setup["provisional"]
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    new_lot = compute_lot_id(
+        "acc_1", merge_setup["survivor"], date(2024, 3, 1), "itx_buy"
+    )
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (new_lot, Decimal("5"))
+    ]
+
+
+def test_accept_merge_is_fully_undoable(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The real path: a merge that migrated a lot selection undoes as one unit.
+
+    Wraps ``accept_merge`` in ``operation()`` — exactly what the future CLI/MCP
+    seam does — so every child write shares one operation_id, then reverses it
+    through ``UndoService`` the way an agent would. Proves the whole cascade
+    (decision, links, lot selection, catalog row) is undoable together, not
+    just that each repo's ``undo_event`` works in isolation.
+    """
+    provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    # Sanity: the merge actually applied before we undo it.
+    new_lot = compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_buy")
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (new_lot, Decimal("5"))
+    ]
+
+    UndoService(db).undo(op, actor="cli")
+
+    assert _security_exists(db, provisional)
+    assert _accepted_binding(db) == provisional
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None and decision["status"] == "pending"
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (old_lot, Decimal("5"))
+    ]
+
+
+def test_accept_sums_quantities_when_selections_collapse_onto_one_lot(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Two selections that re-hash onto the SAME post-merge lot_id sum, not crash.
+
+    Reachable if a future opening-lot bootstrap mints a ``source_transaction_id``
+    that collides across securities in the same account+date (Task 15 forward
+    risk): the survivor already holds a lot at the exact ``(account_id,
+    acquisition_date, source_transaction_id)`` triple the provisional's lot
+    remaps onto. Writing both as separate rows would violate the
+    ``(investment_transaction_id, lot_id)`` primary key.
+    """
+    provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
+    prov_lot = _add_lot(db, security_id=provisional, source_transaction_id="itx_dup")
+    surv_lot = _add_lot(db, security_id=survivor, source_transaction_id="itx_dup")
+    assert compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_dup") == surv_lot
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(prov_lot, Decimal("3")), (surv_lot, Decimal("4"))],
+        actor="cli",
+    )
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (surv_lot, Decimal("7"))
+    ]
+
+
+def test_accept_preserves_untouched_selections_in_a_migrated_disposal(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A same-disposal selection already on the survivor survives the replace.
+
+    ``set_for_disposal`` replaces the WHOLE set for a disposal — rewriting it
+    with only the remapped rows would silently drop the others.
+    """
+    provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
+    prov_lot = _add_lot(db, security_id=provisional)
+    surv_lot = _add_lot(
+        db, security_id=survivor, source_transaction_id="itx_buy_survivor"
+    )
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(prov_lot, Decimal("5")), (surv_lot, Decimal("2"))],
+        actor="cli",
+    )
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    remapped = compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_buy")
+    assert sorted(LotSelectionsRepo(db).list_for_disposal("itx_sell")) == sorted([
+        (remapped, Decimal("5")),
+        (surv_lot, Decimal("2")),
+    ])
+
+
+def test_accept_auto_rejects_sibling_decisions(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    other = _mint(db, name="Vanguard Total Market Index", created_by="user")
+    sibling = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=other,
+        actor="system",
+    )
+    assert sibling.target_id is not None
+    # A pending decision for a DIFFERENT ref must not be swept up.
+    unrelated = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value="sec_2",
+        source_type="plaid",
+        candidate_security_id=other,
+        actor="system",
+    )
+    assert unrelated.target_id is not None
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    repo = SecurityLinkDecisionsRepo(db)
+    sibling_row = repo.fetch_by_id(sibling.target_id)
+    assert sibling_row is not None and sibling_row["status"] == "rejected"
+    unrelated_row = repo.fetch_by_id(unrelated.target_id)
+    assert unrelated_row is not None and unrelated_row["status"] == "pending"
+    assert repo.count_pending() == 1
+
+
+def test_accept_audit_chain_shares_one_parent(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Every child write carries the decision-update's audit id as parent."""
+    provisional = merge_setup["provisional"]
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    parent = db.execute(
+        """
+        SELECT audit_id FROM app.audit_log
+        WHERE action = 'security_link_decision.update_status' AND target_id = ?
+        """,
+        [merge_setup["decision_id"]],
+    ).fetchone()
+    assert parent is not None
+    children = db.execute(
+        """
+        SELECT action FROM app.audit_log
+        WHERE parent_audit_id = ?
+        ORDER BY action
+        """,
+        [parent[0]],
+    ).fetchall()
+    actions = {row[0] for row in children}
+    assert {
+        "lot_selections.set",
+        "security_link.repoint",
+        "securities.delete",
+    } <= actions
+
+
+# ------------------------------------------------- manual-ledger cascade
+
+
+def test_accept_repoints_manual_ledger_rows_onto_survivor(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A manual event on the provisional must move to the survivor, not be orphaned.
+
+    ``raw.manual_investment_transactions`` stores a *resolved* ``security_id``
+    and the staging view carries it verbatim — no link-table indirection — so
+    the link repoint does not move it. Deleting the provisional catalog row
+    while a manual event still points at it splits the instrument's lots and
+    cost basis across a live security and a dead one.
+    """
+    _add_manual_event(db, security_id=merge_setup["provisional"])
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _manual_security_id(db) == merge_setup["survivor"]
+
+
+def test_manual_repoint_undoes_with_the_rest_of_the_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """The manual repoint rides the merge's operation_id — a partial undo is a defect."""
+    _add_manual_event(db, security_id=merge_setup["provisional"])
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+    assert _manual_security_id(db) == merge_setup["survivor"]
+
+    UndoService(db).undo(op, actor="cli")
+
+    assert _manual_security_id(db) == merge_setup["provisional"]
+
+
+def test_accept_leaves_manual_rows_on_other_securities_alone(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Only rows referencing the provisional move — a repoint is not a table sweep."""
+    other = _mint(db, name="Apple Inc.", created_by="user")
+    _add_manual_event(db, security_id=other, source_transaction_id="manual_other")
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _manual_security_id(db, "manual_other") == other
+
+
+# ---------------------------------------------------------------- redo
+
+
+def test_undo_of_a_merge_is_itself_undoable(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Redo: undoing the undo re-applies the whole merge.
+
+    The undo engine replays rows in reverse, so the re-insert of the survivor's
+    link runs before the old link is put back to 'reversed'. That transient
+    violates the at-most-one-accepted-binding invariant even though the final
+    state does not — the redo must not trip on it.
+    """
+    provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+    _add_manual_event(db, security_id=provisional)
+
+    with operation() as op:
+        SecurityLinksService(db).accept_merge(merge_setup["decision_id"], into=survivor)
+    undone = UndoService(db).undo(op, actor="cli")
+
+    UndoService(db).undo(undone.undo_operation_id, actor="cli")
+
+    new_lot = compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_buy")
+    assert _accepted_binding(db) == survivor
+    assert not _security_exists(db, provisional)
+    assert _manual_security_id(db) == survivor
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (new_lot, Decimal("5"))
+    ]
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None and decision["status"] == "accepted"
+
+
+# ---------------------------------------------------------------- block
+
+
+def test_unremappable_selection_blocks_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    _add_disposal(db, "itx_sell", merge_setup["provisional"])
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[("lot_gone000000", Decimal("5"))],
+        actor="cli",
+    )
+
+    with pytest.raises(UserError, match="cannot be deterministically remapped"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    # Nothing changed: binding still on the provisional, decision still pending,
+    # provisional catalog row intact, selection untouched.
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert _security_exists(db, merge_setup["provisional"])
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        ("lot_gone000000", Decimal("5"))
+    ]
+
+
+def test_selection_on_a_third_securitys_lot_blocks_merge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A resolvable lot_id on an unrelated security is still unremappable.
+
+    The disposal re-keys onto the survivor; a lot from a third security never
+    lands in the survivor's pool, so the election would silently become FIFO.
+    """
+    third = _mint(db, name="Some Other Fund", created_by="user")
+    foreign_lot = _add_lot(db, security_id=third)
+    _add_disposal(db, "itx_sell", merge_setup["provisional"])
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(foreign_lot, Decimal("5"))],
+        actor="cli",
+    )
+
+    with pytest.raises(UserError, match="cannot be deterministically remapped"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+def test_accept_blocks_when_core_absent_and_selections_exist(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Without core, remappability is unverifiable — refuse rather than guess."""
+    db.execute("DROP TABLE core.fct_investment_lots")
+    db.execute("DROP TABLE core.fct_investment_transactions")
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[("lot_abcdef0000", Decimal("5"))],
+        actor="cli",
+    )
+
+    with pytest.raises(UserError, match="not been materialized"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+def test_accept_proceeds_when_core_absent_and_no_selections(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    db.execute("DROP TABLE core.fct_investment_lots")
+    db.execute("DROP TABLE core.fct_investment_transactions")
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert _accepted_binding(db) == merge_setup["survivor"]
+    assert not _security_exists(db, merge_setup["provisional"])
+
+
+# ---------------------------------------------------------------- guards
+
+
+def test_accept_twice_raises(db: Database, merge_setup: dict[str, str]) -> None:
+    service = SecurityLinksService(db)
+    service.accept_merge(merge_setup["decision_id"], into=merge_setup["survivor"])
+
+    with pytest.raises(UserError, match="not pending"):
+        service.accept_merge(merge_setup["decision_id"], into=merge_setup["survivor"])
+
+
+def test_accept_wrong_into_raises(db: Database, merge_setup: dict[str, str]) -> None:
+    """``into`` != the decision's candidate_security_id -> UserError.
+
+    The confirming safety check: passing a security id that is not the
+    decision's own candidate must raise MUTATION_INVALID_INPUT before any
+    other validation, mirroring
+    ``MerchantLinksService.set``'s ``target_merchant_id`` guard. Matters most
+    on a tied group, where accepting the wrong decision_id both merges into
+    the wrong security AND auto-rejects the right one.
+    """
+    other = _mint(db, name="Some Other Fund", created_by="user")
+
+    with pytest.raises(UserError, match="does not match"):
+        SecurityLinksService(db).accept_merge(merge_setup["decision_id"], into=other)
+
+    # Rolled back: still pending, provisional binding untouched.
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert _security_exists(db, merge_setup["provisional"])
+
+
+def test_accept_unknown_decision_raises(db: Database) -> None:
+    with pytest.raises(UserError, match="No security-link decision"):
+        SecurityLinksService(db).accept_merge("deadbeef0000", into="sec000000000")
+
+
+def test_accept_raises_when_ref_is_unbound(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    link_id = db.execute(
+        "SELECT link_id FROM app.security_links WHERE status = 'accepted'"
+    ).fetchone()
+    assert link_id is not None
+    SecurityLinksRepo(db).reverse(
+        link_id=str(link_id[0]), reversed_by="user", actor="cli"
+    )
+
+    with pytest.raises(UserError, match="No accepted binding"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+def test_accept_raises_when_provisional_is_user_authored(db: Database) -> None:
+    """Pre-write guard: refuses before the first write, not just at the last.
+
+    ``SecuritiesRepo.delete`` also enforces "never delete a user-authored
+    row", but only at step 7 of the cascade (after four writes already ran).
+    This check moves the refusal ahead of the first write.
+    """
+    _create_core_tables(db)
+    survivor = _mint(db, name="Vanguard Total Stock Market ETF", created_by="user")
+    user_bound = _mint(db, name="My Custom Security", created_by="user")
+    SecurityLinksRepo(db).insert(
+        security_id=user_bound,
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        decided_by="user",
+        actor="cli",
+    )
+    decision = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=survivor,
+        actor="system",
+    )
+    assert decision.target_id is not None
+
+    with pytest.raises(UserError, match="user-authored"):
+        SecurityLinksService(db).accept_merge(decision.target_id, into=survivor)
+
+    assert _accepted_binding(db, ref_value=_REF_VALUE) == user_bound
+    assert _security_exists(db, user_bound)
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+def test_accept_raises_when_candidate_is_missing(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A dangling candidate must not become the ref's new binding."""
+    db.execute(
+        "DELETE FROM app.securities WHERE security_id = ?", [merge_setup["survivor"]]
+    )
+
+    with pytest.raises(UserError, match="No security found"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+def test_accept_raises_when_ref_is_already_bound_to_the_candidate(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Nothing to merge — and repointing a link onto itself is not a no-op."""
+    link_id = db.execute(
+        "SELECT link_id FROM app.security_links WHERE status = 'accepted'"
+    ).fetchone()
+    assert link_id is not None
+    SecurityLinksRepo(db).repoint(
+        link_id=str(link_id[0]),
+        new_security_id=merge_setup["survivor"],
+        decided_by="user",
+        actor="cli",
+    )
+
+    with pytest.raises(UserError, match="already bound"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+# ---------------------------------------------------------------- gauge
+
+
+def test_accept_refreshes_the_review_pending_gauge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Regression guard: a stale gauge is worse than no gauge (Task 10 review finding).
+
+    Before accept, the gauge reflects the one pending decision seeded by
+    ``merge_setup``; after accept it must drop to 0 — not stay pinned at
+    whatever value the last refresh (or no refresh at all) left behind.
+    """
+    SECURITY_LINK_REVIEW_PENDING.set(0)  # isolate from other tests' last value
+
+    SecurityLinksService(db).accept_merge(
+        merge_setup["decision_id"], into=merge_setup["survivor"]
+    )
+
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SECURITY_LINK_REVIEW_PENDING._value.get() == 0  # type: ignore[reportPrivateUsage] — testing prometheus internals
+
+
+def test_reject_refreshes_the_review_pending_gauge(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Reject must also refresh the gauge — a sibling stays pending, so the count is 1, not 0."""
+    other = _mint(db, name="Vanguard Total Market Index", created_by="user")
+    sibling = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=other,
+        actor="system",
+    )
+    assert sibling.target_id is not None
+    SECURITY_LINK_REVIEW_PENDING.set(0)  # isolate from other tests' last value
+
+    SecurityLinksService(db).reject_merge(merge_setup["decision_id"])
+
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SECURITY_LINK_REVIEW_PENDING._value.get() == 1  # type: ignore[reportPrivateUsage] — testing prometheus internals
+
+
+# ---------------------------------------------------------------- reject
+
+
+def test_reject_keeps_minted_security(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    SecurityLinksService(db).reject_merge(merge_setup["decision_id"])
+
+    assert _security_exists(db, merge_setup["provisional"])
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None and decision["status"] == "rejected"
+
+
+def test_reject_leaves_sibling_candidates_pending(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Rejecting one candidate does not answer the others for the same ref."""
+    other = _mint(db, name="Vanguard Total Market Index", created_by="user")
+    sibling = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=other,
+        actor="system",
+    )
+    assert sibling.target_id is not None
+
+    SecurityLinksService(db).reject_merge(merge_setup["decision_id"])
+
+    row = SecurityLinkDecisionsRepo(db).fetch_by_id(sibling.target_id)
+    assert row is not None and row["status"] == "pending"
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+
+
+def test_reject_twice_raises(db: Database, merge_setup: dict[str, str]) -> None:
+    service = SecurityLinksService(db)
+    service.reject_merge(merge_setup["decision_id"])
+
+    with pytest.raises(UserError, match="not pending"):
+        service.reject_merge(merge_setup["decision_id"])
+
+
+def test_reject_unknown_decision_raises(db: Database) -> None:
+    with pytest.raises(UserError, match="No security-link decision"):
+        SecurityLinksService(db).reject_merge("deadbeef0000")
+
+
+# ---------------------------------------------------- failure injection
+
+
+def _fail(*_args: Any, **_kwargs: Any) -> None:
+    raise RuntimeError("injected failure")
+
+
+@pytest.mark.parametrize(
+    ("repo_cls", "method"),
+    [
+        (SecuritiesRepo, "delete"),
+        (SecurityLinksRepo, "repoint"),
+        (LotSelectionsRepo, "set_for_disposal"),
+    ],
+)
+def test_accept_rolls_back_entirely_on_any_write_failure(
+    db: Database,
+    merge_setup: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    repo_cls: type,
+    method: str,
+) -> None:
+    """A merge either fully applies or leaves nothing behind — never a half-merge."""
+    provisional = merge_setup["provisional"]
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+    sibling = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=_mint(db, name="Another Fund", created_by="user"),
+        actor="system",
+    )
+    assert sibling.target_id is not None
+    monkeypatch.setattr(repo_cls, method, _fail)
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+
+    repo = SecurityLinkDecisionsRepo(db)
+    assert _accepted_binding(db) == provisional
+    assert _security_exists(db, provisional)
+    assert repo.count_pending() == 2
+    decision = repo.fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None and decision["status"] == "pending"
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
+        (old_lot, Decimal("5"))
+    ]
+    reversed_links = db.execute(
+        "SELECT COUNT(*) FROM app.security_links WHERE status = 'reversed'"
+    ).fetchone()
+    assert reversed_links is not None and reversed_links[0] == 0
+
+
+# ---------------------------------------------------------------- reads
+
+
+def test_read_methods_delegate_to_the_decisions_repo(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    service = SecurityLinksService(db)
+
+    assert service.count_pending() == 1
+    pending = service.list_pending()
+    assert [row["decision_id"] for row in pending] == [merge_setup["decision_id"]]
+    assert len(service.history(limit=10)) == 1
+
+
+def test_pending_enriches_candidate_with_ticker_and_name(db: Database) -> None:
+    """The reviewer must see the candidate's identity, not a bare id (Task 12 finding).
+
+    ``list_pending()`` rows carry only ``candidate_security_id`` — ``pending()``
+    must join against ``app.securities`` so the CLI can show what the merge
+    candidate actually IS.
+    """
+    survivor = (
+        SecuritiesRepo(db)
+        .upsert(
+            security_id=None,
+            name="Vanguard Total Stock Market ETF",
+            security_type="etf",
+            ticker="VTI",
+            created_by="user",
+            actor="cli",
+        )
+        .target_id
+    )
+    assert survivor is not None
+    provisional = _mint(db, name="Vanguard Total Stock Mkt ETF", created_by="plaid")
+    SecurityLinksRepo(db).insert(
+        security_id=provisional,
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        decided_by="auto",
+        actor="system",
+    )
+    SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        provider_ticker="VTI",
+        provider_name="Vanguard Total Stock Mkt ETF",
+        candidate_security_id=survivor,
+        confidence_score=0.5,
+        match_reason="fuzzy_name",
+        actor="system",
+    )
+
+    groups = SecurityLinksService(db).pending()
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.ref_kind == _REF_KIND
+    assert group.ref_value == _REF_VALUE
+    assert group.provider_ticker == "VTI"
+    assert len(group.candidates) == 1
+    candidate = group.candidates[0]
+    assert candidate.candidate_security_id == survivor
+    assert candidate.candidate_ticker == "VTI"
+    assert candidate.candidate_name == "Vanguard Total Stock Market ETF"
+    assert candidate.match_reason == "fuzzy_name"
+
+
+def test_pending_groups_tied_candidates_for_the_same_ref(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Sibling decisions for one ref (an identifier tie) form ONE group, not two."""
+    other = _mint(db, name="Vanguard Total Market Index", created_by="user")
+    sibling = SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=other,
+        actor="system",
+    )
+    assert sibling.target_id is not None
+
+    groups = SecurityLinksService(db).pending()
+
+    assert len(groups) == 1
+    decision_ids = {c.decision_id for c in groups[0].candidates}
+    assert decision_ids == {merge_setup["decision_id"], sibling.target_id}
+
+
+def test_pending_candidate_with_deleted_security_has_no_ticker_or_name(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """A candidate whose catalog row is gone degrades to (None, None), never raises."""
+    db.execute(
+        "DELETE FROM app.securities WHERE security_id = ?", [merge_setup["survivor"]]
+    )
+
+    groups = SecurityLinksService(db).pending()
+
+    candidate = groups[0].candidates[0]
+    assert candidate.candidate_security_id == merge_setup["survivor"]
+    assert candidate.candidate_ticker is None
+    assert candidate.candidate_name is None
+
+
+def test_pending_empty_when_no_decisions(db: Database) -> None:
+    assert SecurityLinksService(db).pending() == []

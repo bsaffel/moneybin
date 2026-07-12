@@ -164,18 +164,26 @@ def test_set_reject_clears_pending_without_binding(
     assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
 
 
-def test_set_empty_string_target_rejects_without_binding(
+def test_set_empty_string_target_is_an_input_error_not_a_silent_reject(
     db: Database, seeded_pending_decision: None
 ) -> None:
-    """[4] An empty-string target_merchant_id REJECTS (never binds merchant_id='')."""
+    """An empty-string target is an input error — it neither binds NOR rejects.
+
+    Inferring "reject" from an empty string means a caller that MEANT to accept,
+    but computed its target into an empty value, silently discards the pairing
+    instead — and a reject is a decision the user has to actually make. Only
+    ``None`` rejects. Matches ``AccountLinksService``; the decision must survive
+    as pending so the mistake is recoverable.
+    """
     svc = MerchantLinksService(db, actor="cli")
 
-    svc.set(_DECISION_ID, target_merchant_id="")
+    with pytest.raises(UserError) as exc:
+        svc.set(_DECISION_ID, target_merchant_id="")
 
-    assert svc.count_pending() == 0
+    assert exc.value.code == error_codes.MUTATION_INVALID_INPUT
     assert MerchantLinksRepo(db).lookup(_SOURCE_TYPE, _REF_VALUE) is None
     decision = MerchantLinkDecisionsRepo(db).fetch_by_id(_DECISION_ID)
-    assert decision is not None and decision["status"] == "rejected"
+    assert decision is not None and decision["status"] == "pending"
 
 
 def test_set_reject_sweeps_all_siblings(db: Database) -> None:

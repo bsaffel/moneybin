@@ -106,12 +106,28 @@ SECURITY_TYPES: frozenset[str] = frozenset({
     "other",
 })
 
-# Per-type refinement vocabulary; a type absent from this map admits no subtype.
+# Per-type refinement vocabulary for USER-AUTHORABLE subtypes; a type absent from
+# this map admits no subtype. Gates _validate_event on manual writes ONLY — the
+# sync pipeline writes provider-derived rows straight into core (SQLMesh, not
+# record_events) and is not bound by this map. See _PIPELINE_EMITTED_SUBTYPES: the
+# pipeline emits a STRICT SUPERSET of this vocabulary, and the two must never be
+# merged into one map — a subtype that claims "provider-derived reconstruction"
+# (e.g. transfer_in/opening_bootstrap) must stay impossible for a user to hand-author.
 _SUBTYPE_VOCAB: dict[str, frozenset[str]] = {
     "dividend": frozenset({"qualified", "non_qualified"}),
     "capital_gain_distribution": frozenset({"short_term", "long_term"}),
     "fee": frozenset({"tax_withheld"}),
     "reinvest": frozenset({"dividend", "interest", "capital_gain"}),
+}
+
+# Subtypes the sync pipeline emits directly into core.fct_investment_transactions,
+# bypassing _validate_event entirely (e.g. prep.stg_plaid__opening_lots writes
+# subtype='opening_bootstrap' under type='transfer_in' via SQLMesh). NOT
+# user-authorable — see the _SUBTYPE_VOCAB comment above. The ledger-wide closed
+# vocabulary is _SUBTYPE_VOCAB ∪ _PIPELINE_EMITTED_SUBTYPES; pinned by
+# test_ledger_subtype_vocabulary_is_closed in test_investment_service.py.
+_PIPELINE_EMITTED_SUBTYPES: dict[str, frozenset[str]] = {
+    "transfer_in": frozenset({"opening_bootstrap"}),
 }
 
 # ── Sign rules (Req 6) ───────────────────────────────────────────────────────

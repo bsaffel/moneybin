@@ -43,6 +43,39 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   never be pointed at a real one), and re-running rebuilds that profile's database
   from scratch and regenerates (deterministic by default); `--yes` for
   non-interactive use. (#310)
+- **Plaid Investments sync (M1G.4).** Securities, investment transactions, and
+  dated holdings snapshots (with per-lot tax data) now ride the existing
+  `sync pull` job into five new `raw.plaid_*` tables and flow into the
+  investment ledger — the shipped cost-basis engine derives lots, realized
+  gains, and holdings with no engine changes. Security identity resolves
+  through an adopt-or-mint ladder (`SecurityResolver`): adopt an existing
+  binding, auto-bind on an unambiguous strong identifier (CUSIP/ISIN/exact
+  ticker), or refuse to merge on any ambiguity — a stripped-ticker hit, an
+  identifier tie, or a fuzzy name match mints a provisional security and
+  files one pending merge decision per candidate for review
+  (`investments securities links pending/set/history` on CLI and MCP, also
+  surfaced in the `review` sweep and `system_status`). Accepting a merge
+  fuses two instruments' tax lots, so it always requires a human confirm —
+  over MCP the accept is gated behind an elicitation naming both securities,
+  and a client that cannot elicit is directed to the CLI rather than allowed
+  to proceed. An opening-lot
+  bootstrap seeds pre-window positions from the first holdings snapshot so a
+  long-held position doesn't realize a phantom oversold gain on its first
+  Plaid-reported sale. `system doctor` gains eight investment reconciliation
+  checks: staging rows held for review (splits, underivable transfer
+  directions, unmapped subtypes),
+  opening-lot-bootstrap gaps, unmodeled short/option legs,
+  holdings-vs-ledger divergence, manual-and-Plaid source overlap, unresolved
+  securities, and positions the broker or the ledger reports that the other
+  side doesn't. A per-pull holdings-snapshot receipt records that an item
+  reported even when it returns zero positions, so a fully-liquidated broker
+  is visible as liquidated rather than read as still holding its last
+  reported positions. Three
+  behaviors ship a conservative default pending Plaid Sandbox golden
+  validation: reinvest/corporate-action pairing (`event_group_id`) is not yet
+  linked, fee inclusion in `amount` is assumed (with a drift guard), and
+  every stock split routes to manual review instead of auto-deriving a
+  multiplier. (#318)
 - **Investment data model & cost-basis engine (M1J.1).** A manually-maintained
   securities catalog (`investments securities add/set/list`) and an
   investment-transaction ledger (`investments add` — buy, sell, reinvest,
@@ -262,11 +295,21 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   M3B), and documents two failures that look like bugs but aren't: Cowork's *remote*
   sessions can never see a local MCP server, and managed-org policy flags
   (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`) can disable local MCP
-  outright. The Windsurf section now warns that **MoneyBin's 102 tools exceed
+  outright. The Windsurf section now warns that **MoneyBin's 105 tools exceed
   Cascade's hard 100-active-tool ceiling** — Windsurf gives no signal when tools are
   dropped, so users must disable some by hand. The Gemini CLI section explains why
   MoneyBin never sets `trust: true` (it bypasses *all* tool-call confirmations, and
   our surface includes write tools). (#315)
+- **Accepting a link merge now requires a human confirm on every surface.** The
+  account, merchant, and security link tools (`accounts_links_set`,
+  `merchants_links_set`, `investments_securities_links_set`) gate the accept
+  branch behind an MCP elicitation naming both entities being fused; a client
+  that cannot elicit is directed to the CLI rather than allowed to proceed.
+  These proposals are raised precisely *because* identity resolution could not
+  bind unambiguously, so accepting one is never a decision an agent should make
+  alone. Accept and reject are now explicit rather than inferred from whether a
+  target id was supplied. (#318)
+
 - **`core.dim_categories` gains an accounting `class` (M1V).** Every category
   now carries `class` (`income` | `expense` | `transfer` | `debt`), assigned
   at curation time for seed categories and defaulting to `expense` for user
@@ -461,6 +504,38 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   an existing database is never touched or rolled back) and reports that it
   completed rather than created it. `ProfileExistsError` now means "a *registered*
   profile exists", so re-creating a real profile still refuses. (#315)
+- **An empty target no longer silently rejects a link-merge proposal forever.**
+  On the account, merchant, and security link tools, an empty-string target id
+  fell through a truthiness test and was recorded as a permanent REJECT, which
+  identity resolution never re-proposes — so a malformed argument could
+  permanently suppress a correct merge with no error to the user. Empty targets
+  are now an input error. (#318)
+- **Undoing the undo of an accepted link merge no longer fails.**
+  `MerchantLinksRepo.repoint` and `SecurityLinksRepo.repoint` emitted their two
+  audit rows in the reverse of their SQL order, so the undo engine's reverse
+  replay re-inserted the new binding before restoring the old one — tripping the
+  at-most-one-accepted-binding guard on a state the forward path never produces.
+  Every merge redo failed deterministically, with a stack trace rather than a
+  message. (#318)
+- **Reversing a pending review decision no longer silently discards it.**
+  `reverse()` on all four review-queue decision repos (`security_link`,
+  `account_link`, `match`, `merchant_link`) checked only `reversed_at IS
+  NULL`, so calling it on a still-`pending` row dequeued the item from the
+  review queue with no accept or reject ever recorded — defeating the
+  human-review guarantee those queues exist to provide. All four now refuse
+  to reverse anything but an already-decided (`accepted`/`rejected`) row.
+  `SecurityLinksRepo` also gained `repoint()` (replacing an in-place
+  `rebind()`), preserving append-only binding history the same way
+  `MerchantLinksRepo.repoint` already does. (#318)
+- **`moneybin system doctor` now actually runs its SQLMesh invariant
+  checks.** Every audit file under `sqlmesh/audits/` was missing `standalone
+  TRUE`, so SQLMesh loaded them as generic audits — which only run when a
+  model references them in its `audits (...)` property, and none did.
+  `system doctor` had therefore been silently reporting zero SQLMesh
+  invariants since they shipped, and three audits never executed. All
+  audits are now `standalone TRUE` and run on every check; one revived audit
+  (`fct_transactions_sign_convention`) was also corrected to stop flagging
+  legitimate `$0.00` transactions. (#318)
 - **OFX imports no longer silently drop transactions that share a duplicate
   FITID.** Some institutions (observed: Chase) reuse one OFX `FITID` for two
   distinct same-day transactions — a foreign purchase and its

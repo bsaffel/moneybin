@@ -187,7 +187,10 @@ app.add_typer(
 )
 app.command(
     name="review",
-    help="Pending counts across all review queues (matches, categorize, account-links)",
+    help=(
+        "Pending counts across all review queues (matches, categorize, "
+        "account-links, merchant-links, security-links)"
+    ),
 )(review.review_command)
 app.add_typer(transactions.app, name="transactions")
 app.add_typer(assets.app, name="assets")

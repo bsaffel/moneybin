@@ -24,6 +24,13 @@ def _fake_pull_result(
     *,
     transforms_applied: bool = True,
     transforms_error: str | None = None,
+    securities_loaded: int = 0,
+    investment_transactions_loaded: int = 0,
+    holdings_loaded: int = 0,
+    opening_bootstrap_rows: int = 0,
+    investment_source_overlap_accounts: list[str] | None = None,
+    security_resolution: dict[str, int] | None = None,
+    security_resolution_error: str | None = None,
 ) -> PullResult:
     return PullResult(
         job_id="job-xyz",
@@ -31,6 +38,9 @@ def _fake_pull_result(
         accounts_loaded=2,
         balances_loaded=2,
         transactions_removed=0,
+        securities_loaded=securities_loaded,
+        investment_transactions_loaded=investment_transactions_loaded,
+        holdings_loaded=holdings_loaded,
         institutions=[
             InstitutionResult(
                 provider_item_id="item_chase",
@@ -42,6 +52,10 @@ def _fake_pull_result(
         transforms_applied=transforms_applied,
         transforms_duration_seconds=0.05 if transforms_applied else None,
         transforms_error=transforms_error,
+        opening_bootstrap_rows=opening_bootstrap_rows,
+        investment_source_overlap_accounts=investment_source_overlap_accounts or [],
+        security_resolution=security_resolution or {},
+        security_resolution_error=security_resolution_error,
     )
 
 
@@ -126,6 +140,85 @@ def test_sync_pull_no_refresh_flag(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_text_output_no_investments_stays_quiet(
+    mock_build: MagicMock,
+) -> None:
+    """A pull with zero investment data prints no Investments/Securities lines."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result()
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 0, result.output
+    assert "Investments:" not in result.stdout
+    assert "Securities:" not in result.stdout
+    assert "opening lot" not in result.stdout
+    assert "manual and Plaid" not in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_text_output_shows_clean_investment_resolution(
+    mock_build: MagicMock,
+) -> None:
+    """All-clean resolution (no proposed/pending) lists outcomes without a review nag."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        securities_loaded=3,
+        investment_transactions_loaded=4,
+        holdings_loaded=3,
+        security_resolution={"adopted": 1, "auto_bound": 1, "minted": 1},
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 0, result.output
+    assert "Investments: 3 securities, 4 transactions, 3 holdings." in result.stdout
+    assert "Securities: 1 adopted, 1 auto-bound, 1 new." in result.stdout
+    assert "awaiting" not in result.stdout
+    assert "Review:" not in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_text_output_names_review_command_when_awaiting(
+    mock_build: MagicMock,
+) -> None:
+    """Any identity awaiting review must name the exact review command."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        securities_loaded=3,
+        investment_transactions_loaded=1,
+        holdings_loaded=1,
+        security_resolution={"proposed": 2, "pending": 1},
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 0, result.output
+    assert "Securities: 3 awaiting identity review." in result.stdout
+    assert "`moneybin investments securities links pending`" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_text_output_shows_bootstrap_and_overlap(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        securities_loaded=1,
+        investment_transactions_loaded=1,
+        holdings_loaded=1,
+        opening_bootstrap_rows=2,
+        investment_source_overlap_accounts=["acc_1"],
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 0, result.output
+    assert "2 opening lot(s) seeded for pre-window positions." in result.stdout
+    assert "1 account(s) have both manual and Plaid investment history" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_pull_surfaces_transforms_error(mock_build: MagicMock) -> None:
     """Transform failure on pull warns via logger and exits non-zero.
 
@@ -172,6 +265,46 @@ def test_sync_pull_json_mode_exits_nonzero_on_transforms_error(
     payload = json.loads(result.stdout)
     assert payload["transforms_applied"] is False
     assert payload["transforms_error"] == "SQLMeshError"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_surfaces_security_resolution_error(mock_build: MagicMock) -> None:
+    """Security resolution failure on pull warns via logger and exits non-zero.
+
+    Mirrors ``test_sync_pull_surfaces_transforms_error``: there is no
+    staging fallback for an unresolved security_id (unlike accounts), so a
+    swallowed resolution failure is exactly as silent a cost-basis
+    corruption as a swallowed transform failure and must carry the same
+    exit-code signal.
+    """
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        securities_loaded=3,
+        security_resolution_error="boom",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull"])
+    assert result.exit_code == 1
+    service.pull.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_json_mode_exits_nonzero_on_security_resolution_error(
+    mock_build: MagicMock,
+) -> None:
+    """JSON-mode `sync pull` must also exit non-zero on security resolution failure."""
+    service = MagicMock()
+    service.pull.return_value = _fake_pull_result(
+        securities_loaded=3,
+        security_resolution_error="boom",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "pull", "--output", "json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["security_resolution_error"] == "boom"
 
 
 @pytest.mark.unit
@@ -227,6 +360,33 @@ def test_sync_link_surfaces_transforms_error_from_auto_pull(
         pull_result=_fake_pull_result(
             transforms_applied=False,
             transforms_error="SQLMeshError",
+        ),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "link"])
+    assert result.exit_code == 1
+    service.link.assert_called_once()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_surfaces_security_resolution_error_from_auto_pull(
+    mock_build: MagicMock,
+) -> None:
+    """Link's auto-pull security resolution failure must warn and exit non-zero.
+
+    Mirrors ``test_sync_link_surfaces_transforms_error_from_auto_pull``: the
+    same fail-loud contract applies to a swallowed resolution failure as to a
+    swallowed transforms failure.
+    """
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=_fake_pull_result(
+            securities_loaded=3,
+            security_resolution_error="boom",
         ),
     )
     mock_build.return_value.__enter__.return_value = service

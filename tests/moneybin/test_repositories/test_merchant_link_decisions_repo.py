@@ -7,6 +7,8 @@ stored as JSON and decoded (not doubly-encoded) in list/history results.
 
 from __future__ import annotations
 
+import pytest
+
 from moneybin.database import Database
 from moneybin.repositories.merchant_link_decisions_repo import MerchantLinkDecisionsRepo
 
@@ -49,10 +51,18 @@ def test_list_pending_match_signals_is_dict(db: Database) -> None:
 
 
 def test_reverse_drops_from_pending_and_emits_audit(db: Database) -> None:
-    """reverse() removes decision from list_pending and writes a reverse audit row."""
+    """reverse() of a decided decision writes a reverse audit row.
+
+    ``rev1`` is inserted pending and confirmed present in list_pending, then
+    accepted (which is what actually drops it from list_pending) before being
+    reversed — reverse() itself only accepts accepted/rejected rows.
+    """
     repo = MerchantLinkDecisionsRepo(db)
     _insert(repo, decision_id="rev1")
     assert any(r["decision_id"] == "rev1" for r in repo.list_pending())
+
+    repo.update_status("rev1", status="accepted", decided_by="user", actor="cli")
+    assert not any(r["decision_id"] == "rev1" for r in repo.list_pending())
 
     repo.reverse("rev1", reversed_by="user", actor="cli")
 
@@ -63,6 +73,25 @@ def test_reverse_drops_from_pending_and_emits_audit(db: Database) -> None:
         ["rev1", "merchant_link_decision.reverse"],
     ).fetchone()
     assert audit_row is not None, "expected merchant_link_decision.reverse audit row"
+
+
+def test_reverse_raises_when_pending(db: Database) -> None:
+    """A pending decision has no accept/reject decision yet to undo.
+
+    Reversing it would silently dequeue a review item with no decision ever
+    recorded — the guarantee the merchant-link review queue exists to enforce.
+    """
+    repo = MerchantLinkDecisionsRepo(db)
+    _insert(repo, decision_id="d_pending")
+
+    with pytest.raises(ValueError, match="accepted/rejected decisions can be reversed"):
+        repo.reverse("d_pending", reversed_by="user", actor="cli")
+
+    assert [r["decision_id"] for r in repo.list_pending()] == ["d_pending"]
+    still_pending = repo.fetch_by_id("d_pending")
+    assert still_pending is not None
+    assert still_pending["status"] == "pending"
+    assert still_pending["reversed_at"] is None
 
 
 def test_history_returns_newest_first(db: Database) -> None:

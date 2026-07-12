@@ -553,3 +553,34 @@ SYNC_CONNECT_OUTCOMES = Counter(
     "Connect-flow outcomes by terminal status (connected, failed, timeout).",
     ["status"],
 )
+
+# ── Investments sync ─────────────────────────────────────────────────────────
+
+SYNC_INVESTMENTS_RECORDS_LOADED = Counter(
+    "moneybin_sync_investments_records_loaded_total",
+    "Investment records loaded per sync by raw table",
+    ["table"],
+)
+
+INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL = Counter(
+    "moneybin_investment_amount_drift_rows_total",
+    "Plaid investment rows whose |amount| reconciles under neither fee convention",
+)
+
+SECURITY_LINK_OUTCOMES_TOTAL = Counter(
+    "moneybin_security_link_outcomes_total",
+    "SecurityResolver ladder outcomes per resolved security",
+    ["result"],
+)
+
+SECURITY_LINK_DECISION_OUTCOMES_TOTAL = Counter(
+    "moneybin_security_link_decision_outcomes_total",
+    "Outcomes of security-link merge review decisions via SecurityLinksService.",
+    # outcome: accepted | rejected
+    ["outcome"],
+)
+
+SECURITY_LINK_REVIEW_PENDING = Gauge(
+    "moneybin_security_link_review_pending",
+    "Current count of pending security_link_decisions.",
+)

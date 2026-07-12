@@ -1,0 +1,155 @@
+# Hand-authored to the sync-plaid-investments.md server contract (PR #311 shape).
+# Replace with a Plaid Sandbox capture when moneybin-sync ships the endpoints.
+# Every account referenced by investment_transactions / investment_holdings must
+# appear here — the loader's orphan guard rejects a payload whose investment
+# arrays name an account the accounts array never delivered.
+accounts:
+  - account_id: acc_1
+    account_type: investment
+    account_subtype: brokerage
+    institution_name: Alpha Brokerage
+    official_name: Alpha Brokerage Individual
+    mask: "1234"
+  - account_id: acc_dup
+    account_type: investment
+    account_subtype: ira
+    institution_name: Beta Retirement
+    mask: "5678"
+transactions: []
+balances: []
+removed_transactions: []
+securities:
+  - security_id: sec_aapl
+    provider_item_id: item_1
+    ticker_symbol: AAPL
+    market_identifier_code: XNAS
+    name: Apple Inc.
+    type: equity
+    close_price: "214.55"
+    close_price_as_of: "2026-07-08"
+    iso_currency_code: USD
+    is_cash_equivalent: false
+  - security_id: sec_dup
+    provider_item_id: item_1
+    institution_id: ins_alpha
+    institution_security_id: ALPHA-VTI
+    ticker_symbol: VTI
+    name: Vanguard Total Stock Market ETF
+    type: etf
+    iso_currency_code: USD
+  - security_id: sec_dup
+    provider_item_id: item_2
+    institution_id: ins_beta
+    institution_security_id: BETA-VTI
+    ticker_symbol: VTI
+    name: Vanguard Total Stock Market ETF
+    type: etf
+    iso_currency_code: USD
+investment_transactions:
+  - investment_transaction_id: itx_buy_1
+    account_id: acc_1
+    provider_item_id: item_1
+    security_id: sec_aapl
+    date: "2026-07-06"
+    transaction_datetime: "2026-07-05T14:30:00Z"
+    name: BUY AAPL
+    quantity: "10.0"
+    amount: "2145.50"
+    price: "214.55"
+    fees: "0.0"
+    iso_currency_code: USD
+    type: buy
+    subtype: buy
+  - investment_transaction_id: itx_cash_1
+    account_id: acc_1
+    provider_item_id: item_1
+    date: "2026-07-01"
+    name: DEPOSIT
+    amount: "-500.00"
+    iso_currency_code: USD
+    type: cash
+    subtype: deposit
+  - investment_transaction_id: itx_drift_1
+    account_id: acc_dup
+    provider_item_id: item_2
+    security_id: sec_dup
+    date: "2026-07-02"
+    name: BUY VTI
+    quantity: "2.0"
+    amount: "999.99"        # |q*p| = 600.00; fails both fee conventions -> drift guard
+    price: "300.00"
+    fees: "1.00"
+    iso_currency_code: USD
+    type: buy
+    subtype: buy
+  - investment_transaction_id: itx_large_qty_1
+    account_id: acc_1
+    provider_item_id: item_1
+    security_id: sec_aapl
+    date: "2026-07-07"
+    name: BUY AAPL (large)
+    quantity: "10000"
+    # gross = |10000 * 214.55| = 2,145,500.00; price is 2dp, so rounding can
+    # hide up to $0.005/share -> up to $50.00 of true gross at this quantity.
+    # amount is $30.00 off gross: outside the old flat $0.01 tolerance, inside
+    # the scaled tolerance (0.01 + 10000 * 0.01 / 2 = $50.01) -> not drift.
+    amount: "2145530.00"
+    price: "214.55"
+    fees: "0"
+    iso_currency_code: USD
+    type: buy
+    subtype: buy
+investment_holdings:
+  - account_id: acc_1
+    provider_item_id: item_1
+    security_id: sec_aapl
+    institution_price: "214.55"
+    institution_price_as_of: "2026-07-08"
+    institution_value: "2145.50"
+    cost_basis: "1980.00"
+    quantity: "10.0"
+    iso_currency_code: USD
+    tax_lots:
+      - institution_lot_id: lot_7f
+        original_purchase_datetime: "2021-03-11T00:00:00Z"
+        quantity: "6.0"
+        purchase_price: "121.00"
+        cost_basis: "726.00"
+        current_value: "1287.30"
+        position_type: long
+      - original_purchase_datetime: null      # NULL institution_lot_id AND NULL date
+        quantity: "4.0"
+        cost_basis: "1254.00"
+        position_type: long
+  # Same security (VTI) held at BOTH brokerages — the security-dedup scenario.
+  # The Alpha-side position sits on the ALPHA account: a Plaid account_id is
+  # scoped to its item, so acc_dup (Beta/item_2) cannot also be reported under
+  # item_1. Attributing it that way is the cross-item drift the loader rejects.
+  - account_id: acc_1
+    provider_item_id: item_1
+    security_id: sec_dup
+    quantity: "5.0"
+    cost_basis: "1000.00"
+    iso_currency_code: USD
+    tax_lots: []
+  - account_id: acc_dup
+    provider_item_id: item_2
+    security_id: sec_dup
+    quantity: "8.0"
+    cost_basis: "2400.00"
+    iso_currency_code: USD
+    tax_lots: []
+metadata:
+  job_id: job-inv-1
+  synced_at: "2026-07-08T12:00:00Z"
+  institutions:
+    - provider_item_id: item_1
+      institution_name: Alpha Brokerage
+      status: completed
+      transaction_count: 2
+      transactions_window_start: "2024-07-08"
+    - provider_item_id: item_2
+      institution_name: Beta Retirement
+      status: completed
+      transaction_count: 1
+      transactions_window_start: "2025-01-15"

@@ -247,6 +247,8 @@ CREATE TABLE IF NOT EXISTS core.fct_investment_transactions (
     amount DECIMAL(18, 2),
     fees DECIMAL(18, 2),
     currency_code VARCHAR,
+    provider_type VARCHAR,
+    provider_subtype VARCHAR,
     source_type VARCHAR,
     source_origin VARCHAR,
     description VARCHAR,
@@ -311,6 +313,10 @@ SELECT CAST(NULL AS VARCHAR) AS account_id,
        CAST(NULL AS DECIMAL(18, 2)) AS cost_basis,
        CAST(NULL AS DECIMAL(28, 10)) AS average_cost,
        CAST(NULL AS VARCHAR) AS currency_code,
+       CAST(NULL AS DECIMAL(28, 10)) AS provider_reported_quantity,
+       CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_cost_basis,
+       CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_value,
+       CAST(NULL AS TIMESTAMP) AS provider_reported_as_of,
        CAST(NULL AS TIMESTAMP) AS updated_at
 WHERE FALSE;
 """
@@ -318,6 +324,9 @@ WHERE FALSE;
 # explicit casts (DECIMAL(28,10)/(18,2)/(28,10)) — average_cost is DECIMAL,
 # NOT DOUBLE (DuckDB's decimal `/` promotes to DOUBLE unless the whole
 # division is cast back). database.md: no FLOAT for financial quantities.
+# The provider_reported_* columns are the broker's non-authoritative claim
+# (LEFT JOINed from the newest holdings snapshot in production) — same types as
+# the ledger-derived columns they mirror.
 
 
 def create_core_dim_stub_views(db: Database) -> None:

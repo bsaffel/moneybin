@@ -77,7 +77,7 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | LibreChat | stdio, sse, streamable-http | `librechat.yaml` / in-app panel | T2 | |
 | Warp | stdio, SSE URL | UI add; auto-detects `.warp/.mcp.json` + reads Claude Code/Codex config | T2 | Often works with zero MoneyBin effort via config pickup |
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
-| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 102** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
+| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 105** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
 | ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** (pending #315) | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension. **Until #315 merges, `chatgpt-desktop` is manual-config only** (still in `_NO_INSTALL_CLIENTS` on `main`) |
 | ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
@@ -107,7 +107,7 @@ works.
 - **Windsurf → T2.** A top-3 name in 2024/early-2025, but Google poached its
   founders and Cognition acquired the remainder (Dec 2025); it now trails badly
   on adoption (~$82M vs Cursor's ~$2B ARR). Combined with the 100-tool-cap tax
-  against our 102-tool surface, it doesn't earn a release-gated T1 commitment.
+  against our 105-tool surface, it doesn't earn a release-gated T1 commitment.
   Still documented (stdio works); revisit on a momentum change.
 - **Antigravity → T1.** Google-backed, MCP over stdio/SSE/HTTP, its CLI inherits
   Gemini CLI's large base. Adoption is early and its surfaces are still moving,
@@ -145,10 +145,10 @@ Stale guidance found during the review; all are routine fixes:
    documented behavior — file with logs against claude-ai-mcp.
 5. **Windsurf tool-cap overflow is a shipped defect, not informational.**
    Progressive disclosure was retired (`mcp-architecture.md` §3): the full
-   registered surface is visible at connect, so all **102** tools count against
+   registered surface is visible at connect, so all **105** tools count against
    Cascade's hard **100-active-tool ceiling**. Count confirmed against the live
    served surface — `moneybin mcp list-tools` → `list_tools()` reports
-   `total_count: 102`, `0 hidden`. (Static `@mcp_tool`-decorator counts undercount
+   `total_count: 105`, `0 hidden`. (Static `@mcp_tool`-decorator counts undercount
    — e.g. 100 if you subtract the intentionally-unregistered budget/transform
    modules — because the served surface includes tools registered outside those
    modules; only a live `list_tools()` is authoritative.) We are 2 over. **PR
@@ -326,7 +326,7 @@ first public release). Content decisions:
   sunsetting Gemini CLI. T1 targets the stable desktop + CLI surfaces and
   re-verifies the config path each release while the surfaces settle.
 - **Windsurf → T2** (was OQ1). Momentum faded after the Cognition acquisition,
-  and the 100-active-tool cap vs our 102 is a per-release headroom tax not worth
+  and the 100-active-tool cap vs our 105 is a per-release headroom tax not worth
   paying for a distant follower. Documented, not release-gated; no headroom
   policy. Revisit on a momentum change. (The Phase-0 item to *verify* the visible
   count stays — still worth knowing — but it no longer gates a T1 commitment.)

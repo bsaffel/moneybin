@@ -20,11 +20,11 @@ from typing import TYPE_CHECKING
 from fastmcp.server.elicitation import AcceptedElicitation
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
-from mcp.types import ClientCapabilities, ElicitationCapability
 
 from moneybin import error_codes
 from moneybin.config import set_current_profile
 from moneybin.errors import UserError
+from moneybin.mcp.elicitation import supports_elicitation
 from moneybin.observability import setup_observability
 from moneybin.protocol.envelope import build_error_envelope
 from moneybin.services.profile_service import ProfileExistsError, ProfileService
@@ -76,7 +76,7 @@ class FirstRunSetupMiddleware(Middleware):
             return await call_next(context)
 
         ctx = context.fastmcp_context
-        if ctx is None or not _supports_elicitation(ctx):
+        if ctx is None or not supports_elicitation(ctx):
             return _setup_required_result()
 
         name = await _elicit_profile_name(ctx)
@@ -94,13 +94,6 @@ class FirstRunSetupMiddleware(Middleware):
         self._configured = True
         logger.info("First-run setup complete; profile configured in-process")
         return await call_next(context)
-
-
-def _supports_elicitation(ctx: Context) -> bool:
-    """True when the connected client declared the elicitation capability."""
-    return ctx.session.check_client_capability(
-        ClientCapabilities(elicitation=ElicitationCapability())
-    )
 
 
 async def _elicit_profile_name(ctx: Context) -> str | None:

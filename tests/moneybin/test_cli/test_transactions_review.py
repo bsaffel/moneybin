@@ -109,6 +109,27 @@ def test_review_type_filter_merchant_links(
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
 @patch("moneybin.config.get_settings")
+def test_review_type_filter_security_links(
+    mock_get_settings: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """--type security-links limits output to the security-link queue count."""
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_get_settings.return_value = MagicMock()
+    mock_db.execute.return_value.fetchone.return_value = (0,)
+
+    result = runner.invoke(
+        app, ["transactions", "review", "--type", "security-links", "--status"]
+    )
+    assert result.exit_code == 0
+    out = result.output.lower()
+    assert "security-link" in out
+    assert "matches pending" not in out
+    assert "uncategorized" not in out
+
+
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.config.get_settings")
 def test_review_status_json_type_filter_merchant_links(
     mock_get_settings: MagicMock, mock_get_db: MagicMock
 ) -> None:
@@ -159,6 +180,7 @@ def test_review_status_json_output(
         "categorize_pending": 0,
         "account_links_pending": 0,
         "merchant_links_pending": 0,
+        "security_links_pending": 0,
         "total": 0,
     }
 

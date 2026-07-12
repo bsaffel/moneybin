@@ -95,18 +95,62 @@ async def test_timed_out_tool_resets_only_its_own_connection(
     @mcp_tool(dynamic_classification=True)
     def slow_tool() -> ResponseEnvelope[Any]:
         from moneybin.database import (
-            _write_conn_thread_local,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
+            _write_conn_holder,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
         )
 
-        # The decorator points conn_holder at this call's per-call list before
+        # The decorator points the holder at this call's per-call list before
         # running the sync body; mirror get_database registering its connection.
-        holder = getattr(_write_conn_thread_local, "conn_holder", None)
+        holder = _write_conn_holder.get()
         assert holder is not None
         holder[0] = sentinel
         time.sleep(0.5)
         return _ok_envelope()
 
     await slow_tool()
+    reset_mock.assert_called_once_with(sentinel)
+
+
+@pytest.mark.unit
+async def test_timed_out_async_tool_resets_the_conn_its_worker_thread_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An async tool's write runs on a thread it spawns — that conn must still reset.
+
+    The link-set tools are `async def` (they await an elicitation) and dispatch
+    the write through their OWN asyncio.to_thread. That worker is a fresh OS
+    thread, so a thread-local registration set by the decorator never reaches it:
+    the connection went unregistered, the timeout handler found nothing to
+    interrupt, and the merge was free to commit AFTER the caller had already
+    been told the call timed out — a write the user believes did not happen.
+    """
+    monkeypatch.setattr("moneybin.mcp.decorator._get_timeout_seconds", lambda: 0.05)
+    reset_mock = MagicMock()
+    monkeypatch.setattr(
+        "moneybin.mcp.decorator.interrupt_and_reset_database", reset_mock
+    )
+    sentinel = object()
+
+    def _blocking_write() -> None:
+        from moneybin.database import (
+            _write_conn_holder,  # type: ignore[reportPrivateUsage]  # test-only: simulate get_database registering its conn
+        )
+
+        # Runs on the worker thread the TOOL spawned, not the one the decorator
+        # dispatched — the registration has to survive that hop.
+        holder = _write_conn_holder.get()
+        assert holder is not None, "async body's worker thread never saw the holder"
+        holder[0] = sentinel
+        time.sleep(0.5)
+
+    @mcp_tool(dynamic_classification=True)
+    async def slow_async_write() -> ResponseEnvelope[Any]:
+        await asyncio.to_thread(_blocking_write)
+        return _ok_envelope()
+
+    result = await slow_async_write()
+
+    assert result.error is not None
+    assert result.error.code == error_codes.INFRA_TIMED_OUT
     reset_mock.assert_called_once_with(sentinel)
 
 
@@ -250,11 +294,7 @@ async def test_back_to_back_call_after_timeout_succeeds(
             # Mirror real get_database: register the per-call holder so the
             # decorator's timeout cleanup resets THIS connection (rather than
             # finding [0]=None and skipping, which the guarded cleanup now does).
-            holder = getattr(
-                db_module._write_conn_thread_local,  # pyright: ignore[reportPrivateUsage]
-                "conn_holder",
-                None,
-            )
+            holder = db_module._write_conn_holder.get()  # pyright: ignore[reportPrivateUsage]
             if holder is not None:
                 holder[0] = conn
         try:

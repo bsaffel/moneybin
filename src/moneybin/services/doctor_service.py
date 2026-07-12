@@ -25,17 +25,23 @@ from moneybin.tables import (
     CATEGORIZATION_RULES,
     CATEGORY_OVERRIDES,
     DIM_ACCOUNTS,
+    DIM_HOLDINGS,
+    FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
     LOT_SELECTIONS,
+    MANUAL_INVESTMENT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
     PDF_FORMATS,
+    PLAID_INVESTMENT_TRANSACTIONS,
+    PLAID_SECURITIES,
     PROPOSED_RULES,
     SECURITIES,
+    SECURITY_LINKS,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
@@ -66,6 +72,39 @@ _ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
 _ALLOWED_PK_EXPRS = frozenset({_BALANCE_ASSERTIONS_PK_EXPR})
 
 _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
+
+# Shared by `_run_investment_unreported_holdings` and
+# `_run_investment_phantom_holdings` — both need "the one whole snapshot per
+# item with the latest extracted_at" (never "latest row per position": that
+# would let a stale survivor from an earlier pull mask an omission in the
+# newest one). Mirrors the identical CTE in `dim_holdings.sql`. No leading
+# `WITH` — callers splice this into their own `WITH <this>, ...` clause.
+#
+# Derived from the snapshot RECEIPTS (one row per item per pull, written even
+# when the item reports zero positions), NOT from the presence of holdings rows.
+# Plaid returns no holding entries for an item holding nothing, so the pull
+# where a broker's every account is liquidated writes no holdings rows at all —
+# a row-derived newest snapshot cannot see it, and silently keeps the last
+# NON-EMPTY snapshot from an earlier pull. Keyed on the receipt, an item that
+# reported nothing has an EMPTY newest snapshot (its positions are phantoms) and
+# an item that never reported has NO newest snapshot (its positions are out of
+# scope) — the distinction the raw holdings rows cannot express.
+_NEWEST_HOLDINGS_SNAPSHOT_CTE = """
+newest_snapshot AS (
+    SELECT source_origin, source_file
+    FROM (
+        SELECT
+            source_origin,
+            source_file,
+            ROW_NUMBER() OVER (
+                PARTITION BY source_origin
+                ORDER BY extracted_at DESC, source_file DESC
+            ) AS snapshot_rank
+        FROM prep.stg_plaid__investment_holdings_snapshots
+    )
+    WHERE snapshot_rank = 1
+)
+"""
 
 
 def _is_live_fingerprint(raw: str | None) -> bool:
@@ -163,12 +202,24 @@ class DoctorService:
         categorization = self._run_categorization_coverage()
         app_integrity = self._run_app_integrity(full=full)
         orphan_app_state = self._run_orphan_app_state()
+        investment_checks = [
+            self._run_investment_staging_rejects(),
+            self._run_opening_lot_review(),
+            self._run_investment_unmodeled_legs(),
+            self._run_holdings_snapshot_divergence(),
+            self._run_investment_source_overlap(),
+            self._run_investment_unresolved_securities(),
+            self._run_investment_conflicting_security_refs(),
+            self._run_investment_unreported_holdings(),
+            self._run_investment_phantom_holdings(),
+        ]
         raw_invariants = [
             *sqlmesh_results,
             dedup_reconciliation,
             categorization,
             *app_integrity,
             orphan_app_state,
+            *investment_checks,
         ]
         invariants = [self._apply_recipe(r) for r in raw_invariants]
         return DoctorReport(invariants=invariants, transaction_count=transaction_count)
@@ -617,6 +668,543 @@ class DoctorService:
                     "transaction_id absent from core.fct_transactions"
                 ),
                 affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_staging_rejects(self) -> InvariantResult:
+        """Plaid investment rows staging routed to review instead of the ledger.
+
+        Staging refuses to guess, and files the row here instead. Three reasons
+        today: ``split_underivable`` (a ``split`` whose multiplier MoneyBin
+        will not derive), ``transfer_direction_underivable`` (a security-bearing
+        ``transfer`` leg whose in/out direction cannot be inferred from
+        quantity), and ``unmapped_subtype`` (an unmapped security-bearing
+        subtype). All are deliberate refusals, not silent drops — this is where
+        they surface. The query is deliberately open (``review_reason IS NOT
+        NULL``), so a NEW reason added upstream surfaces here without a code
+        change; only this list needs the follow-up.
+        """
+        name = "investment_staging_rejects"
+        try:
+            rows = self._db.execute(
+                """
+                SELECT investment_transaction_id, review_reason
+                FROM prep.stg_plaid__investment_transactions
+                WHERE review_reason IS NOT NULL
+                ORDER BY investment_transaction_id
+                """  # noqa: S608  # fixed view name, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"staging view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            reasons = sorted({str(r[1]) for r in rows})
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} Plaid investment row(s) held out of the ledger "
+                    f"pending review ({', '.join(reasons)}) — MoneyBin will not "
+                    "guess a derivation for these; cross-check the affected trade "
+                    "dates against your broker statement until automatic "
+                    "resolution ships"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_opening_lot_review(self) -> InvariantResult:
+        """Positions the opening-lot bootstrap refused to synthesize.
+
+        Covers short/non-positive quantity, NULL basis, and
+        ``sold_out_prewindow`` gaps the bootstrap declined to reconstruct
+        rather than guess (``prep.stg_plaid__opening_lot_review``).
+        ``security_id`` falls back to ``source_security_key`` (the same
+        fallback ``_run_investment_unreported_holdings`` uses) — an unbound
+        security is exactly the kind of gap this check exists to surface, and
+        a bare ``security_id`` would render it as an unactionable ``None``.
+        """
+        name = "investment_opening_lot_review"
+        try:
+            rows = self._db.execute(
+                """
+                SELECT account_id,
+                       COALESCE(security_id, source_security_key) AS security_key,
+                       reason
+                FROM prep.stg_plaid__opening_lot_review
+                ORDER BY account_id, security_key
+                """  # noqa: S608  # fixed view name, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"bootstrap review view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} position(s) not bootstrapped "
+                    "(short/split/negative-gap) — held basis may be missing; "
+                    "treat cost basis for these (account, security) pairs as "
+                    "incomplete until you can supply the opening lot manually"
+                ),
+                affected_ids=[f"{r[0]}:{r[1]} ({r[2]})" for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_unmodeled_legs(self) -> InvariantResult:
+        """Legs recorded in the ledger but stripped of lot-affecting quantity.
+
+        Staging maps three families of ``provider_subtype`` to
+        ``type = 'other'`` with ``ledger_quantity`` forced to NULL: short
+        legs (``buy to cover``/``sell short``), option legs
+        (``assignment``/``exercise``/``expire``), and catch-all events
+        (``adjustment``/``loan payment``/``rebalance``) —
+        ``stg_plaid__investment_transactions.sql``'s own comment groups all
+        three under "never carry a ledger quantity." All of them carry
+        ``ledger_include = TRUE`` and ``review_reason = NULL`` (not staging
+        rejects), so this check is the only place they surface; it keys on
+        ``provider_subtype`` for exactly that reason. The risk is not
+        theoretical for the option-leg family: an ``assignment`` that
+        exercises away a covered-call position disposes of real shares, but
+        with no ledger quantity to consume, the held lot never closes — a
+        phantom position that overstates net worth until reconciled.
+
+        Matched on ``LOWER(provider_subtype)`` because staging classifies on
+        ``LOWER(COALESCE(subtype, ''))`` while preserving the provider's raw
+        casing in ``provider_subtype``: a case-sensitive list here would miss
+        an ``'Assignment'`` that staging still routed to NULL-quantity
+        ``other``, and the check would report ``pass`` on exactly the row it
+        exists to surface. Normalize identically on both sides.
+        """
+        name = "investment_unmodeled_legs"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT investment_transaction_id
+                FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
+                WHERE LOWER(provider_subtype) IN (
+                    'buy to cover', 'sell short',
+                    'assignment', 'exercise', 'expire',
+                    'adjustment', 'loan payment', 'rebalance'
+                )
+                ORDER BY investment_transaction_id
+                """  # noqa: S608  # TableRef constant
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"ledger unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} leg(s) recorded but kept out of the "
+                    "long-only lot engine — short positions, option "
+                    "assignment/exercise/expiration, and other catch-all "
+                    "events (adjustment/loan payment/rebalance) carry no "
+                    "lot-affecting quantity; if one of these disposed of "
+                    "shares (e.g. a covered call exercised away), the "
+                    "position may never close in MoneyBin — cross-check "
+                    "against your broker statement and track it outside "
+                    "MoneyBin until short/option accounting ships"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_holdings_snapshot_divergence(self) -> InvariantResult:
+        """Engine-derived held lots diverging from the broker's newest snapshot.
+
+        ``core.dim_holdings`` is ``positions LEFT JOIN provider_reported`` — a
+        broker-reported position MoneyBin has no lot for produces no row at
+        all here (the more dangerous direction; not this check's job — see
+        ``prep.stg_plaid__investment_holdings`` for that). This check only
+        catches divergence on positions MoneyBin DOES hold a lot for.
+
+        The cost-basis leg is gated on ``provider_reported_cost_basis IS NOT
+        NULL``, mirroring the quantity leg's own ``provider_reported_quantity
+        IS NOT NULL`` gate above: the raw DDL declares ``cost_basis``
+        nullable and brokers routinely omit it, so ``COALESCE(..., 0)`` on
+        that column alone would read "the broker didn't say" as "the broker
+        says $0" and fire on every quantity-matched position whose
+        connection doesn't report basis. The tolerance itself is relative,
+        not a flat cent: ``GREATEST(0.01, 1bp of the reported basis)`` so
+        many small DRIP/reinvest lots accumulating sub-cent rounding on a
+        large position don't cross a fixed absolute floor.
+        """
+        name = "investment_holdings_divergence"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT account_id, security_id
+                FROM {DIM_HOLDINGS.full_name}
+                WHERE provider_reported_quantity IS NOT NULL
+                  AND (
+                    quantity <> provider_reported_quantity
+                    OR (
+                      provider_reported_cost_basis IS NOT NULL
+                      AND ABS(
+                        COALESCE(cost_basis, 0) - provider_reported_cost_basis
+                      ) > GREATEST(0.01, ABS(provider_reported_cost_basis) * 0.0001)
+                    )
+                  )
+                ORDER BY account_id, security_id
+                """  # noqa: S608  # TableRef constant
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"dim_holdings unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} position(s) where engine-derived held lots "
+                    "diverge from the broker snapshot (method mismatch or "
+                    "pre-window sell) — the broker snapshot is authoritative "
+                    "for the held position; MoneyBin's quantity/cost_basis for "
+                    "these should not be trusted until the divergence clears"
+                ),
+                affected_ids=[f"{r[0]}:{r[1]}" for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_source_overlap(self) -> InvariantResult:
+        """Accounts carrying BOTH manual and Plaid investment history.
+
+        Lots and gains double-count until one source is chosen per account
+        (investment dedup across sources is a future matching child, unlike
+        transactions which already have ``prep.int_transactions__matched``).
+        """
+        name = "investment_source_overlap"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT DISTINCT COALESCE(al.account_id, p.account_id) AS account_id
+                FROM {PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
+                LEFT JOIN {ACCOUNT_LINKS.full_name} AS al
+                  ON al.status = 'accepted' AND al.ref_kind = 'source_native'
+                  AND al.source_type = 'plaid' AND al.source_origin = p.source_origin
+                  AND al.ref_value = p.account_id
+                JOIN {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
+                  ON m.account_id = COALESCE(al.account_id, p.account_id)
+                ORDER BY account_id
+                """  # noqa: S608  # TableRef constants
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — raw tables absent on fresh DBs
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"raw tables unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} account(s) have both manual and Plaid "
+                    "investment rows — lots and gains double-count until one "
+                    "source is chosen per account; delete or stop importing the "
+                    "redundant manual entries (investment dedup is a future "
+                    "matching child)"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_unresolved_securities(self) -> InvariantResult:
+        """Ledger rows a provider security key never resolved to a canonical security.
+
+        ``cost_basis.py`` silently skips every ``LedgerEvent`` with
+        ``security_id is None`` when grouping for lot computation — so an
+        unresolved security is not just a missing label, it quietly
+        understates lots and gains for that event. Scoped to rows whose
+        staging row carried a non-NULL provider security key (a genuine
+        security-bearing event); a NULL key is a legitimate cash-only row
+        (deposit, withdrawal, ...) and not a gap.
+        """
+        name = "investment_unresolved_securities"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT c.investment_transaction_id
+                FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS c
+                JOIN prep.stg_plaid__investment_transactions AS p
+                  ON p.investment_transaction_id = c.investment_transaction_id
+                WHERE c.security_id IS NULL
+                  AND p.source_security_key IS NOT NULL
+                ORDER BY c.investment_transaction_id
+                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core/staging view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"ledger/staging unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} investment transaction(s) carry a provider "
+                    "security key the resolver never bound to a canonical "
+                    "security — cost basis silently drops these events, "
+                    "understating lots and gains; run "
+                    "`moneybin investments securities links pending` to review "
+                    "and resolve them"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_conflicting_security_refs(self) -> InvariantResult:
+        """One provider security, bound to two different canonical securities.
+
+        A Plaid security row carries several refs (its plaid_security_id plus an
+        institution ref per institution holding it). They describe ONE instrument,
+        so they must resolve to one security. When they don't, MoneyBin is holding
+        the same instrument as two — its lots and gains are split across both, and
+        every report understates each.
+
+        The resolver refuses to repoint either binding on its own: a repoint is a
+        reviewed merge, never a sync-time side effect, and rewriting the wrong one
+        fuses two real instruments' tax lots irreversibly. So it logs and moves on
+        — which made the conflict invisible to everyone not reading server logs.
+        This is that missing surface.
+
+        Deliberately NOT filed into the security-link review queue: accepting such
+        a decision merges the bound security away, and that path refuses a
+        user-authored row outright — it would enqueue a decision the user cannot
+        action. The conflict needs a human to decide which security is real, so
+        report it and name both.
+        """
+        name = "investment_conflicting_security_refs"
+        try:
+            # Reconstruct each provider row's refs exactly as SecurityResolver
+            # binds them (plaid_security_id, plus one namespaced institution ref
+            # per institution reporting it), then ask how many securities they
+            # landed on. A single (ref_kind, ref_value) can only be bound once —
+            # the conflict is BETWEEN a row's own refs, so it is invisible to any
+            # query that doesn't group them back together.
+            rows = self._db.execute(
+                f"""
+                WITH provider_refs AS (
+                    SELECT security_id AS provider_key,
+                           'plaid_security_id' AS ref_kind,
+                           security_id AS ref_value
+                    FROM {PLAID_SECURITIES.full_name}
+                    UNION
+                    SELECT security_id,
+                           'institution_security_id',
+                           institution_id || ':' || institution_security_id
+                    FROM {PLAID_SECURITIES.full_name}
+                    WHERE institution_id IS NOT NULL
+                      AND institution_security_id IS NOT NULL
+                )
+                SELECT r.provider_key
+                FROM provider_refs AS r
+                JOIN {SECURITY_LINKS.full_name} AS l
+                  ON l.ref_kind = r.ref_kind
+                 AND l.ref_value = r.ref_value
+                 AND l.source_type = 'plaid'
+                 AND l.status = 'accepted'
+                GROUP BY r.provider_key
+                HAVING COUNT(DISTINCT l.security_id) > 1
+                ORDER BY r.provider_key
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — raw/app tables absent before first sync
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"security links unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} provider security row(s) have refs bound to more "
+                    "than one canonical security — the same instrument is held as "
+                    "two, so its lots and gains are split across both and each is "
+                    "understated; decide which security is real and merge the "
+                    "other away"
+                ),
+                affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_unreported_holdings(self) -> InvariantResult:
+        """Broker-reported positions with no matching ``core.dim_holdings`` row.
+
+        ``core.dim_holdings`` is ``positions LEFT JOIN provider_reported`` — a
+        position the broker's newest snapshot reports that MoneyBin has no
+        open lot for produces NO row there at all (unlike a divergence, which
+        at least produces a row to compare). That makes this the more
+        dangerous direction: a position the user may hold without MoneyBin
+        knowing it, caused by an unbound security, a declined opening-lot
+        bootstrap, or a holdings snapshot that landed before its
+        transactions. Checked directly against the staging view — the only
+        place this direction is visible — scoped to each item's newest
+        snapshot (mirrors ``dim_holdings.sql``'s own scoping) so a position
+        the broker has since stopped reporting (sold, disconnected) is not
+        flagged as a live gap. ``h.quantity > 0`` excludes a broker row
+        reporting a CLOSED position (quantity 0 or NULL, both allowed by the
+        raw DDL) — the same "holds nothing" case
+        ``is_short_or_nonpositive`` already treats as expected data upstream
+        (the opening-lot bootstrap), not a secretly-held position.
+        """
+        name = "investment_unreported_holdings"
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE}
+                SELECT DISTINCT h.account_id,
+                       COALESCE(h.security_id, h.source_security_key) AS security_key
+                FROM prep.stg_plaid__investment_holdings AS h
+                JOIN newest_snapshot AS ns
+                  ON ns.source_file = h.source_file
+                  AND ns.source_origin = h.source_origin
+                LEFT JOIN {DIM_HOLDINGS.full_name} AS d
+                  ON d.account_id = h.account_id AND d.security_id = h.security_id
+                WHERE d.account_id IS NULL
+                  AND COALESCE(h.quantity, 0) > 0
+                ORDER BY h.account_id, security_key
+                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"holdings staging/core view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} position(s) the broker's newest snapshot "
+                    "reports holding that MoneyBin has no open lot for at all "
+                    "— you may hold this position without MoneyBin knowing it "
+                    "(an unresolved security, a declined opening-lot "
+                    "bootstrap, or a snapshot that arrived before its "
+                    "transactions); cross-check against your broker statement "
+                    "and resolve any pending securities via "
+                    "`moneybin investments securities links pending`"
+                ),
+                affected_ids=[f"{r[0]}:{r[1]}" for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_investment_phantom_holdings(self) -> InvariantResult:
+        """Open lots MoneyBin holds that the broker's newest snapshot no longer reports.
+
+        The mirror image of ``_run_investment_unreported_holdings``, and the
+        more dangerous direction the OTHER way: MoneyBin claiming a position
+        the broker's current data disagrees with OVERSTATES net worth,
+        rather than understating it. ``core.dim_holdings.provider_reported_quantity``
+        is already NULL exactly when the broker's newest snapshot omits a
+        position MoneyBin holds a lot for (``dim_holdings.sql`` — "that NULL
+        is itself the signal") — this check is what actually reads it.
+
+        The stale-item guard keys on whether the ITEM (``source_origin``)
+        delivered a snapshot, NOT on whether the ACCOUNT appears in it. An
+        account-keyed guard drops the worst phantom of all: Plaid returns no
+        holding entries for an account holding nothing, so a fully-liquidated
+        account whose sells never reached the ledger has ZERO rows in the
+        newest snapshot — the 100%-overstated account is exactly the one an
+        account-keyed guard filters out. Keying on the item still rules out the
+        case the guard exists for: an item that never delivered a snapshot
+        (never synced, disconnected) has no ``newest_snapshot`` row at all, so
+        none of its accounts are checked. An account's item is read from either
+        Plaid investment staging view — a liquidated account is absent from
+        holdings but still present in transactions.
+
+        "The item delivered a snapshot" is read from the snapshot RECEIPTS
+        (``_NEWEST_HOLDINGS_SNAPSHOT_CTE``), not from the presence of holdings
+        rows — the same distinction one level up. An item whose entire pull
+        comes back empty (every account at the broker liquidated) writes no
+        holdings rows, so a row-derived guard reads the last NON-EMPTY pull as
+        current and ``dim_holdings`` hands this check the STALE quantity the
+        broker no longer claims — a `pass` on the largest overstatement there
+        is. With the receipt, that pull IS the newest snapshot, no holdings row
+        joins to it, ``provider_reported_quantity`` is NULL, and every lot the
+        ledger never closed surfaces here.
+
+        A row surfaced here is a lot the ledger never closed: an option
+        assignment/exercise mapped to ``other`` with no ledger quantity (see
+        ``_run_investment_unmodeled_legs``), an early sale the ledger never
+        recorded, or a lot the engine otherwise failed to close.
+        """
+        name = "investment_phantom_holdings"
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE},
+                account_items AS (
+                    SELECT DISTINCT account_id, source_origin
+                    FROM prep.stg_plaid__investment_holdings
+                    UNION
+                    SELECT DISTINCT account_id, source_origin
+                    FROM prep.stg_plaid__investment_transactions
+                ),
+                reported_accounts AS (
+                    SELECT DISTINCT ai.account_id
+                    FROM account_items AS ai
+                    JOIN newest_snapshot AS ns
+                      ON ns.source_origin = ai.source_origin
+                )
+                SELECT d.account_id, d.security_id
+                FROM {DIM_HOLDINGS.full_name} AS d
+                JOIN reported_accounts AS ra ON ra.account_id = d.account_id
+                WHERE d.provider_reported_quantity IS NULL
+                ORDER BY d.account_id, d.security_id
+                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"holdings staging/core view unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(rows)} position(s) MoneyBin holds an open lot for "
+                    "that the broker's newest (live) snapshot no longer "
+                    "reports for the account — you likely do NOT hold this "
+                    "position (an option assignment/exercise, an early sale "
+                    "the ledger never recorded, or a lot the engine failed "
+                    "to close); this overstates net worth until reconciled "
+                    "— cross-check against your broker statement and record "
+                    "the missing disposal"
+                ),
+                affected_ids=[f"{r[0]}:{r[1]}" for r in rows],
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

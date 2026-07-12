@@ -157,8 +157,9 @@ Per-tool input schemas are not in this guide on purpose; the `--help`-equivalent
 | `reports.*` | Curated analytical views (one per report) | `reports_networth`, `reports_networth_history`, `reports_spending`, `reports_cashflow`, `reports_recurring`, `reports_merchants`, `reports_large_transactions`, `reports_balance_drift` |
 | `categories.*` | Category taxonomy management | `categories`, `categories_create`, `categories_set`, `categories_delete` |
 | `merchants.*` | Merchant name mappings | `merchants`, `merchants_create` |
+| `investments.*` | Investment ledger, positions, tax lots, realized gains, securities catalog (manual entry and Plaid sync both feed it), and the Plaid security-identity merge review queue | `investments`, `investments_record`, `investments_holdings`, `investments_lots`, `investments_lots_select`, `investments_gains`, `investments_securities`, `investments_securities_set`, `investments_securities_links_pending`, `investments_securities_links_set`, `investments_securities_links_history` |
 | `import.*` | File import + inbox drain + revert | `import_files`, `import_preview`, `import_status`, `import_revert`, `import_formats`, `import_inbox_sync`, `import_inbox_pending`, `import_labels_set` |
-| `sync.*` | Plaid bank connections and pulls | `sync_link`, `sync_link_status`, `sync_disconnect`, `sync_pull`, `sync_status`, `sync_schedule_set`, `sync_schedule_show`, `sync_schedule_remove` |
+| `sync.*` | Plaid bank connections and pulls (cash, credit cards, and investments) | `sync_link`, `sync_link_status`, `sync_disconnect`, `sync_pull`, `sync_status`, `sync_schedule_set`, `sync_schedule_show`, `sync_schedule_remove` |
 | `refresh` | Single umbrella that rebuilds derived tables | `refresh_run` |
 | `transform.*` | SQLMesh-step granularity (read tools) | `transform_status`, `transform_plan`, `transform_validate`, `transform_audit` |
 | `sql.*` | Read-only SQL escape hatch + schema introspection | `sql_query`, `sql_schema` |

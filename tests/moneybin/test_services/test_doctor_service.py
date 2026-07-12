@@ -17,6 +17,7 @@ from moneybin.services.doctor_service import (
     DoctorService,
     InvariantResult,
 )
+from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -191,9 +192,9 @@ _FK_SQL = """
 _SIGN_SQL = """
     SELECT transaction_id
     FROM core.fct_transactions
-    WHERE amount = 0 OR amount IS NULL
+    WHERE amount IS NULL
     ORDER BY transaction_id
-"""  # noqa: S608 — test SQL
+"""  # noqa: S608 — test SQL; mirrors fct_transactions_sign_convention.sql (zero is a modeled direction, not a violation)
 
 _TRANSFER_SQL = """
     SELECT bt.debit_transaction_id
@@ -280,7 +281,7 @@ def test_fk_integrity_fails_orphaned_account(
 
 
 @pytest.mark.unit
-def test_sign_convention_fails_zero_amount(
+def test_sign_convention_fails_null_amount(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     doctor_db.execute("""
@@ -292,7 +293,7 @@ def test_sign_convention_fails_zero_amount(
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month, transaction_year_quarter
         ) VALUES
-        ('ZERO', 'ACC1', '2026-03-01', 0.00, 0.00, 'expense', 'Zero',
+        ('NULL_AMT', 'ACC1', '2026-03-01', NULL, NULL, 'expense', 'Unresolved',
          'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 3, 1, 6, '2026-03', '2026-Q1')
     """)  # noqa: S608 — test input, not user data
@@ -309,7 +310,46 @@ def test_sign_convention_fails_zero_amount(
         r for r in report.invariants if r.name == "fct_transactions_sign_convention"
     )
     assert sign.status == "fail"
-    assert "ZERO" in sign.affected_ids
+    assert "NULL_AMT" in sign.affected_ids
+
+
+@pytest.mark.unit
+def test_sign_convention_passes_zero_amount(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A $0.00 transaction is a modeled 'zero' direction, not a defect.
+
+    Regression pin for the audit-revival fix: core.fct_transactions models
+    zero as a legitimate third transaction_direction (a waived fee, a $0
+    authorization), so the sign-convention audit must not flag it.
+    """
+    doctor_db.execute("""
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description,
+            transaction_type, is_pending, currency_code, source_type,
+            source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month, transaction_year_quarter
+        ) VALUES
+        ('ZERO', 'ACC1', '2026-03-01', 0.00, 0.00, 'zero', 'Waived fee',
+         'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         2026, 3, 1, 6, '2026-03', '2026-Q1')
+    """)  # noqa: S608 — test input, not user data
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all(verbose=True)
+    sign = next(
+        r for r in report.invariants if r.name == "fct_transactions_sign_convention"
+    )
+    assert sign.status == "pass"
+    assert sign.affected_ids == []
 
 
 @pytest.mark.unit
@@ -704,8 +744,11 @@ def test_run_all_returns_expected_invariants(
     # pdf_formats recipe-validity / bounds / fingerprint-shape) +
     # orphan_app_state (PR4: scans transaction_notes / transaction_tags vs
     # core) + account_links / account_link_decisions / transaction_id_aliases
-    # audit coverage (M1S).
-    assert len(report.invariants) == 36
+    # audit coverage (M1S) + 9 investment reconciliation checks (T17: staging
+    # rejects, opening-lot review, unmodeled legs, holdings divergence,
+    # source overlap, unresolved securities, conflicting security refs,
+    # unreported holdings, phantom holdings).
+    assert len(report.invariants) == 45
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -828,3 +871,1038 @@ def test_sqlmesh_discovery_failure_emits_skipped_invariant(
     assert skipped is not None
     assert skipped.status == "skipped"
     assert "SQLMesh" in (skipped.detail or "")
+
+
+# ---------------------------------------------------------------------------
+# Investment reconciliation checks (T17) — each surfaces a deliberate
+# upstream gap (split_underivable/unmapped_subtype staging rejects, declined
+# opening-lot bootstraps, unmodeled short/option/catch-all legs,
+# holdings-snapshot divergence in both directions (broker-unreported and
+# MoneyBin-phantom), manual+Plaid source overlap, and unresolved provider
+# securities) rather than letting the pipeline silently drop them.
+#
+# Exercised through the public run_all() — like every other check in this
+# file (_dedup_result precedent above) — never by calling a private _run_*
+# method directly: pyright's strict reportPrivateUsage forbids it.
+# ---------------------------------------------------------------------------
+
+
+def _investment_result(
+    db: Database, monkeypatch: pytest.MonkeyPatch, name: str
+) -> InvariantResult:
+    """Run the full doctor report (SQLMesh mocked) and return the named investment invariant."""
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(db).run_all()
+    return next(r for r in report.invariants if r.name == name)
+
+
+@pytest.mark.unit
+def test_staging_rejects_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'split_underivable'), ('itx_2', NULL)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "warn"
+    assert result.affected_ids == ["itx_1"]
+
+
+@pytest.mark.unit
+def test_staging_rejects_pass_when_no_review_reasons(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, review_reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES ('itx_1', NULL)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_staging_rejects")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_opening_lot_review_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc1', 'sec1', 'plaid_sec1', 'short_or_nonpositive')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert result.status == "warn"
+    # A bound security_id wins over the provider key.
+    assert result.affected_ids == ["acc1:sec1 (short_or_nonpositive)"]
+
+
+@pytest.mark.unit
+def test_opening_lot_review_unbound_security_shows_provider_key(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unbound security (security_id NULL) must render its provider key, not 'None'.
+
+    The view carries source_security_key precisely so the raw provider row
+    stays addressable when the canonical id never resolved — the same
+    fallback ``_run_investment_unreported_holdings`` already applies.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__opening_lot_review VALUES "
+        "('acc1', NULL, 'plaid_sec_unbound', 'short_or_nonpositive')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:plaid_sec_unbound (short_or_nonpositive)"]
+
+
+@pytest.mark.unit
+def test_conflicting_security_refs_warn(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two securities claiming one provider ref = one instrument held as two.
+
+    The resolver will not repoint either binding (a repoint is a reviewed merge,
+    never a sync-time side effect), so it logs and moves on. Nobody reads server
+    logs; without this check the split is invisible while both securities quietly
+    understate their lots.
+    """
+    db.execute(
+        "INSERT INTO raw.plaid_securities "
+        "(security_id, institution_id, institution_security_id, source_file, "
+        "source_origin) VALUES ('p_vti', 'ins_1', 'ALPHA-VTI', 'f', 'item_1')"
+    )
+    # The row's OWN two refs disagree: its plaid id says sec_a, its institution
+    # ref says sec_b. Each binding is individually unique and legal — only
+    # grouping them back to the provider row exposes the split.
+    db.execute(
+        "INSERT INTO app.security_links "
+        "(link_id, security_id, ref_kind, ref_value, source_type, status, decided_by, "
+        "decided_at) VALUES "
+        "('l1', 'sec_a', 'plaid_security_id', 'p_vti', 'plaid', 'accepted', 'auto', NOW()), "
+        "('l2', 'sec_b', 'institution_security_id', 'ins_1:ALPHA-VTI', 'plaid', "
+        "'accepted', 'auto', NOW())"
+    )
+    result = _investment_result(db, monkeypatch, "investment_conflicting_security_refs")
+    assert result.status == "warn"
+    assert result.affected_ids == ["p_vti"]
+
+
+@pytest.mark.unit
+def test_conflicting_security_refs_pass_when_each_ref_binds_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The steady state, including the case most likely to be a false positive.
+
+    One fund held at TWO brokerages is one security_id with two institution refs
+    — three refs, all correctly bound to the same security. That is healthy and
+    routine, and a check that flagged it would warn on every multi-brokerage
+    database. Only a row whose refs land on DIFFERENT securities is a conflict.
+    """
+    db.execute(
+        "INSERT INTO raw.plaid_securities "
+        "(security_id, institution_id, institution_security_id, source_file, "
+        "source_origin) VALUES "
+        "('p_vti', 'ins_1', 'ALPHA-VTI', 'f', 'item_1'), "
+        "('p_vti', 'ins_2', 'BETA-VTI', 'f', 'item_2')"
+    )
+    db.execute(
+        "INSERT INTO app.security_links "
+        "(link_id, security_id, ref_kind, ref_value, source_type, status, decided_by, "
+        "decided_at) VALUES "
+        "('l1', 'sec_a', 'plaid_security_id', 'p_vti', 'plaid', 'accepted', 'auto', NOW()), "
+        "('l2', 'sec_a', 'institution_security_id', 'ins_1:ALPHA-VTI', 'plaid', "
+        "'accepted', 'auto', NOW()), "
+        "('l3', 'sec_a', 'institution_security_id', 'ins_2:BETA-VTI', 'plaid', "
+        "'accepted', 'auto', NOW())"
+    )
+    result = _investment_result(db, monkeypatch, "investment_conflicting_security_refs")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_opening_lot_review_pass_when_nothing_needs_review(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty review queue must read `pass` — not warn on zero rows.
+
+    The check exists to surface positions the bootstrap REFUSED to synthesize;
+    a healthy database has none, and that is the state it spends most of its
+    life in. Without this, a query that silently matched everything would look
+    identical to one that correctly matched nothing.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__opening_lot_review "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "reason VARCHAR)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_opening_lot_review")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_unmodeled_legs_surface_short_option_and_catchall(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every provider_subtype the staging CASE maps to NULL-quantity 'other' must surface.
+
+    Not just short legs (buy to cover/sell short) — option legs
+    (assignment/exercise/expire) and other catch-all events (adjustment/loan
+    payment/rebalance) get IDENTICAL treatment in
+    stg_plaid__investment_transactions.sql's CASE, and this check is the
+    only place any of them surface (ledger_include = TRUE, review_reason =
+    NULL). A plain 'buy' must never be flagged.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(investment_transaction_id VARCHAR, provider_subtype VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES "
+        "('itx_cover', 'buy to cover'), ('itx_short', 'sell short'), "
+        "('itx_assign', 'assignment'), ('itx_exercise', 'exercise'), "
+        "('itx_expire', 'expire'), ('itx_adjust', 'adjustment'), "
+        "('itx_loan', 'loan payment'), ('itx_rebalance', 'rebalance'), "
+        "('itx_buy', 'buy')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unmodeled_legs")
+    assert result.status == "warn"
+    assert result.affected_ids == [
+        "itx_adjust",
+        "itx_assign",
+        "itx_cover",
+        "itx_exercise",
+        "itx_expire",
+        "itx_loan",
+        "itx_rebalance",
+        "itx_short",
+    ]
+
+
+@pytest.mark.unit
+def test_unmodeled_legs_match_subtype_case_insensitively(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check must normalize provider_subtype the way staging does (LOWER()).
+
+    ``stg_plaid__investment_transactions`` classifies on
+    ``LOWER(COALESCE(subtype, ''))`` but preserves the raw string verbatim in
+    ``provider_subtype``. A case-sensitive IN-list here misses exactly the rows
+    the check exists to surface: an 'Assignment' still maps through the
+    LOWER-based branch to NULL-quantity 'other' with no review_reason, so this
+    check is its only surface — and it would report `pass`.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(investment_transaction_id VARCHAR, provider_subtype VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES "
+        "('itx_assign', 'Assignment'), ('itx_short', 'SELL SHORT'), "
+        "('itx_buy', 'Buy')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unmodeled_legs")
+    assert result.status == "warn"
+    assert result.affected_ids == ["itx_assign", "itx_short"]
+
+
+@pytest.mark.unit
+def test_unmodeled_legs_pass_when_every_leg_is_modeled(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ordinary legs must read `pass` — the check's IN-list has to be selective.
+
+    The sibling case-insensitivity test proves the check CATCHES what it should;
+    this proves it does not catch what it shouldn't. A predicate broadened until
+    it matched every subtype would still satisfy every warn test on this check
+    while making the doctor cry wolf on a perfectly healthy ledger.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(investment_transaction_id VARCHAR, provider_subtype VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES "
+        "('itx_buy', 'buy'), ('itx_sell', 'sell'), ('itx_div', 'dividend')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unmodeled_legs")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_holdings_divergence_warn(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), cost_basis DECIMAL(18,2), "
+        "provider_reported_quantity DECIMAL(28,10), provider_reported_cost_basis DECIMAL(18,2))"
+    )
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES "
+        "('a', 's_ok', 10, 100.00, 10, 100.00), "
+        "('a', 's_bad', 10, 100.00, 8, 100.00)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_holdings_divergence")
+    assert result.status == "warn"
+    assert result.affected_ids == ["a:s_bad"]
+
+
+@pytest.mark.unit
+def test_holdings_divergence_ignores_rows_broker_never_reported(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A position the broker's newest snapshot doesn't report is not a divergence.
+
+    NULL ``provider_reported_quantity`` means the snapshot omits the position
+    entirely — not a mismatch to flag (see ``dim_holdings.sql`` header).
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), cost_basis DECIMAL(18,2), "
+        "provider_reported_quantity DECIMAL(28,10), provider_reported_cost_basis DECIMAL(18,2))"
+    )
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES "
+        "('a', 's_unreported', 10, 100.00, NULL, NULL)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_holdings_divergence")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_holdings_divergence_ignores_null_broker_cost_basis(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broker snapshot that omits cost_basis (NULL) must not read as $0.
+
+    ``COALESCE(provider_reported_cost_basis, 0)`` would turn "the broker
+    didn't say" into "the broker says $0" and fire on every quantity-matched
+    position whose connection doesn't report basis — the raw DDL declares
+    cost_basis nullable and brokers routinely omit it. Quantity matches
+    exactly here, so the only thing that could fire is the cost-basis leg.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), cost_basis DECIMAL(18,2), "
+        "provider_reported_quantity DECIMAL(28,10), provider_reported_cost_basis DECIMAL(18,2))"
+    )
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('a', 's_ok', 10, 400.00, 10, NULL)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_holdings_divergence")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_holdings_divergence_relative_tolerance_ignores_rounding_on_large_positions(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sub-cent-relative mismatch on a large position must not fire.
+
+    Many small DRIP/reinvest lots on a $4,000 position can accumulate a few
+    cents of rounding drift against the broker's own rounding — a flat
+    $0.01 absolute tolerance would false-positive on healthy large
+    positions. The tolerance floor is GREATEST(0.01, 1bp of reported basis);
+    here 1bp of $4,000.00 is $0.40, well above the $0.02 gap.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), cost_basis DECIMAL(18,2), "
+        "provider_reported_quantity DECIMAL(28,10), provider_reported_cost_basis DECIMAL(18,2))"
+    )
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('a', 's_ok', 10, 4000.00, 10, 4000.02)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_holdings_divergence")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_holdings_divergence_still_fires_beyond_relative_tolerance(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine cost-basis mismatch beyond the relative floor must still fire.
+
+    Same $4,000 position as the rounding-tolerance test above, but the gap
+    ($0.50) exceeds the 1bp floor ($0.40) — the relative tolerance must not
+    neuter real divergence detection.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "quantity DECIMAL(28,10), cost_basis DECIMAL(18,2), "
+        "provider_reported_quantity DECIMAL(28,10), provider_reported_cost_basis DECIMAL(18,2))"
+    )
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('a', 's_bad', 10, 4000.00, 10, 4000.50)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_holdings_divergence")
+    assert result.status == "warn"
+    assert result.affected_ids == ["a:s_bad"]
+
+
+@pytest.mark.unit
+def test_source_overlap_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transactions (
+            investment_transaction_id, account_id, transaction_date, amount,
+            source_file, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
+        """  # noqa: S608 — test input, not user data
+    )
+    db.execute(
+        """
+        INSERT INTO app.account_links (
+            link_id, account_id, ref_kind, ref_value, source_type, source_origin,
+            status, decided_by, decided_at
+        ) VALUES ('lnk1', 'ACC1', 'source_native', 'plaid_acc1', 'plaid', 'item1',
+                   'accepted', 'auto', CURRENT_TIMESTAMP)
+        """  # noqa: S608 — test input, not user data
+    )
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES ('manual_1', 'imp1', 'ACC1', 'buy', '2026-01-02', 'cli')
+        """  # noqa: S608 — test input, not user data
+    )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "warn"
+    assert result.affected_ids == ["ACC1"]
+
+
+@pytest.mark.unit
+def test_source_overlap_pass_when_only_one_source(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transactions (
+            investment_transaction_id, account_id, transaction_date, amount,
+            source_file, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
+        """  # noqa: S608 — test input, not user data
+    )
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_unresolved_securities_warn(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, source_security_key VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'plaid_sec_abc'), ('itx_2', NULL)"
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(investment_transaction_id VARCHAR, security_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES "
+        "('itx_1', NULL), ('itx_2', NULL)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unresolved_securities")
+    assert result.status == "warn"
+    # itx_2 has no provider security key at all (a legitimate cash-only row,
+    # e.g. deposit/withdrawal) — a NULL security_id there is not a gap.
+    assert result.affected_ids == ["itx_1"]
+
+
+@pytest.mark.unit
+def test_unresolved_securities_pass_when_resolved(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, source_security_key VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'plaid_sec_abc')"
+    )
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(investment_transaction_id VARCHAR, security_id VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES ('itx_1', 'sec_canonical')"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unresolved_securities")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def _create_snapshot_receipts_table(db: Database) -> None:
+    """Create the per-item, per-pull holdings-snapshot receipts staging view.
+
+    Both holdings checks read "the newest snapshot for this item" from HERE,
+    not from the presence of holdings rows: an item whose pull returned zero
+    positions writes no holdings rows at all, so a row-derived newest snapshot
+    silently stays the last NON-EMPTY one.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_holdings_snapshots "
+        "(source_origin VARCHAR, source_file VARCHAR, holdings_date DATE, "
+        "holdings_count INTEGER, extracted_at TIMESTAMP)"
+    )
+
+
+def _receipt(
+    db: Database,
+    source_origin: str,
+    source_file: str,
+    extracted_at: str,
+    holdings_count: int,
+) -> None:
+    """Record that ``source_origin`` reported its holdings in pull ``source_file``."""
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings_snapshots "
+        "(source_origin, source_file, holdings_date, holdings_count, extracted_at) "
+        "VALUES (?, ?, CAST(? AS TIMESTAMP)::DATE, ?, CAST(? AS TIMESTAMP))",
+        [source_origin, source_file, extracted_at, holdings_count, extracted_at],
+    )
+
+
+@pytest.mark.unit
+def test_unreported_holdings_warn(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broker-reported position with no ``core.dim_holdings`` row must surface.
+
+    ``dim_holdings`` is ``positions LEFT JOIN provider_reported`` — a position
+    MoneyBin has no lot for (here: an unbound security) produces no row there
+    at all, so this direction can only be checked against the staging view
+    directly (see ``dim_holdings.sql`` header).
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_holdings "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "quantity DECIMAL(28,10), "
+        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_known', 'plaid_sec_known', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00'), "
+        "('acc1', NULL, 'plaid_sec_unbound', 3, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    _create_snapshot_receipts_table(db)
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 2)
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "provider_reported_quantity DECIMAL(28,10))"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_known', 5)")
+    result = _investment_result(db, monkeypatch, "investment_unreported_holdings")
+    assert result.status == "warn"
+    # sec_known has a matching dim_holdings row — not flagged. The unbound
+    # security (NULL canonical id) has none — flagged, displayed by its
+    # provider key since it has no canonical id to show.
+    assert result.affected_ids == ["acc1:plaid_sec_unbound"]
+
+
+@pytest.mark.unit
+def test_unreported_holdings_ignores_closed_position_at_broker(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broker row reporting quantity 0 (a closed position) must not surface.
+
+    ``is_short_or_nonpositive`` (the opening-lot bootstrap) already treats
+    ``held_qty <= 0`` as expected data, not a gap — a closed position at the
+    broker is not a position MoneyBin might secretly be holding.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_holdings "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "quantity DECIMAL(28,10), "
+        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', NULL, 'plaid_sec_closed', 0, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    _create_snapshot_receipts_table(db)
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "provider_reported_quantity DECIMAL(28,10))"
+    )
+    result = _investment_result(db, monkeypatch, "investment_unreported_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_unreported_holdings_only_considers_newest_snapshot(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A position from a superseded (non-newest) snapshot must not be flagged.
+
+    The broker no longer claiming a position in its newest pull means it's
+    gone (sold, disconnected) — not a currently-unknown holding.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_holdings "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "quantity DECIMAL(28,10), "
+        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_stale', 'plaid_sec_stale', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00'), "
+        "('acc1', 'sec_current', 'plaid_sec_current', 5, 'item1', 'sync_2', "
+        "'2026-02-01 00:00:00')"
+    )
+    _create_snapshot_receipts_table(db)
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    _receipt(db, "item1", "sync_2", "2026-02-01 00:00:00", 1)
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "provider_reported_quantity DECIMAL(28,10))"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_current', 5)")
+    result = _investment_result(db, monkeypatch, "investment_unreported_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def _create_phantom_holdings_tables(db: Database) -> None:
+    """Create the staging + core tables ``investment_phantom_holdings`` reads.
+
+    The check keys its stale-item guard on the ITEM (``source_origin``), so it
+    reads BOTH Plaid investment staging views: an account whose item reported
+    but which holds nothing is absent from the newest holdings snapshot and is
+    only discoverable through the transactions view. "Which snapshot is newest"
+    comes from the snapshot RECEIPTS view, never from the presence of holdings
+    rows — see ``_create_snapshot_receipts_table``.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_holdings "
+        "(account_id VARCHAR, security_id VARCHAR, source_security_key VARCHAR, "
+        "quantity DECIMAL(28,10), "
+        "source_origin VARCHAR, source_file VARCHAR, extracted_at TIMESTAMP)"
+    )
+    db.execute(
+        "CREATE TABLE prep.stg_plaid__investment_transactions "
+        "(investment_transaction_id VARCHAR, account_id VARCHAR, "
+        "source_origin VARCHAR)"
+    )
+    _create_snapshot_receipts_table(db)
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR, "
+        "provider_reported_quantity DECIMAL(28,10))"
+    )
+
+
+@pytest.mark.unit
+def test_phantom_holdings_warn_when_account_in_snapshot_but_position_isnt(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lot MoneyBin holds that the account's live snapshot omits must surface.
+
+    Reproduces the phantom-position gap: an option assignment (or any
+    unmodeled leg) disposes of shares with no ledger quantity to close the
+    lot, so ``core.dim_holdings`` still shows it open while the broker's
+    fresh snapshot — which DOES report other positions for this account —
+    no longer reports this one.
+    """
+    _create_phantom_holdings_tables(db)
+    # acc1's newest snapshot reports sec_other — the account IS live and
+    # synced — but says nothing about sec_phantom.
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_other', 'plaid_sec_other', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES "
+        "('acc1', 'sec_phantom', NULL), "
+        "('acc1', 'sec_other', 5)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "warn"
+    # sec_other's provider_reported_quantity is populated (reported) — not
+    # flagged. sec_phantom's is NULL while the account is live — flagged.
+    assert result.affected_ids == ["acc1:sec_phantom"]
+
+
+@pytest.mark.unit
+def test_phantom_holdings_warn_when_account_fully_liquidated(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worst phantom — an account the broker now reports as holding NOTHING.
+
+    Plaid returns no holding entries for an account with no positions, so a
+    fully-liquidated account has ZERO rows in the item's newest snapshot while
+    MoneyBin still shows every lot open (the sells were option
+    assignment/exercise rows staging maps to NULL-quantity 'other'). An
+    account-keyed stale-item guard filters that account out entirely and
+    reports `pass` on a 100%-overstated account. The guard must key on whether
+    the ITEM reported, not whether the ACCOUNT did.
+    """
+    _create_phantom_holdings_tables(db)
+    # item1 covers acc1 and acc2. Its newest snapshot (sync_2) reports acc2
+    # only — acc1 was liquidated, so the broker returns nothing for it. acc1's
+    # positions appear only in the superseded sync_1 snapshot.
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_gone', 'plaid_sec_gone', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00'), "
+        "('acc2', 'sec_live', 'plaid_sec_live', 7, 'item1', 'sync_2', "
+        "'2026-02-01 00:00:00')"
+    )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    _receipt(db, "item1", "sync_2", "2026-02-01 00:00:00", 1)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1'), ('itx_2', 'acc2', 'item1')"
+    )
+    # MoneyBin never closed acc1's lot: dim_holdings still carries it, with a
+    # NULL provider_reported_quantity (the broker's newest snapshot omits it).
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES "
+        "('acc1', 'sec_gone', NULL), "
+        "('acc2', 'sec_live', 7)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec_gone"]
+
+
+@pytest.mark.unit
+def test_phantom_holdings_warn_when_account_never_in_any_snapshot_but_item_reported(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An account known only from the transactions view still counts as reported.
+
+    The item delivered a live snapshot (for a sibling account), so its
+    accounts are covered by a live pull. An account that has never appeared in
+    ANY holdings snapshot while MoneyBin holds open lots for it is a phantom,
+    not a stale item.
+    """
+    _create_phantom_holdings_tables(db)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc2', 'sec_live', 'plaid_sec_live', 7, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1')"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_never', NULL)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec_never"]
+
+
+@pytest.mark.unit
+def test_phantom_holdings_warn_when_item_reports_zero_holdings(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The residual blind spot: an item whose pull returns NO holdings at all.
+
+    Every account at the broker is liquidated, so Plaid returns an empty
+    holdings array and the loader writes ZERO holdings rows for that pull.
+    A newest-snapshot derived from the presence of holdings ROWS therefore
+    cannot see this pull at all — the item either drops out of the guard
+    entirely (no rows ever) or silently keeps an earlier NON-EMPTY snapshot.
+    Either way the largest possible net-worth overstatement — a broker where
+    MoneyBin claims every position and the broker claims none — reads as
+    `pass`.
+
+    The snapshot RECEIPT is the missing evidence: item1 reported (receipt for
+    sync_1), and what it reported was nothing (``holdings_count = 0``). Its
+    accounts are in scope, and every lot MoneyBin still holds for them is a
+    phantom.
+    """
+    _create_phantom_holdings_tables(db)
+    # No holdings rows for item1 in ANY snapshot — the pull came back empty.
+    # The accounts are known only through the transactions view.
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 0)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1'), ('itx_2', 'acc2', 'item1')"
+    )
+    db.execute(
+        "INSERT INTO core.dim_holdings VALUES "
+        "('acc1', 'sec_gone', NULL), "
+        "('acc2', 'sec_also_gone', NULL)"
+    )
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "warn"
+    assert result.affected_ids == ["acc1:sec_gone", "acc2:sec_also_gone"]
+
+
+@pytest.mark.unit
+def test_phantom_holdings_pass_when_item_has_no_receipt(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No receipt = the item never reported. Absence of evidence, not evidence of absence.
+
+    The twin of ``test_phantom_holdings_warn_when_item_reports_zero_holdings``,
+    and the reason the receipt exists rather than a bare "treat every missing
+    snapshot as empty" rule. item1 has holdings rows from an earlier pull but
+    NO receipt for any pull — it never reported under the receipt regime (a
+    disconnected item, or rows that predate the receipt). Trading the false
+    negative for a false positive here would flag every position at a
+    disconnected broker as sold.
+    """
+    _create_phantom_holdings_tables(db)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_held', 'plaid_sec_held', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1')"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_phantom', NULL)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_phantom_holdings_pass_when_item_stale_or_absent(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held lot must NOT be flagged when its ITEM never delivered a snapshot.
+
+    A stale/disconnected item whose snapshot never arrived would otherwise
+    make every position on the account look like a phantom — the item-liveness
+    guard exists precisely to rule this out.
+    """
+    _create_phantom_holdings_tables(db)
+    # Only item2 ever delivered a snapshot. acc1 belongs to item1, which has
+    # investment transactions but no holdings snapshot at all.
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc2', 'sec_other', 'plaid_sec_other', 5, 'item2', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    _receipt(db, "item2", "sync_1", "2026-01-01 00:00:00", 1)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_transactions VALUES "
+        "('itx_1', 'acc1', 'item1')"
+    )
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_x', NULL)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_phantom_holdings_pass_when_account_is_manual_only(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual-only account has no Plaid item at all — never a phantom.
+
+    ``core.dim_holdings.provider_reported_quantity`` is NULL for every
+    manually-recorded position (no broker ever claimed it), so an unguarded
+    check would flag the entire manual ledger.
+    """
+    _create_phantom_holdings_tables(db)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc_plaid', 'sec_live', 'plaid_sec_live', 5, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc_manual', 'sec_m', NULL)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_phantom_holdings_pass_when_freshly_bootstrapped(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A freshly bootstrapped position (quantity matches the broker) must not fire.
+
+    ``provider_reported_quantity`` populated (not NULL) means the broker's
+    newest snapshot DOES report this exact position — the ordinary,
+    healthy case.
+    """
+    _create_phantom_holdings_tables(db)
+    db.execute(
+        "INSERT INTO prep.stg_plaid__investment_holdings VALUES "
+        "('acc1', 'sec_ok', 'plaid_sec_ok', 10, 'item1', 'sync_1', "
+        "'2026-01-01 00:00:00')"
+    )
+    _receipt(db, "item1", "sync_1", "2026-01-01 00:00:00", 1)
+    db.execute("INSERT INTO core.dim_holdings VALUES ('acc1', 'sec_ok', 10)")
+    result = _investment_result(db, monkeypatch, "investment_phantom_holdings")
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+@pytest.mark.unit
+def test_investment_checks_skip_when_views_absent(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "investment_staging_rejects",
+        "investment_opening_lot_review",
+        "investment_unmodeled_legs",
+        "investment_holdings_divergence",
+        "investment_unresolved_securities",
+        "investment_unreported_holdings",
+        "investment_phantom_holdings",
+    ):
+        assert _investment_result(db, monkeypatch, name).status == "skipped"
+
+
+@pytest.mark.unit
+def test_run_all_includes_investment_checks(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every investment check appears in the aggregated report.
+
+    Holds even when the underlying prep/core views don't exist yet — the
+    checks report ``skipped``, they don't vanish from the report.
+    """
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.services.doctor_service.sqlmesh_context", _fake_ctx)
+    report = DoctorService(doctor_db).run_all()
+    names = [r.name for r in report.invariants]
+    assert "investment_staging_rejects" in names
+    assert "investment_opening_lot_review" in names
+    assert "investment_unmodeled_legs" in names
+    assert "investment_holdings_divergence" in names
+    assert "investment_source_overlap" in names
+    assert "investment_unresolved_securities" in names
+    assert "investment_unreported_holdings" in names
+    assert "investment_phantom_holdings" in names
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_investment_checks_bind_to_real_transform_output(db: Database) -> None:
+    """The investment checks must run against a REAL transform, not a mock.
+
+    Every ``_run_investment_*`` check fails open to ``skipped`` on any
+    exception — correct behavior before a first transform, but it also means
+    a renamed column in ``prep.stg_plaid__*`` / ``core.dim_holdings`` /
+    ``core.fct_investment_transactions`` would silently degrade every
+    investment check to ``skipped`` while the rest of the doctor report
+    stayed green — the exact failure mode this task exists to prevent.
+    Every other test in this module mocks ``sqlmesh_context`` and fabricates
+    the underlying tables by hand; this is the one test that runs a real
+    ``TransformService.apply()`` (materializing the actual SQLMesh views)
+    and a real (unmocked) ``DoctorService.run_all()`` against them, proving
+    the check SQL is wired to the real column names.
+    """
+    db.execute(
+        """
+        INSERT INTO app.securities (security_id, name, security_type, currency_code)
+        VALUES ('sec_real', 'Real Test Security', 'equity', 'USD')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions
+            (source_transaction_id, import_id, account_id, security_id, type,
+             trade_date, quantity, amount, fees, currency_code,
+             created_at, created_by, investment_transaction_id)
+        VALUES ('manual_buy_real', 'imp_real', 'acc_real', 'sec_real', 'buy',
+                '2026-01-01'::DATE, 10::DECIMAL(28,10), -1000.00::DECIMAL(18,2),
+                0::DECIMAL(18,2), 'USD', '2026-01-01 09:00:00'::TIMESTAMP,
+                'cli', 'inv_buy_real')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+    result = TransformService(db).apply()
+    assert result.applied, f"transform apply failed: {result.error}"
+
+    report = DoctorService(db).run_all()
+    investment_names = {
+        "investment_staging_rejects",
+        "investment_opening_lot_review",
+        "investment_unmodeled_legs",
+        "investment_holdings_divergence",
+        "investment_source_overlap",
+        "investment_unresolved_securities",
+        "investment_unreported_holdings",
+        "investment_phantom_holdings",
+    }
+    by_name = {r.name: r for r in report.invariants}
+    missing = investment_names - by_name.keys()
+    assert not missing, f"investment checks missing from the report: {missing}"
+    skipped = {
+        n: by_name[n].detail for n in investment_names if by_name[n].status == "skipped"
+    }
+    assert not skipped, (
+        f"investment check(s) skipped against a real transform — the SQL is "
+        f"not actually bound to the real schema: {skipped}"
+    )

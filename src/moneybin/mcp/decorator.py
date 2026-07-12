@@ -33,7 +33,7 @@ from typing import Any, cast
 
 from moneybin import error_codes
 from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
-    _write_conn_thread_local,  # pyright: ignore[reportPrivateUsage]
+    _write_conn_holder,  # pyright: ignore[reportPrivateUsage]
     interrupt_and_reset_database,
 )
 from moneybin.errors import UserError, classify_user_error
@@ -481,24 +481,23 @@ def mcp_tool(
                 # via the task context. Scoped to fn execution only — audit rows
                 # are written there; the except handlers below emit privacy-log
                 # events (not audit rows), so they need no operation context.
-                with operation():
-                    async with cm:
-                        if is_coro:
-                            result = await fn(*args, **kwargs)
-                        else:
-
-                            def _fn_with_conn_tracking(*a: Any, **kw: Any) -> Any:
-                                _write_conn_thread_local.conn_holder = (
-                                    _conn_for_this_call
-                                )
-                                try:
-                                    return fn(*a, **kw)
-                                finally:
-                                    _write_conn_thread_local.conn_holder = None
-
-                            result = await asyncio.to_thread(
-                                _fn_with_conn_tracking, *args, **kwargs
-                            )
+                # Registered on the context, not the thread, and around BOTH
+                # branches: an async tool body opens its write connection on a
+                # worker thread it spawns itself (asyncio.to_thread), which
+                # inherits this context but would never see a thread-local set
+                # here. Without it the connection goes unregistered and the
+                # timeout handler has nothing to interrupt, so the write commits
+                # after the caller already received a timed_out envelope.
+                holder_token = _write_conn_holder.set(_conn_for_this_call)
+                try:
+                    with operation():
+                        async with cm:
+                            if is_coro:
+                                result = await fn(*args, **kwargs)
+                            else:
+                                result = await asyncio.to_thread(fn, *args, **kwargs)
+                finally:
+                    _write_conn_holder.reset(holder_token)
             except TimeoutError as exc:
                 if not cm.expired():
                     try:
@@ -522,11 +521,11 @@ def mcp_tool(
                 # writer.
                 #
                 # This relies on get_database registering the acquired conn in
-                # the per-call holder, which it does for sync tool bodies (run
-                # via asyncio.to_thread with conn_holder set). There are no async
-                # write tools today; one would need the same holder wiring to be
-                # interrupted on timeout (otherwise [0] stays None and we skip —
-                # the latent gap is a missed reset, never a collateral one).
+                # the per-call holder. The holder is a ContextVar set around both
+                # branches, so it reaches a sync body's worker thread AND the
+                # thread an async body spawns for its own write (the link-set
+                # tools do exactly that) — either way the conn registers and this
+                # handler can interrupt it.
                 #
                 # A sync tool body runs in a thread-pool worker we cannot cancel.
                 # The one way that worker could commit after the caller gave up

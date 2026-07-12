@@ -139,12 +139,13 @@ def test_status_last_import_at_populated(system_db: Database) -> None:
 
 @pytest.mark.unit
 def test_status_queue_counts_integer_types(system_db: Database) -> None:
-    """matches, account_links, merchant_links, and categorize pending counts are integers."""
+    """matches, account_links, merchant_links, security_links, and categorize pending counts are integers."""
     svc = SystemService(db=system_db)
     result = svc.status()
     assert isinstance(result.matches_pending, int)
     assert isinstance(result.account_links_pending, int)
     assert isinstance(result.merchant_links_pending, int)
+    assert isinstance(result.security_links_pending, int)
     assert isinstance(result.categorize_pending, int)
     # matches_pending is 0 because match_decisions table is empty
     assert result.matches_pending == 0
@@ -154,6 +155,9 @@ def test_status_queue_counts_integer_types(system_db: Database) -> None:
     # merchant_links_pending is 0 because merchant_link_decisions is empty —
     # surfaced end-to-end (dataclass + MCP payload), not computed-then-dropped.
     assert result.merchant_links_pending == 0
+    # security_links_pending is 0 because security_link_decisions is empty —
+    # surfaced end-to-end (dataclass + MCP payload), Task 12.
+    assert result.security_links_pending == 0
     # categorize_pending reflects the 2 uncategorized transactions in the fixture
     assert result.categorize_pending == 2
 

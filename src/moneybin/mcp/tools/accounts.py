@@ -21,8 +21,11 @@ deferred to the M1L audit-undo consumer.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import date as _date
 from decimal import Decimal
+from typing import Literal
 
 from fastmcp import FastMCP
 
@@ -31,6 +34,7 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.elicitation import confirm_or_raise
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountLinksHistoryPayload,
@@ -430,49 +434,210 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
         data=payload,
         total_count=n_pending,
         actions=[
-            "Use accounts_links_set to merge (pass candidate_account_id as "
-            "target_account_id) or standalone-reject (pass null) each decision",
+            "Use accounts_links_set(decision_id, action='accept', "
+            "target_account_id=<candidate_account_id>) to merge — the user is "
+            "prompted to confirm the merge before anything is written",
+            "Use accounts_links_set(decision_id, action='reject') to keep the "
+            "provisional account as its own canonical account",
         ],
     )
 
 
-@mcp_tool(domain="links", read_only=False)
-def accounts_links_set(
-    decision_id: str,
-    target_account_id: str | None,
-) -> ResponseEnvelope[AccountLinksSetPayload]:
-    """Accept (merge) or standalone-reject one pending account-link decision.
+@dataclass(frozen=True, slots=True)
+class _AccountMergeProposal:
+    """One pending account-merge decision, flattened for the confirmation prompt."""
 
-    Mutates app.account_link_decisions (sets status) and, on accept,
-    re-points app.account_links source_native entries from the provisional
-    account onto target_account_id. On standalone-reject (target_account_id
-    = null), rejects every pending decision for the provisional account —
-    it remains its own canonical account.
+    decision_id: str
+    provisional_account_id: str
+    provisional_display_name: str
+    candidate_account_id: str
+    candidate_display_name: str
+    confidence: float | None
+    signal: str | None
 
-    target_account_id MUST be passed explicitly — there is no default:
-    - Pass the candidate_account_id from accounts_links_pending to MERGE.
-    - Pass null to STANDALONE-REJECT (keep the provisional as its own entity).
-    Omitting it would default the merge, which may cause unintended binding.
 
-    Mutation surface: writes app.account_link_decisions + app.account_links.
-    Revert is via the audit log in app.audit_log (no undo tool yet; undo
-    is deferred to the M1L audit-undo consumer). Find pending decisions
-    with accounts_links_pending.
+def _account_cli_equivalent(decision_id: str, target_account_id: str) -> str:
+    return f"moneybin accounts links set {decision_id} --into {target_account_id}"
 
-    Args:
-        decision_id: The decision id to act on (from accounts_links_pending).
-        target_account_id: The candidate account_id to merge into, or null
-            to standalone-reject (keep provisional as its own canonical account).
+
+def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
+    """Read the decision out of the live review queue, or raise if it isn't there."""
+    with get_database(read_only=True) as db:
+        groups = AccountLinksService(db, actor="mcp").pending()
+    for group in groups:
+        for candidate in group.candidates:
+            if candidate.decision_id == decision_id:
+                return _AccountMergeProposal(
+                    decision_id=decision_id,
+                    provisional_account_id=group.provisional_account_id,
+                    provisional_display_name=group.provisional_display_name,
+                    candidate_account_id=candidate.candidate_account_id,
+                    candidate_display_name=candidate.candidate_display_name,
+                    confidence=candidate.confidence,
+                    signal=candidate.signal,
+                )
+    raise UserError(
+        f"No pending account-link decision '{decision_id}'.",
+        code=error_codes.MUTATION_NOT_FOUND,
+        hint="List open decisions with accounts_links_pending.",
+    )
+
+
+def _account_confirm_message(p: _AccountMergeProposal) -> str:
+    """Prompt text a human reads before two accounts' histories are fused.
+
+    Names BOTH accounts and the weak signal the resolver fired on — the human
+    cannot judge the merge without seeing what merges into what, and why the
+    resolver refused to decide on its own.
     """
+    confidence = "unscored" if p.confidence is None else f"{p.confidence:.2f}"
+    return (
+        "Confirm an account merge (this fuses two accounts' transaction "
+        "histories and balances).\n\n"
+        f"MERGE AWAY — provisional, account_id {p.provisional_account_id}:\n"
+        f"  name {p.provisional_display_name or '(none)'}\n\n"
+        f"INTO — survivor, account_id {p.candidate_account_id}:\n"
+        f"  name {p.candidate_display_name or '(none)'}\n\n"
+        f"Proposed on: signal {p.signal or 'unspecified'}, confidence "
+        f"{confidence}. The resolver proposes a merge ONLY when it cannot bind "
+        "on its own — this is an ambiguous match, not a certain one.\n\n"
+        "Accepting re-points every accepted source reference from the "
+        "provisional onto the survivor, so both accounts' transactions and "
+        "balances become one account, and every other pending proposal touching "
+        "the provisional is rejected. If these are not the same real-world "
+        "account, the merged history and net worth will be wrong. Reversible "
+        "via system_audit_undo(operation_id).\n\n"
+        "Accept this merge?"
+    )
+
+
+def _apply_account_accept(decision_id: str, target_account_id: str) -> None:
+    # decided_by="user" is truthful only on this path: a human just ratified the
+    # merge through the elicitation gate above.
     with get_database(read_only=False) as db:
         AccountLinksService(db, actor="mcp").set(
             decision_id, target_account_id=target_account_id, decided_by="user"
         )
-    status = "accepted" if target_account_id is not None else "rejected"
+
+
+def _apply_account_reject(decision_id: str) -> None:
+    # decided_by="auto": no human ratified this reject — the agent called it.
+    # The column's CHECK admits only 'auto' | 'user', and recording 'user' for a
+    # decision no human made is precisely the falsehood the accept gate exists to
+    # prevent. The MCP channel itself is preserved in app.audit_log (actor='mcp').
+    with get_database(read_only=False) as db:
+        AccountLinksService(db, actor="mcp").set(
+            decision_id, target_account_id=None, decided_by="auto"
+        )
+
+
+@mcp_tool(
+    domain="links",
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+    # The accept path blocks on a human reading a merge confirmation (two
+    # accounts + the reason they're ambiguous). The 30s default would routinely
+    # fire first — and a cap that expires mid-decision means the user "accepts"
+    # into a coroutine that was already cancelled. Same headroom as
+    # investments_securities_links_set. Timing out is still safe (nothing is
+    # written), just confusing.
+    timeout_seconds=180.0,
+)
+async def accounts_links_set(
+    decision_id: str,
+    action: Literal["accept", "reject"],
+    target_account_id: str | None = None,
+) -> ResponseEnvelope[AccountLinksSetPayload]:
+    """Accept (merge) or standalone-reject one pending account-link decision.
+
+    `action` is explicit — accept vs reject is never inferred from whether
+    `target_account_id` has a value:
+
+    - `action="accept"` + `target_account_id=<the decision's own
+      candidate_account_id>` MERGES. This REQUIRES explicit human confirmation:
+      the tool prompts the user through an MCP elicitation naming both accounts
+      and the matching signal, and merges only if they agree. On a client that
+      cannot prompt (no elicitation capability), accept HARD-FAILS with
+      mutation_confirmation_required and points at the CLI — an agent cannot
+      accept a merge on its own, at any confidence. `target_account_id` is also
+      a confirming safety check: it must equal the decision's own candidate, so
+      a mistyped or stale decision_id cannot merge into the wrong account.
+      Mismatched, empty, or missing `target_account_id` raises
+      mutation_invalid_input — it is never treated as a reject.
+    - `action="reject"` (pass no `target_account_id`) STANDALONE-REJECTS — the
+      provisional stays its own canonical account. Cheap and reversible, so no
+      confirmation is required. Rejects every pending decision for the
+      provisional account.
+
+    A merge fuses two accounts: it re-points every accepted source reference
+    from the provisional onto the survivor, so their transactions and balances
+    become one account. If they are not the same real-world account, the merged
+    history and net worth are wrong.
+
+    Mutation surface: writes app.account_link_decisions + app.account_links.
+    Reverse with system_audit_undo(operation_id) — find the operation_id via
+    system_audit. Find pending decisions with accounts_links_pending.
+
+    Args:
+        decision_id: The decision id to act on (from accounts_links_pending).
+        action: "accept" (merge, requires `target_account_id` + human
+            confirmation) or "reject" (keep the provisional account standalone;
+            pass no `target_account_id`).
+        target_account_id: With action="accept", the candidate account_id to
+            merge into — must equal the decision's own candidate_account_id.
+            Invalid with action="reject".
+    """
+    if action not in ("accept", "reject"):
+        raise UserError(
+            f"action must be 'accept' or 'reject' (got {action!r}).",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if action == "reject":
+        if target_account_id is not None:
+            raise UserError(
+                "'target_account_id' is only valid with action='accept'. To "
+                "reject, pass action='reject' with no 'target_account_id'.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        # DB work off the event loop: this tool is a coroutine (it awaits the
+        # elicitation), so a blocking DuckDB write here would stall the server.
+        await asyncio.to_thread(_apply_account_reject, decision_id)
+        status = "rejected"
+    else:
+        if not target_account_id:
+            raise UserError(
+                "action='accept' requires 'target_account_id' = the decision's "
+                "own candidate_account_id (see accounts_links_pending). An empty "
+                "'target_account_id' is not a reject — pass action='reject' for "
+                "that.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        proposal = await asyncio.to_thread(_load_pending_account_proposal, decision_id)
+        if target_account_id != proposal.candidate_account_id:
+            # Refuse BEFORE prompting: a doomed merge must not cost the user a
+            # confirmation. The service re-checks this; this is the boundary copy.
+            raise UserError(
+                f"'target_account_id' does not match decision '{decision_id}' — "
+                "it must be that decision's own candidate_account_id.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                hint="Re-read the decision with accounts_links_pending.",
+            )
+        await confirm_or_raise(
+            _account_confirm_message(proposal),
+            subject="This merge",
+            unchanged=f"decision '{decision_id}' is still pending",
+            cli_equivalent=_account_cli_equivalent(decision_id, target_account_id),
+            details={"decision_id": decision_id},
+        )
+        await asyncio.to_thread(_apply_account_accept, decision_id, target_account_id)
+        status = "accepted"
     return build_envelope(
         data=AccountLinksSetPayload(decision_id=decision_id, status=status),
         actions=[
             "Use accounts_links_pending to review remaining pending decisions",
+            "Reverse this decision with system_audit_undo(operation_id) — find "
+            "the operation_id with system_audit",
         ],
     )
 
@@ -654,13 +819,20 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         accounts_links_set,
         "accounts_links_set",
         "Accept (merge) or standalone-reject one pending account-link decision. "
-        "Pass target_account_id = candidate_account_id to MERGE the provisional "
-        "account into the candidate. Pass null to STANDALONE-REJECT — the "
-        "provisional stays its own canonical account. target_account_id has no "
-        "default: pass it explicitly to avoid accidental standalone rejection. "
-        "Writes app.account_link_decisions + app.account_links; revert via "
-        "app.audit_log (no undo tool yet). Discover pending decisions with "
-        "accounts_links_pending.",
+        "action='accept' + target_account_id=<the decision's own "
+        "candidate_account_id> MERGES: it prompts the user to confirm (MCP "
+        "elicitation naming both accounts and the match signal) and merges only "
+        "on their explicit agreement — a merge fuses two accounts' transaction "
+        "histories and balances, so the agent cannot accept one on its own. On a "
+        "client without elicitation, accept fails with "
+        "mutation_confirmation_required and names the CLI equivalent. "
+        "target_account_id must equal the decision's own candidate (mismatched, "
+        "empty, or missing target_account_id raises mutation_invalid_input — it "
+        "is NEVER read as a reject). action='reject' (no target_account_id) keeps "
+        "the provisional as its own canonical account and rejects every pending "
+        "decision for it. Writes app.account_link_decisions + app.account_links; "
+        "reverse with system_audit_undo(operation_id). Discover pending decisions "
+        "with accounts_links_pending.",
     )
     register(
         mcp,

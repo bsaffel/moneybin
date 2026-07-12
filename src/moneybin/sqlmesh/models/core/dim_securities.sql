@@ -18,4 +18,4 @@ SELECT
   coingecko_id, /* Crypto price-lookup slug (Pillar C) */
   is_cash_equivalent, /* Treat-like-cash flag (money-market/sweep) */
   currency_code /* Denominating currency */
-FROM app.securities /* Future: UNION ALL resolved securities from prep.stg_plaid__securities, etc. */
+FROM app.securities /* Superseded (sync-plaid-investments.md): the SecurityResolver MINTS synced securities into app.securities, so a union here would double-count; the dim stays a catalog view (merchant precedent) */

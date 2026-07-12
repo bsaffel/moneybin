@@ -48,6 +48,103 @@ async def test_sync_pull_returns_envelope_with_summary(mock_build: MagicMock) ->
 
 @pytest.mark.unit
 @patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_surfaces_security_resolution_failure(
+    mock_build: MagicMock,
+) -> None:
+    """A pull whose security resolution failed must NOT read as a clean success.
+
+    There is no source-native fallback for security_id and cost_basis.py skips
+    every NULL-security event, so a swallowed resolution failure silently drops
+    every buy/sell on those securities from lots and realized gains. The CLI
+    warns and exits non-zero; the MCP payload must carry the same outcome.
+    """
+    service = MagicMock()
+    service.pull.return_value = PullResult(
+        job_id="j1",
+        transactions_loaded=0,
+        accounts_loaded=1,
+        balances_loaded=1,
+        transactions_removed=0,
+        securities_loaded=12,
+        investment_transactions_loaded=7,
+        holdings_loaded=3,
+        holding_lots_loaded=2,
+        institutions=[],
+        opening_bootstrap_rows=4,
+        investment_source_overlap_accounts=["acc_dup"],
+        security_resolution={"minted": 2, "proposed": 1},
+        security_resolution_error="database is locked",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull
+
+    envelope = await sync_pull()
+
+    data = envelope.data
+    assert data.security_resolution_error == "database is locked"
+    assert data.security_resolution == {"minted": 2, "proposed": 1}
+    assert data.securities_loaded == 12
+    assert data.investment_transactions_loaded == 7
+    assert data.holdings_loaded == 3
+    assert data.holding_lots_loaded == 2
+    assert data.opening_bootstrap_rows == 4
+    assert data.investment_source_overlap_accounts == ["acc_dup"]
+    # The agent must be told the pull is NOT clean and what to do about it.
+    actions_text = " ".join(envelope.actions)
+    assert "security resolution failed" in actions_text.lower()
+    assert "sync_pull" in actions_text
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_flags_pending_security_review(mock_build: MagicMock) -> None:
+    """Identities awaiting review must reach the agent, with the review tool named."""
+    service = MagicMock()
+    service.pull.return_value = PullResult(
+        job_id="j1",
+        transactions_loaded=0,
+        accounts_loaded=1,
+        balances_loaded=0,
+        transactions_removed=0,
+        institutions=[],
+        security_resolution={"adopted": 3, "proposed": 2, "pending": 1},
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull
+
+    envelope = await sync_pull()
+
+    assert envelope.data.security_resolution["proposed"] == 2
+    actions_text = " ".join(envelope.actions)
+    assert "investments_securities_links_pending" in actions_text
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_flags_manual_plaid_overlap(mock_build: MagicMock) -> None:
+    """The manual/Plaid overlap list reaches the agent — lots double-count until fixed."""
+    service = MagicMock()
+    service.pull.return_value = PullResult(
+        job_id="j1",
+        transactions_loaded=0,
+        accounts_loaded=1,
+        balances_loaded=0,
+        transactions_removed=0,
+        institutions=[],
+        investment_source_overlap_accounts=["acc_a", "acc_b"],
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull
+
+    envelope = await sync_pull()
+
+    assert envelope.data.investment_source_overlap_accounts == ["acc_a", "acc_b"]
+    actions_text = " ".join(envelope.actions)
+    assert "both manual and Plaid" in actions_text
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = [
