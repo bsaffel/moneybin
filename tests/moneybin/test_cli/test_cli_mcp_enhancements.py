@@ -355,6 +355,28 @@ class TestMCPInstall:
         assert str(tmp_path) in result.stdout
         assert "--from" not in result.stdout
 
+    def test_install_pins_moneybin_home_in_the_published_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MONEYBIN_HOME pinning is orthogonal to package location.
+
+        The published (non-repo) branch changed how args are built; this guards
+        that MONEYBIN_HOME still lands in the emitted env there, so a future
+        refactor cannot silently re-couple home-pinning to the repo branch.
+        """
+        monkeypatch.setattr("moneybin.cli.commands.mcp.find_repo_root", lambda: None)
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+
+        result = runner.invoke(
+            app, ["install", "--client", "claude-desktop", "--print"]
+        )
+
+        assert result.exit_code == 0
+        # Still the pinned published path...
+        assert "--from" in result.stdout
+        # ...and the home is pinned into the config's env block.
+        assert str(tmp_path.resolve()) in result.stdout
+
 
 class TestMCPInstallSnippetHardening:
     """The generated snippet must survive the launch context clients actually use."""
