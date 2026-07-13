@@ -115,8 +115,7 @@ works.
 
 Sources: AI-coding market-share reviews (Cursor ~$2B ARR / Claude Code most-loved
 / Copilot largest base), Cognition–Windsurf acquisition coverage, and the
-Antigravity 2.0 four-surface launch (Google I/O 2026) confirming stdio MCP. Full
-session research: `private/research/2026-07-10-ai-client-compatibility.md`.
+Antigravity 2.0 four-surface launch (Google I/O 2026) confirming stdio MCP.
 
 ## Blessed-path corrections (Phase 0 — immediate)
 
@@ -220,11 +219,8 @@ portable `[A-Za-z0-9_-]` tool names; the response envelope; `mcp install`
 config-writing, which remains a fully current pattern (Anthropic's
 `claude mcp add` and FastMCP's `fastmcp install` do the same).
 
-The discrete execution breakdown of this ladder for the Tier-1 clients (the
-W1–W11 build inventory: what ships, in what order, with dependencies) lives in
-`private/strategy/distribution-roadmap.md` §1.0 — kept out of this tracked spec
-because it churns monthly and gets a full `writing-plans` decomposition only when
-M3B executes.
+The public contract is the distribution ladder above. Its release sequencing and
+implementation breakdown are intentionally not part of this document.
 
 ## M3D — remote MCP + auth (design inputs sharpened)
 

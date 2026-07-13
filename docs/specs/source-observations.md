@@ -136,9 +136,10 @@ Writes (accepting a match, rejecting a match, asserting a balance) MUST go throu
 
 The Web UI must NOT introduce a separate observation store (in React state, in a service-worker cache, in a sidecar SQLite file, or in any other form) that the warehouse is not the source of truth for. Caching read results for latency is fine; treating cached results as authoritative state is not.
 
-## Genuine gaps tracked as followups
+## Known follow-ups
 
-Three gaps exist in the current observation surface. None requires a new layer; each is an extension to an existing spec and is tracked in `private/followups.md`:
+Three gaps exist in the current observation surface. None requires a new layer;
+each is an extension to an existing spec:
 
 1. **Wire Plaid balance observations into `core.fct_balances`.** The `prep.stg_plaid__balances` staging view and the raw Plaid balance loader (`src/moneybin/extractors/plaid/extractor.py`) already exist; the gap is that `core.fct_balances` still unions only OFX, tabular, and user assertions. Amend [`sync-plaid.md`](sync-plaid.md) to extend the `UNION ALL` in `src/moneybin/sqlmesh/models/core/fct_balances.sql` with the existing Plaid staging view. Listed as a future extension in [`reports-net-worth.md`](reports-net-worth.md) Req 1. Cost-of-delay is moderate — the user can already assert balances manually — but landing it removes the largest blind spot in automated balance drift detection.
 2. **Anchor-to-anchor interval drift as a named doctor audit.** Today's `reconciliation_delta` is per-day; it surfaces the snapshot drift but not the interval-level "between these two consecutive anchors, does the net of `fct_transactions` over the interval equal the anchor delta?" check. Implement as a SQLMesh named audit plus an entry in the doctor recipe registry per [`data-recovery-contract.md`](data-recovery-contract.md). Amend [`moneybin-doctor.md`](moneybin-doctor.md). Small spec amendment; ships independently.

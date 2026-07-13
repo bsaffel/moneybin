@@ -1,133 +1,128 @@
-<!-- Last reviewed: 2026-07-09 -->
+<!-- Last reviewed: 2026-07-13 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
-  <img src="docs/assets/moneybin-icon.png" alt="MoneyBin" width="300">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/moneybin-logo-on-dark.svg">
+    <img src="docs/assets/moneybin-logo-on-light.svg" alt="MoneyBin" width="320">
+  </picture>
 
   **Your finances, understood by AI.**
 
-  The personal finance platform you actually own — easy enough to just ask,<br>
-  powerful enough to query with SQL, and built for the AI you already use.
+  A local-first financial data platform: one encrypted database, open interfaces,<br>
+  and answers you can trace back to their source.
+
+  [Try the demo](#try-it) · [What works today](docs/features.md) · [Architecture](docs/architecture.md)
 
   [![CI](https://github.com/bsaffel/moneybin/actions/workflows/ci.yml/badge.svg)](https://github.com/bsaffel/moneybin/actions/workflows/ci.yml)
-  [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-  [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg)](https://www.python.org)
-  [![DuckDB](https://img.shields.io/badge/DuckDB-powered-FFF000.svg)](https://duckdb.org)
-
+  [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8A6A1C.svg)](LICENSE)
+  [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-1C1A16.svg)](https://www.python.org)
 </div>
 <!-- markdownlint-enable MD033 MD041 -->
 
----
+MoneyBin imports financial data into an encrypted [DuckDB](https://duckdb.org)
+database on your machine. You can work with the same canonical data through the
+CLI, SQL, or an AI assistant over
+[MCP](https://modelcontextprotocol.io)—without handing ownership of the database
+to another financial app.
 
-As easy as Mint was. As powerful as the tools data engineers actually use. Ask your money anything in plain language — then ask to see the exact SQL behind the answer. Your data lives in one encrypted file on your own machine, and you can walk away with it any time.
+<!-- markdownlint-disable MD033 -->
+<p align="center">
+  <img
+    src="docs/assets/moneybin-interface-preview.png"
+    alt="MoneyBin transaction interface design preview with a spending chart, SQL-backed filters, and ledger rows"
+    width="820"
+  >
+</p>
+<!-- markdownlint-enable MD033 -->
 
-> **Why I built this.** When Mint shut down, I lost access to years of my own financial data. I'd switched to Mint from Quicken because it was effortless — and then it was just *gone*. I work with data all day and always wanted to query my money the way I query everything else: with SQL. So I built the tool I wanted — the ease of Mint, the power of a best-in-class analytics stack, and AI as the primary way you interact with it. — *Brandon*
+> **Design preview with synthetic data.** The browser interface is in
+> development. The encrypted database, import pipeline, CLI, SQL access,
+> reports, and MCP server are available today.
 
-## What makes MoneyBin different
+## Why MoneyBin
 
-- **Ask your money anything.** MoneyBin speaks [MCP](https://modelcontextprotocol.io), the protocol your AI assistant uses to reach local tools — so Claude, Cursor, VS Code, Gemini CLI, Codex, and others can answer real questions about your finances. Bring your own model; when a better one ships, MoneyBin works with it on day one. → [MCP guide](docs/guides/mcp-server.md)
+### Own the database
 
-- **Query it like a data engineer.** Underneath the chat is a real analytics warehouse — [DuckDB](https://duckdb.org) plus [SQLMesh](https://sqlmesh.com), the framework that compiles and versions SQL pipelines. Every number traces from a canonical table back through a model to your original file. When the AI gives you an answer, ask it to *show you the SQL*. → [SQL access](docs/guides/sql-access.md)
+Each profile is one AES-256-GCM-encrypted DuckDB file under `~/.moneybin/`. No
+vendor account is required for local use, and the database remains useful
+outside any single UI or AI model.
 
-- **Built to be extended — by you and your agents.** MoneyBin assumes you'll want to track *your* money *your* way. The schema and the import pipeline are stable contracts an agent can build against today — and a first-class extension contract for reports, analysis packages, and data providers is taking shape now, so you (or Claude Code, or Cursor) can vibe-code a new report, a custom importer, or a whole tracker on top of your own data. MoneyBin wants to be the first tool your agent reaches for. → [Extension contract](docs/specs/extension-contracts.md)
+### Ask or query
 
-- **You own it, end to end.** Local-first by default — one encrypted DuckDB file per profile under `~/.moneybin/`, AES-256-GCM at rest. No vendor account required, no data resale, no lock-in. The same code powers an optional hosted tier; switching deployments is moving one file. → [Architecture](docs/architecture.md) · [Threat model](docs/guides/threat-model.md)
+Use natural language through an MCP-compatible assistant, structured CLI
+commands, or SQL. All three surfaces operate on the same modeled data instead
+of maintaining separate answers.
 
-- **Your history comes with you.** Import from bank files (CSV/OFX/QFX/QBO/Excel/Parquet/PDF), sync from Plaid, or connect a live Google Sheet — your categories migrate with you and auto-rules learn from them. Cross-source dedup means re-importing overlapping months never double-counts. → [Data import](docs/guides/data-import.md)
+### Inspect the evidence
 
-## How it works
+Imports are deduplicated and recorded as reversible batches. Reports and tools
+can return provenance and SQL, so a convenient answer does not have to be a
+black box.
 
-```mermaid
-graph LR
-    A["Your bank files<br/>Plaid · Sheets"] --> B["MoneyBin<br/>encrypted DuckDB + SQL"]
-    B --> C["AI assistants<br/>via MCP"]
-    B --> D["You<br/>CLI · SQL · agents"]
-```
+## Try it
 
-→ [Architecture](docs/architecture.md) for the full pipeline.
-
-## Quick Start
-
-> **Today's install is from source.** The published `uvx moneybin` / `pip install moneybin` path lands with MoneyBin's first tagged release (a `brew install` path follows). Until then, `git clone` + [uv](https://docs.astral.sh/uv/) is the way in — the commands below work today. Not comfortable with a CLI checkout? [Bookmark the project](https://github.com/bsaffel/moneybin) and check back.
->
-> **Platform:** macOS is the primary target; Linux works via PyPI; Windows is untested. MoneyBin runs on demand — no daemon, no container, no open network ports (the MCP server speaks stdio).
+MoneyBin is currently installed from source. macOS is the primary target, Linux
+is supported, and Windows is not yet tested. You need Python 3.12+,
+[uv](https://docs.astral.sh/uv/), and Git. MoneyBin runs on demand—there is no
+daemon, container, or open network port for local use.
 
 ```bash
 git clone https://github.com/bsaffel/moneybin.git
 cd moneybin
 make setup
+moneybin demo
 ```
 
-The first command you run sets up your profile automatically — one encrypted database that's yours, under `~/.moneybin/`. Everything you import lands there.
+`moneybin demo` creates an isolated profile with synthetic data, runs the full
+pipeline, checks the resulting database, and prints a first answer. It never
+touches a real profile.
 
-Bring in your data — import a file, drain the watched-folder inbox, or sync a Plaid-connected bank:
+From there, try the same data through different interfaces:
 
 ```bash
-moneybin import files path/to/transactions.csv    # CSV / TSV / Excel / Parquet / Feather
-moneybin import files path/to/checking.qfx        # OFX / QFX / QBO
-moneybin import inbox                              # drain ~/Documents/MoneyBin/<profile>/inbox/
-moneybin sync pull                                 # Plaid sync (cash + credit-card accounts)
+moneybin reports networth
+moneybin sql query "SELECT * FROM reports.net_worth LIMIT 10"
+moneybin mcp install --client claude-desktop
 ```
 
-> **Coming from another tool?** Tiller, Mint, and YNAB have first-class migration profiles; Lunch Money, Copilot, Monarch, and Maybe export CSV that the generic importer reads. Beancount and GnuCash users can drop OFX/QFX exports through the same command. → [Data import guide](docs/guides/data-import.md)
+See the [data import guide](docs/guides/data-import.md) for CSV, OFX/QFX/QBO,
+Excel, Parquet, PDF, Plaid, and Google Sheets sources, or the
+[MCP guide](docs/guides/mcp-server.md) for supported AI clients and tool
+behavior.
 
-Wire MoneyBin into your AI client and ask in natural language:
+## Current state
 
-```bash
-moneybin mcp install --client claude-desktop      # also: claude-code, cursor, codex, gemini-cli, ...
-```
+MoneyBin is pre-v1 and in daily use by its author. Today it includes encrypted
+multi-profile storage, deterministic imports, cross-source deduplication,
+transfer detection, categorization, Plaid sync for cash, credit-card, and
+investment accounts, investment lots and gains, curated reports, ad-hoc SQL,
+reversible edits, integrity checks, a CLI, and an MCP server.
 
-- *"What's my spending by category this month?"*
-- *"Find all my recurring subscriptions and their annual cost."*
-- *"Show me the SQL behind that number."*
-
-Or drive the same primitives from the shell — agents and humans share one JSON envelope:
-
-```bash
-moneybin reports networth --output json
-moneybin transactions list --category Groceries --output json
-moneybin sql query "SELECT category, SUM(amount) FROM core.fct_transactions GROUP BY 1"
-```
-
-→ [Data Import](docs/guides/data-import.md) · [MCP clients](docs/guides/mcp-clients.md) · [CLI reference](docs/guides/cli-reference.md) · [What works today](docs/features.md)
-
-## Where it stands
-
-**MoneyBin is pre-v1.** It's in daily use by the author, and the foundation is built to last rather than built to demo.
-
-**Working today:** the CLI and MCP server (≈70 tools across nine AI clients), encrypted multi-profile storage, file imports (CSV/OFX/QFX/QBO/Excel/Parquet), native-text PDF statement import with saved replayable per-format recipes, a watched-folder inbox, Plaid sync (cash, credit cards, and investments), live Google Sheets sync, cross-source dedup and transfer detection, rule-based categorization with an opt-in LLM-assist step, investment tracking (buys, sells, dividends, four cost-basis methods, tax lots, realized gain/loss — by hand or synced from Plaid), eight curated reports, privacy-safe ad-hoc SQL, reversible edits with a full audit trail, and `moneybin system doctor` integrity checks.
-
-**In flight:** a published `pip install` / `brew install` path and first-run onboarding, AI-assisted import for scanned and other hard-to-parse PDFs, an extensible report framework, non-author validation of Plaid sync (the link → sync → reconcile round-trip is built and author-tested against Production), and the contributor extension contract.
-
-**Planned:** investment price feeds and net-worth integration, multi-currency, budgets, a web UI dashboard, and an opt-in hosted tier — same code you can self-host.
-
-→ [What works today](docs/features.md) · [Roadmap](docs/roadmap.md) · [Where MoneyBin fits](docs/comparison.md)
-
-## Is it for you?
-
-MoneyBin's lane is narrow on purpose: your data stays on your machine, AI assists rather than runs the show, the code is open source, and every database file is encrypted at rest. It fits best if you're comfortable in a terminal and want your finances inside your own data and AI workflow. If you need a polished mobile app, a shared household budget, or pure envelope budgeting today, [the audience page](docs/audience.md) names the tool that's genuinely a better fit — honestly. → [Audience](docs/audience.md) · [Comparison](docs/comparison.md)
+It does not yet have a published package or Homebrew install, polished first-run
+onboarding, the browser interface shown above, or the planned hosted service.
+Plaid's link, sync, and reconcile round trip is built and author-tested against
+a production account, but still needs non-author validation. The exact
+capability boundary lives in [What Works Today](docs/features.md); future work
+lives in the [roadmap](docs/roadmap.md).
 
 ## Documentation
 
-- [What Works Today](docs/features.md) — capability snapshot with per-feature links
-- [Feature Guides](docs/guides/) — how to use what's shipped
-- [Roadmap](docs/roadmap.md) — what's in flight and planned
-- [Architecture](docs/architecture.md) — guarantees, diagram, read/write contract
-- [Threat Model](docs/guides/threat-model.md) — what encryption protects against, and what it doesn't
-- [MCP Server](docs/guides/mcp-server.md) — tool catalog, response envelope, redaction
-- [Where MoneyBin Fits](docs/comparison.md) — the lane it's built for, and who to use instead
-- [Audience](docs/audience.md) — who MoneyBin is for, today and at launch
-- [Licensing](docs/licensing.md) — why AGPL, what it does and doesn't mean
-- [Spec Index](docs/specs/INDEX.md) · [Decision Records](docs/decisions/) · [Changelog](CHANGELOG.md) · [Security Policy](SECURITY.md)
+- [What Works Today](docs/features.md) — shipped capabilities and their limits
+- [Guides](docs/guides/) — imports, CLI, MCP, SQL, security, and operations
+- [Architecture](docs/architecture.md) — data flow, guarantees, and extension boundaries
+- [Roadmap](docs/roadmap.md) — current priorities without speculative dates
 
-## Community
-
-- **Issues:** [GitHub Issues](https://github.com/bsaffel/moneybin/issues) for bugs and feature requests
-- **Discussions:** [GitHub Discussions](https://github.com/bsaffel/moneybin/discussions) for questions, ideas, and show-and-tell
+For a critical comparison with other tools, see
+[Where MoneyBin Fits](docs/comparison.md) and [Who It Is For](docs/audience.md).
 
 ## Contributing
 
-→ [`CONTRIBUTING.md`](CONTRIBUTING.md) — dev setup, project structure, scenario runner, branching conventions
+Bug reports, focused feature proposals, and pull requests are welcome. Start
+with [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and project
+conventions. Use [GitHub Discussions](https://github.com/bsaffel/moneybin/discussions)
+for broader questions and design conversations.
 
 ## License
 
-[AGPL-3.0](LICENSE). MoneyBin uses the same license model as Bitwarden, Plausible, Element, and Sentry — open source, self-hostable, with a planned hosted tier that runs the same code anyone can self-host. → [Why AGPL](docs/licensing.md)
+[AGPL-3.0](LICENSE). See [Licensing](docs/licensing.md) for the practical meaning
+of the license and the relationship between self-hosted and planned hosted use.
