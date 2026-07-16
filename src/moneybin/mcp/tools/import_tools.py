@@ -69,6 +69,8 @@ def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list
     `mapping=...` override.
     """
     actions: list[str] = []
+    if outcome.reason == "sign_convention":
+        return _sign_confirm_actions(file_path, outcome.error_message)
     if outcome.error_message:
         # Surface validation_failure detail first so the agent / human
         # sees WHY their last attempt was rejected (which override key
@@ -795,6 +797,10 @@ def _import_confirm_bridge(
     recipe that fails the security bounds raises ``UserError``.
     """
     from moneybin.extractors.pdf.bridge import BridgeResponseError
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        confirmation_payload_dict,
+    )
     from moneybin.services.import_service import ImportService
 
     path = _validate_file_path(file_path)
@@ -811,6 +817,15 @@ def _import_confirm_bridge(
         # invalid. A ValueError raised later (PDF extraction, load) is NOT
         # caught here so it isn't mislabeled — it surfaces as a generic error.
         raise UserError(str(e), code="bridge_response_invalid") from e
+    except ImportConfirmationRequiredError as e:
+        return build_envelope(
+            sensitivity="medium",
+            data={
+                "status": "confirmation_required",
+                **confirmation_payload_dict(e.outcome),
+            },
+            actions=_confirmation_actions(file_path, e.outcome),
+        )
 
     if result.outcome == "invalid":
         return build_envelope(
@@ -945,7 +960,7 @@ def import_confirm(
     """
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
-        ProposedMapping,
+        confirmation_payload_dict,
     )
     from moneybin.services.import_service import ImportService
 
@@ -1035,33 +1050,11 @@ def import_confirm(
         # ConfirmationRequired. Mirror import_files' envelope so the agent
         # sees the validator's error_message and actions[] instead of an
         # opaque server error.
-        proposed_mapping = (
-            e.outcome.proposed.field_mapping
-            if isinstance(e.outcome.proposed, ProposedMapping)
-            else {}
-        )
-        unmapped = (
-            list(e.outcome.proposed.unmapped_columns)
-            if isinstance(e.outcome.proposed, ProposedMapping)
-            else []
-        )
         return build_envelope(
             sensitivity="medium",
             data={
                 "status": "confirmation_required",
-                "channel": e.outcome.channel,
-                "tier": e.outcome.confidence.tier,
-                "score": e.outcome.confidence.score,
-                "reason": e.outcome.reason,
-                "error_message": e.outcome.error_message,
-                "proposed_mapping": proposed_mapping,
-                "samples": e.outcome.samples,
-                "flagged": list(e.outcome.confidence.flagged),
-                "missing_required": list(e.outcome.confidence.missing_required),
-                "unmapped_columns": unmapped,
-                # Carry account_proposals so an account_confirmation re-prompt
-                # surfaces the source keys the agent needs for account_bindings.
-                "account_proposals": list(e.outcome.account_proposals),
+                **confirmation_payload_dict(e.outcome),
             },
             actions=_confirmation_actions(str(path), e.outcome),
         )

@@ -23,7 +23,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
-from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL, PDF_SIGN_GATE_TOTAL
 from moneybin.services.import_service import BridgeApplyResult, ImportService
 from moneybin.tables import PDF_FORMATS, TABULAR_TRANSACTIONS
 
@@ -193,6 +193,35 @@ def test_apply_save_format_false_skips_persist(
         f"SELECT COUNT(*) FROM {PDF_FORMATS.full_name}"  # noqa: S608  # TableRef constant, not user input
     ).fetchone()
     assert rows is not None and rows[0] == 0
+
+
+def test_apply_inverted_recipe_requires_human_confirmation(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """A bridge agent cannot silently choose a whole-ledger inversion."""
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+
+    # Reconciliation operates on the statement's source signs, before the
+    # loader canonicalizes them, so this is a genuinely reconciling proposal.
+    recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
+    before = PDF_SIGN_GATE_TOTAL.labels(outcome="proposed")._value.get()  # type: ignore[reportPrivateUsage]
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).apply_pdf_bridge_response(
+            _pdf_path(tmp_path), _bridge_response(recipe=recipe)
+        )
+
+    from moneybin.services.import_confirmation import SignConventionProposal
+
+    assert exc.value.outcome.reason == "sign_convention"
+    assert isinstance(exc.value.outcome.proposed, SignConventionProposal)
+    assert exc.value.outcome.proposed.sign_convention == "negative_is_income"
+    assert PDF_SIGN_GATE_TOTAL.labels(outcome="proposed")._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+    loaded = db.conn.execute(
+        f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant, not user input
+        "WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert loaded is not None and loaded[0] == 0
 
 
 def test_apply_writes_revertable_import_log(

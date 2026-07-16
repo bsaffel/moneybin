@@ -1378,6 +1378,7 @@ class ImportService:
                 f"Valid values: {list(get_args(NumberFormatType))}.",
                 code="invalid_number_format",
             )
+        detected_sign = resolved.sign_convention
         if sign or date_format_override or number_format_override:
             resolved = dataclasses.replace(
                 resolved,
@@ -1389,6 +1390,18 @@ class ImportService:
                 if number_format_override
                 else resolved.number_format,
             )
+
+        self._gate_tabular_sign_convention(
+            detected_sign=detected_sign,
+            sign=sign,
+            confirm=confirm,
+            actor_kind=actor_kind,
+            evidence=(
+                f"saved format {matched_format.name!r} uses negative_is_income"
+                if matched_format
+                else "a column header contains the word 'credit'"
+            ),
+        )
 
         # Determine account info
         source_type = format_info.file_type
@@ -2117,6 +2130,13 @@ class ImportService:
                 reject_reason=decision.reason,
             )
 
+        # The bridge response is agent-authored, not a human ratification. A
+        # recipe that inverts every amount therefore follows the same gate as
+        # deterministic PDFs before it can persist or load any rows.
+        decision = self._gate_pdf_sign_convention(
+            decision, sign=None, confirm=False, force_confirmation=True
+        )
+
         # 4. Load + persist via the shared transactions path (rung="bridge").
         #    begin_import only here: the invalid path above writes nothing, so
         #    it needs no import_log row. The two ValueError guards inside
@@ -2184,6 +2204,7 @@ class ImportService:
         *,
         sign: str | None,
         confirm: bool,
+        force_confirmation: bool = False,
     ) -> "RouteDecision":
         """Ratify, override, or gate an auto-derived sign inversion.
 
@@ -2275,7 +2296,9 @@ class ImportService:
             )
 
         is_auto_derived = decision.matched_format_name is None
-        if recipe.sign_convention != "negative_is_income" or not is_auto_derived:
+        if recipe.sign_convention != "negative_is_income" or (
+            not is_auto_derived and not force_confirmation
+        ):
             return decision
 
         if confirm:
@@ -2309,10 +2332,49 @@ class ImportService:
                     "This looks like a credit-card statement "
                     f"(matched: {', '.join(decision.card_markers)}). Charges will be "
                     "recorded as expenses and payments as credits — every amount's "
-                    "sign is inverted. Re-run the import in a terminal to confirm: "
-                    "`moneybin import files <path> --confirm` if it IS a credit card, "
-                    "or `moneybin import files <path> --sign negative_is_expense` if "
-                    "it is not."
+                    "sign is inverted. A person must confirm or override this "
+                    "inversion before anything is imported."
+                ),
+            )
+        )
+
+    def _gate_tabular_sign_convention(
+        self,
+        *,
+        detected_sign: SignConventionType,
+        sign: str | None,
+        confirm: bool,
+        actor_kind: "ActorKind",
+        evidence: str,
+    ) -> None:
+        """Require a human to ratify an inferred tabular ledger inversion."""
+        from moneybin.metrics.registry import TABULAR_SIGN_GATE_TOTAL
+
+        if detected_sign != "negative_is_income":
+            return
+        if sign is not None:
+            TABULAR_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
+            return
+        if confirm and actor_kind == "human":
+            TABULAR_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+            return
+
+        TABULAR_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_CARD_SIGN_CONFIDENCE,
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=(evidence,),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+                error_message=(
+                    "This tabular format would invert every amount: negative values "
+                    "become income and positive values become expenses. A person "
+                    "must confirm or override this inversion before anything is "
+                    "imported."
                 ),
             )
         )

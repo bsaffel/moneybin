@@ -711,7 +711,7 @@ def _sign_recovery_commands(file_path_str: str) -> list[str]:
 def _render_sign_convention_prompt(
     proposed: SignConventionProposal, file_path_str: str
 ) -> None:
-    """Print the interactive prompt for a card sign-convention confirmation.
+    """Print the interactive prompt for a sign-convention confirmation.
 
     "magic stays visible": a whole-ledger sign inversion the user can't see the
     evidence for must never be applied. Show the matched card disclosures and the
@@ -719,14 +719,14 @@ def _render_sign_convention_prompt(
     honest recoveries — never "Validation failed" (this is a proposal, not a
     failure) or the --mapping hint (a dead-end loop for a PDF).
     """
-    typer.echo("\n👀  This looks like a credit-card statement")
+    typer.echo("\n👀  Sign convention confirmation required")
     typer.echo(f"   File: {file_path_str}")
     typer.echo(
-        "   Recording it as a card inverts every amount's sign — charges become "
-        "expenses, payments become credits."
+        "   Recording it with this convention inverts every amount's sign — "
+        "negative values become income and positive values become expenses."
     )
     if proposed.evidence:
-        typer.echo(f"\n   Matched card disclosures: {', '.join(proposed.evidence)}")
+        typer.echo(f"\n   Inference evidence: {', '.join(proposed.evidence)}")
     if proposed.sample_rows:
         typer.echo("\n   Printed on statement → recorded by MoneyBin:")
         for row in proposed.sample_rows:

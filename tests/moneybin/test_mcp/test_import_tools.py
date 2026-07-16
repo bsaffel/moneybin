@@ -1270,6 +1270,32 @@ class TestImportConfirmBridge:
         assert result.error is not None
         assert result.error.code == "bridge_response_invalid"
 
+    async def test_inverted_bridge_recipe_returns_sign_confirmation(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The MCP bridge path surfaces the human-only recovery, never a load."""
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.side_effect = _sign_error()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "sign_convention"
+        assert data["sign_convention"] == "negative_is_income"
+        actions = " ".join(result.actions)
+        assert str(pdf) in actions
+        assert "<path>" not in actions
+        assert "--confirm" in actions
+
     async def test_non_parse_value_error_not_labeled_bridge_invalid(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

@@ -29,6 +29,7 @@ def _make_mapping_result(
     confidence: str,
     field_mapping: dict[str, str] | None = None,
     sign_needs_confirmation: bool = False,
+    sign_convention: str = "negative_is_expense",
 ) -> object:
     """Return a MappingResult-like object with the given confidence and score."""
     from moneybin.extractors.tabular.column_mapper import MappingResult
@@ -44,7 +45,7 @@ def _make_mapping_result(
         confidence=confidence,  # type: ignore[arg-type]
         date_format="%Y-%m-%d",
         number_format="us",
-        sign_convention="negative_is_expense",
+        sign_convention=sign_convention,  # type: ignore[arg-type]  # test fixture accepts every supported convention
         sign_needs_confirmation=sign_needs_confirmation,
         is_multi_account=False,
         unmapped_columns=["Balance"],
@@ -405,3 +406,66 @@ class TestTabularConfirmationFlow:
             "sign convention" in caplog.text.lower()
             or "ambiguous" in caplog.text.lower()
         )
+
+    def test_agent_cannot_confirm_an_inferred_credit_card_inversion(
+        self, db: Database
+    ) -> None:
+        """A generic MCP accept signal cannot ratify a whole-ledger flip."""
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+            SignConventionProposal,
+        )
+        from moneybin.services.import_service import ImportService
+
+        inverted = _make_mapping_result(
+            score=0.95,
+            confidence="high",
+            sign_convention="negative_is_income",
+            sign_needs_confirmation=True,
+        )
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=inverted,
+            ),
+            pytest.raises(ImportConfirmationRequiredError) as exc,
+        ):
+            ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                actor_kind="agent",
+            )
+
+        assert exc.value.outcome.channel == "tabular"
+        assert exc.value.outcome.reason == "sign_convention"
+        assert isinstance(exc.value.outcome.proposed, SignConventionProposal)
+        assert exc.value.outcome.proposed.sign_convention == "negative_is_income"
+        rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert rows is not None and rows[0] == 0
+
+    def test_human_can_confirm_an_inferred_credit_card_inversion(
+        self, db: Database
+    ) -> None:
+        """The CLI's explicit --confirm recovery remains available."""
+        from moneybin.services.import_service import ImportService
+
+        inverted = _make_mapping_result(
+            score=0.95,
+            confidence="high",
+            sign_convention="negative_is_income",
+            sign_needs_confirmation=True,
+        )
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=inverted,
+        ):
+            result = ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+            )
+
+        assert result.import_id is not None

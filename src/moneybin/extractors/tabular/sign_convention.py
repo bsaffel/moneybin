@@ -87,6 +87,7 @@ def infer_sign_convention(
     if _CREDIT_WORD_RE.search(header_context):
         return SignConventionResult(
             convention="negative_is_income",
+            needs_confirmation=True,
             reason="Credit card context detected — negative values are payments/credits",
         )
 
