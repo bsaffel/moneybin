@@ -238,6 +238,14 @@ def import_files_command(
             "Single-file mode only."
         ),
     ),
+    confirm_sign: bool = typer.Option(
+        False,
+        "--confirm-sign",
+        help=(
+            "Explicitly approve an inferred tabular sign inversion. "
+            "Single-file mode only."
+        ),
+    ),
     sign: SignConventionType | None = typer.Option(
         None,
         "--sign",
@@ -366,14 +374,14 @@ def import_files_command(
             "⚠️  Per-file flags only apply in single-file mode and will be "
             "ignored. Use one file per command for per-file overrides."
         )
-    if len(file_paths) > 1 and confirm:
+    if len(file_paths) > 1 and (confirm or confirm_sign):
         # --confirm with multiple files would silently auto-accept every
         # first-encounter layout in the batch sight-unseen. Each layout is a
         # separate trust decision; refuse the batch and require per-file
         # invocations or use `moneybin import confirm <file>` after the
         # confirmation_required envelopes surface.
         raise typer.BadParameter(
-            "--confirm cannot be combined with multiple files. Each first-"
+            "--confirm and --confirm-sign cannot be combined with multiple files. Each first-"
             "encounter layout requires its own confirmation. Re-run per-file "
             "or import without --confirm to surface confirmation_required "
             "envelopes, then ratify with `moneybin import confirm <file>`."
@@ -412,6 +420,7 @@ def import_files_command(
                         no_size_limit=no_size_limit,
                         auto_accept=yes,
                         confirm=confirm,
+                        human_sign_confirmation=confirm_sign,
                         actor_kind="human",
                     )
                     if result.sign_correction_suggested:
@@ -523,7 +532,9 @@ def import_files_command(
                 # "Validation failed" prefix (this is a proposal, not a failure).
                 if outcome.error_message:
                     confirm_actions.append(outcome.error_message)
-                confirm_actions.extend(_sign_recovery_commands(file_path_str))
+                confirm_actions.extend(
+                    _sign_recovery_commands(file_path_str, channel=outcome.channel)
+                )
             else:
                 if outcome.error_message:
                     confirm_actions.append(
@@ -688,7 +699,7 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
             )
 
 
-def _sign_recovery_commands(file_path_str: str) -> list[str]:
+def _sign_recovery_commands(file_path_str: str, *, channel: str) -> list[str]:
     """The two honest recoveries for a card sign-convention confirmation.
 
     A card statement proposes inverting every amount (charges → expenses,
@@ -702,15 +713,20 @@ def _sign_recovery_commands(file_path_str: str) -> list[str]:
 
     quoted = shlex.quote(file_path_str)
     return [
-        f"If it IS a credit card: moneybin import files {quoted} --confirm "
-        "(records charges as expenses, payments as credits).",
+        (
+            f"Confirm the tabular mapping, then approve the sign: moneybin import "
+            f"confirm {quoted} --accept --confirm-sign"
+            if channel == "tabular"
+            else f"If it IS a credit card: moneybin import files {quoted} --confirm "
+            "(records charges as expenses, payments as credits)."
+        ),
         f"If it is NOT a credit card: moneybin import files {quoted} "
         "--sign negative_is_expense (records amounts exactly as printed).",
     ]
 
 
 def _render_sign_convention_prompt(
-    proposed: SignConventionProposal, file_path_str: str
+    proposed: SignConventionProposal, file_path_str: str, *, channel: str
 ) -> None:
     """Print the interactive prompt for a sign-convention confirmation.
 
@@ -737,7 +753,7 @@ def _render_sign_convention_prompt(
             label = f"{desc}: " if desc else ""
             typer.echo(f"     {label}{printed} → {recorded}")
     typer.echo("\n   To proceed:")
-    for line in _sign_recovery_commands(file_path_str):
+    for line in _sign_recovery_commands(file_path_str, channel=channel):
         typer.echo(f"     {line}")
     typer.echo()
 
@@ -765,7 +781,9 @@ def _render_confirmation_prompt(
     if outcome.reason == "sign_convention" and isinstance(
         outcome.proposed, SignConventionProposal
     ):
-        _render_sign_convention_prompt(outcome.proposed, file_path_str)
+        _render_sign_convention_prompt(
+            outcome.proposed, file_path_str, channel=outcome.channel
+        )
         return
 
     quoted_path = shlex.quote(file_path_str)
@@ -858,6 +876,11 @@ def import_confirm_command(
         "--confirm",
         help="Confirm a PDF bridge recipe's ledger-wide sign inversion.",
     ),
+    confirm_sign: bool = typer.Option(
+        False,
+        "--confirm-sign",
+        help="Explicitly approve an inferred tabular sign inversion.",
+    ),
     account_id: str | None = typer.Option(
         None,
         "--account-id",
@@ -908,6 +931,7 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/statement.csv --mapping date=Date --mapping amount=Amount
         moneybin import confirm ~/Downloads/statement.csv --accept --output json
         moneybin import confirm ~/Downloads/statement.csv --accept --account-name "Chase Checking"
+        moneybin import confirm ~/Downloads/card.csv --accept --confirm-sign
         moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
@@ -917,9 +941,10 @@ def import_confirm_command(
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
     if bridge_response is not None:
-        if accept or mapping:
+        if accept or mapping or confirm_sign:
             raise typer.BadParameter(
-                "--bridge-response cannot be combined with --accept or --mapping.",
+                "--bridge-response cannot be combined with --accept, --mapping, or "
+                "--confirm-sign.",
                 param_hint="'--bridge-response'",
             )
         if account_name or account_binding or account_meta:
@@ -1007,6 +1032,7 @@ def import_confirm_command(
                         account_bindings=parsed_bindings,
                         account_metadata=parsed_metadata,
                         save_format=save_format,
+                        human_sign_confirmation=confirm_sign,
                         actor_kind="human",
                         refresh=False,  # caller can run 'moneybin transform apply' separately
                     )
@@ -1024,7 +1050,11 @@ def import_confirm_command(
         confirm_actions: list[str] = []
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
-        if outcome.reason == "account_confirmation":
+        if outcome.reason == "sign_convention":
+            confirm_actions.extend(
+                _sign_recovery_commands(str(file_path), channel=outcome.channel)
+            )
+        elif outcome.reason == "account_confirmation":
             # The layout is settled; only the account identity needs ratifying.
             # The --mapping/--accept hints are irrelevant here (and --accept
             # without a binding loops back to this gate), so surface only the
@@ -1062,7 +1092,9 @@ def import_confirm_command(
             # partial-override iteration.
             return
         # Interactive path: human-readable summary + exit code 1.
-        if outcome.reason == "account_confirmation":
+        if outcome.reason == "sign_convention":
+            _render_confirmation_prompt(outcome, str(file_path))
+        elif outcome.reason == "account_confirmation":
             # The layout is settled; show the bindings to supply, not a --mapping
             # hint (which would mislead — the mapping is fine).
             logger.error("❌ Account identity must be confirmed before import.")

@@ -440,6 +440,64 @@ class TestImportConfirmTool:
         assert result.data.rows_loaded == 10
         assert result.data.import_id == "abc-123"
 
+    async def test_tabular_sign_confirmation_elicitation_is_human_gated(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An agent's mapping accept pauses for a separate human sign decision."""
+        from moneybin.services.import_confirmation import SignConventionProposal
+        from moneybin.services.import_service import ImportResult
+
+        csv_file = tmp_path / "statements" / "card.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        sign_error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=("a column header contains the word 'credit'",),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+            )
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = [
+            sign_error,
+            ImportResult(
+                file_path=str(csv_file),
+                file_type="tabular",
+                transactions=2,
+                import_id="sign-123",
+            ),
+        ]
+        confirm = AsyncMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+            patch("moneybin.services.inbox_service.InboxService"),
+            patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ),
+        ):
+            result = await import_confirm(file_path=str(csv_file), accept=True)
+
+        assert result.data.import_id == "sign-123"
+        confirm.assert_awaited_once()
+        assert (
+            mock_service.import_file.call_args_list[1].kwargs["human_sign_confirmation"]
+            is True
+        )
+
     async def test_mapping_override_passes_overrides_to_service(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

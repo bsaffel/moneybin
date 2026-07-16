@@ -24,7 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `credit`, so it is counted as a liability in net worth. Agent-authored PDF
   bridge recipes now require an MCP human-confirmation prompt before they can
   invert a ledger; clients without that prompt use `moneybin import confirm
-  <path> --bridge-response response.json --confirm`. (#324)
+  <path> --bridge-response response.json --confirm`. Tabular credit-card
+  inferences now likewise pause after mapping confirmation until a person runs
+  `moneybin import confirm <path> --accept --confirm-sign`; accepting a column
+  mapping alone can never approve the ledger-wide sign inversion. (#324)
 - **Auto-rule proposals can no longer silently mass-mislabel the ledger.** A
   transaction description that normalizes to a 1–2 character token (e.g. "TO",
   from a truncated "TRANSFER TO ...") previously became a `contains` rule —

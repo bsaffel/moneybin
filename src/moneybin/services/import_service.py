@@ -1082,6 +1082,7 @@ class ImportService:
         no_size_limit: bool = False,
         auto_accept: bool = False,
         confirm: bool = False,
+        human_sign_confirmation: bool = False,
         actor_kind: "ActorKind" = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
@@ -1105,6 +1106,8 @@ class ImportService:
             no_size_limit: Override file size limit.
             auto_accept: Auto-accept the top fuzzy account match without prompting.
             confirm: If True, acts as Accept signal to resolve_or_confirm.
+            human_sign_confirmation: Explicit human approval of an inferred
+                tabular sign inversion; independent of mapping acceptance.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
             account_bindings: Map of source_account_key -> canonical account_id
                 (adopt) or "new" (mint standalone), ratifying the account-binding
@@ -1398,8 +1401,7 @@ class ImportService:
         self._gate_tabular_sign_convention(
             detected_sign=detected_sign,
             sign=sign,
-            confirm=confirm,
-            actor_kind=actor_kind,
+            human_sign_confirmation=human_sign_confirmation,
             is_first_contact=matched_format is None,
             evidence=(
                 f"saved format {matched_format.name!r} uses negative_is_income"
@@ -2141,6 +2143,19 @@ class ImportService:
         # recipe that inverts every amount therefore follows the same gate as
         # deterministic PDFs before it can persist or load any rows.
         decision = self._gate_pdf_sign_convention(decision, sign=None, confirm=confirm)
+        if (
+            confirm
+            and decision.recipe is not None
+            and decision.recipe.sign_convention == "negative_is_income"
+        ):
+            # A bridge recipe's sign evidence comes from the agent rather than
+            # the deterministic card-marker detector. This explicit human
+            # approval must therefore persist as a replay bypass; otherwise a
+            # marker-free statement would re-escalate on every import.
+            decision = dataclasses.replace(
+                decision,
+                recipe=decision.recipe.model_copy(update={"sign_ratified": True}),
+            )
 
         # 4. Load + persist via the shared transactions path (rung="bridge").
         #    begin_import only here: the invalid path above writes nothing, so
@@ -2322,12 +2337,10 @@ class ImportService:
                     sample_rows=_sign_sample_rows(decision.rows),
                 ),
                 reason="sign_convention",
-                # Recovery is the CLI on both surfaces: the CLI confirms natively
-                # (--confirm / --sign), and MCP cannot ratify a sign inversion in
-                # place yet (elicitation-based confirm is planned), so its agent is
-                # directed to the same terminal command. No literal path here — the
-                # path isn't in scope at the gate; each surface fills in the concrete
-                # command from the file it holds.
+                # A deterministic PDF has no bridge recipe to re-run, so the CLI
+                # confirms it natively (--confirm / --sign). No literal path here —
+                # the path isn't in scope at the gate; each surface fills in the
+                # concrete command from the file it holds.
                 error_message=(
                     "This looks like a credit-card statement "
                     f"(matched: {', '.join(decision.card_markers)}). Charges will be "
@@ -2343,8 +2356,7 @@ class ImportService:
         *,
         detected_sign: SignConventionType,
         sign: str | None,
-        confirm: bool,
-        actor_kind: "ActorKind",
+        human_sign_confirmation: bool,
         is_first_contact: bool,
         evidence: str,
     ) -> None:
@@ -2356,7 +2368,7 @@ class ImportService:
         if sign is not None:
             TABULAR_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
             return
-        if confirm and actor_kind == "human":
+        if human_sign_confirmation:
             TABULAR_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
             return
 
@@ -3148,6 +3160,7 @@ class ImportService:
         no_size_limit: bool = False,
         auto_accept: bool = False,
         confirm: bool = False,
+        human_sign_confirmation: bool = False,
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
@@ -3191,9 +3204,10 @@ class ImportService:
             no_size_limit: Override file size limit for tabular imports.
             auto_accept: Auto-accept the top fuzzy account match without prompting
                 (CLI: --yes / -y). Defaults to False.
-            confirm: Ratify the system's proposal without further prompting —
-                the detected column mapping (tabular) or the credit-card sign
-                inversion (PDF).
+            confirm: Ratify the detected column mapping (tabular) or the
+                credit-card sign inversion (PDF).
+            human_sign_confirmation: Explicit human approval of an inferred
+                tabular sign inversion; never inferred from ``confirm``.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
             account_bindings: Map of source_account_key -> canonical account_id
                 (adopt) or "new" (mint standalone), ratifying the account-binding
@@ -3228,6 +3242,7 @@ class ImportService:
             no_size_limit=no_size_limit,
             auto_accept=auto_accept,
             confirm=confirm,
+            human_sign_confirmation=human_sign_confirmation,
             actor_kind=actor_kind,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
@@ -3285,6 +3300,7 @@ class ImportService:
         no_size_limit: bool = False,
         auto_accept: bool = False,
         confirm: bool = False,
+        human_sign_confirmation: bool = False,
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
@@ -3325,6 +3341,7 @@ class ImportService:
                 no_size_limit=no_size_limit,
                 auto_accept=auto_accept,
                 confirm=confirm,
+                human_sign_confirmation=human_sign_confirmation,
                 actor_kind=actor_kind,
                 account_bindings=account_bindings,
                 account_metadata=account_metadata,

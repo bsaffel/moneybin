@@ -585,6 +585,25 @@ class TestImportConfirmCommand:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
 
+    def test_confirm_sign_is_distinct_from_mapping_accept(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """--confirm-sign, not --accept, carries the tabular sign decision."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--confirm-sign"]
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["confirm"] is True
+        assert call_kwargs["human_sign_confirmation"] is True
+
     def test_bridge_response_requires_explicit_confirm(self, tmp_path: Path) -> None:
         """A JSON bridge recipe cannot load until the terminal user confirms it."""
         pdf_file = tmp_path / "statement.pdf"

@@ -238,6 +238,16 @@ def test_apply_inverted_recipe_loads_after_human_confirmation(
 
     assert result.outcome == "applied"
     assert result.rows_loaded == 2
+    assert result.format_name is not None
+
+    import json as _json
+
+    row = db.conn.execute(
+        f"SELECT extraction_recipe FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [result.format_name],
+    ).fetchone()
+    assert row is not None
+    assert _json.loads(row[0])["sign_ratified"] is True
 
 
 def test_apply_writes_revertable_import_log(

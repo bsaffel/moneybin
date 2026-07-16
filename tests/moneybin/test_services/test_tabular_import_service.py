@@ -445,10 +445,82 @@ class TestTabularConfirmationFlow:
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 0
 
+    def test_mapping_accept_does_not_confirm_an_inferred_credit_card_inversion(
+        self, db: Database
+    ) -> None:
+        """The mapping accept signal cannot silently ratify the sign flip."""
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        inverted = _make_mapping_result(
+            score=0.95,
+            confidence="high",
+            sign_convention="negative_is_income",
+            sign_needs_confirmation=True,
+        )
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=inverted,
+            ),
+            pytest.raises(ImportConfirmationRequiredError) as exc,
+        ):
+            ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+            )
+
+        assert exc.value.outcome.reason == "sign_convention"
+
+    def test_tabular_card_requires_mapping_then_sign_confirmation(
+        self, db: Database
+    ) -> None:
+        """The real three-step retry flow keeps the two decisions separate."""
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        inverted = _make_mapping_result(
+            score=0.95,
+            confidence="high",
+            sign_convention="negative_is_income",
+            sign_needs_confirmation=True,
+        )
+        service = ImportService(db)
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=inverted,
+        ):
+            with pytest.raises(ImportConfirmationRequiredError) as mapping:
+                service.import_file(_STANDARD_CSV, account_name="test", refresh=False)
+            with pytest.raises(ImportConfirmationRequiredError) as sign:
+                service.import_file(
+                    _STANDARD_CSV,
+                    account_name="test",
+                    refresh=False,
+                    confirm=True,
+                )
+            result = service.import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                human_sign_confirmation=True,
+            )
+
+        assert mapping.value.outcome.reason == "unknown_layout"
+        assert sign.value.outcome.reason == "sign_convention"
+        assert result.import_id is not None
+
     def test_human_can_confirm_an_inferred_credit_card_inversion(
         self, db: Database
     ) -> None:
-        """The CLI's explicit --confirm recovery remains available."""
+        """A separate human sign confirmation permits the already-accepted mapping."""
         from moneybin.services.import_service import ImportService
 
         inverted = _make_mapping_result(
@@ -466,6 +538,7 @@ class TestTabularConfirmationFlow:
                 account_name="test",
                 refresh=False,
                 confirm=True,
+                human_sign_confirmation=True,
             )
 
         assert result.import_id is not None
@@ -492,6 +565,7 @@ class TestTabularConfirmationFlow:
                 account_name="test",
                 refresh=False,
                 confirm=True,
+                human_sign_confirmation=True,
             )
 
         replay = service.import_file(
