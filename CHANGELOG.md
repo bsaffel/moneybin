@@ -21,9 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   confirm it is a card (`moneybin import files <path> --confirm`), or overrule a
   false detection (`--sign negative_is_expense`), and that override survives every
   future replay of the format. Confirming a card also types its account as
-  `credit`, so it is counted as a liability in net worth. (MCP surfaces the same
-  confirmation and, for now, routes it to the CLI to resolve; in-place
-  confirmation is planned.)
+  `credit`, so it is counted as a liability in net worth. Agent-authored PDF
+  bridge recipes now require an MCP human-confirmation prompt before they can
+  invert a ledger; clients without that prompt use `moneybin import confirm
+  <path> --bridge-response response.json --confirm`. (#324)
 - **Auto-rule proposals can no longer silently mass-mislabel the ledger.** A
   transaction description that normalizes to a 1–2 character token (e.g. "TO",
   from a truncated "TRANSFER TO ...") previously became a `contains` rule —

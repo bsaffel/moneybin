@@ -469,3 +469,36 @@ class TestTabularConfirmationFlow:
             )
 
         assert result.import_id is not None
+
+    def test_confirmed_credit_card_format_replays_without_confirmation(
+        self, db: Database
+    ) -> None:
+        """A human-confirmed format is trusted on each later statement."""
+        from moneybin.services.import_service import ImportService
+
+        inverted = _make_mapping_result(
+            score=0.95,
+            confidence="high",
+            sign_convention="negative_is_income",
+            sign_needs_confirmation=True,
+        )
+        service = ImportService(db)
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=inverted,
+        ):
+            first = service.import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+            )
+
+        replay = service.import_file(
+            _STANDARD_CSV,
+            account_name="test",
+            refresh=False,
+        )
+
+        assert first.import_id is not None
+        assert replay.import_id is not None

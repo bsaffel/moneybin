@@ -224,6 +224,22 @@ def test_apply_inverted_recipe_requires_human_confirmation(
     assert loaded is not None and loaded[0] == 0
 
 
+def test_apply_inverted_recipe_loads_after_human_confirmation(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """Only the explicit human-confirmed service path may load an inversion."""
+    recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
+
+    result = ImportService(db).apply_pdf_bridge_response(
+        _pdf_path(tmp_path),
+        _bridge_response(recipe=recipe),
+        confirm=True,
+    )
+
+    assert result.outcome == "applied"
+    assert result.rows_loaded == 2
+
+
 def test_apply_writes_revertable_import_log(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:

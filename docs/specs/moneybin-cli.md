@@ -126,6 +126,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- confirm <file>             -- Terminal step of the propose→review→confirm workflow
 |   |     --accept                   Accept the detected mapping as-is
 |   |     [--mapping field=column]   Partial-merge override (repeatable)
+|   |     [--bridge-response FILE --confirm]  Apply an agent PDF recipe from JSON after explicit human sign approval
 |   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
 |   |     [--account-name NAME]      Optional; omitting all account identifiers elicits account_confirmation (resolve via --account-binding/--account-name/--account-id)
 |   |     [--account-id ID]          Explicit account ID bypass

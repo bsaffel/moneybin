@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         ConfirmationRequired,
         SignConventionProposal,
     )
+    from moneybin.services.import_service import ImportResult
 
 
 class _FormatTypeFilter(StrEnum):
@@ -847,6 +848,16 @@ def import_confirm_command(
         "--mapping",
         help="Partial-merge override (repeatable): --mapping field=column.",
     ),
+    bridge_response: Path | None = typer.Option(
+        None,
+        "--bridge-response",
+        help="JSON file containing a PDF bridge {recipe, rows} response.",
+    ),
+    confirm: bool = typer.Option(
+        False,
+        "--confirm",
+        help="Confirm a PDF bridge recipe's ledger-wide sign inversion.",
+    ),
     account_id: str | None = typer.Option(
         None,
         "--account-id",
@@ -897,6 +908,7 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/statement.csv --mapping date=Date --mapping amount=Amount
         moneybin import confirm ~/Downloads/statement.csv --accept --output json
         moneybin import confirm ~/Downloads/statement.csv --accept --account-name "Chase Checking"
+        moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
@@ -904,7 +916,31 @@ def import_confirm_command(
     from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
-    if not accept and not mapping:
+    if bridge_response is not None:
+        if accept or mapping:
+            raise typer.BadParameter(
+                "--bridge-response cannot be combined with --accept or --mapping.",
+                param_hint="'--bridge-response'",
+            )
+        if account_name or account_binding or account_meta:
+            raise typer.BadParameter(
+                "--bridge-response supports --account-id only; PDF rows do not use "
+                "--account-name, --account-binding, or --account-meta.",
+                param_hint="'--bridge-response'",
+            )
+        if not confirm:
+            raise typer.BadParameter(
+                "--bridge-response requires --confirm because its recipe may invert "
+                "every amount in the statement.",
+                param_hint="'--confirm'",
+            )
+    elif confirm:
+        raise typer.BadParameter(
+            "--confirm is only valid with --bridge-response; use --accept for a "
+            "tabular mapping.",
+            param_hint="'--confirm'",
+        )
+    elif not accept and not mapping:
         raise typer.BadParameter(
             "Pass --accept to ratify the proposed mapping, or at least one "
             "--mapping field=column to override specific fields.",
@@ -914,6 +950,27 @@ def import_confirm_command(
     if not file_path.exists():
         logger.error(f"❌ File not found: {file_path}")
         raise typer.Exit(1)
+
+    bridge_response_data: dict[str, Any] | None = None
+    if bridge_response is not None:
+        try:
+            parsed_response = json.loads(bridge_response.read_text(encoding="utf-8"))
+        except OSError as e:
+            raise typer.BadParameter(
+                f"Could not read bridge response: {e}",
+                param_hint="'--bridge-response'",
+            ) from e
+        except json.JSONDecodeError as e:
+            raise typer.BadParameter(
+                f"Bridge response must be valid JSON: {e.msg}",
+                param_hint="'--bridge-response'",
+            ) from e
+        if not isinstance(parsed_response, dict):
+            raise typer.BadParameter(
+                "Bridge response JSON must be an object with recipe and rows keys.",
+                param_hint="'--bridge-response'",
+            )
+        bridge_response_data = parsed_response
 
     parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
     parsed_bindings = (
@@ -930,20 +987,30 @@ def import_confirm_command(
     try:
         with handle_cli_errors():
             with get_database(read_only=False) as db:
-                result = ImportService(
-                    db
-                ).import_file(
-                    file_path=file_path,
-                    confirm=accept,
-                    overrides=parsed_mapping,
-                    account_id=account_id,
-                    account_name=account_name,
-                    account_bindings=parsed_bindings,
-                    account_metadata=parsed_metadata,
-                    save_format=save_format,
-                    actor_kind="human",
-                    refresh=False,  # caller can run 'moneybin transform apply' separately
-                )
+                service = ImportService(db)
+                if bridge_response_data is not None:
+                    bridge_result = service.apply_pdf_bridge_response(
+                        file_path,
+                        bridge_response_data,
+                        save_format=save_format,
+                        account_id=account_id,
+                        confirm=True,
+                    )
+                    result = None
+                else:
+                    result = service.import_file(
+                        file_path=file_path,
+                        confirm=accept,
+                        overrides=parsed_mapping,
+                        account_id=account_id,
+                        account_name=account_name,
+                        account_bindings=parsed_bindings,
+                        account_metadata=parsed_metadata,
+                        save_format=save_format,
+                        actor_kind="human",
+                        refresh=False,  # caller can run 'moneybin transform apply' separately
+                    )
+                    bridge_result = None
     except ImportConfirmationRequiredError as e:
         # The confirm attempt itself can re-surface ConfirmationRequired —
         # e.g. an override that names an unknown source column, or a
@@ -1014,6 +1081,52 @@ def import_confirm_command(
                 f"{file_path}' and re-run with a corrected --mapping."
             )
         raise typer.Exit(1) from e
+
+    if bridge_result is not None:
+        if bridge_result.outcome == "invalid":
+            data = {
+                "status": "invalid",
+                "reject_reason": bridge_result.reject_reason,
+                "expected_row_count": bridge_result.expected_row_count,
+                "actual_row_count": bridge_result.actual_row_count,
+                "rows_diverged": bridge_result.rows_diverged,
+            }
+            envelope = build_envelope(data=data, sensitivity="medium", actions=[])
+            render_or_json(envelope, output, cli_actor="import_confirm_command")
+            if output != OutputFormat.JSON:
+                logger.error(
+                    "❌ PDF bridge response did not reconcile; nothing was imported."
+                )
+            raise typer.Exit(1)
+
+        from moneybin.services.inbox_service import InboxService  # noqa: PLC0415
+
+        InboxService.for_active_profile_no_db().archive_confirmed_file(file_path)
+        data = {
+            "status": "applied",
+            "import_id": bridge_result.import_id,
+            "rows_loaded": bridge_result.rows_loaded,
+            "format_name": bridge_result.format_name,
+            "expected_row_count": bridge_result.expected_row_count,
+            "actual_row_count": bridge_result.actual_row_count,
+            "rows_diverged": bridge_result.rows_diverged,
+        }
+        actions = [
+            f"Use 'moneybin import revert {bridge_result.import_id}' to undo this import.",
+            "Run 'moneybin transform apply' to rebuild derived tables.",
+            "Run 'moneybin import status' to confirm imported counts.",
+        ]
+        envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
+        render_or_json(envelope, output, cli_actor="import_confirm_command")
+        if not quiet and output != OutputFormat.JSON:
+            logger.info(
+                f"✅ Imported {file_path.name}: {bridge_result.rows_loaded} rows "
+                f"(import_id: {bridge_result.import_id})"
+            )
+            logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
+        return
+
+    result = cast("ImportResult", result)
 
     # Confirmed out of the inbox's pending/ bucket → archive to processed/ and
     # drop the .pending.yml sidecar (no-op for a path that never entered the

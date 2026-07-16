@@ -1338,7 +1338,11 @@ class ImportService:
             )
             format_source = "detected"
 
-            if mapping_result.sign_needs_confirmation and not sign:
+            if (
+                mapping_result.sign_needs_confirmation
+                and not sign
+                and resolved.sign_convention != "negative_is_income"
+            ):
                 logger.warning(
                     "⚠️  Sign convention is ambiguous (all amounts appear positive). "
                     f"Proceeding with '{resolved.sign_convention}' — "
@@ -1396,6 +1400,7 @@ class ImportService:
             sign=sign,
             confirm=confirm,
             actor_kind=actor_kind,
+            is_first_contact=matched_format is None,
             evidence=(
                 f"saved format {matched_format.name!r} uses negative_is_income"
                 if matched_format
@@ -2030,6 +2035,7 @@ class ImportService:
         *,
         save_format: bool = True,
         account_id: str | None = None,
+        confirm: bool = False,
     ) -> BridgeApplyResult:
         """Apply a driving agent's bridge response: validate, reconcile, load.
 
@@ -2069,6 +2075,7 @@ class ImportService:
             account_id: Pin the rows to an existing ``dim_accounts`` row when
                 the statement carries no account anchor (mirrors the tabular
                 and deterministic-PDF ``account_id`` semantics).
+            confirm: Human-only ratification of an inferred sign inversion.
         """
         from moneybin.extractors.pdf.bridge import (
             BridgeResponseError,
@@ -2133,9 +2140,7 @@ class ImportService:
         # The bridge response is agent-authored, not a human ratification. A
         # recipe that inverts every amount therefore follows the same gate as
         # deterministic PDFs before it can persist or load any rows.
-        decision = self._gate_pdf_sign_convention(
-            decision, sign=None, confirm=False, force_confirmation=True
-        )
+        decision = self._gate_pdf_sign_convention(decision, sign=None, confirm=confirm)
 
         # 4. Load + persist via the shared transactions path (rung="bridge").
         #    begin_import only here: the invalid path above writes nothing, so
@@ -2204,7 +2209,6 @@ class ImportService:
         *,
         sign: str | None,
         confirm: bool,
-        force_confirmation: bool = False,
     ) -> "RouteDecision":
         """Ratify, override, or gate an auto-derived sign inversion.
 
@@ -2218,11 +2222,9 @@ class ImportService:
         A REPLAY (`matched_format_name` set) was confirmed once already and loads
         without asking again — the confirm is once per format, not per statement.
 
-        Install this only downstream of ``route_pdf_import``. ``route_forced_recipe``
-        (the bridge apply) also reports ``matched_format_name is None``, but a
-        caller who supplied ``bridge_response={'recipe': ..., 'rows': [...]}`` has
-        already ratified that recipe's sign convention — re-gating it would ask
-        twice, with no card evidence to show the second time.
+        ``route_forced_recipe`` (the bridge apply) also reports
+        ``matched_format_name is None``. Its recipe is agent-authored, not a
+        human ratification, so it deliberately follows this first-contact gate.
 
         The gate deliberately does NOT route through ``resolve_or_confirm``: that
         seam lets an agent self-accept at ``high``, and a silently agent-accepted
@@ -2296,9 +2298,7 @@ class ImportService:
             )
 
         is_auto_derived = decision.matched_format_name is None
-        if recipe.sign_convention != "negative_is_income" or (
-            not is_auto_derived and not force_confirmation
-        ):
+        if recipe.sign_convention != "negative_is_income" or not is_auto_derived:
             return decision
 
         if confirm:
@@ -2345,12 +2345,13 @@ class ImportService:
         sign: str | None,
         confirm: bool,
         actor_kind: "ActorKind",
+        is_first_contact: bool,
         evidence: str,
     ) -> None:
         """Require a human to ratify an inferred tabular ledger inversion."""
         from moneybin.metrics.registry import TABULAR_SIGN_GATE_TOTAL
 
-        if detected_sign != "negative_is_income":
+        if detected_sign != "negative_is_income" or not is_first_contact:
             return
         if sign is not None:
             TABULAR_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()

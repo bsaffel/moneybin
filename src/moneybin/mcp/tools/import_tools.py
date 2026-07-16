@@ -12,10 +12,11 @@ Tools:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastmcp import FastMCP
 
@@ -132,7 +133,7 @@ def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
 
 
 def _sign_confirm_actions(file_path: str, error_message: str) -> list[str]:
-    """The agent-facing hints for a PDF sign-convention confirmation_required.
+    """The agent-facing hints for a sign-convention confirmation_required.
 
     Ratifying a card statement inverts every amount, and a wrong flip corrupts the
     ledger on this import and on every future replay of the format — so the agent
@@ -788,6 +789,7 @@ def _import_confirm_bridge(
     *,
     save_format: bool,
     account_id: str | None,
+    confirm: bool = False,
 ) -> ResponseEnvelope[ImportConfirmPayload]:
     """Apply a PDF bridge response via ImportService.apply_pdf_bridge_response.
 
@@ -811,6 +813,7 @@ def _import_confirm_bridge(
                 bridge_response,
                 save_format=save_format,
                 account_id=account_id,
+                confirm=confirm,
             )
     except BridgeResponseError as e:
         # Only a bad response shape / out-of-bounds recipe is bridge_response_
@@ -886,8 +889,22 @@ def _import_confirm_bridge(
     )
 
 
+def _bridge_sign_confirmation_message(payload: dict[str, Any]) -> str:
+    """Describe the exact ledger-wide change a human must ratify."""
+    evidence = ", ".join(str(item) for item in payload["sign_evidence"])
+    sample_rows = payload["sign_sample_rows"][:3]
+    return (
+        "This PDF bridge recipe identifies the statement as a credit card and "
+        "will reverse every amount: charges become negative expenses and payments "
+        "become positive income.\n\n"
+        f"Evidence from the statement: {evidence}.\n"
+        f"Sample rows (printed amount → MoneyBin amount): {sample_rows}\n\n"
+        "Approve this sign inversion?"
+    )
+
+
 @mcp_tool(read_only=False, idempotent=False)
-def import_confirm(
+async def import_confirm(
     file_path: str,
     *,
     accept: bool = False,
@@ -916,8 +933,10 @@ def import_confirm(
       document, reconciles the re-executed rows against the statement balances
       (the authority — your returned rows are verified against it, and a row-
       count divergence is reported back), persists the recipe, and loads the
-      transactions. A response that fails reconciliation is rejected
-      (``status='invalid'``) and nothing loads.
+      transactions. A recipe that would invert every amount pauses for an MCP
+      human-confirmation prompt; an agent cannot approve that inversion. A
+      response that fails reconciliation is rejected (``status='invalid'``)
+      and nothing loads.
 
     Single-account tabular files (CSVs without an embedded account identifier)
     require ``account_id`` or ``account_name``. PDF rows resolve the account
@@ -940,7 +959,8 @@ def import_confirm(
         accept: Accept the proposed mapping as-is (no overrides). Tabular only.
         mapping: Partial field→column override dict. Tabular only.
         bridge_response: PDF bridge reply ``{'recipe': ..., 'rows': [...]}``.
-            Mutually exclusive with ``accept``/``mapping``.
+            Mutually exclusive with ``accept``/``mapping``. An inverted recipe
+            requires explicit human confirmation through MCP elicitation.
         save_format: Auto-save the confirmed mapping/recipe as a named format
             for future imports. Defaults to True.
         account_id: Existing account id to associate single-account rows with.
@@ -988,11 +1008,40 @@ def import_confirm(
                 "rows to an existing account when there is no anchor.",
                 code="bridge_account_name_unsupported",
             )
-        return _import_confirm_bridge(
+        first_attempt = await asyncio.to_thread(
+            _import_confirm_bridge,
             str(path),
             bridge_response,
             save_format=save_format,
             account_id=account_id,
+        )
+        payload = cast(dict[str, Any], first_attempt.data)
+        if not (
+            payload.get("status") == "confirmation_required"
+            and payload.get("reason") == "sign_convention"
+        ):
+            return first_attempt
+
+        from moneybin.mcp.elicitation import confirm_or_raise
+
+        quoted_path = shlex.quote(str(path))
+        await confirm_or_raise(
+            _bridge_sign_confirmation_message(payload),
+            subject="This PDF bridge sign inversion",
+            unchanged="the PDF was not imported",
+            cli_equivalent=(
+                f"moneybin import confirm {quoted_path} "
+                "--bridge-response <bridge-response.json> --confirm"
+            ),
+            details={"file_path": str(path)},
+        )
+        return await asyncio.to_thread(
+            _import_confirm_bridge,
+            str(path),
+            bridge_response,
+            save_format=save_format,
+            account_id=account_id,
+            confirm=True,
         )
 
     if path.suffix.lower() == ".pdf":
@@ -1003,12 +1052,13 @@ def import_confirm(
         # re-extract the document and, for a bridge PDF, write a spurious egress
         # audit row):
         #   * Bridge (native-text extraction) — re-call with bridge_response=.
-        #   * Sign convention (credit-card inversion) — MCP cannot ratify a sign
-        #     flip in place yet (elicitation-based confirm is planned); the human
-        #     resolves it in a terminal, where inverting every amount is a
-        #     deliberate, visible act. accept=True must never silently invert the
-        #     ledger, and the tabular catch below only serializes ProposedMapping,
-        #     so running the tabular path here would loop the agent instead.
+        #   * Sign convention (credit-card inversion) — a deterministic PDF has
+        #     no bridge recipe to re-run, so the human resolves it in a terminal,
+        #     where inverting every amount is a deliberate, visible act. Bridge
+        #     recipes use the MCP elicitation path above. accept=True must never
+        #     silently invert the ledger, and the tabular catch below only
+        #     serializes ProposedMapping, so running the tabular path here would
+        #     loop the agent instead.
         quoted = shlex.quote(str(path))
         raise UserError(
             "A PDF confirmation cannot be ratified with accept=/mapping= over MCP. "
@@ -1016,8 +1066,9 @@ def import_confirm(
             "extraction), call import_confirm(file_path=..., bridge_response="
             "{'recipe': ..., 'rows': [...]}). If it returned a sign-convention "
             "confirmation (a credit-card statement — confirming inverts every "
-            "amount's sign), MCP cannot ratify the inversion in place yet; resolve "
-            f"it in a terminal: `moneybin import files {quoted} --confirm` if it IS "
+            "amount's sign), MCP cannot ratify the deterministic PDF inversion "
+            "in place; resolve it in a terminal: "
+            f"`moneybin import files {quoted} --confirm` if it IS "
             f"a credit card, or `moneybin import files {quoted} --sign "
             "negative_is_expense` if it is not.",
             code="confirm_channel_conflict",
@@ -1191,8 +1242,9 @@ def register_import_tools(mcp: FastMCP) -> None:
         "PDF bridge: pass bridge_response={'recipe': ..., 'rows': [...]} — "
         "MoneyBin re-runs your recipe against the document, reconciles, and "
         "loads, writing raw.tabular_transactions + app.pdf_formats (when "
-        "save_format=True); a response that fails reconciliation is rejected and "
-        "nothing loads. Data load is reversible via import_revert; format save "
+        "save_format=True); an inverted bridge recipe elicits explicit human "
+        "approval before loading. A response that fails reconciliation is rejected "
+        "and nothing loads. Data load is reversible via import_revert; format save "
         "can be undone via system_audit_undo. "
         "Amounts use the accounting convention: negative=expense, "
         "positive=income; transfers exempt.",

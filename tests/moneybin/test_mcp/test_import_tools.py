@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pytest import MonkeyPatch
@@ -1270,10 +1270,58 @@ class TestImportConfirmBridge:
         assert result.error is not None
         assert result.error.code == "bridge_response_invalid"
 
-    async def test_inverted_bridge_recipe_returns_sign_confirmation(
+    async def test_inverted_bridge_recipe_requires_human_elicitation(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        """The MCP bridge path surfaces the human-only recovery, never a load."""
+        """A human approval, not the agent, is required before the bridge loads."""
+        from moneybin.services.import_service import BridgeApplyResult
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.side_effect = [
+            _sign_error(),
+            BridgeApplyResult(
+                outcome="applied",
+                import_id="imp123",
+                rows_loaded=2,
+                format_name="chase_abc123",
+                expected_row_count=2,
+                actual_row_count=2,
+                rows_diverged=False,
+            ),
+        ]
+        confirm = AsyncMock()
+        mock_inbox_cls = MagicMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+            patch("moneybin.services.inbox_service.InboxService", mock_inbox_cls),
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "applied"
+        confirm.assert_awaited_once()
+        assert confirm.await_args is not None
+        prompt = confirm.await_args.args[0]
+        assert "minimum payment" in prompt
+        assert "COFFEE SHOP" in prompt
+        assert (
+            mock_service.apply_pdf_bridge_response.call_args_list[1].kwargs["confirm"]
+            is True
+        )
+
+    async def test_inverted_bridge_recipe_cannot_load_without_elicitation(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An unsupported MCP client leaves the PDF unchanged."""
         pdf = self._patch(monkeypatch, tmp_path)
         mock_service = MagicMock()
         mock_service.apply_pdf_bridge_response.side_effect = _sign_error()
@@ -1286,15 +1334,9 @@ class TestImportConfirmBridge:
                 bridge_response={"recipe": {}, "rows": []},
             )
 
-        data = result.data
-        assert isinstance(data, dict)
-        assert data["status"] == "confirmation_required"
-        assert data["reason"] == "sign_convention"
-        assert data["sign_convention"] == "negative_is_income"
-        actions = " ".join(result.actions)
-        assert str(pdf) in actions
-        assert "<path>" not in actions
-        assert "--confirm" in actions
+        assert result.error is not None
+        assert result.error.code == "mutation_confirmation_required"
+        assert mock_service.apply_pdf_bridge_response.call_count == 1
 
     async def test_non_parse_value_error_not_labeled_bridge_invalid(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

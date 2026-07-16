@@ -30,7 +30,7 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
     SignConventionProposal,
 )
-from moneybin.services.import_service import ImportResult
+from moneybin.services.import_service import BridgeApplyResult, ImportResult
 
 runner = CliRunner()
 
@@ -584,6 +584,66 @@ class TestImportConfirmCommand:
         assert result.exit_code == 0
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
+
+    def test_bridge_response_requires_explicit_confirm(self, tmp_path: Path) -> None:
+        """A JSON bridge recipe cannot load until the terminal user confirms it."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            ["confirm", str(pdf_file), "--bridge-response", str(response_file)],
+        )
+
+        assert result.exit_code != 0
+        assert "requires --confirm" in result.output
+
+    def test_confirmed_bridge_response_loads(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The CLI sends an explicit human confirmation to the shared service."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        apply = mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            return_value=BridgeApplyResult(
+                outcome="applied",
+                import_id="bridge123",
+                rows_loaded=2,
+                format_name="chase_abc123",
+                expected_row_count=2,
+                actual_row_count=2,
+                rows_diverged=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert apply.call_args.kwargs["confirm"] is True
+        assert apply.call_args.args[1] == {
+            "recipe": {},
+            "rows": [],
+        }
+        assert json.loads(result.output)["data"]["status"] == "applied"
 
     def test_requires_accept_or_mapping(
         self,
