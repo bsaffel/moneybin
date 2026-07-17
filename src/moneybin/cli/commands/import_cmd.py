@@ -546,14 +546,13 @@ def import_files_command(
                     )
                 if outcome.reason == "account_confirmation":
                     # The layout is settled; only the account identity needs
-                    # ratifying. The --mapping/--confirm hints below are irrelevant
-                    # here (and following --accept without a binding loops back to
-                    # this gate), so surface ONLY the binding + preview hints.
+                    # ratifying. Replay the current confirmation inputs because
+                    # retries persist no partial state, and add the missing binding.
+                    # The generic alternate mapping hints below remain irrelevant.
                     confirm_actions.append(
-                        f"Run 'moneybin import confirm {file_path_str} --accept "
-                        "--account-binding <source_key>=<account_id|new>' to bind each "
-                        "proposed account (adopt an existing id, or 'new' to keep "
-                        "distinct)."
+                        f"Run `{_account_recovery_command(file_path_str, outcome, mapping=overrides, confirm_sign=confirm_sign)}` "
+                        "to bind each proposed account (adopt an existing id, or "
+                        "'new' to keep distinct)."
                     )
                 else:
                     # resolve_or_confirm refuses Accept on low-tier proposals (the
@@ -597,7 +596,12 @@ def import_files_command(
             # Interactive human path: render a human-readable summary and exit
             # 1 so pipelines halt cleanly (unlike the non-TTY path which exits
             # 0 so scripted consumers can parse the envelope).
-            _render_confirmation_prompt(outcome, file_path_str, mapping=overrides)
+            _render_confirmation_prompt(
+                outcome,
+                file_path_str,
+                mapping=overrides,
+                confirm_sign=confirm_sign,
+            )
             raise typer.Exit(1) from _exc
 
         if not isinstance(_exc, (ValueError, PermissionError)):
@@ -703,11 +707,51 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
             )
 
 
+def _tabular_recovery_args(
+    *,
+    mapping: dict[str, str] | None,
+    account_bindings: dict[str, str] | None,
+) -> list[str]:
+    """Serialize mapping and account bindings for a repeatable CLI recovery."""
+    args: list[str] = []
+    for field, source in (mapping or {}).items():
+        args.extend(("--mapping", f"{field}={source}"))
+    for source_key, account_id in (account_bindings or {}).items():
+        args.extend(("--account-binding", f"{source_key}={account_id}"))
+    return args
+
+
+def _account_recovery_command(
+    file_path_str: str,
+    outcome: ConfirmationRequired,
+    *,
+    mapping: dict[str, str] | None = None,
+    account_bindings: dict[str, str] | None = None,
+    confirm_sign: bool = False,
+) -> str:
+    """Reproduce a tabular confirmation while adding unresolved account bindings."""
+    import shlex  # noqa: PLC0415
+
+    bindings = dict(account_bindings or {})
+    for proposal in outcome.account_proposals:
+        source_key = str(proposal["source_account_key"])
+        bindings.setdefault(source_key, "<account_id|new>")
+    if not bindings:
+        bindings["<source_key>"] = "<account_id|new>"
+
+    parts = ["moneybin", "import", "confirm", file_path_str, "--accept"]
+    if confirm_sign:
+        parts.append("--confirm-sign")
+    parts.extend(_tabular_recovery_args(mapping=mapping, account_bindings=bindings))
+    return shlex.join(parts)
+
+
 def _sign_recovery_commands(
     file_path_str: str,
     *,
     channel: str,
     mapping: dict[str, str] | None = None,
+    account_bindings: dict[str, str] | None = None,
 ) -> list[str]:
     """The two honest recoveries for a card sign-convention confirmation.
 
@@ -721,15 +765,22 @@ def _sign_recovery_commands(
     import shlex  # noqa: PLC0415
 
     quoted = shlex.quote(file_path_str)
-    mapping_args = " ".join(
-        f"--mapping {shlex.quote(f'{field}={source}')}"
-        for field, source in (mapping or {}).items()
-    )
-    mapping_suffix = f" {mapping_args}" if mapping_args else ""
+    tabular_parts = [
+        "moneybin",
+        "import",
+        "confirm",
+        file_path_str,
+        "--accept",
+        "--confirm-sign",
+        *_tabular_recovery_args(
+            mapping=mapping,
+            account_bindings=account_bindings,
+        ),
+    ]
     return [
         (
-            f"Confirm the tabular mapping, then approve the sign: moneybin import "
-            f"confirm {quoted} --accept --confirm-sign{mapping_suffix}"
+            "Confirm the tabular mapping, then approve the sign: "
+            f"{shlex.join(tabular_parts)}"
             if channel == "tabular"
             else f"If it IS a credit card: moneybin import files {quoted} --confirm "
             "(records charges as expenses, payments as credits)."
@@ -745,6 +796,7 @@ def _render_sign_convention_prompt(
     *,
     channel: str,
     mapping: dict[str, str] | None = None,
+    account_bindings: dict[str, str] | None = None,
 ) -> None:
     """Print the interactive prompt for a sign-convention confirmation.
 
@@ -772,7 +824,10 @@ def _render_sign_convention_prompt(
             typer.echo(f"     {label}{printed} → {recorded}")
     typer.echo("\n   To proceed:")
     for line in _sign_recovery_commands(
-        file_path_str, channel=channel, mapping=mapping
+        file_path_str,
+        channel=channel,
+        mapping=mapping,
+        account_bindings=account_bindings,
     ):
         typer.echo(f"     {line}")
     typer.echo()
@@ -783,6 +838,8 @@ def _render_confirmation_prompt(
     file_path_str: str,
     *,
     mapping: dict[str, str] | None = None,
+    account_bindings: dict[str, str] | None = None,
+    confirm_sign: bool = False,
 ) -> None:
     """Print a human-readable confirmation summary for an unknown-layout encounter.
 
@@ -809,6 +866,7 @@ def _render_confirmation_prompt(
             file_path_str,
             channel=outcome.channel,
             mapping=mapping,
+            account_bindings=account_bindings,
         )
         return
 
@@ -855,10 +913,16 @@ def _render_confirmation_prompt(
     typer.echo("\n   To proceed:")
     # Suggested commands shlex-quoted so paths with spaces survive copy-paste.
     if outcome.reason == "account_confirmation":
-        # --mapping/--confirm are irrelevant once the layout is settled.
+        # Replay prior confirmation inputs because retries persist no partial state.
         typer.echo(
-            f"     moneybin import confirm {quoted_path} --accept "
-            "--account-binding <source_key>=<account_id|new>"
+            "     "
+            + _account_recovery_command(
+                file_path_str,
+                outcome,
+                mapping=mapping,
+                account_bindings=account_bindings,
+                confirm_sign=confirm_sign,
+            )
         )
     else:
         # Accept hint is gated on tier — resolve_or_confirm refuses Accept at
@@ -1084,17 +1148,18 @@ def import_confirm_command(
                     str(file_path),
                     channel=outcome.channel,
                     mapping=parsed_mapping,
+                    account_bindings=parsed_bindings,
                 )
             )
         elif outcome.reason == "account_confirmation":
             # The layout is settled; only the account identity needs ratifying.
-            # The --mapping/--accept hints are irrelevant here (and --accept
-            # without a binding loops back to this gate), so surface only the
-            # binding + preview hints.
+            # Replay the current confirmation inputs because retries persist no
+            # partial state, and add the missing binding. Generic alternate
+            # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run 'moneybin import confirm {file_path} --accept "
-                "--account-binding <source_key>=<account_id|new>' to bind each "
-                "proposed account (adopt an existing id, or 'new' to keep distinct)."
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, mapping=parsed_mapping, account_bindings=parsed_bindings, confirm_sign=confirm_sign)}` "
+                "to bind each proposed account (adopt an existing id, or 'new' "
+                "to keep distinct)."
             )
         else:
             confirm_actions.append(
@@ -1125,15 +1190,28 @@ def import_confirm_command(
             return
         # Interactive path: human-readable summary + exit code 1.
         if outcome.reason == "sign_convention":
-            _render_confirmation_prompt(outcome, str(file_path), mapping=parsed_mapping)
+            _render_confirmation_prompt(
+                outcome,
+                str(file_path),
+                mapping=parsed_mapping,
+                account_bindings=parsed_bindings,
+                confirm_sign=confirm_sign,
+            )
         elif outcome.reason == "account_confirmation":
-            # The layout is settled; show the bindings to supply, not a --mapping
-            # hint (which would mislead — the mapping is fine).
+            # The layout is settled; replay the current inputs and add the
+            # bindings still required to finish this independent call.
             logger.error("❌ Account identity must be confirmed before import.")
             _echo_account_proposals(outcome, err=True)
             logger.info(
-                f"💡 Re-run 'moneybin import confirm {file_path} --accept "
-                "--account-binding <source_key>=<account_id|new>'."
+                "💡 Re-run `"
+                + _account_recovery_command(
+                    str(file_path),
+                    outcome,
+                    mapping=parsed_mapping,
+                    account_bindings=parsed_bindings,
+                    confirm_sign=confirm_sign,
+                )
+                + "`."
             )
         else:
             msg = f"❌ Confirmation failed: {outcome.reason}" + (

@@ -388,6 +388,10 @@ class TestImportFilesConfirmationRequired:
 class TestImportConfirmTool:
     """import_confirm tool: accept, override, validation, actor_kind."""
 
+    def test_allows_human_confirmation_timeout(self) -> None:
+        """Human sign elicitation gets the established 180-second decision window."""
+        assert import_confirm._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+
     async def test_requires_accept_or_mapping(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
@@ -503,7 +507,7 @@ class TestImportConfirmTool:
     async def test_tabular_sign_retry_returns_account_confirmation_envelope(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        """An account gate after sign approval remains a structured MCP response."""
+        """Account recovery preserves inputs and discloses repeated sign elicitation."""
         from moneybin.services.import_confirmation import SignConventionProposal
 
         csv_file = tmp_path / "statements" / "card.csv"
@@ -545,12 +549,25 @@ class TestImportConfirmTool:
                 side_effect=ValueError("preview unavailable"),
             ),
         ):
-            result = await import_confirm(file_path=str(csv_file), accept=True)
+            result = await import_confirm(
+                file_path=str(csv_file),
+                accept=True,
+                mapping={"description": "Memo"},
+                account_bindings={"settled": "acct-123"},
+            )
 
         data = result.data
         assert isinstance(data, dict)
         assert data["status"] == "confirmation_required"
         assert data["reason"] == "account_confirmation"
+        actions = " ".join(result.actions or [])
+        assert "accept=True" in actions
+        assert "mapping={'description': 'Memo'}" in actions
+        assert "'settled': 'acct-123'" in actions
+        assert "'card-abc': '<account_id|new>'" in actions
+        assert "not persisted across MCP calls" in actions
+        assert "ask the human to confirm the sign inversion again" in actions
+        assert "human_sign_confirmation" not in actions
 
     async def test_mapping_override_passes_overrides_to_service(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

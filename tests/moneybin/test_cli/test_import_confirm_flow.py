@@ -133,8 +133,8 @@ def _make_sign_confirmation_error() -> ImportConfirmationRequiredError:
     return ImportConfirmationRequiredError(outcome)
 
 
-def test_tabular_sign_recovery_preserves_mapping_overrides() -> None:
-    """The sign-confirmation retry repeats the mapping the user already chose."""
+def test_tabular_sign_recovery_preserves_confirmation_inputs() -> None:
+    """The sign-confirmation retry repeats mapping and account choices."""
     from moneybin.cli.commands.import_cmd import (
         _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
     )
@@ -143,9 +143,12 @@ def test_tabular_sign_recovery_preserves_mapping_overrides() -> None:
         "card.csv",
         channel="tabular",
         mapping={"description": "Memo"},
+        account_bindings={"settled": "acct-123"},
     )
 
+    assert "--accept --confirm-sign" in actions[0]
     assert "--mapping description=Memo" in actions[0]
+    assert "--account-binding settled=acct-123" in actions[0]
 
 
 class TestImportFilesConfirmFlow:
@@ -524,6 +527,26 @@ class TestImportFilesConfirmFlow:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs.get("actor_kind") == "human"
 
+    def test_confirm_sign_flag_is_forwarded_with_confirm(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`import files --confirm --confirm-sign` reaches the service unchanged."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--confirm", "--confirm-sign"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["confirm"] is True
+        assert call_kwargs["human_sign_confirmation"] is True
+
     def test_single_path_uses_import_file_not_batch(
         self,
         mock_db: MagicMock,
@@ -882,6 +905,57 @@ class TestImportConfirmCommand:
         assert any("--account-binding" in a for a in payload["actions"])
         # Mapping/accept hints gated out for account_confirmation.
         assert not any("--mapping" in a for a in payload["actions"])
+
+    def test_account_recovery_after_sign_preserves_confirmation_inputs(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A later account gate retains the sign, mapping, and binding choices."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("card-abc")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--confirm-sign",
+                "--mapping",
+                "description=Memo",
+                "--account-binding",
+                "settled=acct-123",
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        actions = " ".join(json.loads(result.output)["actions"])
+        assert "--accept" in actions
+        assert "--confirm-sign" in actions
+        assert "--mapping description=Memo" in actions
+        assert "--account-binding settled=acct-123" in actions
+        assert "--account-binding 'card-abc=<account_id|new>'" in actions
 
     def test_account_confirmation_tty_renders_proposals(
         self,

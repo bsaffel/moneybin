@@ -62,7 +62,14 @@ def _validate_file_path(file_path: str) -> Path:
     return resolved
 
 
-def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list[str]:
+def _confirmation_actions(
+    file_path: str,
+    outcome: ConfirmationRequired,
+    *,
+    mapping: dict[str, str] | None = None,
+    account_bindings: dict[str, str] | None = None,
+    sign_reconfirmation_required: bool = False,
+) -> list[str]:
     """Build the actions[] hints for a confirmation_required envelope.
 
     Omits the `accept=True` suggestion on `low`-tier proposals because
@@ -83,20 +90,30 @@ def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list
         actions.append(f"Validation failed: {outcome.error_message}")
     if outcome.reason == "account_confirmation":
         # The column mapping is settled; only the account identity is open.
-        # accept=True ratifies the mapping and account_bindings answers the
-        # account in one call — a bare accept (no binding) loops back to the
-        # account gate and a mapping override is irrelevant. Bind every proposal
-        # (the gate is all-or-nothing).
-        keys = [
-            str(p.get("source_account_key", "")) for p in outcome.account_proposals
-        ] or ["<source_key>"]
-        binding_map = ", ".join(f"'{k}': '<account_id|new>'" for k in keys)
+        # Re-supply the accepted mapping because independent calls persist no
+        # partial confirmation state, then answer every account proposal (the
+        # gate is all-or-nothing). A bare accept loops back to the account gate.
+        bindings = dict(account_bindings or {})
+        for proposal in outcome.account_proposals:
+            key = str(proposal.get("source_account_key", ""))
+            bindings.setdefault(key, "<account_id|new>")
+        if not bindings:
+            bindings["<source_key>"] = "<account_id|new>"
+        call_args = [f"file_path={file_path!r}", "accept=True"]
+        if mapping:
+            call_args.append(f"mapping={mapping!r}")
+        call_args.append(f"account_bindings={bindings!r}")
         actions.append(
-            f"Use import_confirm(file_path='{file_path}', accept=True, "
-            f"account_bindings={{{binding_map}}}) to ratify the mapping and bind "
-            "every account; source keys are in "
+            f"Use import_confirm({', '.join(call_args)}) to ratify the mapping "
+            "and bind every account; source keys are in "
             "data.account_proposals[].source_account_key."
         )
+        if sign_reconfirmation_required:
+            actions.append(
+                "The sign confirmation is not persisted across MCP calls, so "
+                "this next call will ask the human to confirm the sign inversion "
+                "again before importing."
+            )
         return actions
     if outcome.confidence.tier != "low":
         actions.append(
@@ -963,7 +980,12 @@ def _import_confirm_tabular(
         )
 
 
-@mcp_tool(read_only=False, idempotent=False)
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    # Human sign confirmation can take longer than the default MCP timeout.
+    timeout_seconds=180.0,
+)
 async def import_confirm(
     file_path: str,
     *,
@@ -1187,7 +1209,13 @@ async def import_confirm(
                         "status": "confirmation_required",
                         **confirmation_payload_dict(retry_error.outcome),
                     },
-                    actions=_confirmation_actions(str(path), retry_error.outcome),
+                    actions=_confirmation_actions(
+                        str(path),
+                        retry_error.outcome,
+                        mapping=mapping,
+                        account_bindings=account_bindings,
+                        sign_reconfirmation_required=True,
+                    ),
                 )
         else:
             # An override that names an unknown source column, or an Accept against
@@ -1201,7 +1229,12 @@ async def import_confirm(
                     "status": "confirmation_required",
                     **confirmation_payload_dict(e.outcome),
                 },
-                actions=_confirmation_actions(str(path), e.outcome),
+                actions=_confirmation_actions(
+                    str(path),
+                    e.outcome,
+                    mapping=mapping,
+                    account_bindings=account_bindings,
+                ),
             )
 
     actions: list[str] = [
