@@ -142,11 +142,9 @@ Numbered, testable. Tagged by phase.
    `core.fct_balances_daily`** (the model `reports.net_worth` actually aggregates) gain a
    `currency_code`; `core.fct_transactions` already carries it. `core.dim_accounts` also
    carries it today, but under the legacy name `iso_currency_code` — this phase renames it
-   to `currency_code` end-to-end (schema, `AccountService`, `account_settings_repo`,
-   privacy taxonomy, and the `accounts_set` MCP tool's parameter name; the CLI's
-   `--currency` flag is unaffected) per the resolved naming decision (§Key Decisions,
-   Decision 5). Where a grain genuinely cannot know its currency, it inherits the
-   account's `currency_code`, never a blind `'USD'`.
+   to `currency_code` end-to-end per the resolved naming decision and scope (§Key
+   Decisions, Decision 5). Where a grain genuinely cannot know its currency, it inherits
+   the account's `currency_code`, never a blind `'USD'`.
 4. **Home currency setting.** A profile-level `home_currency` (ISO 4217), **mutable**,
    defaulted by **locale auto-detection with explicit user confirmation** in the
    [first-run wizard](mcp-first-run-setup.md). Distinct from per-account currency. It is
@@ -392,36 +390,39 @@ realized FX gain/loss on the conversion pairs.
    `fct_transactions`** — a conversion is a relationship between two
    events, and reuses the investments cost-basis engine.
 5. **Canonical currency column name = `currency_code`** *(coherence decision — resolved
-   2026-07-17).* Three names existed when this spec was drafted: `currency_code`
-   (`fct_transactions`), `iso_currency_code` (`dim_accounts`), `currency` (investments
-   spec, then unbuilt). Investments shipped (PR #300) and adopted **`currency_code`**
-   directly (`investments-data-model.md` Requirement 15). Plaid Investments sync then
-   shipped too (PR #318 / moneybin-sync #29) and reinforced the same split three more
-   times: the broker wire contract (`SyncSecurity`, `SyncInvestmentTransaction`,
-   `SyncHolding`) deliberately keeps `iso_currency_code`/`unofficial_currency_code`
-   (mirroring Plaid's own field names, consistent with how every other passthrough field
-   is handled), while staging translates it and every `core.*` table —
-   `dim_securities`, `dim_holdings`, `fct_investment_transactions`, `fct_transactions` —
-   normalizes to `currency_code`. `core.dim_accounts` was the one remaining holdout in
-   `core` against a pattern now established four times over.
+   2026-07-17).* **Decision: rename `dim_accounts.iso_currency_code` → `currency_code`
+   end-to-end, as a direct rename with no deprecation shim.** Confirmed with Brandon
+   2026-07-17. Exact call sites and migration steps are M1K.1 implementation-plan detail
+   (see Requirement 3), not spec content — the scope in brief: the `app.account_settings`
+   schema + repo, `AccountService`, `core.dim_accounts`, the privacy taxonomy/payloads,
+   and the `accounts_set` MCP tool's parameter name. The CLI is already clean (`accounts
+   set --currency`, not `--iso-currency-code`) and is unaffected.
 
-   **Decision: rename `dim_accounts.iso_currency_code` → `currency_code`, as a direct
-   rename with no deprecation shim.** Confirmed with Brandon 2026-07-17. Scope is
-   narrower than the original ~35×/66× `src`-wide grep suggests — most of those hits are
-   the wire layer above, which correctly keeps the provider's name. The real
-   account-currency surface is ~24 call sites: `app.account_settings` (schema + repo),
-   `AccountService`, `core.dim_accounts`, the privacy taxonomy/payloads, and the
-   `accounts_set` MCP tool's parameter name. The CLI is already clean (`accounts set
-   --currency`, not `--iso-currency-code`) and needs no change.
+   Three names existed when this spec was drafted: `currency_code` (`fct_transactions`),
+   `iso_currency_code` (`dim_accounts`), `currency` (investments spec, then unbuilt).
+   Investments shipped (PR #300) and adopted **`currency_code`** directly
+   (`investments-data-model.md` Requirement 15). Plaid Investments sync then shipped too
+   (PR #318 / moneybin-sync #29) and reinforced the same split three more times: the
+   broker wire contract (`SyncSecurity`, `SyncInvestmentTransaction`, `SyncHolding`)
+   deliberately keeps `iso_currency_code`/`unofficial_currency_code` (mirroring Plaid's
+   own field names, consistent with how every other passthrough field is handled), while
+   staging translates it and every `core.*` table — `dim_securities`, `dim_holdings`,
+   `fct_investment_transactions`, `fct_transactions` — normalizes to `currency_code`.
+   `core.dim_accounts` was the one remaining holdout in `core` against a pattern now
+   established four times over. The raw `iso_currency_code` grep count across `src/` is
+   large (dozens) but mostly irrelevant to this decision — nearly all of it is the wire
+   layer above, which correctly keeps the provider's name; only the account-currency
+   surface listed above is actually in scope.
 
    The original text here assumed the MCP-parameter rename needed the
    ship-alongside-the-old-name-for-one-release protocol from `design-principles.md`. That
-   protocol is explicitly **post-launch only**; per that doc's own launch trigger (M3E
-   hosted launch, or the first tagged release adopted by a non-author user), MoneyBin is
+   protocol is explicitly **post-launch only**; per that doc's own launch trigger
+   (**M3H** hosted launch, or the first tagged release adopted by a non-author user —
+   `design-principles.md` itself currently misstates this as "M3E," a separate stale
+   milestone-code reference worth fixing there independently of this spec), MoneyBin is
    still pre-launch — no tag has been cut and no non-author user has adopted the MCP
    contract yet. So the rename is a direct, one-time change: no shim, no follow-up removal
-   PR. Implementation (migration + the ~24 call sites) is scoped to M1K.1, not this spec
-   pass — see Requirement 3.
+   PR. Implementation is scoped to M1K.1, not this spec pass — see Requirement 3.
 
 ## Out of Scope
 
