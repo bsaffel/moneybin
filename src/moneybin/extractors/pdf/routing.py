@@ -62,6 +62,7 @@ from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
 from moneybin.extractors.pdf.recipe import (
     FieldExtraction,
     Recipe,
+    YearlessDateError,
     execute_recipe,
     group_anchors,
 )
@@ -505,6 +506,32 @@ def _run_recipe_pipeline(
             ),
             confidence=0.0,
             reason="unsupported_number_format",
+            matched_format_name=matched_format_name,
+            fp=fp,
+            card_markers=card_markers,
+        )
+    except YearlessDateError:
+        # A year-less row couldn't be placed in time (no capturable period, or a
+        # date beyond posting drift). Fail the WHOLE extraction rather than let the
+        # executor silently drop the row — and route as transaction_table_underivable
+        # so it reaches the bridge, where an agent can supply the period anchors the
+        # deterministic path lacked (see YearlessDateError / bridge yearless support).
+        logger.warning(
+            "execute_recipe: year-less date row unresolvable — routing to bridge"
+        )
+        return RouteDecision(
+            outcome="seed",
+            recipe=recipe,
+            rows=[],
+            metadata=StatementMetadata(
+                account_id=None,
+                period_start=None,
+                period_end=None,
+                opening_balance=None,
+                closing_balance=None,
+            ),
+            confidence=0.0,
+            reason="transaction_table_underivable",
             matched_format_name=matched_format_name,
             fp=fp,
             card_markers=card_markers,

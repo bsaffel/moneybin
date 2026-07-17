@@ -348,26 +348,16 @@ def _detect_start_anchor(doc: PdfDocument, table: PdfTable) -> str:
         if cells == expected:
             return stripped
     # A shape-derived table has a synthesized (canonical) header that equals no
-    # real line. Anchor instead on the amount-naming column-header line
-    # ("... $ Amount") — far more specific than the bare "Date", which also
-    # appears in the preamble ("Payment Due Date: ..."). Scan UP from the first
-    # data row for the NEAREST such line: a card preamble routinely mentions
-    # "amount" (an "Amount Due" summary) above the header, and taking the first
-    # match anywhere in the document would anchor the region there, above the
-    # real transaction table.
+    # real line. Anchor on the wrapped header's amount line ("... $ Amount")
+    # instead — the very line _synthesize_tables_from_row_shape begins collection
+    # after, so the carved region and the derivation sample agree, and a preamble
+    # "Amount Due" summary (not directly above the rows) is not mistaken for it.
+    # Falls back to the bare first column name when no wrapped header is found.
     stripped_lines = [s for line in doc.text_lines if (s := line.strip())]
     cells_per_line = [_re.split(_ROW_SPLIT, s) for s in stripped_lines]
-    first_row_idx = next(
-        (i for i, cells in enumerate(cells_per_line) if _is_transaction_row(cells)),
-        None,
-    )
-    if first_row_idx is not None:
-        for i in range(first_row_idx - 1, -1, -1):
-            cells = cells_per_line[i]
-            if not _is_transaction_row(cells) and any(
-                _AMOUNT_COL_RE.search(c) for c in cells
-            ):
-                return stripped_lines[i]
+    header_idx = _shape_header_index(cells_per_line)
+    if header_idx is not None:
+        return stripped_lines[header_idx]
     return table.header[0]
 
 
@@ -498,27 +488,35 @@ def _is_transaction_row(cells: list[str]) -> bool:
     )
 
 
-def _modal_width(rows: list[list[str]]) -> int:
-    """Most common cell count among *rows*; ties resolve to the larger width."""
-    widths = [len(r) for r in rows]
-    return max(sorted(set(widths), reverse=True), key=widths.count)
-
-
-def _synthesize_header(width: int) -> list[str]:
-    """Canonical Date/Description(.../)/Amount header for a shape-derived table.
+def _synthesize_header(rows: list[list[str]]) -> list[str]:
+    """Canonical Date/…/Amount header for a shape-derived table, from its *rows*.
 
     The statement's own header wrapped or garbled beyond clean recovery, so name
     the columns canonically — the classifiers only need the first to read as a
-    date column and the last as an amount column. Middle columns get distinct
-    ``Description_n`` names so ``execute_recipe``'s per-field row dict keeps each
-    one; they all canonicalise to the single ``description`` key downstream, where
-    ``routing._canonicalize_rows`` JOINS them (in field order) rather than
-    dropping all but the last — so a row wider than three cells loses no
-    merchant/detail component.
+    date column and the last as an amount column. Middle columns:
+
+    - A column whose cells are ALL date-shaped is named "Posting Date" (only the
+      first such column) so it casts as a date and canonicalises to the structured
+      ``post_date`` field — a card layout's second date column — rather than being
+      folded into free-text description.
+    - Every other middle column gets a distinct ``Description_n`` name so
+      ``execute_recipe``'s per-field row dict keeps each; they all canonicalise to
+      the single ``description`` key, where ``routing._canonicalize_rows`` JOINS
+      them (in field order) rather than dropping all but the last — so a row wider
+      than three cells loses no merchant/detail component.
     """
+    width = len(rows[0])
     if width == 3:
         return ["Date", "Description", "Amount"]
-    middle = [f"Description_{i}" for i in range(1, width - 1)]
+    middle: list[str] = []
+    post_date_named = False
+    for col in range(1, width - 1):
+        col_all_dates = all(bool(_ANY_DATE_RE.match(r[col])) for r in rows)
+        if col_all_dates and not post_date_named:
+            middle.append("Posting Date")
+            post_date_named = True
+        else:
+            middle.append(f"Description_{col}")
     return ["Date", *middle, "Amount"]
 
 
@@ -528,41 +526,123 @@ def _shape_reconstructed_tables(doc: PdfDocument) -> list[PdfTable]:
     A wrapped multi-line header (Chase's "Date of" / "Transaction ... $ Amount")
     names no single line, so neither the ruled tables nor
     ``_synthesize_tables_from_text`` find it; the rows are still shape-unambiguous.
-    The ``_has_named_transactional_header`` guard keeps a debit/credit statement
-    (which DOES name its columns) from being force-fit to one synthesized Amount
-    column here — it must stay deferred to the bridge.
+    The ``_has_debit_credit_header`` guard keeps a debit/credit statement (which
+    DOES name its columns) from being force-fit to one synthesized Amount column
+    here — it must stay deferred to the bridge.
 
-    Single home for "reconstruct by shape, only when no header names the table,"
-    shared by the derivable selector (``_select_transaction_table``) and the
-    statement detector (``_looks_transactional_anywhere``). When only the selector
-    knew about it, a wrapped-header statement that failed derivation for any other
-    reason (notably the year-less no-period decline) classified as
+    Single home for "reconstruct by shape, only when no debit/credit header claims
+    the table," shared by the derivable selector (``_select_transaction_table``)
+    and the statement detector (``_looks_transactional_anywhere``). When only the
+    selector knew about it, a wrapped-header statement that failed derivation for
+    any other reason (notably the year-less no-period decline) classified as
     ``no_transaction_table`` and was silently seeded — the exact failure mode shape
     reconstruction was added to close.
     """
-    if _has_named_transactional_header(doc):
+    if _has_debit_credit_header(doc):
         return []
     return [
         t for t in _synthesize_tables_from_row_shape(doc) if _is_transaction_shaped(t)
     ]
 
 
-def _has_named_transactional_header(doc: PdfDocument) -> bool:
-    """True when some ruled or text line already names a transaction table.
+def _has_shape_transaction_rows(doc: PdfDocument) -> bool:
+    """True when unnamed date-led, money-tailed rows exist — a wrapped-header table.
 
-    Guards the shape-based fallback: when a real header exists — a single-amount
-    layout OR the deferred debit/credit pair — the named-header paths own it. A
-    debit/credit statement must route to the bridge, not be force-fit to one
-    synthesized Amount column, so shape reconstruction must not fire for it.
+    Looser than ``_shape_reconstructed_tables``: it recognises the document IS a
+    transaction statement even when the rows don't form a single *derivable* table
+    (mixed widths block derivation, but not the fact that it's transactional).
+    Used only by ``_looks_transactional_anywhere`` so such a statement reports
+    ``transaction_table_underivable`` and reaches the bridge instead of being
+    silently seeded as ``no_transaction_table``. Guarded on no-debit/credit-header
+    so a named split layout stays deferred, matching ``_shape_reconstructed_tables``.
     """
-    for table in doc.tables:
-        if _is_transactional_header(table.header):
-            return True
-    for line in doc.text_lines:
-        stripped = line.strip()
-        if stripped and _is_transactional_header(_re.split(_ROW_SPLIT, stripped)):
-            return True
-    return False
+    if _has_debit_credit_header(doc):
+        return False
+    return any(
+        _is_transaction_row(_re.split(_ROW_SPLIT, stripped))
+        for line in doc.text_lines
+        if (stripped := line.strip())
+    )
+
+
+def _names_debit_credit(headers: list[str]) -> bool:
+    """True when *headers* name a date-led debit/credit pair (not a single amount).
+
+    ``_is_transactional_header`` accepts a single-amount header OR a debit/credit
+    pair; excluding the ones carrying an amount column leaves exactly the split
+    layout.
+    """
+    return _is_transactional_header(headers) and not any(
+        _AMOUNT_COL_RE.search(h) for h in headers
+    )
+
+
+def _has_debit_credit_header(doc: PdfDocument) -> bool:
+    """True when a ruled or text line names a debit/credit (split) transaction table.
+
+    This is the ONLY named layout shape reconstruction must defer to. A
+    single-amount named header is already claimed upstream by
+    ``_synthesize_tables_from_text`` (so it never reaches shape reconstruction); a
+    debit/credit header names its columns but is deliberately not deterministically
+    derivable (``_classify_sign_convention`` rejects the pair), so without this
+    guard shape reconstruction would force-fit it to one synthesized Amount column.
+
+    Scoped to debit/credit rather than ANY named header so an unrelated
+    single-amount mini-table elsewhere in the document (a "Recent Payments" box)
+    doesn't suppress reconstruction of the real wrapped transaction table.
+    """
+    if any(_names_debit_credit(t.header) for t in doc.tables):
+        return True
+    return any(
+        _names_debit_credit(_re.split(_ROW_SPLIT, stripped))
+        for line in doc.text_lines
+        if (stripped := line.strip())
+    )
+
+
+# Only these truly-terminal balance sentinels stop shape-row collection. The
+# broader _END_ANCHOR_CANDIDATES set includes per-category subtotals ("Total Fees",
+# "Total Payments", "Totals") that a real card statement can print BETWEEN sections
+# — using them as a hard stop would truncate every later section. A balance line is
+# unambiguously the end of activity.
+_SHAPE_END_ANCHORS: tuple[str, ...] = (
+    "Ending Balance",
+    "ENDING BALANCE",
+    "Closing Balance",
+)
+
+
+def _opens_shape_end_anchor(cells: list[str]) -> bool:
+    """True when a non-row line opens a terminal balance sentinel (end of activity)."""
+    return bool(cells) and cells[0].startswith(_SHAPE_END_ANCHORS)
+
+
+def _shape_header_index(cells_per_line: list[list[str]]) -> int | None:
+    r"""Index of the wrapped header's amount line, or None if absent.
+
+    An amount-naming non-row line ("... $ Amount") that is directly above the first
+    transaction row (tolerating single-cell section sub-headers between them) is the
+    second physical line of the wrapped header. Starting collection just after it
+    excludes a preamble line that happens to be date-led + money-tailed (a
+    due-date/amount summary) from both the derivation sample and the start-anchor
+    scan. Distinct from a preamble "Amount Due" summary, which is NOT immediately
+    followed by transaction rows. None → no wrapped header found; the caller scans
+    from the top of the document.
+    """
+    for i, cells in enumerate(cells_per_line):
+        if _is_transaction_row(cells) or len(cells) <= 1:
+            continue
+        if not any(_AMOUNT_COL_RE.search(c) for c in cells):
+            continue
+        # An amount-naming non-row line is the wrapped header iff the next
+        # substantive (non-single-cell) line is a transaction row.
+        for nxt in cells_per_line[i + 1 :]:
+            if len(nxt) <= 1:
+                continue  # a section sub-header between header and first row
+            if _is_transaction_row(nxt):
+                return i
+            break  # next substantive line isn't a row → not the header; keep looking
+    return None
 
 
 def _synthesize_tables_from_row_shape(doc: PdfDocument) -> list[PdfTable]:
@@ -577,42 +657,52 @@ def _synthesize_tables_from_row_shape(doc: PdfDocument) -> list[PdfTable]:
     OTHER CREDITS", "PURCHASE", "INTEREST CHARGED") that split to a single cell,
     and synthesize a canonical header of the rows' width.
 
-    Two bounds keep the sample honest:
+    Bounds that keep the sample honest and the layout unambiguous:
 
-    - **End sentinel.** Collection stops at the transaction table's end anchor
-      (once rows have started). Without a positional bound this scans every line,
-      so a later date-led, money-tailed section — a daily-balance or fee summary
-      sharing the modal width — would fold its rows into the sample and could skew
-      date/number-format or sign detection. (``_synthesize_tables_from_text``
-      bounds by contiguity; this rung has no header to anchor to, so it bounds by
-      the end sentinel ``_text_transaction_candidate`` already uses.)
+    - **Start after the wrapped header.** Collection begins just after the header's
+      amount line (``_shape_header_index``), so a preamble line that happens to be
+      date-led + money-tailed isn't sampled or mistaken for the region's first row.
+    - **Stop at a balance sentinel.** Only a terminal balance line
+      (``_SHAPE_END_ANCHORS``) ends collection — NOT the broad end-anchor set,
+      whose per-category subtotals ("Total Fees") can sit between sections and would
+      truncate every later one.
     - **Uniform width.** Every collected row must share one width. ``execute_recipe``
       splits raw text and drops any line whose cell count != the recipe's field
       count, so a lone row whose description carries an internal 2+-space gap (an
       extra cell) would be silently dropped from extraction — and if the dropped
       amounts net near zero, reconciliation still passes and those rows vanish with
-      nothing surfaced. Refuse to reconstruct rather than derive a recipe that can
-      only extract a subset; the statement routes to seed/bridge intact instead.
+      nothing surfaced. Refuse to reconstruct rather than derive a partial recipe.
+    - **Single amount column.** If the rows carry money in the LAST TWO cells
+      (amount + running balance, or a debit/credit pair), which trailing column is
+      the transaction amount is ambiguous — defer to the bridge rather than mislabel
+      a balance as Amount. (A wrapped-header debit/credit statement evades the
+      named-header guard, so it is caught here by row shape.)
 
-    Caller-guarded: only fires when no line names the columns, so a debit/credit
-    statement (which names them) never reaches here and stays deferred.
+    Caller-guarded: only fires when no debit/credit header names the columns.
     """
+    cells_per_line = [
+        _re.split(_ROW_SPLIT, stripped) if (stripped := line.strip()) else []
+        for line in doc.text_lines
+    ]
+    header_idx = _shape_header_index(cells_per_line)
+    scan_from = 0 if header_idx is None else header_idx + 1
+
     rows: list[list[str]] = []
-    for line in doc.text_lines:
-        stripped = line.strip()
-        if not stripped:
+    for cells in cells_per_line[scan_from:]:
+        if not cells:
             continue
-        cells = _re.split(_ROW_SPLIT, stripped)
         if _is_transaction_row(cells):
             rows.append(cells)
-        elif rows and _opens_end_anchor(stripped):
-            break  # end sentinel after the rows — a later section starts here
+        elif rows and _opens_shape_end_anchor(cells):
+            break  # terminal balance sentinel — activity has ended
     if not rows:
         return []
-    width = _modal_width(rows)
+    width = len(rows[0])
     if any(len(r) != width for r in rows):
-        return []
-    return [PdfTable(page=1, header=_synthesize_header(width), rows=rows)]
+        return []  # rows must be one uniform width — see the docstring
+    if all(_is_money_cell(r[-2]) for r in rows):
+        return []  # money in the last two cells → debit/credit or running balance
+    return [PdfTable(page=1, header=_synthesize_header(rows), rows=rows)]
 
 
 def _period_capturable(doc: PdfDocument) -> bool:
@@ -740,16 +830,18 @@ def _opens_end_anchor(line: str) -> bool:
 def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
     """Return True when *doc* is a bank statement, derivable or not.
 
-    Walks the named-header tables (ruled + text-reconstructed), then the
-    shape-reconstructed table (a wrapped/unnamed header — the same rung
-    ``_select_transaction_table`` uses, so "is it a statement?" and "can I derive
-    it?" can't disagree about a wrapped-header layout), then the raw text lines —
-    load-bearing for the most common real layout; see
-    ``_text_transaction_candidate``.
+    Walks the named-header tables (ruled + text-reconstructed), then unnamed
+    date-led/money-tailed rows (a wrapped/unnamed header), then the raw text lines
+    — load-bearing for the most common real layout; see
+    ``_text_transaction_candidate``. The shape rung here is deliberately LOOSER
+    than the one ``_select_transaction_table`` uses: derivation refuses a
+    mixed-width shape table, but a mixed-width statement is still a statement, so
+    "is it a statement?" stays True (→ ``transaction_table_underivable`` → bridge)
+    even where "can I derive it?" is False. See ``_has_shape_transaction_rows``.
     """
     return (
         _select_loose_transaction_table(doc) is not None
-        or bool(_shape_reconstructed_tables(doc))
+        or _has_shape_transaction_rows(doc)
         or _text_transaction_candidate(doc) is not None
     )
 

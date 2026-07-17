@@ -821,19 +821,17 @@ def test_derive_declines_yearless_card_without_billing_period() -> None:
     assert derive_recipe(doc, _EMPTY_META) is None
 
 
-def test_derive_card_wider_than_three_cells_keeps_every_middle_column() -> None:
-    """A shape-derived row with a middle column beyond date/desc/amount loses nothing.
+def test_derive_card_structures_a_post_date_column() -> None:
+    """A shape-derived middle column of dates becomes structured `post_date`.
 
-    A wrapped card layout can split a row into more than three cells (here a
-    separate post-date column sits between the transaction date and the merchant).
-    The synthesized middle columns all canonicalise to the single `description`
-    key; `_canonicalize_rows` must JOIN them rather than keep only the last, or the
-    merchant/detail component is silently dropped while the row still reconciles
-    and imports.
+    A wrapped card layout can split a row into a transaction date, a POST date, the
+    merchant, and the amount. The all-dates middle column is named "Posting Date",
+    so it casts as a (period-resolved) date and lands on the structured `post_date`
+    field the loader reads — rather than being folded into free-text description.
     """
     from moneybin.extractors.pdf.recipe import execute_recipe
     from moneybin.extractors.pdf.routing import (
-        _canonicalize_rows,  # pyright: ignore[reportPrivateUsage] -- join-on-collision probe
+        _canonicalize_rows,  # pyright: ignore[reportPrivateUsage] -- canonical-key probe
     )
 
     text_lines = [
@@ -856,10 +854,49 @@ def test_derive_card_wider_than_three_cells_keeps_every_middle_column() -> None:
     canonical = _canonicalize_rows(recipe, extracted.rows)
 
     assert len(canonical) == 2
-    # Both middle cells survive in the joined description — neither is dropped.
-    assert canonical[0]["description"] == "12/26 COFFEE SHOP"
-    assert canonical[1]["description"] == "01/17 BOOKSTORE"
+    # Transaction date, structured post date (period-resolved), clean description.
+    assert canonical[0]["date"] == date(2024, 12, 24)
+    assert canonical[0]["post_date"] == date(2024, 12, 26)
+    assert canonical[0]["description"] == "COFFEE SHOP"
+    assert canonical[1]["post_date"] == date(2025, 1, 17)
     assert canonical[0]["amount"] == Decimal("25.00")
+
+
+def test_derive_card_joins_multiple_non_date_middle_columns() -> None:
+    """Non-date middle columns still canonicalise to one joined description.
+
+    A width-4 layout whose middle columns are BOTH free text (merchant + a
+    reference) has no date column to structure, so both become `Description_n` and
+    `_canonicalize_rows` joins them in order — neither component is dropped.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+    from moneybin.extractors.pdf.routing import (
+        _canonicalize_rows,  # pyright: ignore[reportPrivateUsage] -- join-on-collision probe
+    )
+
+    text_lines = [
+        "CHASE FREEDOM UNLIMITED",
+        "Minimum Payment Due: $25.00",
+        "Opening/Closing Date   12/23/24 - 01/22/25",
+        "ACCOUNT ACTIVITY",
+        "Date of",
+        "Transaction   Merchant   Reference   $ Amount",
+        "12/24   COFFEE SHOP   REF-8842   25.00",
+        "01/15   BOOKSTORE   REF-1290   40.00",
+        "Totals Year-to-Date",
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+    assert recipe is not None
+
+    extracted = execute_recipe(recipe, "\n".join(text_lines))
+    canonical = _canonicalize_rows(recipe, extracted.rows)
+
+    assert len(canonical) == 2
+    assert canonical[0]["description"] == "COFFEE SHOP REF-8842"
+    assert canonical[1]["description"] == "BOOKSTORE REF-1290"
+    assert "post_date" not in canonical[0]
 
 
 def test_shape_reconstruction_refuses_mixed_width_rows() -> None:
@@ -888,6 +925,86 @@ def test_shape_reconstruction_refuses_mixed_width_rows() -> None:
     assert _synthesize_tables_from_row_shape(doc) == []
     # …and the document therefore does not derive a partial recipe.
     assert derive_recipe(doc, _EMPTY_META) is None
+
+
+def test_shape_reconstruction_does_not_stop_at_per_category_subtotal() -> None:
+    """A per-category subtotal between sections must not truncate later sections.
+
+    "Total Fees Charged …" matches the broad end-anchor list used elsewhere, but
+    here it sits BETWEEN transaction sections. Collection must continue past it —
+    only a true balance sentinel stops the scan — or every later section is
+    silently truncated, the exact multi-section shape this rung targets.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Date of",
+        "Transaction   Description   $ Amount",
+        "PURCHASE",
+        "01/05   COFFEE SHOP   25.00",
+        "Total Fees Charged   0.00",  # per-category subtotal, NOT the table end
+        "INTEREST CHARGED",
+        "01/22   INTEREST   12.00",
+    ])
+
+    tables = _synthesize_tables_from_row_shape(doc)
+
+    assert len(tables) == 1
+    assert tables[0].rows == [
+        ["01/05", "COFFEE SHOP", "25.00"],
+        ["01/22", "INTEREST", "12.00"],
+    ]
+
+
+def test_shape_reconstruction_defers_running_balance_layout() -> None:
+    """Rows with money in the last two cells (amount + balance) defer to the bridge.
+
+    A wrapped-header debit/credit or running-balance statement evades the
+    named-header guard; shape reconstruction can't tell which trailing column is
+    the transaction amount, so it must refuse rather than mislabel a balance.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Date of",
+        "Transaction   Description   Amount   Balance",
+        "01/05   COFFEE SHOP   -25.00   975.00",
+        "01/09   PAYCHECK   200.00   1175.00",
+    ])
+
+    assert _synthesize_tables_from_row_shape(doc) == []
+
+
+def test_shape_reconstruction_excludes_preamble_row_before_header() -> None:
+    """A preamble date-led/money-tailed line before the header isn't folded in.
+
+    Collection starts after the wrapped header's amount line, so a preamble notice
+    that happens to be transaction-shaped ("02/15 AutoPay Scheduled 500.00") is not
+    sampled as a transaction row nor mistaken for the region's first row.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "02/15   AutoPay Scheduled   500.00",  # preamble, above the header
+        "Date of",
+        "Transaction   Description   $ Amount",
+        "01/05   COFFEE SHOP   25.00",
+        "01/09   BOOKSTORE   40.00",
+    ])
+
+    tables = _synthesize_tables_from_row_shape(doc)
+
+    assert len(tables) == 1
+    assert tables[0].rows == [
+        ["01/05", "COFFEE SHOP", "25.00"],
+        ["01/09", "BOOKSTORE", "40.00"],
+    ]
 
 
 def test_shape_reconstruction_stops_at_end_anchor() -> None:

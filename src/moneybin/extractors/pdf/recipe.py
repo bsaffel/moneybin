@@ -277,6 +277,19 @@ def _statement_period(recipe: Recipe, document_text: str) -> tuple[date, date] |
 _MAX_YEARLESS_DRIFT_DAYS = 45
 
 
+class YearlessDateError(ValueError):
+    """A year-less date row could not be resolved to a real year.
+
+    Distinct from an ordinary cast failure so ``execute_recipe`` can tell "this
+    row is junk, skip it" (bad amount, a non-row line that happened to match)
+    apart from "a real transaction row can't be placed in time." The latter must
+    fail the whole extraction rather than silently drop the row: a dropped row
+    whose amount nets ~zero against another would still reconcile, losing
+    transactions with nothing surfaced (the same silent-partial-drop class the
+    shape-width refusal closes). Routing catches this and routes to the bridge.
+    """
+
+
 def _resolve_yearless_date(
     raw: str, date_format: str, period: tuple[date, date] | None
 ) -> date:
@@ -288,11 +301,20 @@ def _resolve_yearless_date(
     falls back to the closest year, ties going to the closing year — but only
     within ``_MAX_YEARLESS_DRIFT_DAYS`` of the cycle; a date further out is an
     anomaly with no correct year and is rejected rather than silently guessed.
+
+    Raises ``YearlessDateError`` on any failure to place the date.
     """
     if period is None:
-        raise ValueError("year-less date requires a statement period")
+        raise YearlessDateError("year-less date requires a statement period")
     start, end = period
-    parsed = datetime.strptime(raw, date_format)  # year defaults to 1900
+    # Parse against an explicit leap year so a 02/29 date extracts its month/day
+    # instead of tripping strptime's implicit non-leap 1900 default (which raises
+    # before the candidate-year bracketing below could try a real leap year); the
+    # actual year is bracketed from the period.
+    try:
+        parsed = datetime.strptime(f"{raw} 2000", f"{date_format} %Y")
+    except ValueError as exc:
+        raise YearlessDateError(f"cannot parse year-less date {raw!r}") from exc
     # Bracket the year with the period's own two years AND the years immediately
     # adjacent to them. The period years place a row inside the cycle; the
     # adjacent years cover a posted date that drifts just past a year boundary —
@@ -307,7 +329,7 @@ def _resolve_yearless_date(
         except ValueError:
             continue  # e.g. 02/29 in a non-leap candidate year
     if not candidates:
-        raise ValueError(f"cannot place year-less date {raw!r} in period")
+        raise YearlessDateError(f"cannot place year-less date {raw!r} in period")
     within = [c for c in candidates if start <= c <= end]
     if within:
         return within[0]
@@ -318,7 +340,7 @@ def _resolve_yearless_date(
     )
     drift = min(abs((closest - start).days), abs((closest - end).days))
     if drift > _MAX_YEARLESS_DRIFT_DAYS:
-        raise ValueError(
+        raise YearlessDateError(
             f"year-less date {raw!r} resolves {drift} days outside the billing "
             f"period — beyond posting drift; refusing to guess a year"
         )
@@ -395,6 +417,11 @@ def execute_recipe(recipe: Recipe, document_text: str) -> ExtractedRows:
             try:
                 # group(0) == validated raw.strip(); fullmatch is the gate.
                 row[fld.name] = _cast_field(fld, m.group(0), period)
+            except YearlessDateError:
+                # A real transaction row that can't be placed in time fails the
+                # WHOLE extraction rather than being silently skipped like junk —
+                # the caller routes to seed/bridge. See YearlessDateError.
+                raise
             except (ValueError, OverflowError, ArithmeticError):
                 failed = True
                 break

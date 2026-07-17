@@ -326,6 +326,45 @@ def test_resolve_yearless_date_rejects_far_out_of_period_date() -> None:
         _resolve_yearless_date("06/15", "%m/%d", period)  # ~5 months out
 
 
+def test_resolve_yearless_date_resolves_leap_day() -> None:
+    """A 02/29 transaction resolves in a leap year, not strptime's non-leap 1900.
+
+    Parsing "02/29" against "%m/%d" alone defaults to year 1900 (not a leap year)
+    and raises before any candidate year is tried; the leap-safe parse extracts
+    month/day first, then brackets the real (leap) year from the period.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        _resolve_yearless_date,  # pyright: ignore[reportPrivateUsage] -- leap-day probe
+    )
+
+    period = (date(2024, 2, 1), date(2024, 2, 29))  # 2024 is a leap year
+    assert _resolve_yearless_date("02/29", "%m/%d", period) == date(2024, 2, 29)
+
+
+def test_execute_recipe_raises_on_unresolvable_yearless_row() -> None:
+    """A year-less row with no capturable period fails the whole extraction.
+
+    Rather than silently skip the row (risking a net-zero silent loss), the
+    executor raises YearlessDateError so the caller can route to seed/bridge
+    instead of importing a partial ledger.
+    """
+    from moneybin.extractors.pdf.recipe import YearlessDateError
+
+    recipe = Recipe.model_validate(
+        _make_recipe(
+            metadata_anchors=[],  # decline metadata capture → no period available
+            fields=[
+                _make_field("date", r"\d{2}/\d{2}", "date", "%m/%d"),
+                _make_field("amount", r"-?\d+\.\d{2}", "decimal"),
+            ],
+        )
+    )
+    text = "\n".join(["TRANSACTIONS", "12/26   -100.00", "TOTAL"])
+
+    with pytest.raises(YearlessDateError):
+        execute_recipe(recipe, text)
+
+
 def test_execute_recipe_resolves_yearless_year_from_declared_period_anchors() -> None:
     """A recipe's own period anchors let execute_recipe resolve year-less rows.
 

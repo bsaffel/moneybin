@@ -627,6 +627,36 @@ def test_wrapped_header_yearless_without_period_is_underivable_not_absent(
     assert decision.reason == "transaction_table_underivable"
 
 
+def test_mixed_width_wrapped_header_reaches_bridge_not_seed(db: Database) -> None:
+    """A wrapped-header statement with one odd-width row must reach the bridge.
+
+    Shape reconstruction refuses to derive a recipe when the rows aren't a single
+    uniform width (a description with an internal 2+-space gap gains a cell), but
+    the statement IS transaction-shaped — no line names the columns, so no other
+    rung recognises it. The failure classifier must still see it and report
+    ``transaction_table_underivable`` (→ bridge) rather than ``no_transaction_table``
+    (→ silent seed with no path to the assisted reader).
+    """
+    doc = PdfDocument(
+        source_file="chase_card.pdf",
+        tables=[],
+        text_lines=[
+            "CHASE FREEDOM UNLIMITED",
+            "Minimum Payment Due: $25.00",
+            "Date of",
+            "Transaction   Merchant Name or Description   $ Amount",
+            "12/24   COFFEE SHOP   25.00",
+            "12/26   PAYPAL   *SOMEVENDOR   40.00",  # internal 2-space gap → 4 cells
+            "01/15   BOOKSTORE   15.00",
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "transaction_table_underivable"
+
+
 def test_european_number_format_is_not_bridge_eligible(
     db: Database,
 ) -> None:
