@@ -43,9 +43,12 @@ Two consequences fall out of that shape:
   provider disappears (see [Total privacy](#total-privacy-run-a-local-model)).
 - **Tool results ride the same wire as your prompt.** When the agent calls a
   MoneyBin tool, the result envelope travels back to the model so it can continue
-  the conversation. That is the entire trust boundary: your client's process, and
-  your client's provider. Nothing else phones home — MoneyBin sends no telemetry,
-  analytics, or update checks (see the [network boundary in the threat
+  the conversation. For the AI data flow, that is the whole trust boundary: your
+  client's process and your client's provider. MoneyBin itself sends no telemetry,
+  analytics, or update checks. The exception is the connector tools you opt into —
+  `sync_*` reaches the moneybin-sync broker and `gsheet_*` reaches the Google
+  Sheets API when invoked — which is a separate egress path, not a hop to the
+  model provider (see the [network boundary in the threat
   model](threat-model.md#network-boundary)).
 
 ---
@@ -60,7 +63,7 @@ envelope contains once it reaches the model.
 | Transaction reads (`transactions_search`, `transactions_get`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
 | Report views (`reports_networth`, `reports_spending`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
-| Categorization assist (`transactions_categorize_assist`) | Description *shape* only — see below | Amounts, dates, account IDs, embedded PII | Per-call event |
+| Categorization assist (`transactions_categorize_assist`) | Scrubbed description — **merchant name kept**, amount as a sign only | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
 | Errors / timeouts | A generic message; no row content, no SQL text | — | Per-call event |
 
@@ -108,17 +111,22 @@ from your bank unfiltered — MoneyBin does not rewrite them.
 There is one exception, and it is the only place MoneyBin minimizes a payload
 before an AI sees it:
 
-**Categorization assist** (`transactions_categorize_assist`) sends the model the
-*shape* of a description, not your money. Before the prompt is built, it:
+**Categorization assist** (`transactions_categorize_assist`) sends a scrubbed
+description, not the full transaction. The **merchant name is kept** — it is the
+signal the model categorizes on — but before the prompt is built, it:
 
 - replaces the amount with a single **sign** (`+`, `-`, or `0`) — never the value,
 - drops the **date** and the **account identifier** entirely,
-- scrubs embedded **locations, emails, phone numbers, and card-reference tails**
-  out of the description and memo.
+- scrubs embedded **locations, emails, phone numbers, card-reference tails, and
+  store numbers** out of the description and memo.
 
-So the model categorizing "SQ *BLUE BOTTLE 0123, OAKLAND CA" sees roughly "coffee
-shop, outflow" — enough to label it, not enough to reconstruct the transaction.
-No other tool does this; the reads and reports above send the real values.
+So the model categorizing "SQ *BLUE BOTTLE #0123, OAKLAND CA" sees **"BLUE
+BOTTLE"** with an outflow sign — the merchant, yes, but not the amount, the date,
+the account, or the location. It still learns *where* you shopped; it does not
+learn *how much*, *when*, or *from which account*. That is real minimization, but
+it is not anonymization — do not read this row as "the model never sees my
+merchants." No other tool minimizes at all; the reads and reports above send the
+merchant name and every other field in the clear.
 
 ---
 

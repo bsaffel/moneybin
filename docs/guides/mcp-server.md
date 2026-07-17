@@ -23,11 +23,13 @@ Only the profile name is sent to the model; the encryption key is generated loca
 ## Privacy: where does my data go?
 
 The most common question from people coming from a CLI-only workflow. The short
-answer: the MCP server runs locally and makes no outbound calls of its own, but
-your MCP client sends your prompts **and the tool results** to whatever model
-provider it's configured against — anything the agent sees, the provider sees.
-Account and routing numbers are masked before they leave; nothing else is, and
-the consent ledger records but does not yet gate.
+answer: the MCP server runs locally and sends no telemetry or model calls of its
+own — though the `sync_*` and `gsheet_*` tools do reach their configured
+endpoints (the moneybin-sync broker, the Google Sheets API) when you invoke them.
+Separately, your MCP client sends your prompts **and the tool results** to
+whatever model provider it's configured against — anything the agent sees, the
+provider sees. Account and routing numbers are masked before they leave; nothing
+else is, and the consent ledger records but does not yet gate.
 
 The full, honest breakdown — what leaves per kind of tool, what's always masked,
 what's only recorded locally, and how to run a fully local model so nothing
