@@ -225,6 +225,10 @@ def is_yearless_date_format(date_format: str | None) -> bool:
     on a separate billing-period line. A year-less date can't be cast on its own —
     it needs the statement period to bracket the year (``_resolve_yearless_date``).
     """
+    # .lower() collapses %Y onto %y, so one substring check catches both the
+    # 4-digit (%Y) and 2-digit (%y) year directives. A case-sensitive check would
+    # silently stop recognising %Y and misclassify a year-bearing format as
+    # year-less.
     return date_format is not None and "%y" not in date_format.lower()
 
 
@@ -277,8 +281,15 @@ def _resolve_yearless_date(
         raise ValueError("year-less date requires a statement period")
     start, end = period
     parsed = datetime.strptime(raw, date_format)  # year defaults to 1900
+    # Bracket the year with the period's own two years AND the years immediately
+    # adjacent to them. The period years place a row inside the cycle; the
+    # adjacent years cover a posted date that drifts just past a year boundary —
+    # e.g. 12/31 on a 01/01-01/31 cycle belongs to the PRIOR year. Without them a
+    # within-one-calendar-year period offers a single candidate year, so such a
+    # row can only resolve inside the period's year and is stored ~a year late.
+    candidate_years = sorted({start.year - 1, start.year, end.year, end.year + 1})
     candidates: list[date] = []
-    for year in (start.year, end.year):
+    for year in candidate_years:
         try:
             candidates.append(date(year, parsed.month, parsed.day))
         except ValueError:
@@ -299,8 +310,14 @@ def _cast_field(
     field: FieldExtraction, raw: str, period: tuple[date, date] | None
 ) -> Any:
     """Cast one field, resolving a year-less date against the statement period."""
-    if field.cast == "date" and is_yearless_date_format(field.date_format):
-        return _resolve_yearless_date(raw, field.date_format or "%m/%d", period)
+    # The explicit `is not None` is redundant with is_yearless_date_format (which
+    # is False for None) but narrows date_format to str for _resolve_yearless_date.
+    if (
+        field.cast == "date"
+        and field.date_format is not None
+        and is_yearless_date_format(field.date_format)
+    ):
+        return _resolve_yearless_date(raw, field.date_format, period)
     return _cast(field, raw)
 
 

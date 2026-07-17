@@ -11,6 +11,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Real credit-card PDF statements now extract their transactions instead of
+  falling back to a raw dump.** Chase card statements (and others shaped like
+  them) print their transaction table in three ways no synthetic sample did: a
+  column header wrapped across two physical lines ("Date of" above
+  "Transaction … $ Amount"), section sub-headers ("PAYMENTS AND OTHER CREDITS",
+  "PURCHASE", "INTEREST CHARGED") interleaved among the rows, and dates printed
+  as MM/DD with the year only on a separate "Opening/Closing Date" line.
+  Previously every such statement extracted zero transactions and was stored as
+  an unparsed seed; now the table is reconstructed from the rows' shape, each
+  row's year is resolved from the statement's billing period (correct even when
+  the cycle crosses year-end), and the statement imports like any other. A
+  statement whose columns genuinely can't be derived deterministically still
+  escalates to the assisted reader rather than being silently seeded.
 - **Credit-card PDF statements now import with correct signs.** A statement that
   names itself a credit card (via its required disclosures — "minimum payment",
   "credit limit", and the like) derives the inverted convention

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from moneybin.extractors.pdf.recipe import (
@@ -266,3 +268,41 @@ def test_cast_decimal_handles_empty_string() -> None:
 
     fld = FieldExtraction(name="amount", pattern=r".*", cast="decimal")
     assert _cast(fld, "") == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Year-less date resolution (_resolve_yearless_date)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "period", "expected"),
+    [
+        # Cycle crosses year-end: the two period years both resolve the row.
+        ("12/26", (date(2024, 12, 23), date(2025, 1, 22)), date(2024, 12, 26)),
+        ("01/15", (date(2024, 12, 23), date(2025, 1, 22)), date(2025, 1, 15)),
+        # Cycle within ONE calendar year, row just BEFORE it (posted-date drift
+        # across the year boundary): must resolve to the PRIOR year, not this one.
+        # The period offers only 2025 as a period year, so without an adjacent-year
+        # candidate this silently stored 2025-12-31 — ~a year late.
+        ("12/31", (date(2025, 1, 1), date(2025, 1, 31)), date(2024, 12, 31)),
+        # Cycle within one year, row just AFTER it → the following year.
+        ("01/02", (date(2024, 12, 1), date(2024, 12, 31)), date(2025, 1, 2)),
+    ],
+)
+def test_resolve_yearless_date_brackets_year_including_adjacent(
+    raw: str,
+    period: tuple[date, date],
+    expected: date,
+) -> None:
+    """A year-less MM/DD row resolves via the billing period, adjacent years included.
+
+    The within-window year wins when the date lands inside the cycle; a date that
+    drifts just past a year boundary falls back to the closest year — which may be
+    the period's adjacent year, not one of its two endpoints.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        _resolve_yearless_date,  # pyright: ignore[reportPrivateUsage] -- year-bracket probe
+    )
+
+    assert _resolve_yearless_date(raw, "%m/%d", period) == expected

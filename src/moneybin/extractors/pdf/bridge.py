@@ -226,10 +226,16 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
             "without it, loaded rows have no transaction_date (a post_date "
             "field alone does not qualify)"
         )
-    # An explicit date_format must carry a year directive. Without one, strptime
-    # defaults to year 1900 and the loader silently writes wrong dates —
-    # reconciliation only checks amount totals, not the date range. No
-    # date_format → execute_recipe's default parsing handles years.
+    # Bridge policy (not a limitation of the executor): a bridge-authored
+    # date_format must carry a year directive. The executor CAN now resolve a
+    # year-less MM/DD format by bracketing the year from the billing period
+    # (recipe._resolve_yearless_date), but only the deterministic deriver drives
+    # that path, and only after confirming the period is capturable
+    # (auto_derive._period_capturable). A bridge-authored recipe carries no such
+    # guarantee, so fail closed here rather than let an agent recipe's year-less
+    # dates fall back to strptime's 1900 default — reconciliation checks only
+    # amount totals, not the date range. (No date_format at all → execute_recipe's
+    # year-bearing default parsing handles it.)
     for f in recipe.fields:
         if (
             f.cast == "date"

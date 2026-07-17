@@ -227,11 +227,31 @@ def _canonicalize_rows(
 
     Build the per-field mapping once from recipe.fields and reuse it across
     every row so the work is O(rows · fields) once, not per-cell-per-call.
+
+    Multiple source columns can canonicalise to ``description`` — a wrapped row
+    reconstructed by shape splits into several middle cells (merchant + a
+    post-date or reference column), each named ``Description_n`` so
+    ``execute_recipe`` keeps them distinct, and every such name matches
+    ``DESC_NAME_RE``. Their values are JOINED in field order rather than
+    overwritten, so no merchant/detail component is silently dropped. Only
+    ``description`` is joined: it is the sole string-cast key a recipe can
+    legitimately repeat (two ``amount``/``date`` columns would be a malformed
+    recipe, and joining cast Decimals/dates is meaningless).
     """
     if not rows:
         return rows
     key_map = {f.name: _canonical_key(f) for f in recipe.fields}
-    return [{key_map.get(k, k.lower()): v for k, v in row.items()} for row in rows]
+    canonical: list[dict[str, Any]] = []
+    for row in rows:
+        merged: dict[str, Any] = {}
+        for k, v in row.items():
+            ckey = key_map.get(k, k.lower())
+            if ckey == "description" and ckey in merged:
+                merged[ckey] = f"{merged[ckey]} {v}".strip()
+            else:
+                merged[ckey] = v
+        canonical.append(merged)
+    return canonical
 
 
 def _compute_confidence(recipe: Recipe, rows: list[dict[str, Any]]) -> float:

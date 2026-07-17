@@ -789,3 +789,74 @@ def test_derive_card_infers_year_from_opening_closing_date() -> None:
         (date(2025, 1, 15), Decimal("40.00")),
         (date(2025, 1, 22), Decimal("12.00")),
     ]
+
+
+def test_derive_declines_yearless_card_without_billing_period() -> None:
+    """A wrapped-header MM/DD statement with no billing period must NOT derive.
+
+    The rows carry no year, and no "Opening/Closing Date" line supplies one, so the
+    executor could only guess. ``derive_recipe`` declines (returns None) rather than
+    author a recipe that emits wrong dates — routing then escalates to the bridge
+    (see ``test_routing``) instead of silently seeding. Pairs with
+    ``test_derive_card_infers_year_from_opening_closing_date`` (identical shape WITH
+    a period line) to isolate the period guard: with a period it derives, without
+    one it declines — so a future refactor can't regress the decline into emitting
+    wrong dates and stay green.
+    """
+    text_lines = [
+        "CHASE FREEDOM UNLIMITED",
+        "Minimum Payment Due: $25.00",
+        "Credit Limit: $10,000",
+        "ACCOUNT ACTIVITY",
+        "Date of",
+        "Transaction          Merchant Name or Transaction Description $ Amount",
+        "PAYMENTS AND OTHER CREDITS",
+        "12/26   PAYMENT THANK YOU          -100.00",
+        "PURCHASE",
+        "12/24   COFFEE SHOP          25.00",
+        "Totals Year-to-Date",
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    assert derive_recipe(doc, _EMPTY_META) is None
+
+
+def test_derive_card_wider_than_three_cells_keeps_every_middle_column() -> None:
+    """A shape-derived row with a middle column beyond date/desc/amount loses nothing.
+
+    A wrapped card layout can split a row into more than three cells (here a
+    separate post-date column sits between the transaction date and the merchant).
+    The synthesized middle columns all canonicalise to the single `description`
+    key; `_canonicalize_rows` must JOIN them rather than keep only the last, or the
+    merchant/detail component is silently dropped while the row still reconciles
+    and imports.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+    from moneybin.extractors.pdf.routing import (
+        _canonicalize_rows,  # pyright: ignore[reportPrivateUsage] -- join-on-collision probe
+    )
+
+    text_lines = [
+        "CHASE SAPPHIRE PREFERRED",
+        "Minimum Payment Due: $25.00",
+        "Opening/Closing Date   12/23/24 - 01/22/25",
+        "ACCOUNT ACTIVITY",
+        "Date of",
+        "Transaction   Post Date   Merchant Name or Description   $ Amount",
+        "12/24   12/26   COFFEE SHOP   25.00",
+        "01/15   01/17   BOOKSTORE   40.00",
+        "Totals Year-to-Date",
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+    assert recipe is not None
+
+    extracted = execute_recipe(recipe, "\n".join(text_lines))
+    canonical = _canonicalize_rows(recipe, extracted.rows)
+
+    assert len(canonical) == 2
+    # Both middle cells survive in the joined description — neither is dropped.
+    assert canonical[0]["description"] == "12/26 COFFEE SHOP"
+    assert canonical[1]["description"] == "01/17 BOOKSTORE"
+    assert canonical[0]["amount"] == Decimal("25.00")

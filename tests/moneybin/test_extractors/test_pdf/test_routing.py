@@ -592,6 +592,41 @@ def test_debit_credit_statement_is_underivable_not_absent(
     assert decision.reason == "transaction_table_underivable"
 
 
+def test_wrapped_header_yearless_without_period_is_underivable_not_absent(
+    db: Database,
+) -> None:
+    r"""A wrapped-header MM/DD statement with no billing period must reach the bridge.
+
+    The columns are named only by a two-physical-line header ("Date of" /
+    "Transaction ... $ Amount"), so no single line splits into a named header and
+    only shape reconstruction sees the table. `derive_recipe` correctly declines
+    (year-less rows with no capturable period → it won't author a recipe that
+    emits wrong dates). The failure classifier must ALSO see the table by shape,
+    else it reports `no_transaction_table` — excluded from bridge escalation — and
+    the statement is silently seeded, the exact failure mode shape reconstruction
+    was added to close.
+    """
+    doc = PdfDocument(
+        source_file="chase_card.pdf",
+        tables=[],
+        text_lines=[
+            "CHASE FREEDOM UNLIMITED",
+            "Minimum Payment Due: $25.00",
+            "ACCOUNT ACTIVITY",
+            "Date of",
+            "Transaction          Merchant Name or Description          $ Amount",
+            "12/24   COFFEE SHOP          25.00",
+            "01/15   BOOKSTORE          40.00",
+            "Totals Year-to-Date",
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "transaction_table_underivable"
+
+
 def test_european_number_format_is_not_bridge_eligible(
     db: Database,
 ) -> None:

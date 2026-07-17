@@ -349,17 +349,25 @@ def _detect_start_anchor(doc: PdfDocument, table: PdfTable) -> str:
             return stripped
     # A shape-derived table has a synthesized (canonical) header that equals no
     # real line. Anchor instead on the amount-naming column-header line
-    # ("... $ Amount") sitting above the rows — far more specific than the bare
-    # "Date", which also appears in preamble ("Payment Due Date: ...").
-    for line in doc.text_lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        cells = _re.split(_ROW_SPLIT, stripped)
-        if not _is_transaction_row(cells) and any(
-            _AMOUNT_COL_RE.search(c) for c in cells
-        ):
-            return stripped
+    # ("... $ Amount") — far more specific than the bare "Date", which also
+    # appears in the preamble ("Payment Due Date: ..."). Scan UP from the first
+    # data row for the NEAREST such line: a card preamble routinely mentions
+    # "amount" (an "Amount Due" summary) above the header, and taking the first
+    # match anywhere in the document would anchor the region there, above the
+    # real transaction table.
+    stripped_lines = [s for line in doc.text_lines if (s := line.strip())]
+    cells_per_line = [_re.split(_ROW_SPLIT, s) for s in stripped_lines]
+    first_row_idx = next(
+        (i for i, cells in enumerate(cells_per_line) if _is_transaction_row(cells)),
+        None,
+    )
+    if first_row_idx is not None:
+        for i in range(first_row_idx - 1, -1, -1):
+            cells = cells_per_line[i]
+            if not _is_transaction_row(cells) and any(
+                _AMOUNT_COL_RE.search(c) for c in cells
+            ):
+                return stripped_lines[i]
     return table.header[0]
 
 
@@ -502,12 +510,41 @@ def _synthesize_header(width: int) -> list[str]:
     The statement's own header wrapped or garbled beyond clean recovery, so name
     the columns canonically — the classifiers only need the first to read as a
     date column and the last as an amount column. Middle columns get distinct
-    names so the row-dict keys don't collide.
+    ``Description_n`` names so ``execute_recipe``'s per-field row dict keeps each
+    one; they all canonicalise to the single ``description`` key downstream, where
+    ``routing._canonicalize_rows`` JOINS them (in field order) rather than
+    dropping all but the last — so a row wider than three cells loses no
+    merchant/detail component.
     """
     if width == 3:
         return ["Date", "Description", "Amount"]
     middle = [f"Description_{i}" for i in range(1, width - 1)]
     return ["Date", *middle, "Amount"]
+
+
+def _shape_reconstructed_tables(doc: PdfDocument) -> list[PdfTable]:
+    r"""Transaction tables recovered from data-row *shape*, or [] if a header names one.
+
+    A wrapped multi-line header (Chase's "Date of" / "Transaction ... $ Amount")
+    names no single line, so neither the ruled tables nor
+    ``_synthesize_tables_from_text`` find it; the rows are still shape-unambiguous.
+    The ``_has_named_transactional_header`` guard keeps a debit/credit statement
+    (which DOES name its columns) from being force-fit to one synthesized Amount
+    column here — it must stay deferred to the bridge.
+
+    Single home for "reconstruct by shape, only when no header names the table,"
+    shared by the derivable selector (``_select_transaction_table``) and the
+    statement detector (``_looks_transactional_anywhere``). When only the selector
+    knew about it, a wrapped-header statement that failed derivation for any other
+    reason (notably the year-less no-period decline) classified as
+    ``no_transaction_table`` and was silently seeded — the exact failure mode shape
+    reconstruction was added to close.
+    """
+    if _has_named_transactional_header(doc):
+        return []
+    return [
+        t for t in _synthesize_tables_from_row_shape(doc) if _is_transaction_shaped(t)
+    ]
 
 
 def _has_named_transactional_header(doc: PdfDocument) -> bool:
@@ -685,12 +722,16 @@ def _opens_end_anchor(line: str) -> bool:
 def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
     """Return True when *doc* is a bank statement, derivable or not.
 
-    Checks ruled tables and reconstructed ones first, then falls back to the raw
-    text lines — which is load-bearing for the most common real layout; see
+    Walks the named-header tables (ruled + text-reconstructed), then the
+    shape-reconstructed table (a wrapped/unnamed header — the same rung
+    ``_select_transaction_table`` uses, so "is it a statement?" and "can I derive
+    it?" can't disagree about a wrapped-header layout), then the raw text lines —
+    load-bearing for the most common real layout; see
     ``_text_transaction_candidate``.
     """
     return (
         _select_loose_transaction_table(doc) is not None
+        or bool(_shape_reconstructed_tables(doc))
         or _text_transaction_candidate(doc) is not None
     )
 
@@ -706,17 +747,12 @@ def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
         candidates = [
             t for t in _synthesize_tables_from_text(doc) if _is_transaction_shaped(t)
         ]
-    if not candidates and not _has_named_transactional_header(doc):
+    if not candidates:
         # No ruled table and no line names the columns — a wrapped multi-line
         # header like Chase's "Date of" / "Transaction ... $ Amount". Fall back to
-        # detecting the table by its data-row shape. The missing-named-header
-        # guard keeps a debit/credit statement (which DOES name its columns) from
-        # being force-fit to a single synthesized Amount column here.
-        candidates = [
-            t
-            for t in _synthesize_tables_from_row_shape(doc)
-            if _is_transaction_shaped(t)
-        ]
+        # detecting the table by its data-row shape (guarded so a debit/credit
+        # statement stays deferred to the bridge — see _shape_reconstructed_tables).
+        candidates = _shape_reconstructed_tables(doc)
     if not candidates:
         return None
     return max(candidates, key=lambda t: len(t.rows))
