@@ -26,10 +26,10 @@ props**. Real names:
 
 - **Color** — surfaces `--bg-base --bg-surface --bg-raised --bg-inset`; borders
   `--border-hairline --border-strong`; text `--text-primary --text-secondary
-  --text-faint`; the one accent `--accent-brass` (+`--accent-brass-strong`),
+  --text-faint`; the three-tier accent — `--accent-brass` text / `--accent-gilt` fills / `--accent-verdigris` interaction (with `*-strong` hovers, `--on-accent-gilt` ink on gilt, `*-tint` washes),
   **never blue**; money `--pos-income` (green) / `--neg-expense` (red); series
   `--chart-1` … `--chart-8`; `--focus`.
-- **Type** — `--font-display` (Newsreader serif; headlines/wordmark only),
+- **Type** — `--font-display` (Newsreader serif; headlines, wordmark, room/page titles only),
   `--font-ui` (Schibsted Grotesk; all UI), `--font-data` (JetBrains Mono;
   **every** amount/timestamp/axis label/SQL). Sizes `--text-body-size
   --text-table-size --text-amount-size --text-hero-amount-size --text-h2-size

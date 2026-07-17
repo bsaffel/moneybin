@@ -16,7 +16,7 @@ The single icon vocabulary — 19 glyphs, custom-drawn to the grammar: 20×20 gr
 
 - **Icons are sparing.** An icon never appears without a visible label except in a collapsed nav rail or an icon-only control — and then `title` (tooltip + aria-label) is mandatory.
 - **Sizes:** 16px inside controls and table rows, 20px in nav rails. Never larger in app chrome.
-- **Color:** inherit text color. Brass only when the element itself is active/brass — never as decoration.
+- **Color:** inherit text color (`currentColor`). The glyph itself is never gold — a gold glyph reads as a fill and breaks the no-fills grammar. Active *location* (the you-are-here nav row) = a brass edge tick beside an ink glyph (`box-shadow: inset 2px 0 0 var(--accent-brass)`), not a brass drawing; a toggled-on icon-only control = verdigris via `currentColor` (interaction, per the accent tiers).
 - **The ask/AI surface is the terminal caret `▸_`** (text, `--font-data`), never an icon, never ✨. Unicode glyph budget stays: ⌘K, ⇄ transfers, ▲▼ deltas, ● status.
 - **New glyphs are a system change:** draw to the grammar and add to `Icon.jsx` + `guidelines/icons-grammar.html` — never an inline one-off SVG in a screen. If a stock icon is unavoidable, restroke Lucide to 1.5px and flag it.
 - **Fills are exceptional** — only the settings hub dot, the warning point, and the `more` dots. Dots are marks, not shapes.

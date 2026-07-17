@@ -2,7 +2,7 @@
    Serif speaks (display/brand voice), sans works (UI), mono counts (ALL money, timestamps, axis labels, SQL, CLI).
    All faces OFL 1.1 — self-host in production (no font CDNs in a no-telemetry product). */
 :root {
-  --font-display: 'Newsreader', Georgia, serif;                 /* headlines, wordmark; 400-600, opsz on; never UI controls or data */
+  --font-display: 'Newsreader', Georgia, serif;                 /* headlines, wordmark, room/page titles (24px app chrome, 34-46px spec docs); 400-600, opsz on; never widgets, tables, controls, overlines, or any data surface */
   --font-ui: 'Schibsted Grotesk', 'Helvetica Neue', sans-serif; /* labels, nav, body, buttons; 400/500/600 */
   --font-data: 'JetBrains Mono', monospace;                     /* every amount, timestamp, axis label, row count */
 

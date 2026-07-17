@@ -93,7 +93,7 @@
    Serif speaks (display/brand voice), sans works (UI), mono counts (ALL money, timestamps, axis labels, SQL, CLI).
    All faces OFL 1.1 — self-host in production (no font CDNs in a no-telemetry product). */
 :root {
-  --font-display: 'Newsreader', Georgia, serif;                 /* headlines, wordmark; 400-600, opsz on; never UI controls or data */
+  --font-display: 'Newsreader', Georgia, serif;                 /* headlines, wordmark, room/page titles (24px app chrome, 34-46px spec docs); 400-600, opsz on; never widgets, tables, controls, overlines, or any data surface */
   --font-ui: 'Schibsted Grotesk', 'Helvetica Neue', sans-serif; /* labels, nav, body, buttons; 400/500/600 */
   --font-data: 'JetBrains Mono', monospace;                     /* every amount, timestamp, axis label, row count */
 
@@ -129,4 +129,10 @@
 
   /* the one shadow — floating layers (popovers, menus, tooltips) ONLY */
   --shadow-floating: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+/* MoneyBin motion tokens. Motion reports a state change — mechanical, not organic. See motion.md (binding). */
+:root {
+  --motion-fast: 120ms;                        /* state flips: chevron, pin, audit-strip reveal */
+  --motion-slow: 180ms;                        /* surface changes: drawer, tooltip */
+  --motion-ease: cubic-bezier(0.2, 0, 0, 1);   /* decisive out, no overshoot */
 }
