@@ -232,14 +232,17 @@ def is_yearless_date_format(date_format: str | None) -> bool:
     return date_format is not None and "%y" not in date_format.lower()
 
 
-def _grouped_anchors(
+def group_anchors(
     anchors: list[FieldExtraction] | None,
 ) -> dict[str, list[str]] | None:
     """Regroup a recipe's flat metadata_anchors into capture_metadata's dict shape.
 
     Recipes store one FieldExtraction per (field, pattern) alternative; capture
-    wants ``{field: [pattern, ...]}``. None passes through so capture_metadata
-    falls back to DEFAULT_ANCHORS.
+    wants ``{field: [pattern, ...]}``. Tri-state, preserved by both callers:
+    ``None`` → capture_metadata falls back to DEFAULT_ANCHORS; an empty list →
+    ``{}`` → the caller deliberately declines metadata capture; a populated list →
+    the grouped dict. Shared by the executor (``_statement_period``) and the replay
+    pipeline (``routing._run_recipe_pipeline``) so the transformation lives once.
     """
     if anchors is None:
         return None
@@ -261,10 +264,17 @@ def _statement_period(recipe: Recipe, document_text: str) -> tuple[date, date] |
         for f in recipe.fields
     ):
         return None
-    md = capture_metadata(document_text, _grouped_anchors(recipe.metadata_anchors))
+    md = capture_metadata(document_text, group_anchors(recipe.metadata_anchors))
     if md.period_start is None or md.period_end is None:
         return None
     return (md.period_start, md.period_end)
+
+
+# Posting drift can put a row a little outside the printed cycle; roughly one
+# billing cycle of slack absorbs that. A year-less MM/DD landing further out has
+# no correct year (an OCR garble, a misparsed line) — the resolver refuses rather
+# than guess one, since reconciliation sums amounts and can't catch a wrong date.
+_MAX_YEARLESS_DRIFT_DAYS = 45
 
 
 def _resolve_yearless_date(
@@ -275,7 +285,9 @@ def _resolve_yearless_date(
     The cycle can cross a year boundary (``12/23/24 - 01/22/25``), so the year is
     per-row: pick whichever of the period's two years lands the date inside the
     cycle. A date a day or two outside the printed window (posted dates drift)
-    falls back to the closest year, ties going to the closing year.
+    falls back to the closest year, ties going to the closing year — but only
+    within ``_MAX_YEARLESS_DRIFT_DAYS`` of the cycle; a date further out is an
+    anomaly with no correct year and is rejected rather than silently guessed.
     """
     if period is None:
         raise ValueError("year-less date requires a statement period")
@@ -300,10 +312,17 @@ def _resolve_yearless_date(
     if within:
         return within[0]
     # Outside the printed window: closest to the cycle, ties → later year.
-    return min(
+    closest = min(
         candidates,
         key=lambda c: (min(abs((c - start).days), abs((c - end).days)), -c.year),
     )
+    drift = min(abs((closest - start).days), abs((closest - end).days))
+    if drift > _MAX_YEARLESS_DRIFT_DAYS:
+        raise ValueError(
+            f"year-less date {raw!r} resolves {drift} days outside the billing "
+            f"period — beyond posting drift; refusing to guess a year"
+        )
+    return closest
 
 
 def _cast_field(

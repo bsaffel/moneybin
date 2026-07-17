@@ -30,7 +30,7 @@ from typing import Any, Literal, cast
 
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint
 from moneybin.extractors.pdf.ir import PdfDocument
-from moneybin.extractors.pdf.recipe import Recipe
+from moneybin.extractors.pdf.recipe import Recipe, is_yearless_date_format
 
 TRANSPARENCY_NOTICE = (
     "Proceeding will surface this PDF's content to the agent you are "
@@ -237,12 +237,7 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
     # amount totals, not the date range. (No date_format at all → execute_recipe's
     # year-bearing default parsing handles it.)
     for f in recipe.fields:
-        if (
-            f.cast == "date"
-            and f.date_format
-            and "%Y" not in f.date_format
-            and "%y" not in f.date_format
-        ):
+        if f.cast == "date" and is_yearless_date_format(f.date_format):
             raise BridgeResponseError(
                 f"bridge recipe field {f.name!r} has date_format "
                 f"{f.date_format!r} with no year directive (%Y or %y) — dates "

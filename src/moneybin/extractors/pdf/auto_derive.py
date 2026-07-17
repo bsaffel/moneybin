@@ -575,7 +575,24 @@ def _synthesize_tables_from_row_shape(doc: PdfDocument) -> list[PdfTable]:
     unambiguous — a date-shaped first cell, a money-shaped last cell — so collect
     them by shape, skipping the interleaved section sub-headers ("PAYMENTS AND
     OTHER CREDITS", "PURCHASE", "INTEREST CHARGED") that split to a single cell,
-    and synthesize a canonical header of the rows' modal width.
+    and synthesize a canonical header of the rows' width.
+
+    Two bounds keep the sample honest:
+
+    - **End sentinel.** Collection stops at the transaction table's end anchor
+      (once rows have started). Without a positional bound this scans every line,
+      so a later date-led, money-tailed section — a daily-balance or fee summary
+      sharing the modal width — would fold its rows into the sample and could skew
+      date/number-format or sign detection. (``_synthesize_tables_from_text``
+      bounds by contiguity; this rung has no header to anchor to, so it bounds by
+      the end sentinel ``_text_transaction_candidate`` already uses.)
+    - **Uniform width.** Every collected row must share one width. ``execute_recipe``
+      splits raw text and drops any line whose cell count != the recipe's field
+      count, so a lone row whose description carries an internal 2+-space gap (an
+      extra cell) would be silently dropped from extraction — and if the dropped
+      amounts net near zero, reconciliation still passes and those rows vanish with
+      nothing surfaced. Refuse to reconstruct rather than derive a recipe that can
+      only extract a subset; the statement routes to seed/bridge intact instead.
 
     Caller-guarded: only fires when no line names the columns, so a debit/credit
     statement (which names them) never reaches here and stays deferred.
@@ -588,11 +605,12 @@ def _synthesize_tables_from_row_shape(doc: PdfDocument) -> list[PdfTable]:
         cells = _re.split(_ROW_SPLIT, stripped)
         if _is_transaction_row(cells):
             rows.append(cells)
+        elif rows and _opens_end_anchor(stripped):
+            break  # end sentinel after the rows — a later section starts here
     if not rows:
         return []
     width = _modal_width(rows)
-    rows = [r for r in rows if len(r) == width]
-    if not rows:
+    if any(len(r) != width for r in rows):
         return []
     return [PdfTable(page=1, header=_synthesize_header(width), rows=rows)]
 

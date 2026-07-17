@@ -860,3 +860,64 @@ def test_derive_card_wider_than_three_cells_keeps_every_middle_column() -> None:
     assert canonical[0]["description"] == "12/26 COFFEE SHOP"
     assert canonical[1]["description"] == "01/17 BOOKSTORE"
     assert canonical[0]["amount"] == Decimal("25.00")
+
+
+def test_shape_reconstruction_refuses_mixed_width_rows() -> None:
+    """Rows of inconsistent width abort reconstruction — never a silent partial drop.
+
+    `execute_recipe` splits raw text and drops any line whose cell count != the
+    recipe's field count, so a lone row whose description carries an internal
+    2+-space gap (an extra cell) would be silently excluded from extraction. If
+    the dropped amounts net near zero, reconciliation still passes and those
+    transactions vanish with nothing surfaced. Reconstruction must refuse when the
+    rows aren't a single uniform width, routing the whole statement to seed/bridge
+    intact rather than deriving a recipe that can only extract a subset.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Date of",
+        "Transaction   Description   $ Amount",
+        "01/05   COFFEE SHOP   25.00",
+        "01/09   PAYPAL   *SOMEVENDOR   40.00",  # internal 2-space gap → 4 cells
+        "01/12   BOOKSTORE   15.00",
+    ])
+
+    assert _synthesize_tables_from_row_shape(doc) == []
+    # …and the document therefore does not derive a partial recipe.
+    assert derive_recipe(doc, _EMPTY_META) is None
+
+
+def test_shape_reconstruction_stops_at_end_anchor() -> None:
+    """A dated section after the table's end sentinel must not pollute the sample.
+
+    Unlike `_synthesize_tables_from_text` (which bounds a run by contiguity),
+    shape reconstruction scans every line — so a later date-led, money-tailed
+    section (a daily-balance or fee summary) sharing the modal width would fold its
+    rows into the derivation sample and could skew date/number-format or sign
+    detection. Collection stops at the transaction table's end sentinel.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Date of",
+        "Transaction   Description   $ Amount",
+        "01/05   COFFEE SHOP   25.00",
+        "01/09   BOOKSTORE   40.00",
+        "Ending Balance   1234.56",
+        "Daily Balance Summary",
+        "01/05   RUNNING BALANCE   999.00",
+        "01/09   RUNNING BALANCE   959.00",
+    ])
+
+    tables = _synthesize_tables_from_row_shape(doc)
+
+    assert len(tables) == 1
+    assert tables[0].rows == [
+        ["01/05", "COFFEE SHOP", "25.00"],
+        ["01/09", "BOOKSTORE", "40.00"],
+    ]

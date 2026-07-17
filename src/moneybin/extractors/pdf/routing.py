@@ -59,7 +59,12 @@ from moneybin.extractors.pdf.confidence import is_high_confidence, score
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint, match_format
 from moneybin.extractors.pdf.ir import PdfDocument
 from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
-from moneybin.extractors.pdf.recipe import FieldExtraction, Recipe, execute_recipe
+from moneybin.extractors.pdf.recipe import (
+    FieldExtraction,
+    Recipe,
+    execute_recipe,
+    group_anchors,
+)
 from moneybin.extractors.pdf.reconciliation import reconcile
 from moneybin.metrics.registry import (
     PDF_EXTRACTION_CONFIDENCE,
@@ -554,26 +559,17 @@ def _run_recipe_pipeline(
     # ------------------------------------------------------------------
     # 4. Capture metadata
     # ------------------------------------------------------------------
-    # Replay path: use the saved recipe's metadata_anchors so a bridge-
-    # authored or manually corrected format with non-default balance/account
-    # labels can actually find its values on replay. Group by field name so
-    # multiple FieldExtraction entries with the same name (alternative
-    # patterns for the same field — e.g. the two default account_id anchors
-    # "Account Number: \\S+" and "Account ending in \\d+") are preserved as
-    # ordered alternatives. Without grouping, capture_metadata only sees the
-    # first pattern per name.
-    #
-    # Tri-state semantics on Recipe.metadata_anchors:
-    #   * None        → no anchors authored; fall back to DEFAULT_ANCHORS
-    #   * non-empty   → use the listed anchors verbatim
-    #   * empty list  → caller deliberately declines metadata capture
-    #                    (Phase 2b bridge-authored recipes for statement
-    #                    formats with no balance lines)
+    # Replay path: use the saved recipe's metadata_anchors so a bridge-authored or
+    # manually corrected format with non-default balance/account labels can find
+    # its values on replay. group_anchors regroups the flat FieldExtraction list
+    # into capture_metadata's {name: [pattern, ...]} shape — preserving multiple
+    # alternative patterns per field (e.g. the two default account_id anchors) and
+    # the tri-state None / [] / populated semantics of metadata_anchors (see its
+    # docstring). First-contact path (use_recipe_anchors False) leaves anchors_dict
+    # None so capture falls back to DEFAULT_ANCHORS.
     anchors_dict: dict[str, list[str]] | None = None
-    if use_recipe_anchors and recipe.metadata_anchors is not None:
-        anchors_dict = {}
-        for f in recipe.metadata_anchors:
-            anchors_dict.setdefault(f.name, []).append(f.pattern)
+    if use_recipe_anchors:
+        anchors_dict = group_anchors(recipe.metadata_anchors)
     metadata = capture_metadata(document_text, anchors=anchors_dict)
 
     if not metadata.is_complete_for_reconciliation():

@@ -306,3 +306,21 @@ def test_resolve_yearless_date_brackets_year_including_adjacent(
     )
 
     assert _resolve_yearless_date(raw, "%m/%d", period) == expected
+
+
+def test_resolve_yearless_date_rejects_far_out_of_period_date() -> None:
+    """A MM/DD far outside the billing cycle is an anomaly — reject, don't guess.
+
+    The out-of-window fallback tolerates a few days of posting drift, but a date
+    months from the cycle (an OCR garble or a misparsed line) has no correct year.
+    Reconciliation can't catch a wrong year (it sums amounts, never validates
+    dates), so the resolver refuses rather than silently assign an arbitrary one —
+    the row then fails to cast and the statement routes to seed.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        _resolve_yearless_date,  # pyright: ignore[reportPrivateUsage] -- drift-bound probe
+    )
+
+    period = (date(2025, 1, 1), date(2025, 1, 31))
+    with pytest.raises(ValueError, match="outside the billing period"):
+        _resolve_yearless_date("06/15", "%m/%d", period)  # ~5 months out
