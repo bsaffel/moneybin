@@ -500,3 +500,27 @@ def derive_query_tier(output_classes: dict[str, DataClass]) -> Tier:
     if not output_classes:
         return Tier.LOW
     return max(c.tier for c in output_classes.values())
+
+
+# ---------------------------------------------------------------------------
+# Reports declared-class lookup
+# ---------------------------------------------------------------------------
+
+
+@functools.cache
+def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
+    """(schema, table) -> {column: DataClass} from every @report's declared map.
+
+    Reports declare their classes on @report(classes=...) (ADR-013); lineage
+    can't derive them because SQLMesh deploys reports.* as `SELECT *` pointers.
+    Imported lazily to avoid a privacy<->reports import cycle and to keep the
+    CLI cold-start path from eagerly loading report runners.
+    """
+    from moneybin.reports._framework.registry import spec_of  # noqa: PLC0415
+    from moneybin.reports.definitions import ALL_REPORTS  # noqa: PLC0415
+
+    out: dict[tuple[str, str], dict[str, DataClass]] = {}
+    for runner in ALL_REPORTS:
+        spec = spec_of(runner)
+        out[(spec.view.schema, spec.view.name)] = dict(spec.classes)
+    return out

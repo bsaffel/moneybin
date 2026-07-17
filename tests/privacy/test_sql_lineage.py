@@ -20,6 +20,7 @@ from moneybin.privacy.sql_lineage import (
     get_current_schema_snapshot,
     is_data_query,
     parse_cached,
+    reports_class_map,
     resolve_output_classes,
     tables_outside_schemas,
 )
@@ -378,3 +379,22 @@ def test_scalar_subquery_count_does_not_downgrade(populated_db: Database) -> Non
         populated_db,
     )
     assert out == {"total": DataClass.TXN_AMOUNT}
+
+
+# ---------------------------------------------------------------------------
+# Task 1: Reports declared-class lookup
+# ---------------------------------------------------------------------------
+
+
+def test_reports_class_map_is_keyed_by_reports_schema() -> None:
+    m = reports_class_map()
+    assert m, "expected at least one @report in ALL_REPORTS"
+    assert all(schema == "reports" for (schema, _table) in m)
+
+
+def test_reports_class_map_account_id_is_critical() -> None:
+    # Every report that exposes account_id must declare it CRITICAL (ADR-013).
+    m = reports_class_map()
+    for cols in m.values():
+        if "account_id" in cols:
+            assert cols["account_id"] is DataClass.ACCOUNT_IDENTIFIER
