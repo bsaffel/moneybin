@@ -515,8 +515,15 @@ def _run_recipe_pipeline(
         # date beyond posting drift). Fail the WHOLE extraction rather than let the
         # executor silently drop the row. Both reasons are bridge-eligible so an
         # agent can supply the period anchors the deterministic path lacked; on a
-        # saved-recipe replay use the replay reason so the escalation carries the
-        # drifted-recipe context (and marks the replay guard failed).
+        # saved-recipe replay use the replay reason + guard flag + the same
+        # replay-failure telemetry the reconciliation path emits, so a saved format
+        # whose year-less rows stop resolving is counted rather than silently
+        # escaping the guard metric. (First-contact uses transaction_table_underivable
+        # — a recipe existed but a row wouldn't cast; it is bridge-eligible either
+        # way, so the label difference from reconciliation_failed is cosmetic.)
+        if is_saved_replay:
+            PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_failed").inc()
+            PDF_REPLAY_GUARD_FAILURE_TOTAL.inc()
         logger.warning(
             "execute_recipe: year-less date row unresolvable — routing to bridge"
         )

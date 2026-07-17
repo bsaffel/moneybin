@@ -627,6 +627,37 @@ def test_wrapped_header_yearless_without_period_is_underivable_not_absent(
     assert decision.reason == "transaction_table_underivable"
 
 
+def test_route_yearless_drift_row_fails_extraction_to_bridge(db: Database) -> None:
+    """A year-less row that can't be placed fails the whole extraction → bridge.
+
+    The billing period is capturable, so derivation authors a year-less recipe; but
+    one row's date sits far outside the cycle (an anomaly). execute_recipe raises
+    YearlessDateError, and routing must fail the WHOLE extraction and seed as
+    transaction_table_underivable (bridge-eligible) rather than silently drop the
+    row. Drives the routing YearlessDateError handler end-to-end (first-contact).
+    """
+    doc = PdfDocument(
+        source_file="chase_card.pdf",
+        tables=[],
+        text_lines=[
+            "CHASE FREEDOM UNLIMITED",
+            "Minimum Payment Due: $25.00",
+            "Opening/Closing Date   01/01/25 - 01/31/25",
+            "Date of",
+            "Transaction   Description   $ Amount",
+            "01/05   COFFEE SHOP   25.00",
+            "01/15   BOOKSTORE   40.00",
+            "06/15   ANOMALY ROW   10.00",  # ~4 months outside the billing cycle
+            "Ending Balance   1234.56",
+        ],
+    )
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "transaction_table_underivable"
+
+
 def test_mixed_width_wrapped_header_reaches_bridge_not_seed(db: Database) -> None:
     """A wrapped-header statement with one odd-width row must reach the bridge.
 
