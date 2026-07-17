@@ -71,4 +71,5 @@ def _classification_assertions(db: Database) -> list[AssertionResult]:
 def test_reports_declared_classes_cover_real_views() -> None:
     scenario = load_shipped_scenario("reports-recipe-library")
     assert scenario is not None
-    run_scenario(scenario, extra_assertions=_classification_assertions)
+    result = run_scenario(scenario, extra_assertions=_classification_assertions)
+    assert result.passed, result.failure_summary()
