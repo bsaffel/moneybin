@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-17 -->
 # MoneyBin Guides
 
 How-to guides for MoneyBin. These walk you through specific tasks — import data, query SQL, configure profiles, run a headless install. For reference material (schemas, APIs), see [`docs/reference/`](../reference/). For the doc index, see [`docs/README.md`](../README.md).

@@ -1,9 +1,9 @@
-<!-- Last reviewed: 2026-05-24 -->
+<!-- Last reviewed: 2026-07-17 -->
 # MCP Server
 
 MoneyBin's MCP server is what lets you ask an AI assistant questions like *"Where did I overspend last month?"* and have it run the multi-step pipeline that answers them — import the latest file, refresh derived tables, fetch the right report, then summarize. The agent picks the tools, chains them via action hints embedded in every response, and discovers parameter schemas at runtime. The same surface is reachable from the CLI for parity; this guide is about the chat-driven path.
 
-The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and registers around seventy tools across roughly a dozen domains. Names are stable today but pre-1.0 — every rename lands in `CHANGELOG.md`.
+The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and registers more than a hundred tools across roughly a dozen domains. Names are stable today but pre-1.0 — every rename lands in `CHANGELOG.md`.
 
 ## Install
 
@@ -216,21 +216,16 @@ Field gloss:
 
 ## Sensitivity tiers
 
-Every tool declares one of three tiers, derived automatically from the privacy
+Every tool carries one of four tiers, derived automatically from the privacy
 classes of the fields it returns (a tool whose payload has no classified fields
-fails to register — the tier is never hand-set).
+fails to register — the tier is never hand-set):
 
 | Tier | Data | What it controls today |
 |---|---|---|
-| `low` | Aggregates, counts, taxonomy reference data | None — always callable |
-| `medium` | Row-level fields: descriptions, amounts, dates | Logging + audit metadata |
-| `high` | Critical PII (account numbers, raw provider blobs) | Account/routing numbers **masked before egress**; logging + audit metadata; planned consent gate |
-
-> This table uses the three-tier public grouping. The runtime actually derives a
-> fourth tier — `critical` — for the account/routing identifiers, split out from
-> `high` (which covers balances and amounts); `critical` is the tier that is
-> always masked before egress today. The grouping here is for brevity; the code
-> distinguishes all four.
+| `low` | Aggregates, counts, category labels, currency, record ids | None — always callable |
+| `medium` | Merchant names, descriptions, notes, transaction dates | Logging metadata |
+| `high` | Balances, transaction and income amounts | Logging metadata; planned consent gate |
+| `critical` | Account and routing numbers, raw provider blobs | Account/routing numbers **masked before egress today**; logging metadata; planned consent gate |
 
 What the tier does today: it tags the per-call event in the privacy log (`tool`, `sensitivity`, data classes, row count) for *every* invocation, read or write. Mutations additionally write an `app.audit_log` row visible through `system_audit` — but reads do not, so `system_audit` shows only writes, not every call. (The two records are distinct; see [What the AI Provider Sees](what-the-ai-sees.md) for the split.) The logs live wherever your MoneyBin install writes them (default: stderr of the `mcp serve` subprocess; configurable via the standard logging settings). Retention is whatever you configure on the log destination — MoneyBin does not prune. Independently of the tier, CRITICAL fields (account/routing numbers) are always masked before a result leaves the process.
 

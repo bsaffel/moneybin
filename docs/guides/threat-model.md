@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-17 -->
 # Threat Model
 
 What MoneyBin protects against, and what it does not. This page is the honest list — written so a privacy-conscious user can decide whether MoneyBin meets their threat model, not so MoneyBin looks good. If you're trusting MoneyBin with real financial data, read this in full before you decide.
@@ -218,15 +218,16 @@ The server's persistent state, ports, container topology, and operational postur
 
 ## Sensitivity tiers (current vs planned)
 
-Every MCP tool declares one of three sensitivity tiers via the `@mcp_tool(sensitivity=...)` decorator:
+Every MCP tool carries one of four sensitivity tiers, derived automatically from the privacy classes of the fields it returns (there is no `sensitivity=` argument — the tier is computed, and a payload with no classified fields fails to register):
 
 | Tier | Data | Today | Planned |
 |---|---|---|---|
 | `low` | Aggregates, counts, category labels, system metadata | Logged on every call | Same |
-| `medium` | Row-level transactions, descriptions, amounts, dates | Logged on every call; visible in `system_audit` | Persistent consent prompt; degraded-response fallback |
-| `high` | Critical PII (account numbers, raw provider blobs) | Logged on every call; visible in `system_audit` | Per-call confirmation; redaction before egress for cloud clients |
+| `medium` | Merchant names, descriptions, notes, transaction dates | Logged on every call | Persistent consent prompt; degraded-response fallback |
+| `high` | Balances, transaction and income amounts | Logged on every call | Persistent consent prompt; degraded-response fallback |
+| `critical` | Account and routing numbers, raw provider blobs | Logged on every call; **masked before egress today** | Per-call confirmation; local-unmask option |
 
-**What this means today:** the tier is a logging and audit signal, not an enforced gate. A `medium` or `high` tool will execute and return its full result without any user-visible consent prompt; the response leaves the MoneyBin process and lands in the MCP client, which forwards it to the LLM. The audit log captures intent (use `system_audit` to read it back), but it doesn't block the call.
+**What this means today:** the tier is a logging signal plus (at `critical`) a masking trigger, not a consent gate. A `medium`, `high`, or `critical` tool executes and returns its result without any user-visible consent prompt — account and routing numbers masked, everything else in the clear; the response leaves the MoneyBin process and lands in the MCP client, which forwards it to the LLM. The per-call privacy log captures intent (use `privacy_log` to read it back; `system_audit` records mutations only), but nothing blocks the call.
 
 **What this means going forward:** when the consent framework lands, `medium` / `high` calls without consent will return aggregate-only `data` with `summary.degraded: true` — never failing outright. The tier names won't change. Cross-links: the per-tool breakdown of what actually leaves is in [What the AI Provider Sees](what-the-ai-sees.md); tier mechanics in [MCP server: sensitivity tiers](mcp-server.md#sensitivity-tiers).
 
