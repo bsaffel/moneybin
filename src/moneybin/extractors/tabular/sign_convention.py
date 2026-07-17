@@ -31,6 +31,9 @@ class SignConventionResult:
     reason: str = ""
     """Human-readable explanation of the inference."""
 
+    evidence_header: str | None = None
+    """Original source header that triggered the inference, if any."""
+
 
 def infer_sign_convention(
     amount_values: list[str | None] | None,
@@ -45,8 +48,8 @@ def infer_sign_convention(
         amount_values: Values from a single amount column (if present).
         debit_values: Values from a debit column (if present).
         credit_values: Values from a credit column (if present).
-        header_context: Lowercase header text for context clues
-            (e.g., "credit" suggests credit card statement).
+        header_context: Mapped amount header for context clues
+            (e.g., "Transaction Credit" suggests a credit-card statement).
 
     Returns:
         SignConventionResult with the inferred convention.
@@ -89,6 +92,7 @@ def infer_sign_convention(
             convention="negative_is_income",
             needs_confirmation=True,
             reason="Credit card context detected — negative values are payments/credits",
+            evidence_header=header_context,
         )
 
     return SignConventionResult(

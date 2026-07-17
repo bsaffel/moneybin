@@ -40,6 +40,18 @@ class TestInferSignConvention:
             amount_values=["42.50", "8.99", "-500.00"],
             debit_values=None,
             credit_values=None,
-            header_context="credit",
+            header_context="Transaction Credit",
         )
         assert result.convention == "negative_is_income"
+        assert result.needs_confirmation is True
+        assert result.evidence_header == "Transaction Credit"
+
+    def test_credit_limit_is_not_credit_card_context(self) -> None:
+        result = infer_sign_convention(
+            amount_values=["42.50", "8.99", "-500.00"],
+            debit_values=None,
+            credit_values=None,
+            header_context="credit_limit",
+        )
+        assert result.convention == "negative_is_expense"
+        assert result.evidence_header is None
