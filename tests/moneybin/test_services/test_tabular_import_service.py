@@ -583,6 +583,165 @@ class TestTabularConfirmationFlow:
             == before + 1
         )
 
+    def test_single_amount_mapping_rejects_split_sign_before_batch(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A split override cannot reach a transform that only has ``amount``."""
+        from moneybin.errors import UserError
+        from moneybin.services.import_service import ImportService
+
+        csv_file = tmp_path / "single.csv"
+        csv_file.write_text(
+            "Date,Description,Amount\n2026-01-05,Coffee,-4.75\n",
+            encoding="utf-8",
+        )
+        single_result = _make_mapping_result(score=1.0, confidence="high")
+
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=single_result,
+            ),
+            pytest.raises(UserError, match="single amount column") as exc,
+        ):
+            ImportService(db).import_file(
+                csv_file,
+                account_id="acct-single",
+                refresh=False,
+                confirm=True,
+                sign="split_debit_credit",
+                save_format=False,
+            )
+
+        assert exc.value.code == "invalid_sign_convention"
+        assert "--sign negative_is_expense" in exc.value.message
+        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        assert log_rows is not None and log_rows[0] == 0
+
+    @pytest.mark.parametrize("sign", ["negative_is_expense", "negative_is_income"])
+    def test_split_mapping_rejects_single_sign_before_batch(
+        self, db: Database, tmp_path: Path, sign: str
+    ) -> None:
+        """Single-column conventions cannot finalize a split mapping as rejected."""
+        from moneybin.errors import UserError
+        from moneybin.services.import_service import ImportService
+
+        csv_file = tmp_path / "split.csv"
+        csv_file.write_text(
+            "Date,Description,Debit,Credit\n2026-01-05,Coffee,4.75,\n",
+            encoding="utf-8",
+        )
+        split_result = _make_mapping_result(
+            score=1.0,
+            confidence="high",
+            field_mapping={
+                "transaction_date": "Date",
+                "debit_amount": "Debit",
+                "credit_amount": "Credit",
+                "description": "Description",
+            },
+            sign_convention="split_debit_credit",
+        )
+
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=split_result,
+            ),
+            pytest.raises(UserError, match="debit/credit pair") as exc,
+        ):
+            ImportService(db).import_file(
+                csv_file,
+                account_id="acct-split",
+                refresh=False,
+                confirm=True,
+                sign=sign,
+                save_format=False,
+            )
+
+        assert exc.value.code == "invalid_sign_convention"
+        assert "--sign split_debit_credit" in exc.value.message
+        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        assert log_rows is not None and log_rows[0] == 0
+
+    @pytest.mark.parametrize(
+        ("columns", "row", "mapping", "sign"),
+        [
+            (
+                "Date,Description,Amount",
+                "2026-01-05,Coffee,-4.75",
+                {
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                "negative_is_expense",
+            ),
+            (
+                "Date,Description,Amount",
+                "2026-01-05,Coffee,4.75",
+                {
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                "negative_is_income",
+            ),
+            (
+                "Date,Description,Debit,Credit",
+                "2026-01-05,Coffee,4.75,",
+                {
+                    "transaction_date": "Date",
+                    "debit_amount": "Debit",
+                    "credit_amount": "Credit",
+                    "description": "Description",
+                },
+                "split_debit_credit",
+            ),
+        ],
+    )
+    def test_explicit_sign_matching_mapping_shape_loads(
+        self,
+        db: Database,
+        tmp_path: Path,
+        columns: str,
+        row: str,
+        mapping: dict[str, str],
+        sign: str,
+    ) -> None:
+        """Every explicit convention still loads when its required columns exist."""
+        from moneybin.services.import_service import ImportService
+
+        csv_file = tmp_path / "matching.csv"
+        csv_file.write_text(f"{columns}\n{row}\n", encoding="utf-8")
+        mapping_result = _make_mapping_result(
+            score=1.0,
+            confidence="high",
+            field_mapping=mapping,
+            sign_convention=sign,
+        )
+
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=mapping_result,
+        ):
+            result = ImportService(db).import_file(
+                csv_file,
+                account_id="acct-matching",
+                refresh=False,
+                confirm=True,
+                sign=sign,
+                save_format=False,
+            )
+
+        assert result.rows_loaded == 1
+        log_row = db.execute(
+            "SELECT status, rows_imported, rows_rejected FROM raw.import_log "
+            "WHERE import_id = ?",
+            [result.import_id],
+        ).fetchone()
+        assert log_row == ("complete", 1, 0)
+
     def test_confirmed_credit_card_format_replays_without_confirmation(
         self, db: Database
     ) -> None:
