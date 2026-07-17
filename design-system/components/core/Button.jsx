@@ -15,7 +15,9 @@ export function Button({ variant = 'primary', size = 'md', disabled = false, typ
     userSelect: 'none',
   };
   const variants = {
-    primary: { background: 'var(--accent-gilt)', color: 'var(--on-accent-gilt)' },
+    // Gilt fill + a 1px brass edge: on the light theme the edge carries the control
+    // boundary (4.9:1) where the fill alone is only ~2.5:1; on dark it is a faint engraving.
+    primary: { background: 'var(--accent-gilt)', color: 'var(--on-accent-gilt)', border: '1px solid var(--accent-brass)' },
     secondary: { background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-strong)' },
     ghost: { background: 'transparent', color: 'var(--text-secondary)' },
   };

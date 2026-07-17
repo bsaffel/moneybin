@@ -8,7 +8,7 @@ export interface DuckKeyProps {
   size?: number;
   /** 'mono' single-color (app chrome) or 'full' light face + gilt bill + eye (docs/marketing). Default 'mono'. */
   variant?: 'mono' | 'full';
-  /** Fill for 'mono'; pick from accent or text ramps. Default var(--accent-gilt) (the mark is a gold fill). */
+  /** Fill for 'mono'; pick from accent or text ramps. Default var(--brand-gold) — bright gilt on dark, brass on light (an identity mark, like the logo). */
   color?: string;
   style?: React.CSSProperties;
 }

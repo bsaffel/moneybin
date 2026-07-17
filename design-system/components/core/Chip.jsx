@@ -27,6 +27,7 @@ export function Chip({ variant = 'category', children, onClick, active = false, 
       style={{ ...base, ...variants[variant], ...style }}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
+      aria-pressed={onClick ? active : undefined}
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(e); } } : undefined}
       onMouseEnter={(e) => { if (onClick && variant === 'sql') e.currentTarget.style.borderColor = 'var(--accent-brass)'; }}

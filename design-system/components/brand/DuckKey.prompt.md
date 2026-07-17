@@ -1,7 +1,7 @@
 The reusable duck-key glyph (see guidelines/brand-duckkey.html). Mono for app chrome, full-color eyed for docs/marketing.
 
 ```jsx
-<DuckKey size={24} />                          {/* gilt mono — unlock affordance */}
+<DuckKey size={24} />                          {/* brand-gold mono — unlock affordance */}
 <DuckKey size={24} color="var(--text-secondary)" />
 <DuckKey size={48} variant="full" />           {/* docs/marketing */}
 ```

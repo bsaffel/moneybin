@@ -23,7 +23,7 @@ never hardcode a duration, easing, or color.
 ## Loops
 
 - **`sync` is the only loop, and only while a sync is in flight.** Linear
-  rotation, ~1.2s per turn, stopping dead at 0° the instant the sync completes.
+  rotation over `--motion-sync` (~1.2s per turn), stopping dead at 0° the instant the sync completes.
 - **No other looping or ambient motion.** No pulse, no breathing dot, no
   shimmer, no idle drift. A resting screen is still.
 
@@ -64,7 +64,7 @@ strokes that differ**:
 
 The single sanctioned brand animation. On unlock, the `DuckKey` does a
 quarter-turn as it seats into the keyhole and the `VaultStatusBar` engages —
-**≤400ms, once per unlock.** This is the sole exception to the DuckKey's
+**≤ `--motion-ceremony` (400ms), once per unlock.** This is the sole exception to the DuckKey's
 "never rotated" brand rule and the only motion in the system allowed to exceed
 chrome durations. It fires on the unlock transition only, never on a resting or
 already-unlocked vault.

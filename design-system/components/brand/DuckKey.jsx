@@ -1,4 +1,4 @@
-export function DuckKey({ size = 48, variant = 'mono', color = 'var(--accent-gilt)', style }) {
+export function DuckKey({ size = 48, variant = 'mono', color = 'var(--brand-gold)', style }) {
   // Duck-key: circle head + rounded-pill bill pointing right — the exact negative of the bill-hole keyhole.
   // Never rotated; bill always points right. 'full' (light face, gilt bill, eye) is docs/marketing only.
   const head = variant === 'full' ? '#E9E4DB' : color;

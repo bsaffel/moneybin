@@ -21,7 +21,7 @@ one wins. Sample data throughout; the grammar is what ships. Never hardcode hex
 
 Every mark takes its color from its *job*, not its series:
 
-- **Gilt (`--accent-gilt`) = fills** — bars, areas, marker dots. One bright hex both themes; on the light surface a fill's extent is carried by a 1px `--accent-brass` edge, so gold stays gold instead of darkening to brown to chase the 3:1 floor.
+- **Gilt (`--accent-gilt`) = fills** — bars, areas, marker dots. One bright hex both themes. A *labeled* bar carries its value in height + label (WCAG 1.4.11), so bars stay unedged and gold even on the light surface; only an interactive control's gilt fill (a button) takes a 1px `--accent-brass` edge to hold its 3:1 boundary on light.
 - **Brass (`--accent-brass`) = derived lines and provenance text** — the value-over-time line, avg (dashed) and trend (solid) lines, SQL chips, WHERE labels, overlines. Theme-responsive so it stays legible as text on both surfaces.
 - **Verdigris (`--accent-verdigris`) = interaction only** — hover/selected states, pinned-tooltip accents, clickable legend entries. Never a data encoding (its dark value equals `--chart-2`; keep verdigris in chart slot 2 so a categorical chart never double-encodes it).
 - **Ink (`--text-secondary` / `--text-faint`) = axes and labels only** — never on bars.

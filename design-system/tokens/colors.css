@@ -8,10 +8,10 @@
  *     dark and the light surfaces (dark needs it lighter, light needs it
  *     darker), and text legibility outranks a shared hex.
  *   GILT   fills — golden fills: chart bars, marker dots, the primary button,
- *     the wordmark, selected-surface tints. One bright hex both themes. On the
- *     light surface a fill's extent is carried by a 1px --accent-brass hairline
- *     edge (4.9:1), not the fill itself — so gold stays gold on paper instead of
- *     darkening to brown to chase the 3:1 floor.
+ *     selected-surface tints. One bright hex both themes. An interactive
+ *     control's gilt fill (a button) carries a 1px --accent-brass edge so its
+ *     boundary clears 3:1 on the light surface; a labeled chart bar relies on
+ *     its height and label instead (WCAG 1.4.11), so bars stay unedged and gold.
  *   VERDIGRIS responds — interaction only: selected rows/segments, active
  *     filters, links, workflow states. Never a data encoding. Its dark value
  *     equals --chart-2, and it is kept in chart slot 2 so a categorical chart
@@ -19,7 +19,10 @@
  *
  * Text on a gilt fill is --on-accent-gilt (ink, both themes); --focus stays
  * brass-family (identity, not selection — verdigris would make keyboard focus
- * and selection indistinguishable).
+ * and selection indistinguishable). The wordmark "Bin" and the DuckKey are
+ * identity marks rendered on the surface, so they use --brand-gold: bright gilt
+ * on dark, deepening to brass on light (the surface-relative sibling of the
+ * logo's plate-relative --mark-coin).
  */
 :root {
   --bg-base: #141311;
@@ -35,7 +38,7 @@
   --accent-brass: #A6832C;
   --accent-brass-strong: #B89238;  /* brass-text hover — brightens on dark */
   --on-accent-brass: #141311;  /* ink where brass is ever a fill (rare post-tiering) */
-  /* gilt — golden fills; one bright hex both themes, extent edged on light */
+  /* gilt — golden fills; one bright hex both themes, control fills edged on light */
   --accent-gilt: #C79B3B;
   --accent-gilt-strong: #D6A845;  /* gilt-fill hover — brightens on dark */
   --accent-gilt-tint: #3A3120;  /* selected-surface wash */
@@ -49,6 +52,8 @@
   /* logo mark — auto-contrast plate/coin for the current surface (paper plate on the dark theme) */
   --mark-plate: #E9E4DB;
   --mark-coin: #8A6A1C;
+  /* brand-gold — wordmark "Bin" + DuckKey; bright gilt on the dark lead theme */
+  --brand-gold: var(--accent-gilt);
   /* categorical chart palette (shared across themes; equal-lightness oklch, hue-spread) */
   --chart-1: #C79B3B;
   --chart-2: #56A8A0;
@@ -74,7 +79,7 @@
   --accent-brass: #8A6A1C;
   --accent-brass-strong: #6E5416;  /* brass-text hover — deepens on light */
   --on-accent-brass: #FFFFFF;
-  /* gilt — same bright gold as dark; its extent is carried by the brass edge (4.9:1) */
+  /* gilt — same bright gold as dark; control fills carry a brass edge on light (4.9:1) */
   --accent-gilt: #C79B3B;
   --accent-gilt-strong: #B8862A;  /* gilt-fill hover — deepens on light */
   --accent-gilt-tint: #EFE6CF;  /* selected-surface wash (visible on paper) */
@@ -88,4 +93,6 @@
   /* logo mark — ink plate on the light theme's light surfaces */
   --mark-plate: #1C1A16;
   --mark-coin: #C79B3B;
+  /* brand-gold — deepens to brass on light so identity marks stay legible */
+  --brand-gold: var(--accent-brass);
 }

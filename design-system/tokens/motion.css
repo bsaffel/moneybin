@@ -3,4 +3,6 @@
   --motion-fast: 120ms;                        /* state flips: chevron, pin, audit-strip reveal */
   --motion-slow: 180ms;                        /* surface changes: drawer, tooltip */
   --motion-ease: cubic-bezier(0.2, 0, 0, 1);   /* decisive out, no overshoot */
+  --motion-sync: 1200ms;                       /* the sync loop — one full turn (the only loop) */
+  --motion-ceremony: 400ms;                    /* the vault-unlock ceremony (the one exception) */
 }
