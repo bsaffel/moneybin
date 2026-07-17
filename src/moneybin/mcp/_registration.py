@@ -9,13 +9,40 @@ destructiveHint, idempotentHint, openWorldHint).
 
 from __future__ import annotations
 
+import functools
+import inspect
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from fastmcp.tools import ToolResult
 from mcp.types import ToolAnnotations
+
+from moneybin.protocol.envelope import ResponseEnvelope
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
+
+
+def _wire_result_adapter(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Return a FastMCP adapter that emits the canonical envelope wire shape."""
+    signature = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    async def wire_result(*args: Any, **kwargs: Any) -> ToolResult:
+        envelope = cast(ResponseEnvelope[Any], await fn(*args, **kwargs))
+        return ToolResult(
+            content=envelope.to_json(),
+            structured_content=envelope.to_dict(),
+        )
+
+    wire_result.__annotations__ = {  # pyright: ignore[reportFunctionMemberAccess]
+        **getattr(fn, "__annotations__", {}),
+        "return": ToolResult,
+    }
+    wire_result.__signature__ = signature.replace(  # type: ignore[attr-defined]
+        return_annotation=ToolResult
+    )
+    return wire_result
 
 
 def register(mcp: FastMCP, fn: Callable[..., Any], name: str, description: str) -> None:
@@ -39,4 +66,4 @@ def register(mcp: FastMCP, fn: Callable[..., Any], name: str, description: str) 
         tags=tags,
         annotations=annotations,
         output_schema=cast(Any, fn)._mcp_output_schema,
-    )(fn)
+    )(_wire_result_adapter(fn))
