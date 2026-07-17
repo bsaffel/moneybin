@@ -14,7 +14,11 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.privacy.sql_query import execute_sql_query, validate_read_only_query
+from moneybin.privacy.sql_query import (
+    _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
+    execute_sql_query,
+    validate_read_only_query,
+)
 from moneybin.privacy.taxonomy import Tier
 
 # Every remote URL scheme the read-only validator must reject. Kept in lockstep
@@ -292,3 +296,10 @@ def test_classes_returned_includes_routing_number(populated_db: Database) -> Non
         populated_db, "SELECT routing_number FROM core.dim_accounts", max_rows=100
     )
     assert "routing_number" in result.classes_returned
+
+
+def test_reports_schema_is_queryable() -> None:
+    assert "reports" in _ALLOWED_QUERY_SCHEMAS
+    # core/app still allowed; internal schemas still fenced in Phase 1.
+    assert {"core", "app"} <= _ALLOWED_QUERY_SCHEMAS
+    assert "meta" not in _ALLOWED_QUERY_SCHEMAS

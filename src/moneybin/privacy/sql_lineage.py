@@ -157,10 +157,11 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     """Return a SchemaSnapshot whose expensive MappingSchema build is cached.
 
     Per call this issues two cheap catalog queries (the migration version and
-    the core/app column list); both are sub-millisecond on a local DuckDB and
-    dwarfed by the per-call connection open. The costly part — building the
-    sqlglot ``MappingSchema`` — is memoised by ``_build_snapshot`` keyed on
-    (version, ordered columns), so it runs only when the schema actually changes.
+    the core/app/reports column list); both are sub-millisecond on a local
+    DuckDB and dwarfed by the per-call connection open. The costly part —
+    building the sqlglot ``MappingSchema`` — is memoised by ``_build_snapshot``
+    keyed on (version, ordered columns), so it runs only when the schema
+    actually changes.
 
     Columns are ordered by ``column_index`` (DuckDB's definition order) so star
     expansion matches the runtime column order — see ``_build_snapshot``.
@@ -170,7 +171,7 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
         """
         SELECT schema_name, table_name, column_name
         FROM duckdb_columns()
-        WHERE schema_name IN ('core', 'app')
+        WHERE schema_name IN ('core', 'app', 'reports')
         ORDER BY schema_name, table_name, column_index
         """
     ).fetchall()

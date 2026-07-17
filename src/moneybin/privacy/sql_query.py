@@ -43,11 +43,10 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 
 logger = logging.getLogger(__name__)
 
-# Data queries may reference only the schemas the privacy CLASSIFICATION
-# registry covers, so every queryable column has a known data class and the
-# masking guarantee is sound. reports.* is deferred until its views are
-# classified (tracked as a follow-up); raw/prep/meta are internal schemas.
-_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app"})
+# Data queries may reference these schemas: core/app (CLASSIFICATION registry)
+# and reports (declared @report classes, ADR-013). raw/prep land in Phase 2
+# (CRITICAL declarations + content-net floor); meta/seeds stay internal.
+_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app", "reports"})
 
 # --- Read-only / file-access safety gate -----------------------------------
 # DuckDB table-valued functions that read local files or make network requests.
