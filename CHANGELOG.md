@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-09 -->
+<!-- Last reviewed: 2026-07-17 -->
 
 # Changelog
 
@@ -10,7 +10,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- **`accounts_set`'s currency parameter is now `currency_code`, not
+  `iso_currency_code`.** Aligns the account-currency parameter name with
+  every other currency field in the schema. Pre-launch, so this is a direct
+  rename with no deprecation alias — any script or agent calling
+  `accounts_set(iso_currency_code=...)` needs to update to `currency_code`.
+  The CLI's `moneybin accounts set --currency` flag is unaffected.
+
 ### Fixed
+- **Non-USD transactions and balances are no longer silently relabeled
+  USD.** OFX's per-statement currency (`CURDEF`) and Plaid's per-balance
+  currency were parsed but discarded; every transaction and balance landed
+  with an unrecorded, assumed `USD`. Currency is now captured end-to-end
+  from OFX and Plaid, a transaction or balance with no currency of its own
+  inherits its account's currency setting, and — for the first time — an
+  amount whose currency genuinely isn't known stays unlabeled instead of
+  being guessed. `moneybin accounts set --currency` (or MCP
+  `accounts_set(currency_code=...)`) sets an account's currency explicitly.
+  Full currency-aware reporting (a home-currency setting and a guard against
+  silently summing mixed currencies) is still to come.
 - **Credit-card PDF statements now import with correct signs.** A statement that
   names itself a credit card (via its required disclosures — "minimum payment",
   "credit limit", and the like) derives the inverted convention
