@@ -30,6 +30,7 @@ def _make_mapping_result(
     field_mapping: dict[str, str] | None = None,
     sign_needs_confirmation: bool = False,
     sign_convention: str = "negative_is_expense",
+    sign_evidence_header: str | None = None,
 ) -> object:
     """Return a MappingResult-like object with the given confidence and score."""
     from moneybin.extractors.tabular.column_mapper import MappingResult
@@ -47,6 +48,7 @@ def _make_mapping_result(
         number_format="us",
         sign_convention=sign_convention,  # type: ignore[arg-type]  # test fixture accepts every supported convention
         sign_needs_confirmation=sign_needs_confirmation,
+        sign_evidence_header=sign_evidence_header,
         is_multi_account=False,
         unmapped_columns=["Balance"],
         flagged_fields=[],
@@ -422,6 +424,7 @@ class TestTabularConfirmationFlow:
             confidence="high",
             sign_convention="negative_is_income",
             sign_needs_confirmation=True,
+            sign_evidence_header="Transaction Credit",
         )
         with (
             patch(
@@ -440,6 +443,11 @@ class TestTabularConfirmationFlow:
 
         assert exc.value.outcome.channel == "tabular"
         assert exc.value.outcome.reason == "sign_convention"
+        from moneybin.services.import_confirmation import confirmation_payload_dict
+
+        assert confirmation_payload_dict(exc.value.outcome)["sign_evidence"] == [
+            "Transaction Credit"
+        ]
         assert isinstance(exc.value.outcome.proposed, SignConventionProposal)
         assert exc.value.outcome.proposed.sign_convention == "negative_is_income"
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()

@@ -1200,6 +1200,7 @@ class ImportService:
                     matched_format = fmt
                     break
 
+        sign_evidence_header: str | None = None
         if matched_format:
             resolved = ResolvedMapping(
                 field_mapping=matched_format.field_mapping,
@@ -1238,6 +1239,7 @@ class ImportService:
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,
             )
+            sign_evidence_header = mapping_result.sign_evidence_header
             confidence = mapping_result.to_confidence(
                 t_high=bands.t_high, t_med=bands.t_med
             )
@@ -1403,7 +1405,7 @@ class ImportService:
             sign=sign,
             human_sign_confirmation=human_sign_confirmation,
             is_first_contact=matched_format is None,
-            evidence="a column header contains the word 'credit'",
+            evidence=sign_evidence_header or resolved.field_mapping.get("amount", ""),
         )
 
         # Determine account info
