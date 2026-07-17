@@ -449,7 +449,7 @@ class TransactionService:
                         entry.get("payment_channel"),
                         entry.get("transaction_type"),
                         entry.get("check_number"),
-                        entry.get("currency_code") or "USD",
+                        entry.get("currency_code"),
                         actor,
                         transaction_id,
                     ],
