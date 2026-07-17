@@ -73,11 +73,16 @@ The rest of this page expands each column.
 
 ## Always masked (enforced today)
 
-Two field families never leave MoneyBin in the clear, on any tool, on both the
-MCP and the CLI `--output json` surface:
+Two classified field families never leave MoneyBin in the clear, on any tool, on
+both the MCP and the CLI `--output json` surface:
 
 - **Account identifiers** → `****1234` (last four kept).
 - **Routing numbers** → `*****` (fully masked).
+
+(This is the masking of the account-number and routing-number *columns*. An
+account number a user typed into a free-text note or that a bank embedded in a
+description is *not* detected — that's the passthrough case covered under [Not
+masked](#not-masked-stated-plainly) below.)
 
 This is enforced structurally, not by convention. Every one of MoneyBin's ~105
 tools must declare the privacy class of each field it returns, or it fails to
@@ -117,8 +122,11 @@ signal the model categorizes on — but before the prompt is built, it:
 
 - replaces the amount with a single **sign** (`+`, `-`, or `0`) — never the value,
 - drops the **date** and the **account identifier** entirely,
-- scrubs embedded **locations, emails, phone numbers, card-reference tails, and
-  store numbers** out of the description and memo.
+- runs a best-effort scrub of embedded **locations, emails, phone numbers,
+  card-reference tails, and store numbers** out of the description and memo. This
+  is regex-based: it catches common forms, not every one — a card tail fused to
+  other characters (`xxxxxxxxx5648`) can slip through, so treat it as noise
+  reduction, not a guarantee.
 
 So the model categorizing "SQ *BLUE BOTTLE #0123, OAKLAND CA" sees **"BLUE
 BOTTLE"** with an outflow sign — the merchant, yes, but not the amount, the date,
@@ -136,8 +144,11 @@ The provider sees the *results of the queries the agent ran*, not your database:
 
 - `sql_query` is walled to the `core` and `app` schemas, is read-only (writes,
   DDL, and file/URL functions are rejected), and caps results at 1,000 rows with
-  a 30-second limit. It cannot reach `raw`/`prep`, cannot read local files, and
-  cannot exfiltrate to a URL.
+  a 30-second limit. It cannot **SELECT row data** from `raw`/`prep`, read local
+  files, or exfiltrate to a URL. One narrow exception: catalog statements
+  (`DESCRIBE`, `SHOW`, `PRAGMA`, `EXPLAIN`) run before the schema gate, so an
+  agent can see the *structure* of `raw`/`prep` tables — column names, types, and
+  storage stats — but never their row values.
 - Typed reads return the rows matching the filter the agent chose, capped and
   paginated.
 
@@ -196,7 +207,13 @@ provider, because it was.
 
 ## What MoneyBin records locally
 
-Two independent local records, neither of which leaves your machine:
+Two independent local records. Both are stored locally and neither is transmitted
+anywhere on its own — but note that both are exposed through their *own* MCP tools
+(`privacy_log`, `system_audit`), so an agent that calls those tools pulls the
+records into a tool result, which then reaches the provider like any other. That
+matters most for `system_audit`, whose payload deliberately includes
+high-sensitivity before/after values. "Stored locally, not transmitted on their
+own" — not "the model can never see them."
 
 - **Per-call privacy log** (`privacy.log.jsonl`, `privacy_log` tool / `moneybin
   privacy log`). One line per tool call — the tool name, its sensitivity tier,
