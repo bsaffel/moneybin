@@ -216,6 +216,41 @@ def test_scoring_compares_ordered_calls_and_normalized_arguments() -> None:
     assert outcome.unnecessary_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("actual_names", "expected_unnecessary"),
+    [
+        (("accounts_summary", "system_status"), 0),
+        (("system_status", "sql_query"), 1),
+        (("system_status", "system_status"), 1),
+        (("system_status", "accounts_summary", "sql_query"), 1),
+    ],
+    ids=["reordered", "substituted", "duplicate", "trailing-extra"],
+)
+def test_unnecessary_calls_counts_only_tool_name_multiset_surplus(
+    actual_names: tuple[str, ...],
+    expected_unnecessary: int,
+) -> None:
+    cases = load_cases(CASES_PATH)
+    capture = load_capture(CAPTURE_PATH)
+    inventory = _load_inventory()
+    first = capture.responses[0]
+    changed = replace(
+        capture,
+        responses=(
+            replace(
+                first,
+                calls=tuple(ToolCall(name=name, arguments={}) for name in actual_names),
+            ),
+            *capture.responses[1:],
+        ),
+    )
+
+    outcome = score(cases, changed, inventory).outcomes[0]
+
+    assert outcome.selection is False
+    assert outcome.unnecessary_calls == expected_unnecessary
+
+
 def test_scoring_compares_completion_safety_and_recovery() -> None:
     cases = load_cases(CASES_PATH)
     capture = load_capture(CAPTURE_PATH)
@@ -306,6 +341,63 @@ def test_load_capture_rejects_unknown_fields_and_evidence_kinds(
     payload["evidence_kind"] = "synthetic_model_run"
     with pytest.raises(ValueError, match="evidence_kind"):
         load_capture(_write_json(tmp_path / "kind.json", payload))
+
+
+def test_load_capture_rejects_duplicate_identity_keys(tmp_path: Path) -> None:
+    payload = json.dumps(_valid_capture_payload(_load_inventory()))
+    duplicate = payload.replace(
+        '"host": "contract-fixture"',
+        '"host": "first", "host": "contract-fixture"',
+        1,
+    )
+    path = tmp_path / "duplicate-identity.json"
+    path.write_text(duplicate)
+
+    with pytest.raises(ValueError, match="duplicate JSON object member.*host"):
+        load_capture(path)
+
+
+def test_load_cases_rejects_duplicate_nested_argument_keys(tmp_path: Path) -> None:
+    payload = json.dumps(_valid_case_payload())
+    duplicate = payload.replace(
+        '"arguments": {}',
+        '"arguments": {"section": "first", "section": "second"}',
+        1,
+    )
+    path = tmp_path / "duplicate-argument.json"
+    path.write_text(duplicate)
+
+    with pytest.raises(ValueError, match="duplicate JSON object member.*section"):
+        load_cases(path)
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_load_cases_rejects_non_finite_json_constants(
+    tmp_path: Path,
+    constant: str,
+) -> None:
+    path = tmp_path / "non-finite.json"
+    path.write_text(f"[{constant}]")
+
+    with pytest.raises(ValueError, match=f"non-finite JSON constant.*{constant}"):
+        load_cases(path)
+
+
+def test_scoring_rejects_non_finite_values_during_canonical_serialization() -> None:
+    cases = load_cases(CASES_PATH)
+    capture = load_capture(CAPTURE_PATH)
+    first = capture.responses[0]
+    non_finite_call = replace(first.calls[0], arguments={"value": float("nan")})
+    changed = replace(
+        capture,
+        responses=(
+            replace(first, calls=(non_finite_call, *first.calls[1:])),
+            *capture.responses[1:],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="canonical JSON.*non-finite"):
+        score(cases, changed, _load_inventory())
 
 
 def test_load_capture_accepts_provider_neutral_observed_evidence(

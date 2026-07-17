@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -288,10 +289,7 @@ def _score_case(
         _canonical_json(actual.arguments) == _canonical_json(expected.arguments)
         for expected, actual in zip(expectation.calls, response.calls, strict=True)
     )
-    unnecessary = sum(
-        index >= len(expected_names) or call.name != expected_names[index]
-        for index, call in enumerate(response.calls)
-    )
+    unnecessary = sum((Counter(actual_names) - Counter(expected_names)).values())
     return CaseOutcome(
         case_id=case_id,
         selection=selection,
@@ -412,9 +410,31 @@ def _validate_evidence_labels(capture: EvalCapture) -> None:
 
 def _read_json(path: Path) -> object:
     try:
-        return cast(object, json.loads(path.read_text()))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"could not load JSON from {path}: {error}") from error
+        return cast(
+            object,
+            json.loads(
+                path.read_text(),
+                object_pairs_hook=_strict_json_object,
+                parse_constant=_reject_non_finite_constant,
+            ),
+        )
+    except (OSError, ValueError) as error:
+        raise ValueError(f"could not load strict JSON from {path}: {error}") from error
+
+
+def _strict_json_object(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object member {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_non_finite_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
 
 
 def _object(value: object, context: str) -> dict[str, object]:
@@ -494,7 +514,15 @@ def _string_tuple(
 
 
 def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except ValueError as error:
+        raise ValueError("canonical JSON cannot serialize non-finite values") from error
 
 
 def _load_inventory(path: Path) -> SurfaceInventory:
