@@ -102,8 +102,9 @@ def _seed_ofx_twin(db: Database, *, account_id: str) -> None:
     Mirrors ``tests.scenarios._runner.fixture_loader`` column shapes. No
     ``currency_code`` is set on the transaction — a real OFX file lacking a
     CURDEF element leaves it NULL (Task 2's honest-capture behavior), which is
-    the precondition for this bug: the higher-priority source has no currency
-    of its own.
+    the precondition for this scenario: the higher-priority source has no
+    currency of its own, so the assertion only holds if ARG_MIN correctly
+    prefers the lower-priority source's known value.
     """
     now = datetime.now(UTC)
     db.ingest_dataframe(
