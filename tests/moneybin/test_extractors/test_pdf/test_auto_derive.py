@@ -927,6 +927,38 @@ def test_shape_reconstruction_refuses_mixed_width_rows() -> None:
     assert derive_recipe(doc, _EMPTY_META) is None
 
 
+def test_shape_recipe_without_terminal_anchor_excludes_above_header_rows() -> None:
+    """A missing end_anchor carves start→EOF, not the whole document.
+
+    A shape-derived recipe whose statement ends with a non-balance terminal
+    ("Totals Year-to-Date") gets the ``"Total:"`` end-anchor fallback, which the
+    document doesn't contain. ``_carve_region`` must then carve from the start
+    anchor to end-of-document — NOT return the whole text — so a summary line above
+    the wrapped header ("02/19/2025 Amount Due 120.00") isn't executed as a
+    transaction row.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    text_lines = [
+        "CHASE FREEDOM UNLIMITED",
+        "Minimum Payment Due: $25.00",
+        "02/19/2025   Amount Due   120.00",  # summary line ABOVE the wrapped header
+        "Date of",
+        "Transaction   Description   $ Amount",
+        "01/05/2025   COFFEE SHOP   25.00",
+        "01/09/2025   BOOKSTORE   40.00",
+        "Totals Year-to-Date   65.00",  # terminal, not a _SHAPE_END_ANCHORS sentinel
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+    assert recipe is not None
+
+    result = execute_recipe(recipe, "\n".join(text_lines))
+    # Only the two real rows — the above-header summary line is not executed.
+    assert [r["Amount"] for r in result.rows] == [Decimal("25.00"), Decimal("40.00")]
+
+
 def test_select_transaction_table_not_suppressed_by_small_named_table() -> None:
     """A small unrelated named table must not suppress the larger wrapped table.
 
