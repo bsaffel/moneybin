@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -504,6 +505,85 @@ class TestImportConfirmTool:
             is True
         )
 
+    async def test_tabular_sign_no_elicitation_cli_fallback_is_lossless(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The terminal fallback reproduces every public confirmation input."""
+        from moneybin.services.import_confirmation import SignConventionProposal
+
+        csv_file = tmp_path / "statements" / "Owner's card.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        sign_error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=("Debit",),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+            )
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = sign_error
+        mapping = {"description": "Merchant Name"}
+        bindings = {"minted card": "new", "settled": "acct existing"}
+        metadata = {
+            "minted card": {
+                "display_name": "Owner's Card",
+                "last_four": "4267",
+            }
+        }
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(csv_file),
+                mapping=mapping,
+                save_format=False,
+                account_id="acct explicit",
+                account_name="Owner's Card",
+                account_bindings=bindings,
+                account_metadata=metadata,
+            )
+
+        assert result.error is not None
+        assert result.error.code == "mutation_confirmation_required"
+        assert result.error.hint is not None
+        command = result.error.hint.split("`", 2)[1]
+        tokens = shlex.split(command)
+        assert tokens[:4] == ["moneybin", "import", "confirm", str(csv_file)]
+        assert "--accept" not in tokens
+        assert "--confirm-sign" in tokens
+        assert "--no-save-format" in tokens
+        assert tokens[tokens.index("--account-id") + 1] == "acct explicit"
+        assert tokens[tokens.index("--account-name") + 1] == "Owner's Card"
+        assert tokens[tokens.index("--mapping") + 1] == "description=Merchant Name"
+        binding_values = {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
+        }
+        assert binding_values == {
+            "minted card=new",
+            "settled=acct existing",
+        }
+        metadata_values = {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
+        }
+        assert metadata_values == {
+            "minted card:display_name=Owner's Card",
+            "minted card:last_four=4267",
+        }
+        assert "human_sign_confirmation" not in result.error.hint
+        assert mock_service.import_file.call_count == 1
+
     async def test_tabular_sign_retry_returns_account_confirmation_envelope(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
@@ -551,9 +631,17 @@ class TestImportConfirmTool:
         ):
             result = await import_confirm(
                 file_path=str(csv_file),
-                accept=True,
                 mapping={"description": "Memo"},
-                account_bindings={"settled": "acct-123"},
+                save_format=False,
+                account_id="acct-explicit",
+                account_name="Card Account",
+                account_bindings={"settled": "acct-123", "minted": "new"},
+                account_metadata={
+                    "minted": {
+                        "display_name": "Travel Card",
+                        "last_four": "4267",
+                    }
+                },
             )
 
         data = result.data
@@ -561,10 +649,16 @@ class TestImportConfirmTool:
         assert data["status"] == "confirmation_required"
         assert data["reason"] == "account_confirmation"
         actions = " ".join(result.actions or [])
-        assert "accept=True" in actions
+        assert "accept=True" not in actions
         assert "mapping={'description': 'Memo'}" in actions
+        assert "save_format=False" in actions
+        assert "account_id='acct-explicit'" in actions
+        assert "account_name='Card Account'" in actions
         assert "'settled': 'acct-123'" in actions
+        assert "'minted': 'new'" in actions
         assert "'card-abc': '<account_id|new>'" in actions
+        assert "'display_name': 'Travel Card'" in actions
+        assert "'last_four': '4267'" in actions
         assert "not persisted across MCP calls" in actions
         assert "ask the human to confirm the sign inversion again" in actions
         assert "human_sign_confirmation" not in actions

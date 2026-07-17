@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +24,19 @@ from moneybin.connectors.gsheet.testing.fake_sheets_client import (
     TestSheetsClient,
 )
 from moneybin.database import Database
+from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+
+
+def _confirmation_count(outcome: str) -> float:
+    """Return the aggregate GSheet confirmation count across confidence tiers."""
+    return sum(
+        IMPORT_CONFIRMATIONS_TOTAL.labels(
+            channel="gsheet",
+            tier=tier,
+            outcome=outcome,
+        )._value.get()  # type: ignore[reportPrivateUsage]  # test metric
+        for tier in ("low", "medium", "high")
+    )
 
 
 def _make_service(
@@ -75,19 +90,49 @@ def _seed_workbook(gid: int = 99) -> FakeWorkbook:
     )
 
 
-def _inverted_sign_workbook() -> FakeWorkbook:
+def _inverted_sign_workbook(*, include_unknown_amount: bool = False) -> FakeWorkbook:
     """Single-amount credit export that triggers negative-is-income inference."""
+    headers = ["Date", "Description", "Transaction Credit"]
+    rows = [
+        ["2026-01-15", "Whole Foods", "87.42"],
+        ["2026-01-20", "Payment", "-250.00"],
+    ]
+    if include_unknown_amount:
+        headers.append("Other Amount")
+        rows[0].append("42.00")
+        rows[1].append("-60.00")
     return FakeWorkbook(
         title="Card Transactions",
         tabs=[
             FakeSheetTab(
                 name="Transactions",
                 gid=0,
-                headers=["Date", "Description", "Transaction Credit"],
-                rows=[
-                    ["2026-01-15", "Whole Foods", "87.42"],
-                    ["2026-01-20", "Payment", "-250.00"],
-                ],
+                headers=headers,
+                rows=rows,
+            )
+        ],
+    )
+
+
+def _split_sign_workbook(*, include_unknown_amount: bool = False) -> FakeWorkbook:
+    """Split debit/credit export whose positive cells carry source-role polarity."""
+    headers = ["Date", "Description", "Debit", "Credit"]
+    rows = [
+        ["2026-01-15", "Whole Foods", "87.42", ""],
+        ["2026-01-20", "Payment", "", "250.00"],
+    ]
+    if include_unknown_amount:
+        headers.append("Other Amount")
+        rows[0].append("87.42")
+        rows[1].append("250.00")
+    return FakeWorkbook(
+        title="Card Transactions",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=headers,
+                rows=rows,
             )
         ],
     )
@@ -136,6 +181,46 @@ def test_connect_inferred_inversion_requires_sign_before_write_or_pull(
     assert error.evidence_header == "Transaction Credit"
     assert "invert every transaction amount" in error.message
     assert "--sign negative_is_income" in error.message
+    assert svc.list_connections() == []
+    pull.assert_not_called()
+
+
+def test_connect_rejects_inferred_sign_from_discarded_amount_source(
+    in_memory_db: Database,
+) -> None:
+    """A replacement amount source cannot inherit sign evidence from another column."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ssReplacedAmount",
+        _inverted_sign_workbook(include_unknown_amount=True),
+    )
+
+    with (
+        patch(
+            "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
+        ) as pull,
+        pytest.raises(GSheetError) as exc_info,
+    ):
+        svc.connect(
+            ConnectionRequest(
+                url=(
+                    "https://docs.google.com/spreadsheets/d/ssReplacedAmount/edit#gid=0"
+                ),
+                adapter="transactions",
+                account_name="Card",
+                account_id="acct_card",
+                column_mapping={"Other Amount": "amount"},
+                yes=True,
+                human_sign_confirmation=True,
+            )
+        )
+
+    assert not isinstance(
+        exc_info.value,
+        gsheet_errors.GSheetSignConfirmationRequiredError,
+    )
+    assert "Other Amount" in str(exc_info.value)
+    assert "--sign" in str(exc_info.value)
     assert svc.list_connections() == []
     pull.assert_not_called()
 
@@ -199,8 +284,11 @@ def test_internal_human_sign_confirmation_succeeds_without_persisting_signal(
     )
 
     assert result.connection.sign_convention == "negative_is_income"
+    before = _confirmation_count("accepted")
+
     with pytest.raises(gsheet_errors.GSheetSignConfirmationRequiredError):
         svc.reconnect(result.connection.connection_id, yes=True)
+    assert _confirmation_count("accepted") == before
 
     reconnected = svc.reconnect(
         result.connection.connection_id,
@@ -208,6 +296,145 @@ def test_internal_human_sign_confirmation_succeeds_without_persisting_signal(
         human_sign_confirmation=True,
     )
     assert reconnected.connection.sign_convention == "negative_is_income"
+    assert _confirmation_count("accepted") == before + 1
+
+
+def test_split_debit_override_requires_human_then_loads_negative_expense(
+    in_memory_db: Database,
+) -> None:
+    """Selecting detected Debit as amount preserves its expense polarity."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssSplitDebit", _split_sign_workbook())
+    request = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ssSplitDebit/edit#gid=0",
+        adapter="transactions",
+        account_name="Card",
+        account_id="acct_card",
+        column_mapping={"Debit": "amount"},
+        yes=True,
+    )
+
+    before = _confirmation_count("overridden")
+
+    with (
+        patch(
+            "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
+        ) as pull,
+        pytest.raises(gsheet_errors.GSheetSignConfirmationRequiredError) as exc_info,
+    ):
+        svc.connect(request)
+
+    assert exc_info.value.proposed_convention == "negative_is_income"
+    assert exc_info.value.evidence_header == "Debit"
+    assert svc.list_connections() == []
+    pull.assert_not_called()
+    assert _confirmation_count("overridden") == before
+
+    approved = svc.connect(replace(request, human_sign_confirmation=True))
+
+    assert approved.connection.column_mapping["Debit"] == "amount"
+    assert approved.connection.sign_convention == "negative_is_income"
+    assert approved.initial_pull is not None
+    amounts = in_memory_db.execute(
+        "SELECT amount FROM raw.tabular_transactions "
+        "WHERE source_origin = ? ORDER BY transaction_date",
+        [approved.connection.connection_id],
+    ).fetchall()
+    assert amounts == [(Decimal("-87.42"),)]
+    assert _confirmation_count("overridden") == before + 1
+
+
+def test_split_credit_override_retains_positive_income_polarity(
+    in_memory_db: Database,
+) -> None:
+    """Selecting detected Credit as amount keeps the split transform's income sign."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssSplitCredit", _split_sign_workbook())
+
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssSplitCredit/edit#gid=0",
+            adapter="transactions",
+            account_name="Card",
+            account_id="acct_card",
+            column_mapping={"Credit": "amount"},
+            yes=True,
+        )
+    )
+
+    assert result.connection.sign_convention == "negative_is_expense"
+    amounts = in_memory_db.execute(
+        "SELECT amount FROM raw.tabular_transactions WHERE source_origin = ?",
+        [result.connection.connection_id],
+    ).fetchall()
+    assert amounts == [(Decimal("250.00"),)]
+
+
+def test_split_override_with_unknown_source_role_requires_explicit_sign(
+    in_memory_db: Database,
+) -> None:
+    """A split-to-single source with no detected polarity is never guessed."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook(
+        "ssSplitUnknown",
+        _split_sign_workbook(include_unknown_amount=True),
+    )
+
+    with (
+        patch(
+            "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
+        ) as pull,
+        pytest.raises(GSheetError, match="--sign"),
+    ):
+        svc.connect(
+            ConnectionRequest(
+                url=(
+                    "https://docs.google.com/spreadsheets/d/ssSplitUnknown/edit#gid=0"
+                ),
+                adapter="transactions",
+                account_name="Card",
+                account_id="acct_card",
+                column_mapping={"Other Amount": "amount"},
+                yes=True,
+            )
+        )
+
+    assert svc.list_connections() == []
+    pull.assert_not_called()
+
+
+def test_reconnect_explicit_sign_bypasses_inferred_inversion_gate(
+    in_memory_db: Database,
+) -> None:
+    """A direct CLI reconnect sign remains an explicit human decision."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssReconnectSign", _tiller_workbook())
+    connected = svc.connect(
+        ConnectionRequest(
+            url=("https://docs.google.com/spreadsheets/d/ssReconnectSign/edit#gid=0"),
+            adapter="transactions",
+            account_name="Card",
+            account_id="acct_card",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    sheets.register_workbook("ssReconnectSign", _inverted_sign_workbook())
+
+    reconnected = svc.reconnect(
+        connected.connection.connection_id,
+        yes=True,
+        sign="negative_is_income",
+    )
+
+    assert reconnected.connection.sign_convention == "negative_is_income"
+    assert reconnected.initial_pull is not None
+    amounts = in_memory_db.execute(
+        "SELECT amount FROM raw.tabular_transactions "
+        "WHERE source_origin = ? ORDER BY transaction_date",
+        [connected.connection.connection_id],
+    ).fetchall()
+    assert amounts == [(Decimal("-87.42"),), (Decimal("250.00"),)]
 
 
 def test_connect_seed_explicit(in_memory_db: Database) -> None:

@@ -66,8 +66,13 @@ def _confirmation_actions(
     file_path: str,
     outcome: ConfirmationRequired,
     *,
+    accept: bool = True,
     mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
     sign_reconfirmation_required: bool = False,
 ) -> list[str]:
     """Build the actions[] hints for a confirmation_required envelope.
@@ -99,10 +104,19 @@ def _confirmation_actions(
             bindings.setdefault(key, "<account_id|new>")
         if not bindings:
             bindings["<source_key>"] = "<account_id|new>"
-        call_args = [f"file_path={file_path!r}", "accept=True"]
+        call_args = [f"file_path={file_path!r}"]
+        if accept:
+            call_args.append("accept=True")
         if mapping:
             call_args.append(f"mapping={mapping!r}")
+        call_args.append(f"save_format={save_format!r}")
+        if account_id is not None:
+            call_args.append(f"account_id={account_id!r}")
+        if account_name is not None:
+            call_args.append(f"account_name={account_name!r}")
         call_args.append(f"account_bindings={bindings!r}")
+        if account_metadata is not None:
+            call_args.append(f"account_metadata={account_metadata!r}")
         actions.append(
             f"Use import_confirm({', '.join(call_args)}) to ratify the mapping "
             "and bind every account; source keys are in "
@@ -130,6 +144,40 @@ def _confirmation_actions(
         "to inspect the proposal and samples in detail."
     )
     return actions
+
+
+def _tabular_confirm_cli_equivalent(
+    file_path: str,
+    *,
+    accept: bool,
+    mapping: dict[str, str] | None,
+    save_format: bool,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+    confirm_sign: bool,
+) -> str:
+    """Serialize the public tabular confirmation request as a shell-safe command."""
+    parts = ["moneybin", "import", "confirm", file_path]
+    if accept:
+        parts.append("--accept")
+    for field, source in (mapping or {}).items():
+        parts.extend(("--mapping", f"{field}={source}"))
+    if confirm_sign:
+        parts.append("--confirm-sign")
+    if account_id is not None:
+        parts.extend(("--account-id", account_id))
+    if account_name is not None:
+        parts.extend(("--account-name", account_name))
+    for source_key, binding in (account_bindings or {}).items():
+        parts.extend(("--account-binding", f"{source_key}={binding}"))
+    for source_key, metadata in (account_metadata or {}).items():
+        for field, value in metadata.items():
+            parts.extend(("--account-meta", f"{source_key}:{field}={value}"))
+    if not save_format:
+        parts.append("--no-save-format")
+    return shlex.join(parts)
 
 
 def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
@@ -1183,9 +1231,16 @@ async def import_confirm(
                 _sign_confirmation_message(payload),
                 subject="This tabular sign inversion",
                 unchanged="the file was not imported",
-                cli_equivalent=(
-                    f"moneybin import confirm {shlex.quote(str(path))} "
-                    "--accept --confirm-sign"
+                cli_equivalent=_tabular_confirm_cli_equivalent(
+                    str(path),
+                    accept=accept,
+                    mapping=mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=account_bindings,
+                    account_metadata=account_metadata,
+                    confirm_sign=True,
                 ),
                 details={"file_path": str(path)},
             )
@@ -1212,8 +1267,13 @@ async def import_confirm(
                     actions=_confirmation_actions(
                         str(path),
                         retry_error.outcome,
+                        accept=accept,
                         mapping=mapping,
+                        save_format=save_format,
+                        account_id=account_id,
+                        account_name=account_name,
                         account_bindings=account_bindings,
+                        account_metadata=account_metadata,
                         sign_reconfirmation_required=True,
                     ),
                 )
@@ -1232,8 +1292,13 @@ async def import_confirm(
                 actions=_confirmation_actions(
                     str(path),
                     e.outcome,
+                    accept=accept,
                     mapping=mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
                     account_bindings=account_bindings,
+                    account_metadata=account_metadata,
                 ),
             )
 

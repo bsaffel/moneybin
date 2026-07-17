@@ -10,6 +10,7 @@ argument parsing, exit codes, error messages, and JSON envelope shape.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -134,21 +135,47 @@ def _make_sign_confirmation_error() -> ImportConfirmationRequiredError:
 
 
 def test_tabular_sign_recovery_preserves_confirmation_inputs() -> None:
-    """The sign-confirmation retry repeats mapping and account choices."""
+    """The sign-confirmation command losslessly serializes public inputs."""
     from moneybin.cli.commands.import_cmd import (
         _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
     )
 
     actions = _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
-        "card.csv",
+        "Owner's card.csv",
         channel="tabular",
-        mapping={"description": "Memo"},
-        account_bindings={"settled": "acct-123"},
+        accept=False,
+        mapping={"description": "Merchant Name"},
+        save_format=False,
+        account_id="acct explicit",
+        account_name="Owner's Card",
+        account_bindings={"settled key": "acct existing", "minted card": "new"},
+        account_metadata={
+            "minted card": {
+                "display_name": "Owner's Card",
+                "last_four": "4267",
+            }
+        },
     )
 
-    assert "--accept --confirm-sign" in actions[0]
-    assert "--mapping description=Memo" in actions[0]
-    assert "--account-binding settled=acct-123" in actions[0]
+    command = actions[0].split(": ", 1)[1]
+    tokens = shlex.split(command)
+    assert tokens[:4] == ["moneybin", "import", "confirm", "Owner's card.csv"]
+    assert "--accept" not in tokens
+    assert "--confirm-sign" in tokens
+    assert "--no-save-format" in tokens
+    assert tokens[tokens.index("--account-id") + 1] == "acct explicit"
+    assert tokens[tokens.index("--account-name") + 1] == "Owner's Card"
+    assert tokens[tokens.index("--mapping") + 1] == "description=Merchant Name"
+    assert {
+        tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
+    } == {"settled key=acct existing", "minted card=new"}
+    assert {
+        tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
+    } == {
+        "minted card:display_name=Owner's Card",
+        "minted card:last_four=4267",
+    }
+    assert "human_sign_confirmation" not in command
 
 
 class TestImportFilesConfirmFlow:
@@ -944,18 +971,47 @@ class TestImportConfirmCommand:
                 "description=Memo",
                 "--account-binding",
                 "settled=acct-123",
+                "--account-binding",
+                "minted=new",
+                "--account-meta",
+                "minted:display_name=Travel Card",
+                "--account-meta",
+                "minted:last_four=4267",
+                "--account-id",
+                "acct-explicit",
+                "--account-name",
+                "Card Account",
+                "--no-save-format",
                 "--output",
                 "json",
             ],
         )
 
         assert result.exit_code == 0
-        actions = " ".join(json.loads(result.output)["actions"])
-        assert "--accept" in actions
-        assert "--confirm-sign" in actions
-        assert "--mapping description=Memo" in actions
-        assert "--account-binding settled=acct-123" in actions
-        assert "--account-binding 'card-abc=<account_id|new>'" in actions
+        actions = json.loads(result.output)["actions"]
+        recovery = next(action for action in actions if action.startswith("Re-run `"))
+        command = recovery.split("`", 2)[1]
+        tokens = shlex.split(command)
+        assert "--accept" in tokens
+        assert "--confirm-sign" in tokens
+        assert "--no-save-format" in tokens
+        assert tokens[tokens.index("--account-id") + 1] == "acct-explicit"
+        assert tokens[tokens.index("--account-name") + 1] == "Card Account"
+        assert tokens[tokens.index("--mapping") + 1] == "description=Memo"
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
+        } == {
+            "settled=acct-123",
+            "minted=new",
+            "card-abc=<account_id|new>",
+        }
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
+        } == {
+            "minted:display_name=Travel Card",
+            "minted:last_four=4267",
+        }
+        assert "human_sign_confirmation" not in command
 
     def test_account_confirmation_tty_renders_proposals(
         self,

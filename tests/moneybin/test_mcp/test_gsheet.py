@@ -318,6 +318,56 @@ async def test_gsheet_connect_elicits_human_then_retries_sign_internally(
     new_callable=AsyncMock,
 )
 @patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_connect_split_debit_override_uses_private_human_retry(
+    mock_build: MagicMock,
+    mock_confirm: AsyncMock,
+) -> None:
+    """The public source→destination override survives the one-shot retry."""
+    service = MagicMock()
+    service.connect.side_effect = [
+        GSheetSignConfirmationRequiredError(
+            proposed_convention="negative_is_income",
+            evidence_header="Debit",
+        ),
+        ConnectResult(
+            connection=_make_connection(),
+            detection=_make_detection(),
+            initial_pull=_make_load_result(),
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    from moneybin.mcp.tools.gsheet import gsheet_connect
+
+    await gsheet_connect(
+        url="https://docs.google.com/spreadsheets/d/card/edit#gid=0",
+        adapter="transactions",
+        account_id="acct_card",
+        column_mapping={"Debit": "amount"},
+        yes=True,
+    )
+
+    first_request = service.connect.call_args_list[0].args[0]
+    retry_request = service.connect.call_args_list[1].args[0]
+    assert first_request.column_mapping == {"Debit": "amount"}
+    assert retry_request == replace(first_request, human_sign_confirmation=True)
+    assert mock_confirm.await_args is not None
+    assert "Debit" in mock_confirm.await_args.args[0]
+    assert mock_confirm.await_args.kwargs["cli_equivalent"].endswith(
+        "--sign negative_is_income"
+    )
+    assert (
+        "human_sign_confirmation"
+        not in mock_confirm.await_args.kwargs["cli_equivalent"]
+    )
+
+
+@pytest.mark.unit
+@patch(
+    "moneybin.mcp.elicitation.confirm_or_raise",
+    new_callable=AsyncMock,
+)
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
 async def test_gsheet_connect_yes_does_not_self_confirm_sign(
     mock_build: MagicMock,
     mock_confirm: AsyncMock,

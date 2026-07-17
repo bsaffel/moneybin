@@ -536,7 +536,13 @@ def import_files_command(
                     confirm_actions.append(outcome.error_message)
                 confirm_actions.extend(
                     _sign_recovery_commands(
-                        file_path_str, channel=outcome.channel, mapping=overrides
+                        file_path_str,
+                        channel=outcome.channel,
+                        accept=confirm or overrides is None,
+                        mapping=overrides,
+                        save_format=save_format,
+                        account_id=account_id,
+                        account_name=account_name,
                     )
                 )
             else:
@@ -550,7 +556,7 @@ def import_files_command(
                     # retries persist no partial state, and add the missing binding.
                     # The generic alternate mapping hints below remain irrelevant.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, mapping=overrides, confirm_sign=confirm_sign)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -599,7 +605,11 @@ def import_files_command(
             _render_confirmation_prompt(
                 outcome,
                 file_path_str,
+                accept=confirm or overrides is None,
                 mapping=overrides,
+                save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
                 confirm_sign=confirm_sign,
             )
             raise typer.Exit(1) from _exc
@@ -711,27 +721,70 @@ def _tabular_recovery_args(
     *,
     mapping: dict[str, str] | None,
     account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
 ) -> list[str]:
-    """Serialize mapping and account bindings for a repeatable CLI recovery."""
+    """Serialize repeatable tabular mapping and account options."""
     args: list[str] = []
     for field, source in (mapping or {}).items():
         args.extend(("--mapping", f"{field}={source}"))
     for source_key, account_id in (account_bindings or {}).items():
         args.extend(("--account-binding", f"{source_key}={account_id}"))
+    for source_key, metadata in (account_metadata or {}).items():
+        for field, value in metadata.items():
+            args.extend(("--account-meta", f"{source_key}:{field}={value}"))
     return args
+
+
+def _tabular_confirmation_command(
+    file_path_str: str,
+    *,
+    accept: bool,
+    confirm_sign: bool,
+    mapping: dict[str, str] | None,
+    save_format: bool,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> str:
+    """Serialize one public tabular confirmation request losslessly."""
+    import shlex  # noqa: PLC0415
+
+    parts = ["moneybin", "import", "confirm", file_path_str]
+    if accept:
+        parts.append("--accept")
+    if confirm_sign:
+        parts.append("--confirm-sign")
+    if account_id is not None:
+        parts.extend(("--account-id", account_id))
+    if account_name is not None:
+        parts.extend(("--account-name", account_name))
+    parts.extend(
+        _tabular_recovery_args(
+            mapping=mapping,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+    )
+    if not save_format:
+        parts.append("--no-save-format")
+    return shlex.join(parts)
 
 
 def _account_recovery_command(
     file_path_str: str,
     outcome: ConfirmationRequired,
     *,
+    accept: bool = True,
     mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
 ) -> str:
     """Reproduce a tabular confirmation while adding unresolved account bindings."""
-    import shlex  # noqa: PLC0415
-
     bindings = dict(account_bindings or {})
     for proposal in outcome.account_proposals:
         source_key = str(proposal["source_account_key"])
@@ -739,19 +792,30 @@ def _account_recovery_command(
     if not bindings:
         bindings["<source_key>"] = "<account_id|new>"
 
-    parts = ["moneybin", "import", "confirm", file_path_str, "--accept"]
-    if confirm_sign:
-        parts.append("--confirm-sign")
-    parts.extend(_tabular_recovery_args(mapping=mapping, account_bindings=bindings))
-    return shlex.join(parts)
+    return _tabular_confirmation_command(
+        file_path_str,
+        accept=accept,
+        confirm_sign=confirm_sign,
+        mapping=mapping,
+        save_format=save_format,
+        account_id=account_id,
+        account_name=account_name,
+        account_bindings=bindings,
+        account_metadata=account_metadata,
+    )
 
 
 def _sign_recovery_commands(
     file_path_str: str,
     *,
     channel: str,
+    accept: bool = True,
     mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
 ) -> list[str]:
     """The two honest recoveries for a card sign-convention confirmation.
 
@@ -765,22 +829,20 @@ def _sign_recovery_commands(
     import shlex  # noqa: PLC0415
 
     quoted = shlex.quote(file_path_str)
-    tabular_parts = [
-        "moneybin",
-        "import",
-        "confirm",
+    tabular_command = _tabular_confirmation_command(
         file_path_str,
-        "--accept",
-        "--confirm-sign",
-        *_tabular_recovery_args(
-            mapping=mapping,
-            account_bindings=account_bindings,
-        ),
-    ]
+        accept=accept,
+        confirm_sign=True,
+        mapping=mapping,
+        save_format=save_format,
+        account_id=account_id,
+        account_name=account_name,
+        account_bindings=account_bindings,
+        account_metadata=account_metadata,
+    )
     return [
         (
-            "Confirm the tabular mapping, then approve the sign: "
-            f"{shlex.join(tabular_parts)}"
+            f"Confirm the tabular mapping, then approve the sign: {tabular_command}"
             if channel == "tabular"
             else f"If it IS a credit card: moneybin import files {quoted} --confirm "
             "(records charges as expenses, payments as credits)."
@@ -795,8 +857,13 @@ def _render_sign_convention_prompt(
     file_path_str: str,
     *,
     channel: str,
+    accept: bool = True,
     mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
 ) -> None:
     """Print the interactive prompt for a sign-convention confirmation.
 
@@ -826,8 +893,13 @@ def _render_sign_convention_prompt(
     for line in _sign_recovery_commands(
         file_path_str,
         channel=channel,
+        accept=accept,
         mapping=mapping,
+        save_format=save_format,
+        account_id=account_id,
+        account_name=account_name,
         account_bindings=account_bindings,
+        account_metadata=account_metadata,
     ):
         typer.echo(f"     {line}")
     typer.echo()
@@ -837,8 +909,13 @@ def _render_confirmation_prompt(
     outcome: ConfirmationRequired,
     file_path_str: str,
     *,
+    accept: bool = True,
     mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
 ) -> None:
     """Print a human-readable confirmation summary for an unknown-layout encounter.
@@ -865,8 +942,13 @@ def _render_confirmation_prompt(
             outcome.proposed,
             file_path_str,
             channel=outcome.channel,
+            accept=accept,
             mapping=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
             account_bindings=account_bindings,
+            account_metadata=account_metadata,
         )
         return
 
@@ -919,8 +1001,13 @@ def _render_confirmation_prompt(
             + _account_recovery_command(
                 file_path_str,
                 outcome,
+                accept=accept,
                 mapping=mapping,
+                save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
                 account_bindings=account_bindings,
+                account_metadata=account_metadata,
                 confirm_sign=confirm_sign,
             )
         )
@@ -1147,8 +1234,13 @@ def import_confirm_command(
                 _sign_recovery_commands(
                     str(file_path),
                     channel=outcome.channel,
+                    accept=accept,
                     mapping=parsed_mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
                     account_bindings=parsed_bindings,
+                    account_metadata=parsed_metadata,
                 )
             )
         elif outcome.reason == "account_confirmation":
@@ -1157,7 +1249,7 @@ def import_confirm_command(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, mapping=parsed_mapping, account_bindings=parsed_bindings, confirm_sign=confirm_sign)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
@@ -1193,8 +1285,13 @@ def import_confirm_command(
             _render_confirmation_prompt(
                 outcome,
                 str(file_path),
+                accept=accept,
                 mapping=parsed_mapping,
+                save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
                 account_bindings=parsed_bindings,
+                account_metadata=parsed_metadata,
                 confirm_sign=confirm_sign,
             )
         elif outcome.reason == "account_confirmation":
@@ -1207,8 +1304,13 @@ def import_confirm_command(
                 + _account_recovery_command(
                     str(file_path),
                     outcome,
+                    accept=accept,
                     mapping=parsed_mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
                     account_bindings=parsed_bindings,
+                    account_metadata=parsed_metadata,
                     confirm_sign=confirm_sign,
                 )
                 + "`."

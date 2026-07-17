@@ -143,11 +143,10 @@ def gsheet_connect(
         None,
         "--sign",
         help="Sign-convention override for the saved connection. Required "
-        "when --column-mapping changes a split debit/credit detection "
-        "into a single 'amount' column and the export uses "
-        "positive_is_expense (credit-card style); otherwise the saved "
-        "sign defaults to negative_is_expense and amounts persist with "
-        "inverted polarity. Choices: negative_is_expense, "
+        "when MoneyBin cannot derive polarity from the selected source. "
+        "Split-to-single mappings derive polarity from the selected "
+        "detected debit or credit role; replacing a detected single "
+        "amount source requires an explicit sign. Choices: negative_is_expense, "
         "negative_is_income, split_debit_credit.",
     ),
     yes: bool = typer.Option(
