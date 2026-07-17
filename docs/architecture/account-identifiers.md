@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-17 -->
 
 # Account Identifiers
 
@@ -112,7 +112,7 @@ Same real-world account, loaded twice:
 
 ## Account-settings overlay
 
-User-controlled fields (`display_name`, `archived`, `include_in_net_worth`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`, `official_name`) live in `app.account_settings`, keyed by `account_id`. `core.dim_accounts` `LEFT JOIN`s this table at refresh time so consumers see one resolved view. No consumer joins `app.account_settings` directly — the dim is the single source of truth. See [`docs/reference/data-model.md`](../reference/data-model.md#coredim_accounts) for the column list.
+User-controlled fields (`display_name`, `archived`, `include_in_net_worth`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `official_name`) live in `app.account_settings`, keyed by `account_id`. `core.dim_accounts` `LEFT JOIN`s this table at refresh time so consumers see one resolved view. No consumer joins `app.account_settings` directly — the dim is the single source of truth. See [`docs/reference/data-model.md`](../reference/data-model.md#coredim_accounts) for the column list.
 
 `display_name` resolution falls back in order: user override → derived default (`institution_name + ' ' + account_type + ' …' + RIGHT(account_id, 4)`) → bare `account_id`. Renaming an account through `moneybin accounts set --display-name "..."` only writes to `app.account_settings`; `account_id` does not change.
 
