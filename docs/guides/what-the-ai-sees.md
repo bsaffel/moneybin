@@ -11,7 +11,10 @@ The one-sentence version: **anything the agent reads to answer you, the model
 provider receives** — except account and routing numbers, which are masked
 before they ever leave MoneyBin. If that trade is unacceptable, the [last
 section](#if-that-isnt-acceptable) lists the ways to narrow or eliminate it,
-including running a fully local model so nothing leaves your machine at all.
+including running a fully local model so nothing reaches a model provider at all.
+(The `sync_*` and `gsheet_*` connector tools still reach their own endpoints when
+you use them — see the trust boundary below; "local model" removes the *provider*
+hop, not those.)
 
 This is the AI-data-flow companion to the [Threat Model](threat-model.md) (the
 full in-scope/out-of-scope threat list) and the [MCP Server
@@ -60,10 +63,10 @@ envelope contains once it reaches the model.
 
 | Tool kind | Goes to the provider | Always masked first | Recorded locally |
 |---|---|---|---|
-| Transaction reads (`transactions_search`, `transactions_get`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
+| Transaction reads (`transactions_get`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
 | Report views (`reports_networth`, `reports_spending`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
-| Categorization assist (`transactions_categorize_assist`) | Scrubbed description — **merchant name kept**, amount as a sign only | Amount value, date, account ID, locations, embedded PII | Per-call event |
+| Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
 | Errors / timeouts | A generic message; no row content, no SQL text | — | Per-call event |
 
@@ -73,33 +76,42 @@ The rest of this page expands each column.
 
 ## Always masked (enforced today)
 
-Two classified field families never leave MoneyBin in the clear, on any tool, on
-both the MCP and the CLI `--output json` surface:
+MoneyBin masks account and routing numbers before a result leaves the process, on
+the MCP tools and the CLI `--output json` surface alike:
 
 - **Account identifiers** → `****1234` (last four kept).
 - **Routing numbers** → `*****` (fully masked).
 
-(This is the masking of the account-number and routing-number *columns*. An
-account number a user typed into a free-text note or that a bank embedded in a
-description is *not* detected — that's the passthrough case covered under [Not
-masked](#not-masked-stated-plainly) below.)
+This is enforced by **field classification**, not convention. Every one of
+MoneyBin's ~105 tools must declare the privacy class of each field it returns, or
+it fails to register at startup; a field **typed as** an account or routing number
+is always masked. The two dynamic surfaces reach the same result two different
+ways: `sql_query` traces each output column back to its source column through the
+SQL and masks by the resolved class (a column it can't resolve **fails closed** to
+the most-sensitive treatment), while the report views mask by a **declared
+per-report column→class map** — lineage tracing is deliberately *not* used there
+(a `reports.*` view is `SELECT * FROM <internal table>`, so tracing would classify
+the pointer and leak; per ADR-013). Either way raw SQL is not a bypass: `SELECT
+last_four FROM core.dim_accounts` comes back masked, and an undeclared report
+column fails closed.
 
-This is enforced structurally, not by convention. Every one of MoneyBin's ~105
-tools must declare the privacy class of each field it returns, or it fails to
-register at startup. What that guarantees is that a field **typed as** an account
-or routing number is always masked. For `sql_query` and the report views, the same
-masking is applied by tracing each output column back to its source column through
-the SQL; a column the tracer can't resolve **fails closed** (it gets the
-most-sensitive treatment, never the least). So raw SQL is not a privacy bypass:
-`SELECT last_four FROM core.dim_accounts` comes back masked.
+**The masking follows a field's declared class, not a content scan — so a raw
+account number that rides *inside* a field classified as something else is not
+caught.** Three real cases, disclosed rather than hidden:
 
-The masking follows the field's **declared class**, not a content scan — so an
-account number that rides inside a field classified as free text is *not* caught.
-The clearest case: `import_preview` / `import_files` return a `sample_values`
-preview of the file being imported, classified as description text; if the file
-has a raw account-number column, those digits reach the provider in that sample.
-Masking protects the typed account/routing fields, not every place an account
-number can appear.
+- **Free-text notes and descriptions** — an account number you typed into a note,
+  or one a bank embedded in a description, reaches the model verbatim (see [Not
+  masked](#not-masked-stated-plainly) below).
+- **Import samples** — `import_preview` / `import_files` return a `sample_values`
+  preview of the file being imported, classified as description text; a raw
+  account-number column in that file shows up in the sample.
+- **Audit snapshots** — `system_audit` / `system_audit_get` return the before/after
+  row of a change; if that change set an account's `last_four`, the snapshot
+  carries the raw digits.
+
+Masking protects the typed account/routing *fields*. It does not scrub account
+numbers out of free text, file samples, or audit snapshots — there the field's own
+class governs, and it isn't `critical`.
 
 > The operator commands `moneybin db query`, `db shell`, and `db ui` are the
 > deliberate exception — they are raw, unmasked, local operator access and print
@@ -141,8 +153,16 @@ BOTTLE"** with an outflow sign — the merchant, yes, but not the amount, the da
 the account, or the location. It still learns *where* you shopped; it does not
 learn *how much*, *when*, or *from which account*. That is real minimization, but
 it is not anonymization — do not read this row as "the model never sees my
-merchants." No other tool minimizes at all; the reads and reports above send the
-merchant name and every other field in the clear.
+merchants."
+
+One caveat specific to this tool: only the free-text *description and memo* are
+scrubbed. The assist payload also carries structural fields verbatim —
+`transaction_id`, `source_type`, `transaction_type`, `is_transfer`,
+`transfer_pair_id`, `payment_channel`, and the transaction's **`check_number`**.
+The check number in particular is a real identifying value and is *not* redacted,
+so "scrubbed description" is not the same as "scrubbed payload." No other tool
+minimizes at all; the reads and reports above send the merchant name and every
+other field in the clear.
 
 ---
 
@@ -172,10 +192,12 @@ answer needed; the ceiling over a session is whatever you direct.
 
 The provider in the diagram exists only because your MCP client points at a cloud
 model. Run a **local** model instead and the cloud provider drops out entirely:
-prompts and tool results never leave your machine. This is the only way to get a
-genuine privacy *guarantee* rather than a narrowed exposure — with any cloud
-model, the results you ask about reach that model, the same as any cloud
-assistant.
+prompts and tool results no longer reach any model provider. (The `sync_*` /
+`gsheet_*` connector tools still call their own endpoints if you use them — a
+local model removes the provider hop, not those.) This is the only way to get a
+genuine privacy *guarantee* against the model provider rather than a narrowed
+exposure — with any cloud model, the results you ask about reach that model, the
+same as any cloud assistant.
 
 MoneyBin makes this possible but does not do it for you: the server side doesn't
 care which model is on the other end of the stdio pipe, so a local model connects
@@ -276,8 +298,11 @@ Ranked from strongest guarantee to smallest change:
    local data with no model in the loop at all. The CLI is a first-class surface,
    not a fallback.
 3. **Import from files only, skip Plaid.** OFX/QFX/QBO/CSV/PDF imports never touch
-   the network; that keeps your data off both the model provider and the sync
-   broker (see [the threat model on Plaid](threat-model.md#plaid-itself-when-you-use-bank-direct-sync)).
+   the network, so nothing reaches the sync broker (see [the threat model on
+   Plaid](threat-model.md#plaid-itself-when-you-use-bank-direct-sync)). This alone
+   does **not** keep the data off the model provider — the moment you query it
+   through an agent, it reaches the provider like any other tool result. Pair it
+   with the CLI or a local model (options 1–2) to close that path too.
 4. **`moneybin db lock` when you're not actively using the agent.** A locked
    profile can't be opened by a new MCP session at all.
 

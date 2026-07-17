@@ -225,7 +225,7 @@ Every MCP tool carries one of four sensitivity tiers, derived automatically from
 | `low` | Aggregates, counts, category labels, system metadata | Logged on every call | Same |
 | `medium` | Merchant names, descriptions, notes, transaction dates | Logged on every call | Persistent consent prompt; degraded-response fallback |
 | `high` | Balances, transaction and income amounts | Logged on every call | Persistent consent prompt; degraded-response fallback |
-| `critical` | Account and routing numbers, raw provider blobs | Logged on every call; **masked before egress today** | Per-call confirmation; local-unmask option |
+| `critical` | Account and routing numbers | Logged on every call; **masked before egress today** | Per-call confirmation; local-unmask option |
 
 **What this means today:** the tier is a logging signal plus (at `critical`) a masking trigger, not a consent gate. A `medium`, `high`, or `critical` tool executes and returns its result without any user-visible consent prompt — account and routing numbers masked, everything else in the clear; the response leaves the MoneyBin process and lands in the MCP client, which forwards it to the LLM. The per-call privacy log captures intent (use `privacy_log` to read it back; `system_audit` records mutations only), but nothing blocks the call.
 
