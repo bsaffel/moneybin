@@ -10,15 +10,16 @@ const PRESETS = {
   hero: [52, 52, 20],
 };
 
-export function Wordmark({ size = 'bar', bin = 'brass', plate, style }) {
+export function Wordmark({ size = 'bar', bin = 'gold', plate, style }) {
   const [wm, mk, gap] =
     typeof size === 'number'
       ? [size, Math.round(size * 1.5), Math.round(size * 0.6)]
       : PRESETS[size] ?? PRESETS.bar;
-  // "Bin" carries brass by default — the one place brass is decorative, not
-  // semantic. Switch to 'mono' when another brass element shares the bar so
-  // brass stays unique to a single lock-up.
-  const binColor = bin === 'mono' ? 'var(--text-primary)' : 'var(--accent-brass)';
+  // "Bin" carries --brand-gold by default — the wordmark is identity text, so it
+  // is bright gilt on dark and deepens to brass on light, each clearing 4.5:1 as
+  // text where no single hex would (like the logo mark, not a flat fill). Switch
+  // to 'mono' when another gold element shares the bar.
+  const binColor = bin === 'mono' ? 'var(--text-primary)' : 'var(--brand-gold)';
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: gap + 'px', ...style }}>
       <Mark size={mk} plate={plate} />

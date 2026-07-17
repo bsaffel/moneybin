@@ -13,8 +13,9 @@ const panel = {
   color: 'var(--text-secondary)',
 };
 
-// Icons inherit currentColor — the brass row shows an active/brass element, the
-// only case where a glyph goes brass.
+// Icons inherit currentColor — the last cell is a toggled-on icon-only control in
+// verdigris (interaction). A glyph is never gold; an active nav location is a brass
+// edge tick beside an ink glyph, not a brass drawing.
 export const Vocabulary = () => (
   <div style={panel}>
     <Icon name="home" />
@@ -26,7 +27,7 @@ export const Vocabulary = () => (
     <Icon name="chevron" direction="down" size={16} />
     <Icon name="sync" size={16} />
     <Icon name="pin" title="Pin to overview" size={16} />
-    <span style={{ color: 'var(--accent-brass)', display: 'inline-flex' }}>
+    <span style={{ color: 'var(--accent-verdigris)', display: 'inline-flex' }}>
       <Icon name="console" />
     </span>
   </div>

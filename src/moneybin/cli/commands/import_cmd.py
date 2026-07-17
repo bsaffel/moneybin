@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from datetime import date
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 
@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         ConfirmationRequired,
         SignConventionProposal,
     )
+    from moneybin.services.import_service import ImportResult
 
 
 class _FormatTypeFilter(StrEnum):
@@ -237,6 +238,14 @@ def import_files_command(
             "Single-file mode only."
         ),
     ),
+    confirm_sign: bool = typer.Option(
+        False,
+        "--confirm-sign",
+        help=(
+            "Explicitly approve an inferred tabular sign inversion. "
+            "Single-file mode only."
+        ),
+    ),
     sign: SignConventionType | None = typer.Option(
         None,
         "--sign",
@@ -365,14 +374,14 @@ def import_files_command(
             "⚠️  Per-file flags only apply in single-file mode and will be "
             "ignored. Use one file per command for per-file overrides."
         )
-    if len(file_paths) > 1 and confirm:
+    if len(file_paths) > 1 and (confirm or confirm_sign):
         # --confirm with multiple files would silently auto-accept every
         # first-encounter layout in the batch sight-unseen. Each layout is a
         # separate trust decision; refuse the batch and require per-file
         # invocations or use `moneybin import confirm <file>` after the
         # confirmation_required envelopes surface.
         raise typer.BadParameter(
-            "--confirm cannot be combined with multiple files. Each first-"
+            "--confirm and --confirm-sign cannot be combined with multiple files. Each first-"
             "encounter layout requires its own confirmation. Re-run per-file "
             "or import without --confirm to surface confirmation_required "
             "envelopes, then ratify with `moneybin import confirm <file>`."
@@ -390,29 +399,32 @@ def import_files_command(
                 # ImportConfirmationRequiredError can bubble to the CLI handler.
                 # Multi-path stays on import_files (batch contract).
                 if len(file_paths) == 1:
-                    result = svc.import_file(
-                        file_path=file_paths[0],
-                        refresh=refresh,
-                        institution=institution,
-                        force=force,
-                        interactive=interactive,
-                        account_id=account_id,
-                        account_name=account_name,
-                        format_name=format_name,
-                        overrides=overrides,
-                        sign=sign,
-                        date_format=date_format or None,
-                        number_format=number_format,
-                        save_format=save_format,
-                        sheet=sheet,
-                        delimiter=delimiter,
-                        encoding=encoding,
-                        no_row_limit=no_row_limit,
-                        no_size_limit=no_size_limit,
-                        auto_accept=yes,
-                        confirm=confirm,
-                        actor_kind="human",
-                    )
+                    import_kwargs: dict[str, Any] = {
+                        "file_path": file_paths[0],
+                        "refresh": refresh,
+                        "institution": institution,
+                        "force": force,
+                        "interactive": interactive,
+                        "account_id": account_id,
+                        "account_name": account_name,
+                        "format_name": format_name,
+                        "overrides": overrides,
+                        "sign": sign,
+                        "date_format": date_format or None,
+                        "number_format": number_format,
+                        "save_format": save_format,
+                        "sheet": sheet,
+                        "delimiter": delimiter,
+                        "encoding": encoding,
+                        "no_row_limit": no_row_limit,
+                        "no_size_limit": no_size_limit,
+                        "auto_accept": yes,
+                        "confirm": confirm,
+                        "actor_kind": "human",
+                    }
+                    if confirm_sign:
+                        import_kwargs["human_sign_confirmation"] = True
+                    result = svc.import_file(**import_kwargs)
                     if result.sign_correction_suggested:
                         typer.echo(
                             "⚠️  Sign convention may be inverted (running balance "
@@ -522,7 +534,17 @@ def import_files_command(
                 # "Validation failed" prefix (this is a proposal, not a failure).
                 if outcome.error_message:
                     confirm_actions.append(outcome.error_message)
-                confirm_actions.extend(_sign_recovery_commands(file_path_str))
+                confirm_actions.extend(
+                    _sign_recovery_commands(
+                        file_path_str,
+                        channel=outcome.channel,
+                        accept=confirm or overrides is None,
+                        mapping=overrides,
+                        save_format=save_format,
+                        account_id=account_id,
+                        account_name=account_name,
+                    )
+                )
             else:
                 if outcome.error_message:
                     confirm_actions.append(
@@ -530,14 +552,13 @@ def import_files_command(
                     )
                 if outcome.reason == "account_confirmation":
                     # The layout is settled; only the account identity needs
-                    # ratifying. The --mapping/--confirm hints below are irrelevant
-                    # here (and following --accept without a binding loops back to
-                    # this gate), so surface ONLY the binding + preview hints.
+                    # ratifying. Replay the current confirmation inputs because
+                    # retries persist no partial state, and add the missing binding.
+                    # The generic alternate mapping hints below remain irrelevant.
                     confirm_actions.append(
-                        f"Run 'moneybin import confirm {file_path_str} --accept "
-                        "--account-binding <source_key>=<account_id|new>' to bind each "
-                        "proposed account (adopt an existing id, or 'new' to keep "
-                        "distinct)."
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign)}` "
+                        "to bind each proposed account (adopt an existing id, or "
+                        "'new' to keep distinct)."
                     )
                 else:
                     # resolve_or_confirm refuses Accept on low-tier proposals (the
@@ -581,7 +602,17 @@ def import_files_command(
             # Interactive human path: render a human-readable summary and exit
             # 1 so pipelines halt cleanly (unlike the non-TTY path which exits
             # 0 so scripted consumers can parse the envelope).
-            _render_confirmation_prompt(outcome, file_path_str)
+            _render_confirmation_prompt(
+                outcome,
+                file_path_str,
+                accept=confirm or overrides is None,
+                mapping=overrides,
+                save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
+                confirm_sign=confirm_sign,
+                sign=sign,
+            )
             raise typer.Exit(1) from _exc
 
         if not isinstance(_exc, (ValueError, PermissionError)):
@@ -687,16 +718,150 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
             )
 
 
-def _sign_recovery_commands(file_path_str: str) -> list[str]:
+def _tabular_recovery_args(
+    *,
+    mapping: dict[str, str] | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> list[str]:
+    """Serialize repeatable tabular mapping and account options."""
+    args: list[str] = []
+    for field, source in (mapping or {}).items():
+        args.extend(("--mapping", f"{field}={source}"))
+    for source_key, account_id in (account_bindings or {}).items():
+        args.extend(("--account-binding", f"{source_key}={account_id}"))
+    for source_key, metadata in (account_metadata or {}).items():
+        for field, value in metadata.items():
+            args.extend(("--account-meta", f"{source_key}:{field}={value}"))
+    return args
+
+
+def _tabular_confirmation_command(
+    file_path_str: str,
+    *,
+    accept: bool,
+    confirm_sign: bool,
+    sign: SignConventionType | None,
+    mapping: dict[str, str] | None,
+    save_format: bool,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> str:
+    """Serialize one public tabular confirmation request losslessly."""
+    import shlex  # noqa: PLC0415
+
+    parts = ["moneybin", "import", "confirm", file_path_str]
+    if accept:
+        parts.append("--accept")
+    if confirm_sign:
+        parts.append("--confirm-sign")
+    if sign is not None:
+        parts.extend(("--sign", sign))
+    if account_id is not None:
+        parts.extend(("--account-id", account_id))
+    if account_name is not None:
+        parts.extend(("--account-name", account_name))
+    parts.extend(
+        _tabular_recovery_args(
+            mapping=mapping,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+    )
+    if not save_format:
+        parts.append("--no-save-format")
+    return shlex.join(parts)
+
+
+def _account_recovery_command(
+    file_path_str: str,
+    outcome: ConfirmationRequired,
+    *,
+    accept: bool = True,
+    mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+    confirm_sign: bool = False,
+    sign: SignConventionType | None = None,
+) -> str:
+    """Reproduce a tabular confirmation while adding unresolved account bindings."""
+    bindings = dict(account_bindings or {})
+    for proposal in outcome.account_proposals:
+        source_key = str(proposal["source_account_key"])
+        bindings.setdefault(source_key, "<account_id|new>")
+    if not bindings:
+        bindings["<source_key>"] = "<account_id|new>"
+
+    return _tabular_confirmation_command(
+        file_path_str,
+        accept=accept,
+        confirm_sign=confirm_sign,
+        sign=sign,
+        mapping=mapping,
+        save_format=save_format,
+        account_id=account_id,
+        account_name=account_name,
+        account_bindings=bindings,
+        account_metadata=account_metadata,
+    )
+
+
+def _sign_recovery_commands(
+    file_path_str: str,
+    *,
+    channel: str,
+    accept: bool = True,
+    mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+) -> list[str]:
     """The two honest recoveries for a card sign-convention confirmation.
 
     A card statement proposes inverting every amount (charges → expenses,
     payments → credits). The user decides by re-running with the convention they
-    intend, never by blind-accepting a proposed mapping — there is no mapping.
+    intend, never by blind-accepting a proposed mapping.
     Shared by the JSON ``actions[]`` and the interactive prompt so the CLI never
     drifts from the terminal command the gate's ``error_message`` already names.
     Mirrors the MCP ``_sign_confirm_actions`` recovery.
     """
+    if channel == "tabular":
+        approve_command = _tabular_confirmation_command(
+            file_path_str,
+            accept=accept,
+            confirm_sign=True,
+            sign=None,
+            mapping=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+        native_command = _tabular_confirmation_command(
+            file_path_str,
+            accept=accept,
+            confirm_sign=False,
+            sign="negative_is_expense",
+            mapping=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+        return [
+            f"Approve the inferred credit-card inversion: {approve_command}",
+            f"Keep amounts exactly as printed: {native_command}",
+        ]
+
     import shlex  # noqa: PLC0415
 
     quoted = shlex.quote(file_path_str)
@@ -709,9 +874,19 @@ def _sign_recovery_commands(file_path_str: str) -> list[str]:
 
 
 def _render_sign_convention_prompt(
-    proposed: SignConventionProposal, file_path_str: str
+    proposed: SignConventionProposal,
+    file_path_str: str,
+    *,
+    channel: str,
+    accept: bool = True,
+    mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
 ) -> None:
-    """Print the interactive prompt for a card sign-convention confirmation.
+    """Print the interactive prompt for a sign-convention confirmation.
 
     "magic stays visible": a whole-ledger sign inversion the user can't see the
     evidence for must never be applied. Show the matched card disclosures and the
@@ -719,14 +894,14 @@ def _render_sign_convention_prompt(
     honest recoveries — never "Validation failed" (this is a proposal, not a
     failure) or the --mapping hint (a dead-end loop for a PDF).
     """
-    typer.echo("\n👀  This looks like a credit-card statement")
+    typer.echo("\n👀  Sign convention confirmation required")
     typer.echo(f"   File: {file_path_str}")
     typer.echo(
-        "   Recording it as a card inverts every amount's sign — charges become "
-        "expenses, payments become credits."
+        "   Recording it with this convention inverts every amount's sign — "
+        "negative values become income and positive values become expenses."
     )
     if proposed.evidence:
-        typer.echo(f"\n   Matched card disclosures: {', '.join(proposed.evidence)}")
+        typer.echo(f"\n   Inference evidence: {', '.join(proposed.evidence)}")
     if proposed.sample_rows:
         typer.echo("\n   Printed on statement → recorded by MoneyBin:")
         for row in proposed.sample_rows:
@@ -736,13 +911,34 @@ def _render_sign_convention_prompt(
             label = f"{desc}: " if desc else ""
             typer.echo(f"     {label}{printed} → {recorded}")
     typer.echo("\n   To proceed:")
-    for line in _sign_recovery_commands(file_path_str):
+    for line in _sign_recovery_commands(
+        file_path_str,
+        channel=channel,
+        accept=accept,
+        mapping=mapping,
+        save_format=save_format,
+        account_id=account_id,
+        account_name=account_name,
+        account_bindings=account_bindings,
+        account_metadata=account_metadata,
+    ):
         typer.echo(f"     {line}")
     typer.echo()
 
 
 def _render_confirmation_prompt(
-    outcome: ConfirmationRequired, file_path_str: str
+    outcome: ConfirmationRequired,
+    file_path_str: str,
+    *,
+    accept: bool = True,
+    mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+    confirm_sign: bool = False,
+    sign: SignConventionType | None = None,
 ) -> None:
     """Print a human-readable confirmation summary for an unknown-layout encounter.
 
@@ -764,7 +960,18 @@ def _render_confirmation_prompt(
     if outcome.reason == "sign_convention" and isinstance(
         outcome.proposed, SignConventionProposal
     ):
-        _render_sign_convention_prompt(outcome.proposed, file_path_str)
+        _render_sign_convention_prompt(
+            outcome.proposed,
+            file_path_str,
+            channel=outcome.channel,
+            accept=accept,
+            mapping=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
         return
 
     quoted_path = shlex.quote(file_path_str)
@@ -810,10 +1017,22 @@ def _render_confirmation_prompt(
     typer.echo("\n   To proceed:")
     # Suggested commands shlex-quoted so paths with spaces survive copy-paste.
     if outcome.reason == "account_confirmation":
-        # --mapping/--confirm are irrelevant once the layout is settled.
+        # Replay prior confirmation inputs because retries persist no partial state.
         typer.echo(
-            f"     moneybin import confirm {quoted_path} --accept "
-            "--account-binding <source_key>=<account_id|new>"
+            "     "
+            + _account_recovery_command(
+                file_path_str,
+                outcome,
+                accept=accept,
+                mapping=mapping,
+                save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
+                account_bindings=account_bindings,
+                account_metadata=account_metadata,
+                confirm_sign=confirm_sign,
+                sign=sign,
+            )
         )
     else:
         # Accept hint is gated on tier — resolve_or_confirm refuses Accept at
@@ -847,6 +1066,29 @@ def import_confirm_command(
         "--mapping",
         help="Partial-merge override (repeatable): --mapping field=column.",
     ),
+    bridge_response: Path | None = typer.Option(
+        None,
+        "--bridge-response",
+        help="JSON file containing a PDF bridge {recipe, rows} response.",
+    ),
+    confirm: bool = typer.Option(
+        False,
+        "--confirm",
+        help="Confirm a PDF bridge recipe's ledger-wide sign inversion.",
+    ),
+    confirm_sign: bool = typer.Option(
+        False,
+        "--confirm-sign",
+        help="Explicitly approve an inferred tabular sign inversion.",
+    ),
+    sign: SignConventionType | None = typer.Option(
+        None,
+        "--sign",
+        help=(
+            "Explicit tabular sign-convention override. Use "
+            "negative_is_expense to keep amounts as printed."
+        ),
+    ),
     account_id: str | None = typer.Option(
         None,
         "--account-id",
@@ -874,7 +1116,7 @@ def import_confirm_command(
         help=(
             "Metadata for a 'new' account (repeatable): "
             "--account-meta source_key:field=value, where field is one of "
-            "display_name, account_subtype, last_four, iso_currency_code."
+            "display_name, account_subtype, last_four, currency_code."
         ),
     ),
     save_format: bool = typer.Option(
@@ -897,6 +1139,9 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/statement.csv --mapping date=Date --mapping amount=Amount
         moneybin import confirm ~/Downloads/statement.csv --accept --output json
         moneybin import confirm ~/Downloads/statement.csv --accept --account-name "Chase Checking"
+        moneybin import confirm ~/Downloads/card.csv --accept --confirm-sign
+        moneybin import confirm ~/Downloads/card.csv --accept --sign negative_is_expense
+        moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
@@ -904,7 +1149,37 @@ def import_confirm_command(
     from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
-    if not accept and not mapping:
+    if bridge_response is not None:
+        if accept or mapping or confirm_sign or sign:
+            raise typer.BadParameter(
+                "--bridge-response cannot be combined with --accept, --mapping, "
+                "--confirm-sign, or --sign.",
+                param_hint="'--bridge-response'",
+            )
+        if account_name or account_binding or account_meta:
+            raise typer.BadParameter(
+                "--bridge-response supports --account-id only; PDF rows do not use "
+                "--account-name, --account-binding, or --account-meta.",
+                param_hint="'--bridge-response'",
+            )
+        if not confirm:
+            raise typer.BadParameter(
+                "--bridge-response requires --confirm because its recipe may invert "
+                "every amount in the statement.",
+                param_hint="'--confirm'",
+            )
+    elif confirm:
+        raise typer.BadParameter(
+            "--confirm is only valid with --bridge-response; use --accept for a "
+            "tabular mapping.",
+            param_hint="'--confirm'",
+        )
+    elif confirm_sign and sign is not None:
+        raise typer.BadParameter(
+            "--confirm-sign and --sign are alternate sign decisions; choose one.",
+            param_hint="'--confirm-sign' or '--sign'",
+        )
+    elif not accept and not mapping:
         raise typer.BadParameter(
             "Pass --accept to ratify the proposed mapping, or at least one "
             "--mapping field=column to override specific fields.",
@@ -914,6 +1189,27 @@ def import_confirm_command(
     if not file_path.exists():
         logger.error(f"❌ File not found: {file_path}")
         raise typer.Exit(1)
+
+    bridge_response_data: dict[str, Any] | None = None
+    if bridge_response is not None:
+        try:
+            parsed_response = json.loads(bridge_response.read_text(encoding="utf-8"))
+        except OSError as e:
+            raise typer.BadParameter(
+                f"Could not read bridge response: {e}",
+                param_hint="'--bridge-response'",
+            ) from e
+        except json.JSONDecodeError as e:
+            raise typer.BadParameter(
+                f"Bridge response must be valid JSON: {e.msg}",
+                param_hint="'--bridge-response'",
+            ) from e
+        if not isinstance(parsed_response, dict):
+            raise typer.BadParameter(
+                "Bridge response JSON must be an object with recipe and rows keys.",
+                param_hint="'--bridge-response'",
+            )
+        bridge_response_data = parsed_response
 
     parsed_mapping = _parse_overrides(list(mapping)) if mapping else None
     parsed_bindings = (
@@ -930,20 +1226,34 @@ def import_confirm_command(
     try:
         with handle_cli_errors():
             with get_database(read_only=False) as db:
-                result = ImportService(
-                    db
-                ).import_file(
-                    file_path=file_path,
-                    confirm=accept,
-                    overrides=parsed_mapping,
-                    account_id=account_id,
-                    account_name=account_name,
-                    account_bindings=parsed_bindings,
-                    account_metadata=parsed_metadata,
-                    save_format=save_format,
-                    actor_kind="human",
-                    refresh=False,  # caller can run 'moneybin transform apply' separately
-                )
+                service = ImportService(db)
+                if bridge_response_data is not None:
+                    bridge_result = service.apply_pdf_bridge_response(
+                        file_path,
+                        bridge_response_data,
+                        save_format=save_format,
+                        account_id=account_id,
+                        confirm=True,
+                    )
+                    result = None
+                else:
+                    confirm_kwargs: dict[str, Any] = {
+                        "file_path": file_path,
+                        "confirm": accept,
+                        "overrides": parsed_mapping,
+                        "account_id": account_id,
+                        "account_name": account_name,
+                        "account_bindings": parsed_bindings,
+                        "account_metadata": parsed_metadata,
+                        "save_format": save_format,
+                        "sign": sign,
+                        "actor_kind": "human",
+                        "refresh": False,
+                    }
+                    if confirm_sign:
+                        confirm_kwargs["human_sign_confirmation"] = True
+                    result = service.import_file(**confirm_kwargs)
+                    bridge_result = None
     except ImportConfirmationRequiredError as e:
         # The confirm attempt itself can re-surface ConfirmationRequired —
         # e.g. an override that names an unknown source column, or a
@@ -957,15 +1267,29 @@ def import_confirm_command(
         confirm_actions: list[str] = []
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
-        if outcome.reason == "account_confirmation":
+        if outcome.reason == "sign_convention":
+            confirm_actions.extend(
+                _sign_recovery_commands(
+                    str(file_path),
+                    channel=outcome.channel,
+                    accept=accept,
+                    mapping=parsed_mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=parsed_bindings,
+                    account_metadata=parsed_metadata,
+                )
+            )
+        elif outcome.reason == "account_confirmation":
             # The layout is settled; only the account identity needs ratifying.
-            # The --mapping/--accept hints are irrelevant here (and --accept
-            # without a binding loops back to this gate), so surface only the
-            # binding + preview hints.
+            # Replay the current confirmation inputs because retries persist no
+            # partial state, and add the missing binding. Generic alternate
+            # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run 'moneybin import confirm {file_path} --accept "
-                "--account-binding <source_key>=<account_id|new>' to bind each "
-                "proposed account (adopt an existing id, or 'new' to keep distinct)."
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign)}` "
+                "to bind each proposed account (adopt an existing id, or 'new' "
+                "to keep distinct)."
             )
         else:
             confirm_actions.append(
@@ -995,14 +1319,41 @@ def import_confirm_command(
             # partial-override iteration.
             return
         # Interactive path: human-readable summary + exit code 1.
-        if outcome.reason == "account_confirmation":
-            # The layout is settled; show the bindings to supply, not a --mapping
-            # hint (which would mislead — the mapping is fine).
+        if outcome.reason == "sign_convention":
+            _render_confirmation_prompt(
+                outcome,
+                str(file_path),
+                accept=accept,
+                mapping=parsed_mapping,
+                save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
+                account_bindings=parsed_bindings,
+                account_metadata=parsed_metadata,
+                confirm_sign=confirm_sign,
+                sign=sign,
+            )
+        elif outcome.reason == "account_confirmation":
+            # The layout is settled; replay the current inputs and add the
+            # bindings still required to finish this independent call.
             logger.error("❌ Account identity must be confirmed before import.")
             _echo_account_proposals(outcome, err=True)
             logger.info(
-                f"💡 Re-run 'moneybin import confirm {file_path} --accept "
-                "--account-binding <source_key>=<account_id|new>'."
+                "💡 Re-run `"
+                + _account_recovery_command(
+                    str(file_path),
+                    outcome,
+                    accept=accept,
+                    mapping=parsed_mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=parsed_bindings,
+                    account_metadata=parsed_metadata,
+                    confirm_sign=confirm_sign,
+                    sign=sign,
+                )
+                + "`."
             )
         else:
             msg = f"❌ Confirmation failed: {outcome.reason}" + (
@@ -1014,6 +1365,52 @@ def import_confirm_command(
                 f"{file_path}' and re-run with a corrected --mapping."
             )
         raise typer.Exit(1) from e
+
+    if bridge_result is not None:
+        if bridge_result.outcome == "invalid":
+            data = {
+                "status": "invalid",
+                "reject_reason": bridge_result.reject_reason,
+                "expected_row_count": bridge_result.expected_row_count,
+                "actual_row_count": bridge_result.actual_row_count,
+                "rows_diverged": bridge_result.rows_diverged,
+            }
+            envelope = build_envelope(data=data, sensitivity="medium", actions=[])
+            render_or_json(envelope, output, cli_actor="import_confirm_command")
+            if output != OutputFormat.JSON:
+                logger.error(
+                    "❌ PDF bridge response did not reconcile; nothing was imported."
+                )
+            raise typer.Exit(1)
+
+        from moneybin.services.inbox_service import InboxService  # noqa: PLC0415
+
+        InboxService.for_active_profile_no_db().archive_confirmed_file(file_path)
+        data = {
+            "status": "applied",
+            "import_id": bridge_result.import_id,
+            "rows_loaded": bridge_result.rows_loaded,
+            "format_name": bridge_result.format_name,
+            "expected_row_count": bridge_result.expected_row_count,
+            "actual_row_count": bridge_result.actual_row_count,
+            "rows_diverged": bridge_result.rows_diverged,
+        }
+        actions = [
+            f"Use 'moneybin import revert {bridge_result.import_id}' to undo this import.",
+            "Run 'moneybin transform apply' to rebuild derived tables.",
+            "Run 'moneybin import status' to confirm imported counts.",
+        ]
+        envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
+        render_or_json(envelope, output, cli_actor="import_confirm_command")
+        if not quiet and output != OutputFormat.JSON:
+            logger.info(
+                f"✅ Imported {file_path.name}: {bridge_result.rows_loaded} rows "
+                f"(import_id: {bridge_result.import_id})"
+            )
+            logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
+        return
+
+    result = cast("ImportResult", result)
 
     # Confirmed out of the inbox's pending/ bucket → archive to processed/ and
     # drop the .pending.yml sidecar (no-op for a path that never entered the

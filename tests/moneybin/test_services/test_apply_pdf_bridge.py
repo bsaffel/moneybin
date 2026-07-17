@@ -23,7 +23,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
-from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL
+from moneybin.metrics.registry import PDF_BRIDGE_EGRESS_TOTAL, PDF_SIGN_GATE_TOTAL
 from moneybin.services.import_service import BridgeApplyResult, ImportService
 from moneybin.tables import PDF_FORMATS, TABULAR_TRANSACTIONS
 
@@ -36,7 +36,12 @@ _ROW_REGION_START = "Date  Description  Amount"
 _ROW_REGION_END = "Total:"
 
 
-def _standard_doc(opening: str = "1000.00", closing: str = "1100.00") -> PdfDocument:
+def _standard_doc(
+    opening: str = "1000.00",
+    closing: str = "1100.00",
+    *,
+    card_markers: bool = False,
+) -> PdfDocument:
     """Chase statement IR whose rows net to closing - opening (reconciles)."""
     return PdfDocument(
         source_file="chase_may.pdf",
@@ -47,6 +52,7 @@ def _standard_doc(opening: str = "1000.00", closing: str = "1100.00") -> PdfDocu
             "To: 01/31/2024",
             f"Beginning Balance: ${opening}",
             f"Ending Balance: ${closing}",
+            *(["Minimum Payment Due: $25.00"] if card_markers else []),
             _ROW_REGION_START,
             "01/15/2024  Coffee Shop  -50.00",
             "01/20/2024  Paycheck  150.00",
@@ -193,6 +199,83 @@ def test_apply_save_format_false_skips_persist(
         f"SELECT COUNT(*) FROM {PDF_FORMATS.full_name}"  # noqa: S608  # TableRef constant, not user input
     ).fetchone()
     assert rows is not None and rows[0] == 0
+
+
+def test_apply_inverted_recipe_requires_human_confirmation(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """A bridge agent cannot silently choose a whole-ledger inversion."""
+    from moneybin.services.import_confirmation import ImportConfirmationRequiredError
+
+    # Reconciliation operates on the statement's source signs, before the
+    # loader canonicalizes them, so this is a genuinely reconciling proposal.
+    recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
+    before = PDF_SIGN_GATE_TOTAL.labels(outcome="proposed")._value.get()  # type: ignore[reportPrivateUsage]
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).apply_pdf_bridge_response(
+            _pdf_path(tmp_path), _bridge_response(recipe=recipe)
+        )
+
+    from moneybin.services.import_confirmation import SignConventionProposal
+
+    assert exc.value.outcome.reason == "sign_convention"
+    assert isinstance(exc.value.outcome.proposed, SignConventionProposal)
+    assert exc.value.outcome.proposed.sign_convention == "negative_is_income"
+    assert PDF_SIGN_GATE_TOTAL.labels(outcome="proposed")._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+    loaded = db.conn.execute(
+        f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant, not user input
+        "WHERE source_type = 'pdf'"
+    ).fetchone()
+    assert loaded is not None and loaded[0] == 0
+
+
+def test_apply_inverted_recipe_loads_after_human_confirmation(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """Only the explicit human-confirmed service path may load an inversion."""
+    recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
+
+    result = ImportService(db).apply_pdf_bridge_response(
+        _pdf_path(tmp_path),
+        _bridge_response(recipe=recipe),
+        confirm=True,
+    )
+
+    assert result.outcome == "applied"
+    assert result.rows_loaded == 2
+    assert result.format_name is not None
+
+    import json as _json
+
+    row = db.conn.execute(
+        f"SELECT extraction_recipe FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [result.format_name],
+    ).fetchone()
+    assert row is not None
+    assert _json.loads(row[0])["sign_ratified"] is True
+
+
+def test_marker_backed_inverted_recipe_keeps_polarity_guard_after_confirmation(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """Card disclosures keep future replay checks active after confirmation."""
+    import json as _json
+
+    stub_extract[0] = _standard_doc(card_markers=True)
+    recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
+
+    result = ImportService(db).apply_pdf_bridge_response(
+        _pdf_path(tmp_path), _bridge_response(recipe=recipe), confirm=True
+    )
+
+    assert result.format_name is not None
+    row = db.conn.execute(
+        f"SELECT extraction_recipe FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [result.format_name],
+    ).fetchone()
+    assert row is not None
+    assert _json.loads(row[0])["sign_ratified"] is False
 
 
 def test_apply_writes_revertable_import_log(

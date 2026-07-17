@@ -6,7 +6,7 @@
   "cssEntry": ".design-sync/component-css.css",
   "extraFonts": ".design-sync/fonts/fonts.css",
   "readmeHeader": ".design-sync/conventions.md",
-  "buildCmd": "sh -c 'cat tokens/colors.css tokens/typography.css tokens/shape.css > .design-sync/component-css.css'",
+  "buildCmd": "sh -c 'cat tokens/colors.css tokens/typography.css tokens/shape.css tokens/motion.css > .design-sync/component-css.css'",
   "docsMap": {
     "Button": "components/core/Button.prompt.md",
     "Chip": "components/core/Chip.prompt.md",

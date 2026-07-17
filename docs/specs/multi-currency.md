@@ -2,7 +2,7 @@
 
 ## Status
 
-ready
+in-progress
 
 ## Goal
 
@@ -29,12 +29,17 @@ Today amounts are *implicitly* USD, inconsistently:
   all — `CURDEF` isn't captured anywhere in the OFX pipeline (raw parse, staging,
   or union) yet.
 - `core.fct_transactions` exposes `currency_code`; `core.dim_accounts` has
-  `iso_currency_code` — but **balances carry no currency at all** (`core.fct_balances`,
+  `currency_code` — but **balances carry no currency at all** (`core.fct_balances`,
   `reports.net_worth` have no currency column).
 - Reports `SUM` across rows with no currency dimension. A user who imports EUR rows
   via CSV (currency lands in `fct_transactions`) gets every report summing EUR+USD
   into a single number while the envelope claims USD. **This is a live correctness
   bug**, not a hypothetical — M1K.1's guard closes it.
+
+**Update, 2026-07-17:** the capture gaps and the `dim_accounts` naming described
+above are closed (Requirements 1–3, 8). The no-silent-blend guard (Requirement 5)
+that fully closes the live correctness bug is not yet built, so reports can still
+blend currencies until it ships.
 
 The design move is the same one [`investments-data-model.md`](investments-data-model.md)
 makes: **lock the schema, stage the algorithm.** The investments spec (implemented,
@@ -55,7 +60,7 @@ Related specs:
 - [`reports-net-worth.md`](reports-net-worth.md) and the report recipe library —
   consumers that must segment-or-convert, never silently blend.
 - [`account-management.md`](account-management.md) — `app.account_settings`; per-account
-  `iso_currency_code` already validated against ISO 4217.
+  `currency_code` already validated against ISO 4217.
 - [`smart-import-financial.md`](smart-import-financial.md),
   [`smart-import-tabular.md`](smart-import-tabular.md), [`sync-plaid.md`](sync-plaid.md) —
   the capture points where currency must stop being dropped.
@@ -107,7 +112,7 @@ their mechanics confirm the cost:
 
 | Phase | Scope | Depends on | Notes |
 |---|---|---|---|
-| **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. |
+| **M1K.1** | Currency capture & integrity (no conversion) | nothing | Independent of investments; **may be pulled into the first public release** (see [`roadmap.md`](../roadmap.md) §"The first public release"). Closes the live silent-blend bug. Requirements 1, 2, 3, 8 (capture, schema, account-currency inheritance) implemented 2026-07-17; Requirements 4–7 (home currency, no-silent-blend guard, doctor check, report guard) remain open. |
 | **M1K.2** | Display conversion (auditable rates) | M1K.1 + **investments (M1J)** | The unifying conversion layer over both cash and investment grains. Sequenced after investments so it converts *everything* in one coherent pass. |
 | **M1K.3** | Realized FX gain/loss | M1K.2 + investments cost-basis engine | Reuses the investments lot/cost-basis machinery; the genuinely investment-shaped part. |
 
@@ -131,6 +136,9 @@ Numbered, testable. Tagged by phase.
    has no `iso_currency_code`/`unofficial_currency_code` field, so balance currency
    isn't captured at all yet. Adding it to `SyncBalance` and moneybin-sync's mapping
    is an **additive, optional** contract change (one-way door: additive only).
+   **Implemented 2026-07-17:** OFX `CURDEF` now flows raw parse → `stg_ofx__transactions`
+   → union; `SyncBalance` gained `iso_currency_code`/`unofficial_currency_code` and
+   moneybin-sync's mapping populates it.
 2. **The union stops hardcoding `'USD'`.** `int_transactions__unioned.sql` reads the
    captured currency for the OFX and Plaid arms and leaves it `NULL` when the source omits
    it — it does **not** `COALESCE` to a literal `'USD'`, which would relabel a non-USD
@@ -138,6 +146,9 @@ Numbered, testable. Tagged by phase.
    arms' blind-`'USD'` fallback is the same class of bug (they do read source currency when
    present) and is dropped in the same pass; account inheritance (Req 3) fills currency where
    known, and anything still unknown is segmented, not guessed (Req 8).
+   **Implemented 2026-07-17:** no arm (OFX/manual/tabular/Plaid) defaults to a literal
+   `'USD'` anymore, including the CLI `transactions create --currency` entry point that
+   fed the manual arm.
 3. **Currency at every core monetary grain.** `core.fct_balances` **and the derived
    `core.fct_balances_daily`** (the model `reports.net_worth` actually aggregates) gain a
    `currency_code`; `core.fct_transactions` already carries it. `core.dim_accounts` also
@@ -145,6 +156,9 @@ Numbered, testable. Tagged by phase.
    to `currency_code` end-to-end per the resolved naming decision and scope (§Key
    Decisions, Decision 5). Where a grain genuinely cannot know its currency, it inherits
    the account's `currency_code`, never a blind `'USD'`.
+   **Implemented 2026-07-17:** `dim_accounts.currency_code` (renamed), `fct_balances`/
+   `fct_balances_daily.currency_code`, and account-currency inheritance on
+   `fct_transactions`/`fct_balances` all shipped.
 4. **Home currency setting.** A profile-level `home_currency` (ISO 4217), **mutable**,
    defaulted by **locale auto-detection with explicit user confirmation** in the
    [first-run wizard](mcp-first-run-setup.md). Distinct from per-account currency. It is
@@ -173,6 +187,8 @@ Numbered, testable. Tagged by phase.
    surfaced by `system doctor` (Req 6) for the user to assign. `home_currency` itself is
    established by the first-run wizard (Req 4), not the migration. Versioned migration under
    `src/moneybin/sql/migrations/`.
+   **Implemented 2026-07-17** for the capture/inheritance columns above; the Requirements 5
+   and 6 behaviors referenced in this item (segmentation, doctor surfacing) are still open.
 
 ### M1K.2 — Display conversion
 
@@ -423,6 +439,10 @@ realized FX gain/loss on the conversion pairs.
    still pre-launch — no tag has been cut and no non-author user has adopted the MCP
    contract yet. So the rename is a direct, one-time change: no shim, no follow-up removal
    PR. Implementation is scoped to M1K.1, not this spec pass — see Requirement 3.
+
+   **Implemented as decided, 2026-07-17:** `dim_accounts.iso_currency_code` (and
+   `app.account_settings.iso_currency_code`, the `accounts_set` MCP parameter, and every
+   internal reference) renamed to `currency_code` end-to-end; no shim.
 
 ## Out of Scope
 

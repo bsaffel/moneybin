@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     payment_channel         VARCHAR, -- Optional: in_store, online, other
     transaction_type        VARCHAR, -- Optional source-style type code
     check_number            VARCHAR, -- Optional check number
-    currency_code           VARCHAR DEFAULT 'USD', -- ISO 4217 currency code
+    currency_code           VARCHAR, -- ISO 4217 currency code; NULL when unspecified (never guessed — see multi-currency.md)
     created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by              VARCHAR NOT NULL -- 'cli' or 'mcp'; future-extensible for multi-user identity
 );
@@ -432,7 +432,7 @@ transactions create <amount> <description>
     [--tag TAG]                 Repeatable; e.g. --tag tax:business --tag vacation:hawaii-2026
     [--check-number N]
     [--payment-channel CH]
-    [--currency CODE]           Default: USD
+    [--currency CODE]           Default: unspecified (never guessed — see multi-currency.md)
     [--yes]                     Skip confirmation
 ```
 

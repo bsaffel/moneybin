@@ -324,6 +324,33 @@ class ResolvedMapping:
     confidence: str
 
 
+def _validate_explicit_tabular_sign_shape(
+    field_mapping: dict[str, str],
+    sign: SignConventionType,
+) -> None:
+    """Reject an explicit sign convention that cannot read the mapped columns."""
+    has_split_amount = (
+        "debit_amount" in field_mapping and "credit_amount" in field_mapping
+    )
+    if sign == "split_debit_credit" and not has_split_amount:
+        raise UserError(
+            "Sign convention 'split_debit_credit' does not fit this file's "
+            "columns: the mapping resolves a single amount column, which this "
+            "convention does not read. Re-run with --sign negative_is_expense "
+            "or --sign negative_is_income, or map both debit_amount and "
+            "credit_amount; nothing was imported.",
+            code="invalid_sign_convention",
+        )
+    if sign != "split_debit_credit" and has_split_amount:
+        raise UserError(
+            f"Sign convention {sign!r} does not fit this file's columns: the "
+            "mapping resolves a debit/credit pair, which this convention does "
+            "not read. Re-run with --sign split_debit_credit, or map one amount "
+            "column; nothing was imported.",
+            code="invalid_sign_convention",
+        )
+
+
 def _display_label(file_type: str, file_path: Path) -> str:
     """User-facing label for a detected file type.
 
@@ -539,7 +566,7 @@ _NEW_ACCOUNT_META_KEYS = frozenset({
     "display_name",
     "account_subtype",
     "last_four",
-    "iso_currency_code",
+    "currency_code",
 })
 
 
@@ -569,7 +596,7 @@ def _validate_account_metadata(metadata: dict[str, dict[str, str]] | None) -> No
             display_name=meta.get("display_name"),
             last_four=meta.get("last_four"),
             account_subtype=meta.get("account_subtype"),
-            iso_currency_code=meta.get("iso_currency_code"),
+            currency_code=meta.get("currency_code"),
         )
 
 
@@ -990,7 +1017,7 @@ class ImportService:
             display_name=meta.get("display_name"),
             last_four=meta.get("last_four"),
             account_subtype=meta.get("account_subtype"),
-            iso_currency_code=meta.get("iso_currency_code"),
+            currency_code=meta.get("currency_code"),
         )
         AccountSettingsRepo(self._db, audit=self._audit).set(
             account_id=settings.account_id,
@@ -999,7 +1026,7 @@ class ImportService:
             last_four=settings.last_four,
             account_subtype=settings.account_subtype,
             holder_category=settings.holder_category,
-            iso_currency_code=settings.iso_currency_code,
+            currency_code=settings.currency_code,
             credit_limit=settings.credit_limit,
             archived=settings.archived,
             include_in_net_worth=settings.include_in_net_worth,
@@ -1082,6 +1109,7 @@ class ImportService:
         no_size_limit: bool = False,
         auto_accept: bool = False,
         confirm: bool = False,
+        human_sign_confirmation: bool = False,
         actor_kind: "ActorKind" = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
@@ -1105,13 +1133,15 @@ class ImportService:
             no_size_limit: Override file size limit.
             auto_accept: Auto-accept the top fuzzy account match without prompting.
             confirm: If True, acts as Accept signal to resolve_or_confirm.
+            human_sign_confirmation: Explicit human approval of an inferred
+                tabular sign inversion; independent of mapping acceptance.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
             account_bindings: Map of source_account_key -> canonical account_id
                 (adopt) or "new" (mint standalone), ratifying the account-binding
                 confirmation. Unbound accounts with weak candidates gate for a
                 human caller.
             account_metadata: Map of source_account_key -> {display_name,
-                account_subtype, last_four, iso_currency_code} captured into
+                account_subtype, last_four, currency_code} captured into
                 app.account_settings for accounts minted this import.
 
         Returns:
@@ -1197,6 +1227,7 @@ class ImportService:
                     matched_format = fmt
                     break
 
+        sign_evidence_header: str | None = None
         if matched_format:
             resolved = ResolvedMapping(
                 field_mapping=matched_format.field_mapping,
@@ -1235,6 +1266,7 @@ class ImportService:
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,
             )
+            sign_evidence_header = mapping_result.sign_evidence_header
             confidence = mapping_result.to_confidence(
                 t_high=bands.t_high, t_med=bands.t_med
             )
@@ -1338,7 +1370,11 @@ class ImportService:
             )
             format_source = "detected"
 
-            if mapping_result.sign_needs_confirmation and not sign:
+            if (
+                mapping_result.sign_needs_confirmation
+                and not sign
+                and resolved.sign_convention != "negative_is_income"
+            ):
                 logger.warning(
                     "⚠️  Sign convention is ambiguous (all amounts appear positive). "
                     f"Proceeding with '{resolved.sign_convention}' — "
@@ -1378,6 +1414,12 @@ class ImportService:
                 f"Valid values: {list(get_args(NumberFormatType))}.",
                 code="invalid_number_format",
             )
+        if sign:
+            _validate_explicit_tabular_sign_shape(
+                resolved.field_mapping,
+                cast(SignConventionType, sign),
+            )
+        detected_sign = resolved.sign_convention
         if sign or date_format_override or number_format_override:
             resolved = dataclasses.replace(
                 resolved,
@@ -1389,6 +1431,14 @@ class ImportService:
                 if number_format_override
                 else resolved.number_format,
             )
+
+        self._gate_tabular_sign_convention(
+            detected_sign=detected_sign,
+            sign=sign,
+            human_sign_confirmation=human_sign_confirmation,
+            is_first_contact=matched_format is None,
+            evidence=sign_evidence_header or resolved.field_mapping.get("amount", ""),
+        )
 
         # Determine account info
         source_type = format_info.file_type
@@ -2017,6 +2067,7 @@ class ImportService:
         *,
         save_format: bool = True,
         account_id: str | None = None,
+        confirm: bool = False,
     ) -> BridgeApplyResult:
         """Apply a driving agent's bridge response: validate, reconcile, load.
 
@@ -2056,6 +2107,7 @@ class ImportService:
             account_id: Pin the rows to an existing ``dim_accounts`` row when
                 the statement carries no account anchor (mirrors the tabular
                 and deterministic-PDF ``account_id`` semantics).
+            confirm: Human-only ratification of an inferred sign inversion.
         """
         from moneybin.extractors.pdf.bridge import (
             BridgeResponseError,
@@ -2115,6 +2167,23 @@ class ImportService:
                 actual_row_count=actual_row_count,
                 rows_diverged=rows_diverged,
                 reject_reason=decision.reason,
+            )
+
+        # The bridge response is agent-authored, not a human ratification. A
+        # recipe that inverts every amount therefore follows the same gate as
+        # deterministic PDFs before it can persist or load any rows.
+        decision = self._gate_pdf_sign_convention(decision, sign=None, confirm=confirm)
+        if (
+            confirm
+            and decision.recipe is not None
+            and decision.recipe.sign_convention == "negative_is_income"
+            and not decision.card_markers
+        ):
+            # A marker-free bridge recipe has no deterministic replay evidence,
+            # so this human approval is the durable replay bypass.
+            decision = dataclasses.replace(
+                decision,
+                recipe=decision.recipe.model_copy(update={"sign_ratified": True}),
             )
 
         # 4. Load + persist via the shared transactions path (rung="bridge").
@@ -2197,11 +2266,9 @@ class ImportService:
         A REPLAY (`matched_format_name` set) was confirmed once already and loads
         without asking again — the confirm is once per format, not per statement.
 
-        Install this only downstream of ``route_pdf_import``. ``route_forced_recipe``
-        (the bridge apply) also reports ``matched_format_name is None``, but a
-        caller who supplied ``bridge_response={'recipe': ..., 'rows': [...]}`` has
-        already ratified that recipe's sign convention — re-gating it would ask
-        twice, with no card evidence to show the second time.
+        ``route_forced_recipe`` (the bridge apply) also reports
+        ``matched_format_name is None``. Its recipe is agent-authored, not a
+        human ratification, so it deliberately follows this first-contact gate.
 
         The gate deliberately does NOT route through ``resolve_or_confirm``: that
         seam lets an agent self-accept at ``high``, and a silently agent-accepted
@@ -2299,20 +2366,57 @@ class ImportService:
                     sample_rows=_sign_sample_rows(decision.rows),
                 ),
                 reason="sign_convention",
-                # Recovery is the CLI on both surfaces: the CLI confirms natively
-                # (--confirm / --sign), and MCP cannot ratify a sign inversion in
-                # place yet (elicitation-based confirm is planned), so its agent is
-                # directed to the same terminal command. No literal path here — the
-                # path isn't in scope at the gate; each surface fills in the concrete
-                # command from the file it holds.
+                # A deterministic PDF has no bridge recipe to re-run, so the CLI
+                # confirms it natively (--confirm / --sign). No literal path here —
+                # the path isn't in scope at the gate; each surface fills in the
+                # concrete command from the file it holds.
                 error_message=(
                     "This looks like a credit-card statement "
                     f"(matched: {', '.join(decision.card_markers)}). Charges will be "
                     "recorded as expenses and payments as credits — every amount's "
-                    "sign is inverted. Re-run the import in a terminal to confirm: "
-                    "`moneybin import files <path> --confirm` if it IS a credit card, "
-                    "or `moneybin import files <path> --sign negative_is_expense` if "
-                    "it is not."
+                    "sign is inverted. A person must confirm or override this "
+                    "inversion before anything is imported."
+                ),
+            )
+        )
+
+    def _gate_tabular_sign_convention(
+        self,
+        *,
+        detected_sign: SignConventionType,
+        sign: str | None,
+        human_sign_confirmation: bool,
+        is_first_contact: bool,
+        evidence: str,
+    ) -> None:
+        """Require a human to ratify an inferred tabular ledger inversion."""
+        from moneybin.metrics.registry import TABULAR_SIGN_GATE_TOTAL
+
+        if detected_sign != "negative_is_income" or not is_first_contact:
+            return
+        if sign is not None:
+            TABULAR_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
+            return
+        if human_sign_confirmation:
+            TABULAR_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+            return
+
+        TABULAR_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_CARD_SIGN_CONFIDENCE,
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=(evidence,),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+                error_message=(
+                    "This tabular format would invert every amount: negative values "
+                    "become income and positive values become expenses. A person "
+                    "must confirm or override this inversion before anything is "
+                    "imported."
                 ),
             )
         )
@@ -3085,6 +3189,7 @@ class ImportService:
         no_size_limit: bool = False,
         auto_accept: bool = False,
         confirm: bool = False,
+        human_sign_confirmation: bool = False,
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
@@ -3128,9 +3233,10 @@ class ImportService:
             no_size_limit: Override file size limit for tabular imports.
             auto_accept: Auto-accept the top fuzzy account match without prompting
                 (CLI: --yes / -y). Defaults to False.
-            confirm: Ratify the system's proposal without further prompting —
-                the detected column mapping (tabular) or the credit-card sign
-                inversion (PDF).
+            confirm: Ratify the detected column mapping (tabular) or the
+                credit-card sign inversion (PDF).
+            human_sign_confirmation: Explicit human approval of an inferred
+                tabular sign inversion; never inferred from ``confirm``.
             actor_kind: 'human' (always surfaces) or 'agent' (may self-accept at high tier).
             account_bindings: Map of source_account_key -> canonical account_id
                 (adopt) or "new" (mint standalone), ratifying the account-binding
@@ -3165,6 +3271,7 @@ class ImportService:
             no_size_limit=no_size_limit,
             auto_accept=auto_accept,
             confirm=confirm,
+            human_sign_confirmation=human_sign_confirmation,
             actor_kind=actor_kind,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
@@ -3222,6 +3329,7 @@ class ImportService:
         no_size_limit: bool = False,
         auto_accept: bool = False,
         confirm: bool = False,
+        human_sign_confirmation: bool = False,
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
@@ -3262,6 +3370,7 @@ class ImportService:
                 no_size_limit=no_size_limit,
                 auto_accept=auto_accept,
                 confirm=confirm,
+                human_sign_confirmation=human_sign_confirmation,
                 actor_kind=actor_kind,
                 account_bindings=account_bindings,
                 account_metadata=account_metadata,

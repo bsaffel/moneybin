@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     last_four VARCHAR,
     account_subtype VARCHAR,
     holder_category VARCHAR,
-    iso_currency_code VARCHAR DEFAULT 'USD',
+    currency_code VARCHAR DEFAULT 'USD',
     credit_limit DECIMAL(18, 2),
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE
@@ -141,7 +141,8 @@ SELECT
     0.00::DECIMAL(18, 2) AS balance,
     'ofx'::VARCHAR AS source_type,
     'placeholder'::VARCHAR AS source_ref,
-    CURRENT_TIMESTAMP AS updated_at
+    CURRENT_TIMESTAMP AS updated_at,
+    'USD'::VARCHAR AS currency_code
 WHERE FALSE;
 """
 
@@ -152,7 +153,8 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
     balance DECIMAL(18, 2),
     is_observed BOOLEAN,
     observation_source VARCHAR,
-    reconciliation_delta DECIMAL(18, 2)
+    reconciliation_delta DECIMAL(18, 2),
+    currency_code VARCHAR
 );
 """
 

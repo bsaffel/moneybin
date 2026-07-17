@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-09 -->
+<!-- Last reviewed: 2026-07-17 -->
 
 # Changelog
 
@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 > **Milestone taxonomy revised 2026-05-30.** The scheme is now four phase-aligned milestones — **M0 Foundation · M1 Ingestion Core · M2 Analysis & Reports · M3 Productization & Distribution** — with lettered increments (e.g. `M1J`) beneath. Entries written before this date (the `[Unreleased]` narrative and the dated sections below) reference the **pre-revision** grid (old M0/M1/M2A–C/M3A–F) and are preserved as historical record. See [`docs/roadmap.md`](docs/roadmap.md) for the old→new mapping.
 
 ## [Unreleased]
+
+### Changed
+- **`accounts_set`'s currency parameter is now `currency_code`, not
+  `iso_currency_code`.** Aligns the account-currency parameter name with
+  every other currency field in the schema. Pre-launch, so this is a direct
+  rename with no deprecation alias — any script or agent calling
+  `accounts_set(iso_currency_code=...)` needs to update to `currency_code`.
+  The CLI's `moneybin accounts set --currency` flag is unaffected.
 
 ### Fixed
 - **Real credit-card PDF statements now extract their transactions instead of
@@ -24,6 +32,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the cycle crosses year-end), and the statement imports like any other. A
   statement whose columns genuinely can't be derived deterministically still
   escalates to the assisted reader rather than being silently seeded.
+- **Non-USD transactions and balances are no longer silently relabeled
+  USD.** OFX's per-statement currency (`CURDEF`) and Plaid's per-balance
+  currency were parsed but discarded; every transaction and balance landed
+  with an unrecorded, assumed `USD`. Currency is now captured end-to-end
+  from OFX and Plaid, and a transaction or balance with no currency of its
+  own inherits its account's explicit currency setting when one exists.
+  `moneybin accounts set --currency` (or MCP
+  `accounts_set(currency_code=...)`) sets that setting. An account with no
+  explicit setting still defaults to `USD` — closing that gap with a
+  genuine "unknown, not guessed" terminal case is scoped to a follow-up
+  (M1K.1 Part B), alongside full currency-aware reporting (a home-currency
+  setting and a guard against silently summing mixed currencies).
 - **Credit-card PDF statements now import with correct signs.** A statement that
   names itself a credit card (via its required disclosures — "minimum payment",
   "credit limit", and the like) derives the inverted convention
@@ -34,9 +54,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   confirm it is a card (`moneybin import files <path> --confirm`), or overrule a
   false detection (`--sign negative_is_expense`), and that override survives every
   future replay of the format. Confirming a card also types its account as
-  `credit`, so it is counted as a liability in net worth. (MCP surfaces the same
-  confirmation and, for now, routes it to the CLI to resolve; in-place
-  confirmation is planned.)
+  `credit`, so it is counted as a liability in net worth. Agent-authored PDF
+  bridge recipes now require an MCP human-confirmation prompt before they can
+  invert a ledger; clients without that prompt use `moneybin import confirm
+  <path> --bridge-response response.json --confirm`. Tabular credit-card
+  inferences now likewise pause after mapping confirmation until a person runs
+  `moneybin import confirm <path> --accept --confirm-sign`; accepting a column
+  mapping alone can never approve the ledger-wide sign inversion. The matching
+  “keep amounts as printed” recovery is now the lossless
+  `moneybin import confirm <path> --accept --sign negative_is_expense`; both
+  alternatives retain any mapping, format-save, and account-binding inputs. (#324)
 - **Auto-rule proposals can no longer silently mass-mislabel the ledger.** A
   transaction description that normalizes to a 1–2 character token (e.g. "TO",
   from a truncated "TRANSFER TO ...") previously became a `contains` rule —
@@ -76,10 +103,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   categorizing it double-counts it against the eventual transfer pair once
   matching resolves. Rows with a pending transfer match are now flagged, with
   a hint to resolve the match first — they are still returned, never hidden.
+- **The MCP server's agent-facing instructions no longer claim a consent gate
+  that doesn't exist.** The onboarding text injected at session start said tools
+  "degrade to aggregates" without consent — no such behavior is implemented. It
+  now states the truth: account/routing numbers are masked, all other fields
+  reach the model provider as-is, and there is no consent gate yet.
+
+### Changed
+- **Google Sheets MCP connections can no longer set an inferred sign convention
+  themselves.** The agent-settable `sign` input was removed; an inferred
+  `negative_is_income` convention now requires a human confirmation prompt,
+  while the CLI continues to require an explicit `--sign` choice. (#324)
 
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **"What the AI Provider Sees" guide.** A precise, code-verified statement of
+  what reaches the model provider when an agent drives MoneyBin — what's masked
+  (account/routing numbers, enforced today), what isn't (amounts, descriptions,
+  merchants, dates), what the consent ledger does and doesn't gate, what's
+  recorded locally, and how to run a fully local model so nothing leaves the
+  machine. [`docs/guides/what-the-ai-sees.md`](docs/guides/what-the-ai-sees.md).
 - **`moneybin --version`** prints the installed MoneyBin version. (#316)
 - **PyPI release pipeline with Trusted Publishing.** A tagged release builds the
   wheel and publishes it to PyPI over OIDC Trusted Publishing (no stored token),

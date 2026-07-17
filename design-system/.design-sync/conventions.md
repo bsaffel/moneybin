@@ -26,10 +26,10 @@ props**. Real names:
 
 - **Color** — surfaces `--bg-base --bg-surface --bg-raised --bg-inset`; borders
   `--border-hairline --border-strong`; text `--text-primary --text-secondary
-  --text-faint`; the one accent `--accent-brass` (+`--accent-brass-strong`),
+  --text-faint`; the three-tier accent — `--accent-brass` text / `--accent-gilt` fills / `--accent-verdigris` interaction (brass + gilt have `-strong` hover variants, gilt + verdigris have `-tint` washes, `--on-accent-gilt` is the ink on a gilt fill),
   **never blue**; money `--pos-income` (green) / `--neg-expense` (red); series
   `--chart-1` … `--chart-8`; `--focus`.
-- **Type** — `--font-display` (Newsreader serif; headlines/wordmark only),
+- **Type** — `--font-display` (Newsreader serif; headlines, wordmark, room/page titles only),
   `--font-ui` (Schibsted Grotesk; all UI), `--font-data` (JetBrains Mono;
   **every** amount/timestamp/axis label/SQL). Sizes `--text-body-size
   --text-table-size --text-amount-size --text-hero-amount-size --text-h2-size
@@ -53,7 +53,7 @@ props**. Real names:
   inherits `currentColor`. An icon never appears without a visible label except
   in a collapsed rail or an icon-only control, where `title` is required. The
   AI/ask surface is the caret `▸_` (`--font-data`), never an icon, never ✨.
-- Brass is the only accent. Hairline borders, no resting shadows. **No emoji, no
+- One metal accent in three tiers — brass (provenance text), gilt (fills), verdigris (interaction); never blue. Hairline borders, no resting shadows. **No emoji, no
   exclamation points, no superlatives.** Sentence case; overline labels are
   ALL-CAPS mono, tracked `--text-overline-tracking`.
 

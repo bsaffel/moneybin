@@ -106,7 +106,7 @@ Claude Design output is **not** repo-native. Fix it:
 - **Freeze any runtime `<script>` to static SVG.** Run its logic once, bake the
   elements inline, delete the script. Specimens must render static.
 
-Audit the brand non-negotiables on every asset: brass-only accent (never blue),
+Audit the brand non-negotiables on every asset: three-tier metal accent — brass text, gilt fills, verdigris interaction (never blue),
 money in mono via `Amount` with explicit +/− signs, hairline borders / no resting
 shadow, SQL provenance chip on data widgets, no emoji, no exclamation points.
 

@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     payment_channel       VARCHAR,                                    -- Optional: in_store, online, other
     transaction_type      VARCHAR,                                    -- Optional source-style type code
     check_number          VARCHAR,                                    -- Optional check number
-    currency_code         VARCHAR DEFAULT 'USD',                      -- ISO 4217 currency code
+    currency_code         VARCHAR,                                    -- ISO 4217 currency code; NULL when unknown (never fabricated)
     created_at            TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by            VARCHAR NOT NULL,                           -- 'cli' or 'mcp'; future-extensible for multi-user identity
     transaction_id        VARCHAR                                     -- Predicted gold-key (SHA256 of 'manual|user|account_id|source_transaction_id'[:16] per ADR-015/RD-2); populated at INSERT so doctor orphan_app_state can suppress false-positives on rows not yet materialized in core.fct_transactions

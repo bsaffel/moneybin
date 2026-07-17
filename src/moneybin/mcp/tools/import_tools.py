@@ -12,15 +12,17 @@ Tools:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastmcp import FastMCP
 
 if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
+    from moneybin.services.import_service import ImportResult
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -60,7 +62,19 @@ def _validate_file_path(file_path: str) -> Path:
     return resolved
 
 
-def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list[str]:
+def _confirmation_actions(
+    file_path: str,
+    outcome: ConfirmationRequired,
+    *,
+    accept: bool = True,
+    mapping: dict[str, str] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+    sign_reconfirmation_required: bool = False,
+) -> list[str]:
     """Build the actions[] hints for a confirmation_required envelope.
 
     Omits the `accept=True` suggestion on `low`-tier proposals because
@@ -69,6 +83,10 @@ def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list
     `mapping=...` override.
     """
     actions: list[str] = []
+    if outcome.reason == "sign_convention":
+        return _sign_confirm_actions(
+            file_path, outcome.error_message, channel=outcome.channel
+        )
     if outcome.error_message:
         # Surface validation_failure detail first so the agent / human
         # sees WHY their last attempt was rejected (which override key
@@ -77,20 +95,39 @@ def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list
         actions.append(f"Validation failed: {outcome.error_message}")
     if outcome.reason == "account_confirmation":
         # The column mapping is settled; only the account identity is open.
-        # accept=True ratifies the mapping and account_bindings answers the
-        # account in one call — a bare accept (no binding) loops back to the
-        # account gate and a mapping override is irrelevant. Bind every proposal
-        # (the gate is all-or-nothing).
-        keys = [
-            str(p.get("source_account_key", "")) for p in outcome.account_proposals
-        ] or ["<source_key>"]
-        binding_map = ", ".join(f"'{k}': '<account_id|new>'" for k in keys)
+        # Re-supply the accepted mapping because independent calls persist no
+        # partial confirmation state, then answer every account proposal (the
+        # gate is all-or-nothing). A bare accept loops back to the account gate.
+        bindings = dict(account_bindings or {})
+        for proposal in outcome.account_proposals:
+            key = str(proposal.get("source_account_key", ""))
+            bindings.setdefault(key, "<account_id|new>")
+        if not bindings:
+            bindings["<source_key>"] = "<account_id|new>"
+        call_args = [f"file_path={file_path!r}"]
+        if accept:
+            call_args.append("accept=True")
+        if mapping:
+            call_args.append(f"mapping={mapping!r}")
+        call_args.append(f"save_format={save_format!r}")
+        if account_id is not None:
+            call_args.append(f"account_id={account_id!r}")
+        if account_name is not None:
+            call_args.append(f"account_name={account_name!r}")
+        call_args.append(f"account_bindings={bindings!r}")
+        if account_metadata is not None:
+            call_args.append(f"account_metadata={account_metadata!r}")
         actions.append(
-            f"Use import_confirm(file_path='{file_path}', accept=True, "
-            f"account_bindings={{{binding_map}}}) to ratify the mapping and bind "
-            "every account; source keys are in "
+            f"Use import_confirm({', '.join(call_args)}) to ratify the mapping "
+            "and bind every account; source keys are in "
             "data.account_proposals[].source_account_key."
         )
+        if sign_reconfirmation_required:
+            actions.append(
+                "The sign confirmation is not persisted across MCP calls, so "
+                "this next call will ask the human to confirm the sign inversion "
+                "again before importing."
+            )
         return actions
     if outcome.confidence.tier != "low":
         actions.append(
@@ -107,6 +144,40 @@ def _confirmation_actions(file_path: str, outcome: ConfirmationRequired) -> list
         "to inspect the proposal and samples in detail."
     )
     return actions
+
+
+def _tabular_confirm_cli_equivalent(
+    file_path: str,
+    *,
+    accept: bool,
+    mapping: dict[str, str] | None,
+    save_format: bool,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+    confirm_sign: bool,
+) -> str:
+    """Serialize the public tabular confirmation request as a shell-safe command."""
+    parts = ["moneybin", "import", "confirm", file_path]
+    if accept:
+        parts.append("--accept")
+    for field, source in (mapping or {}).items():
+        parts.extend(("--mapping", f"{field}={source}"))
+    if confirm_sign:
+        parts.append("--confirm-sign")
+    if account_id is not None:
+        parts.extend(("--account-id", account_id))
+    if account_name is not None:
+        parts.extend(("--account-name", account_name))
+    for source_key, binding in (account_bindings or {}).items():
+        parts.extend(("--account-binding", f"{source_key}={binding}"))
+    for source_key, metadata in (account_metadata or {}).items():
+        for field, value in metadata.items():
+            parts.extend(("--account-meta", f"{source_key}:{field}={value}"))
+    if not save_format:
+        parts.append("--no-save-format")
+    return shlex.join(parts)
 
 
 def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
@@ -129,25 +200,34 @@ def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
     )
 
 
-def _sign_confirm_actions(file_path: str, error_message: str) -> list[str]:
-    """The agent-facing hints for a PDF sign-convention confirmation_required.
+def _sign_confirm_actions(
+    file_path: str, error_message: str, *, channel: str
+) -> list[str]:
+    """The agent-facing hints for a sign-convention confirmation_required.
 
-    Ratifying a card statement inverts every amount, and a wrong flip corrupts the
-    ledger on this import and on every future replay of the format — so the agent
-    must NOT ratify it. MCP has no in-place path to confirm a sign inversion yet
-    (elicitation-based confirm is planned); until then the human resolves it in a
-    terminal, where inverting every amount is a deliberate, visible act. The hints
-    therefore point at the CLI, not at an `import_confirm` call that cannot ratify
-    a sign flip.
+    Ratifying an inferred card-style convention inverts every amount, and a wrong
+    flip corrupts the ledger on this import and on every future replay of the
+    format. An agent cannot ratify it; tabular imports elicit the human in place,
+    while deterministic PDFs retain their explicit CLI recovery.
     """
     quoted = shlex.quote(file_path)
     return [
         error_message,
-        "Show the user sign_sample_rows — what the statement printed vs what "
-        "MoneyBin would record — so THEY decide. MCP cannot ratify a sign "
-        "inversion in place yet; resolve it in a terminal:",
-        f"If it IS a credit card: moneybin import files {quoted} --confirm "
-        "(records charges as expenses).",
+        (
+            "Call import_confirm(file_path=..., accept=True) so MoneyBin can "
+            "show the human the tabular sign-inversion approval."
+            if channel == "tabular"
+            else "Show the user sign_sample_rows — what the statement printed vs what "
+            "MoneyBin would record — so THEY decide. Resolve this deterministic PDF "
+            "in a terminal:"
+        ),
+        (
+            f"If it IS a credit card: moneybin import confirm {quoted} --accept "
+            "--confirm-sign (records charges as expenses)."
+            if channel == "tabular"
+            else f"If it IS a credit card: moneybin import files {quoted} --confirm "
+            "(records charges as expenses)."
+        ),
         f"If it is NOT a credit card: moneybin import files {quoted} "
         "--sign negative_is_expense (records amounts exactly as printed).",
     ]
@@ -382,7 +462,14 @@ def import_files(
         # recovery. It owns err_msg as its lead line, so skip the generic
         # "Validation failed" prefix (this is a proposal, not a validation error).
         if payload.get("reason") == "sign_convention":
-            actions.extend(_sign_confirm_actions(pending.path, err_msg))
+            channel = payload.get("channel")
+            actions.extend(
+                _sign_confirm_actions(
+                    pending.path,
+                    err_msg,
+                    channel=channel if isinstance(channel, str) else "tabular",
+                )
+            )
             continue
         if err_msg:
             actions.append(f"Validation failed: {err_msg}")
@@ -510,7 +597,9 @@ def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
                     "sign_evidence": payload["sign_evidence"],
                     "sign_sample_rows": payload["sign_sample_rows"],
                 },
-                actions=_sign_confirm_actions(str(path), e.outcome.error_message),
+                actions=_sign_confirm_actions(
+                    str(path), e.outcome.error_message, channel=e.outcome.channel
+                ),
             )
         # Otherwise pdf_preview escalated via _raise_pdf_bridge_escalation, which
         # always constructs a BridgePayload — so proposed is never the tabular
@@ -786,6 +875,7 @@ def _import_confirm_bridge(
     *,
     save_format: bool,
     account_id: str | None,
+    confirm: bool = False,
 ) -> ResponseEnvelope[ImportConfirmPayload]:
     """Apply a PDF bridge response via ImportService.apply_pdf_bridge_response.
 
@@ -795,6 +885,10 @@ def _import_confirm_bridge(
     recipe that fails the security bounds raises ``UserError``.
     """
     from moneybin.extractors.pdf.bridge import BridgeResponseError
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        confirmation_payload_dict,
+    )
     from moneybin.services.import_service import ImportService
 
     path = _validate_file_path(file_path)
@@ -805,12 +899,22 @@ def _import_confirm_bridge(
                 bridge_response,
                 save_format=save_format,
                 account_id=account_id,
+                confirm=confirm,
             )
     except BridgeResponseError as e:
         # Only a bad response shape / out-of-bounds recipe is bridge_response_
         # invalid. A ValueError raised later (PDF extraction, load) is NOT
         # caught here so it isn't mislabeled — it surfaces as a generic error.
         raise UserError(str(e), code="bridge_response_invalid") from e
+    except ImportConfirmationRequiredError as e:
+        return build_envelope(
+            sensitivity="medium",
+            data={
+                "status": "confirmation_required",
+                **confirmation_payload_dict(e.outcome),
+            },
+            actions=_confirmation_actions(file_path, e.outcome),
+        )
 
     if result.outcome == "invalid":
         return build_envelope(
@@ -871,8 +975,66 @@ def _import_confirm_bridge(
     )
 
 
-@mcp_tool(read_only=False, idempotent=False)
-def import_confirm(
+def _sign_confirmation_message(payload: dict[str, Any]) -> str:
+    """Describe the exact ledger-wide change a human must ratify."""
+    evidence = ", ".join(str(item) for item in payload["sign_evidence"])
+    sample_rows = payload["sign_sample_rows"][:3]
+    source = (
+        "PDF bridge recipe" if payload.get("channel") == "pdf" else "tabular import"
+    )
+    samples = (
+        f"Sample rows (printed amount → MoneyBin amount): {sample_rows}\n\n"
+        if sample_rows
+        else "\n"
+    )
+    return (
+        f"This {source} identifies the file as a credit card and will reverse "
+        "every amount: charges become negative expenses and payments become "
+        "positive income.\n\n"
+        f"Evidence from the file: {evidence}.\n"
+        f"{samples}"
+        "Approve this sign inversion?"
+    )
+
+
+def _import_confirm_tabular(
+    path: Path,
+    *,
+    accept: bool,
+    mapping: dict[str, str] | None,
+    save_format: bool,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+    human_sign_confirmation: bool = False,
+) -> ImportResult:
+    """Apply one tabular confirmation attempt outside the MCP event loop."""
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        return ImportService(db).import_file(
+            path,
+            confirm=accept,
+            overrides=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+            actor_kind="agent",
+            human_sign_confirmation=human_sign_confirmation,
+            refresh=False,  # caller can run refresh_run separately
+        )
+
+
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    # Human sign confirmation can take longer than the default MCP timeout.
+    timeout_seconds=180.0,
+)
+async def import_confirm(
     file_path: str,
     *,
     accept: bool = False,
@@ -901,8 +1063,10 @@ def import_confirm(
       document, reconciles the re-executed rows against the statement balances
       (the authority — your returned rows are verified against it, and a row-
       count divergence is reported back), persists the recipe, and loads the
-      transactions. A response that fails reconciliation is rejected
-      (``status='invalid'``) and nothing loads.
+      transactions. A recipe that would invert every amount pauses for an MCP
+      human-confirmation prompt; an agent cannot approve that inversion. A
+      response that fails reconciliation is rejected (``status='invalid'``)
+      and nothing loads.
 
     Single-account tabular files (CSVs without an embedded account identifier)
     require ``account_id`` or ``account_name``. PDF rows resolve the account
@@ -925,7 +1089,8 @@ def import_confirm(
         accept: Accept the proposed mapping as-is (no overrides). Tabular only.
         mapping: Partial field→column override dict. Tabular only.
         bridge_response: PDF bridge reply ``{'recipe': ..., 'rows': [...]}``.
-            Mutually exclusive with ``accept``/``mapping``.
+            Mutually exclusive with ``accept``/``mapping``. An inverted recipe
+            requires explicit human confirmation through MCP elicitation.
         save_format: Auto-save the confirmed mapping/recipe as a named format
             for future imports. Defaults to True.
         account_id: Existing account id to associate single-account rows with.
@@ -940,14 +1105,13 @@ def import_confirm(
             account and persists no partial state between calls.
         account_metadata: For accounts bound ``"new"``, a map of
             ``source_account_key`` -> ``{display_name, account_subtype,
-            last_four, iso_currency_code}`` captured into the minted account's
+            last_four, currency_code}`` captured into the minted account's
             settings. Unknown fields raise. Ignored for adopted accounts.
     """
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
-        ProposedMapping,
+        confirmation_payload_dict,
     )
-    from moneybin.services.import_service import ImportService
 
     # Validate the path up front so an invalid path surfaces as
     # invalid_file_path before any channel/argument guard below (otherwise a
@@ -973,11 +1137,40 @@ def import_confirm(
                 "rows to an existing account when there is no anchor.",
                 code="bridge_account_name_unsupported",
             )
-        return _import_confirm_bridge(
+        first_attempt = await asyncio.to_thread(
+            _import_confirm_bridge,
             str(path),
             bridge_response,
             save_format=save_format,
             account_id=account_id,
+        )
+        payload = cast(dict[str, Any], first_attempt.data)
+        if not (
+            payload.get("status") == "confirmation_required"
+            and payload.get("reason") == "sign_convention"
+        ):
+            return first_attempt
+
+        from moneybin.mcp.elicitation import confirm_or_raise
+
+        quoted_path = shlex.quote(str(path))
+        await confirm_or_raise(
+            _sign_confirmation_message(payload),
+            subject="This PDF bridge sign inversion",
+            unchanged="the PDF was not imported",
+            cli_equivalent=(
+                f"moneybin import confirm {quoted_path} "
+                "--bridge-response <bridge-response.json> --confirm"
+            ),
+            details={"file_path": str(path)},
+        )
+        return await asyncio.to_thread(
+            _import_confirm_bridge,
+            str(path),
+            bridge_response,
+            save_format=save_format,
+            account_id=account_id,
+            confirm=True,
         )
 
     if path.suffix.lower() == ".pdf":
@@ -988,12 +1181,13 @@ def import_confirm(
         # re-extract the document and, for a bridge PDF, write a spurious egress
         # audit row):
         #   * Bridge (native-text extraction) — re-call with bridge_response=.
-        #   * Sign convention (credit-card inversion) — MCP cannot ratify a sign
-        #     flip in place yet (elicitation-based confirm is planned); the human
-        #     resolves it in a terminal, where inverting every amount is a
-        #     deliberate, visible act. accept=True must never silently invert the
-        #     ledger, and the tabular catch below only serializes ProposedMapping,
-        #     so running the tabular path here would loop the agent instead.
+        #   * Sign convention (credit-card inversion) — a deterministic PDF has
+        #     no bridge recipe to re-run, so the human resolves it in a terminal,
+        #     where inverting every amount is a deliberate, visible act. Bridge
+        #     recipes use the MCP elicitation path above. accept=True must never
+        #     silently invert the ledger, and the tabular catch below only
+        #     serializes ProposedMapping, so running the tabular path here would
+        #     loop the agent instead.
         quoted = shlex.quote(str(path))
         raise UserError(
             "A PDF confirmation cannot be ratified with accept=/mapping= over MCP. "
@@ -1001,8 +1195,9 @@ def import_confirm(
             "extraction), call import_confirm(file_path=..., bridge_response="
             "{'recipe': ..., 'rows': [...]}). If it returned a sign-convention "
             "confirmation (a credit-card statement — confirming inverts every "
-            "amount's sign), MCP cannot ratify the inversion in place yet; resolve "
-            f"it in a terminal: `moneybin import files {quoted} --confirm` if it IS "
+            "amount's sign), MCP cannot ratify the deterministic PDF inversion "
+            "in place; resolve it in a terminal: "
+            f"`moneybin import files {quoted} --confirm` if it IS "
             f"a credit card, or `moneybin import files {quoted} --sign "
             "negative_is_expense` if it is not.",
             code="confirm_channel_conflict",
@@ -1016,55 +1211,96 @@ def import_confirm(
         )
 
     try:
-        with get_database(read_only=False) as db:
-            result = ImportService(db).import_file(
-                path,
-                confirm=accept,
-                overrides=mapping,
-                save_format=save_format,
-                account_id=account_id,
-                account_name=account_name,
-                account_bindings=account_bindings,
-                account_metadata=account_metadata,
-                actor_kind="agent",
-                refresh=False,  # caller can run refresh_run separately
-            )
+        result = await asyncio.to_thread(
+            _import_confirm_tabular,
+            path,
+            accept=accept,
+            mapping=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
     except ImportConfirmationRequiredError as e:
-        # An override that names an unknown source column, or an Accept against
-        # a low-tier proposal where required fields remain missing, re-surfaces
-        # ConfirmationRequired. Mirror import_files' envelope so the agent
-        # sees the validator's error_message and actions[] instead of an
-        # opaque server error.
-        proposed_mapping = (
-            e.outcome.proposed.field_mapping
-            if isinstance(e.outcome.proposed, ProposedMapping)
-            else {}
-        )
-        unmapped = (
-            list(e.outcome.proposed.unmapped_columns)
-            if isinstance(e.outcome.proposed, ProposedMapping)
-            else []
-        )
-        return build_envelope(
-            sensitivity="medium",
-            data={
-                "status": "confirmation_required",
-                "channel": e.outcome.channel,
-                "tier": e.outcome.confidence.tier,
-                "score": e.outcome.confidence.score,
-                "reason": e.outcome.reason,
-                "error_message": e.outcome.error_message,
-                "proposed_mapping": proposed_mapping,
-                "samples": e.outcome.samples,
-                "flagged": list(e.outcome.confidence.flagged),
-                "missing_required": list(e.outcome.confidence.missing_required),
-                "unmapped_columns": unmapped,
-                # Carry account_proposals so an account_confirmation re-prompt
-                # surfaces the source keys the agent needs for account_bindings.
-                "account_proposals": list(e.outcome.account_proposals),
-            },
-            actions=_confirmation_actions(str(path), e.outcome),
-        )
+        if e.outcome.reason == "sign_convention":
+            from moneybin.mcp.elicitation import confirm_or_raise
+
+            payload = confirmation_payload_dict(e.outcome)
+            await confirm_or_raise(
+                _sign_confirmation_message(payload),
+                subject="This tabular sign inversion",
+                unchanged="the file was not imported",
+                cli_equivalent=_tabular_confirm_cli_equivalent(
+                    str(path),
+                    accept=accept,
+                    mapping=mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=account_bindings,
+                    account_metadata=account_metadata,
+                    confirm_sign=True,
+                ),
+                details={"file_path": str(path)},
+            )
+            try:
+                result = await asyncio.to_thread(
+                    _import_confirm_tabular,
+                    path,
+                    accept=accept,
+                    mapping=mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=account_bindings,
+                    account_metadata=account_metadata,
+                    human_sign_confirmation=True,
+                )
+            except ImportConfirmationRequiredError as retry_error:
+                return build_envelope(
+                    sensitivity="medium",
+                    data={
+                        "status": "confirmation_required",
+                        **confirmation_payload_dict(retry_error.outcome),
+                    },
+                    actions=_confirmation_actions(
+                        str(path),
+                        retry_error.outcome,
+                        accept=accept,
+                        mapping=mapping,
+                        save_format=save_format,
+                        account_id=account_id,
+                        account_name=account_name,
+                        account_bindings=account_bindings,
+                        account_metadata=account_metadata,
+                        sign_reconfirmation_required=True,
+                    ),
+                )
+        else:
+            # An override that names an unknown source column, or an Accept against
+            # a low-tier proposal where required fields remain missing, re-surfaces
+            # ConfirmationRequired. Mirror import_files' envelope so the agent
+            # sees the validator's error_message and actions[] instead of an
+            # opaque server error.
+            return build_envelope(
+                sensitivity="medium",
+                data={
+                    "status": "confirmation_required",
+                    **confirmation_payload_dict(e.outcome),
+                },
+                actions=_confirmation_actions(
+                    str(path),
+                    e.outcome,
+                    accept=accept,
+                    mapping=mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=account_bindings,
+                    account_metadata=account_metadata,
+                ),
+            )
 
     actions: list[str] = [
         f"Use import_revert(import_id='{result.import_id}') to undo this import.",
@@ -1198,8 +1434,9 @@ def register_import_tools(mcp: FastMCP) -> None:
         "PDF bridge: pass bridge_response={'recipe': ..., 'rows': [...]} — "
         "MoneyBin re-runs your recipe against the document, reconciles, and "
         "loads, writing raw.tabular_transactions + app.pdf_formats (when "
-        "save_format=True); a response that fails reconciliation is rejected and "
-        "nothing loads. Data load is reversible via import_revert; format save "
+        "save_format=True); an inverted bridge recipe elicits explicit human "
+        "approval before loading. A response that fails reconciliation is rejected "
+        "and nothing loads. Data load is reversible via import_revert; format save "
         "can be undone via system_audit_undo. "
         "Amounts use the accounting convention: negative=expense, "
         "positive=income; transfers exempt.",
