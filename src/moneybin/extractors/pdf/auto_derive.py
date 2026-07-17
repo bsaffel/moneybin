@@ -49,8 +49,17 @@ from moneybin.extractors.pdf.column_names import (
     DEBIT_NAME_RE as _DEBIT_COL_RE,
 )
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
-from moneybin.extractors.pdf.metadata import DEFAULT_ANCHORS, StatementMetadata
-from moneybin.extractors.pdf.recipe import FieldExtraction, Recipe, RegionAnchors
+from moneybin.extractors.pdf.metadata import (
+    DEFAULT_ANCHORS,
+    StatementMetadata,
+    capture_metadata,
+)
+from moneybin.extractors.pdf.recipe import (
+    FieldExtraction,
+    Recipe,
+    RegionAnchors,
+    is_yearless_date_format,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +75,11 @@ _DATE_FORMATS: list[tuple[str, str]] = [
     ("%m/%d/%Y", r"\d{2}/\d{2}/\d{4}"),
     ("%Y-%m-%d", r"\d{4}-\d{2}-\d{2}"),
     ("%m/%d/%y", r"\d{2}/\d{2}/\d{2}"),
+    # Year-less MM/DD: credit-card transaction rows print no year (it lives only
+    # on the "Opening/Closing Date" line). Listed last so a sample that carries a
+    # year matches a year-bearing format first; execute_recipe brackets the year
+    # from the billing period at cast time.
+    ("%m/%d", r"\d{2}/\d{2}"),
 ]
 
 # "Does this cell open a transaction row?" — any date shape the deriver knows.
@@ -222,6 +236,11 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
     date_fmt, date_pattern = _detect_date_format(table)
     if date_fmt is None or date_pattern is None:
         return None
+    if is_yearless_date_format(date_fmt) and not _period_capturable(doc):
+        # MM/DD rows carry no year; without the billing period the executor can't
+        # resolve one, so don't author a recipe that could only emit wrong dates.
+        # Declining routes the statement to the bridge instead of miswriting it.
+        return None
 
     number_fmt = _detect_number_format(table, amount_cols)
     if number_fmt is None:
@@ -328,6 +347,19 @@ def _detect_start_anchor(doc: PdfDocument, table: PdfTable) -> str:
         cells = _re.split(_ROW_SPLIT, stripped)
         if cells == expected:
             return stripped
+    # A shape-derived table has a synthesized (canonical) header that equals no
+    # real line. Anchor instead on the amount-naming column-header line
+    # ("... $ Amount") sitting above the rows — far more specific than the bare
+    # "Date", which also appears in preamble ("Payment Due Date: ...").
+    for line in doc.text_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        cells = _re.split(_ROW_SPLIT, stripped)
+        if not _is_transaction_row(cells) and any(
+            _AMOUNT_COL_RE.search(c) for c in cells
+        ):
+            return stripped
     return table.header[0]
 
 
@@ -431,6 +463,112 @@ def _synthesize_tables_from_text(doc: PdfDocument) -> list[PdfTable]:
         PdfTable(page=1, header=list(header), rows=rows)
         for header, rows in runs.items()
     ]
+
+
+# ---------------------------------------------------------------------------
+# Shape-based reconstruction (wrapped / unnamed headers)
+# ---------------------------------------------------------------------------
+
+
+def _is_money_cell(cell: str) -> bool:
+    """True when a cell parses as a money amount under either supported locale."""
+    token = _strip_currency(cell)
+    return _matches_us(token) or _matches_european(token)
+
+
+def _is_transaction_row(cells: list[str]) -> bool:
+    r"""True when a ``\s{2,}``-split line has the shape of a transaction row.
+
+    Date-shaped first cell (any known format, including year-less MM/DD), a
+    money-shaped last cell, and a description column between — the shape a row has
+    regardless of whether the statement ever names its columns.
+    """
+    return (
+        len(cells) >= 3
+        and bool(_ANY_DATE_RE.match(cells[0]))
+        and _is_money_cell(cells[-1])
+    )
+
+
+def _modal_width(rows: list[list[str]]) -> int:
+    """Most common cell count among *rows*; ties resolve to the larger width."""
+    widths = [len(r) for r in rows]
+    return max(sorted(set(widths), reverse=True), key=widths.count)
+
+
+def _synthesize_header(width: int) -> list[str]:
+    """Canonical Date/Description(.../)/Amount header for a shape-derived table.
+
+    The statement's own header wrapped or garbled beyond clean recovery, so name
+    the columns canonically — the classifiers only need the first to read as a
+    date column and the last as an amount column. Middle columns get distinct
+    names so the row-dict keys don't collide.
+    """
+    if width == 3:
+        return ["Date", "Description", "Amount"]
+    middle = [f"Description_{i}" for i in range(1, width - 1)]
+    return ["Date", *middle, "Amount"]
+
+
+def _has_named_transactional_header(doc: PdfDocument) -> bool:
+    """True when some ruled or text line already names a transaction table.
+
+    Guards the shape-based fallback: when a real header exists — a single-amount
+    layout OR the deferred debit/credit pair — the named-header paths own it. A
+    debit/credit statement must route to the bridge, not be force-fit to one
+    synthesized Amount column, so shape reconstruction must not fire for it.
+    """
+    for table in doc.tables:
+        if _is_transactional_header(table.header):
+            return True
+    for line in doc.text_lines:
+        stripped = line.strip()
+        if stripped and _is_transactional_header(_re.split(_ROW_SPLIT, stripped)):
+            return True
+    return False
+
+
+def _synthesize_tables_from_row_shape(doc: PdfDocument) -> list[PdfTable]:
+    r"""Reconstruct a transaction table from data-row shape when no header names it.
+
+    Real credit-card statements wrap the column header across two physical lines
+    ("Date of" / "Transaction  Merchant ...  $ Amount"), so no single line
+    ``\s{2,}``-splits into a date-led >=3-cell header and
+    ``_synthesize_tables_from_text`` finds nothing. The rows themselves are
+    unambiguous — a date-shaped first cell, a money-shaped last cell — so collect
+    them by shape, skipping the interleaved section sub-headers ("PAYMENTS AND
+    OTHER CREDITS", "PURCHASE", "INTEREST CHARGED") that split to a single cell,
+    and synthesize a canonical header of the rows' modal width.
+
+    Caller-guarded: only fires when no line names the columns, so a debit/credit
+    statement (which names them) never reaches here and stays deferred.
+    """
+    rows: list[list[str]] = []
+    for line in doc.text_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        cells = _re.split(_ROW_SPLIT, stripped)
+        if _is_transaction_row(cells):
+            rows.append(cells)
+    if not rows:
+        return []
+    width = _modal_width(rows)
+    rows = [r for r in rows if len(r) == width]
+    if not rows:
+        return []
+    return [PdfTable(page=1, header=_synthesize_header(width), rows=rows)]
+
+
+def _period_capturable(doc: PdfDocument) -> bool:
+    """True when the document carries both billing-period dates.
+
+    A year-less MM/DD statement is only derivable if the executor can resolve each
+    row's year from the period; derive_recipe refuses to author a recipe that
+    can't, routing to the bridge instead.
+    """
+    md = capture_metadata("\n".join(doc.text_lines))
+    return md.period_start is not None and md.period_end is not None
 
 
 def _is_transactional_header(headers: list[str]) -> bool:
@@ -567,6 +705,17 @@ def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
     if not candidates:
         candidates = [
             t for t in _synthesize_tables_from_text(doc) if _is_transaction_shaped(t)
+        ]
+    if not candidates and not _has_named_transactional_header(doc):
+        # No ruled table and no line names the columns — a wrapped multi-line
+        # header like Chase's "Date of" / "Transaction ... $ Amount". Fall back to
+        # detecting the table by its data-row shape. The missing-named-header
+        # guard keeps a debit/credit statement (which DOES name its columns) from
+        # being force-fit to a single synthesized Amount column here.
+        candidates = [
+            t
+            for t in _synthesize_tables_from_row_shape(doc)
+            if _is_transaction_shaped(t)
         ]
     if not candidates:
         return None

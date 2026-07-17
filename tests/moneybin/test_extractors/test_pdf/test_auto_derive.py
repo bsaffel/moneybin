@@ -692,3 +692,100 @@ def test_credit_card_markers_returns_matched_disclosures() -> None:
 def test_credit_card_markers_empty_for_checking_statement() -> None:
     doc = _make_text_only_doc(["CHASE TOTAL CHECKING", "Date Description Amount"])
     assert credit_card_markers(doc) == ()
+
+
+# ---------------------------------------------------------------------------
+# Real Chase credit-card layout (F10 close-out): a two-physical-line column
+# header ("Date of" / "Transaction  ...  $ Amount"), section sub-headers
+# interleaved among the rows, and MM/DD dates with the year only on a separate
+# "Opening/Closing Date" line. Every synthetic fixture had a single-line header,
+# no interstitial sections, and year-bearing dates — so the suite passed while
+# every real statement seeded. These reproduce the real shape.
+# ---------------------------------------------------------------------------
+
+
+def test_derive_card_two_line_header_and_interleaved_sections() -> None:
+    r"""A wrapped column header + section sub-headers still derive and round-trip.
+
+    The real header spans two lines ("Date of" above "Transaction  Merchant ...
+    $ Amount"), so no single line splits on \s{2,} into a date-led >=3-cell
+    header; and PAYMENTS/PURCHASE/INTEREST section lines sit between the rows.
+    The old reconstructor found no header and, even given one, broke its
+    contiguous row run on the first section line — seeding the whole statement.
+    Year-bearing dates here isolate the reconstruction from year inference.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    text_lines = [
+        "CHASE FREEDOM UNLIMITED",
+        "Minimum Payment Due: $25.00",
+        "Credit Limit: $10,000",
+        "ACCOUNT ACTIVITY",
+        "Date of",
+        "Transaction          Merchant Name or Transaction Description $ Amount",
+        "PAYMENTS AND OTHER CREDITS",
+        "01/15/2025   PAYMENT THANK YOU          -100.00",
+        "PURCHASE",
+        "01/20/2025   COFFEE SHOP          25.00",
+        "01/22/2025   BOOKSTORE          40.00",
+        "INTEREST CHARGED",
+        "01/22/2025   PURCHASE INTEREST CHARGE          12.00",
+        "Totals Year-to-Date",
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+
+    assert recipe is not None
+    # Card disclosures present → the inverted convention is proposed.
+    assert recipe.sign_convention == "negative_is_income"
+    # Round-trip: the section headers must be skipped (not parsed as rows), and
+    # every real transaction row — across all three sections — must come back.
+    result = execute_recipe(recipe, "\n".join(text_lines))
+    assert [(r["Date"], r["Amount"]) for r in result.rows] == [
+        (date(2025, 1, 15), Decimal("-100.00")),
+        (date(2025, 1, 20), Decimal("25.00")),
+        (date(2025, 1, 22), Decimal("40.00")),
+        (date(2025, 1, 22), Decimal("12.00")),
+    ]
+
+
+def test_derive_card_infers_year_from_opening_closing_date() -> None:
+    """MM/DD rows resolve their year from the statement's billing period.
+
+    Real card rows print MM/DD with no year; the year lives only on the
+    "Opening/Closing Date  12/23/24 - 01/22/25" line. The cycle crosses year-end,
+    so the year is per-row: 12/xx belongs to the opening year, 01/xx to the
+    closing year. Replay-safe because each month carries its own period line.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    text_lines = [
+        "CHASE FREEDOM UNLIMITED",
+        "Minimum Payment Due: $25.00",
+        "Credit Limit: $10,000",
+        "Opening/Closing Date   12/23/24 - 01/22/25",
+        "ACCOUNT ACTIVITY",
+        "Date of",
+        "Transaction          Merchant Name or Transaction Description $ Amount",
+        "PAYMENTS AND OTHER CREDITS",
+        "12/26   PAYMENT THANK YOU          -100.00",
+        "PURCHASE",
+        "12/24   COFFEE SHOP          25.00",
+        "01/15   BOOKSTORE          40.00",
+        "INTEREST CHARGED",
+        "01/22   PURCHASE INTEREST CHARGE          12.00",
+        "Totals Year-to-Date",
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+
+    assert recipe is not None
+    result = execute_recipe(recipe, "\n".join(text_lines))
+    assert [(r["Date"], r["Amount"]) for r in result.rows] == [
+        (date(2024, 12, 26), Decimal("-100.00")),
+        (date(2024, 12, 24), Decimal("25.00")),
+        (date(2025, 1, 15), Decimal("40.00")),
+        (date(2025, 1, 22), Decimal("12.00")),
+    ]

@@ -24,12 +24,14 @@ from __future__ import annotations
 import logging
 import re as _stdlib_re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 import regex as _re
 from pydantic import BaseModel, Field, model_validator
+
+from moneybin.extractors.pdf.metadata import capture_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +218,92 @@ def _cast(field: FieldExtraction, raw: str) -> Any:
     raise ValueError(f"Unknown cast type: {field.cast!r}")
 
 
+def is_yearless_date_format(date_format: str | None) -> bool:
+    """True when a strptime format carries no year token (e.g. ``"%m/%d"``).
+
+    Credit-card statements print transaction dates as MM/DD; the year lives only
+    on a separate billing-period line. A year-less date can't be cast on its own —
+    it needs the statement period to bracket the year (``_resolve_yearless_date``).
+    """
+    return date_format is not None and "%y" not in date_format.lower()
+
+
+def _grouped_anchors(
+    anchors: list[FieldExtraction] | None,
+) -> dict[str, list[str]] | None:
+    """Regroup a recipe's flat metadata_anchors into capture_metadata's dict shape.
+
+    Recipes store one FieldExtraction per (field, pattern) alternative; capture
+    wants ``{field: [pattern, ...]}``. None passes through so capture_metadata
+    falls back to DEFAULT_ANCHORS.
+    """
+    if anchors is None:
+        return None
+    grouped: dict[str, list[str]] = {}
+    for a in anchors:
+        grouped.setdefault(a.name, []).append(a.pattern)
+    return grouped
+
+
+def _statement_period(recipe: Recipe, document_text: str) -> tuple[date, date] | None:
+    """The (opening, closing) billing dates, captured only when a field needs them.
+
+    None when no field is year-less (the period is irrelevant) or the document
+    lacks both period dates — year-less rows then fail to cast and are skipped,
+    and derive_recipe refuses to author such a recipe in the first place.
+    """
+    if not any(
+        f.cast == "date" and is_yearless_date_format(f.date_format)
+        for f in recipe.fields
+    ):
+        return None
+    md = capture_metadata(document_text, _grouped_anchors(recipe.metadata_anchors))
+    if md.period_start is None or md.period_end is None:
+        return None
+    return (md.period_start, md.period_end)
+
+
+def _resolve_yearless_date(
+    raw: str, date_format: str, period: tuple[date, date] | None
+) -> date:
+    """Resolve a year-less ``MM/DD`` date to a full date via the billing period.
+
+    The cycle can cross a year boundary (``12/23/24 - 01/22/25``), so the year is
+    per-row: pick whichever of the period's two years lands the date inside the
+    cycle. A date a day or two outside the printed window (posted dates drift)
+    falls back to the closest year, ties going to the closing year.
+    """
+    if period is None:
+        raise ValueError("year-less date requires a statement period")
+    start, end = period
+    parsed = datetime.strptime(raw, date_format)  # year defaults to 1900
+    candidates: list[date] = []
+    for year in (start.year, end.year):
+        try:
+            candidates.append(date(year, parsed.month, parsed.day))
+        except ValueError:
+            continue  # e.g. 02/29 in a non-leap candidate year
+    if not candidates:
+        raise ValueError(f"cannot place year-less date {raw!r} in period")
+    within = [c for c in candidates if start <= c <= end]
+    if within:
+        return within[0]
+    # Outside the printed window: closest to the cycle, ties → later year.
+    return min(
+        candidates,
+        key=lambda c: (min(abs((c - start).days), abs((c - end).days)), -c.year),
+    )
+
+
+def _cast_field(
+    field: FieldExtraction, raw: str, period: tuple[date, date] | None
+) -> Any:
+    """Cast one field, resolving a year-less date against the statement period."""
+    if field.cast == "date" and is_yearless_date_format(field.date_format):
+        return _resolve_yearless_date(raw, field.date_format or "%m/%d", period)
+    return _cast(field, raw)
+
+
 # ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
@@ -238,6 +326,9 @@ def execute_recipe(recipe: Recipe, document_text: str) -> ExtractedRows:
         )
     rows: list[dict[str, Any]] = []
     region = _carve_region(document_text, recipe.row_region)
+    # Year-less MM/DD date rows resolve their year from the statement's billing
+    # period, extracted from the document once here (None when no field needs it).
+    period = _statement_period(recipe, document_text)
 
     for line in region.splitlines():
         if not line.strip():
@@ -267,7 +358,7 @@ def execute_recipe(recipe: Recipe, document_text: str) -> ExtractedRows:
                 break
             try:
                 # group(0) == validated raw.strip(); fullmatch is the gate.
-                row[fld.name] = _cast(fld, m.group(0))
+                row[fld.name] = _cast_field(fld, m.group(0), period)
             except (ValueError, OverflowError, ArithmeticError):
                 failed = True
                 break
