@@ -86,7 +86,7 @@ Single source of truth for spec status. Update this table when a spec's status c
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Multi-Currency](multi-currency.md) | Feature | draft | M1K foundational schema wave, not display polish. **Original currency is canonical at every grain; conversion is presentation-time** (never mutates stored originals). Phased: **M1K.1** capture + integrity + home currency + no-silent-blend guard (independent of investments; may precede the first public release); **M1K.2** display conversion via auditable Frankfurter rates (after investments); **M1K.3** realized FX gain/loss (reuses the investments cost-basis engine). Raw stays source-of-truth; core rebuilt, not patched. Resolves the core currency design questions inline; flags one coherence call (canonical `currency_code` naming). |
+| [Multi-Currency](multi-currency.md) | Feature | ready | M1K foundational schema wave, not display polish. **Original currency is canonical at every grain; conversion is presentation-time** (never mutates stored originals). Phased: **M1K.1** capture + integrity + home currency + no-silent-blend guard (independent of investments; may precede the first public release); **M1K.2** display conversion via auditable Frankfurter rates (after investments); **M1K.3** realized FX gain/loss (reuses the investments cost-basis engine). Raw stays source-of-truth; core rebuilt, not patched. Canonical `currency_code` naming resolved 2026-07-17 — `dim_accounts.iso_currency_code` renames end-to-end as part of M1K.1. |
 
 ## Privacy & Security
 
