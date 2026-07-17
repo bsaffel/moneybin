@@ -8,9 +8,10 @@ Tools:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastmcp import FastMCP
+from pydantic import JsonValue
 
 from moneybin import error_codes
 from moneybin.database import get_database
@@ -18,6 +19,7 @@ from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import get_max_rows, tier_to_sensitivity
+from moneybin.privacy.payloads.sql import SQLQueryPayload, SQLSchemaPayload
 from moneybin.privacy.sql_query import execute_sql_query
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
@@ -28,7 +30,7 @@ from moneybin.services.schema_catalog import build_schema_doc
 
 
 @mcp_tool(dynamic_classification=True)
-def sql_query(query: str) -> ResponseEnvelope[Any]:
+def sql_query(query: str) -> ResponseEnvelope[SQLQueryPayload]:
     """Execute a read-only SQL query against the core and app schemas.
 
     Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries are allowed.
@@ -58,7 +60,7 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     with get_database(read_only=True) as db:
         result = execute_sql_query(db, query, max_rows=get_max_rows())
     return build_envelope(
-        data=result.records,
+        data=SQLQueryPayload(rows=result.records),
         sensitivity=tier_to_sensitivity(result.tier).value,
         total_count=result.total_count,
         classes_returned=result.classes_returned,
@@ -66,7 +68,7 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
 
 
 @mcp_tool(dynamic_classification=True)
-def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
+def sql_schema(table: str | None = None) -> ResponseEnvelope[SQLSchemaPayload]:
     """Return the curated database schema for ad-hoc SQL composition.
 
     Equivalent to reading the ``moneybin://schema`` MCP resource. Provided
@@ -100,13 +102,18 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
         # non-curated tables) — it's a few hundred bytes and is the kind of
         # orientation hint the compact view exists to surface.
         return build_envelope(
-            data={
-                "version": doc["version"],
-                "generated_at": doc["generated_at"],
-                "conventions": doc["conventions"],
-                "tables": compact,
-                "beyond_the_interface": doc.get("beyond_the_interface"),
-            },
+            data=SQLSchemaPayload(
+                document=cast(
+                    dict[str, JsonValue],
+                    {
+                        "version": doc["version"],
+                        "generated_at": doc["generated_at"],
+                        "conventions": doc["conventions"],
+                        "tables": compact,
+                        "beyond_the_interface": doc.get("beyond_the_interface"),
+                    },
+                )
+            ),
             sensitivity="low",
             classes_returned=["aggregate"],
             actions=[
@@ -118,7 +125,9 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
 
     if table == "*":
         return build_envelope(
-            data=doc, sensitivity="low", classes_returned=["aggregate"]
+            data=SQLSchemaPayload(document=doc),
+            sensitivity="low",
+            classes_returned=["aggregate"],
         )
 
     matches = [t for t in tables if t["name"] == table]
@@ -136,12 +145,17 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
             actions=[f"Call again with table=<one of>: {known}"],
         )
     return build_envelope(
-        data={
-            "version": doc["version"],
-            "generated_at": doc["generated_at"],
-            "conventions": doc["conventions"],
-            "tables": matches,
-        },
+        data=SQLSchemaPayload(
+            document=cast(
+                dict[str, JsonValue],
+                {
+                    "version": doc["version"],
+                    "generated_at": doc["generated_at"],
+                    "conventions": doc["conventions"],
+                    "tables": matches,
+                },
+            )
+        ),
         sensitivity="low",
         classes_returned=["aggregate"],
     )

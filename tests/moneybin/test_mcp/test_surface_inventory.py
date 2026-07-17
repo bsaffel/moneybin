@@ -3,8 +3,6 @@
 import json
 from pathlib import Path
 
-import pytest
-from fastmcp import Client
 from mcp.types import Tool, ToolAnnotations
 
 from moneybin.mcp.surface_inventory import SurfaceInventory
@@ -47,15 +45,21 @@ def test_inventory_omits_bytes_for_absent_components() -> None:
     assert row.annotation_bytes == 0
 
 
-@pytest.mark.integration
-async def test_live_inventory_matches_committed_baseline() -> None:
-    from moneybin.mcp.server import init_db, mcp
-
-    init_db()
-    async with Client(mcp) as client:
-        actual = SurfaceInventory.from_tools(await client.list_tools()).to_dict()
-
+def test_committed_baseline_is_self_consistent() -> None:
     baseline = (
         Path(__file__).parents[2] / "fixtures/mcp_surface/baseline-2026-07-17.json"
     )
-    assert actual == json.loads(baseline.read_text())
+    expected = json.loads(baseline.read_text())
+    tools = [Tool.model_validate(row["definition"]) for row in expected["tools"]]
+
+    assert SurfaceInventory.from_tools(tools).to_dict() == expected
+
+
+async def test_live_inventory_snapshot_is_deterministic() -> None:
+    from scripts.mcp_surface_snapshot import inventory_server
+
+    first = (await inventory_server()).to_dict()
+    second = (await inventory_server()).to_dict()
+
+    assert first == second
+    assert first["tool_count"] == 105

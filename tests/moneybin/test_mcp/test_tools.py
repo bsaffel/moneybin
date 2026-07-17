@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.accounts import accounts, register_accounts_tools
@@ -39,6 +39,17 @@ _INSERT_TRANSACTIONS = """
 
 class TestToolRegistration:
     """Verify tools register correctly and produce envelope responses."""
+
+    @pytest.mark.integration
+    async def test_every_listed_tool_has_output_schema(self) -> None:
+        from moneybin.mcp.server import init_db, mcp
+
+        init_db()
+        async with Client(mcp) as client:
+            tools = await client.list_tools()
+
+        assert len(tools) == 105
+        assert all(tool.outputSchema is not None for tool in tools)
 
     @pytest.mark.unit
     async def test_reports_tools_register(self) -> None:
@@ -116,7 +127,7 @@ class TestToolRegistration:
         )
         parsed = result.to_dict()
         assert "summary" in parsed
-        assert parsed["data"][0]["cnt"] == 2
+        assert parsed["data"]["rows"][0]["cnt"] == 2
 
     @pytest.mark.unit
     async def test_sql_schema_returns_envelope(self, mcp_db: object) -> None:
@@ -126,7 +137,7 @@ class TestToolRegistration:
         # sql_schema uses dynamic_classification=True and sets low sensitivity explicitly
         # (schema metadata only — no financial data)
         assert parsed["summary"]["sensitivity"] == "low"
-        data = parsed["data"]
+        data = parsed["data"]["document"]
         assert data["version"] == 1
         names = {t["name"] for t in data["tables"]}
         assert "core.fct_transactions" in names
@@ -138,7 +149,7 @@ class TestToolRegistration:
     ) -> None:
         """The default (no-arg) response is the compact catalog, not the full doc."""
         result = await sql_schema()
-        data = result.to_dict()["data"]
+        data = result.to_dict()["data"]["document"]
         # Compact entries carry counts, not the per-column detail.
         sample = next(iter(data["tables"]))
         assert "column_count" in sample
@@ -153,7 +164,7 @@ class TestToolRegistration:
     async def test_sql_schema_full_doc_with_star(self, mcp_db: object) -> None:
         """table='*' returns the full schema document with column detail."""
         result = await sql_schema(table="*")
-        data = result.to_dict()["data"]
+        data = result.to_dict()["data"]["document"]
         # Full doc keeps the per-column detail for every table.
         for entry in data["tables"]:
             assert "columns" in entry
@@ -163,7 +174,7 @@ class TestToolRegistration:
     async def test_sql_schema_drill_into_single_table(self, mcp_db: object) -> None:
         """table='<schema.name>' returns only that table with full detail."""
         result = await sql_schema(table="core.fct_transactions")
-        data = result.to_dict()["data"]
+        data = result.to_dict()["data"]["document"]
         assert [t["name"] for t in data["tables"]] == ["core.fct_transactions"]
         assert data["tables"][0]["columns"]
 

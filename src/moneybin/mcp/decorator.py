@@ -37,6 +37,7 @@ from moneybin.database import (  # noqa: PLC2701 — private import for per-call
     interrupt_and_reset_database,
 )
 from moneybin.errors import UserError, classify_user_error
+from moneybin.mcp.output_schema import output_schema_for
 from moneybin.mcp.privacy import Sensitivity, log_tool_call, tier_to_sensitivity
 from moneybin.privacy.introspection import (
     PrivacyContractError,
@@ -290,6 +291,20 @@ def mcp_tool(
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        try:
+            return_hint = typing.get_type_hints(fn).get("return")
+        except (NameError, TypeError) as exc:
+            raise PrivacyContractError(
+                f"{fn.__name__}: could not resolve return annotation ({exc}); "
+                "ensure the payload type is imported at decoration time"
+            ) from exc
+        if return_hint is None:
+            raise PrivacyContractError(
+                f"{fn.__name__} has no return annotation; "
+                "every @mcp_tool must declare -> ResponseEnvelope[T]"
+            )
+        output_schema = output_schema_for(return_hint)
+
         # Derive sensitivity at registration time from the return type annotation.
         # Raises PrivacyContractError if the return type isn't ResponseEnvelope[T]
         # with classified T — unless dynamic_classification=True is set.
@@ -302,24 +317,6 @@ def mcp_tool(
             payload_type_arg: Any = None
             has_critical = False
         else:
-            # get_type_hints resolves string annotations (from __future__ import
-            # annotations). A payload class defined below the @mcp_tool fn in the
-            # same module, or imported lazily/conditionally, raises NameError at
-            # decoration time. Re-raise as PrivacyContractError so the failure
-            # names the contract instead of surfacing a bare NameError — the same
-            # guarding _find_list_params applies to this call.
-            try:
-                return_hint = typing.get_type_hints(fn).get("return")
-            except (NameError, TypeError) as exc:
-                raise PrivacyContractError(
-                    f"{fn.__name__}: could not resolve return annotation ({exc}); "
-                    "ensure the payload type is imported at decoration time"
-                ) from exc
-            if return_hint is None:
-                raise PrivacyContractError(
-                    f"{fn.__name__} has no return annotation; "
-                    "every @mcp_tool must declare -> ResponseEnvelope[T]"
-                )
             # Unwrap ResponseEnvelope[T] → T. Require the origin to be
             # ResponseEnvelope specifically, not merely "some generic" — a
             # `list[Payload]` or `dict[str, Payload]` annotation would otherwise
@@ -657,6 +654,7 @@ def mcp_tool(
         wrapper._mcp_max_items = max_items  # type: ignore[attr-defined]
         wrapper._mcp_timeout_seconds = timeout_seconds  # type: ignore[attr-defined]
         wrapper._mcp_list_params = list_params  # type: ignore[attr-defined]
+        wrapper._mcp_output_schema = output_schema  # type: ignore[attr-defined]
         return wrapper
 
     return decorator

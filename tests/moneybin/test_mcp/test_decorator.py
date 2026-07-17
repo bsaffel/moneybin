@@ -9,6 +9,8 @@ import pytest
 from moneybin import error_codes
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
+from moneybin.privacy.introspection import PrivacyContractError
+from moneybin.privacy.payloads.accounts import AccountListPayload
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
 
@@ -50,6 +52,14 @@ class TestLogToolCall:
 
 class TestMCPToolDecorator:
     """Tests for the @mcp_tool decorator."""
+
+    @pytest.mark.unit
+    def test_decorator_attaches_output_schema(self) -> None:
+        @mcp_tool()
+        def sample() -> ResponseEnvelope[AccountListPayload]:  # type: ignore[return]
+            ...
+
+        assert sample._mcp_output_schema["type"] == "object"  # type: ignore[attr-defined]
 
     @pytest.mark.unit
     def test_decorator_sets_sensitivity_attribute(self) -> None:
@@ -123,16 +133,16 @@ class TestMCPToolDecorator:
         assert result.data == [{"value": 42}]  # pyright: ignore[reportUnknownMemberType]
 
     @pytest.mark.unit
-    async def test_decorator_raises_type_error_for_non_envelope(self) -> None:
-        """Tools that return non-ResponseEnvelope raise TypeError."""
-        import pytest
+    def test_decorator_rejects_non_envelope_return_annotation(self) -> None:
+        """Tools must declare an envelope before an output schema can be derived."""
 
-        @mcp_tool(dynamic_classification=True)
-        def my_tool() -> str:  # type: ignore[return]
-            return "plain string result"  # type: ignore[return-value]
+        def my_tool() -> str:
+            return "plain string result"
 
-        with pytest.raises(TypeError, match="expected ResponseEnvelope"):
-            await my_tool()
+        with pytest.raises(
+            PrivacyContractError, match=r"output schema requires ResponseEnvelope\[T\]"
+        ):
+            mcp_tool(dynamic_classification=True)(my_tool)
 
 
 @pytest.mark.unit

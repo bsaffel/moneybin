@@ -10,7 +10,7 @@ destructiveHint, idempotentHint, openWorldHint).
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from mcp.types import ToolAnnotations
 
@@ -33,4 +33,10 @@ def register(mcp: FastMCP, fn: Callable[..., Any], name: str, description: str) 
         idempotentHint=getattr(fn, "_mcp_idempotent", True),
         openWorldHint=getattr(fn, "_mcp_open_world", False),
     )
-    mcp.tool(name=name, description=description, tags=tags, annotations=annotations)(fn)
+    mcp.tool(
+        name=name,
+        description=description,
+        tags=tags,
+        annotations=annotations,
+        output_schema=cast(Any, fn)._mcp_output_schema,
+    )(fn)

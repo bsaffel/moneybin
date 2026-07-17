@@ -57,7 +57,7 @@ def test_opaque_account_id_passes_through(mcp_db: object) -> None:  # type: igno
     env = _run("SELECT account_id FROM core.dim_accounts LIMIT 1")
     assert env.error is None, f"Unexpected error: {env.error}"
     assert env.summary.sensitivity == "low"
-    for row in env.data:  # type: ignore[union-attr]
+    for row in env.data.rows:
         assert row["account_id"] in {"ACC001", "ACC002"}, (
             f"account_id should pass through unmasked: {row['account_id']!r}"
         )
@@ -72,9 +72,9 @@ def test_high_tier_passes_through(
     env = _run("SELECT amount FROM core.fct_transactions LIMIT 1")
     assert env.error is None, f"Unexpected error: {env.error}"
     assert env.summary.sensitivity == "high"
-    assert len(env.data) == 1  # type: ignore[arg-type]
+    assert len(env.data.rows) == 1
     # DuckDB returns DECIMAL(18,2) as Decimal; amount is not masked (HIGH passes through).
-    assert isinstance(env.data[0]["amount"], (int, float, Decimal))  # type: ignore[index]
+    assert isinstance(env.data.rows[0]["amount"], (int, float, Decimal))
 
 
 @pytest.mark.integration
@@ -126,7 +126,7 @@ def test_routing_number_masked(mcp_db: object) -> None:  # type: ignore[type-arg
     env = _run("SELECT routing_number FROM core.dim_accounts LIMIT 1")
     assert env.error is None
     assert env.summary.sensitivity == "critical"
-    for row in env.data:  # type: ignore[union-attr]
+    for row in env.data.rows:
         # _mask_routing_number returns "*****"
         assert row["routing_number"] == "*****", (
             f"routing_number not masked: {row['routing_number']!r}"
@@ -151,7 +151,7 @@ def test_describe_bypasses_lineage(mcp_db: object) -> None:  # type: ignore[type
     env = _run("DESCRIBE core.fct_transactions")
     assert env.error is None, f"Unexpected error: {env.error}"
     assert env.summary.sensitivity == "low"
-    assert len(env.data) > 0  # type: ignore[arg-type]
+    assert len(env.data.rows) > 0
 
 
 @pytest.mark.integration
@@ -194,7 +194,7 @@ def test_unaliased_aggregate_critical_masked(mcp_db: object) -> None:  # type: i
     env = _run("SELECT MIN(routing_number) FROM core.dim_accounts")
     assert env.error is None, f"Unexpected error: {env.error}"
     assert env.summary.sensitivity == "critical"
-    row = env.data[0]  # type: ignore[index]
+    row = env.data.rows[0]
     (value,) = row.values()
     assert str(value).startswith("****"), (
         f"unaliased routing_number not masked: {value!r}"
