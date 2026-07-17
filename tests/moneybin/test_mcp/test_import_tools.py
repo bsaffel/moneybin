@@ -493,10 +493,64 @@ class TestImportConfirmTool:
 
         assert result.data.import_id == "sign-123"
         confirm.assert_awaited_once()
+        assert confirm.await_args is not None
+        assert "Sample rows" not in confirm.await_args.args[0]
         assert (
             mock_service.import_file.call_args_list[1].kwargs["human_sign_confirmation"]
             is True
         )
+
+    async def test_tabular_sign_retry_returns_account_confirmation_envelope(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An account gate after sign approval remains a structured MCP response."""
+        from moneybin.services.import_confirmation import SignConventionProposal
+
+        csv_file = tmp_path / "statements" / "card.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        sign_error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=("a column header contains the word 'credit'",),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+            )
+        )
+        account_error = _make_confirmation_error(
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=[{"source_account_key": "card-abc", "candidates": []}],
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = [sign_error, account_error]
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", AsyncMock()),
+            patch("moneybin.services.inbox_service.InboxService"),
+            patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ),
+        ):
+            result = await import_confirm(file_path=str(csv_file), accept=True)
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "account_confirmation"
 
     async def test_mapping_override_passes_overrides_to_service(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

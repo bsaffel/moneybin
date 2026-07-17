@@ -36,7 +36,12 @@ _ROW_REGION_START = "Date  Description  Amount"
 _ROW_REGION_END = "Total:"
 
 
-def _standard_doc(opening: str = "1000.00", closing: str = "1100.00") -> PdfDocument:
+def _standard_doc(
+    opening: str = "1000.00",
+    closing: str = "1100.00",
+    *,
+    card_markers: bool = False,
+) -> PdfDocument:
     """Chase statement IR whose rows net to closing - opening (reconciles)."""
     return PdfDocument(
         source_file="chase_may.pdf",
@@ -47,6 +52,7 @@ def _standard_doc(opening: str = "1000.00", closing: str = "1100.00") -> PdfDocu
             "To: 01/31/2024",
             f"Beginning Balance: ${opening}",
             f"Ending Balance: ${closing}",
+            *(["Minimum Payment Due: $25.00"] if card_markers else []),
             _ROW_REGION_START,
             "01/15/2024  Coffee Shop  -50.00",
             "01/20/2024  Paycheck  150.00",
@@ -248,6 +254,28 @@ def test_apply_inverted_recipe_loads_after_human_confirmation(
     ).fetchone()
     assert row is not None
     assert _json.loads(row[0])["sign_ratified"] is True
+
+
+def test_marker_backed_inverted_recipe_keeps_polarity_guard_after_confirmation(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """Card disclosures keep future replay checks active after confirmation."""
+    import json as _json
+
+    stub_extract[0] = _standard_doc(card_markers=True)
+    recipe = {**_valid_recipe_dict(), "sign_convention": "negative_is_income"}
+
+    result = ImportService(db).apply_pdf_bridge_response(
+        _pdf_path(tmp_path), _bridge_response(recipe=recipe), confirm=True
+    )
+
+    assert result.format_name is not None
+    row = db.conn.execute(
+        f"SELECT extraction_recipe FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [result.format_name],
+    ).fetchone()
+    assert row is not None
+    assert _json.loads(row[0])["sign_ratified"] is False
 
 
 def test_apply_writes_revertable_import_log(

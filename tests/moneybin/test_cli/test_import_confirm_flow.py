@@ -133,6 +133,21 @@ def _make_sign_confirmation_error() -> ImportConfirmationRequiredError:
     return ImportConfirmationRequiredError(outcome)
 
 
+def test_tabular_sign_recovery_preserves_mapping_overrides() -> None:
+    """The sign-confirmation retry repeats the mapping the user already chose."""
+    from moneybin.cli.commands.import_cmd import (
+        _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+    )
+
+    actions = _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        "card.csv",
+        channel="tabular",
+        mapping={"description": "Memo"},
+    )
+
+    assert "--mapping description=Memo" in actions[0]
+
+
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 

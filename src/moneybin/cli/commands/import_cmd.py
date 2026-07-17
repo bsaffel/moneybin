@@ -535,7 +535,9 @@ def import_files_command(
                 if outcome.error_message:
                     confirm_actions.append(outcome.error_message)
                 confirm_actions.extend(
-                    _sign_recovery_commands(file_path_str, channel=outcome.channel)
+                    _sign_recovery_commands(
+                        file_path_str, channel=outcome.channel, mapping=overrides
+                    )
                 )
             else:
                 if outcome.error_message:
@@ -595,7 +597,7 @@ def import_files_command(
             # Interactive human path: render a human-readable summary and exit
             # 1 so pipelines halt cleanly (unlike the non-TTY path which exits
             # 0 so scripted consumers can parse the envelope).
-            _render_confirmation_prompt(outcome, file_path_str)
+            _render_confirmation_prompt(outcome, file_path_str, mapping=overrides)
             raise typer.Exit(1) from _exc
 
         if not isinstance(_exc, (ValueError, PermissionError)):
@@ -701,12 +703,17 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
             )
 
 
-def _sign_recovery_commands(file_path_str: str, *, channel: str) -> list[str]:
+def _sign_recovery_commands(
+    file_path_str: str,
+    *,
+    channel: str,
+    mapping: dict[str, str] | None = None,
+) -> list[str]:
     """The two honest recoveries for a card sign-convention confirmation.
 
     A card statement proposes inverting every amount (charges → expenses,
     payments → credits). The user decides by re-running with the convention they
-    intend, never by blind-accepting a proposed mapping — there is no mapping.
+    intend, never by blind-accepting a proposed mapping.
     Shared by the JSON ``actions[]`` and the interactive prompt so the CLI never
     drifts from the terminal command the gate's ``error_message`` already names.
     Mirrors the MCP ``_sign_confirm_actions`` recovery.
@@ -714,10 +721,15 @@ def _sign_recovery_commands(file_path_str: str, *, channel: str) -> list[str]:
     import shlex  # noqa: PLC0415
 
     quoted = shlex.quote(file_path_str)
+    mapping_args = " ".join(
+        f"--mapping {shlex.quote(f'{field}={source}')}"
+        for field, source in (mapping or {}).items()
+    )
+    mapping_suffix = f" {mapping_args}" if mapping_args else ""
     return [
         (
             f"Confirm the tabular mapping, then approve the sign: moneybin import "
-            f"confirm {quoted} --accept --confirm-sign"
+            f"confirm {quoted} --accept --confirm-sign{mapping_suffix}"
             if channel == "tabular"
             else f"If it IS a credit card: moneybin import files {quoted} --confirm "
             "(records charges as expenses, payments as credits)."
@@ -728,7 +740,11 @@ def _sign_recovery_commands(file_path_str: str, *, channel: str) -> list[str]:
 
 
 def _render_sign_convention_prompt(
-    proposed: SignConventionProposal, file_path_str: str, *, channel: str
+    proposed: SignConventionProposal,
+    file_path_str: str,
+    *,
+    channel: str,
+    mapping: dict[str, str] | None = None,
 ) -> None:
     """Print the interactive prompt for a sign-convention confirmation.
 
@@ -755,13 +771,18 @@ def _render_sign_convention_prompt(
             label = f"{desc}: " if desc else ""
             typer.echo(f"     {label}{printed} → {recorded}")
     typer.echo("\n   To proceed:")
-    for line in _sign_recovery_commands(file_path_str, channel=channel):
+    for line in _sign_recovery_commands(
+        file_path_str, channel=channel, mapping=mapping
+    ):
         typer.echo(f"     {line}")
     typer.echo()
 
 
 def _render_confirmation_prompt(
-    outcome: ConfirmationRequired, file_path_str: str
+    outcome: ConfirmationRequired,
+    file_path_str: str,
+    *,
+    mapping: dict[str, str] | None = None,
 ) -> None:
     """Print a human-readable confirmation summary for an unknown-layout encounter.
 
@@ -784,7 +805,10 @@ def _render_confirmation_prompt(
         outcome.proposed, SignConventionProposal
     ):
         _render_sign_convention_prompt(
-            outcome.proposed, file_path_str, channel=outcome.channel
+            outcome.proposed,
+            file_path_str,
+            channel=outcome.channel,
+            mapping=mapping,
         )
         return
 
@@ -1056,7 +1080,11 @@ def import_confirm_command(
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
         if outcome.reason == "sign_convention":
             confirm_actions.extend(
-                _sign_recovery_commands(str(file_path), channel=outcome.channel)
+                _sign_recovery_commands(
+                    str(file_path),
+                    channel=outcome.channel,
+                    mapping=parsed_mapping,
+                )
             )
         elif outcome.reason == "account_confirmation":
             # The layout is settled; only the account identity needs ratifying.
@@ -1097,7 +1125,7 @@ def import_confirm_command(
             return
         # Interactive path: human-readable summary + exit code 1.
         if outcome.reason == "sign_convention":
-            _render_confirmation_prompt(outcome, str(file_path))
+            _render_confirmation_prompt(outcome, str(file_path), mapping=parsed_mapping)
         elif outcome.reason == "account_confirmation":
             # The layout is settled; show the bindings to supply, not a --mapping
             # hint (which would mislead — the mapping is fine).

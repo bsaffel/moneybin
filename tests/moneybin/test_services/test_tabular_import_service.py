@@ -543,6 +543,38 @@ class TestTabularConfirmationFlow:
 
         assert result.import_id is not None
 
+    def test_explicit_sign_override_loads_and_records_gate_metric(
+        self, db: Database
+    ) -> None:
+        """A CLI-level explicit sign choice bypasses the inferred-sign proposal."""
+        from moneybin.metrics.registry import TABULAR_SIGN_GATE_TOTAL
+        from moneybin.services.import_service import ImportService
+
+        inverted = _make_mapping_result(
+            score=0.95,
+            confidence="high",
+            sign_convention="negative_is_income",
+            sign_needs_confirmation=True,
+        )
+        before = TABULAR_SIGN_GATE_TOTAL.labels(outcome="overridden")._value.get()  # type: ignore[reportPrivateUsage]
+        with patch(
+            "moneybin.extractors.tabular.column_mapper.map_columns",
+            return_value=inverted,
+        ):
+            result = ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                sign="negative_is_expense",
+            )
+
+        assert result.import_id is not None
+        assert (
+            TABULAR_SIGN_GATE_TOTAL.labels(outcome="overridden")._value.get()  # type: ignore[reportPrivateUsage]  # testing prometheus internals
+            == before + 1
+        )
+
     def test_confirmed_credit_card_format_replays_without_confirmation(
         self, db: Database
     ) -> None:

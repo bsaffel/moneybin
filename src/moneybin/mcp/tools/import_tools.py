@@ -917,12 +917,17 @@ def _sign_confirmation_message(payload: dict[str, Any]) -> str:
     source = (
         "PDF bridge recipe" if payload.get("channel") == "pdf" else "tabular import"
     )
+    samples = (
+        f"Sample rows (printed amount → MoneyBin amount): {sample_rows}\n\n"
+        if sample_rows
+        else "\n"
+    )
     return (
         f"This {source} identifies the file as a credit card and will reverse "
         "every amount: charges become negative expenses and payments become "
         "positive income.\n\n"
         f"Evidence from the file: {evidence}.\n"
-        f"Sample rows (printed amount → MoneyBin amount): {sample_rows}\n\n"
+        f"{samples}"
         "Approve this sign inversion?"
     )
 
@@ -1162,18 +1167,28 @@ async def import_confirm(
                 ),
                 details={"file_path": str(path)},
             )
-            result = await asyncio.to_thread(
-                _import_confirm_tabular,
-                path,
-                accept=accept,
-                mapping=mapping,
-                save_format=save_format,
-                account_id=account_id,
-                account_name=account_name,
-                account_bindings=account_bindings,
-                account_metadata=account_metadata,
-                human_sign_confirmation=True,
-            )
+            try:
+                result = await asyncio.to_thread(
+                    _import_confirm_tabular,
+                    path,
+                    accept=accept,
+                    mapping=mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=account_bindings,
+                    account_metadata=account_metadata,
+                    human_sign_confirmation=True,
+                )
+            except ImportConfirmationRequiredError as retry_error:
+                return build_envelope(
+                    sensitivity="medium",
+                    data={
+                        "status": "confirmation_required",
+                        **confirmation_payload_dict(retry_error.outcome),
+                    },
+                    actions=_confirmation_actions(str(path), retry_error.outcome),
+                )
         else:
             # An override that names an unknown source column, or an Accept against
             # a low-tier proposal where required fields remain missing, re-surfaces

@@ -1403,11 +1403,7 @@ class ImportService:
             sign=sign,
             human_sign_confirmation=human_sign_confirmation,
             is_first_contact=matched_format is None,
-            evidence=(
-                f"saved format {matched_format.name!r} uses negative_is_income"
-                if matched_format
-                else "a column header contains the word 'credit'"
-            ),
+            evidence="a column header contains the word 'credit'",
         )
 
         # Determine account info
@@ -2147,11 +2143,10 @@ class ImportService:
             confirm
             and decision.recipe is not None
             and decision.recipe.sign_convention == "negative_is_income"
+            and not decision.card_markers
         ):
-            # A bridge recipe's sign evidence comes from the agent rather than
-            # the deterministic card-marker detector. This explicit human
-            # approval must therefore persist as a replay bypass; otherwise a
-            # marker-free statement would re-escalate on every import.
+            # A marker-free bridge recipe has no deterministic replay evidence,
+            # so this human approval is the durable replay bypass.
             decision = dataclasses.replace(
                 decision,
                 recipe=decision.recipe.model_copy(update={"sign_ratified": True}),
