@@ -8,8 +8,9 @@ a pointer, not a second copy; when the two disagree, `readme.md` wins.
 - **Dark theme leads.** Dark is the bare `:root`; light is the
   `[data-theme="light"]` peer mapping — never an inversion.
 - **One metal accent, three tiers, never blue.** brass (`--accent-brass`) speaks
-  — provenance text; gilt (`--accent-gilt`) fills — bars, dots, buttons, the
-  wordmark; verdigris (`--accent-verdigris`) responds — selection, filters, links.
+  — provenance text; gilt (`--accent-gilt`) fills — bars, dots, buttons;
+  verdigris (`--accent-verdigris`) responds — selection, filters, links. Identity
+  marks (wordmark "Bin", DuckKey) use `--brand-gold` — gilt on dark, brass on light.
   Single-series value-over-time lines are brass; category bars are gilt fills;
   multi-series draw `--chart-1..8` in order, six max before grouping to "Other",
   and a category keeps its hue in every view.

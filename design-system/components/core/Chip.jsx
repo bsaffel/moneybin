@@ -14,7 +14,7 @@ export function Chip({ variant = 'category', children, onClick, active = false, 
       fontSize: '11px',
       padding: '2px 6px',
       // Selected/active filter chip = interaction → verdigris (§0 tiers). Text sits
-      // on the surface, not on --accent-verdigris-tint: verdigris-on-tint is 4.18:1 in
+      // on the surface, not on --accent-verdigris-tint: verdigris-on-tint is 3.95:1 in
       // light (below AA), verdigris-on-surface is 4.76:1. The tint is for row backgrounds.
       color: active ? 'var(--accent-verdigris)' : 'var(--text-secondary)',
       borderColor: active ? 'var(--accent-verdigris)' : 'var(--border-strong)',

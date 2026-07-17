@@ -16,8 +16,9 @@ export function Wordmark({ size = 'bar', bin = 'gold', plate, style }) {
       ? [size, Math.round(size * 1.5), Math.round(size * 0.6)]
       : PRESETS[size] ?? PRESETS.bar;
   // "Bin" carries --brand-gold by default — the wordmark is identity text, so it
-  // is bright gilt on dark and deepens to brass on light (like the logo mark, not
-  // a flat fill). Switch to 'mono' when another gold element shares the bar.
+  // is bright gilt on dark and deepens to brass on light, each clearing 4.5:1 as
+  // text where no single hex would (like the logo mark, not a flat fill). Switch
+  // to 'mono' when another gold element shares the bar.
   const binColor = bin === 'mono' ? 'var(--text-primary)' : 'var(--brand-gold)';
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: gap + 'px', ...style }}>

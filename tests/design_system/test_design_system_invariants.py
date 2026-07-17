@@ -16,7 +16,11 @@ actually shipped to ``main`` and survived until someone happened to look:
 - a card hardcoding a token's *dark* hex, freezing it there and breaking it under
   ``[data-theme="light"]``;
 - doc surfaces enumerating the components without the newest one, so the agents
-  that read them never learn it exists and keep inlining one-off SVGs.
+  that read them never learn it exists and keep inlining one-off SVGs;
+- an accent tier whose contrast claim never held — a gilt tier-label at 2.3:1 on
+  the light theme, or ``--brand-gold`` briefly frozen to a single hex that fails
+  as text on one surface — because hand-computed WCAG ratios went unchecked across
+  two review rounds.
 
 Each of those is mechanically checkable and none of them needed judgment to
 catch. They shipped because nothing checked.
@@ -374,4 +378,113 @@ def test_docs_enumerate_every_component(doc: Path) -> None:
     assert not missing, (
         f"{doc.relative_to(_REPO_ROOT)} does not mention {missing}. An agent reading "
         f"this file will not know {'they exist' if len(missing) > 1 else 'it exists'}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Accent contrast contracts
+#
+# The three-tier accent system rests on contrast claims a screenshot cannot verify
+# and nothing else here checks: brass carries text on every surface, ink stays
+# legible on a gilt fill, verdigris reads on a raised surface, and the wordmark's
+# ``--brand-gold`` clears AA in *both* themes — the whole reason it deepens from
+# gilt to brass on the light theme rather than staying one hex. Two review rounds
+# shipped hand-computed ratios that didn't hold (a gilt tier-label at 2.3:1 on
+# light), so the numbers now fail CI instead of a reviewer's recomputation. A pair
+# is a floor only where the doctrine says that color carries text there — verdigris
+# on a *surface*, never on the base canvas or its own tint (both are intentionally
+# sub-AA and the palette never sets text on them).
+# ---------------------------------------------------------------------------
+_COLORS_CSS = _DS / "tokens" / "colors.css"
+
+# (foreground token, background token, floor, what it carries). 4.5 = normal text
+# (WCAG 2.x AA); a graphic boundary would be 3.0. Every pair must clear its floor
+# in BOTH themes.
+_CONTRAST_CONTRACTS = (
+    ("--accent-brass", "--bg-base", 4.5, "brass provenance text on the base canvas"),
+    ("--accent-brass", "--bg-surface", 4.5, "brass text on a surface"),
+    ("--accent-brass", "--bg-raised", 4.5, "brass text on a raised surface"),
+    ("--on-accent-gilt", "--accent-gilt", 4.5, "ink on the gilt primary-button fill"),
+    (
+        "--accent-verdigris",
+        "--bg-surface",
+        4.5,
+        "verdigris interaction text on a surface",
+    ),
+    (
+        "--brand-gold",
+        "--bg-base",
+        4.5,
+        'the wordmark "Bin" / DuckKey on the base canvas',
+    ),
+)
+
+
+def _parse_theme_palettes() -> dict[str, dict[str, str]]:
+    """Resolve ``colors.css`` into ``{theme: {token: "#hex"}}`` for dark and light.
+
+    Dark is the bare ``:root``; light is ``:root`` overlaid with the
+    ``[data-theme="light"]`` overrides (a token light does not redefine inherits the
+    dark value). One level of ``var(--other)`` indirection is resolved within the
+    theme, because ``--brand-gold`` is authored as ``var(--accent-gilt)`` on dark and
+    ``var(--accent-brass)`` on light — so its real contrast follows the tier it points
+    at, which is exactly the property under test.
+    """
+    css = _COLORS_CSS.read_text()
+
+    def block(selector: str) -> dict[str, str]:
+        match = re.search(re.escape(selector) + r"\s*\{(.*?)\}", css, re.S)
+        assert match, f"{_COLORS_CSS.name}: no {selector} block found"
+        return dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", match.group(1)))
+
+    dark = block(":root")
+    light = {**dark, **block('[data-theme="light"]')}
+
+    def resolve(theme: dict[str, str], value: str) -> str:
+        value = value.strip()
+        ref = re.fullmatch(r"var\((--[\w-]+)\)", value)
+        return resolve(theme, theme[ref.group(1)]) if ref else value
+
+    return {
+        name: {token: resolve(theme, value) for token, value in theme.items()}
+        for name, theme in (("dark", dark), ("light", light))
+    }
+
+
+def _relative_luminance(hex_color: str) -> float:
+    digits = hex_color.lstrip("#")
+
+    def channel(value: int) -> float:
+        c = value / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (int(digits[i : i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def _contrast_ratio(fg_hex: str, bg_hex: str) -> float:
+    darker, lighter = sorted((_relative_luminance(fg_hex), _relative_luminance(bg_hex)))
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+@pytest.mark.parametrize("theme", ("dark", "light"))
+@pytest.mark.parametrize(
+    "fg,bg,floor,role",
+    _CONTRAST_CONTRACTS,
+    ids=[
+        f"{fg.removeprefix('--')}-on-{bg.removeprefix('--')}"
+        for fg, bg, _, _ in _CONTRAST_CONTRACTS
+    ],
+)
+def test_accent_contrast_contracts(
+    theme: str, fg: str, bg: str, floor: float, role: str
+) -> None:
+    """Every intended accent-on-surface pair clears its WCAG floor in both themes."""
+    palette = _parse_theme_palettes()[theme]
+    fg_hex, bg_hex = palette[fg], palette[bg]
+    ratio = _contrast_ratio(fg_hex, bg_hex)
+    assert ratio >= floor, (
+        f"{theme} theme: {fg} ({fg_hex}) on {bg} ({bg_hex}) is {ratio:.2f}:1, below "
+        f"the {floor}:1 floor for {role}. Adjust the token, or move the element to a "
+        f"surface it clears — do not weaken this floor."
     )
