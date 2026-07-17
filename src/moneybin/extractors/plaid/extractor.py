@@ -141,6 +141,7 @@ _BALANCES_SCHEMA = pl.Schema({
     "balance_date": pl.Date,
     "current_balance": pl.Decimal(18, 2),
     "available_balance": pl.Decimal(18, 2),
+    "iso_currency_code": pl.Utf8,
     "source_file": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,

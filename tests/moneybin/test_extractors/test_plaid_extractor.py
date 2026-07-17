@@ -188,3 +188,31 @@ def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) 
 def test_handle_removed_transactions_empty_list_is_noop(db: Database) -> None:
     loader = PlaidExtractor(db)
     assert loader.handle_removed_transactions([]) == 0
+
+
+def test_loader_writes_balance_currency(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    payload = sync_data.model_copy(deep=True)
+    payload.balances = [
+        b.model_copy(update={"iso_currency_code": "EUR"})
+        if b.account_id == "acc_chase_check"
+        else b
+        for b in payload.balances
+    ]
+
+    loader = PlaidExtractor(db)
+    loader.load(payload, job_id=payload.metadata.job_id)
+
+    row = db.execute(
+        "SELECT iso_currency_code FROM raw.plaid_balances WHERE account_id = 'acc_chase_check'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "EUR"
+
+    # The untouched fixture row has no currency captured -> NULL, not a guess.
+    other = db.execute(
+        "SELECT iso_currency_code FROM raw.plaid_balances WHERE account_id = 'acc_chase_save'"
+    ).fetchone()
+    assert other is not None
+    assert other[0] is None

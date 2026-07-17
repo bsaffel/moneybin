@@ -9,6 +9,7 @@ SELECT
   b.balance_date,
   b.current_balance,
   b.available_balance,
+  b.iso_currency_code,
   b.source_file,
   b.source_type,
   b.source_origin,

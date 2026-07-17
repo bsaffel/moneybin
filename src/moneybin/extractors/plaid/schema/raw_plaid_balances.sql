@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
     balance_date DATE NOT NULL,         -- Date the balance was reported
     current_balance DECIMAL(18, 2),     -- Current balance including pending transactions
     available_balance DECIMAL(18, 2),   -- Available balance; NULL for credit accounts
+    iso_currency_code VARCHAR,          -- Plaid's currency code, verbatim; NULL if omitted
     source_file VARCHAR NOT NULL,
     source_type VARCHAR NOT NULL DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,
