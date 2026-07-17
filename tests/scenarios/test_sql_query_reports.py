@@ -21,6 +21,7 @@ from tests.scenarios._runner import load_shipped_scenario, run_scenario
 
 def _masking_assertions(db: Database) -> list[AssertionResult]:
     results: list[AssertionResult] = []
+    verified_nonempty = 0
     for runner in ALL_REPORTS:
         spec = spec_of(runner)
         critical = [c for c, dc in spec.classes.items() if dc.tier is Tier.CRITICAL]
@@ -33,11 +34,14 @@ def _masking_assertions(db: Database) -> list[AssertionResult]:
             max_rows=5,
         )
         vals = [r[col] for r in res.records if r.get(col) is not None]
-        masked = all(str(v).startswith("*") for v in vals)
+        if vals:
+            verified_nonempty += 1
+        masked = all(str(v).startswith("****") for v in vals)
+        tier_ok = res.tier is Tier.CRITICAL
         results.append(
             AssertionResult(
                 name=f"{spec.name}_{col}_masked_via_sql_query",
-                passed=masked and res.tier is Tier.CRITICAL,
+                passed=masked and tier_ok,
                 details={
                     "view": spec.view.full_name,
                     "column": col,
@@ -45,11 +49,30 @@ def _masking_assertions(db: Database) -> list[AssertionResult]:
                 },
                 error=(
                     None
-                    if masked
-                    else f"{spec.name}.{col} returned unmasked via sql_query: {vals[:1]}"
+                    if masked and tier_ok
+                    else (
+                        f"{spec.name}.{col} via sql_query: masked={masked}, "
+                        f"tier={res.tier} (expected CRITICAL), sample={vals[:1]}"
+                    )
                 ),
             )
         )
+    # Structural guard: the point of this test is to observe REAL masked CRITICAL
+    # values. Every per-report assertion above passes vacuously on an empty result
+    # (all([]) is True), so require at least one report to have returned a
+    # non-empty CRITICAL sample — otherwise masking was never actually exercised.
+    results.append(
+        AssertionResult(
+            name="at_least_one_critical_report_column_exercised",
+            passed=verified_nonempty >= 1,
+            details={"reports_with_nonempty_critical_samples": verified_nonempty},
+            error=(
+                None
+                if verified_nonempty >= 1
+                else "no CRITICAL report column returned any rows — masking never exercised"
+            ),
+        )
+    )
     return results
 
 
