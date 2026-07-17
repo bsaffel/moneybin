@@ -556,7 +556,7 @@ def import_files_command(
                     # retries persist no partial state, and add the missing binding.
                     # The generic alternate mapping hints below remain irrelevant.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -611,6 +611,7 @@ def import_files_command(
                 account_id=account_id,
                 account_name=account_name,
                 confirm_sign=confirm_sign,
+                sign=sign,
             )
             raise typer.Exit(1) from _exc
 
@@ -740,6 +741,7 @@ def _tabular_confirmation_command(
     *,
     accept: bool,
     confirm_sign: bool,
+    sign: SignConventionType | None,
     mapping: dict[str, str] | None,
     save_format: bool,
     account_id: str | None,
@@ -755,6 +757,8 @@ def _tabular_confirmation_command(
         parts.append("--accept")
     if confirm_sign:
         parts.append("--confirm-sign")
+    if sign is not None:
+        parts.extend(("--sign", sign))
     if account_id is not None:
         parts.extend(("--account-id", account_id))
     if account_name is not None:
@@ -783,6 +787,7 @@ def _account_recovery_command(
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
+    sign: SignConventionType | None = None,
 ) -> str:
     """Reproduce a tabular confirmation while adding unresolved account bindings."""
     bindings = dict(account_bindings or {})
@@ -796,6 +801,7 @@ def _account_recovery_command(
         file_path_str,
         accept=accept,
         confirm_sign=confirm_sign,
+        sign=sign,
         mapping=mapping,
         save_format=save_format,
         account_id=account_id,
@@ -826,27 +832,42 @@ def _sign_recovery_commands(
     drifts from the terminal command the gate's ``error_message`` already names.
     Mirrors the MCP ``_sign_confirm_actions`` recovery.
     """
+    if channel == "tabular":
+        approve_command = _tabular_confirmation_command(
+            file_path_str,
+            accept=accept,
+            confirm_sign=True,
+            sign=None,
+            mapping=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+        native_command = _tabular_confirmation_command(
+            file_path_str,
+            accept=accept,
+            confirm_sign=False,
+            sign="negative_is_expense",
+            mapping=mapping,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+        return [
+            f"Approve the inferred credit-card inversion: {approve_command}",
+            f"Keep amounts exactly as printed: {native_command}",
+        ]
+
     import shlex  # noqa: PLC0415
 
     quoted = shlex.quote(file_path_str)
-    tabular_command = _tabular_confirmation_command(
-        file_path_str,
-        accept=accept,
-        confirm_sign=True,
-        mapping=mapping,
-        save_format=save_format,
-        account_id=account_id,
-        account_name=account_name,
-        account_bindings=account_bindings,
-        account_metadata=account_metadata,
-    )
     return [
-        (
-            f"Confirm the tabular mapping, then approve the sign: {tabular_command}"
-            if channel == "tabular"
-            else f"If it IS a credit card: moneybin import files {quoted} --confirm "
-            "(records charges as expenses, payments as credits)."
-        ),
+        f"If it IS a credit card: moneybin import files {quoted} --confirm "
+        "(records charges as expenses, payments as credits).",
         f"If it is NOT a credit card: moneybin import files {quoted} "
         "--sign negative_is_expense (records amounts exactly as printed).",
     ]
@@ -917,6 +938,7 @@ def _render_confirmation_prompt(
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
+    sign: SignConventionType | None = None,
 ) -> None:
     """Print a human-readable confirmation summary for an unknown-layout encounter.
 
@@ -1009,6 +1031,7 @@ def _render_confirmation_prompt(
                 account_bindings=account_bindings,
                 account_metadata=account_metadata,
                 confirm_sign=confirm_sign,
+                sign=sign,
             )
         )
     else:
@@ -1057,6 +1080,14 @@ def import_confirm_command(
         False,
         "--confirm-sign",
         help="Explicitly approve an inferred tabular sign inversion.",
+    ),
+    sign: SignConventionType | None = typer.Option(
+        None,
+        "--sign",
+        help=(
+            "Explicit tabular sign-convention override. Use "
+            "negative_is_expense to keep amounts as printed."
+        ),
     ),
     account_id: str | None = typer.Option(
         None,
@@ -1109,6 +1140,7 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/statement.csv --accept --output json
         moneybin import confirm ~/Downloads/statement.csv --accept --account-name "Chase Checking"
         moneybin import confirm ~/Downloads/card.csv --accept --confirm-sign
+        moneybin import confirm ~/Downloads/card.csv --accept --sign negative_is_expense
         moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
@@ -1118,10 +1150,10 @@ def import_confirm_command(
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
     if bridge_response is not None:
-        if accept or mapping or confirm_sign:
+        if accept or mapping or confirm_sign or sign:
             raise typer.BadParameter(
-                "--bridge-response cannot be combined with --accept, --mapping, or "
-                "--confirm-sign.",
+                "--bridge-response cannot be combined with --accept, --mapping, "
+                "--confirm-sign, or --sign.",
                 param_hint="'--bridge-response'",
             )
         if account_name or account_binding or account_meta:
@@ -1141,6 +1173,11 @@ def import_confirm_command(
             "--confirm is only valid with --bridge-response; use --accept for a "
             "tabular mapping.",
             param_hint="'--confirm'",
+        )
+    elif confirm_sign and sign is not None:
+        raise typer.BadParameter(
+            "--confirm-sign and --sign are alternate sign decisions; choose one.",
+            param_hint="'--confirm-sign' or '--sign'",
         )
     elif not accept and not mapping:
         raise typer.BadParameter(
@@ -1209,6 +1246,7 @@ def import_confirm_command(
                         "account_bindings": parsed_bindings,
                         "account_metadata": parsed_metadata,
                         "save_format": save_format,
+                        "sign": sign,
                         "actor_kind": "human",
                         "refresh": False,
                     }
@@ -1249,7 +1287,7 @@ def import_confirm_command(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, account_id=account_id, account_name=account_name, account_bindings=parsed_bindings, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
@@ -1293,6 +1331,7 @@ def import_confirm_command(
                 account_bindings=parsed_bindings,
                 account_metadata=parsed_metadata,
                 confirm_sign=confirm_sign,
+                sign=sign,
             )
         elif outcome.reason == "account_confirmation":
             # The layout is settled; replay the current inputs and add the
@@ -1312,6 +1351,7 @@ def import_confirm_command(
                     account_bindings=parsed_bindings,
                     account_metadata=parsed_metadata,
                     confirm_sign=confirm_sign,
+                    sign=sign,
                 )
                 + "`."
             )

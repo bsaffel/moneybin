@@ -27,7 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   <path> --bridge-response response.json --confirm`. Tabular credit-card
   inferences now likewise pause after mapping confirmation until a person runs
   `moneybin import confirm <path> --accept --confirm-sign`; accepting a column
-  mapping alone can never approve the ledger-wide sign inversion. (#324)
+  mapping alone can never approve the ledger-wide sign inversion. The matching
+  “keep amounts as printed” recovery is now the lossless
+  `moneybin import confirm <path> --accept --sign negative_is_expense`; both
+  alternatives retain any mapping, format-save, and account-binding inputs. (#324)
 - **Auto-rule proposals can no longer silently mass-mislabel the ledger.** A
   transaction description that normalizes to a 1–2 character token (e.g. "TO",
   from a truncated "TRANSFER TO ...") previously became a `contains` rule —

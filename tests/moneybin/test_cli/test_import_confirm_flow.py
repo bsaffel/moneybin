@@ -134,8 +134,8 @@ def _make_sign_confirmation_error() -> ImportConfirmationRequiredError:
     return ImportConfirmationRequiredError(outcome)
 
 
-def test_tabular_sign_recovery_preserves_confirmation_inputs() -> None:
-    """The sign-confirmation command losslessly serializes public inputs."""
+def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
+    """Both sign choices losslessly serialize every public confirmation input."""
     from moneybin.cli.commands.import_cmd import (
         _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
     )
@@ -157,25 +157,37 @@ def test_tabular_sign_recovery_preserves_confirmation_inputs() -> None:
         },
     )
 
-    command = actions[0].split(": ", 1)[1]
-    tokens = shlex.split(command)
-    assert tokens[:4] == ["moneybin", "import", "confirm", "Owner's card.csv"]
-    assert "--accept" not in tokens
-    assert "--confirm-sign" in tokens
-    assert "--no-save-format" in tokens
-    assert tokens[tokens.index("--account-id") + 1] == "acct explicit"
-    assert tokens[tokens.index("--account-name") + 1] == "Owner's Card"
-    assert tokens[tokens.index("--mapping") + 1] == "description=Merchant Name"
-    assert {
-        tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
-    } == {"settled key=acct existing", "minted card=new"}
-    assert {
-        tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
-    } == {
-        "minted card:display_name=Owner's Card",
-        "minted card:last_four=4267",
-    }
-    assert "human_sign_confirmation" not in command
+    assert len(actions) == 2
+    approve_command = actions[0].split(": ", 1)[1]
+    native_command = actions[1].split(": ", 1)[1]
+    approve_tokens = shlex.split(approve_command)
+    native_tokens = shlex.split(native_command)
+
+    for command, tokens in (
+        (approve_command, approve_tokens),
+        (native_command, native_tokens),
+    ):
+        assert tokens[:4] == ["moneybin", "import", "confirm", "Owner's card.csv"]
+        assert "--accept" not in tokens
+        assert "--no-save-format" in tokens
+        assert tokens[tokens.index("--account-id") + 1] == "acct explicit"
+        assert tokens[tokens.index("--account-name") + 1] == "Owner's Card"
+        assert tokens[tokens.index("--mapping") + 1] == "description=Merchant Name"
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
+        } == {"settled key=acct existing", "minted card=new"}
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
+        } == {
+            "minted card:display_name=Owner's Card",
+            "minted card:last_four=4267",
+        }
+        assert "human_sign_confirmation" not in command
+
+    assert "--confirm-sign" in approve_tokens
+    assert "--sign" not in approve_tokens
+    assert "--confirm-sign" not in native_tokens
+    assert native_tokens[native_tokens.index("--sign") + 1] == "negative_is_expense"
 
 
 class TestImportFilesConfirmFlow:
@@ -668,6 +680,121 @@ class TestImportConfirmCommand:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
         assert call_kwargs["human_sign_confirmation"] is True
+
+    def test_generated_sign_recoveries_parse_to_lossless_service_arguments(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Both generated human choices execute through the real confirm parser."""
+        from moneybin.cli.commands.import_cmd import (
+            _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        )
+
+        csv_file = tmp_path / "Owner's card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,50.00,Coffee\n")
+        actions = _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+            str(csv_file),
+            channel="tabular",
+            accept=False,
+            mapping={"description": "Merchant Name"},
+            save_format=False,
+            account_id="acct explicit",
+            account_name="Owner's Card",
+            account_bindings={"settled key": "acct existing", "minted card": "new"},
+            account_metadata={
+                "minted card": {
+                    "display_name": "Owner's Card",
+                    "last_four": "4267",
+                }
+            },
+        )
+
+        for index, expected_sign in (
+            (0, None),
+            (1, "negative_is_expense"),
+        ):
+            command = actions[index].split(": ", 1)[1]
+            tokens = shlex.split(command)
+            result = runner.invoke(app, tokens[2:])
+
+            assert result.exit_code == 0, result.output
+            call_kwargs = mock_import_file.call_args.kwargs
+            assert call_kwargs["confirm"] is False
+            assert call_kwargs["overrides"] == {"description": "Merchant Name"}
+            assert call_kwargs["save_format"] is False
+            assert call_kwargs["account_id"] == "acct explicit"
+            assert call_kwargs["account_name"] == "Owner's Card"
+            assert call_kwargs["account_bindings"] == {
+                "settled key": "acct existing",
+                "minted card": "new",
+            }
+            assert call_kwargs["account_metadata"] == {
+                "minted card": {
+                    "display_name": "Owner's Card",
+                    "last_four": "4267",
+                }
+            }
+            assert call_kwargs.get("sign") == expected_sign
+            if index == 0:
+                assert call_kwargs["human_sign_confirmation"] is True
+            else:
+                assert "human_sign_confirmation" not in call_kwargs
+            mock_import_file.reset_mock()
+
+    def test_confirm_sign_and_explicit_sign_are_mutually_exclusive(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """One invocation cannot approve and override the sign simultaneously."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount\n2025-01-01,50.00\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--confirm-sign",
+                "--sign",
+                "negative_is_expense",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "alternate sign decisions" in result.output
+        mock_import_file.assert_not_called()
+
+    def test_bridge_response_rejects_tabular_sign_override(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The tabular sign option cannot be silently ignored by PDF bridge apply."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--sign",
+                "negative_is_expense",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--bridge-response cannot be combined" in result.output
+        assert "--sign" in result.output
 
     def test_bridge_response_requires_explicit_confirm(self, tmp_path: Path) -> None:
         """A JSON bridge recipe cannot load until the terminal user confirms it."""

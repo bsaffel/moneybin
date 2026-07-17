@@ -246,6 +246,37 @@ def test_connect_explicit_negative_is_income_sign_succeeds(
     assert result.connection.sign_convention == "negative_is_income"
 
 
+def test_connect_rejects_split_sign_for_single_amount_before_write_or_pull(
+    in_memory_db: Database,
+) -> None:
+    """A single amount mapping cannot persist the split-only convention."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssSingleSplitSign", _tiller_workbook())
+
+    with (
+        patch(
+            "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
+        ) as pull,
+        pytest.raises(GSheetError, match="single amount mapping"),
+    ):
+        svc.connect(
+            ConnectionRequest(
+                url=(
+                    "https://docs.google.com/spreadsheets/d/"
+                    "ssSingleSplitSign/edit#gid=0"
+                ),
+                adapter="transactions",
+                account_name="Card",
+                account_id="acct_card",
+                sign="split_debit_credit",
+                yes=True,
+            )
+        )
+
+    assert svc.list_connections() == []
+    pull.assert_not_called()
+
+
 def test_connect_yes_does_not_confirm_inferred_sign(
     in_memory_db: Database,
 ) -> None:
@@ -435,6 +466,55 @@ def test_reconnect_explicit_sign_bypasses_inferred_inversion_gate(
         [connected.connection.connection_id],
     ).fetchall()
     assert amounts == [(Decimal("-87.42"),), (Decimal("250.00"),)]
+
+
+def test_reconnect_rejects_split_sign_for_single_amount_without_mutation(
+    in_memory_db: Database,
+) -> None:
+    """An invalid split sign cannot update or pull an existing single mapping."""
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssReconnectSplitSign", _tiller_workbook())
+    connected = svc.connect(
+        ConnectionRequest(
+            url=(
+                "https://docs.google.com/spreadsheets/d/ssReconnectSplitSign/edit#gid=0"
+            ),
+            adapter="transactions",
+            account_name="Card",
+            account_id="acct_card",
+            yes=True,
+        )
+    )
+    connection_id = connected.connection.connection_id
+    before = svc.get(connection_id)
+    assert before is not None
+    rows_before = in_memory_db.execute(
+        "SELECT amount, deleted_from_source_at "
+        "FROM raw.tabular_transactions WHERE source_origin = ?",
+        [connection_id],
+    ).fetchall()
+
+    with (
+        patch(
+            "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
+        ) as pull,
+        pytest.raises(GSheetError, match="single amount mapping"),
+    ):
+        svc.reconnect(
+            connection_id,
+            yes=True,
+            sign="split_debit_credit",
+        )
+
+    after = svc.get(connection_id)
+    assert after == before
+    rows_after = in_memory_db.execute(
+        "SELECT amount, deleted_from_source_at "
+        "FROM raw.tabular_transactions WHERE source_origin = ?",
+        [connection_id],
+    ).fetchall()
+    assert rows_after == rows_before == [(Decimal("-87.42"), None)]
+    pull.assert_not_called()
 
 
 def test_connect_seed_explicit(in_memory_db: Database) -> None:

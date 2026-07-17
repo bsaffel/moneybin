@@ -142,6 +142,13 @@ def _resolve_transactions_sign_convention(
             )
         return "split_debit_credit", None
 
+    if explicit_sign == "split_debit_credit":
+        raise GSheetError(
+            "--sign='split_debit_credit' contradicts the resolved single "
+            "amount mapping. Drop --sign (the shape requires a single-column "
+            "convention) or map both debit_amount and credit_amount."
+        )
+
     if explicit_sign is not None:
         return explicit_sign, None
 
