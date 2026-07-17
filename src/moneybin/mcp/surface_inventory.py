@@ -53,7 +53,12 @@ class SurfaceInventory:
 
     def to_dict(self) -> dict[str, object]:
         """Return the JSON-ready inventory representation."""
-        return asdict(self)
+        return {
+            "tools": [asdict(tool) for tool in self.tools],
+            "tool_count": self.tool_count,
+            "total_bytes": self.total_bytes,
+            "sha256": self.sha256,
+        }
 
 
 def _inventory_row(payload: dict[str, JsonValue]) -> ToolInventory:

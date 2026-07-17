@@ -1,5 +1,10 @@
 """Tests for canonical MCP tool surface byte inventories."""
 
+import json
+from pathlib import Path
+
+import pytest
+from fastmcp import Client
 from mcp.types import Tool, ToolAnnotations
 
 from moneybin.mcp.surface_inventory import SurfaceInventory
@@ -40,3 +45,17 @@ def test_inventory_omits_bytes_for_absent_components() -> None:
     assert row.description_bytes == 0
     assert row.output_schema_bytes == 0
     assert row.annotation_bytes == 0
+
+
+@pytest.mark.integration
+async def test_live_inventory_matches_committed_baseline() -> None:
+    from moneybin.mcp.server import init_db, mcp
+
+    init_db()
+    async with Client(mcp) as client:
+        actual = SurfaceInventory.from_tools(await client.list_tools()).to_dict()
+
+    baseline = (
+        Path(__file__).parents[2] / "fixtures/mcp_surface/baseline-2026-07-17.json"
+    )
+    assert actual == json.loads(baseline.read_text())
