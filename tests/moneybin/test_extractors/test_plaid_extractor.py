@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from moneybin.connectors.sync_models import SyncDataResponse
-from moneybin.database import Database
+from moneybin.database import Database, sqlmesh_context
 from moneybin.extractors.plaid import PlaidExtractor
 
 FIXTURE = Path(__file__).parent / "fixtures" / "plaid_sync_response.yaml"
@@ -216,3 +216,46 @@ def test_loader_writes_balance_currency(
     ).fetchone()
     assert other is not None
     assert other[0] is None
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_loader_writes_balance_unofficial_currency(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A balance with only unofficial_currency_code must still land non-NULL.
+
+    Plaid reports iso_currency_code and unofficial_currency_code as mutually
+    exclusive: an account whose currency Plaid can't map to ISO 4217
+    (crypto-adjacent or specialty accounts) reports it only via
+    unofficial_currency_code. That must still reach
+    core.fct_balances.currency_code via the COALESCE in fct_balances.sql --
+    not silently fall back to dim_accounts' USD default (multi-currency.md
+    M1K.1 Requirement 1).
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.balances = [
+        b.model_copy(update={"unofficial_currency_code": "USDC"})
+        if b.account_id == "acc_chase_check"
+        else b
+        for b in payload.balances
+    ]
+
+    loader = PlaidExtractor(db)
+    loader.load(payload, job_id=payload.metadata.job_id)
+
+    raw_row = db.execute(
+        "SELECT iso_currency_code, unofficial_currency_code FROM raw.plaid_balances "
+        "WHERE account_id = 'acc_chase_check'"
+    ).fetchone()
+    assert raw_row is not None
+    assert raw_row == (None, "USDC")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    core_row = db.execute(
+        "SELECT currency_code FROM core.fct_balances WHERE account_id = 'acc_chase_check'"
+    ).fetchone()
+    assert core_row is not None
+    assert core_row[0] == "USDC"

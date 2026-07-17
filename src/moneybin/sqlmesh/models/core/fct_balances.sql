@@ -60,7 +60,7 @@ WITH ofx_balances AS (
     'plaid' AS source_type,
     b.source_origin AS source_ref,
     b.loaded_at AS updated_at,
-    b.iso_currency_code AS currency_code
+    COALESCE(b.iso_currency_code, b.unofficial_currency_code) AS currency_code
   FROM prep.stg_plaid__balances AS b
   LEFT JOIN prep.stg_plaid__accounts AS a
     ON a.source_account_key = b.source_account_key AND a.source_origin = b.source_origin
