@@ -66,9 +66,11 @@ class TestResponseEnvelope:
             summary=SummaryMeta(total_count=3, returned_count=3),
             data=[{"period": "2026-04", "income": 5200.00}],
             actions=["Use reports_spending_by_category for breakdown"],
+            classes_returned=["AMOUNT"],
         )
         d = envelope.to_dict()
         assert set(d.keys()) == {"status", "summary", "data", "actions"}
+        assert "classes_returned" not in d
         assert d["status"] == "ok"
         assert list(d.keys())[0] == "status"
         assert d["summary"]["total_count"] == 3
