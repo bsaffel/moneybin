@@ -10,7 +10,8 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** draft — design approved; feasibility and evaluation gates remain
+- **Status:** in-progress — contract foundation is underway; fresh observed
+  baseline and candidate evidence remains an external Plan 6 gate
 - **Address:** M3K.2 — second work item under M3K (CLI / MCP UX standards)
 - **Origin:** July 2026 deep MCP surface review: 105 tools are visible at every
   connection, exceed Windsurf's 100-tool global ceiling, and serialize to about
@@ -57,7 +58,7 @@ second user-visible concept. The generic report runner then reduced the target
 to approximately 45 tools.
 
 Until this spec is implemented, the current full 105-tool registry remains the
-operating reality. Draft text must not be described as shipped behavior.
+operating reality. Proposed text must not be described as shipped behavior.
 
 ## Why now
 
@@ -558,7 +559,7 @@ is a bounded domain runner, not an execution proxy.
 
 ## Promotion gates
 
-This spec moves from `draft` to `ready` only when:
+This spec remains `in-progress` and must not move to `implemented` until:
 
 - the proposed names and contracts reconcile against live code;
 - output-schema registration is proven through FastMCP;

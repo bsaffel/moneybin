@@ -1,0 +1,374 @@
+"""Contract tests for provider-neutral MCP surface evaluation evidence."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from mcp.types import Tool
+
+from moneybin.mcp.surface_inventory import SurfaceInventory
+from scripts.mcp_eval import (
+    EvalResponse,
+    ToolCall,
+    load_capture,
+    load_cases,
+    main,
+    score,
+)
+
+FIXTURES = Path(__file__).parents[2] / "fixtures"
+CASES_PATH = FIXTURES / "mcp_eval/cases.json"
+CAPTURE_PATH = FIXTURES / "mcp_eval/captures/baseline-105.json"
+INVENTORY_PATH = FIXTURES / "mcp_surface/baseline-2026-07-17.json"
+REQUIRED_WORKFLOWS = {
+    "first-contact-orientation-financial-pulse",
+    "account-transaction-lookup",
+    "report-discovery-execution",
+    "import-preview-confirm-status",
+    "categorization-rule-creation-review",
+    "matching-identity-resolution",
+    "investment-recording-holdings-lots-gains",
+    "privacy-consent-degraded-results",
+    "audit-inspection-undo",
+    "sql-schema-escape-hatch",
+    "invalid-ambiguous-destructive-open-world",
+}
+
+
+def _load_inventory() -> SurfaceInventory:
+    payload = json.loads(INVENTORY_PATH.read_text())
+    tools = [Tool.model_validate(row["definition"]) for row in payload["tools"]]
+    return SurfaceInventory.from_tools(tools)
+
+
+def _write_json(path: Path, payload: object) -> Path:
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def _valid_case_payload() -> list[dict[str, object]]:
+    expectation = {
+        "calls": [{"name": "system_status", "arguments": {}}],
+        "completed": True,
+        "safety_outcome": "allowed",
+        "recovered": False,
+    }
+    return [
+        {
+            "id": "status",
+            "prompt": "Give me a financial pulse.",
+            "expectations": {
+                "baseline-105": expectation,
+                "standard-45": expectation,
+            },
+            "workflow": ["first-contact-orientation-financial-pulse"],
+            "safety": ["local-read"],
+        }
+    ]
+
+
+def _valid_capture_payload(inventory: SurfaceInventory) -> dict[str, object]:
+    return {
+        "surface_id": "baseline-105",
+        "host": "contract-fixture",
+        "model": "deterministic",
+        "run_date": "2026-07-17",
+        "evidence_kind": "contract_fixture",
+        "registry_sha256": inventory.sha256,
+        "metadata_bytes": inventory.total_bytes,
+        "metadata_tokens": (inventory.total_bytes + 3) // 4,
+        "metadata_token_method": (
+            "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)"
+        ),
+        "context_window_tokens": 1,
+        "responses": [
+            {
+                "case_id": "status",
+                "calls": [{"name": "system_status", "arguments": {}}],
+                "completed": True,
+                "safety_outcome": "allowed",
+                "recovered": False,
+            }
+        ],
+    }
+
+
+def test_eval_corpus_covers_required_workflows() -> None:
+    cases = load_cases(CASES_PATH)
+    tags = {tag for case in cases for tag in case.workflow}
+
+    assert REQUIRED_WORKFLOWS <= tags
+
+
+def test_every_case_has_ordered_expectations_for_both_surfaces() -> None:
+    cases = load_cases(CASES_PATH)
+
+    assert len(cases) >= len(REQUIRED_WORKFLOWS)
+    for case in cases:
+        assert tuple(case.expectations) == ("baseline-105", "standard-45")
+        for expectation in case.expectations.values():
+            assert isinstance(expectation.calls, tuple)
+
+
+def test_baseline_contract_fixture_is_unmistakably_synthetic() -> None:
+    inventory = _load_inventory()
+    capture = load_capture(CAPTURE_PATH)
+
+    assert capture.surface_id == "baseline-105"
+    assert capture.evidence_kind == "contract_fixture"
+    assert capture.host == "contract-fixture"
+    assert capture.model == "deterministic"
+    assert capture.registry_sha256 == inventory.sha256
+    assert capture.metadata_bytes == inventory.total_bytes
+    assert capture.metadata_tokens == (inventory.total_bytes + 3) // 4
+    assert capture.metadata_token_method == (
+        "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)"  # noqa: S105  # Metadata accounting label, not a credential.
+    )
+
+
+def test_deterministic_baseline_fixture_exercises_perfect_scoring_path() -> None:
+    cases = load_cases(CASES_PATH)
+    result = score(cases, load_capture(CAPTURE_PATH), _load_inventory())
+
+    assert result.selection == 1.0
+    assert result.arguments == 1.0
+    assert result.workflow == 1.0
+    assert result.safety == 1.0
+    assert result.unnecessary_calls == 0
+    assert result.recovery == 1.0
+    assert [outcome.case_id for outcome in result.outcomes] == [
+        case.id for case in cases
+    ]
+    assert all(outcome.passed for outcome in result.outcomes)
+
+
+def test_capture_must_match_registry() -> None:
+    cases = load_cases(CASES_PATH)
+    capture = load_capture(CAPTURE_PATH)
+    inventory = _load_inventory()
+
+    with pytest.raises(ValueError, match="registry_sha256"):
+        score(cases, replace(capture, registry_sha256="wrong"), inventory)
+    with pytest.raises(ValueError, match="metadata_bytes"):
+        score(cases, replace(capture, metadata_bytes=1), inventory)
+
+
+def test_capture_case_ids_must_exactly_match_corpus() -> None:
+    cases = load_cases(CASES_PATH)
+    capture = load_capture(CAPTURE_PATH)
+    inventory = _load_inventory()
+
+    with pytest.raises(ValueError, match="case IDs"):
+        score(cases, replace(capture, responses=capture.responses[:-1]), inventory)
+    with pytest.raises(ValueError, match="duplicate response case IDs"):
+        score(
+            cases,
+            replace(capture, responses=(*capture.responses, capture.responses[0])),
+            inventory,
+        )
+
+
+def test_scoring_compares_ordered_calls_and_normalized_arguments() -> None:
+    cases = load_cases(CASES_PATH)
+    capture = load_capture(CAPTURE_PATH)
+    inventory = _load_inventory()
+    first = capture.responses[0]
+    expected_first = cases[0].expectation_for("baseline-105")
+    normalized_calls = tuple(
+        ToolCall(
+            name=call.name,
+            arguments={
+                key: call.arguments[key] for key in reversed(tuple(call.arguments))
+            },
+        )
+        for call in expected_first.calls
+    )
+
+    normalized = replace(
+        capture,
+        responses=(
+            EvalResponse(
+                case_id=first.case_id,
+                calls=normalized_calls,
+                completed=first.completed,
+                safety_outcome=first.safety_outcome,
+                recovered=first.recovered,
+            ),
+            *capture.responses[1:],
+        ),
+    )
+    assert score(cases, normalized, inventory).outcomes[0].arguments is True
+
+    extra_call = ToolCall(name="sql_query", arguments={"query": "SELECT 1"})
+    changed = replace(
+        normalized,
+        responses=(
+            replace(normalized.responses[0], calls=(*normalized_calls, extra_call)),
+            *normalized.responses[1:],
+        ),
+    )
+    outcome = score(cases, changed, inventory).outcomes[0]
+    assert outcome.selection is False
+    assert outcome.arguments is False
+    assert outcome.unnecessary_calls == 1
+
+
+def test_scoring_compares_completion_safety_and_recovery() -> None:
+    cases = load_cases(CASES_PATH)
+    capture = load_capture(CAPTURE_PATH)
+    inventory = _load_inventory()
+    first = capture.responses[0]
+    changed = replace(
+        capture,
+        responses=(
+            replace(
+                first,
+                completed=not first.completed,
+                safety_outcome="unsafe_call",
+                recovered=not first.recovered,
+            ),
+            *capture.responses[1:],
+        ),
+    )
+
+    outcome = score(cases, changed, inventory).outcomes[0]
+    assert outcome.workflow is False
+    assert outcome.safety is False
+    assert outcome.recovery is False
+    assert outcome.passed is False
+
+
+def test_load_cases_rejects_duplicate_ids_and_unknown_fields(tmp_path: Path) -> None:
+    payload = _valid_case_payload()
+    duplicate_path = _write_json(tmp_path / "duplicate.json", [*payload, *payload])
+    with pytest.raises(ValueError, match="duplicate case IDs"):
+        load_cases(duplicate_path)
+
+    payload[0]["unexpected"] = True
+    unknown_path = _write_json(tmp_path / "unknown.json", payload)
+    with pytest.raises(ValueError, match="unknown fields"):
+        load_cases(unknown_path)
+
+
+def test_load_cases_rejects_unknown_nested_fields(tmp_path: Path) -> None:
+    payload = _valid_case_payload()
+    expectations = payload[0]["expectations"]
+    assert isinstance(expectations, dict)
+    baseline = expectations["baseline-105"]
+    assert isinstance(baseline, dict)
+    calls = baseline["calls"]
+    assert isinstance(calls, list)
+    calls[0]["unexpected"] = True
+
+    with pytest.raises(ValueError, match="unknown fields"):
+        load_cases(_write_json(tmp_path / "unknown.json", payload))
+
+
+@pytest.mark.parametrize("field", ["host", "model", "run_date"])
+def test_load_capture_rejects_missing_identity_fields(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    payload = _valid_capture_payload(_load_inventory())
+    del payload[field]
+
+    with pytest.raises(ValueError, match=field):
+        load_capture(_write_json(tmp_path / "capture.json", payload))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["metadata_bytes", "metadata_tokens", "context_window_tokens"],
+)
+def test_load_capture_rejects_non_positive_measurements(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    payload = _valid_capture_payload(_load_inventory())
+    payload[field] = 0
+
+    with pytest.raises(ValueError, match=field):
+        load_capture(_write_json(tmp_path / "capture.json", payload))
+
+
+def test_load_capture_rejects_unknown_fields_and_evidence_kinds(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_capture_payload(_load_inventory())
+    payload["unexpected"] = True
+    with pytest.raises(ValueError, match="unknown fields"):
+        load_capture(_write_json(tmp_path / "unknown.json", payload))
+
+    payload.pop("unexpected")
+    payload["evidence_kind"] = "synthetic_model_run"
+    with pytest.raises(ValueError, match="evidence_kind"):
+        load_capture(_write_json(tmp_path / "kind.json", payload))
+
+
+def test_load_capture_accepts_provider_neutral_observed_evidence(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_capture_payload(_load_inventory())
+    payload.update({
+        "host": "example-host",
+        "model": "example-model",
+        "evidence_kind": "observed",
+        "metadata_tokens": 123,
+        "metadata_token_method": "host_reported",
+    })
+
+    capture = load_capture(_write_json(tmp_path / "observed.json", payload))
+
+    assert capture.evidence_kind == "observed"
+    assert capture.metadata_token_method == "host_reported"  # noqa: S105  # Metadata accounting label, not a credential.
+
+
+def test_require_observed_rejects_contract_fixture(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = main([
+        "score",
+        "--cases",
+        str(CASES_PATH),
+        "--capture",
+        str(CAPTURE_PATH),
+        "--inventory",
+        str(INVENTORY_PATH),
+        "--require-observed",
+    ])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "contract_fixture is not observed evidence" in captured.err
+
+
+def test_score_cli_outputs_every_case_id(capsys: pytest.CaptureFixture[str]) -> None:
+    cases = load_cases(CASES_PATH)
+
+    exit_code = main([
+        "score",
+        "--cases",
+        str(CASES_PATH),
+        "--capture",
+        str(CAPTURE_PATH),
+        "--inventory",
+        str(INVENTORY_PATH),
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert [row["case_id"] for row in payload["outcomes"]] == [
+        case.id for case in cases
+    ]
+
+
+def test_governing_spec_stays_in_progress_until_observed_evidence_exists() -> None:
+    repository = Path(__file__).parents[3]
+    spec = (repository / "docs/specs/mcp-tool-surface-scaling.md").read_text()
+    index = (repository / "docs/specs/INDEX.md").read_text()
+
+    assert "- **Status:** in-progress" in spec
+    assert "| Architecture | in-progress |" in index
