@@ -412,30 +412,38 @@ async def test_register_emits_tool_annotations() -> None:
 async def test_registered_tool_returns_schema_compatible_wire_envelope() -> None:
     """FastMCP validates the canonical envelope dictionary, not its dataclass."""
     import json
+    import warnings
+    from decimal import Decimal
 
     from fastmcp import Client, FastMCP
 
     from moneybin.mcp._registration import register
-    from moneybin.privacy.payloads.sql import SQLSchemaPayload
+    from moneybin.privacy.payloads.sql import SQLQueryPayload
     from moneybin.protocol.envelope import build_envelope
 
     @mcp_tool(dynamic_classification=True)
-    def schema_tool() -> ResponseEnvelope[SQLSchemaPayload]:
+    def decimal_tool() -> ResponseEnvelope[SQLQueryPayload]:
+        rows: list[dict[str, Any]] = [{"amount": Decimal("12.34")}]
         return build_envelope(
-            data=SQLSchemaPayload(document={"version": 1}),
-            sensitivity="low",
-            classes_returned=["aggregate"],
+            data=SQLQueryPayload(rows=rows),
+            sensitivity="high",
+            classes_returned=["txn_amount"],
         )
 
     mcp = FastMCP("test")
-    register(mcp, schema_tool, "schema_tool", "Return a schema document.")
+    register(mcp, decimal_tool, "decimal_tool", "Return a Decimal amount.")
 
-    async with Client(mcp) as client:
-        [listed] = await client.list_tools()
-        result = await client.call_tool("schema_tool", {})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        async with Client(mcp) as client:
+            [listed] = await client.list_tools()
+            result = await client.call_tool("decimal_tool", {})
 
     assert listed.outputSchema is not None
     assert result.structured_content is not None
-    assert result.structured_content["status"] == "ok"
-    assert result.structured_content["data"] == {"document": {"version": 1}}
-    assert json.loads(result.content[0].text) == result.structured_content  # type: ignore[attr-defined]
+    content = json.loads(result.content[0].text)  # type: ignore[attr-defined]
+    assert content == result.structured_content
+    assert content["status"] == "ok"
+    assert content["data"]["rows"][0]["amount"] == 12.34
+    assert isinstance(content["data"]["rows"][0]["amount"], float)
+    assert not caught

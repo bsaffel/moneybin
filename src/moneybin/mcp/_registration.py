@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -30,9 +31,10 @@ def _wire_result_adapter(fn: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(fn)
     async def wire_result(*args: Any, **kwargs: Any) -> ToolResult:
         envelope = cast(ResponseEnvelope[Any], await fn(*args, **kwargs))
+        content_json = envelope.to_json()
         return ToolResult(
-            content=envelope.to_json(),
-            structured_content=envelope.to_dict(),
+            content=content_json,
+            structured_content=json.loads(content_json),
         )
 
     wire_result.__annotations__ = {  # pyright: ignore[reportFunctionMemberAccess]
