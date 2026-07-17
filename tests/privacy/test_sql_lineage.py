@@ -15,6 +15,7 @@ import yaml
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
     SqlParseError,
+    _class_of_key,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
@@ -398,3 +399,19 @@ def test_reports_class_map_account_id_is_critical() -> None:
     for cols in m.values():
         if "account_id" in cols:
             assert cols["account_id"] is DataClass.ACCOUNT_IDENTIFIER
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Resolve reports.* columns in _class_of_key
+# ---------------------------------------------------------------------------
+
+
+def test_class_of_key_resolves_reports_via_declared_map() -> None:
+    # Pick a real declared (schema, table, column) and assert it resolves.
+    (schema, table), cols = next(iter(reports_class_map().items()))
+    col, expected = next(iter(cols.items()))
+    assert _class_of_key((schema, table, col)) is expected
+
+
+def test_class_of_key_unknown_reports_column_is_none() -> None:
+    assert _class_of_key(("reports", "net_worth", "no_such_column")) is None

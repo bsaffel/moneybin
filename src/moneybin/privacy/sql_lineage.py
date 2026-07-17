@@ -285,7 +285,15 @@ def collect_input_columns(
 
 def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     schema, table, column = key
-    return CLASSIFICATION.get((schema, table), {}).get(column)
+    dc = CLASSIFICATION.get((schema, table), {}).get(column)
+    if dc is not None:
+        return dc
+    # reports.* columns are declared on the @report runner, not in
+    # CLASSIFICATION — SQLMesh deploys the view as a `SELECT *` pointer that
+    # lineage can't classify (ADR-013).
+    if schema == "reports":
+        return reports_class_map().get((schema, table), {}).get(column)
+    return None
 
 
 def _fallback_class(
