@@ -192,10 +192,23 @@ class TestV036AuditLogRewrite:
         assert after == expected_after
 
     def test_leaves_other_target_tables_untouched(self, db: Database) -> None:
+        """Proves the rewrite is scoped by target_table, not by key presence.
+
+        A different target_table's payload survives even when it happens to
+        contain the literal key ``iso_currency_code``.
+        """
         _reset_to_pre_v036_state(db)
         _populate(db)
-        other_before = {"transaction_id": "txn_1", "category": "Groceries"}
-        other_after = {"transaction_id": "txn_1", "category": "Dining"}
+        other_before = {
+            "transaction_id": "txn_1",
+            "category": "Groceries",
+            "iso_currency_code": "USD",
+        }
+        other_after = {
+            "transaction_id": "txn_1",
+            "category": "Dining",
+            "iso_currency_code": "USD",
+        }
         _insert_audit_row(
             db,
             audit_id="audit_test_002",
@@ -209,6 +222,8 @@ class TestV036AuditLogRewrite:
         before, after = _audit_json(db, "audit_test_002")
         assert before == other_before
         assert after == other_after
+        assert before is not None
+        assert "iso_currency_code" in before
 
     def test_handles_null_before_value_on_insert_event(self, db: Database) -> None:
         _reset_to_pre_v036_state(db)
@@ -228,6 +243,25 @@ class TestV036AuditLogRewrite:
         assert after is not None
         assert "iso_currency_code" not in after
         assert after["currency_code"] == "USD"
+
+    def test_handles_null_after_value_on_delete_event(self, db: Database) -> None:
+        _reset_to_pre_v036_state(db)
+        _populate(db)
+        _insert_audit_row(
+            db,
+            audit_id="audit_test_005",
+            target_table="account_settings",
+            before_value=_ACCOUNT_SETTINGS_BEFORE,
+            after_value=None,
+        )
+
+        run_migration(db, migrate)
+
+        before, after = _audit_json(db, "audit_test_005")
+        assert after is None
+        assert before is not None
+        assert "iso_currency_code" not in before
+        assert before["currency_code"] == "USD"
 
     def test_idempotent_on_second_run(self, db: Database) -> None:
         _reset_to_pre_v036_state(db)
