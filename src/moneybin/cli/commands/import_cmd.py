@@ -399,30 +399,32 @@ def import_files_command(
                 # ImportConfirmationRequiredError can bubble to the CLI handler.
                 # Multi-path stays on import_files (batch contract).
                 if len(file_paths) == 1:
-                    result = svc.import_file(
-                        file_path=file_paths[0],
-                        refresh=refresh,
-                        institution=institution,
-                        force=force,
-                        interactive=interactive,
-                        account_id=account_id,
-                        account_name=account_name,
-                        format_name=format_name,
-                        overrides=overrides,
-                        sign=sign,
-                        date_format=date_format or None,
-                        number_format=number_format,
-                        save_format=save_format,
-                        sheet=sheet,
-                        delimiter=delimiter,
-                        encoding=encoding,
-                        no_row_limit=no_row_limit,
-                        no_size_limit=no_size_limit,
-                        auto_accept=yes,
-                        confirm=confirm,
-                        human_sign_confirmation=confirm_sign,
-                        actor_kind="human",
-                    )
+                    import_kwargs: dict[str, Any] = {
+                        "file_path": file_paths[0],
+                        "refresh": refresh,
+                        "institution": institution,
+                        "force": force,
+                        "interactive": interactive,
+                        "account_id": account_id,
+                        "account_name": account_name,
+                        "format_name": format_name,
+                        "overrides": overrides,
+                        "sign": sign,
+                        "date_format": date_format or None,
+                        "number_format": number_format,
+                        "save_format": save_format,
+                        "sheet": sheet,
+                        "delimiter": delimiter,
+                        "encoding": encoding,
+                        "no_row_limit": no_row_limit,
+                        "no_size_limit": no_size_limit,
+                        "auto_accept": yes,
+                        "confirm": confirm,
+                        "actor_kind": "human",
+                    }
+                    if confirm_sign:
+                        import_kwargs["human_sign_confirmation"] = True
+                    result = svc.import_file(**import_kwargs)
                     if result.sign_correction_suggested:
                         typer.echo(
                             "⚠️  Sign convention may be inverted (running balance "
@@ -1023,19 +1025,21 @@ def import_confirm_command(
                     )
                     result = None
                 else:
-                    result = service.import_file(
-                        file_path=file_path,
-                        confirm=accept,
-                        overrides=parsed_mapping,
-                        account_id=account_id,
-                        account_name=account_name,
-                        account_bindings=parsed_bindings,
-                        account_metadata=parsed_metadata,
-                        save_format=save_format,
-                        human_sign_confirmation=confirm_sign,
-                        actor_kind="human",
-                        refresh=False,  # caller can run 'moneybin transform apply' separately
-                    )
+                    confirm_kwargs: dict[str, Any] = {
+                        "file_path": file_path,
+                        "confirm": accept,
+                        "overrides": parsed_mapping,
+                        "account_id": account_id,
+                        "account_name": account_name,
+                        "account_bindings": parsed_bindings,
+                        "account_metadata": parsed_metadata,
+                        "save_format": save_format,
+                        "actor_kind": "human",
+                        "refresh": False,
+                    }
+                    if confirm_sign:
+                        confirm_kwargs["human_sign_confirmation"] = True
+                    result = service.import_file(**confirm_kwargs)
                     bridge_result = None
     except ImportConfirmationRequiredError as e:
         # The confirm attempt itself can re-surface ConfirmationRequired —
