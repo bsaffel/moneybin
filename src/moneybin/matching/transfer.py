@@ -168,6 +168,9 @@ def get_candidates_transfers(
             AND a.amount < 0
             AND b.amount > 0
             AND ABS(a.amount) = b.amount
+            -- NULL currency_code means uncaptured, not a mismatch: an unknown
+            -- currency must not block an otherwise-strong transfer match.
+            -- Only a pair of DIFFERENT KNOWN currencies is excluded here.
             AND (
                 a.currency_code = b.currency_code
                 OR a.currency_code IS NULL
