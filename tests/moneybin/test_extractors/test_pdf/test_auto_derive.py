@@ -927,6 +927,80 @@ def test_shape_reconstruction_refuses_mixed_width_rows() -> None:
     assert derive_recipe(doc, _EMPTY_META) is None
 
 
+def test_select_transaction_table_not_suppressed_by_small_named_table() -> None:
+    """A small unrelated named table must not suppress the larger wrapped table.
+
+    Shape reconstruction (rung 3) previously ran only when rungs 1-2 found nothing,
+    so an unrelated small ruled table ("Recent Payments") elsewhere in the document
+    suppressed recovery of the real wrapped transaction table. Selection is now by
+    row count across all rungs, so the larger wrapped table wins.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _select_transaction_table,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    mini = PdfTable(
+        page=1,
+        header=["Date", "Description", "Amount"],
+        rows=[["01/01/2025", "AUTOPAY", "-50.00"]],
+    )
+    doc = PdfDocument(
+        source_file="stmt.pdf",
+        tables=[mini],
+        text_lines=[
+            "Date of",
+            "Transaction   Description   $ Amount",
+            "01/05/2025   COFFEE SHOP   25.00",
+            "01/09/2025   BOOKSTORE   40.00",
+            "01/12/2025   GAS STATION   30.00",
+        ],
+    )
+
+    table = _select_transaction_table(doc)
+
+    assert table is not None
+    assert len(table.rows) == 3  # the wrapped table, not the 1-row ruled mini-table
+
+
+def test_shape_derived_recipe_end_anchor_skips_per_category_subtotal() -> None:
+    """The PERSISTED recipe's end_anchor must not be a mid-table per-category subtotal.
+
+    The derivation sample already skips per-category subtotals, but the saved
+    recipe's ``row_region.end_anchor`` drives ``_carve_region`` on every import and
+    replay. If it picks a mid-table "Total Payments …" line, extraction truncates
+    every later section. A shape-derived recipe uses the narrow balance-terminal
+    anchor set, so it anchors on "Ending Balance" and keeps all sections.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    text_lines = [
+        "CHASE FREEDOM UNLIMITED",
+        "Minimum Payment Due: $25.00",
+        "Date of",
+        "Transaction   Description   $ Amount",
+        "PAYMENTS AND OTHER CREDITS",
+        "01/15/2025   PAYMENT THANK YOU   -100.00",
+        "Total Payments and Other Credits   -100.00",  # mid-table subtotal
+        "PURCHASE",
+        "01/20/2025   COFFEE SHOP   25.00",
+        "01/22/2025   BOOKSTORE   40.00",
+        "Ending Balance   1234.56",
+    ]
+    doc = _make_text_only_doc(text_lines)
+
+    recipe = derive_recipe(doc, _EMPTY_META)
+    assert recipe is not None
+    assert recipe.row_region.end_anchor == "Ending Balance"
+
+    # And extraction keeps all three rows — not truncated at the subtotal.
+    result = execute_recipe(recipe, "\n".join(text_lines))
+    assert [r["Amount"] for r in result.rows] == [
+        Decimal("-100.00"),
+        Decimal("25.00"),
+        Decimal("40.00"),
+    ]
+
+
 def test_shape_reconstruction_does_not_stop_at_per_category_subtotal() -> None:
     """A per-category subtotal between sections must not truncate later sections.
 
@@ -1005,6 +1079,63 @@ def test_shape_reconstruction_excludes_preamble_row_before_header() -> None:
         ["01/05", "COFFEE SHOP", "25.00"],
         ["01/09", "BOOKSTORE", "40.00"],
     ]
+
+
+def test_synthesize_header_posting_date_requires_matching_format() -> None:
+    """A middle date column is "Posting Date" only if it matches the primary format.
+
+    `_build_fields` casts every date-named column with the primary column's
+    detected pattern, so a post-date column in a DIFFERENT literal format would
+    fail every row. It must fall back to a description column instead.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_header,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # Middle date column uses ISO while the primary is MM/DD → NOT "Posting Date".
+    mismatched = [
+        ["12/24", "2024-12-26", "COFFEE", "25.00"],
+        ["01/15", "2025-01-17", "BOOKS", "40.00"],
+    ]
+    assert _synthesize_header(mismatched) == [
+        "Date",
+        "Description_1",
+        "Description_2",
+        "Amount",
+    ]
+
+    # Same format (both MM/DD) → the middle date column IS structured post_date.
+    matched = [
+        ["12/24", "12/26", "COFFEE", "25.00"],
+        ["01/15", "01/17", "BOOKS", "40.00"],
+    ]
+    assert _synthesize_header(matched) == [
+        "Date",
+        "Posting Date",
+        "Description_2",
+        "Amount",
+    ]
+
+
+def test_shape_reconstruction_refuses_without_wrapped_header() -> None:
+    """Rows with no wrapped-header amount line above them don't reconstruct.
+
+    Shape reconstruction targets a wrapped (multi-line) header. With no
+    amount-naming header line preceding the rows, the scan would otherwise fall
+    back to the whole document with no positional bound. Refuse instead — the
+    statement still reaches the bridge via `_has_shape_transaction_rows`.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "SOME PREAMBLE TEXT",
+        "01/05   COFFEE SHOP   25.00",
+        "01/09   BOOKSTORE   40.00",
+    ])
+
+    assert _synthesize_tables_from_row_shape(doc) == []
 
 
 def test_shape_reconstruction_stops_at_end_anchor() -> None:

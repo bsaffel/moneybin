@@ -31,7 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row's year is resolved from the statement's billing period (correct even when
   the cycle crosses year-end), and the statement imports like any other. A
   statement whose columns genuinely can't be derived deterministically still
-  escalates to the assisted reader rather than being silently seeded.
+  escalates to the assisted reader rather than being silently seeded. (#329)
 - **Non-USD transactions and balances are no longer silently relabeled
   USD.** OFX's per-statement currency (`CURDEF`) and Plaid's per-balance
   currency were parsed but discarded; every transaction and balance landed

@@ -285,7 +285,16 @@ def derive_recipe(doc: PdfDocument, _metadata: StatementMetadata) -> Recipe | No
     # header line is uniquely specific to the transaction table.
     document_text = "\n".join(doc.text_lines)
     start_anchor = _detect_start_anchor(doc, table)
-    end_anchor = _detect_end_anchor(document_text, start_anchor)
+    # A shape-derived table (no header names it) is the winner only when it isn't
+    # one of the named-header candidates. Such a recipe must anchor its end on a
+    # terminal balance line, not a per-category subtotal that a card prints between
+    # sections — else _carve_region truncates every later section on replay.
+    shape_derived = table not in _named_transaction_tables(doc)
+    end_anchor = _detect_end_anchor(
+        document_text,
+        start_anchor,
+        _SHAPE_END_ANCHORS if shape_derived else _END_ANCHOR_CANDIDATES,
+    )
     row_region = RegionAnchors(
         start_anchor=start_anchor,
         end_anchor=end_anchor,
@@ -361,23 +370,30 @@ def _detect_start_anchor(doc: PdfDocument, table: PdfTable) -> str:
     return table.header[0]
 
 
-def _detect_end_anchor(document_text: str, start_anchor: str) -> str:
+def _detect_end_anchor(
+    document_text: str,
+    start_anchor: str,
+    candidates: tuple[str, ...] = _END_ANCHOR_CANDIDATES,
+) -> str:
     """Pick a transaction-table end_anchor present in *document_text*.
 
-    Iterates ``_END_ANCHOR_CANDIDATES`` (most specific first) and returns
-    the first candidate that appears AFTER ``start_anchor``. A leading
-    ``start_anchor`` match constrains the search so a candidate string that
-    also appears in the statement preamble (e.g. an issuer's tagline
-    containing "TOTAL") doesn't get picked.
+    Iterates *candidates* (most specific first) and returns the first one that
+    appears AFTER ``start_anchor``. A leading ``start_anchor`` match constrains the
+    search so a candidate string that also appears in the statement preamble (e.g.
+    an issuer's tagline containing "TOTAL") doesn't get picked.
 
-    Falls back to ``"Total:"`` if no candidate matches — the executor's
-    full-text fallback in ``_carve_region`` is the same safety net the
-    previous hardcoded anchor relied on, and the misconfiguration is
-    logged loudly there.
+    A shape-derived recipe passes the narrow ``_SHAPE_END_ANCHORS`` (terminal
+    balance sentinels only): the broad set's per-category subtotals ("Total Fees",
+    "Total Payments") can sit BETWEEN a card's sections, and picking one as the
+    persisted ``end_anchor`` would truncate every later section on replay.
+
+    Falls back to ``"Total:"`` if no candidate matches — the executor's full-text
+    fallback in ``_carve_region`` is the same safety net the previous hardcoded
+    anchor relied on, and the misconfiguration is logged loudly there.
     """
     start_idx = document_text.find(start_anchor)
     search_from = start_idx + len(start_anchor) if start_idx != -1 else 0
-    for candidate in _END_ANCHOR_CANDIDATES:
+    for candidate in candidates:
         if document_text.find(candidate, search_from) != -1:
             return candidate
     return "Total:"
@@ -508,11 +524,26 @@ def _synthesize_header(rows: list[list[str]]) -> list[str]:
     width = len(rows[0])
     if width == 3:
         return ["Date", "Description", "Amount"]
+    # The primary (first-column) date pattern. A middle column is only "Posting
+    # Date" if it parses under the SAME pattern — _build_fields casts every date
+    # column with the primary's pattern, so a differently-formatted post-date
+    # column would fail every row (→ no_rows). None when the first column isn't a
+    # single recognisable date format (then no column can be a matching post date).
+    primary_pattern = next(
+        (
+            pat
+            for _fmt, pat in _DATE_FORMATS
+            if all(_re.fullmatch(pat, r[0]) for r in rows)
+        ),
+        None,
+    )
     middle: list[str] = []
     post_date_named = False
     for col in range(1, width - 1):
-        col_all_dates = all(bool(_ANY_DATE_RE.match(r[col])) for r in rows)
-        if col_all_dates and not post_date_named:
+        col_matches_primary = primary_pattern is not None and all(
+            _re.fullmatch(primary_pattern, r[col]) for r in rows
+        )
+        if col_matches_primary and not post_date_named:
             middle.append("Posting Date")
             post_date_named = True
         else:
@@ -626,8 +657,8 @@ def _shape_header_index(cells_per_line: list[list[str]]) -> int | None:
     excludes a preamble line that happens to be date-led + money-tailed (a
     due-date/amount summary) from both the derivation sample and the start-anchor
     scan. Distinct from a preamble "Amount Due" summary, which is NOT immediately
-    followed by transaction rows. None → no wrapped header found; the caller scans
-    from the top of the document.
+    followed by transaction rows. None → no wrapped header found; the shape rung
+    then declines entirely (this isn't the wrapped-header layout it targets).
     """
     for i, cells in enumerate(cells_per_line):
         if _is_transaction_row(cells) or len(cells) <= 1:
@@ -685,7 +716,13 @@ def _synthesize_tables_from_row_shape(doc: PdfDocument) -> list[PdfTable]:
         for line in doc.text_lines
     ]
     header_idx = _shape_header_index(cells_per_line)
-    scan_from = 0 if header_idx is None else header_idx + 1
+    if header_idx is None:
+        # No wrapped-header amount line: this isn't the wrapped-header shape this
+        # rung targets, and scanning the whole document unbounded would risk
+        # folding preamble/summary rows into the sample. Refuse; the statement
+        # still reaches the bridge via _has_shape_transaction_rows.
+        return []
+    scan_from = header_idx + 1
 
     rows: list[list[str]] = []
     for cells in cells_per_line[scan_from:]:
@@ -846,23 +883,27 @@ def _looks_transactional_anywhere(doc: PdfDocument) -> bool:
     )
 
 
-def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
-    """Return the largest *derivable* transaction-shaped table, or None.
+def _named_transaction_tables(doc: PdfDocument) -> list[PdfTable]:
+    """Transaction-shaped tables that a header names — ruled or text-reconstructed."""
+    return [
+        t
+        for t in (*doc.tables, *_synthesize_tables_from_text(doc))
+        if _is_transaction_shaped(t)
+    ]
 
-    Ruled tables win when pdfplumber found any; tables reconstructed from
-    ``text_lines`` are the fallback for unruled (real-world) statements.
+
+def _select_transaction_table(doc: PdfDocument) -> PdfTable | None:
+    """Return the transaction-shaped table with the MOST rows, across all rungs.
+
+    Named tables (ruled or text-reconstructed) and the shape-reconstructed table
+    (a wrapped/unnamed header) are all candidates; the real transaction table is
+    the largest. Selecting by row count rather than "first non-empty rung" keeps an
+    unrelated small named table — a "Recent Payments" box — from suppressing
+    recovery of the real wrapped transaction table via shape reconstruction. Shape
+    reconstruction stays guarded (``_shape_reconstructed_tables``) so a debit/credit
+    statement is never force-fit here.
     """
-    candidates = [t for t in doc.tables if _is_transaction_shaped(t)]
-    if not candidates:
-        candidates = [
-            t for t in _synthesize_tables_from_text(doc) if _is_transaction_shaped(t)
-        ]
-    if not candidates:
-        # No ruled table and no line names the columns — a wrapped multi-line
-        # header like Chase's "Date of" / "Transaction ... $ Amount". Fall back to
-        # detecting the table by its data-row shape (guarded so a debit/credit
-        # statement stays deferred to the bridge — see _shape_reconstructed_tables).
-        candidates = _shape_reconstructed_tables(doc)
+    candidates = [*_named_transaction_tables(doc), *_shape_reconstructed_tables(doc)]
     if not candidates:
         return None
     return max(candidates, key=lambda t: len(t.rows))

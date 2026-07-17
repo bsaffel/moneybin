@@ -513,9 +513,10 @@ def _run_recipe_pipeline(
     except YearlessDateError:
         # A year-less row couldn't be placed in time (no capturable period, or a
         # date beyond posting drift). Fail the WHOLE extraction rather than let the
-        # executor silently drop the row — and route as transaction_table_underivable
-        # so it reaches the bridge, where an agent can supply the period anchors the
-        # deterministic path lacked (see YearlessDateError / bridge yearless support).
+        # executor silently drop the row. Both reasons are bridge-eligible so an
+        # agent can supply the period anchors the deterministic path lacked; on a
+        # saved-recipe replay use the replay reason so the escalation carries the
+        # drifted-recipe context (and marks the replay guard failed).
         logger.warning(
             "execute_recipe: year-less date row unresolvable — routing to bridge"
         )
@@ -531,7 +532,12 @@ def _run_recipe_pipeline(
                 closing_balance=None,
             ),
             confidence=0.0,
-            reason="transaction_table_underivable",
+            reason=(
+                "replay_reconciliation_failed"
+                if is_saved_replay
+                else "transaction_table_underivable"
+            ),
+            replay_guard_failed=is_saved_replay,
             matched_format_name=matched_format_name,
             fp=fp,
             card_markers=card_markers,

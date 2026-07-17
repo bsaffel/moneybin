@@ -183,7 +183,8 @@ def test_custom_anchors_override_defaults() -> None:
 
 
 def test_bad_date_format_returns_none() -> None:
-    # Anchor matches but value can't be parsed as MM/DD/YYYY
+    # Anchor matches but value can't be parsed as any supported format
+    # (MM/DD/YYYY, MM/DD/YY, or ISO YYYY-MM-DD) — a spelled-out month is unsupported.
     custom: dict[str, list[str]] = {
         "account_id": [],
         "period_start": [r"Start:\s+(\S+)"],
@@ -191,7 +192,7 @@ def test_bad_date_format_returns_none() -> None:
         "opening_balance": [],
         "closing_balance": [],
     }
-    meta = capture_metadata("Start: 2024-01-15", anchors=custom)
+    meta = capture_metadata("Start: 15-Jan-2024", anchors=custom)
     assert meta.period_start is None
 
 
@@ -205,3 +206,19 @@ def test_bad_decimal_returns_none() -> None:
     }
     meta = capture_metadata("OB: not-a-number", anchors=custom)
     assert meta.opening_balance is None
+
+
+def test_capture_metadata_parses_iso_period_date() -> None:
+    """A period anchor capturing an ISO date resolves (bridge ISO-anchor support).
+
+    A bridge-authored recipe may declare a period anchor for a non-default label
+    whose date is ISO-shaped; _parse_date must accept it so the year-less executor
+    can bracket each MM/DD row against the captured period.
+    """
+    custom = {
+        "period_start": [r"Cycle\s+(\d{4}-\d{2}-\d{2})"],
+        "period_end": [r"Cycle\s+\d{4}-\d{2}-\d{2}\s*-\s*(\d{4}-\d{2}-\d{2})"],
+    }
+    meta = capture_metadata("Cycle 2024-12-23 - 2025-01-22", anchors=custom)
+    assert meta.period_start == date(2024, 12, 23)
+    assert meta.period_end == date(2025, 1, 22)

@@ -138,15 +138,18 @@ def _first_match(text: str, patterns: list[str]) -> str | None:
 
 
 def _parse_date(raw: str | None) -> date | None:
-    """Parse a MM/DD/YYYY or MM/DD/YY statement date; None on failure/None input.
+    """Parse a MM/DD/YYYY, MM/DD/YY, or ISO YYYY-MM-DD statement date.
 
-    The 2-digit-year form is what credit-card "Opening/Closing Date" lines print
-    (``12/23/24``); strptime's ``%y`` maps it to 2000-2068 per POSIX, which is
-    correct for every statement this parser will ever see.
+    None on failure or None input. The 2-digit-year form is what credit-card
+    "Opening/Closing Date" lines print (``12/23/24``); strptime's ``%y`` maps it to
+    2000-2068 per POSIX, which is correct for every statement this parser will ever
+    see. ISO is accepted so a bridge-authored period anchor that captures an
+    ISO-shaped date still resolves the year for a year-less statement (the year-less
+    executor brackets each MM/DD row against this period).
     """
     if raw is None:
         return None
-    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
         try:
             return datetime.strptime(raw, fmt).date()
         except ValueError:
