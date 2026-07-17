@@ -11,6 +11,7 @@ SELECT
   b.ledger_balance,
   b.ledger_balance_date::DATE AS ledger_balance_date,
   b.available_balance,
+  b.currency_code,
   b.source_file,
   b.extracted_at,
   b.loaded_at,

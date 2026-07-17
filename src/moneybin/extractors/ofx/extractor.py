@@ -509,6 +509,9 @@ class OFXExtractor:
                     "source_transaction_id": tx_schema.id,
                     "account_id": account.account_id,
                     "transaction_type": tx_schema.type,
+                    "currency_code": account.curdef
+                    if hasattr(account, "curdef")
+                    else None,
                     "date_posted": tx_schema.date.isoformat(),
                     "amount": tx_schema.amount,
                     "payee": _decode_text_field(tx_schema.payee),
@@ -548,6 +551,7 @@ class OFXExtractor:
                 "source_transaction_id": pl.String,
                 "account_id": pl.String,
                 "transaction_type": pl.String,
+                "currency_code": pl.String,
                 "date_posted": pl.String,
                 "amount": _DECIMAL_AMOUNT,
                 "payee": pl.String,
@@ -593,6 +597,9 @@ class OFXExtractor:
                     if hasattr(statement, "available_balance")
                     and statement.available_balance is not None
                     else None,
+                    "currency_code": account.curdef
+                    if hasattr(account, "curdef")
+                    else None,
                     "source_file": source_file,
                     "extracted_at": extraction_timestamp.isoformat(),
                     "import_id": import_id,
@@ -616,6 +623,7 @@ class OFXExtractor:
                 "ledger_balance": _DECIMAL_AMOUNT,
                 "ledger_balance_date": pl.String,
                 "available_balance": _DECIMAL_AMOUNT,
+                "currency_code": pl.String,
                 "source_file": pl.String,
                 "extracted_at": pl.String,
                 "import_id": pl.String,
