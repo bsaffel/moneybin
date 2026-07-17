@@ -42,7 +42,8 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 
 **Why MoneyBin fits today:**
 - A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (nine clients supported).
-- Every MCP tool has a CLI twin with `--output json` parity; the CLI is a first-class agent surface, not an afterthought.
+- MCP and CLI preserve capability and service-outcome parity without requiring
+  1:1 methods; `--output json` keeps the CLI a first-class agent surface.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
 - It's built to be *extended* by the agent, not just queried by it. The schema and the import pipeline are stable surfaces an agent can build against today; a declarative report-runner contract and the broader extension contract (reports, packages, providers) are in flight. Together they make "vibe-code a custom report / importer / tracker on top of my own financial data" the intended workflow, not a hack — MoneyBin wants to be the first tool your agent reaches for.
 

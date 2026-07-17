@@ -2,7 +2,7 @@
 
 > Last updated: 2026-05-20
 > Status: in-progress
-> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns), [`extension-contracts.md`](extension-contracts.md) (Analysis Packages and standalone Reports register `<pkg>_*`-prefixed tools and auto-generated reports into this server via entry points)
+> Companion to: [`mcp-architecture.md`](mcp-architecture.md) (design philosophy, conventions, patterns), [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md) (M3K.2 draft: one bounded standard registry, generic reports, and surface budgets), [`extension-contracts.md`](extension-contracts.md) (Analysis Packages and standalone Reports register capabilities and report definitions into this server via entry points)
 > Supersedes: [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -22,6 +22,14 @@ This spec defines every concrete tool, prompt, and resource in MoneyBin's MCP su
 ## Status
 
 in-progress
+
+> **Disclosure status:** all registered tools remain visible at connect today.
+> M3K.2 proposes replacing today's 105 entries with one capability-complete
+> standard registry of approximately 45 intent- and safety-shaped tools.
+> Generic clients receive that registry in full; capable hosts may defer
+> schemas from the same registry. Per-report MCP tools migrate behind one
+> `reports` catalog/runner while their CLI commands remain specific. The
+> proposal is draft and must not be described as shipped.
 
 > **Naming convention:** path-prefix-verb-suffix (`accounts_balance_assert`). Cross-domain analytical views live under `reports_*` (§3, §4, §12); sync and transform are MCP-exposed (§16, §17). The unified taxonomy is shared with [`moneybin-cli.md`](moneybin-cli.md). See `.claude/rules/surface-design.md` for the operation-shape taxonomy and verb vocabulary the surface is built from.
 
@@ -184,7 +192,7 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 | **Progress notifications** | core | ⏳ not used | Required for the job-handle pattern; `sync-plaid.md` rewrite is the first surface that needs it. |
 | **Sampling** | optional | ⏳ deliberate defer | Server requesting LLM completions back from the client. No current use case; consider only if MoneyBin needs to delegate categorization to the host LLM (today this is an explicit non-goal — categorization runs locally). |
 | **Roots** | optional | ⏳ deliberate defer | Filesystem scope advertisement from the client. Inbox-watching uses MoneyBin-side configuration today. Revisit if a future tool needs to ask the agent for the user's working directory. |
-| **Elicitation** | optional | ✅ shipped (first-run setup); planned (PDF sign-convention confirm) | First use: `FirstRunSetupMiddleware` elicits a profile name on the first tool call when the server booted unconfigured (see "First-run setup" above). Capability probed via `session.check_client_capability`; tools-only clients get the `infra_setup_required` envelope fallback. **Planned second use:** in-place confirmation of a credit-card sign inversion during import (see [`import_confirm`](#import_confirm)) — today the agent is directed to the CLI because ratifying an inversion is a decision the agent must never self-accept. Still NOT used for general destructive-write confirmation — that stays on the `confirm` parameter pattern (revisit when destructive write-tool count > 5). |
+| **Elicitation** | optional | ✅ shipped (first-run setup); planned (payload-bound destructive confirmation) | First use: `FirstRunSetupMiddleware` elicits a profile name on the first tool call when the server booted unconfigured (see "First-run setup" above). Capability probed via `session.check_client_capability`; tools-only clients get the `infra_setup_required` envelope fallback. **Planned M3K.2 use:** confirmation binds canonical validated arguments, resolved IDs, actor/context, operation, and blast radius. Capable clients use elicitation; tools-only clients receive an opaque, short-lived, single-use token carrying the same binding. Existing bare `confirm` parameters remain current behavior until that migration lands. |
 | **Logging level negotiation** | optional | ⏳ not used | Server-side log level honors `MoneyBinSettings.logging.level`; not negotiated per session. |
 | **Pagination cursors** | core | ⏳ partial | `summary.has_more` + `summary.total_count` flag truncation; `offset` parameter handles paging. No opaque cursor pattern; revisit if any tool needs server-side iteration state. |
 | **Server `instructions`** | core | ✅ shipped | `FastMCP(instructions=...)` in `src/moneybin/mcp/server.py`. See above subsection. |
@@ -1777,7 +1785,7 @@ When the entry-points path ships: per [`mcp-architecture.md`](mcp-architecture.m
 Two extension shapes will contribute tools through this second path:
 
 - **Analysis Packages** (`extension-contracts.md` §"Analysis Package contract") — `<pkg>_*`-prefixed tools registered programmatically. The M2M first-party lineup will be `assets_*` and `us_tax_*` (both shipped in the MoneyBin repo, both contributed via the entry-points path rather than explicit register-call imports — see [`asset-tracking.md`](asset-tracking.md) and §17b reservation for the assets namespace). Third-party packages installed via PyPI will register identically once they appear on the entry-point group.
-- **Standalone Reports** (`extension-contracts.md` §"Report contract") — `reports_*` tools auto-generated from structured comments on a single SQLMesh view, including the paired `TableRef` constant, `ReportsService` method, MCP tool, and CLI command. The contributor writes only the SQL with the `@name` / `@description` / `@param` / `@example` block; the framework derives the registration trinity.
+- **Standalone Reports** (`extension-contracts.md` §"Report contract") — report definitions registered from one SQLMesh view and one `@report` runner. The framework derives `TableRef` wiring, a stable report-catalog entry, and an ergonomic per-report CLI command. Under M3K.2, MCP executes every definition through the generic `reports` tool; a new report does not add a tool.
 
 The §18 tool-catalog-discipline rule will apply symmetrically: a PR that adds a package- or report-contributed tool must update this spec (or its in-package equivalent) in the same change. The runtime-registered surface — explicit-register-call plus entry-points — must match what's documented.
 

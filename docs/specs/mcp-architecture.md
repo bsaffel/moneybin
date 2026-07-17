@@ -1,6 +1,6 @@
 # MCP Architecture & Design
 
-> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [`extension-contracts.md`](extension-contracts.md) (contributor-facing surface — packages and reports register tools into this server via entry points), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
+> Companions: [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (AI data flow tiers, consent model), [`moneybin-mcp.md`](moneybin-mcp.md) (concrete tool/prompt/resource definitions), [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md) (M3K.2 draft: one bounded standard registry and host-native deferred schema loading), [`extension-contracts.md`](extension-contracts.md) (contributor-facing surface — packages and reports register capabilities into this server via entry points), [ADR-003: MCP Primary Interface](../decisions/003-mcp-primary-interface.md)
 > Supersedes: `mcp-tier1-tools.md` (prototype-era tool list), [`archived/mcp-read-tools.md`](archived/mcp-read-tools.md), [`archived/mcp-write-tools.md`](archived/mcp-write-tools.md)
 
 ## Purpose
@@ -31,7 +31,10 @@ in-progress
 
 4. **AI-ergonomic by default.** Tool names, descriptions, and parameter schemas are designed for LLM tool selection. Response shapes give the model enough context to reason (structured data with summary metadata) without overwhelming the context window (pagination, configurable detail levels).
 
-5. **CLI symmetry.** Every MCP tool has a CLI equivalent. Same capabilities, same data, different ergonomics. The MCP server and CLI are thin surfaces over a shared service layer — neither implements business logic directly.
+5. **CLI capability symmetry.** MCP and CLI cover the same capability IDs and
+   observable service outcomes with surface-appropriate ergonomics. Method and
+   name equality are not required. Both are thin surfaces over a shared service
+   layer; neither implements business logic directly.
 
 ### Import-first rationale
 
@@ -83,7 +86,9 @@ MCP tools and CLI commands are both thin wrappers around the same service layer.
 
 ### Key boundaries
 
-- **MCP/CLI layer** — Parameter validation, input/output formatting, help text. No SQL, no business logic. Maps 1:1 between the two surfaces.
+- **MCP/CLI layer** — Parameter validation, input/output formatting, help text.
+  No SQL or business logic. Both map to the same capability and service
+  outcomes, not necessarily 1:1 methods.
 - **Privacy middleware** — Intercepts every tool call. Checks sensitivity tier, verifies consent status, applies redaction for the active consent level, logs to audit table. Tools are unaware of their own privacy enforcement — they return full data and the middleware filters it.
 - **Service layer** — Business logic, query construction, data operations. Parameterized SQL only. Returns typed Python objects (dataclasses or Pydantic models), never raw query results.
 - **DuckDB** — Read-only connection for queries, short-lived write connection for mutations (existing pattern from the prototype).
@@ -140,7 +145,7 @@ Tools use a hybrid namespace that reflects the most natural way an AI or user wo
 Tools land on the FastMCP server through two discovery paths. Both will produce the same registered shape — the agent cannot distinguish them, and the surface-discipline, taxonomy, and sensitivity rules above apply identically to each.
 
 1. **In-tree imports.** Core MoneyBin tools live under `src/moneybin/mcp/` and are wired in by explicit `register_*_tools(mcp)` calls in `mcp/server.py`. This is the path every tool documented in `moneybin-mcp.md` takes today and the only path active at runtime as of 2026-05-20.
-2. **Entry-points discovery (planned, pending [`extension-contracts.md`](extension-contracts.md)).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; entry-points discovery is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). When it ships: Analysis Packages and standalone Reports will declare themselves under the `moneybin.packages` setuptools entry-point group. At server startup, after the in-tree `register_*_tools()` calls complete, the framework will enumerate `moneybin.packages` entry points (in-tree-declared and pip-installed alike), load each manifest, validate capabilities and naming, and invoke the package's `tools.register(mcp)` hook. For Reports specifically, the registration trinity (`TableRef` constant, MCP tool, CLI command) will be auto-generated from the view's structured comments — see `extension-contracts.md` §"Auto-generation of the registration trinity".
+2. **Entry-points discovery (planned, pending [`extension-contracts.md`](extension-contracts.md)).** [`extension-contracts.md`](extension-contracts.md) is currently `draft`; entry-points discovery is documented here for design alignment but is NOT active at runtime until the spec reaches `in-progress` and the framework implementation lands (Plan 2 of the extension-contracts implementation graph). When it ships: Analysis Packages and standalone Reports will declare themselves under the `moneybin.packages` setuptools entry-point group. At server startup, after the in-tree `register_*_tools()` calls complete, the framework will enumerate `moneybin.packages` entry points (in-tree-declared and pip-installed alike), load each manifest, validate capabilities and naming, and invoke the package's registration hook. Reports generate a stable report-catalog entry, `TableRef` wiring, and an ergonomic CLI command from one `@report` runner; MCP executes them through the single `reports` tool proposed by M3K.2. See `extension-contracts.md` §"Auto-generation of report surfaces".
 
 The naming conventions above are load-bearing for path 2: a package named `assets` may only register tools prefixed `assets_*`, and registration will refuse to start when a package's tool names violate its declared prefix. This is how the taxonomy will stay coherent as the registered set grows beyond what `mcp/server.py` imports directly.
 
@@ -165,6 +170,20 @@ For the consuming agent there is one surface, governed by one set of rules. The 
 ### Tool disclosure: full surface, taxonomy-led
 
 > **Decision (2026-05-17, supersedes the 2026-05-10 "wired but disabled" stance):** Client-driven progressive disclosure is retired as a strategy. The full registered tool surface is visible at connect. Orientation is delivered through the FastMCP `instructions` field in the `initialize` response and through prefix-grouped tool names with crisp descriptions — both surfaces MoneyBin controls end-to-end. `moneybin_discover`, `MoneyBinSettings.mcp.progressive_disclosure`, and the `Visibility(False, tags={domain})` transforms have been removed. The `tags={domain}` markers on tools (still set via `@mcp_tool(domain=...)`) are kept as dormant metadata, in case a future first-party client (M3C Web UI, or anything driving the Anthropic API directly) can implement prompt-level schema injection in the style of Claude Code's `tool_search`.
+
+> **Proposed revision (2026-07-15; not implemented):** the registry has grown to
+> 105 visible tools, exceeds Windsurf's 100-tool global ceiling, and serializes
+> to roughly 90,600 characters before host wrapping. M3K.2
+> [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md) and proposed
+> [ADR-016](../decisions/016-bounded-mcp-tool-registry.md) define a different
+> path: consolidate to one bounded standard registry of approximately 45 tools.
+> Generic clients receive that registry in full; hosts with native tool search
+> may defer schema injection from the same registry without changing
+> capability availability or identity. This does **not** restore the retired
+> `moneybin_discover` / `tools/list_changed` mechanism or introduce packs,
+> profiles, or reconnect modes. Until the draft is promoted and implemented,
+> the current 105-tool full-surface behavior below remains the operating
+> reality.
 
 #### Why retire client-driven disclosure
 
@@ -196,18 +215,28 @@ The registered set at any moment is bounded by the surface-discipline rule. Tool
 #### Design implications for new tools
 
 - Assume every registered tool is always visible to the agent. Its description, parameter schema, and namespace placement compete for the same finite attention budget as every other tool.
-- The description string carries everything the agent needs at tool-selection time — sign convention, currency, mutation surface, preconditions. See `.claude/rules/mcp.md` "Description requirements".
+- The description opens with distinct intent-specific selection guidance and
+  carries operation-specific mutation, recovery, and precondition details.
+  Shared trust, privacy, and sign-convention prose belongs in server
+  instructions where it can be loaded once. See `.claude/rules/mcp.md`
+  "Description requirements".
 - The `actions` array in response envelopes is the only remaining "what to call next" affordance. When a tool returns `actions`, those tools are already registered and callable — no discover step in between.
 - When proposing a new tool, ask: does the work it does justify ~50–150 tokens of permanent model attention forever? If not, fold it into an adjacent tool (a parameter, a `detail` level) or drop it.
 
-#### When this could be revisited
+#### Why this is now being revisited
 
-Two conditions would warrant reopening:
+The original decision named two conditions that would warrant reopening:
 
 1. **Client convergence on reliable disclosure.** If `tools/list_changed` becomes universally honored across the major clients MoneyBin targets, the dormant tag metadata can be re-activated without re-architecting.
 2. **First-party MoneyBin client.** A MoneyBin-owned Web UI (M3C) or direct Anthropic API host could implement prompt-level schema injection in the style of Claude Code's `tool_search`. Worth re-evaluating once M3C is concrete.
 
-Neither condition is on the near-term path. The full-surface decision is the operating reality through launch.
+Universal `tools/list_changed` support has not arrived, so server-driven
+dynamic disclosure remains rejected. The revisit is instead triggered by a
+hard client ceiling and a third path that does not require server mutation:
+consolidate to one bounded standard registry, then let capable hosts defer
+schemas from that same registry. Generic clients receive it in full. See M3K.2
+for the proposed contracts and evaluation gates. The current 105-tool surface
+remains the operating reality until that proposal ships.
 
 ### Multi-currency as a crosscutting concern
 
@@ -458,76 +487,80 @@ MCP resources are read-only data endpoints that give the AI ambient context with
 
 ---
 
-## 7. CLI Symmetry
+## 7. CLI capability symmetry
 
 ### Shared service layer
 
-The MCP server and CLI are co-equal consumers of the same service layer. The symmetry is structural, not aspirational — both import the same service modules, call the same methods, and get the same results.
+The MCP server and CLI are co-equal consumers of the same service layer. The
+symmetry is structural and outcome-based: both map to the same capability IDs,
+typed domain operations, and observable results. One MCP umbrella may call
+several service stages that remain separate CLI operator commands.
 
 ```python
-# Service layer (shared)
-class ReportsService:
-    def spending_trend(
-        self,
-        from_month: str | None,
-        to_month: str | None,
-        category: str | None,
-        compare: str,
-    ) -> tuple[list[str], list[tuple]]: ...
+# Shared registered report
+SPENDING = ReportSpec(
+    report_id="core:spending",
+    runner=spending,
+    parameter_schema=...,
+)
 
 
-# MCP tool (thin wrapper)
+# MCP: one catalog/runner for every ReportSpec
 @mcp_tool(sensitivity="low")
-def reports_spending(
-    from_month: str | None = None,
-    to_month: str | None = None,
-    category: str | None = None,
-    compare: str = "yoy",
+def reports(
+    report_id: str | None = None,
+    parameters: dict[str, object] | None = None,
 ) -> ResponseEnvelope:
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).spending_trend(
-            from_month, to_month, category, compare
-        )
-    return envelope(cols, rows)
+        return ReportRegistry(db).catalog_or_execute(report_id, parameters)
 
 
-# CLI command (thin wrapper)
+# CLI: one ergonomic command for this report
 @reports_app.command("spending")
-def reports_spending_cmd(
-    from_month: str | None = None,
-    to_month: str | None = None,
-    category: str | None = None,
-    compare: str = "yoy",
-) -> None:
+def reports_spending_cmd(from_month: str | None = None) -> None:
     with get_database(read_only=True) as db:
-        cols, rows = ReportsService(db).spending_trend(
-            from_month, to_month, category, compare
+        result = ReportRegistry(db).execute(
+            "core:spending",
+            {"from_month": from_month},
         )
-    render_table(cols, rows)
+    render_table(result.columns, result.rows)
 ```
+
+This is the approved M3K.2 target shape, not current runtime code.
 
 ### What symmetry means in practice
 
 | Concern | MCP | CLI |
 |---|---|---|
-| **Capabilities** | Identical | Identical |
-| **Parameters** | JSON schema with descriptions | Typer options with help text |
+| **Capabilities and outcomes** | Same capability IDs | Same capability IDs |
+| **Parameters** | JSON schema optimized for agents | Typer arguments/options optimized for humans |
 | **Output format** | Structured JSON (response envelope) | Human-readable tables, status lines, icons per `cli.md` |
 | **Privacy enforcement** | Middleware intercepts tool calls | Same middleware wraps service calls |
 | **Error handling** | Structured error in response envelope | `logger.error` + `typer.Exit(1)` |
 | **Discoverability** | Tool descriptions + `actions` array | `--help` + command group structure |
 
-The `transactions_categorize_commit` MCP tool has CLI parity via `moneybin transactions categorize commit`. Both surfaces share the same `CategorizationService.categorize_items` implementation, validated through the same `CategorizationItem` Pydantic model at every boundary.
+`transactions_categorize_commit` has direct command parity because the natural
+shape matches both surfaces. `refresh_run`, by contrast, is an MCP workflow
+umbrella while the CLI may retain separate match, transform, categorize, and
+identity stage controls. Both forms reach the same service outcomes.
 
 ### What symmetry does NOT mean
 
 - **Not identical UX.** The CLI uses tables, progress bars, and icons. MCP returns structured data. Same data, different presentation.
-- **Not identical invocation.** `moneybin reports spending --from-month 2025-01` vs `reports_spending(from_month="2025-01")`. The CLI uses kebab-case flag names (`--from-month`); MCP uses the underscored parameter keys (`from_month`).
-- **Mostly hand-crafted, with a generated exception.** The CLI is hand-crafted for human ergonomics and is not auto-generated from MCP tool schemas; most surfaces are independently authored over a shared service layer. The exception is the view-backed `reports_*`: both the MCP tool and the CLI command are generated from one `@report` runner (see `extension-contracts.md`), so for those the two surfaces share a single definition rather than parallel hand-authored adapters.
+- **Not identical invocation.** `moneybin reports spending --from-month
+  2025-01` versus `reports(report_id="core:spending",
+  parameters={"from_month": "2025-01"})`.
+- **Not identical granularity.** CLI subgroups make surgical operator commands
+  cheap to discover. MCP spends a permanent context and selection budget per
+  tool, so compatible operations consolidate around intent.
+- **Mostly hand-crafted, with a generated report exception.** The CLI is hand-crafted for human ergonomics and is not auto-generated from MCP tool schemas; most surfaces are independently authored over a shared service layer. View-backed reports share one `@report` runner that generates their catalog entry and ergonomic CLI command (see `extension-contracts.md`). Under M3K.2, MCP calls the generic `reports` runner rather than generating one tool per report.
 
 ### CLI command structure
 
-The CLI mirrors the MCP namespace as top-level command groups (no `data` subgroup — `transform`, `import`, and `sync` are siblings under `moneybin`). The authoritative surface is [`moneybin-cli.md`](moneybin-cli.md); the shape today:
+The CLI uses corresponding domain groups, but need not mirror MCP tool
+granularity (no `data` subgroup — `transform`, `import`, and `sync` are
+siblings under `moneybin`). The authoritative surface is
+[`moneybin-cli.md`](moneybin-cli.md); the shape today:
 
 ```mermaid
 flowchart LR
@@ -671,7 +704,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
 | [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
 | [`matching-overview.md`](matching-overview.md) | Match review tools (`transactions_matches_pending`, etc.) will be defined in `moneybin-mcp.md`. Audit log is shared infrastructure. |
-| [`extension-contracts.md`](extension-contracts.md) | Defines how third-party Analysis Packages and standalone Reports register MCP tools into this server via Python entry points (`moneybin.packages`). Names, namespaces, and response envelopes defined here are inherited by every extension. |
+| [`extension-contracts.md`](extension-contracts.md) | Defines how third-party Analysis Packages register admitted operations and standalone Reports register catalog entries through Python entry points (`moneybin.packages`). Names, namespaces, response envelopes, and registry budgets defined here are inherited by every extension. |
 
 ## Resolved Decisions
 
@@ -679,4 +712,4 @@ These decisions and their rationale should be documented in the 12-month plan.
 - **Prompt count.** Four prompts: `monthly-review`, `categorization-organize`, `onboarding`, `tax-prep`. Defined in [`moneybin-mcp.md`](moneybin-mcp.md) §14.
 - **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
 - **Privacy middleware implementation.** Decorator-based (`@mcp_tool(sensitivity="medium")`) that delegates to a middleware class. Decorator for ergonomics at the tool definition site; class for testability of the consent/audit/redaction logic.
-- **Tool count strategy.** Full registered surface visible at connect, taxonomy-led discovery, surface-discipline rule caps growth. Consolidation (merging CRUD operations into action-parameter tools) was rejected because it trades tool count for schema complexity without reducing cognitive load on the model. Client-driven progressive disclosure (the earlier strategy: core namespaces registered at connection, extended namespaces loaded on demand via `moneybin_discover` and `tools/list_changed`) was retired 2026-05-17 because `tools/list_changed` client support is too uneven to design against. The replacement is a three-lever approach MoneyBin controls end-to-end: load-bearing `instructions` field, prefix-grouped taxonomy, and a stub-gating rule that allows registration only when a tool's backing spec reaches `in-progress` or `implemented`. See §3 "Tool disclosure: full surface, taxonomy-led" and `.claude/rules/mcp.md` "Surface change discipline".
+- **Tool count strategy (implemented baseline; proposed revision filed).** The current full registered surface is visible at connect, with taxonomy-led discovery and a stub-gating rule. Client-driven progressive disclosure (core namespaces registered at connection, extended namespaces revealed through `moneybin_discover` and `tools/list_changed`) was retired 2026-05-17 because client support is too uneven. M3K.2 [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md) now proposes consolidating the 105-tool baseline to one bounded standard registry of approximately 45 intent- and safety-shaped tools. Generic clients receive the complete registry. Capable hosts may defer schemas from that same registry, but MoneyBin does not introduce packs, profiles, or reconnect modes. Compatible projections, target-state writes, batches, workflow umbrellas, and the generic `reports` runner provide consolidation; materially different intent, safety, authorization, sensitivity, confirmation, output, audit, or recovery contracts keep separate identities. The proposal does not change operating behavior while draft. See §3 and `.claude/rules/mcp.md` "Surface change discipline".
