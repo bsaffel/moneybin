@@ -1070,8 +1070,13 @@ class TestManualEntry:
     def test_create_manual_batch_rejects_malformed_currency(
         self, transaction_db: Database
     ) -> None:
-        """A malformed currency_code must be refused, matching accounts_set's check."""
+        """A malformed currency_code must be refused, matching accounts_set's check.
+
+        The error message keeps the entries[{idx}] prefix every other check in
+        _validate_manual_entry uses, so a bad entry in a large batch is
+        attributable without a manual search.
+        """
         self._seed_account(transaction_db)
         service = TransactionService(transaction_db)
-        with pytest.raises(ValueError, match="currency_code"):
+        with pytest.raises(ValueError, match=r"entries\[0\]\.currency_code"):
             service.create_manual_batch([self._entry(currency_code="usd")], actor="cli")

@@ -575,7 +575,10 @@ class TransactionService:
         if currency_code is not None:
             if not isinstance(currency_code, str):
                 raise ValueError(f"entries[{idx}].currency_code must be a string")
-            validate_currency_code(currency_code)
+            try:
+                validate_currency_code(currency_code)
+            except ValueError as e:
+                raise ValueError(f"entries[{idx}].{e}") from e
 
         return {
             "account_id": account_id,
