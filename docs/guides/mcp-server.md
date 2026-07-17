@@ -226,7 +226,13 @@ fails to register — the tier is never hand-set).
 | `medium` | Row-level fields: descriptions, amounts, dates | Logging + audit metadata |
 | `high` | Critical PII (account numbers, raw provider blobs) | Account/routing numbers **masked before egress**; logging + audit metadata; planned consent gate |
 
-What the tier does today: it tags the structured log line for every invocation (`tool`, `sensitivity`, `duration_ms`, `status`) and stamps the audit log row visible through `system_audit`. The logs live wherever your MoneyBin install writes them (default: stderr of the `mcp serve` subprocess; configurable via the standard logging settings). Retention is whatever you configure on the log destination — MoneyBin does not prune. Independently of the tier, CRITICAL fields (account/routing numbers) are always masked before a result leaves the process.
+> This table uses the three-tier public grouping. The runtime actually derives a
+> fourth tier — `critical` — for the account/routing identifiers, split out from
+> `high` (which covers balances and amounts); `critical` is the tier that is
+> always masked before egress today. The grouping here is for brevity; the code
+> distinguishes all four.
+
+What the tier does today: it tags the per-call event in the privacy log (`tool`, `sensitivity`, data classes, row count) for *every* invocation, read or write. Mutations additionally write an `app.audit_log` row visible through `system_audit` — but reads do not, so `system_audit` shows only writes, not every call. (The two records are distinct; see [What the AI Provider Sees](what-the-ai-sees.md) for the split.) The logs live wherever your MoneyBin install writes them (default: stderr of the `mcp serve` subprocess; configurable via the standard logging settings). Retention is whatever you configure on the log destination — MoneyBin does not prune. Independently of the tier, CRITICAL fields (account/routing numbers) are always masked before a result leaves the process.
 
 What the tier does **not** do today: there is no consent-prompt gate that requires explicit user approval before a `high`-tier call, and the tier does not degrade the response. The privacy framework that introduces the gate is planned; `summary.degraded` is wired through the envelope but not yet exercised. When the gate lands, calls without consent will return aggregate-only `data` with `summary.degraded: true` — they will never fail outright. Full data-flow detail: [What the AI Provider Sees](what-the-ai-sees.md).
 

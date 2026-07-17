@@ -86,12 +86,20 @@ masked](#not-masked-stated-plainly) below.)
 
 This is enforced structurally, not by convention. Every one of MoneyBin's ~105
 tools must declare the privacy class of each field it returns, or it fails to
-register at startup — there is no way to ship a tool that returns an unclassified
-account number. For `sql_query` and the report views, the same masking is applied
-by tracing each output column back to its source column through the SQL; a column
-the tracer can't resolve **fails closed** (it gets the most-sensitive treatment,
-never the least). So raw SQL is not a privacy bypass: `SELECT last_four FROM
-core.dim_accounts` comes back masked.
+register at startup. What that guarantees is that a field **typed as** an account
+or routing number is always masked. For `sql_query` and the report views, the same
+masking is applied by tracing each output column back to its source column through
+the SQL; a column the tracer can't resolve **fails closed** (it gets the
+most-sensitive treatment, never the least). So raw SQL is not a privacy bypass:
+`SELECT last_four FROM core.dim_accounts` comes back masked.
+
+The masking follows the field's **declared class**, not a content scan — so an
+account number that rides inside a field classified as free text is *not* caught.
+The clearest case: `import_preview` / `import_files` return a `sample_values`
+preview of the file being imported, classified as description text; if the file
+has a raw account-number column, those digits reach the provider in that sample.
+Masking protects the typed account/routing fields, not every place an account
+number can appear.
 
 > The operator commands `moneybin db query`, `db shell`, and `db ui` are the
 > deliberate exception — they are raw, unmasked, local operator access and print
