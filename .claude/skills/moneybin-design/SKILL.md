@@ -1,6 +1,6 @@
 ---
 name: moneybin-design
-description: Design MoneyBin interfaces and assets on-brand in the "Ledger-grade" style (dark-lead, brass-only accent, money in mono, SQL provenance). Use when building, mocking, or theming any MoneyBin UI, screen, artifact, or component.
+description: Design MoneyBin interfaces and assets on-brand in the "Ledger-grade" style (dark-lead, three-tier metal accent, money in mono, SQL provenance). Use when building, mocking, or theming any MoneyBin UI, screen, artifact, or component.
 ---
 
 MoneyBin's design system — the source of truth — lives at `design-system/` in this
@@ -13,8 +13,10 @@ before producing anything:
 - `design-system/components/<group>/<Name>.jsx` + `.prompt.md` — the real components (Button, Chip, Icon, Amount, WidgetCard, VaultStatusBar, Mark, Wordmark, DuckKey)
 - `design-system/ui_kits/web_app/index.html` — a full dashboard exemplar
 
-Non-negotiables: dark theme leads (light is a first-class peer); brass
-(`--accent-brass`) is the only accent, never blue; money is ALWAYS JetBrains Mono
+Non-negotiables: dark theme leads (light is a first-class peer); one metal accent
+in three tiers — brass (`--accent-brass`) speaks (provenance text), gilt
+(`--accent-gilt`) fills (bars, dots, buttons, wordmark), verdigris
+(`--accent-verdigris`) responds (selection, filters, links) — never blue; money is ALWAYS JetBrains Mono
 with explicit +/- signs on income/expense flows (balances unsigned) — use the `Amount` component; hairline borders, no resting
 shadows; every data widget carries a SQL provenance chip (rung one of a three-rung provenance ladder — a global deep-audit strip, then pinned tooltips snapping to real points; see `design-system/charts.md`); linear chart
 interpolation only; icons come from the `Icon` component (19 glyphs, 20×20 grid,

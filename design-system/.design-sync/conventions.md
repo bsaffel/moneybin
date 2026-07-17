@@ -53,7 +53,7 @@ props**. Real names:
   inherits `currentColor`. An icon never appears without a visible label except
   in a collapsed rail or an icon-only control, where `title` is required. The
   AI/ask surface is the caret `▸_` (`--font-data`), never an icon, never ✨.
-- Brass is the only accent. Hairline borders, no resting shadows. **No emoji, no
+- One metal accent in three tiers — brass (provenance text), gilt (fills), verdigris (interaction); never blue. Hairline borders, no resting shadows. **No emoji, no
   exclamation points, no superlatives.** Sentence case; overline labels are
   ALL-CAPS mono, tracked `--text-overline-tracking`.
 

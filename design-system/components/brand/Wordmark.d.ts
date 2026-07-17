@@ -2,7 +2,7 @@
  * The MoneyBin wordmark lock-up — the Mark paired with the "MoneyBin" name.
  * Promotes the ad-hoc Mark + span pairing to a system component so the two
  * decisions that are easy to get wrong stay correct by construction: the
- * optical baseline nudge (Rule 1) and brass on "Bin" (Rule 2), both baked in.
+ * optical baseline nudge (Rule 1) and gilt on "Bin" (Rule 2), both baked in.
  */
 export interface WordmarkProps {
   /**
@@ -12,11 +12,11 @@ export interface WordmarkProps {
    */
   size?: 'nav' | 'bar' | 'hero' | number;
   /**
-   * Color of the "Bin" letters. 'brass' (default) is the brand default; use
-   * 'mono' whenever another brass element shares the same bar or header, so
-   * brass stays unique to a single lock-up.
+   * Color of the "Bin" letters. 'gilt' (default) is the brand default; use
+   * 'mono' whenever another gold element shares the same bar or header, so
+   * the gilt stays unique to a single lock-up.
    */
-  bin?: 'brass' | 'mono';
+  bin?: 'gilt' | 'mono';
   /**
    * Passed through to the Mark. Omit for theme-aware auto-contrast (recommended);
    * pass 'dark' / 'light' to force a plate. See MarkProps.

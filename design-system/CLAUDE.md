@@ -7,9 +7,12 @@ a pointer, not a second copy; when the two disagree, `readme.md` wins.
 
 - **Dark theme leads.** Dark is the bare `:root`; light is the
   `[data-theme="light"]` peer mapping — never an inversion.
-- **Brass is the only accent, never blue.** `var(--accent-brass)`. Single-series
-  charts are brass; multi-series draw `--chart-1..8` in order, six max before
-  grouping to "Other", and a category keeps its hue in every view.
+- **One metal accent, three tiers, never blue.** brass (`--accent-brass`) speaks
+  — provenance text; gilt (`--accent-gilt`) fills — bars, dots, buttons, the
+  wordmark; verdigris (`--accent-verdigris`) responds — selection, filters, links.
+  Single-series value-over-time lines are brass; category bars are gilt fills;
+  multi-series draw `--chart-1..8` in order, six max before grouping to "Other",
+  and a category keeps its hue in every view.
 - **Money is always mono** (`--font-data`) via the `Amount` component, with an
   explicit +/− (U+2212) on income/expense flows. Balances stay unsigned.
 - **Every data widget carries a SQL provenance chip** — rung one of the

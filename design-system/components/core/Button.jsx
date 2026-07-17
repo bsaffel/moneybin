@@ -15,7 +15,7 @@ export function Button({ variant = 'primary', size = 'md', disabled = false, typ
     userSelect: 'none',
   };
   const variants = {
-    primary: { background: 'var(--accent-brass)', color: 'var(--on-accent-brass)' },
+    primary: { background: 'var(--accent-gilt)', color: 'var(--on-accent-gilt)' },
     secondary: { background: 'transparent', color: 'var(--text-primary)', border: '1px solid var(--border-strong)' },
     ghost: { background: 'transparent', color: 'var(--text-secondary)' },
   };
@@ -27,12 +27,12 @@ export function Button({ variant = 'primary', size = 'md', disabled = false, typ
       style={{ ...base, ...variants[variant], ...style }}
       onMouseEnter={(e) => {
         if (disabled) return;
-        if (variant === 'primary') e.currentTarget.style.background = 'var(--accent-brass-strong)';
+        if (variant === 'primary') e.currentTarget.style.background = 'var(--accent-gilt-strong)';
         if (variant === 'secondary') e.currentTarget.style.borderColor = 'var(--accent-brass)';
         if (variant === 'ghost') e.currentTarget.style.color = 'var(--text-primary)';
       }}
       onMouseLeave={(e) => {
-        if (variant === 'primary') e.currentTarget.style.background = 'var(--accent-brass)';
+        if (variant === 'primary') e.currentTarget.style.background = 'var(--accent-gilt)';
         if (variant === 'secondary') e.currentTarget.style.borderColor = 'var(--border-strong)';
         if (variant === 'ghost') e.currentTarget.style.color = 'var(--text-secondary)';
       }}
