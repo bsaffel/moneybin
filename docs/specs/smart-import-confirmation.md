@@ -321,6 +321,31 @@ Mostly reuse — the confidence contract is a code-level type, not a table.
 - **Config:** `settings.import.confidence.t_high` / `t_med` (band thresholds);
   `settings.import.self_accept_high` (calibration gate, default `false`).
 
+### Google Sheets sign convention (PR #324)
+
+Google Sheets transactions are a tabular source and must not become a second
+sign-inversion policy. Before `connect` or `reconnect` persists
+`negative_is_income`, the connection service requires one of two human-owned
+signals:
+
+- **CLI:** `--sign` is the explicit human override. Without it, connect/reconnect
+  fail before saving the connection or running a pull and name the exact command
+  to re-run.
+- **MCP:** `gsheet_connect` and `gsheet_reconnect` do not accept `sign`. Their
+  wrappers surface the proposed inversion through `confirm_or_raise`; only a
+  successful human elicitation retry carries an internal confirmation signal to
+  the service.
+
+The confirmation is not persisted separately: a successful connection pins the
+selected convention in the existing `app.gsheet_connections` row. Every later
+reconnect re-detects and re-gates a newly inferred inversion before replacing
+that pinned mapping. No rejected or timed-out confirmation writes a connection
+or runs an initial pull.
+
+`import_confirm` also uses `timeout_seconds=180.0`, matching the existing
+human-elicitation tools. The default 30-second tool timeout is shorter than a
+reasonable review of a ledger-wide sign inversion.
+
 ## Implementation Plan
 
 Sequencing note: PDF ships first and **implements this contract** — so the shared pieces
@@ -393,20 +418,11 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 
 ## Out of Scope
 
-- **Unified `ConfirmationRequired` envelope for `gsheet connect`/`reconnect`.**
-  Tabular `import_files` and the per-pull gsheet path both route through
-  `resolve_or_confirm` and surface `ImportConfirmationRequiredError` /
-  `confirmation_required` envelopes. The connect-time gate
-  (`gsheet_connect` / `gsheet reconnect`) is intentionally a different
-  surface — it establishes a persistent connection, not a one-shot import,
-  and uses domain errors (`LowConfidenceError`,
-  `AmbiguousDetectionError`) with actionable strings naming the recovery
-  flag (`--column-mapping`, `--yes`). The shared confidence contract
-  (`Confidence`, bands, `tier_for`) is enforced uniformly via
-  `to_confidence(bands)`; the *envelope shape* differs by surface
-  intentionally. Unifying it would require collapsing the
-  connect/reconnect/per-pull surfaces into one shape — explicitly out of
-  scope; per-pull and one-shot import already share the contract.
+- **Unified `ConfirmationRequired` envelope for gsheet connect/reconnect.**
+  Google Sheets stays a persistent-connection surface, so it does not reuse the
+  one-shot import envelope. CLI uses a domain error with a `--sign` recovery;
+  MCP performs its own human elicitation and retries internally. The shared
+  invariant is the approval boundary, not an identical response shape.
 - **CLI `import files <single-file>` preserves fail-loud refresh.**
   `ImportService.import_file(refresh=True)` raises `RuntimeError` when
   refresh fails after a successful raw load — the CLI exit code reflects
