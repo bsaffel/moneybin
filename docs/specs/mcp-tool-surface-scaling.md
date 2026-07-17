@@ -47,7 +47,10 @@ registry of approximately 45 tools.
   confirmation, output, audit, or recovery contracts materially differ.
 - All registered reports execute through one read-only `reports` catalog and
   runner. Adding a report does not add an MCP tool.
-- Every public tool advertises a typed `outputSchema`.
+- Every public tool returns canonical JSON text and equivalent
+  `structuredContent`. The initial standard registry advertises no
+  `outputSchema`; a schema is admitted only for a named consumer that needs
+  protocol-level result validation or hydration.
 - Every surface change is measured in serialized metadata bytes and evaluated
   for selection, arguments, workflow completion, and safety.
 
@@ -69,7 +72,7 @@ The July 2026 live registry contains:
 | Measure | Current value |
 |---|---:|
 | Visible tools | 105 |
-| Serialized tool metadata | ~90,628 characters |
+| Serialized tool metadata | 90,734 bytes |
 | Rough token estimate | ~20,000–23,000 |
 | Description characters | ~34,013 |
 | Input-schema characters | ~35,270 |
@@ -78,6 +81,13 @@ The July 2026 live registry contains:
 
 The four largest groups — transactions, accounts, investments, and import —
 contain 59 tools and about 62% of the serialized metadata.
+
+The contract-foundation experiment advertised full payload schemas for all 105
+tools. It increased serialized metadata to 861,301 bytes: 768,887 bytes of
+output schemas alone. No current MoneyBin client depends on schema-based result
+hydration or validation. The approximately 10× total increase therefore failed
+the carrying-weight test and was rejected before the standard-registry
+cutover.
 
 Three entries are deprecated aliases rather than capabilities:
 
@@ -295,11 +305,29 @@ Parity tests bind both surfaces to capability IDs, service calls, and observable
 outcomes. Granular CLI operator commands and MCP-protocol-specific features may
 retain documented exemptions.
 
-### 10. Typed output is not traded for count
+### 10. Structured output does not require universal output schemas
 
-Every public tool advertises an `outputSchema` matching its structured response.
-Output-schema bytes count against the surface budget, but omission is not an
-acceptable optimization.
+Every public tool returns canonical JSON in both a text content block and
+`structuredContent`. Internal Pydantic payloads, privacy classification,
+`ResponseEnvelope`, exact decimal normalization, error envelopes, and
+transport-conformance tests remain mandatory.
+
+The [MCP tool
+specification](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)
+makes `outputSchema` optional, and [FastMCP supports structured results without
+one](https://gofastmcp.com/v2/servers/tools). MoneyBin therefore does not
+advertise output schemas in the initial standard registry. A future schema is
+an opt-in public contract, admitted only when:
+
+1. a named client or integration consumes it;
+2. `structuredContent` alone is demonstrably insufficient;
+3. exact serialized-byte and context-budget costs are recorded;
+4. representative compatibility tests pass; and
+5. persisted evaluation evidence shows that the benefit warrants the cost.
+
+When admitted, the schema must match runtime `structuredContent` exactly.
+MoneyBin does not add a schema resource, profile, or configuration switch in
+anticipation of a consumer.
 
 ### 11. Documentation is not an operational tool
 
@@ -375,7 +403,7 @@ CI records count and serialized bytes for:
 
 - descriptions;
 - input schemas;
-- output schemas;
+- output schemas, when advertised;
 - annotations and other metadata;
 - the complete standard registry.
 
@@ -405,6 +433,19 @@ A PR proposing a tool must answer:
 Reports never pass this test as tools; they pass `ReportSpec` validation and
 enter the report registry.
 
+### Output-schema admission record
+
+A PR proposing an `outputSchema` must additionally name:
+
+1. the concrete consuming client or integration;
+2. the result-hydration or validation failure without the schema;
+3. the exact per-tool and registry-wide byte delta;
+4. the representative client compatibility tests; and
+5. the persisted evaluation demonstrating a material benefit.
+
+The initial standard registry has zero admitted output schemas. Advertising one
+without this record is a contract failure.
+
 ## Evaluation contract
 
 ### Baselines
@@ -413,10 +454,10 @@ The contract foundation is active work. The frozen pre-cutover registry lives
 at [`tests/fixtures/mcp_surface/baseline-2026-07-17.json`](../../tests/fixtures/mcp_surface/baseline-2026-07-17.json);
 the matching evaluation capture lives at
 [`tests/fixtures/mcp_eval/captures/baseline-105.json`](../../tests/fixtures/mcp_eval/captures/baseline-105.json).
-The frozen snapshot preserves the 105 expected tool names before
-`outputSchema` was registered. The live surface contract compares those names,
-not full definitions or byte-identical snapshots, because live metadata bytes
-must continue to reflect the schemas actually advertised today.
+The frozen snapshot preserves the actual 105-tool registry with no advertised
+output schemas. It remains the byte baseline for the standard-registry
+consolidation. The rejected full-schema experiment is recorded separately as
+861,301 bytes and is not used to make the candidate comparison easier.
 
 The 50-tool maximum and 40-tool carrying-weight review threshold are durable
 policy. During the intentional 105-tool pre-cutover state, the contract runs
@@ -465,7 +506,7 @@ Record:
 - ambiguous-reference refusal;
 - recovery from structured errors;
 - privacy/consent behavior;
-- input and output schema bytes;
+- input-schema bytes and any admitted output-schema bytes;
 - latency and client compatibility failures.
 
 The checked-in result artifact records:
@@ -484,9 +525,12 @@ An eval harness without a persisted run result does not satisfy the gate.
 Tests inspect the real `tools/list` response, not only Python/Pydantic types.
 For every discriminated or coarse contract they prove:
 
-- all variants appear in the advertised schema;
-- required fields remain variant-specific;
-- output schemas match runtime envelopes;
+- all input variants and variant-specific required fields render correctly;
+- JSON text and `structuredContent` are identical;
+- decimal values remain JSON numbers;
+- success, error, privacy-degraded, dynamic SQL/report, and recovery envelopes
+  retain their natural structured shapes;
+- any selectively admitted output schema matches runtime structured content;
 - native and commonly stringified client inputs behave safely;
 - invalid values do not coerce to zero, false, or empty collections.
 
@@ -504,7 +548,8 @@ global coercion layer without evidence from supported clients.
 
 ### Phase 1 — shared contracts
 
-- Add `outputSchema` registration.
+- Preserve canonical structured results without advertising output schemas.
+- Add the consumer-driven output-schema admission gate.
 - Add explicit capability, audience, safety, and workflow metadata.
 - Implement shared entity resolution and payload-bound confirmation.
 - Add count/byte, description, workflow-closure, and rendered-schema gates.
@@ -581,7 +626,9 @@ is a bounded domain runner, not an execution proxy.
 This spec remains `in-progress` and must not move to `implemented` until:
 
 - the proposed names and contracts reconcile against live code;
-- output-schema registration is proven through FastMCP;
+- canonical FastMCP text/structured transport is proven;
+- the standard registry advertises zero output schemas, or every exception has
+  an approved consumer-driven admission record;
 - the report catalog contract and metric metadata are concrete;
 - payload-bound confirmation and entity-resolution contracts are concrete;
 - the capability-parity test is enforceable;

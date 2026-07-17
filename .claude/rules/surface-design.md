@@ -321,6 +321,9 @@ When adding or modifying a tool / command / endpoint:
    argument, workflow, safety, and schema-compatibility evaluations.
 8. If proposing a defended exception, document the why in the tool description
    and tool-admission record.
+9. Do not advertise `outputSchema` reflexively. Name the consuming client,
+   prove why structured content is insufficient, measure the byte/context
+   delta, and provide compatibility plus persisted benefit evidence.
 
 ## Registry budget
 

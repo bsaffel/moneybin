@@ -80,9 +80,12 @@ Every tool returns this shape:
 
 Currency lives in `summary.display_currency`, not per-row. Per-row `currency` only when returning mixed unconverted currencies.
 
-Every public tool MUST advertise a typed `outputSchema` matching its structured
-response. Output-schema bytes count against the surface budget; omitting the
-schema is not an optimization.
+Every public tool MUST return canonical JSON text and equivalent
+`structuredContent`. Do not advertise `outputSchema` by default. A schema is an
+opt-in public contract and requires a named consuming client, evidence that
+structured content alone is insufficient, exact byte/context cost,
+representative client tests, and persisted benefit evidence. If admitted, it
+MUST match runtime `structuredContent` exactly.
 
 ## Sensitivity Tiers
 
@@ -201,6 +204,13 @@ must name:
 A consolidation is accepted only when metadata bytes decrease and evaluation
 results are no worse. Count reduction alone is insufficient.
 
+**Output-schema admission.** The initial standard registry advertises zero
+output schemas. A PR adding one must include the consuming client/integration,
+the concrete hydration or validation failure without it, exact per-tool and
+registry-wide byte deltas, representative compatibility tests, and a persisted
+evaluation showing material benefit. Do not add schema resources, profiles, or
+configuration switches speculatively.
+
 Any PR that adds, renames, or removes a tool (MCP) or command (CLI) MUST update **two** specs in the same change:
 
 1. The **surface-specific spec** — [`docs/specs/moneybin-mcp.md`](../../docs/specs/moneybin-mcp.md) for MCP changes, [`docs/specs/moneybin-cli.md`](../../docs/specs/moneybin-cli.md) for CLI changes. Per-surface implementation detail (parameter schemas, sensitivity tiers, envelope shape, flag conventions) lives here.
@@ -232,8 +242,10 @@ instructions when it can be loaded once.
 
 Tests inspect the actual `tools/list` response, not only Python/Pydantic types.
 For coarse or discriminated contracts they prove that all variants render,
-variant-specific required fields survive, runtime responses match
-`outputSchema`, and commonly stringified client inputs fail or coerce safely.
+variant-specific required fields survive, JSON text equals
+`structuredContent`, decimal values remain numeric, and commonly stringified
+client inputs fail or coerce safely. Any selectively admitted `outputSchema`
+must also match runtime structured content.
 Do not add a global coercion layer without supported-client evidence.
 
 ## Agent-experience reports

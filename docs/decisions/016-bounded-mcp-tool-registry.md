@@ -2,7 +2,7 @@
 
 **Status:** Proposed (governing spec
 [`mcp-tool-surface-scaling.md`](../specs/mcp-tool-surface-scaling.md) is
-`draft`; accept when that spec is promoted to `ready`)
+`in-progress`; accept after implementation and evidence gates pass)
 
 ## Context
 
@@ -61,7 +61,11 @@ from host prompt loading is not recoverable from code.
 11. All reports register behind one read-only `reports` catalog/runner. Reports
     retain per-entry validation, privacy, metric semantics, and provenance; raw
     SQL remains a separate tool.
-12. Every public tool advertises a typed output schema.
+12. Every public tool returns canonical JSON text and equivalent
+    `structuredContent`. The initial standard registry advertises no
+    `outputSchema`. A future schema requires a named consumer, evidence that
+    structured content alone is insufficient, exact byte costs, compatibility
+    tests, and persisted benefit evidence.
 13. Count and serialized metadata are both gated. Consolidation must reduce
     bytes and pass selection, argument, workflow, safety, and compatibility
     evaluations.
@@ -88,9 +92,9 @@ service-layer contract, or CLI-first operator exemptions.
   client compatibility tests.
 - Payload-bound confirmation and shared entity resolution become cross-domain
   infrastructure.
-- Tests must snapshot the actual `tools/list`, measure input and output schema
-  bytes, prove capability parity and workflow closure, and persist evaluation
-  results.
+- Tests must snapshot the actual `tools/list`, measure every advertised schema
+  byte, prove canonical structured transport, capability parity, and workflow
+  closure, and persist evaluation results.
 - The registry has less numerical headroom than a profile-based design.
   Approaching 50 forces consolidation or an explicit architecture revision.
 - Extension-owned operational tools remain subject to the same admission and
@@ -133,13 +137,24 @@ Rejected for operations. It hides original tool identities from client
 allowlists and approvals. The read-only `reports` registry is a bounded domain
 runner, not an arbitrary tool proxy.
 
+### Universal detailed output schemas
+
+Rejected without a consumer. Full schemas for the existing 105 tools increased
+serialized metadata from 90,734 to 861,301 bytes; output schemas alone accounted
+for 768,887 bytes. MCP defines `outputSchema` as optional, and MoneyBin retains
+canonical `structuredContent`, internal typed payloads, and transport tests
+without advertising it. Selective future adoption remains available through
+the explicit admission record.
+
 ## Acceptance trigger
 
 Promote this ADR to **Accepted** when:
 
-- the governing spec reaches `ready`;
+- the governing spec reaches `implemented`;
 - the approximately 45-tool contract reconciles with live code;
-- output schemas and generic reports are proven;
+- canonical structured transport and generic reports are proven;
+- the initial standard registry advertises zero output schemas, or every
+  exception has an approved consumer-driven admission record;
 - payload-bound confirmation and entity resolution are concrete;
 - capability parity and workflow closure are enforceable;
 - persisted evaluations meet the approved gates;
