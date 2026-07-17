@@ -417,15 +417,16 @@ _CONTRAST_CONTRACTS = (
         4.5,
         'the wordmark "Bin" / DuckKey on the base canvas',
     ),
-    # Graphic (3.0), not text: the heatmap's fully-saturated bin. A gilt fill washes
-    # out to 2.5:1 on the light paper, so --heat-fill deepens to brass there; this
-    # locks the max bin above the graphics floor in both themes (the regression that
-    # a gilt-only ramp introduced and this contract now prevents recurring).
+    # Graphic (3.0), not text: an unlabeled data fill (a heatmap cell, a default
+    # histogram bar) at full strength. A gilt fill washes out to 2.5:1 on the light
+    # paper, so --data-fill deepens to brass there; this locks it above the graphics
+    # floor in both themes (the regression a gilt-only fill introduced, now prevented
+    # from recurring on either the heatmap or the histogram).
     (
-        "--heat-fill",
+        "--data-fill",
         "--bg-surface",
         3.0,
-        "the heatmap's max-intensity bin (no per-cell label to lean on)",
+        "an unlabeled data fill (heatmap cell / histogram bar)",
     ),
 )
 
@@ -434,8 +435,8 @@ def _parse_theme_palettes() -> dict[str, dict[str, str]]:
     """Resolve ``colors.css`` into ``{theme: {token: "#hex"}}`` for dark and light.
 
     Dark is the bare ``:root``; light is ``:root`` overlaid with the
-    ``[data-theme="light"]`` overrides (a token light does not redefine inherits the
-    dark value). One level of ``var(--other)`` indirection is resolved within the
+    ``[data-theme="light"]`` overrides (a token that light does not redefine inherits
+    the dark value). One level of ``var(--other)`` indirection is resolved within the
     theme, because ``--brand-gold`` is authored as ``var(--accent-gilt)`` on dark and
     ``var(--accent-brass)`` on light — so its real contrast follows the tier it points
     at, which is exactly the property under test.

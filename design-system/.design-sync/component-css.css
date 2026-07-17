@@ -54,6 +54,12 @@
   --mark-coin: #8A6A1C;
   /* brand-gold — wordmark "Bin" + DuckKey; bright gilt on the dark lead theme */
   --brand-gold: var(--accent-gilt);
+  /* data-fill — gilt for UNLABELED data marks (heatmap cells, default histogram bars);
+     theme-responsive like --brand-gold. A labeled bar leans on its value label to carry
+     meaning (WCAG 1.4.11) so it stays plain --accent-gilt, but an unlabeled mark must
+     clear the 3:1 graphics floor on its own — and gilt washes out on the light paper
+     (2.5:1 at full strength), so the fill deepens to brass there. */
+  --data-fill: var(--accent-gilt);
   /* categorical chart palette (shared across themes; equal-lightness oklch, hue-spread) */
   --chart-1: #C79B3B;
   --chart-2: #56A8A0;
@@ -95,6 +101,8 @@
   --mark-coin: #C79B3B;
   /* brand-gold — deepens to brass on light so identity marks stay legible */
   --brand-gold: var(--accent-brass);
+  /* data-fill — deepens to brass on paper so an unlabeled mark clears 3:1 (opaque 4.9:1) */
+  --data-fill: var(--accent-brass);
 }
 /* MoneyBin typography tokens.
    Serif speaks (display/brand voice), sans works (UI), mono counts (ALL money, timestamps, axis labels, SQL, CLI).

@@ -21,7 +21,7 @@ one wins. Sample data throughout; the grammar is what ships. Never hardcode hex
 
 Every mark takes its color from its *job*, not its series:
 
-- **Gilt (`--accent-gilt`) = fills** — bars, areas, marker dots. One bright hex both themes. A *labeled* bar carries its value in height + label (WCAG 1.4.11), so bars stay unedged and gold even on the light surface; only an interactive control's gilt fill (a button) takes a 1px `--accent-brass` edge to hold its 3:1 boundary on light.
+- **Gilt (`--accent-gilt`) = fills** — bars, areas, marker dots. One bright hex both themes. A *labeled* bar carries its value in height + label (WCAG 1.4.11), so bars stay unedged and gold even on the light surface; only an interactive control's gilt fill (a button) takes a 1px `--accent-brass` edge to hold its 3:1 boundary on light. An **unlabeled** data fill — heatmap cells, a default histogram bar with no per-bar count — has no label to lean on, so it uses `--data-fill` (gilt on dark, deepening to brass on light) to clear the 3:1 graphics floor on its own.
 - **Brass (`--accent-brass`) = derived lines and provenance text** — the value-over-time line, avg (dashed) and trend (solid) lines, SQL chips, WHERE labels, overlines. Theme-responsive so it stays legible as text on both surfaces.
 - **Verdigris (`--accent-verdigris`) = interaction only** — hover/selected states, pinned-tooltip accents, clickable legend entries. Never a data encoding (its dark value equals `--chart-2`; keep verdigris in chart slot 2 so a categorical chart never double-encodes it).
 - **Ink (`--text-secondary` / `--text-faint`) = axes and labels only** — never on bars.
@@ -68,7 +68,7 @@ Rhythm, not precision. **Five quantized gilt bins, edges $25/$50/$75/$100 per da
 Ribbon height ∝ dollars on one scale. Resting fill-opacity **0.55** (hover 0.8), 2.5px gaps between ribbons at the source node. Labels signed; label rows keep ≥13px separation (collision pass). Categories keep their hues.
 
 ### 07 Histogram — `charts-histogram.html`
-Shape of spending, not its sum. Uneven bucket widths labeled, never hidden. Median marked on the axis. n= printed in the meta; counts printed above bars in deep audit. Single measure = gilt fill at 85% (count labels stay brass).
+Shape of spending, not its sum. Uneven bucket widths labeled, never hidden. Median marked on the axis. n= printed in the meta; counts printed above bars in deep audit. Single measure = `--data-fill` at 85% — theme-responsive (gilt on dark, brass on light), because the default state has no per-bar label to satisfy the 1.4.11 exception, so the fill itself must clear the 3:1 floor (count labels stay brass, audit only).
 
 ### 08 Waterfall — `charts-waterfall.html`
 Signed pair colors for flows, one categorical hue for market effects, computed anchors (`--bg-inset` + strong border). Dashed carry links. Clipped baseline printed on the chart.
