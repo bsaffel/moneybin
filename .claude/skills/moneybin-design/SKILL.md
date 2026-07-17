@@ -15,7 +15,8 @@ before producing anything:
 
 Non-negotiables: dark theme leads (light is a first-class peer); one metal accent
 in three tiers — brass (`--accent-brass`) speaks (provenance text), gilt
-(`--accent-gilt`) fills (bars, dots, buttons, wordmark), verdigris
+(`--accent-gilt`) fills (bars, buttons; identity marks use `--brand-gold`,
+point-markers on a line use ink), verdigris
 (`--accent-verdigris`) responds (selection, filters, links) — never blue; money is ALWAYS JetBrains Mono
 with explicit +/- signs on income/expense flows (balances unsigned) — use the `Amount` component; hairline borders, no resting
 shadows; every data widget carries a SQL provenance chip (rung one of a three-rung provenance ladder — a global deep-audit strip, then pinned tooltips snapping to real points; see `design-system/charts.md`); linear chart

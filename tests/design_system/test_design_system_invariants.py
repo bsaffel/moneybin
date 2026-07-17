@@ -435,8 +435,8 @@ def _parse_theme_palettes() -> dict[str, dict[str, str]]:
     """Resolve ``colors.css`` into ``{theme: {token: "#hex"}}`` for dark and light.
 
     Dark is the bare ``:root``; light is ``:root`` overlaid with the
-    ``[data-theme="light"]`` overrides (a token that light does not redefine inherits
-    the dark value). One level of ``var(--other)`` indirection is resolved within the
+    ``[data-theme="light"]`` overrides (tokens that light does not redefine keep their
+    dark value). One level of ``var(--other)`` indirection is resolved within the
     theme, because ``--brand-gold`` is authored as ``var(--accent-gilt)`` on dark and
     ``var(--accent-brass)`` on light — so its real contrast follows the tier it points
     at, which is exactly the property under test.

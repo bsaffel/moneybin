@@ -26,7 +26,7 @@ props**. Real names:
 
 - **Color** — surfaces `--bg-base --bg-surface --bg-raised --bg-inset`; borders
   `--border-hairline --border-strong`; text `--text-primary --text-secondary
-  --text-faint`; the three-tier accent — `--accent-brass` text / `--accent-gilt` fills / `--accent-verdigris` interaction (with `*-strong` hovers, `--on-accent-gilt` ink on gilt, `*-tint` washes),
+  --text-faint`; the three-tier accent — `--accent-brass` text / `--accent-gilt` fills / `--accent-verdigris` interaction (brass + gilt have `-strong` hover variants, gilt + verdigris have `-tint` washes, `--on-accent-gilt` is the ink on a gilt fill),
   **never blue**; money `--pos-income` (green) / `--neg-expense` (red); series
   `--chart-1` … `--chart-8`; `--focus`.
 - **Type** — `--font-display` (Newsreader serif; headlines, wordmark, room/page titles only),
