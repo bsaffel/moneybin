@@ -16,12 +16,16 @@ status sees the recovery path without a second tool call.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import shlex
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from fastmcp import FastMCP
 
 from moneybin.connectors.gsheet.adapters.base import GSheetConnection
+from moneybin.connectors.gsheet.errors import GSheetSignConfirmationRequiredError
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
 )
@@ -53,7 +57,10 @@ from moneybin.protocol.envelope import (
 )
 
 if TYPE_CHECKING:
-    from moneybin.connectors.gsheet.connection_service import ConnectResult
+    from moneybin.connectors.gsheet.connection_service import (
+        ConnectionRequest,
+        ConnectResult,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +126,42 @@ def _drift_hints(connections: list[GsheetConnectionRow]) -> list[str]:
     ]
 
 
+def _connect(req: ConnectionRequest) -> ConnectResult:
+    """Run a blocking connect attempt with its service lifetime on one thread."""
+    with _build_connection_service() as service:
+        return service.connect(req, actor="mcp")
+
+
+def _reconnect(
+    connection_id: str,
+    *,
+    yes: bool,
+    human_sign_confirmation: bool = False,
+) -> ConnectResult:
+    """Run a blocking reconnect attempt with its service lifetime on one thread."""
+    with _build_connection_service() as service:
+        if human_sign_confirmation:
+            return service.reconnect(
+                connection_id,
+                yes=yes,
+                human_sign_confirmation=True,
+                actor="mcp",
+            )
+        return service.reconnect(connection_id, yes=yes, actor="mcp")
+
+
+def _sign_confirmation_message(
+    error: GSheetSignConfirmationRequiredError,
+) -> str:
+    """Explain the exact header evidence and ledger-wide safety consequence."""
+    return (
+        f"Google Sheets detected amount header {error.evidence_header!r} and inferred "
+        f"{error.proposed_convention!r}. This would invert every transaction amount: "
+        "charges become expenses and payments become credits. Confirm this "
+        "whole-ledger polarity?"
+    )
+
+
 @mcp_tool(
     read_only=False,
     idempotent=False,
@@ -173,14 +216,13 @@ def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope[GsheetAuthPayloa
     # the user has headroom to click Allow without the default 30s firing.
     timeout_seconds=180.0,
 )
-def gsheet_connect(
+async def gsheet_connect(
     url: str,
     adapter: str | None = None,
     alias: str | None = None,
     account_name: str | None = None,
     account_id: str | None = None,
     column_mapping: dict[str, str] | None = None,
-    sign: str | None = None,
     yes: bool = False,
     accept_seed_fallback: bool = False,
     no_initial_pull: bool = False,
@@ -201,20 +243,12 @@ def gsheet_connect(
     (MCP) or `moneybin gsheet auth` (CLI) — both drive the same in-process
     OAuth installed-app flow.
 
-    `sign` is required when `column_mapping` changes a detected split
-    debit/credit layout into a single 'amount' column and the export uses
-    positive_is_expense (credit-card style); without it the saved sign
-    defaults to negative_is_expense and amounts persist with inverted
-    polarity. Choices: 'negative_is_expense', 'negative_is_income',
-    'split_debit_credit'.
+    When detection infers a whole-ledger sign inversion, MCP asks the human
+    inline and retries internally only after explicit confirmation. The agent
+    cannot ratify that inference through this tool's parameters.
     """
-    from typing import cast as _cast  # noqa: PLC0415
-
     from moneybin.connectors.gsheet.connection_service import (  # noqa: PLC0415
         ConnectionRequest,
-    )
-    from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
-        SignConventionType,
     )
 
     req = ConnectionRequest(
@@ -224,13 +258,32 @@ def gsheet_connect(
         account_name=account_name,
         account_id=account_id,
         column_mapping=column_mapping,
-        sign=_cast(SignConventionType, sign) if sign else None,
         yes=yes,
         no_initial_pull=no_initial_pull,
         accept_seed_fallback=accept_seed_fallback,
     )
-    with _build_connection_service() as service:
-        result = service.connect(req, actor="mcp")
+    try:
+        result = await asyncio.to_thread(_connect, req)
+    except GSheetSignConfirmationRequiredError as error:
+        from moneybin.mcp.elicitation import confirm_or_raise  # noqa: PLC0415
+
+        await confirm_or_raise(
+            _sign_confirmation_message(error),
+            subject="This Google Sheets sign inversion",
+            unchanged="the connection was not created and no initial pull ran",
+            cli_equivalent=(
+                f"moneybin gsheet connect {shlex.quote(url)} "
+                f"--sign {error.proposed_convention}"
+            ),
+            details={
+                "evidence_header": error.evidence_header,
+                "proposed_convention": error.proposed_convention,
+            },
+        )
+        result = await asyncio.to_thread(
+            _connect,
+            replace(req, human_sign_confirmation=True),
+        )
 
     data = GsheetConnectPayload(
         connection=_connection_row(result.connection),
@@ -349,9 +402,17 @@ def gsheet_status(
     )
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
-def gsheet_reconnect(
-    connection_id: str, yes: bool = False, sign: str | None = None
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    open_world=True,
+    # Reconnect can pause for a human to review an inferred ledger-wide sign
+    # inversion. Give that decision the same headroom as connect/OAuth instead
+    # of letting the default 30s expire while the user is reading the evidence.
+    timeout_seconds=180.0,
+)
+async def gsheet_reconnect(
+    connection_id: str, yes: bool = False
 ) -> ResponseEnvelope[GsheetConnectPayload]:
     """Re-detect the sheet structure, re-pin the mapping, and run a pull.
 
@@ -363,28 +424,43 @@ def gsheet_reconnect(
     it, an ambiguous remap raises AmbiguousDetectionError so the agent can
     confirm with the user before silently re-pinning the wrong mapping.
 
-    `sign` overrides the saved sign convention when the re-detected shape
-    implies a different convention than the source export actually uses
-    (e.g., a credit-card export now using positive_is_expense). Choices:
-    'negative_is_expense', 'negative_is_income', 'split_debit_credit'.
+    When re-detection infers a whole-ledger sign inversion, MCP asks the human
+    inline and retries internally only after explicit confirmation. The agent
+    cannot ratify that inference through this tool's parameters.
 
     Mutation surface: updates app.gsheet_connections.column_mapping +
     header_signature (audited) and writes raw rows via the pull side-effect.
     Revert: there is no revert — the connection re-binds to whatever the
     sheet currently looks like. Run gsheet_status afterwards to verify.
     """
-    from typing import cast as _cast  # noqa: PLC0415
-
-    from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
-        SignConventionType,
-    )
-
-    with _build_connection_service() as service:
-        result = service.reconnect(
+    try:
+        result = await asyncio.to_thread(
+            _reconnect,
             connection_id,
             yes=yes,
-            sign=_cast(SignConventionType, sign) if sign else None,
-            actor="mcp",
+        )
+    except GSheetSignConfirmationRequiredError as error:
+        from moneybin.mcp.elicitation import confirm_or_raise  # noqa: PLC0415
+
+        await confirm_or_raise(
+            _sign_confirmation_message(error),
+            subject="This Google Sheets sign inversion",
+            unchanged=(f"connection '{connection_id}' was not re-pinned or pulled"),
+            cli_equivalent=(
+                f"moneybin gsheet reconnect {shlex.quote(connection_id)} "
+                f"--sign {error.proposed_convention}"
+            ),
+            details={
+                "connection_id": connection_id,
+                "evidence_header": error.evidence_header,
+                "proposed_convention": error.proposed_convention,
+            },
+        )
+        result = await asyncio.to_thread(
+            _reconnect,
+            connection_id,
+            yes=yes,
+            human_sign_confirmation=True,
         )
 
     data = GsheetConnectPayload(
@@ -448,7 +524,9 @@ def register_gsheet_tools(mcp: FastMCP) -> None:
             "Bind a Google Sheet to MoneyBin via direct OAuth (user-controlled "
             "storage). Detects column mapping, persists app.gsheet_connections, "
             "and runs the initial pull by default. Amounts use MoneyBin convention "
-            "(negative = expense). Run gsheet_auth first if not yet authorized — "
+            "(negative = expense). An inferred ledger-wide sign inversion is "
+            "confirmed by the human through inline elicitation; the agent cannot "
+            "self-confirm it. Run gsheet_auth first if not yet authorized — "
             "this matters for timeout: the OAuth browser consent and the initial "
             "pull share one call window, so for a first-time/large-sheet connect, "
             "authorizing separately leaves the full window for the pull (or set "
@@ -481,8 +559,10 @@ def register_gsheet_tools(mcp: FastMCP) -> None:
         (
             gsheet_reconnect,
             "Re-detect sheet structure, re-pin column mapping, and run a pull. "
-            "Use after drift_detected. No revert — re-binds to whatever the "
-            "sheet currently looks like.",
+            "Use after drift_detected. An inferred ledger-wide sign inversion is "
+            "confirmed by the human through inline elicitation; the agent cannot "
+            "self-confirm it. No revert — re-binds to whatever the sheet currently "
+            "looks like.",
         ),
         (
             gsheet_disconnect,

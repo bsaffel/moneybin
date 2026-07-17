@@ -109,15 +109,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.formats",
         "SignConventionType",
     ),
-    # mcp/tools/gsheet.py imports SignConventionType inside the
-    # gsheet_connect / gsheet_reconnect bodies for typed cast of the
-    # `sign` parameter before threading to ConnectionService. Pure
-    # Literal type, no extractor side effects.
-    (
-        "mcp/tools/gsheet.py",
-        "moneybin.extractors.tabular.formats",
-        "SignConventionType",
-    ),
     (
         "cli/commands/import_cmd.py",
         "moneybin.extractors.tabular.formats",

@@ -470,7 +470,10 @@ def test_reconnect_inferred_inversion_stops_before_update_or_pull(
     sheets.register_workbook("ssR", _inverted_sign_workbook())
 
     with (
-        patch.object(svc._repo, "update_mapping") as update_mapping,
+        patch.object(
+            svc._repo,  # pyright: ignore[reportPrivateUsage]  # test verifies the repository mutation gate
+            "update_mapping",
+        ) as update_mapping,
         patch(
             "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
         ) as pull,
