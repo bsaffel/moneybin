@@ -5,6 +5,7 @@ The CLI's handle_cli_errors maps these to user-facing messages + exit codes.
 
 from moneybin.error_codes import GSHEET_ERROR
 from moneybin.errors import UserError
+from moneybin.extractors.tabular.formats import SignConventionType
 
 
 class GSheetError(UserError):
@@ -13,6 +14,27 @@ class GSheetError(UserError):
     def __init__(self, message: str) -> None:
         """Initialize with a user-safe message."""
         super().__init__(message, code=GSHEET_ERROR)
+
+
+class GSheetSignConfirmationRequiredError(GSheetError):
+    """An inferred whole-ledger sign inversion needs human confirmation."""
+
+    def __init__(
+        self,
+        *,
+        proposed_convention: SignConventionType,
+        evidence_header: str,
+    ) -> None:
+        """Expose the safe proposal and exact source-header evidence."""
+        self.proposed_convention = proposed_convention
+        self.evidence_header = evidence_header
+        super().__init__(
+            f"Google Sheets inferred {proposed_convention!r} from amount header "
+            f"{evidence_header!r}. This would invert every transaction amount: "
+            "charges become expenses and payments become credits. Re-run with "
+            f"--sign {proposed_convention} to confirm this whole-ledger polarity, "
+            "or choose a different --sign convention."
+        )
 
 
 class GSheetAuthError(GSheetError):

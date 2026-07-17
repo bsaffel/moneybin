@@ -21,9 +21,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   confirm it is a card (`moneybin import files <path> --confirm`), or overrule a
   false detection (`--sign negative_is_expense`), and that override survives every
   future replay of the format. Confirming a card also types its account as
-  `credit`, so it is counted as a liability in net worth. (MCP surfaces the same
-  confirmation and, for now, routes it to the CLI to resolve; in-place
-  confirmation is planned.)
+  `credit`, so it is counted as a liability in net worth. Agent-authored PDF
+  bridge recipes now require an MCP human-confirmation prompt before they can
+  invert a ledger; clients without that prompt use `moneybin import confirm
+  <path> --bridge-response response.json --confirm`. Tabular credit-card
+  inferences now likewise pause after mapping confirmation until a person runs
+  `moneybin import confirm <path> --accept --confirm-sign`; accepting a column
+  mapping alone can never approve the ledger-wide sign inversion. The matching
+  “keep amounts as printed” recovery is now the lossless
+  `moneybin import confirm <path> --accept --sign negative_is_expense`; both
+  alternatives retain any mapping, format-save, and account-binding inputs. (#324)
 - **Auto-rule proposals can no longer silently mass-mislabel the ledger.** A
   transaction description that normalizes to a 1–2 character token (e.g. "TO",
   from a truncated "TRANSFER TO ...") previously became a `contains` rule —
@@ -63,6 +70,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   categorizing it double-counts it against the eventual transfer pair once
   matching resolves. Rows with a pending transfer match are now flagged, with
   a hint to resolve the match first — they are still returned, never hidden.
+
+### Changed
+- **Google Sheets MCP connections can no longer set an inferred sign convention
+  themselves.** The agent-settable `sign` input was removed; an inferred
+  `negative_is_income` convention now requires a human confirmation prompt,
+  while the CLI continues to require an explicit `--sign` choice. (#324)
 
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 

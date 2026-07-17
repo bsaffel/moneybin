@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import shlex
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pytest import MonkeyPatch
@@ -388,6 +389,10 @@ class TestImportFilesConfirmationRequired:
 class TestImportConfirmTool:
     """import_confirm tool: accept, override, validation, actor_kind."""
 
+    def test_allows_human_confirmation_timeout(self) -> None:
+        """Human sign elicitation gets the established 180-second decision window."""
+        assert import_confirm._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+
     async def test_requires_accept_or_mapping(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
@@ -439,6 +444,224 @@ class TestImportConfirmTool:
 
         assert result.data.rows_loaded == 10
         assert result.data.import_id == "abc-123"
+
+    async def test_tabular_sign_confirmation_elicitation_is_human_gated(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An agent's mapping accept pauses for a separate human sign decision."""
+        from moneybin.services.import_confirmation import SignConventionProposal
+        from moneybin.services.import_service import ImportResult
+
+        csv_file = tmp_path / "statements" / "card.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        sign_error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=("a column header contains the word 'credit'",),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+            )
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = [
+            sign_error,
+            ImportResult(
+                file_path=str(csv_file),
+                file_type="tabular",
+                transactions=2,
+                import_id="sign-123",
+            ),
+        ]
+        confirm = AsyncMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+            patch("moneybin.services.inbox_service.InboxService"),
+            patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ),
+        ):
+            result = await import_confirm(file_path=str(csv_file), accept=True)
+
+        assert result.data.import_id == "sign-123"
+        confirm.assert_awaited_once()
+        assert confirm.await_args is not None
+        assert "Sample rows" not in confirm.await_args.args[0]
+        assert (
+            mock_service.import_file.call_args_list[1].kwargs["human_sign_confirmation"]
+            is True
+        )
+
+    async def test_tabular_sign_no_elicitation_cli_fallback_is_lossless(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The terminal fallback reproduces every public confirmation input."""
+        from moneybin.services.import_confirmation import SignConventionProposal
+
+        csv_file = tmp_path / "statements" / "Owner's card.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        sign_error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=("Debit",),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+            )
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = sign_error
+        mapping = {"description": "Merchant Name"}
+        bindings = {"minted card": "new", "settled": "acct existing"}
+        metadata = {
+            "minted card": {
+                "display_name": "Owner's Card",
+                "last_four": "4267",
+            }
+        }
+
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(csv_file),
+                mapping=mapping,
+                save_format=False,
+                account_id="acct explicit",
+                account_name="Owner's Card",
+                account_bindings=bindings,
+                account_metadata=metadata,
+            )
+
+        assert result.error is not None
+        assert result.error.code == "mutation_confirmation_required"
+        assert result.error.hint is not None
+        command = result.error.hint.split("`", 2)[1]
+        tokens = shlex.split(command)
+        assert tokens[:4] == ["moneybin", "import", "confirm", str(csv_file)]
+        assert "--accept" not in tokens
+        assert "--confirm-sign" in tokens
+        assert "--no-save-format" in tokens
+        assert tokens[tokens.index("--account-id") + 1] == "acct explicit"
+        assert tokens[tokens.index("--account-name") + 1] == "Owner's Card"
+        assert tokens[tokens.index("--mapping") + 1] == "description=Merchant Name"
+        binding_values = {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
+        }
+        assert binding_values == {
+            "minted card=new",
+            "settled=acct existing",
+        }
+        metadata_values = {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
+        }
+        assert metadata_values == {
+            "minted card:display_name=Owner's Card",
+            "minted card:last_four=4267",
+        }
+        assert "human_sign_confirmation" not in result.error.hint
+        assert mock_service.import_file.call_count == 1
+
+    async def test_tabular_sign_retry_returns_account_confirmation_envelope(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Account recovery preserves inputs and discloses repeated sign elicitation."""
+        from moneybin.services.import_confirmation import SignConventionProposal
+
+        csv_file = tmp_path / "statements" / "card.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.touch()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        sign_error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=("a column header contains the word 'credit'",),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+            )
+        )
+        account_error = _make_confirmation_error(
+            tier="high",
+            score=1.0,
+            reason="account_confirmation",
+            account_proposals=[{"source_account_key": "card-abc", "candidates": []}],
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = [sign_error, account_error]
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", AsyncMock()),
+            patch("moneybin.services.inbox_service.InboxService"),
+            patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ),
+        ):
+            result = await import_confirm(
+                file_path=str(csv_file),
+                mapping={"description": "Memo"},
+                save_format=False,
+                account_id="acct-explicit",
+                account_name="Card Account",
+                account_bindings={"settled": "acct-123", "minted": "new"},
+                account_metadata={
+                    "minted": {
+                        "display_name": "Travel Card",
+                        "last_four": "4267",
+                    }
+                },
+            )
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["reason"] == "account_confirmation"
+        actions = " ".join(result.actions or [])
+        assert "accept=True" not in actions
+        assert "mapping={'description': 'Memo'}" in actions
+        assert "save_format=False" in actions
+        assert "account_id='acct-explicit'" in actions
+        assert "account_name='Card Account'" in actions
+        assert "'settled': 'acct-123'" in actions
+        assert "'minted': 'new'" in actions
+        assert "'card-abc': '<account_id|new>'" in actions
+        assert "'display_name': 'Travel Card'" in actions
+        assert "'last_four': '4267'" in actions
+        assert "not persisted across MCP calls" in actions
+        assert "ask the human to confirm the sign inversion again" in actions
+        assert "human_sign_confirmation" not in actions
 
     async def test_mapping_override_passes_overrides_to_service(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -1269,6 +1492,74 @@ class TestImportConfirmBridge:
             )
         assert result.error is not None
         assert result.error.code == "bridge_response_invalid"
+
+    async def test_inverted_bridge_recipe_requires_human_elicitation(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A human approval, not the agent, is required before the bridge loads."""
+        from moneybin.services.import_service import BridgeApplyResult
+
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.side_effect = [
+            _sign_error(),
+            BridgeApplyResult(
+                outcome="applied",
+                import_id="imp123",
+                rows_loaded=2,
+                format_name="chase_abc123",
+                expected_row_count=2,
+                actual_row_count=2,
+                rows_diverged=False,
+            ),
+        ]
+        confirm = AsyncMock()
+        mock_inbox_cls = MagicMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+            patch("moneybin.services.inbox_service.InboxService", mock_inbox_cls),
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "applied"
+        confirm.assert_awaited_once()
+        assert confirm.await_args is not None
+        prompt = confirm.await_args.args[0]
+        assert "minimum payment" in prompt
+        assert "COFFEE SHOP" in prompt
+        assert (
+            mock_service.apply_pdf_bridge_response.call_args_list[1].kwargs["confirm"]
+            is True
+        )
+
+    async def test_inverted_bridge_recipe_cannot_load_without_elicitation(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """An unsupported MCP client leaves the PDF unchanged."""
+        pdf = self._patch(monkeypatch, tmp_path)
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.side_effect = _sign_error()
+        with patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ):
+            result = await import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+            )
+
+        assert result.error is not None
+        assert result.error.code == "mutation_confirmation_required"
+        assert mock_service.apply_pdf_bridge_response.call_count == 1
 
     async def test_non_parse_value_error_not_labeled_bridge_invalid(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

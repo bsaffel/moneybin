@@ -54,7 +54,7 @@ class BridgePayload:
 
 @dataclass(frozen=True)
 class SignConventionProposal:
-    """PDF-channel proposal to invert every amount's sign.
+    """Proposal to invert every amount's sign.
 
     Carried when a statement names itself a credit card (`evidence`) and the
     detector therefore proposes `negative_is_income`. The convention is not
@@ -62,8 +62,8 @@ class SignConventionProposal:
     sign distributions and both reconcile — so this proposal is never applied
     silently: the caller ratifies it, or overrides it with `sign=`.
 
-    `sample_rows` shows the flip concretely: what the statement printed vs what
-    MoneyBin would record.
+    `sample_rows`, when the extractor can provide them, show the flip concretely:
+    what the source printed vs what MoneyBin would record.
     """
 
     sign_convention: str

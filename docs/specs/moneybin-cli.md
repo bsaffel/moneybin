@@ -116,7 +116,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--save-format NAME]       Save detection as reusable format
 |   |     [--override MAPPING]       Override detected column mapping
 |   |     [--mapping field=column]   Partial-merge override (alias of --override; repeatable)
-|   |     [--confirm/--no-confirm]   Accept/reject a confirmation_required proposal inline
+|   |     [--confirm/--no-confirm] [--confirm-sign]   Accept a mapping and separately approve an inferred tabular sign inversion
 |   |     [--sheet NAME]             Excel sheet selection
 |   |     [--refresh/--no-refresh]   Run post-load pipeline (default on)
 |   |     [--yes]                    Non-interactive mode
@@ -126,6 +126,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- confirm <file>             -- Terminal step of the propose→review→confirm workflow
 |   |     --accept                   Accept the detected mapping as-is
 |   |     [--mapping field=column]   Partial-merge override (repeatable)
+|   |     [--confirm-sign | --sign negative_is_expense|negative_is_income|split_debit_credit]
+|   |                                  Approve an inferred tabular inversion, or explicitly override its convention
+|   |     [--bridge-response FILE --confirm]  Apply an agent PDF recipe after human confirmation
 |   |     [--save-format/--no-save-format]  Pin merged mapping for silent reuse (default on)
 |   |     [--account-name NAME]      Optional; omitting all account identifiers elicits account_confirmation (resolve via --account-binding/--account-name/--account-id)
 |   |     [--account-id ID]          Explicit account ID bypass

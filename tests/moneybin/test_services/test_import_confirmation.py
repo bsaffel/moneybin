@@ -187,7 +187,7 @@ class TestConfirmationPayloadDict:
             ),
             proposed=SignConventionProposal(
                 sign_convention="negative_is_income",
-                evidence=("minimum payment", "credit limit"),
+                evidence=("Transaction Credit",),
                 sample_rows=[
                     {
                         "description": "COFFEE",
@@ -201,7 +201,7 @@ class TestConfirmationPayloadDict:
         payload = confirmation_payload_dict(outcome)
         assert payload["reason"] == "sign_convention"
         assert payload["sign_convention"] == "negative_is_income"
-        assert payload["sign_evidence"] == ["minimum payment", "credit limit"]
+        assert payload["sign_evidence"] == ["Transaction Credit"]
         assert payload["sign_sample_rows"] == [
             {
                 "description": "COFFEE",

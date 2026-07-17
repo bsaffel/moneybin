@@ -72,6 +72,9 @@ class MappingResult:
     sign_needs_confirmation: bool = False
     """True if sign convention is ambiguous."""
 
+    sign_evidence_header: str | None = None
+    """Original amount header that triggered the sign-convention inference."""
+
     is_multi_account: bool = False
     """True if account-identifying columns were detected."""
 
@@ -200,12 +203,11 @@ def map_columns(
                     date_format, _ = detect_date_format(_samples[req_field])
 
     # Sign convention inference
-    header_context = " ".join(df.columns).lower()
     sign_result = infer_sign_convention(
         amount_values=_samples.get("amount"),
         debit_values=_samples.get("debit_amount"),
         credit_values=_samples.get("credit_amount"),
-        header_context=header_context,
+        header_context=mapping.get("amount", ""),
     )
 
     # Multi-account detection
@@ -232,6 +234,7 @@ def map_columns(
         number_format=number_format,
         sign_convention=sign_result.convention,
         sign_needs_confirmation=sign_result.needs_confirmation,
+        sign_evidence_header=sign_result.evidence_header,
         is_multi_account=is_multi_account,
         unmapped_columns=unmapped,
         flagged_fields=flagged,
