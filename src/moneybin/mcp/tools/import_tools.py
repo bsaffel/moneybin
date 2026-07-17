@@ -1105,7 +1105,7 @@ async def import_confirm(
             account and persists no partial state between calls.
         account_metadata: For accounts bound ``"new"``, a map of
             ``source_account_key`` -> ``{display_name, account_subtype,
-            last_four, iso_currency_code}`` captured into the minted account's
+            last_four, currency_code}`` captured into the minted account's
             settings. Unknown fields raise. Ignored for adopted accounts.
     """
     from moneybin.services.import_confirmation import (

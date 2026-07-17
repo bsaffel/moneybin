@@ -22,7 +22,7 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "last_four",
     "account_subtype",
     "holder_category",
-    "iso_currency_code",
+    "currency_code",
     "credit_limit",
     "archived",
     "include_in_net_worth",
@@ -53,7 +53,7 @@ class AccountSettingsRepo(BaseRepo):
         last_four: str | None,
         account_subtype: str | None,
         holder_category: str | None,
-        iso_currency_code: str | None,
+        currency_code: str | None,
         credit_limit: Decimal | None,
         archived: bool,
         include_in_net_worth: bool,
@@ -75,7 +75,7 @@ class AccountSettingsRepo(BaseRepo):
                 f"""
                 INSERT INTO {ACCOUNT_SETTINGS.full_name} (
                     account_id, display_name, official_name, last_four,
-                    account_subtype, holder_category, iso_currency_code,
+                    account_subtype, holder_category, currency_code,
                     credit_limit, archived, include_in_net_worth,
                     default_cost_basis_method
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -85,7 +85,7 @@ class AccountSettingsRepo(BaseRepo):
                     last_four            = excluded.last_four,
                     account_subtype      = excluded.account_subtype,
                     holder_category      = excluded.holder_category,
-                    iso_currency_code    = excluded.iso_currency_code,
+                    currency_code        = excluded.currency_code,
                     credit_limit         = excluded.credit_limit,
                     archived             = excluded.archived,
                     include_in_net_worth = excluded.include_in_net_worth,
@@ -99,7 +99,7 @@ class AccountSettingsRepo(BaseRepo):
                     last_four,
                     account_subtype,
                     holder_category,
-                    iso_currency_code,
+                    currency_code,
                     credit_limit,
                     archived,
                     include_in_net_worth,

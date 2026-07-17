@@ -39,12 +39,23 @@ def _table_exists(db: Database, schema: str, table: str) -> bool:
 
 
 def _recreate_pre_v034_state(db: Database) -> None:
-    """Reverse the V034 end-state: drop the tables and the settings column."""
+    """Reverse the V034 end-state: drop the tables and the settings column.
+
+    Also reverses V036's rename of the currency column. V034's rebuild-with-
+    CHECK idiom recreates ``app.account_settings`` wholesale and hardcodes the
+    column name that existed when V034 was written (``iso_currency_code`` --
+    V034 predates V036). A DB genuinely reaching V034 in migration order has
+    not run V036 yet, so this fixture must match that real chronology for
+    V034's frozen SQL to bind.
+    """
     db.execute("DROP TABLE IF EXISTS app.securities")
     db.execute("DROP TABLE IF EXISTS raw.manual_investment_transactions")
     db.execute("DROP TABLE IF EXISTS app.lot_selections")
     db.execute(
         "ALTER TABLE app.account_settings DROP COLUMN IF EXISTS default_cost_basis_method"
+    )
+    db.execute(
+        "ALTER TABLE app.account_settings RENAME COLUMN currency_code TO iso_currency_code"
     )
     # Realistic populated rows (>=3) with NON-TRIVIAL values in every nullable
     # column the V034 rebuild preserves — so a future edit that drops a column

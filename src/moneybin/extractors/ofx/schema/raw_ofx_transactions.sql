@@ -14,5 +14,6 @@ CREATE TABLE IF NOT EXISTS raw.ofx_transactions (
     import_id VARCHAR, -- UUID of the import batch this row belongs to; NULL for rows imported before V003
     source_type VARCHAR DEFAULT 'ofx', -- Format taxonomy marker; always 'ofx' for OFX/QFX/QBO files
     source_origin VARCHAR, -- Institution slug derived from <FI><ORG> or filename heuristic; NULL for legacy rows
+    currency_code VARCHAR, -- OFX CURDEF, verbatim (e.g. USD); NULL if the source statement lacked one
     PRIMARY KEY (source_transaction_id, account_id, source_file)
 );

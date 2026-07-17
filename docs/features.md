@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-09 -->
+<!-- Last reviewed: 2026-07-17 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -134,7 +134,7 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 - **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit. Planned, not shipped.
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
 - **Investment price feeds and net-worth integration** — Market-valued holdings and unrealized gain/loss (needs a price feed) and folding investment positions into net worth. The ledger, tax lots, four-method cost basis, and realized gain/loss (1099-B surface) already shipped — see [Investments](#investments) above. Planned (core, not a package).
-- **Multi-currency** — FX gain/loss and non-USD accounts. Planned.
+- **Multi-currency** — Original currency is now captured correctly from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. A home-currency setting, display conversion, a guard against silently blending currencies in reports, and FX gain/loss are still planned.
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
 - **Hosted tier** — Same code, hosted. Planned.
 - **Drop-any-PDF import** — AI-assisted extraction of bank-statement PDFs: native-text statements extract locally and free, harder layouts escalate to the AI agent you're already driving MoneyBin with, and a learned recipe replays for free next time. Transaction-shaped rows route to `core`; everything else lands as queryable JSON seeds. **Phase 2a shipped (PR #233)** — auto-derived recipes persist to `app.pdf_formats` keyed by layout fingerprint, reconcile to within 1¢ of the statement's reported balance delta, and replay deterministically on subsequent imports. **Phase 2b bridge round-trip shipped** — a layout the deterministic rung can't crack escalates to the agent you're driving MoneyBin with (with a plain transparency notice), and your confirmed recipe is re-run, reconciled against the statement balances, and loaded; every hand-off is audit-logged (MCP surface today). A drifted saved recipe now auto-recovers (re-derived and version-bumped on the next import instead of stranding the broken recipe), and a scanned/image-only PDF with no text layer returns an explicit "needs a vision-capable backend" message rather than failing opaquely. See [`smart-import-pdf.md`](specs/smart-import-pdf.md).

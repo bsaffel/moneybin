@@ -336,7 +336,7 @@
 
 - description: SELECT * FROM dim_accounts expands to CRITICAL (routing_number / last_four are critical; account_id is record_id)
   sql: SELECT * FROM core.dim_accounts
-  expected_output_classes: {holder_category: txn_type, routing_number: routing_number, account_id: record_id, account_subtype: txn_type, updated_at: timestamp_observability, source_type: txn_type, iso_currency_code: currency, official_name: institution, include_in_net_worth: txn_type, source_file: record_id, loaded_at: timestamp_observability, institution_fid: institution, archived: txn_type, last_four: institution_account_number, account_type: txn_type, institution_name: institution, extracted_at: timestamp_observability, display_name: user_note, credit_limit: balance}
+  expected_output_classes: {holder_category: txn_type, routing_number: routing_number, account_id: record_id, account_subtype: txn_type, updated_at: timestamp_observability, source_type: txn_type, currency_code: currency, official_name: institution, include_in_net_worth: txn_type, source_file: record_id, loaded_at: timestamp_observability, institution_fid: institution, archived: txn_type, last_four: institution_account_number, account_type: txn_type, institution_name: institution, extracted_at: timestamp_observability, display_name: user_note, credit_limit: balance}
   expected_query_tier: critical
 
 # ---------------------------------------------------------------------------

@@ -1116,7 +1116,7 @@ def import_confirm_command(
         help=(
             "Metadata for a 'new' account (repeatable): "
             "--account-meta source_key:field=value, where field is one of "
-            "display_name, account_subtype, last_four, iso_currency_code."
+            "display_name, account_subtype, last_four, currency_code."
         ),
     ),
     save_format: bool = typer.Option(

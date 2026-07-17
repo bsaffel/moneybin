@@ -643,7 +643,7 @@ is a bare slug. When the confirm outcome is **"new account,"** capture alongside
 the binding: **display name**, **account subtype** (checking/savings/**credit** —
 drives sign convention + net-worth inclusion), **last_four**, and **currency**.
 All four are **existing `app.account_settings` fields** (`display_name`,
-`account_subtype`, `last_four`, `iso_currency_code`), so this needs no new schema
+`account_subtype`, `last_four`, `currency_code`), so this needs no new schema
 and isn't blocked on `account-subtype-detail.md` / `multi-currency.md` (those
 refine validation/semantics later). Inferred defaults (subtype from the account
 name, currency from a Tiller column / OFX `CURDEF`) pre-fill the confirm; the user

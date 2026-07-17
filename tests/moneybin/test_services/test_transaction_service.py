@@ -1027,3 +1027,56 @@ class TestManualEntry:
             [result.results[0].transaction_id],
         ).fetchone()
         assert cat_count is not None and cat_count[0] == 0
+
+    @pytest.mark.unit
+    def test_create_manual_batch_leaves_currency_null_when_unspecified(
+        self, transaction_db: Database
+    ) -> None:
+        """No caller-supplied currency must land as raw NULL, never 'USD'.
+
+        Requirement 2 (multi-currency.md): no arm may fabricate a currency
+        for a transaction whose actual currency is unknown.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch([self._entry()], actor="cli")
+        row = transaction_db.conn.execute(
+            "SELECT currency_code FROM raw.manual_transactions WHERE import_id = ?",
+            [result.import_id],
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None, (
+            "unspecified currency must stay NULL, never default to USD"
+        )
+
+    @pytest.mark.unit
+    def test_create_manual_batch_passes_through_explicit_currency(
+        self, transaction_db: Database
+    ) -> None:
+        """A caller-supplied non-USD currency must survive the write unchanged."""
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        result = service.create_manual_batch(
+            [self._entry(currency_code="EUR")], actor="cli"
+        )
+        row = transaction_db.conn.execute(
+            "SELECT currency_code FROM raw.manual_transactions WHERE import_id = ?",
+            [result.import_id],
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "EUR"
+
+    @pytest.mark.unit
+    def test_create_manual_batch_rejects_malformed_currency(
+        self, transaction_db: Database
+    ) -> None:
+        """A malformed currency_code must be refused, matching accounts_set's check.
+
+        The error message keeps the entries[{idx}] prefix every other check in
+        _validate_manual_entry uses, so a bad entry in a large batch is
+        attributable without a manual search.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        with pytest.raises(ValueError, match=r"entries\[0\]\.currency_code"):
+            service.create_manual_batch([self._entry(currency_code="usd")], actor="cli")

@@ -114,6 +114,8 @@ class SyncBalance(BaseModel):
     balance_date: date
     current_balance: Decimal | None = None
     available_balance: Decimal | None = None
+    iso_currency_code: str | None = None
+    unofficial_currency_code: str | None = None
 
 
 class SyncSecurity(BaseModel):
