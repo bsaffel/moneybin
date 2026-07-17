@@ -178,6 +178,26 @@ When adding a new CLI command:
 - Use `monkeypatch` for env vars.
 - Descriptive test names that explain the scenario.
 
+## A Fixture That Trips Two Guards Isolates Neither
+
+When a code path is protected by more than one guard, each guard needs a fixture
+that **only that guard** catches. A fixture that satisfies two of them proves
+nothing about either: delete one guard and the test still passes.
+
+The trap is that such a test looks like its name. `test_approve_refuses_broad_
+proposal_without_allow_broad` used `merchant_pattern="TO"` — a pattern that is
+both *broad* (blast radius far exceeds its evidence) and *unselective* (a
+`contains` pattern below the specificity floor). The refusal it asserted would
+have fired from either guard, so the test was green with the blast-radius check
+removed. It only surfaced when an unrelated change altered which guard claimed
+the refusal, and the metric assertion flipped.
+
+**How to apply.** Adding a second guard beside an existing one? Re-read the
+first guard's fixtures and confirm each still isolates its own guard — the new
+guard may have silently started catching them. Pick fixture values that fail
+exactly one condition: a *long* pattern with a huge blast radius tests breadth;
+a *short* pattern with a tiny blast radius tests specificity.
+
 ## Scenario Expectations Must Be Independently Derived
 
 Scenario assertions, expectations, and tolerances must be derived **independently of the program's output**. A test that codifies "what the code currently produces" only proves the code is consistent with itself — it does not prove the code is correct.

@@ -70,6 +70,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   categorizing it double-counts it against the eventual transfer pair once
   matching resolves. Rows with a pending transfer match are now flagged, with
   a hint to resolve the match first — they are still returned, never hidden.
+- **The MCP server's agent-facing instructions no longer claim a consent gate
+  that doesn't exist.** The onboarding text injected at session start said tools
+  "degrade to aggregates" without consent — no such behavior is implemented. It
+  now states the truth: account/routing numbers are masked, all other fields
+  reach the model provider as-is, and there is no consent gate yet.
 
 ### Changed
 - **Google Sheets MCP connections can no longer set an inferred sign convention
@@ -80,6 +85,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **"What the AI Provider Sees" guide.** A precise, code-verified statement of
+  what reaches the model provider when an agent drives MoneyBin — what's masked
+  (account/routing numbers, enforced today), what isn't (amounts, descriptions,
+  merchants, dates), what the consent ledger does and doesn't gate, what's
+  recorded locally, and how to run a fully local model so nothing leaves the
+  machine. [`docs/guides/what-the-ai-sees.md`](docs/guides/what-the-ai-sees.md).
 - **`moneybin --version`** prints the installed MoneyBin version. (#316)
 - **PyPI release pipeline with Trusted Publishing.** A tagged release builds the
   wheel and publishes it to PyPI over OIDC Trusted Publishing (no stored token),
