@@ -19,7 +19,7 @@ export const Sizes = () => (
   </div>
 );
 
-// bin="mono" — when another brass element shares the bar, drop brass on "Bin".
+// bin="mono" — when another gold element shares the bar, drop gilt on "Bin".
 export const Mono = () => (
   <div
     style={{

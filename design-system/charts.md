@@ -26,7 +26,7 @@ Every mark takes its color from its *job*, not its series:
 - **Verdigris (`--accent-verdigris`) = interaction only** — hover/selected states, pinned-tooltip accents, clickable legend entries. Never a data encoding (its dark value equals `--chart-2`; keep verdigris in chart slot 2 so a categorical chart never double-encodes it).
 - **Ink (`--text-secondary` / `--text-faint`) = axes and labels only** — never on bars.
 
-Rationale: ink on a gilt fill is ~1.04:1 (isoluminant), so labels never sit on gilt; brass reads ~1.9:1 on a gilt bar and clears the 3:1 graphics floor on the dark canvas.
+Rationale: nothing legible sits *on* a gilt fill — ink is ~1.06:1 (isoluminant) and brass is ~1.4:1 (dark) / ~2.0:1 (light), neither clearing the 3:1 floor against gilt — which is exactly why labels and annotations sit above or beside a bar, never on it. Brass clears 3:1 only against a bare surface (~4.8:1 on the dark canvas), where derived lines and provenance text live.
 
 ### Category color
 
