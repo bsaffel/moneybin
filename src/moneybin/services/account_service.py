@@ -26,6 +26,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummary,
     AccountSummaryStats,
 )
+from moneybin.services._validators import validate_currency_code
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
@@ -163,7 +164,6 @@ def suggest_holder_category(value: str) -> str | None:
 
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
-_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
 # Sentinel used in summary() count_by_subtype to represent accounts with
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
@@ -224,10 +224,8 @@ class AccountSettings:
         if self.holder_category is not None:
             if not 1 <= len(self.holder_category) <= 32:
                 raise ValueError("holder_category must be 1-32 characters")
-        if self.currency_code is not None and not _CURRENCY_RE.match(
-            self.currency_code
-        ):
-            raise ValueError("currency_code must be exactly 3 uppercase letters")
+        if self.currency_code is not None:
+            validate_currency_code(self.currency_code)
         if self.credit_limit is not None and self.credit_limit < Decimal("0"):
             raise ValueError("credit_limit must be non-negative")
 

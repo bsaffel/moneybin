@@ -1065,3 +1065,13 @@ class TestManualEntry:
         ).fetchone()
         assert row is not None
         assert row[0] == "EUR"
+
+    @pytest.mark.unit
+    def test_create_manual_batch_rejects_malformed_currency(
+        self, transaction_db: Database
+    ) -> None:
+        """A malformed currency_code must be refused, matching accounts_set's check."""
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+        with pytest.raises(ValueError, match="currency_code"):
+            service.create_manual_batch([self._entry(currency_code="usd")], actor="cli")
