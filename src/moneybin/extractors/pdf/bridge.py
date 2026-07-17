@@ -141,6 +141,21 @@ def recipe_for_agent(recipe: Recipe) -> dict[str, Any]:
     return recipe.model_dump(exclude=set(_AGENT_EXCLUDED_RECIPE_FIELDS))
 
 
+def _recipe_can_resolve_yearless(recipe: Recipe) -> bool:
+    """True when the recipe gives ``execute_recipe`` a way to bracket a year-less year.
+
+    A year-less ``MM/DD`` date resolves its year from the billing period
+    (``recipe._resolve_yearless_date``). The period comes from ``metadata_anchors``:
+    ``None`` falls back to ``DEFAULT_ANCHORS``, which carry period patterns; an
+    explicit list must name BOTH ``period_start`` and ``period_end`` or the executor
+    captures no period and every year-less row fails to cast.
+    """
+    if recipe.metadata_anchors is None:
+        return True
+    names = {a.name for a in recipe.metadata_anchors}
+    return "period_start" in names and "period_end" in names
+
+
 def parse_bridge_response(payload: object) -> BridgeResponse:
     """Validate an agent's response; raise ``BridgeResponseError`` on bad shape.
 
@@ -226,21 +241,31 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
             "without it, loaded rows have no transaction_date (a post_date "
             "field alone does not qualify)"
         )
-    # Bridge policy (not a limitation of the executor): a bridge-authored
-    # date_format must carry a year directive. The executor CAN now resolve a
-    # year-less MM/DD format by bracketing the year from the billing period
-    # (recipe._resolve_yearless_date), but only the deterministic deriver drives
-    # that path, and only after confirming the period is capturable
-    # (auto_derive._period_capturable). A bridge-authored recipe carries no such
-    # guarantee, so fail closed here rather than let an agent recipe's year-less
-    # dates fall back to strptime's 1900 default — reconciliation checks only
-    # amount totals, not the date range. (No date_format at all → execute_recipe's
-    # year-bearing default parsing handles it.)
+    # A bridge-authored year-less date_format (MM/DD) is allowed ONLY when the
+    # recipe can supply the billing period the executor needs to resolve the year
+    # (recipe._resolve_yearless_date) — either metadata_anchors=None (DEFAULT_ANCHORS
+    # carry period patterns) or an explicit list naming period_start AND period_end.
+    # This is what makes the deterministic path's yearless-no-period decline
+    # (auto_derive._period_capturable → transaction_table_underivable) a PRODUCTIVE
+    # escalation: the agent reads the period off a non-default label, declares it as
+    # an anchor, and the statement imports. An explicit anchor list that omits the
+    # period leaves the executor nothing to bracket with — every year-less row would
+    # fail to cast — so reject it early with an actionable message rather than let
+    # the whole statement silently reconcile-fail to a seed. (The executor itself
+    # never writes a 1900 date: a year-less field with no capturable period raises
+    # and the row is skipped. No date_format at all → year-bearing default parsing.)
+    can_resolve_yearless = _recipe_can_resolve_yearless(recipe)
     for f in recipe.fields:
-        if f.cast == "date" and is_yearless_date_format(f.date_format):
+        if (
+            f.cast == "date"
+            and is_yearless_date_format(f.date_format)
+            and not can_resolve_yearless
+        ):
             raise BridgeResponseError(
-                f"bridge recipe field {f.name!r} has date_format "
-                f"{f.date_format!r} with no year directive (%Y or %y) — dates "
-                "would silently load as year 1900"
+                f"bridge recipe field {f.name!r} has a year-less date_format "
+                f"{f.date_format!r} but declares metadata_anchors without "
+                "period_start and period_end — the executor then has no billing "
+                "period to resolve the year from. Add period_start/period_end "
+                "anchors, or use a year-bearing date_format."
             )
     return BridgeResponse(recipe=recipe, rows=typed_rows)

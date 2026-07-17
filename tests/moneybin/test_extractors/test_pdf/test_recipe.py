@@ -324,3 +324,47 @@ def test_resolve_yearless_date_rejects_far_out_of_period_date() -> None:
     period = (date(2025, 1, 1), date(2025, 1, 31))
     with pytest.raises(ValueError, match="outside the billing period"):
         _resolve_yearless_date("06/15", "%m/%d", period)  # ~5 months out
+
+
+def test_execute_recipe_resolves_yearless_year_from_declared_period_anchors() -> None:
+    """A recipe's own period anchors let execute_recipe resolve year-less rows.
+
+    This is the bridge's durable capability: an agent that declares
+    period_start/period_end anchors for a non-default cycle label ("Cycle …" here,
+    which DEFAULT_ANCHORS don't recognise) gets its MM/DD rows bracketed to full
+    dates, so a year-less statement imports instead of dead-ending in a seed.
+    """
+    from decimal import Decimal
+
+    recipe = Recipe.model_validate(
+        _make_recipe(
+            metadata_anchors=[
+                _make_field("period_start", r"Cycle\s+(\d{2}/\d{2}/\d{2})", "date"),
+                _make_field(
+                    "period_end",
+                    r"Cycle\s+\d{2}/\d{2}/\d{2}\s*-\s*(\d{2}/\d{2}/\d{2})",
+                    "date",
+                ),
+            ],
+            fields=[
+                _make_field("date", r"\d{2}/\d{2}", "date", "%m/%d"),
+                _make_field("description", r".+", "str"),
+                _make_field("amount", r"-?\d+\.\d{2}", "decimal"),
+            ],
+        )
+    )
+    text = "\n".join([
+        "Cycle 12/23/24 - 01/22/25",  # a non-default period label the agent read
+        "TRANSACTIONS",
+        "12/26   PAYMENT THANK YOU   -100.00",
+        "01/15   BOOKSTORE   40.00",
+        "TOTAL",
+    ])
+
+    result = execute_recipe(recipe, text)
+
+    # The cycle crosses year-end, so 12/xx → opening year, 01/xx → closing year.
+    assert [(r["date"], r["amount"]) for r in result.rows] == [
+        (date(2024, 12, 26), Decimal("-100.00")),
+        (date(2025, 1, 15), Decimal("40.00")),
+    ]
