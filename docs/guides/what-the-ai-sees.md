@@ -61,7 +61,7 @@ envelope contains once it reaches the model.
 | Report views (`reports_networth`, `reports_spending`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Description *shape* only — see below | Amounts, dates, account IDs, embedded PII | Per-call event |
-| Mutations (categorize, note, tag, split, revert, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row (undoable)** |
+| Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
 | Errors / timeouts | A generic message; no row content, no SQL text | — | Per-call event |
 
 The rest of this page expands each column.
@@ -192,15 +192,19 @@ Two independent local records, neither of which leaves your machine:
 
 - **Per-call privacy log** (`privacy.log.jsonl`, `privacy_log` tool / `moneybin
   privacy log`). One line per tool call — the tool name, its sensitivity tier,
-  the data classes returned, and the row count. It records **no row content and
-  no SQL text**. This lets you audit *which* rows a past session could have
-  exposed, which is the floor on impact if you later regret a question.
-- **Audit log for mutations** (`app.audit_log`, `system_audit` tool). Every write
-  an agent makes — categorization, note, tag, split, revert — lands here with
-  before/after values and an operation id, and is undoable. **Reads are not
-  written to this table.** The audit log is a forensic aid for an honest
-  operator, not tamper-proof evidence against someone who already holds your key
-  (see [audit-log integrity](threat-model.md#audit-log-integrity)).
+  the data classes returned, and the row **count**. It records **no row content,
+  no row identifiers, no filters, and no SQL text**. So it tells you *how many*
+  rows of *what sensitivity* a past session pulled — a coarse floor on impact if
+  you later regret a question — not *which* specific rows.
+- **Audit log for mutations** (`app.audit_log`, `system_audit` tool). App-state
+  mutations an agent makes — categorization, note, tag, split — land here with
+  before/after values and an operation id, and can be reversed
+  (`system_audit_undo`). Two caveats: **reads are not written to this table**,
+  and **not every write is undoable** — `import_revert` hard-deletes the raw rows
+  its batch produced and is recovered only by re-importing the source file, not
+  through the undo path. The audit log is a forensic aid for an honest operator,
+  not tamper-proof evidence against someone who already holds your key (see
+  [audit-log integrity](threat-model.md#audit-log-integrity)).
 
 ---
 
