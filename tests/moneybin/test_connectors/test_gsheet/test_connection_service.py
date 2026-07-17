@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
+from moneybin.connectors.gsheet import errors as gsheet_errors
 from moneybin.connectors.gsheet.connection_service import (
     AmbiguousDetectionError,
     ConnectionRequest,
@@ -72,6 +75,24 @@ def _seed_workbook(gid: int = 99) -> FakeWorkbook:
     )
 
 
+def _inverted_sign_workbook() -> FakeWorkbook:
+    """Single-amount credit export that triggers negative-is-income inference."""
+    return FakeWorkbook(
+        title="Card Transactions",
+        tabs=[
+            FakeSheetTab(
+                name="Transactions",
+                gid=0,
+                headers=["Date", "Description", "Transaction Credit"],
+                rows=[
+                    ["2026-01-15", "Whole Foods", "87.42"],
+                    ["2026-01-20", "Payment", "-250.00"],
+                ],
+            )
+        ],
+    )
+
+
 def test_connect_transactions_high_confidence(in_memory_db: Database) -> None:
     svc, sheets, _ = _make_service(in_memory_db)
     sheets.register_workbook("ss1", _tiller_workbook())
@@ -86,6 +107,107 @@ def test_connect_transactions_high_confidence(in_memory_db: Database) -> None:
     assert result.connection.adapter == "transactions"
     assert result.initial_pull is not None
     assert result.initial_pull.rows_inserted == 1
+
+
+def test_connect_inferred_inversion_requires_sign_before_write_or_pull(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssCredit", _inverted_sign_workbook())
+    req = ConnectionRequest(
+        url="https://docs.google.com/spreadsheets/d/ssCredit/edit#gid=0",
+        adapter="transactions",
+        account_name="Card",
+        account_id="acct_card",
+        yes=True,
+    )
+
+    with (
+        patch(
+            "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
+        ) as pull,
+        pytest.raises(gsheet_errors.GSheetSignConfirmationRequiredError) as exc_info,
+    ):
+        svc.connect(req)
+
+    error = exc_info.value
+    assert isinstance(error, GSheetError)
+    assert error.proposed_convention == "negative_is_income"
+    assert error.evidence_header == "Transaction Credit"
+    assert "invert every transaction amount" in error.message
+    assert "--sign negative_is_income" in error.message
+    assert svc.list_connections() == []
+    pull.assert_not_called()
+
+
+def test_connect_explicit_negative_is_income_sign_succeeds(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssCredit", _inverted_sign_workbook())
+
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssCredit/edit#gid=0",
+            adapter="transactions",
+            account_name="Card",
+            account_id="acct_card",
+            sign="negative_is_income",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+
+    assert result.connection.sign_convention == "negative_is_income"
+
+
+def test_connect_yes_does_not_confirm_inferred_sign(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssCredit", _inverted_sign_workbook())
+
+    with pytest.raises(gsheet_errors.GSheetSignConfirmationRequiredError):
+        svc.connect(
+            ConnectionRequest(
+                url="https://docs.google.com/spreadsheets/d/ssCredit/edit#gid=0",
+                adapter="transactions",
+                account_name="Card",
+                account_id="acct_card",
+                yes=True,
+                no_initial_pull=True,
+            )
+        )
+
+
+def test_internal_human_sign_confirmation_succeeds_without_persisting_signal(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssCredit", _inverted_sign_workbook())
+
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssCredit/edit#gid=0",
+            adapter="transactions",
+            account_name="Card",
+            account_id="acct_card",
+            yes=True,
+            human_sign_confirmation=True,
+            no_initial_pull=True,
+        )
+    )
+
+    assert result.connection.sign_convention == "negative_is_income"
+    with pytest.raises(gsheet_errors.GSheetSignConfirmationRequiredError):
+        svc.reconnect(result.connection.connection_id, yes=True)
+
+    reconnected = svc.reconnect(
+        result.connection.connection_id,
+        yes=True,
+        human_sign_confirmation=True,
+    )
+    assert reconnected.connection.sign_convention == "negative_is_income"
 
 
 def test_connect_seed_explicit(in_memory_db: Database) -> None:
@@ -327,6 +449,42 @@ def test_reconnect_medium_confidence_requires_yes(in_memory_db: Database) -> Non
     # Reconnect WITHOUT yes — must refuse a medium-confidence remap.
     with pytest.raises((AmbiguousDetectionError, LowConfidenceError)):
         svc.reconnect(cid, yes=False)
+
+
+def test_reconnect_inferred_inversion_stops_before_update_or_pull(
+    in_memory_db: Database,
+) -> None:
+    svc, sheets, _ = _make_service(in_memory_db)
+    sheets.register_workbook("ssR", _tiller_workbook())
+    result = svc.connect(
+        ConnectionRequest(
+            url="https://docs.google.com/spreadsheets/d/ssR/edit#gid=0",
+            adapter="transactions",
+            account_name="Chase Checking",
+            account_id="acct_chase",
+            yes=True,
+            no_initial_pull=True,
+        )
+    )
+    connection_id = result.connection.connection_id
+    sheets.register_workbook("ssR", _inverted_sign_workbook())
+
+    with (
+        patch.object(svc._repo, "update_mapping") as update_mapping,
+        patch(
+            "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection"
+        ) as pull,
+        pytest.raises(gsheet_errors.GSheetSignConfirmationRequiredError) as exc_info,
+    ):
+        svc.reconnect(connection_id, yes=True)
+
+    assert exc_info.value.evidence_header == "Transaction Credit"
+    update_mapping.assert_not_called()
+    pull.assert_not_called()
+    unchanged = svc.get(connection_id)
+    assert unchanged is not None
+    assert unchanged.sign_convention == "negative_is_expense"
+    assert unchanged.column_mapping["Amount"] == "amount"
 
 
 def test_rows_to_df_rejects_duplicate_headers() -> None:

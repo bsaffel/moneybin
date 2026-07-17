@@ -28,7 +28,11 @@ from moneybin.connectors.gsheet.adapters.base import (
     GSheetConnection,
     LoadResult,
 )
-from moneybin.connectors.gsheet.errors import GSheetError, GSheetUnreachableError
+from moneybin.connectors.gsheet.errors import (
+    GSheetError,
+    GSheetSignConfirmationRequiredError,
+    GSheetUnreachableError,
+)
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
 from moneybin.database import Database
@@ -77,6 +81,8 @@ class ConnectionRequest:
     account_id: str | None = None
     column_mapping: dict[str, str] | None = None
     sign: SignConventionType | None = None
+    # Internal MCP retry signal after human elicitation; never persisted.
+    human_sign_confirmation: bool = False
     yes: bool = False
     accept_seed_fallback: bool = False
     no_initial_pull: bool = False
@@ -97,6 +103,42 @@ class ConnectResult:
     initial_pull: LoadResult | None
     initial_pull_status: str | None = None
     initial_pull_error: str | None = None
+
+
+def _inferred_sign_evidence_header(detection: DetectionResult) -> str | None:
+    """Return the exact mapped amount header behind an inferred inversion."""
+    if detection.sign_convention != "negative_is_income":
+        return None
+    return next(
+        (
+            source_header
+            for source_header, destination in detection.column_mapping.items()
+            if destination == "amount"
+        ),
+        None,
+    )
+
+
+def _require_inferred_sign_confirmation(
+    *,
+    resolved_convention: str | None,
+    sign_was_explicit: bool,
+    evidence_header: str | None,
+    human_sign_confirmation: bool,
+) -> None:
+    """Gate an inferred whole-ledger inversion on a human-owned signal."""
+    if (
+        resolved_convention != "negative_is_income"
+        or sign_was_explicit
+        or human_sign_confirmation
+    ):
+        return
+    if evidence_header is None:
+        raise RuntimeError("negative_is_income inference is missing header evidence")
+    raise GSheetSignConfirmationRequiredError(
+        proposed_convention="negative_is_income",
+        evidence_header=evidence_header,
+    )
 
 
 class GSheetConnectionService:
@@ -178,6 +220,8 @@ class GSheetConnectionService:
                     "Provide --column-mapping or retry with "
                     "--adapter=seed --alias=<name>."
                 )
+
+        sign_evidence_header = _inferred_sign_evidence_header(detection)
 
         # Medium confidence: ambiguous column matches. Require explicit
         # acceptance (--yes) or an override (--column-mapping) before
@@ -354,6 +398,13 @@ class GSheetConnectionService:
         else:
             column_mapping = detection.column_mapping
 
+        _require_inferred_sign_confirmation(
+            resolved_convention=sign_convention_for_save,
+            sign_was_explicit=req.sign is not None,
+            evidence_header=sign_evidence_header,
+            human_sign_confirmation=req.human_sign_confirmation,
+        )
+
         connection_id = self._repo.insert(
             spreadsheet_id=spreadsheet_id,
             sheet_gid=gid,
@@ -484,9 +535,14 @@ class GSheetConnectionService:
         *,
         yes: bool = False,
         sign: SignConventionType | None = None,
+        human_sign_confirmation: bool = False,
         actor: str = "cli",
     ) -> ConnectResult:
-        """Re-detect against the current sheet, re-pin mapping, run a pull."""
+        """Re-detect, re-pin, and pull.
+
+        ``human_sign_confirmation`` is an internal MCP retry signal and is
+        never persisted.
+        """
         existing = self._repo.get(connection_id)
         if existing is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
@@ -510,6 +566,7 @@ class GSheetConnectionService:
 
         adapter = ADAPTERS[existing["adapter"]]
         detection = adapter.detect(df, account_name=existing.get("account_name"))
+        sign_evidence_header = _inferred_sign_evidence_header(detection)
 
         if existing["adapter"] == "transactions":
             bands = get_settings().import_.confidence
@@ -581,6 +638,13 @@ class GSheetConnectionService:
                 sign_convention_to_save = sign or detection.sign_convention
         else:
             sign_convention_to_save = sign or detection.sign_convention
+
+        _require_inferred_sign_confirmation(
+            resolved_convention=sign_convention_to_save,
+            sign_was_explicit=sign is not None,
+            evidence_header=sign_evidence_header,
+            human_sign_confirmation=human_sign_confirmation,
+        )
 
         self._repo.update_mapping(
             connection_id,
