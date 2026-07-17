@@ -11,7 +11,7 @@ The neighboring docs cover the mechanisms: the [Database & Security guide](datab
 
 ## Hazard: no egress gate today
 
-> **The single most important thing on this page.** Every row of every MCP tool result your agent uses to answer goes to whichever LLM provider the MCP client is configured against. There is no consent prompt, no redaction step, and no aggregate-only fallback intercepting `medium` or `high` sensitivity tool results before they leave the MoneyBin process. Sensitivity tiers are an audit-log signal today, not an enforced gate. If "Anthropic / OpenAI / Google sees my transactions for the duration of this conversation" is unacceptable, do not use the agent — use the CLI, where there is no LLM in the loop. The enforcing consent / degraded-response framework is on the roadmap; it is not shipped.
+> **The single most important thing on this page.** Every row of every MCP tool result your agent uses to answer goes to whichever LLM provider the MCP client is configured against. Account and routing numbers are masked before they leave (CRITICAL-tier fields — enforced today); nothing else is. There is no consent prompt and no aggregate-only fallback intercepting `medium` or `high` sensitivity tool results before they leave the MoneyBin process. Sensitivity tiers are an audit-log signal today, not an enforced gate. If "Anthropic / OpenAI / Google sees my transactions for the duration of this conversation" is unacceptable, do not use the agent — use the CLI, where there is no LLM in the loop, or point your client at a local model. The enforcing consent / degraded-response framework is on the roadmap; it is not shipped. The full per-tool breakdown — what leaves, what's masked, what's recorded — lives in [What the AI Provider Sees](what-the-ai-sees.md).
 
 ---
 
@@ -228,7 +228,7 @@ Every MCP tool declares one of three sensitivity tiers via the `@mcp_tool(sensit
 
 **What this means today:** the tier is a logging and audit signal, not an enforced gate. A `medium` or `high` tool will execute and return its full result without any user-visible consent prompt; the response leaves the MoneyBin process and lands in the MCP client, which forwards it to the LLM. The audit log captures intent (use `system_audit` to read it back), but it doesn't block the call.
 
-**What this means going forward:** when the consent framework lands, `medium` / `high` calls without consent will return aggregate-only `data` with `summary.degraded: true` — never failing outright. The tier names won't change. Cross-link: [MCP server: sensitivity tiers](mcp-server.md#sensitivity-tiers).
+**What this means going forward:** when the consent framework lands, `medium` / `high` calls without consent will return aggregate-only `data` with `summary.degraded: true` — never failing outright. The tier names won't change. Cross-links: the per-tool breakdown of what actually leaves is in [What the AI Provider Sees](what-the-ai-sees.md); tier mechanics in [MCP server: sensitivity tiers](mcp-server.md#sensitivity-tiers).
 
 If you need the strongest practical safeguard before the gate ships: lock the database when you're not actively using the agent (see [`db lock` semantics](#db-lock-semantics) below).
 

@@ -22,15 +22,17 @@ Only the profile name is sent to the model; the encryption key is generated loca
 
 ## Privacy: where does my data go?
 
-The most common question from people coming from a CLI-only workflow. Plain answer:
+The most common question from people coming from a CLI-only workflow. The short
+answer: the MCP server runs locally and makes no outbound calls of its own, but
+your MCP client sends your prompts **and the tool results** to whatever model
+provider it's configured against — anything the agent sees, the provider sees.
+Account and routing numbers are masked before they leave; nothing else is, and
+the consent ledger records but does not yet gate.
 
-- **The MCP server itself runs locally.** When the client launches `moneybin mcp serve`, it spawns a subprocess on your machine that reads/writes your local DuckDB file. The server makes no outbound network calls of its own.
-- **Your MCP client does talk to a hosted LLM.** Claude Desktop sends your prompts to Anthropic. Cursor, Codex, Gemini CLI, and the rest each send prompts to their respective providers per their own privacy policies. MoneyBin does not change that.
-- **Tool results travel the same path as your prompt.** When the agent calls a MoneyBin tool, the result envelope (which may contain transactions, balances, merchant names, categorizations) is sent back to the hosted LLM so it can continue the conversation. Anything the agent sees, the provider sees.
-- **Sensitivity tiers are logged but not yet enforced as a consent gate.** Every tool declares `low`, `medium`, or `high`, and every invocation is stamped into the audit log. The planned consent prompt that gates `high`-tier calls is not in place yet. Until it ships, treat anything you ask the agent as if you sent it to your model provider, because you effectively did.
-- **For a fully local path**, pair MoneyBin with an MCP client that runs against a local LLM. Some clients have experimental support; there is no first-class local-LLM option in our supported-client list today.
-
-This is the honest current state, not the long-term target. The privacy framework that adds consent gates is tracked in the specs.
+The full, honest breakdown — what leaves per kind of tool, what's always masked,
+what's only recorded locally, and how to run a fully local model so nothing
+leaves at all — is its own page: **[What the AI Provider
+Sees](what-the-ai-sees.md)**. Read it before connecting real data.
 
 ## Quick orientation
 
@@ -212,17 +214,19 @@ Field gloss:
 
 ## Sensitivity tiers
 
-Every tool declares one of three tiers via the `@mcp_tool(sensitivity=...)` decorator argument.
+Every tool declares one of three tiers, derived automatically from the privacy
+classes of the fields it returns (a tool whose payload has no classified fields
+fails to register — the tier is never hand-set).
 
 | Tier | Data | What it controls today |
 |---|---|---|
 | `low` | Aggregates, counts, taxonomy reference data | None — always callable |
 | `medium` | Row-level fields: descriptions, amounts, dates | Logging + audit metadata |
-| `high` | Critical PII (account numbers, raw provider blobs) | Logging + audit metadata; planned consent gate |
+| `high` | Critical PII (account numbers, raw provider blobs) | Account/routing numbers **masked before egress**; logging + audit metadata; planned consent gate |
 
-What `sensitivity` does today: it tags the structured log line for every invocation (`tool`, `sensitivity`, `duration_ms`, `status`) and stamps the audit log row visible through `system_audit`. The logs live wherever your MoneyBin install writes them (default: stderr of the `mcp serve` subprocess; configurable via the standard logging settings). Retention is whatever you configure on the log destination — MoneyBin does not prune.
+What the tier does today: it tags the structured log line for every invocation (`tool`, `sensitivity`, `duration_ms`, `status`) and stamps the audit log row visible through `system_audit`. The logs live wherever your MoneyBin install writes them (default: stderr of the `mcp serve` subprocess; configurable via the standard logging settings). Retention is whatever you configure on the log destination — MoneyBin does not prune. Independently of the tier, CRITICAL fields (account/routing numbers) are always masked before a result leaves the process.
 
-What `sensitivity` does **not** do today: there is no consent-prompt gate that requires explicit user approval before a `high`-tier call. The privacy framework that introduces the gate is planned; `summary.degraded` is wired through the envelope but not yet exercised. When the gate lands, calls without consent will return aggregate-only `data` with `summary.degraded: true` — they will never fail outright.
+What the tier does **not** do today: there is no consent-prompt gate that requires explicit user approval before a `high`-tier call, and the tier does not degrade the response. The privacy framework that introduces the gate is planned; `summary.degraded` is wired through the envelope but not yet exercised. When the gate lands, calls without consent will return aggregate-only `data` with `summary.degraded: true` — they will never fail outright. Full data-flow detail: [What the AI Provider Sees](what-the-ai-sees.md).
 
 Tier names will not change. The enforcement layer above them may.
 

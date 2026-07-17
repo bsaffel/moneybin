@@ -38,6 +38,7 @@ The MCP server and the chat clients that talk to it.
 - **[Setting up Claude Desktop](setting-up-claude-desktop.md)** — The fastest path from install to asking Claude about your own money: one command, a restart, a first question.
 - **[MCP Server](mcp-server.md)** — Tool catalog, response envelope, sensitivity tiers, and the action-hint chaining model.
 - **[MCP Clients](mcp-clients.md)** — Install and configure the chat clients MoneyBin is tested against.
+- **[What the AI Provider Sees](what-the-ai-sees.md)** — Exactly what data reaches the model provider when an agent drives MoneyBin: what's masked, what isn't, what's recorded, and how to run a fully local model.
 
 ## Security and privacy
 
@@ -45,6 +46,7 @@ What's protected and what's not. Read these before trusting MoneyBin with real d
 
 - **[Database & Security](database-security.md)** — Encryption model, key lifecycle, backup and restore.
 - **[Threat Model](threat-model.md)** — What MoneyBin protects against and what it does not.
+- **[What the AI Provider Sees](what-the-ai-sees.md)** — The AI-data-flow companion to the threat model: what reaches the model provider, and how to keep it local.
 
 ## Observability
 

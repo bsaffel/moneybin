@@ -72,7 +72,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - LLM-assisted categorization strips amounts, dates, and account identifiers before any prompt leaves your machine. Structural signals only — the model sees the shape of the description, not your money.
 - The threat model is documented — what encryption protects against, what it doesn't (forgotten passphrase, malware on your machine, the AI vendor's data flow).
 
-**What's still rough:** Categorization assist still routes through whatever model your AI client is using — you choose the model, but you also accept its data-flow terms. The redaction layer narrows that exposure; it doesn't eliminate it.
+**What's still rough:** Categorization assist still routes through whatever model your AI client is using — you choose the model, but you also accept its data-flow terms. The redaction layer narrows that exposure; it doesn't eliminate it. For exactly what reaches the provider on every tool — and how to run a fully local model so nothing leaves — see [What the AI Provider Sees](guides/what-the-ai-sees.md).
 
 ## Personas — coming later
 
