@@ -17,6 +17,7 @@ status sees the recovery path without a second tool call.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shlex
 from dataclasses import replace
@@ -162,6 +163,49 @@ def _sign_confirmation_message(
     )
 
 
+def _connect_cli_equivalent(
+    req: ConnectionRequest,
+    error: GSheetSignConfirmationRequiredError,
+) -> str:
+    """Reproduce the public connect request with an explicit human sign choice."""
+    parts = ["moneybin", "gsheet", "connect", req.url]
+    for flag, value in (
+        ("--adapter", req.adapter),
+        ("--alias", req.alias),
+        ("--account-name", req.account_name),
+        ("--account-id", req.account_id),
+    ):
+        if value is not None:
+            parts.extend((flag, value))
+    if req.column_mapping is not None:
+        parts.extend((
+            "--column-mapping",
+            json.dumps(req.column_mapping, separators=(",", ":"), sort_keys=True),
+        ))
+    if req.yes:
+        parts.append("--yes")
+    if req.accept_seed_fallback:
+        parts.append("--accept-seed-fallback")
+    if req.no_initial_pull:
+        parts.append("--no-initial-pull")
+    parts.extend(("--sign", error.proposed_convention))
+    return shlex.join(parts)
+
+
+def _reconnect_cli_equivalent(
+    connection_id: str,
+    *,
+    yes: bool,
+    error: GSheetSignConfirmationRequiredError,
+) -> str:
+    """Reproduce the public reconnect request with an explicit human sign choice."""
+    parts = ["moneybin", "gsheet", "reconnect", connection_id]
+    if yes:
+        parts.append("--yes")
+    parts.extend(("--sign", error.proposed_convention))
+    return shlex.join(parts)
+
+
 @mcp_tool(
     read_only=False,
     idempotent=False,
@@ -271,10 +315,7 @@ async def gsheet_connect(
             _sign_confirmation_message(error),
             subject="This Google Sheets sign inversion",
             unchanged="the connection was not created and no initial pull ran",
-            cli_equivalent=(
-                f"moneybin gsheet connect {shlex.quote(url)} "
-                f"--sign {error.proposed_convention}"
-            ),
+            cli_equivalent=_connect_cli_equivalent(req, error),
             details={
                 "evidence_header": error.evidence_header,
                 "proposed_convention": error.proposed_convention,
@@ -446,9 +487,10 @@ async def gsheet_reconnect(
             _sign_confirmation_message(error),
             subject="This Google Sheets sign inversion",
             unchanged=(f"connection '{connection_id}' was not re-pinned or pulled"),
-            cli_equivalent=(
-                f"moneybin gsheet reconnect {shlex.quote(connection_id)} "
-                f"--sign {error.proposed_convention}"
+            cli_equivalent=_reconnect_cli_equivalent(
+                connection_id,
+                yes=yes,
+                error=error,
             ),
             details={
                 "connection_id": connection_id,

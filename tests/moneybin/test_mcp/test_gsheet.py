@@ -9,6 +9,8 @@ Google Sheets API.
 from __future__ import annotations
 
 import asyncio
+import json
+import shlex
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -239,6 +241,10 @@ async def test_gsheet_connect_elicits_human_then_retries_sign_internally(
     mock_confirm: AsyncMock,
 ) -> None:
     """An inferred inversion retries once only after the human confirms."""
+    from moneybin.cli.commands.gsheet import (
+        _parse_column_mapping,  # pyright: ignore[reportPrivateUsage]  # verifies fallback compatibility with the real CLI parser
+    )
+
     evidence_header = "Card Purchases (+)"
     service = MagicMock()
     service.connect.side_effect = [
@@ -256,8 +262,21 @@ async def test_gsheet_connect_elicits_human_then_retries_sign_internally(
 
     from moneybin.mcp.tools.gsheet import gsheet_connect
 
+    url = "https://docs.google.com/spreadsheets/d/sheet name/edit#gid=7"
+    column_mapping = {
+        "Merchant's Name": "description",
+        "Amount, USD": "amount",
+    }
     envelope = await gsheet_connect(
-        url="https://docs.google.com/spreadsheets/d/abc/edit#gid=0"
+        url=url,
+        adapter="transactions",
+        alias="card feed",
+        account_name="Owner's Card",
+        account_id="acct card",
+        column_mapping=column_mapping,
+        yes=True,
+        accept_seed_fallback=True,
+        no_initial_pull=True,
     )
 
     assert envelope.data.connection.connection_id == "conn_abc"
@@ -276,6 +295,21 @@ async def test_gsheet_connect_elicits_human_then_retries_sign_internally(
         "This would invert every transaction amount: charges become expenses "
         "and payments become credits."
     ) in message
+    cli_equivalent = mock_confirm.await_args.kwargs["cli_equivalent"]
+    cli_tokens = shlex.split(cli_equivalent)
+    assert cli_tokens[:4] == ["moneybin", "gsheet", "connect", url]
+    assert cli_tokens[-2:] == ["--sign", "negative_is_income"]
+    assert cli_tokens[cli_tokens.index("--adapter") + 1] == "transactions"
+    assert cli_tokens[cli_tokens.index("--alias") + 1] == "card feed"
+    assert cli_tokens[cli_tokens.index("--account-name") + 1] == "Owner's Card"
+    assert cli_tokens[cli_tokens.index("--account-id") + 1] == "acct card"
+    serialized_mapping = cli_tokens[cli_tokens.index("--column-mapping") + 1]
+    assert json.loads(serialized_mapping) == column_mapping
+    assert _parse_column_mapping(serialized_mapping) == column_mapping
+    assert "--yes" in cli_tokens
+    assert "--accept-seed-fallback" in cli_tokens
+    assert "--no-initial-pull" in cli_tokens
+    assert "human_sign_confirmation" not in cli_equivalent
 
 
 @pytest.mark.unit
@@ -546,19 +580,19 @@ async def test_gsheet_reconnect_elicits_human_then_retries_sign_internally(
 
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
-    envelope = await gsheet_reconnect(connection_id="conn_abc")
+    envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
 
     assert envelope.data.connection.status == "healthy"
     assert "human_sign_confirmation" not in repr(envelope.to_dict())
     assert service.reconnect.call_args_list == [
         (
             ("conn_abc",),
-            {"yes": False, "actor": "mcp"},
+            {"yes": True, "actor": "mcp"},
         ),
         (
             ("conn_abc",),
             {
-                "yes": False,
+                "yes": True,
                 "human_sign_confirmation": True,
                 "actor": "mcp",
             },
@@ -571,6 +605,9 @@ async def test_gsheet_reconnect_elicits_human_then_retries_sign_internally(
         "This would invert every transaction amount: charges become expenses "
         "and payments become credits."
     ) in message
+    assert mock_confirm.await_args.kwargs["cli_equivalent"] == (
+        "moneybin gsheet reconnect conn_abc --yes --sign negative_is_income"
+    )
 
 
 @pytest.mark.unit
