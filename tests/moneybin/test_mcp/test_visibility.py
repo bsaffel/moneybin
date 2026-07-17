@@ -9,10 +9,20 @@ the portable Anthropic/OpenAI regex.
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import pytest
 from fastmcp import Client
+from mcp.types import Tool
+
+from moneybin.mcp.surface import assert_surface_contract
+from moneybin.mcp.surface_inventory import SurfaceInventory
+
+BASELINE_PATH = (
+    Path(__file__).parents[2] / "fixtures/mcp_surface/baseline-2026-07-17.json"
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -36,7 +46,8 @@ async def test_full_surface_visible_at_connect() -> None:
     from moneybin.mcp.server import mcp
 
     async with Client(mcp) as client:
-        visible = {t.name for t in await client.list_tools()}
+        visible_tools = await client.list_tools()
+    visible = {tool.name for tool in visible_tools}
 
     all_registered = {
         t.name
@@ -48,6 +59,17 @@ async def test_full_surface_visible_at_connect() -> None:
         f"transform may have been reintroduced. "
         f"Missing from visible: {all_registered - visible}; "
         f"unexpected in visible: {visible - all_registered}"
+    )
+
+    baseline_payload = json.loads(BASELINE_PATH.read_text())
+    baseline = SurfaceInventory.from_tools([
+        Tool.model_validate(row["definition"]) for row in baseline_payload["tools"]
+    ])
+    assert_surface_contract(
+        SurfaceInventory.from_tools(visible_tools),
+        expected_names=frozenset(tool.name for tool in baseline.tools),
+        enforce_hard_limit=False,
+        enforce_description_budget=False,
     )
 
 

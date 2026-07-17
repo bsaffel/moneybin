@@ -409,6 +409,25 @@ enter the report registry.
 
 ### Baselines
 
+The contract foundation is active work. The frozen pre-cutover registry lives
+at [`tests/fixtures/mcp_surface/baseline-2026-07-17.json`](../../tests/fixtures/mcp_surface/baseline-2026-07-17.json);
+the matching evaluation capture lives at
+[`tests/fixtures/mcp_eval/captures/baseline-105.json`](../../tests/fixtures/mcp_eval/captures/baseline-105.json).
+The frozen snapshot preserves the 105 expected tool names before
+`outputSchema` was registered. The live surface contract compares those names,
+not full definitions or byte-identical snapshots, because live metadata bytes
+must continue to reflect the schemas actually advertised today.
+
+The 50-tool maximum and 40-tool carrying-weight review threshold are durable
+policy. During the intentional 105-tool pre-cutover state, the contract runs
+with both hard-limit and description-budget enforcement disabled while still
+measuring the live inventory and legacy description debt. Plan 6 enables both
+gates atomically when it cuts the standard registry to 45 tools.
+
+`baseline-105.json` is a deterministic `contract_fixture`, not observed model
+or host evidence. It proves the evaluation format and scoring path; fresh
+observed baseline and candidate evidence remain required for promotion.
+
 Evaluate:
 
 1. the frozen current 105-tool surface;
