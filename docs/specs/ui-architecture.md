@@ -25,7 +25,11 @@ Two facts make a shared UI architecture the right foundation today:
 
 ### The reuse thesis
 
-Competitors treat their UI as the product and MCP as a bolt-on. MoneyBin is the inverse: a mature MCP contract (response envelope, sensitivity tiers, action hints, audit/undo) is the primary surface. That makes MoneyBin structurally able to ship an MCP App as a *coherent extension* of its primary surface — and to render the same components in a browser. This spec exists so that capability is built once, cleanly, instead of as two parallel frontends that drift.
+MoneyBin already has a mature MCP contract: response envelopes, sensitivity
+tiers, action hints, and audit/undo. The visual surfaces should consume that
+contract rather than re-create product behavior in a separate frontend layer.
+This spec makes that reuse structural so the MCP App and browser UI cannot
+silently drift into parallel implementations.
 
 ## Non-Goals
 

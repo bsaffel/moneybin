@@ -26,6 +26,20 @@ issue, roadmap item, or an honest statement that the work is planned. Treat any
 information already committed publicly as public history: moving it to
 `private/` prevents future exposure but does not erase it from Git history.
 
+## External Product References
+
+Public comparison, audience, compatibility, migration, and integration guides
+may name an external product when that helps a user make a practical choice.
+Do not make an external product, competitor, or market study the authority for
+a MoneyBin technical decision. Specs and ADRs must state the actual rationale:
+a user need, source or protocol constraint, observed MoneyBin failure,
+invariant, security property, or validation result.
+
+Keep competitor feature grids, market research, and notes of the form “they do
+X, so MoneyBin should do Y” private. When a provider or dependency contract is
+relevant, cite its primary documentation and state the required behavior
+directly.
+
 ## Diagrams
 
 - **Mermaid over ASCII**: When generating `.md` files that include diagrams, use Mermaid code blocks (` ```mermaid `) instead of ASCII art.

@@ -190,7 +190,11 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 | **Server `instructions`** | core | ✅ shipped | `FastMCP(instructions=...)` in `src/moneybin/mcp/server.py`. See above subsection. |
 | **MCP capability negotiation** | core | ✅ shipped via FastMCP | FastMCP handles `initialize` capabilities; MoneyBin doesn't negotiate per-capability flags today. |
 
-**Discipline:** when a competitor review or MCP spec evolution surfaces a capability not in this table, add it before deciding what to do — the table itself is the audit trail. PRs that add a row marked `⏳ deliberate defer` must include the rationale; PRs that flip a row from `⏳` to `📐` or `✅` must update the relevant subsection of this spec.
+**Discipline:** when an MCP specification change, client constraint, or product
+requirement surfaces a capability not in this table, add it before deciding what
+to do—the table itself is the audit trail. PRs that add a row marked
+`⏳ deliberate defer` must include the rationale; PRs that flip a row from `⏳`
+to `📐` or `✅` must update the relevant subsection of this spec.
 
 #### Decorator: protocol annotations
 
@@ -1801,7 +1805,10 @@ Discharge: a one-time audit pass on the existing surface ran as part of the 2026
 
 ### Tool catalog discipline (PR-review rule)
 
-The tool list documented in this spec must match the runtime-registered set. Without discipline, the documentation drifts (the competitor `copilot-money-mcp` README claims 17 tools but its server registers 33 — exactly the failure mode this rule prevents).
+The tool list documented in this spec must match the runtime-registered set.
+Without an executable parity check, documentation and registration drift
+independently and agents receive a surface different from the one contributors
+reviewed.
 
 - **Rule:** any PR that adds, renames, or removes an `@mcp_tool`-decorated function MUST update this spec in the same change. Codified in [`.claude/rules/mcp.md`](../../.claude/rules/mcp.md) under "Surface change discipline."
 - **Enforcement:** PR review. Reviewers grep for `@mcp_tool` diffs and verify each touches a corresponding spec section.
@@ -1813,7 +1820,9 @@ The tool list documented in this spec must match the runtime-registered set. Wit
 The matrix in [§Protocol-standard capability coverage matrix](#protocol-standard-capability-coverage-matrix) must be re-reviewed:
 
 1. **Whenever the MCP spec adds or changes a capability.** Track the MCP spec changelog (https://modelcontextprotocol.io/) on a quarterly cadence; add new rows for any new capability before deciding adopt vs. defer.
-2. **Whenever a competitor review surfaces a capability we've missed.** The 2026-05-08 MCP-tool-surface review identified `annotations` as such a gap; future reviews should produce similar diffs.
+2. **Whenever protocol evolution, client testing, or a user workflow surfaces a
+   missing capability.** Record the gap in the matrix before deciding whether to
+   implement or deliberately defer it.
 3. **Whenever a row flips status** (`⏳ deliberate defer` → `📐 designed` → `✅ shipped`). The matrix is the audit trail for these transitions.
 
 Owner: whoever maintains this spec. Cadence: quarterly review minimum, plus ad-hoc on the triggers above.

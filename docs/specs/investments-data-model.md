@@ -79,10 +79,9 @@ Related specs:
    `other`. `deposit`/`withdrawal` are *external* cash funding events (NULL
    `security_id`; move net contribution), kept distinct from
    `transfer_in`/`transfer_out`, which are *internal*, basis-preserving position
-   moves — collapsing the two breaks net-contribution/time-weighted-return math
-   (a bug class two shipped competitors hit independently). The `type` is the
-   engine-dispatch contract; two companion columns keep it from being overloaded
-   (the Rotki lesson — one enum must not serve mechanics, reporting, and display):
+   moves—collapsing the two breaks net-contribution and time-weighted-return
+   math. The `type` is the engine-dispatch contract; two companion columns keep
+   one enum from serving mechanics, reporting, and display:
    - **`subtype`** (nullable) — closed per-type refinement vocabulary carrying tax
      character and provenance detail: `qualified`/`non_qualified` on `dividend`;
      `short_term`/`long_term` on `capital_gain_distribution`; `tax_withheld` on
@@ -388,13 +387,11 @@ and consuming them on disposals.
 > `cost_basis_method` `CHECK` (on `app.securities` and `app.account_settings`) allows
 > only `fifo`, `hifo`, `specific`, `average` on purpose — electing a method the engine
 > does not implement would silently miscompute basis, so the constraint is a guard,
-> not an oversight (a shipped competitor declares LIFO/WAC and hard-errors on both;
-> declared-but-unimplemented is the worst state). **LIFO stays out absent real
-> demand**: three surveyed cost-basis engines ship HIFO and zero PFM ships LIFO for
-> brokerage. Mechanically, ordering methods are consumption-order variants of the
-> same engine (the shipped FIFO/LIFO/HIFO trio in Rotki differ only by sort key), so
-> adding LIFO later is a sort key + a lightweight `CHECK`-widening migration — the
-> same deliberate trade-off as `security_type`. Build order within this child:
+> not an oversight. Declaring a method the engine cannot execute is worse than
+> omitting it. **LIFO stays out absent real demand.** Mechanically, ordering
+> methods are consumption-order variants of the same engine, so adding LIFO later
+> is a sort key plus a lightweight `CHECK`-widening migration—the same deliberate
+> trade-off as `security_type`. Build order within this child:
 > FIFO → HIFO (same machinery, different sort key) → specific-ID → average.
 
 ### Short-term / long-term split (shared across all methods)
@@ -448,14 +445,13 @@ The ST/LT split still walks lots oldest-first (only the basis is averaged). Vali
 to `mutual_fund` / `etf` security types. This is the one genuinely distinct
 computation; it adds a single derived path, not a parallel system.
 
-**Implementation note (learned from shipped engines):** compute the pool as two
-running scalars — remaining pooled cost and remaining pooled units, rescaled
-multiplicatively on every disposal — the approach Rotki ships and tests
-(CRA/HMRC pooled-average formula). Do NOT implement average cost as runtime
-lot-merging inside the consumption machinery: that is the design Beancount
-attempted and left disabled behind dead code for ~15 years ("fairly tricky to
-implement"). The lots are still traversed oldest-first for holding-period
-attribution; only the basis number comes from the pool.
+**Implementation note:** compute the pool as two running scalars—remaining
+pooled cost and remaining pooled units—rescaled multiplicatively on every
+disposal. Do not implement average cost as runtime lot-merging inside the
+consumption machinery: it couples pooled-basis arithmetic to lot identity and
+makes partial disposals harder to reason about. The lots are still traversed
+oldest-first for holding-period attribution; only the basis number comes from
+the pool.
 
 **`core.fct_realized_gains` grain under average cost.** There is no lot-specific
 basis when pooling, but the table keeps its uniform (disposal × consumed lot) grain:

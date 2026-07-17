@@ -5,7 +5,13 @@ implemented
 
 ## Goal
 
-Own the `accounts` entity namespace end-to-end for v1: list/show, user-controlled display preferences (rename), lifecycle ops (archive/unarchive, include/exclude from net worth), and the per-account metadata layer modeled on Plaid's account schema. Provide the `app.account_settings` table that other specs (notably [`reports-net-worth.md`](reports-net-worth.md)) reference for per-account configuration. Account merging is explicitly deferred — see [Out of Scope](#out-of-scope).
+Own the `accounts` entity namespace end-to-end for v1: list/show,
+user-controlled display preferences (rename), lifecycle ops (archive/unarchive,
+include/exclude from net worth), and the per-account metadata layer. Its fields
+align with source data that providers expose through account APIs. Provide the
+`app.account_settings` table that other specs (notably
+[`reports-net-worth.md`](reports-net-worth.md)) reference for per-account
+configuration. Account merging is explicitly deferred — see [Out of Scope](#out-of-scope).
 
 ## Background
 

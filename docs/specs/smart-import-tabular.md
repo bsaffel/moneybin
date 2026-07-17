@@ -1,6 +1,9 @@
 # Feature: Smart Tabular Import
 
-> Last updated: 2026-04-22 — added open-source learnings: import batch tracking/reverting, DD/MM disambiguation, running balance validation, size guardrails, regex skip patterns, named number formats, Maybe migration format, design rationale section. Fixtures: 73 → 96.
+> Last updated: 2026-04-22 — added import batch tracking/reverting, DD/MM
+> disambiguation, running balance validation, size guardrails, regex skip
+> patterns, named number formats, migration formats, and a design-rationale
+> section. Fixtures: 73 → 96.
 > Companions: [`smart-import-overview.md`](smart-import-overview.md) (umbrella), [`smart-import-confirmation.md`](smart-import-confirmation.md) (confirm/confidence layer this spec's column-mapping engine feeds), [`matching-overview.md`](matching-overview.md) (provenance contract), [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (downstream dedup), [`categorization-overview.md`](categorization-overview.md) (category bootstrap), [`privacy-data-protection.md`](privacy-data-protection.md) (encryption), [`database-migration.md`](database-migration.md) (schema migration), [`mcp-architecture.md`](mcp-architecture.md) (CLI/MCP symmetry)
 
 ## Status
@@ -13,9 +16,9 @@ Build the definitive tabular data importer for personal finance: any CSV, TSV, E
 Parquet, or delimited text file goes in, correctly mapped and normalized
 transactions come out. When a built-in or saved format matches, import is instant. When
 no format matches, a heuristic detection engine infers the column mapping, presents it
-for confirmation, and saves the result for next time. Multi-account files (Tiller, Mint,
-Monarch) are handled natively. The system learns from every import and turns competitor
-data into a bootstrap accelerator for MoneyBin's categorization engine.
+for confirmation, and saves the result for next time. Multi-account files are handled
+natively. The system learns from every import and turns migrated category data into a
+bootstrap accelerator for MoneyBin's categorization engine.
 
 This spec supersedes [`csv-import.md`](archived/csv-import.md) (the shipped
 format-based system) and absorbs Pillar B (Excel import) from
@@ -44,13 +47,12 @@ format-based system) and absorbs Pillar B (Excel import) from
 - `.claude/rules/cli.md` — non-interactive parity requirement (every interactive
   prompt has a flag equivalent).
 
-### Competitive context
+### Migration preservation
 
-No open-source personal finance tool treats migration as a first-class feature. Switching
-tools typically means: export transactions, re-import, re-categorize from scratch —
-discarding years of categorization work. MoneyBin's smart tabular importer preserves
-imported categories and uses them to seed the auto-rule engine, giving users a
-fully-categorized MoneyBin on day one.
+Switching tools should not discard years of categorization work. The importer
+preserves source categories and uses them to seed the auto-rule engine, giving
+users a useful categorized profile immediately while retaining the original
+values for review.
 
 ---
 
@@ -690,8 +692,7 @@ CREATE TABLE raw.tabular_accounts (
 CREATE TABLE raw.import_log (
     /* Audit log of every tabular file import. Each import batch gets a UUID that is
        stamped on every raw row it produces, enabling import history, reverting, and
-       diagnostics. Inspired by Maybe/Sure's import lifecycle tracking — reverting a
-       bad import should be trivial, not catastrophic. */
+       diagnostics. Reverting a bad import must be trivial, not catastrophic. */
     import_id VARCHAR PRIMARY KEY,              -- UUID generated at the start of each import batch
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file
     source_type VARCHAR NOT NULL,               -- File format: csv, tsv, excel, parquet, feather, pipe
@@ -1718,60 +1719,35 @@ is catastrophic. Fixtures are the primary defense against regression.
 | Account matching | Cross-source registry; number > name > fuzzy | Accounts are global entities, not per-source-type |
 | Transaction ID | Deterministic hash per layer; different identity spaces | Raw: idempotent re-import. Core: independent of source. |
 | Sign normalization | At extract time (Stage 4) | Downstream code always sees negative=expense |
-| Multi-account | Auto-detected from account columns in data | Handles Tiller, Mint, Monarch natively |
-| Import batch tracking | UUID `import_id` on every row + `raw.import_log` table | Enables import reverting (critical for user confidence), history, and diagnostics. Learned from Maybe/Sure's import lifecycle — reverting a bad import must be trivial. |
-| Date disambiguation | Positional value >12 analysis + range reasonableness scoring | Deterministic, explains its reasoning. Learned from Sure's date format scoring (parse rate + reasonable range). Covers the DD/MM vs MM/DD problem that trips up every CSV importer. |
-| Number format detection | Four named conventions (US, European, Swiss/French, zero-decimal) | Covers all major international conventions. Learned from Maybe/Sure's four-format handling and hledger's decimal mark support. |
-| Running balance validation | Sequential delta check on balance column when present | Free validation signal that catches sign convention errors. No competitor uses balance columns for validation — they just store them. |
-| Trailing row removal | Regex patterns (format-specific + default set) | More robust than keyword matching alone. Default patterns compiled from hledger community rules and real-world bank exports. Saved formats store institution-specific patterns. |
-| Size guardrails | Soft warn + hard refuse with override flags | Prevents accidental import of wrong files. Learned from Maybe's 10k row limit. Override flags preserve power-user escape hatch. |
+| Multi-account | Auto-detected from account columns in data | Preserves distinct account identity within a single export |
+| Import batch tracking | UUID `import_id` on every row + `raw.import_log` table | Enables import reverting (critical for user confidence), history, and diagnostics |
+| Date disambiguation | Positional value >12 analysis + range reasonableness scoring | Deterministic and explainable; resolves DD/MM vs MM/DD ambiguity |
+| Number format detection | Four named conventions (US, European, Swiss/French, zero-decimal) | Covers common international conventions without locale guessing |
+| Running balance validation | Sequential delta check on balance column when present | Free validation signal that catches sign-convention errors |
+| Trailing row removal | Regex patterns (format-specific + default set) | More robust than keyword matching alone; saved formats retain institution-specific patterns |
+| Size guardrails | Soft warn + hard refuse with override flags | Prevents accidental import of wrong files while preserving a power-user escape hatch |
 
 ---
 
-## Design Rationale: Learnings from Open-Source Import Systems
+## Design Rationale
 
-This spec incorporates patterns and lessons from every major open-source personal
-finance project's import system. The goal is best-in-class import correctness — no
-open-source tool treats import as seriously as MoneyBin does.
+The importer must make a defensible decision from imperfect files without
+silently changing financial data:
 
-### Competitive landscape (import capabilities)
-
-| Project | Approach | Strengths | Gaps MoneyBin fills |
-|---|---|---|---|
-| **hledger** | Declarative `.rules` files per bank; user writes regex-based field mapping and conditional categorization | Most mature CSV rules system; `amount-in`/`amount-out` dual-field; regex conditionals; `include` for shared rules; community-contributed bank rules | No auto-detection (user must write rules); no confidence tiers; no multi-format support (CSV only); no migration story |
-| **Maybe/Sure** | User selects column labels in web UI; template reuse for repeat imports; date format scoring; four number format conventions | Date range reasonableness scoring; international number formats; import reverting; encoding auto-detection | No format auto-detection (manual column selection); no heuristic engine; no built-in bank profiles; no non-interactive/AI-agent path |
-| **Firefly III** | Separate Data Importer app; user assigns "roles" to columns via web UI; JSON config files saved per bank | Role-based column mapping; broad community; CAMT.052/053 support | No auto-detection; no confidence tiers; manual role assignment; no migration profiles |
-| **Actual Budget** | Dedicated importers per competitor (YNAB4, YNAB5); basic CSV with manual mapping | Good YNAB migration path; auto-rules from payee patterns (post-import) | No general CSV auto-detection; no format heuristics; no multi-format; limited to specific competitor migrations |
-| **Beancount `smart_importer`** | ML (SVM via scikit-learn) wrapping existing importers; predicts posting accounts and payees from historical data | Trains on your own ledger; improves over time; local-only processing | ML for categorization only, not format detection; requires existing labeled data; no standalone import capability |
-
-### What MoneyBin does that none of them do
-
-1. **Fully automatic detection with confidence** — no rules files to write, no columns to
-   manually assign. The heuristic engine detects format, delimiter, encoding, header row,
-   column mapping, sign convention, number format, and date format — then tells you how
-   confident it is and lets you override. Nobody else does this.
-2. **Non-interactive parity** — every interactive prompt has a flag equivalent. AI agents
-   (Claude Code, Codex) and shell scripts can import files without navigating interactive
-   prompts. No competitor offers this.
-3. **Migration as a first-class feature** — imported categories seed the auto-rule engine.
-   No competitor preserves categorization work across tool migrations.
-4. **Running balance validation** — when a balance column is present, use it to validate
-   amounts and sign convention. No competitor exploits this free signal.
-5. **Import reverting** — full undo of any import batch with one command. Maybe/Sure have
-   this; hledger, Firefly III, and Actual do not.
-
-### Patterns adopted from competitors
-
-| Pattern | Source | How adopted |
-|---|---|---|
-| Date format scoring by parse rate + range reasonableness | Maybe/Sure | Stage 3 Step 3 — score candidates on both axes |
-| Four named number format conventions (US, European, Swiss/French, zero-decimal) | Maybe/Sure | Stage 3 Step 3 — auto-detect and record in saved format |
-| Regex-based trailing row exclusion | hledger (`skip /pattern/`) | Stage 2 — default pattern set + format-specific patterns in YAML |
-| `amount-in` / `amount-out` dual-field handling | hledger | Stage 3 Step 5 — `split_debit_credit` sign convention |
-| Import batch lifecycle tracking | Maybe/Sure | Stage 5 — `raw.import_log` with UUID `import_id` on every row |
-| Encoding auto-detection with fallback chain | Maybe/Sure (rchardet) | Stage 1 — `charset-normalizer` (better library, same concept) |
-| Template/format reuse across imports | Maybe/Sure, Firefly III | `app.tabular_formats` — auto-saved detected formats |
-| ML for categorization, not format detection | Beancount `smart_importer` | Out-of-scope confirmation — rules-based detection is the right approach for format detection; ML value is in categorization (separate spec) |
+1. **Detection is deterministic and confidence-scored.** It identifies file
+   shape, delimiter, encoding, headers, column mapping, sign convention,
+   number format, and date format; it explains the result and asks for
+   confirmation when evidence is insufficient.
+2. **Interactive and agent workflows have the same capability.** Every prompt
+   has a non-interactive equivalent so a human, shell script, or AI client can
+   exercise the same import contract.
+3. **Migration preserves prior work.** Imported categories seed the auto-rule
+   engine while the raw source values remain available for audit and correction.
+4. **Source-provided balances are validation evidence.** When a running balance
+   is present, sequential deltas check amount direction and detect malformed
+   rows before they affect reports.
+5. **Every import is reversible.** `import_id` makes a batch a first-class unit
+   for history, diagnostics, and undo.
 
 ---
 
@@ -1781,7 +1757,7 @@ open-source tool treats import as seriously as MoneyBin does.
 |---|---|
 | Scanned/image PDFs | Requires OCR + vision model; different trust profile. See `smart-import-pdf.md` (Pillar C). |
 | AI-assisted parsing (Pillar F) | Consent-gated cloud dependency; separate spec. See `smart-import-ai-parsing.md`. |
-| ML-powered format detection | Rules-based heuristics cover the 80% case. Validated by hledger (rules files), Firefly III (role-based mapping), and Sure (template reuse) — all ship without ML for format detection. Beancount's `smart_importer` proves ML is valuable for *categorization* (post-import), not format detection (pre-import). Add ML if heuristics hit a ceiling in practice. |
+| ML-powered format detection | Format detection must be deterministic, explainable, and usable before a user has labeled history. Add ML only if measured heuristic failures show that those properties cannot meet the required coverage. |
 | JSON / JSONL import | JSON's nested data types (objects, arrays) map better to DuckDB's native STRUCT/LIST/MAP types than to a flattened tabular DataFrame. A future JSON importer should leverage `duckdb.read_json_auto()` for native type inference rather than squeezing through the tabular pipeline. Separate spec when needed. |
 | Investment transaction routing | Architecture supports it (field alias table, routing hook). Implementation deferred to M1J. |
 | Partitioned Parquet datasets | Single-file Parquet in v1. `polars.read_parquet()` accepts globs — minimal lift when needed. |
