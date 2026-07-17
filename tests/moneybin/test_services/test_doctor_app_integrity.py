@@ -571,7 +571,7 @@ def _upsert_settings(repo: AccountSettingsRepo, account_id: str) -> None:
         last_four="1234",
         account_subtype="checking",
         holder_category="personal",
-        iso_currency_code="USD",
+        currency_code="USD",
         credit_limit=None,
         archived=False,
         include_in_net_worth=True,

@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     last_four VARCHAR,
     account_subtype VARCHAR,
     holder_category VARCHAR,
-    iso_currency_code VARCHAR DEFAULT 'USD',
+    currency_code VARCHAR DEFAULT 'USD',
     credit_limit DECIMAL(18, 2),
     archived BOOLEAN DEFAULT FALSE,
     include_in_net_worth BOOLEAN DEFAULT TRUE

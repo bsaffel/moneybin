@@ -539,7 +539,7 @@ _NEW_ACCOUNT_META_KEYS = frozenset({
     "display_name",
     "account_subtype",
     "last_four",
-    "iso_currency_code",
+    "currency_code",
 })
 
 
@@ -569,7 +569,7 @@ def _validate_account_metadata(metadata: dict[str, dict[str, str]] | None) -> No
             display_name=meta.get("display_name"),
             last_four=meta.get("last_four"),
             account_subtype=meta.get("account_subtype"),
-            iso_currency_code=meta.get("iso_currency_code"),
+            currency_code=meta.get("currency_code"),
         )
 
 
@@ -990,7 +990,7 @@ class ImportService:
             display_name=meta.get("display_name"),
             last_four=meta.get("last_four"),
             account_subtype=meta.get("account_subtype"),
-            iso_currency_code=meta.get("iso_currency_code"),
+            currency_code=meta.get("currency_code"),
         )
         AccountSettingsRepo(self._db, audit=self._audit).set(
             account_id=settings.account_id,
@@ -999,7 +999,7 @@ class ImportService:
             last_four=settings.last_four,
             account_subtype=settings.account_subtype,
             holder_category=settings.holder_category,
-            iso_currency_code=settings.iso_currency_code,
+            currency_code=settings.currency_code,
             credit_limit=settings.credit_limit,
             archived=settings.archived,
             include_in_net_worth=settings.include_in_net_worth,
@@ -1111,7 +1111,7 @@ class ImportService:
                 confirmation. Unbound accounts with weak candidates gate for a
                 human caller.
             account_metadata: Map of source_account_key -> {display_name,
-                account_subtype, last_four, iso_currency_code} captured into
+                account_subtype, last_four, currency_code} captured into
                 app.account_settings for accounts minted this import.
 
         Returns:
