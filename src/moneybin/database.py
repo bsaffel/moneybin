@@ -335,6 +335,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "is_observed",
         "observation_source",
         "reconciliation_delta",
+        "currency_code",
     }),
 }
 

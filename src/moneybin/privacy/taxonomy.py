@@ -624,6 +624,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_ref": DataClass.RECORD_ID,
         "source_type": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "currency_code": DataClass.CURRENCY,
     },
     ("core", "fct_balances_daily"): {
         "account_id": DataClass.RECORD_ID,
@@ -632,6 +633,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "is_observed": DataClass.TXN_TYPE,
         "observation_source": DataClass.TXN_TYPE,
         "reconciliation_delta": DataClass.BALANCE,
+        "currency_code": DataClass.CURRENCY,
     },
     ("core", "fct_investment_lots"): {
         "lot_id": DataClass.RECORD_ID,
