@@ -34,5 +34,5 @@ def validate_note_text(text: str) -> None:
 
 def validate_currency_code(value: str) -> None:
     """Enforce ISO 4217 shape: exactly 3 uppercase letters."""
-    if not _CURRENCY_RE.match(value):
+    if not _CURRENCY_RE.fullmatch(value):
         raise ValueError("currency_code must be exactly 3 uppercase letters")
