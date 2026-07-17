@@ -54,6 +54,11 @@
   --mark-coin: #8A6A1C;
   /* brand-gold — wordmark "Bin" + DuckKey; bright gilt on the dark lead theme */
   --brand-gold: var(--accent-gilt);
+  /* heat-fill — calendar-heatmap intensity ramp; theme-responsive like --brand-gold.
+     Gilt holds a legible low-opacity ramp on the dark surface, but washes out on the
+     light paper (opaque gilt is only 2.5:1 there, below the 3:1 graphics floor — a
+     heatmap cell has no label to lean on), so the ramp deepens to brass on light. */
+  --heat-fill: var(--accent-gilt);
   /* categorical chart palette (shared across themes; equal-lightness oklch, hue-spread) */
   --chart-1: #C79B3B;
   --chart-2: #56A8A0;
@@ -95,4 +100,6 @@
   --mark-coin: #C79B3B;
   /* brand-gold — deepens to brass on light so identity marks stay legible */
   --brand-gold: var(--accent-brass);
+  /* heat-fill — heatmap ramp deepens to brass on paper (opaque bin 4.9:1, clears 3:1) */
+  --heat-fill: var(--accent-brass);
 }

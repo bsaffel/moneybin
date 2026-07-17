@@ -417,6 +417,16 @@ _CONTRAST_CONTRACTS = (
         4.5,
         'the wordmark "Bin" / DuckKey on the base canvas',
     ),
+    # Graphic (3.0), not text: the heatmap's fully-saturated bin. A gilt fill washes
+    # out to 2.5:1 on the light paper, so --heat-fill deepens to brass there; this
+    # locks the max bin above the graphics floor in both themes (the regression that
+    # a gilt-only ramp introduced and this contract now prevents recurring).
+    (
+        "--heat-fill",
+        "--bg-surface",
+        3.0,
+        "the heatmap's max-intensity bin (no per-cell label to lean on)",
+    ),
 )
 
 

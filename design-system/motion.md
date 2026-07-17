@@ -23,7 +23,11 @@ never hardcode a duration, easing, or color.
 ## Loops
 
 - **`sync` is the only loop, and only while a sync is in flight.** Linear
-  rotation over `--motion-sync` (~1.2s per turn), stopping dead at 0° the instant the sync completes.
+  rotation over `--motion-sync` (~1.2s per turn), stopping dead at 0° the instant
+  the sync completes. Continuous rotation is the one motion that is *not* eased — it
+  uses `linear` timing, never `--motion-ease`, since a spinner that accelerates and
+  decelerates each turn reads as broken. This is the sole exception to "reference the
+  easing token by name."
 - **No other looping or ambient motion.** No pulse, no breathing dot, no
   shimmer, no idle drift. A resting screen is still.
 
