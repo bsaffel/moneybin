@@ -236,6 +236,7 @@ Observation-grain balance view: OFX statement balances, tabular running balances
 | `source_type` | VARCHAR | `ofx` \| `tabular` \| `assertion`. |
 | `source_ref` | VARCHAR | File path or `'user'` for assertions. |
 | `updated_at` | TIMESTAMP | Underlying observation's `loaded_at` / `created_at` (UTC). |
+| `currency_code` | VARCHAR | ISO 4217; the observation's own captured currency, else inherited from `core.dim_accounts.currency_code`. |
 
 ### `core.fct_balances_daily`
 
@@ -251,6 +252,7 @@ Observed days use the most authoritative source (per-day precedence: `user asser
 | `is_observed` | BOOLEAN | TRUE if an authoritative observation exists for this date. |
 | `observation_source` | VARCHAR | Winning observation's source (`ofx`, `tabular`, `assertion`, `plaid`); NULL when interpolated. |
 | `reconciliation_delta` | DECIMAL(18,2) | `observed_balance − transaction_derived_balance`. Positive when the observed balance exceeds what transactions alone would predict; negative when below. NULL on interpolated days and the first observation. |
+| `currency_code` | VARCHAR | ISO 4217; carried forward from the winning observation (or its interpolated predecessor) on each day. |
 
 Logical grain key: `(account_id, balance_date)`.
 
