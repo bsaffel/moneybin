@@ -241,7 +241,8 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         disallowed = tables_outside_schemas(qtree, snapshot, _ALLOWED_QUERY_SCHEMAS)
         if disallowed:
             raise UserError(
-                "Queries are limited to the core and app schemas.",
+                "Queries are limited to these schemas: "
+                f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
                 code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
                 hint="Use the curated report views; raw/prep are internal schemas.",
                 details={"disallowed": sorted(set(disallowed))},
