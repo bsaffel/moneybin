@@ -23,13 +23,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   USD.** OFX's per-statement currency (`CURDEF`) and Plaid's per-balance
   currency were parsed but discarded; every transaction and balance landed
   with an unrecorded, assumed `USD`. Currency is now captured end-to-end
-  from OFX and Plaid, a transaction or balance with no currency of its own
-  inherits its account's currency setting, and — for the first time — an
-  amount whose currency genuinely isn't known stays unlabeled instead of
-  being guessed. `moneybin accounts set --currency` (or MCP
-  `accounts_set(currency_code=...)`) sets an account's currency explicitly.
-  Full currency-aware reporting (a home-currency setting and a guard against
-  silently summing mixed currencies) is still to come.
+  from OFX and Plaid, and a transaction or balance with no currency of its
+  own inherits its account's explicit currency setting when one exists.
+  `moneybin accounts set --currency` (or MCP
+  `accounts_set(currency_code=...)`) sets that setting. An account with no
+  explicit setting still defaults to `USD` — closing that gap with a
+  genuine "unknown, not guessed" terminal case is scoped to a follow-up
+  (M1K.1 Part B), alongside full currency-aware reporting (a home-currency
+  setting and a guard against silently summing mixed currencies).
 - **Credit-card PDF statements now import with correct signs.** A statement that
   names itself a credit card (via its required disclosures — "minimum payment",
   "credit limit", and the like) derives the inverted convention
