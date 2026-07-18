@@ -414,4 +414,8 @@ def test_class_of_key_resolves_reports_via_declared_map() -> None:
 
 
 def test_class_of_key_unknown_reports_column_is_none() -> None:
-    assert _class_of_key(("reports", "net_worth", "no_such_column")) is None
+    # Real declared report table, but a column it does not declare -> None.
+    # (Completeness guarantees real columns ARE declared; this probes the
+    # known-table / unknown-column path specifically.)
+    (schema, table), _cols = next(iter(reports_class_map().items()))
+    assert _class_of_key((schema, table, "no_such_column_xyz")) is None

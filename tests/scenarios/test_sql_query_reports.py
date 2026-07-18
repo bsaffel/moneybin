@@ -25,38 +25,36 @@ def _masking_assertions(db: Database) -> list[AssertionResult]:
     for runner in ALL_REPORTS:
         spec = spec_of(runner)
         critical = [c for c, dc in spec.classes.items() if dc.tier is Tier.CRITICAL]
-        if not critical:
-            continue
-        col = critical[0]
-        res = execute_sql_query(
-            db,
-            f"SELECT {col} FROM {spec.view.full_name} LIMIT 5",  # noqa: S608  # column/view from declared spec, not user input
-            max_rows=5,
-        )
-        vals = [r[col] for r in res.records if r.get(col) is not None]
-        if vals:
-            verified_nonempty += 1
-        masked = all(str(v).startswith("****") for v in vals)
-        tier_ok = res.tier is Tier.CRITICAL
-        results.append(
-            AssertionResult(
-                name=f"{spec.name}_{col}_masked_via_sql_query",
-                passed=masked and tier_ok,
-                details={
-                    "view": spec.view.full_name,
-                    "column": col,
-                    "sample": vals[:1],
-                },
-                error=(
-                    None
-                    if masked and tier_ok
-                    else (
-                        f"{spec.name}.{col} via sql_query: masked={masked}, "
-                        f"tier={res.tier} (expected CRITICAL), sample={vals[:1]}"
-                    )
-                ),
+        for col in critical:
+            res = execute_sql_query(
+                db,
+                f"SELECT {col} FROM {spec.view.full_name} LIMIT 5",  # noqa: S608  # column/view from declared spec, not user input
+                max_rows=5,
             )
-        )
+            vals = [r[col] for r in res.records if r.get(col) is not None]
+            if vals:
+                verified_nonempty += 1
+            masked = all(str(v).startswith("****") for v in vals)
+            tier_ok = res.tier is Tier.CRITICAL
+            results.append(
+                AssertionResult(
+                    name=f"{spec.name}_{col}_masked_via_sql_query",
+                    passed=masked and tier_ok,
+                    details={
+                        "view": spec.view.full_name,
+                        "column": col,
+                        "sample": vals[:1],
+                    },
+                    error=(
+                        None
+                        if masked and tier_ok
+                        else (
+                            f"{spec.name}.{col} via sql_query: masked={masked}, "
+                            f"tier={res.tier} (expected CRITICAL), sample={vals[:1]}"
+                        )
+                    ),
+                )
+            )
     # Structural guard: the point of this test is to observe REAL masked CRITICAL
     # values. Every per-report assertion above passes vacuously on an empty result
     # (all([]) is True), so require at least one report to have returned a
