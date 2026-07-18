@@ -19,6 +19,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The CLI's `moneybin accounts set --currency` flag is unaffected.
 
 ### Fixed
+- **Real credit-card PDF statements now extract their transactions instead of
+  falling back to a raw dump.** Chase card statements (and others shaped like
+  them) print their transaction table in three ways no synthetic sample did: a
+  column header wrapped across two physical lines ("Date of" above
+  "Transaction … $ Amount"), section sub-headers ("PAYMENTS AND OTHER CREDITS",
+  "PURCHASE", "INTEREST CHARGED") interleaved among the rows, and dates printed
+  as MM/DD with the year only on a separate "Opening/Closing Date" line.
+  Previously every such statement extracted zero transactions and was stored as
+  an unparsed seed; now the table is reconstructed from the rows' shape, each
+  row's year is resolved from the statement's billing period (correct even when
+  the cycle crosses year-end), and the statement imports like any other. A
+  statement whose columns genuinely can't be derived deterministically still
+  escalates to the assisted reader rather than being silently seeded. (#329)
 - **Non-USD transactions and balances are no longer silently relabeled
   USD.** OFX's per-statement currency (`CURDEF`) and Plaid's per-balance
   currency were parsed but discarded; every transaction and balance landed

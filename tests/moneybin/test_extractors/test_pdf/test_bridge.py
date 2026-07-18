@@ -285,28 +285,72 @@ def test_parse_bridge_response_rejects_recipe_without_primary_date_field() -> No
         parse_bridge_response({"recipe": no_date, "rows": []})
 
 
-def test_parse_bridge_response_rejects_yearless_date_format() -> None:
-    """A date field whose explicit ``date_format`` has no year directive is rejected.
+_YEARLESS_FIELDS: list[dict[str, Any]] = [
+    {"name": "date", "pattern": r"\d{2}/\d{2}", "cast": "date", "date_format": "%m/%d"},
+    {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+]
+_PERIOD_ANCHORS: list[dict[str, Any]] = [
+    {
+        "name": "period_start",
+        "pattern": r"Cycle\s+(\d{2}/\d{2}/\d{2})",
+        "cast": "date",
+    },
+    {
+        "name": "period_end",
+        "pattern": r"Cycle\s+\d{2}/\d{2}/\d{2}\s*-\s*(\d{2}/\d{2}/\d{2})",
+        "cast": "date",
+    },
+]
 
-    ``%m/%d`` (no ``%Y``/``%y``) makes ``strptime`` default to year 1900;
-    reconciliation only checks amount totals, so the wrong dates would load
-    silently. Reject at parse time as ``bridge_response_invalid``.
+
+def test_parse_bridge_response_accepts_yearless_with_default_period_anchors() -> None:
+    """A year-less date_format is allowed when metadata_anchors is None.
+
+    None falls back to DEFAULT_ANCHORS, which carry the billing-period patterns the
+    executor's ``_resolve_yearless_date`` needs. The executor never writes a 1900
+    date — a year-less row with no capturable period raises and is skipped — so the
+    bridge admits the recipe rather than pre-rejecting a resolvable one.
+    """
+    yearless = {**_VALID_RECIPE_DICT, "fields": _YEARLESS_FIELDS}
+    response = parse_bridge_response({"recipe": yearless, "rows": []})
+    assert response.recipe.fields[0].date_format == "%m/%d"
+
+
+def test_parse_bridge_response_accepts_yearless_with_declared_period_anchors() -> None:
+    """A year-less date_format is allowed when the recipe declares period anchors.
+
+    This is what makes the deterministic path's yearless-no-recognised-period
+    decline a PRODUCTIVE bridge escalation: the agent reads the period off a
+    non-default label, declares it as period_start/period_end anchors, and the
+    statement imports instead of seeding.
+    """
+    yearless = {
+        **_VALID_RECIPE_DICT,
+        "fields": _YEARLESS_FIELDS,
+        "metadata_anchors": _PERIOD_ANCHORS,
+    }
+    response = parse_bridge_response({"recipe": yearless, "rows": []})
+    assert response.recipe.fields[0].date_format == "%m/%d"
+
+
+def test_parse_bridge_response_rejects_yearless_without_period_anchors() -> None:
+    """A year-less date_format with an explicit anchor list lacking the period is rejected.
+
+    An explicit metadata_anchors list overrides DEFAULT_ANCHORS, so one that omits
+    period_start/period_end leaves the executor no billing period to bracket the
+    year — every year-less row would fail to cast. Reject at parse time with an
+    actionable message rather than silently reconcile-fail the whole statement.
     """
     from moneybin.extractors.pdf.bridge import BridgeResponseError
 
     yearless = {
         **_VALID_RECIPE_DICT,
-        "fields": [
-            {
-                "name": "date",
-                "pattern": r"\d{2}/\d{2}",
-                "cast": "date",
-                "date_format": "%m/%d",
-            },
-            {"name": "amount", "pattern": r"-?\d+\.\d{2}", "cast": "decimal"},
+        "fields": _YEARLESS_FIELDS,
+        "metadata_anchors": [
+            {"name": "account_id", "pattern": r"Account\s+(\d+)", "cast": "str"},
         ],
     }
-    with pytest.raises(BridgeResponseError, match="year"):
+    with pytest.raises(BridgeResponseError, match="period_start and period_end"):
         parse_bridge_response({"recipe": yearless, "rows": []})
 
 

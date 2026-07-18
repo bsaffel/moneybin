@@ -51,16 +51,24 @@ DEFAULT_ANCHORS: dict[str, list[str]] = {
     "period_start": [
         r"Statement\s+Period:\s+(\d{2}/\d{2}/\d{4})",
         r"From:\s+(\d{2}/\d{2}/\d{4})",
+        # Credit-card "Opening/Closing Date  MM/DD/YY - MM/DD/YY" (2-digit year).
+        # This line is also the year source for MM/DD transaction rows that
+        # print no year of their own — see auto_derive / execute_recipe.
+        r"Opening/Closing\s+Date\s+(\d{2}/\d{2}/\d{2})\b",
     ],
     "period_end": [
         r"(?:through|to|–|-)\s+(\d{2}/\d{2}/\d{4})\s*$",
         r"To:\s+(\d{2}/\d{2}/\d{4})",
+        r"Opening/Closing\s+Date\s+\d{2}/\d{2}/\d{2}\s*-\s*(\d{2}/\d{2}/\d{2})\b",
     ],
     "opening_balance": [
         r"Beginning\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
+        # Chase credit-card summary label.
+        r"Previous\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
     ],
     "closing_balance": [
         r"Ending\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
+        r"New\s+Balance[:\s]+\$?([\d,]+\.\d{2})",
     ],
 }
 
@@ -130,13 +138,23 @@ def _first_match(text: str, patterns: list[str]) -> str | None:
 
 
 def _parse_date(raw: str | None) -> date | None:
-    """Parse MM/DD/YYYY string; return None on failure or None input."""
+    """Parse a MM/DD/YYYY, MM/DD/YY, or ISO YYYY-MM-DD statement date.
+
+    None on failure or None input. The 2-digit-year form is what credit-card
+    "Opening/Closing Date" lines print (``12/23/24``); strptime's ``%y`` maps it to
+    2000-2068 per POSIX, which is correct for every statement this parser will ever
+    see. ISO is accepted so a bridge-authored period anchor that captures an
+    ISO-shaped date still resolves the year for a year-less statement (the year-less
+    executor brackets each MM/DD row against this period).
+    """
     if raw is None:
         return None
-    try:
-        return datetime.strptime(raw, "%m/%d/%Y").date()
-    except ValueError:
-        return None
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _parse_decimal(raw: str | None) -> Decimal | None:

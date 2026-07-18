@@ -24,12 +24,14 @@ from __future__ import annotations
 import logging
 import re as _stdlib_re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 import regex as _re
 from pydantic import BaseModel, Field, model_validator
+
+from moneybin.extractors.pdf.metadata import capture_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -170,26 +172,34 @@ def _carve_region(text: str, anchors: RegionAnchors) -> str:
     The fallback is logged so a misconfigured recipe is observable.
     """
     start_idx = text.find(anchors.start_anchor)
-    # Search for end_anchor only AFTER start_anchor — a transaction
-    # description containing the end-anchor text (e.g. "Year-to-Date
-    # Total: $5,000" or a merchant named "Total Kitchen") would otherwise
-    # truncate the carve region and silently drop every subsequent row.
-    after_start = start_idx + len(anchors.start_anchor) if start_idx != -1 else 0
-    end_idx = text.find(anchors.end_anchor, after_start)
-    if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
-        # The full-text fallback usually results in reconciliation failing
-        # later (summary/balance rows look like transactions) and silently
-        # routes to seed. Surface the cause here so operators tailing logs
-        # can see when an end_anchor mismatch is the root cause — most real
-        # bank PDFs use "Totals" / "TOTAL" / "Total Transactions" rather
-        # than the auto-derive default of "Total:".
+    if start_idx == -1:
+        # Can't locate the region at all — fall back to the full text so the
+        # executor can still attempt extraction (usually reconciliation then fails
+        # and the statement routes to seed). Surface the cause for operators.
         logger.warning(
-            f"row_region anchors not found in document "
-            f"(start_anchor={anchors.start_anchor!r} found={start_idx != -1}, "
-            f"end_anchor={anchors.end_anchor!r} found={end_idx != -1}); "
-            f"falling back to full text — reconciliation may fail downstream"
+            f"row_region start_anchor {anchors.start_anchor!r} not found — "
+            f"falling back to full text; reconciliation may fail downstream"
         )
         return text
+    # Search for end_anchor only AFTER start_anchor — a transaction description
+    # containing the end-anchor text (e.g. "Year-to-Date Total: $5,000" or a
+    # merchant named "Total Kitchen") would otherwise truncate the carve region and
+    # silently drop every subsequent row.
+    after_start = start_idx + len(anchors.start_anchor)
+    end_idx = text.find(anchors.end_anchor, after_start)
+    if end_idx == -1:
+        # Start found but no end anchor: carve to end of document rather than
+        # returning the WHOLE text. Summary/preamble rows ABOVE the start anchor
+        # (which the deriver deliberately excluded) must not be executed as
+        # transactions — most real bank PDFs use "Totals"/"TOTAL"/"Total
+        # Transactions" rather than the auto-derive default of "Total:", so this
+        # fallback fires routinely. Mid-table lines below the start are still
+        # included but aren't transaction-shaped, so the executor skips them.
+        logger.warning(
+            f"row_region end_anchor {anchors.end_anchor!r} not found after start — "
+            f"carving to end of document"
+        )
+        return text[after_start:]
     return text[after_start:end_idx]
 
 
@@ -216,6 +226,150 @@ def _cast(field: FieldExtraction, raw: str) -> Any:
     raise ValueError(f"Unknown cast type: {field.cast!r}")
 
 
+def is_yearless_date_format(date_format: str | None) -> bool:
+    """True when a strptime format carries no year token (e.g. ``"%m/%d"``).
+
+    Credit-card statements print transaction dates as MM/DD; the year lives only
+    on a separate billing-period line. A year-less date can't be cast on its own —
+    it needs the statement period to bracket the year (``_resolve_yearless_date``).
+    """
+    # .lower() collapses %Y onto %y, so one substring check catches both the
+    # 4-digit (%Y) and 2-digit (%y) year directives. A case-sensitive check would
+    # silently stop recognising %Y and misclassify a year-bearing format as
+    # year-less.
+    return date_format is not None and "%y" not in date_format.lower()
+
+
+def group_anchors(
+    anchors: list[FieldExtraction] | None,
+) -> dict[str, list[str]] | None:
+    """Regroup a recipe's flat metadata_anchors into capture_metadata's dict shape.
+
+    Recipes store one FieldExtraction per (field, pattern) alternative; capture
+    wants ``{field: [pattern, ...]}``. Tri-state, preserved by both callers:
+    ``None`` → capture_metadata falls back to DEFAULT_ANCHORS; an empty list →
+    ``{}`` → the caller deliberately declines metadata capture; a populated list →
+    the grouped dict. Shared by the executor (``_statement_period``) and the replay
+    pipeline (``routing._run_recipe_pipeline``) so the transformation lives once.
+    """
+    if anchors is None:
+        return None
+    grouped: dict[str, list[str]] = {}
+    for a in anchors:
+        grouped.setdefault(a.name, []).append(a.pattern)
+    return grouped
+
+
+def _statement_period(recipe: Recipe, document_text: str) -> tuple[date, date] | None:
+    """The (opening, closing) billing dates, captured only when a field needs them.
+
+    None when no field is year-less (the period is irrelevant) or the document
+    lacks both period dates — year-less rows then fail to cast and are skipped,
+    and derive_recipe refuses to author such a recipe in the first place.
+    """
+    if not any(
+        f.cast == "date" and is_yearless_date_format(f.date_format)
+        for f in recipe.fields
+    ):
+        return None
+    md = capture_metadata(document_text, group_anchors(recipe.metadata_anchors))
+    if md.period_start is None or md.period_end is None:
+        return None
+    return (md.period_start, md.period_end)
+
+
+# Posting drift can put a row a little outside the printed cycle; roughly one
+# billing cycle of slack absorbs that. A year-less MM/DD landing further out has
+# no correct year (an OCR garble, a misparsed line) — the resolver refuses rather
+# than guess one, since reconciliation sums amounts and can't catch a wrong date.
+_MAX_YEARLESS_DRIFT_DAYS = 45
+
+
+class YearlessDateError(ValueError):
+    """A year-less date row could not be resolved to a real year.
+
+    Distinct from an ordinary cast failure so ``execute_recipe`` can tell "this
+    row is junk, skip it" (bad amount, a non-row line that happened to match)
+    apart from "a real transaction row can't be placed in time." The latter must
+    fail the whole extraction rather than silently drop the row: a dropped row
+    whose amount nets ~zero against another would still reconcile, losing
+    transactions with nothing surfaced (the same silent-partial-drop class the
+    shape-width refusal closes). Routing catches this and routes to the bridge.
+    """
+
+
+def _resolve_yearless_date(
+    raw: str, date_format: str, period: tuple[date, date] | None
+) -> date:
+    """Resolve a year-less ``MM/DD`` date to a full date via the billing period.
+
+    The cycle can cross a year boundary (``12/23/24 - 01/22/25``), so the year is
+    per-row: pick whichever of the period's two years lands the date inside the
+    cycle. A date a day or two outside the printed window (posted dates drift)
+    falls back to the closest year, ties going to the closing year — but only
+    within ``_MAX_YEARLESS_DRIFT_DAYS`` of the cycle; a date further out is an
+    anomaly with no correct year and is rejected rather than silently guessed.
+
+    Raises ``YearlessDateError`` on any failure to place the date.
+    """
+    if period is None:
+        raise YearlessDateError("year-less date requires a statement period")
+    start, end = period
+    # Parse against an explicit leap year so a 02/29 date extracts its month/day
+    # instead of tripping strptime's implicit non-leap 1900 default (which raises
+    # before the candidate-year bracketing below could try a real leap year); the
+    # actual year is bracketed from the period.
+    try:
+        parsed = datetime.strptime(f"{raw} 2000", f"{date_format} %Y")
+    except ValueError as exc:
+        raise YearlessDateError(f"cannot parse year-less date {raw!r}") from exc
+    # Bracket the year with the period's own two years AND the years immediately
+    # adjacent to them. The period years place a row inside the cycle; the
+    # adjacent years cover a posted date that drifts just past a year boundary —
+    # e.g. 12/31 on a 01/01-01/31 cycle belongs to the PRIOR year. Without them a
+    # within-one-calendar-year period offers a single candidate year, so such a
+    # row can only resolve inside the period's year and is stored ~a year late.
+    candidate_years = sorted({start.year - 1, start.year, end.year, end.year + 1})
+    candidates: list[date] = []
+    for year in candidate_years:
+        try:
+            candidates.append(date(year, parsed.month, parsed.day))
+        except ValueError:
+            continue  # e.g. 02/29 in a non-leap candidate year
+    if not candidates:
+        raise YearlessDateError(f"cannot place year-less date {raw!r} in period")
+    within = [c for c in candidates if start <= c <= end]
+    if within:
+        return within[0]
+    # Outside the printed window: closest to the cycle, ties → later year.
+    closest = min(
+        candidates,
+        key=lambda c: (min(abs((c - start).days), abs((c - end).days)), -c.year),
+    )
+    drift = min(abs((closest - start).days), abs((closest - end).days))
+    if drift > _MAX_YEARLESS_DRIFT_DAYS:
+        raise YearlessDateError(
+            f"year-less date {raw!r} resolves {drift} days outside the billing "
+            f"period — beyond posting drift; refusing to guess a year"
+        )
+    return closest
+
+
+def _cast_field(
+    field: FieldExtraction, raw: str, period: tuple[date, date] | None
+) -> Any:
+    """Cast one field, resolving a year-less date against the statement period."""
+    # The explicit `is not None` is redundant with is_yearless_date_format (which
+    # is False for None) but narrows date_format to str for _resolve_yearless_date.
+    if (
+        field.cast == "date"
+        and field.date_format is not None
+        and is_yearless_date_format(field.date_format)
+    ):
+        return _resolve_yearless_date(raw, field.date_format, period)
+    return _cast(field, raw)
+
+
 # ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
@@ -238,6 +392,9 @@ def execute_recipe(recipe: Recipe, document_text: str) -> ExtractedRows:
         )
     rows: list[dict[str, Any]] = []
     region = _carve_region(document_text, recipe.row_region)
+    # Year-less MM/DD date rows resolve their year from the statement's billing
+    # period, extracted from the document once here (None when no field needs it).
+    period = _statement_period(recipe, document_text)
 
     for line in region.splitlines():
         if not line.strip():
@@ -267,7 +424,12 @@ def execute_recipe(recipe: Recipe, document_text: str) -> ExtractedRows:
                 break
             try:
                 # group(0) == validated raw.strip(); fullmatch is the gate.
-                row[fld.name] = _cast(fld, m.group(0))
+                row[fld.name] = _cast_field(fld, m.group(0), period)
+            except YearlessDateError:
+                # A real transaction row that can't be placed in time fails the
+                # WHOLE extraction rather than being silently skipped like junk —
+                # the caller routes to seed/bridge. See YearlessDateError.
+                raise
             except (ValueError, OverflowError, ArithmeticError):
                 failed = True
                 break
