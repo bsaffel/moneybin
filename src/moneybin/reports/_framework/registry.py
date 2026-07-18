@@ -22,6 +22,20 @@ if TYPE_CHECKING:
     import typer
     from fastmcp import FastMCP
 
+_extension_reports: dict[str, ReportSpec] = {}
+
+
+def register_extension_report(spec: ReportSpec) -> None:
+    """Add one discovered SQL-backed extension report by stable full ID."""
+    if spec.report_id in _extension_reports:
+        raise ValueError(f"duplicate extension report_id: {spec.report_id}")
+    _extension_reports[spec.report_id] = spec
+
+
+def extension_report_specs() -> tuple[ReportSpec, ...]:
+    """Return explicitly registered extension reports in deterministic ID order."""
+    return tuple(_extension_reports[key] for key in sorted(_extension_reports))
+
 
 def spec_of(runner: Runner) -> ReportSpec:
     spec = getattr(runner, "_report_spec", None)

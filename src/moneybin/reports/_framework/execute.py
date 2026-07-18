@@ -9,8 +9,12 @@ than live lineage on a user query.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Protocol, cast
+
+from pydantic import JsonValue
 
 from moneybin.database import Database
 from moneybin.mcp.privacy import tier_to_sensitivity
@@ -19,7 +23,7 @@ from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.classify import classify_columns
-from moneybin.reports._framework.contract import ReportSpec
+from moneybin.reports._framework.contract import ReportSemantics, ReportSpec
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,7 @@ class ReportResult:
     truncated: bool
     actions: list[str] = field(default_factory=list)
     period: str | None = None
+    display_currency: str = "USD"
 
     @property
     def classes_returned(self) -> list[str]:
@@ -60,12 +65,77 @@ class ReportResult:
             classes_returned=self.classes_returned,
             actions=self.actions or None,
             period=self.period,
+            display_currency=self.display_currency,
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CatalogReportResult(ReportResult):
+    """A report result tagged with its catalog identity and financial meaning."""
+
+    report_id: str
+    parameters: Mapping[str, JsonValue]
+    semantics: ReportSemantics
+    provenance: tuple[str, ...]
+
+
+class _CatalogSpec(Protocol):
+    """The result-building fields shared by SQL and service report specs."""
+
+    @property
+    def report_id(self) -> str: ...
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def classes(self) -> Mapping[str, DataClass]: ...
+
+    @property
+    def semantics(self) -> ReportSemantics: ...
+
+
+def build_catalog_result(
+    spec: _CatalogSpec,
+    *,
+    parameters: Mapping[str, JsonValue],
+    records: list[dict[str, Any]],
+    columns: list[str],
+    max_rows: int,
+    actions: list[str] | None = None,
+    period: str | None = None,
+) -> CatalogReportResult:
+    """Redact and truncate tabular rows using the shared report rules."""
+    truncated = len(records) > max_rows
+    limited = records[:max_rows]
+
+    # ServiceReportSpec intentionally matches the classification-facing subset
+    # of ReportSpec. The cast keeps classify_columns' existing public signature
+    # stable while both kinds use its fail-closed undeclared-column behavior.
+    col_classes = classify_columns(cast(ReportSpec, spec), columns)
+    redacted = redact_records(limited, col_classes, consent=None)
+
+    return CatalogReportResult(
+        report_id=spec.report_id,
+        parameters=MappingProxyType(dict(parameters)),
+        semantics=spec.semantics,
+        provenance=spec.semantics.provenance,
+        records=redacted,
+        columns=columns,
+        output_classes=col_classes,
+        tier=derive_query_tier(col_classes),
+        # Match SQL execution: when capped, report "at least one more" without
+        # paying for an exact count over a potentially expensive data product.
+        total_count=max_rows + 1 if truncated else len(redacted),
+        truncated=truncated,
+        actions=actions or [],
+        period=period,
+    )
 
 
 def run_report(
     spec: ReportSpec, db: Database, *, max_rows: int, **params: Any
-) -> ReportResult:
+) -> CatalogReportResult:
     """Execute ``spec``'s runner with ``params`` and return redacted results.
 
     Fetches one extra row to detect truncation, classifies each output column
@@ -75,26 +145,14 @@ def run_report(
     cursor = db.execute(rq.sql, list(rq.params))
     columns = [d[0] for d in cursor.description] if cursor.description else []
     rows = cursor.fetchmany(max_rows + 1)
-    truncated = len(rows) > max_rows
-    records = [dict(zip(columns, r, strict=False)) for r in rows[:max_rows]]
+    records = [dict(zip(columns, r, strict=False)) for r in rows]
 
-    # Classify output columns from the report's DECLARED classes map (ADR-013),
-    # then mask via the shared redaction path. An undeclared column fails closed.
-    # consent=None mirrors the sibling sql_query surface (sql_query.py:280): both
-    # MCP and CLI report calls always mask CRITICAL columns — the CLI posture is
-    # intentionally identical to MCP, not a per-surface divergence.
-    col_classes = classify_columns(spec, columns)
-    redacted = redact_records(records, col_classes, consent=None)
-
-    return ReportResult(
-        records=redacted,
+    return build_catalog_result(
+        spec,
+        parameters=cast(Mapping[str, JsonValue], params),
+        records=records,
         columns=columns,
-        output_classes=col_classes,
-        tier=derive_query_tier(col_classes),
-        # total_count > returned makes has_more true downstream; +1 means "at
-        # least one more row" without paying for an exact COUNT(*).
-        total_count=max_rows + 1 if truncated else len(records),
-        truncated=truncated,
         actions=list(rq.actions),
         period=rq.period,
+        max_rows=max_rows,
     )
