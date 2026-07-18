@@ -119,7 +119,7 @@
       },
       "standard-45": {
         "calls": [
-          {"name": "transactions_categorize_rules_set", "arguments": {"rules": [{"matcher": {"type": "contains", "value": "DEMO MARKET"}, "category": "Groceries", "state": "present"}], "reapply": false}},
+          {"name": "transactions_categorize_rules_set", "arguments": {"rules": [{"kind": "rule", "matcher": {"type": "contains", "value": "DEMO MARKET"}, "category": "Groceries", "priority": 100, "state": "present"}], "reapply": false}},
           {"name": "reviews", "arguments": {"kind": "categorization", "status": "pending", "sort": "impact"}}
         ],
         "completed": true,

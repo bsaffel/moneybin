@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any, get_args
 
 import pytest
+from jsonschema import Draft202012Validator
+from jsonschema import validate as validate_json_schema
+from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from pydantic import TypeAdapter, ValidationError
 
 from moneybin.mcp.write_contracts import (
@@ -57,6 +60,140 @@ def _forbidden_fields(then_schema: dict[str, Any]) -> set[str]:
         for branch in then_schema["not"]["anyOf"]
         for required in branch["required"]
     }
+
+
+@pytest.mark.parametrize(
+    ("contract", "valid_payload", "required_field"),
+    [
+        (
+            CategorizationDecisionRequest,
+            {
+                "kind": "categorization",
+                "decision_id": "cat_1",
+                "decision": "accept",
+                "category": "Food",
+            },
+            "category",
+        ),
+        (
+            AccountLinkDecisionRequest,
+            {
+                "kind": "account_link",
+                "decision_id": "decision_1",
+                "decision": "accept",
+                "target_id": "account_1",
+            },
+            "target_id",
+        ),
+        (
+            CategoryStateRequest,
+            {"kind": "category", "state": "present", "category": "Food"},
+            "category",
+        ),
+        (
+            CategoryStateRequest,
+            {"kind": "category", "state": "inactive", "category_id": "cat_1"},
+            "category_id",
+        ),
+        (
+            CategoryStateRequest,
+            {"kind": "category", "state": "absent", "category_id": "cat_1"},
+            "category_id",
+        ),
+        (
+            MerchantStateRequest,
+            {
+                "kind": "merchant",
+                "state": "present",
+                "raw_pattern": "CAFE",
+                "canonical_name": "Cafe",
+            },
+            "raw_pattern",
+        ),
+        (
+            MerchantStateRequest,
+            {
+                "kind": "merchant",
+                "state": "present",
+                "raw_pattern": "CAFE",
+                "canonical_name": "Cafe",
+            },
+            "canonical_name",
+        ),
+        (
+            MerchantStateRequest,
+            {
+                "kind": "merchant",
+                "state": "absent",
+                "merchant_id": "merchant_1",
+            },
+            "merchant_id",
+        ),
+        (
+            CategorizationRuleTarget,
+            {
+                "kind": "rule",
+                "state": "present",
+                "matcher": {"type": "contains", "value": "Cafe"},
+                "category": "Food",
+                "priority": 10,
+            },
+            "matcher",
+        ),
+        (
+            CategorizationRuleTarget,
+            {
+                "kind": "rule",
+                "state": "present",
+                "matcher": {"type": "contains", "value": "Cafe"},
+                "category": "Food",
+                "priority": 10,
+            },
+            "category",
+        ),
+        (
+            CategorizationRuleTarget,
+            {
+                "kind": "rule",
+                "state": "present",
+                "matcher": {"type": "contains", "value": "Cafe"},
+                "category": "Food",
+                "priority": 10,
+            },
+            "priority",
+        ),
+        (
+            CategorizationRuleTarget,
+            {"kind": "rule", "state": "inactive", "rule_id": "rule_1"},
+            "rule_id",
+        ),
+        (
+            CategorizationRuleTarget,
+            {"kind": "rule", "state": "absent", "rule_id": "rule_1"},
+            "rule_id",
+        ),
+    ],
+)
+def test_conditional_schemas_accept_valid_and_reject_explicit_null(
+    contract: Any,
+    valid_payload: dict[str, object],
+    required_field: str,
+) -> None:
+    schema = contract.model_json_schema()
+    Draft202012Validator.check_schema(schema)
+
+    validate_json_schema(valid_payload, schema, cls=Draft202012Validator)
+    contract.model_validate(valid_payload)
+    null_payload = valid_payload | {required_field: None}
+    with pytest.raises(JSONSchemaValidationError):
+        validate_json_schema(null_payload, schema, cls=Draft202012Validator)
+    with pytest.raises(ValidationError):
+        contract.model_validate(null_payload)
+    wrong_type_payload: dict[str, object] = valid_payload | {required_field: [None]}
+    with pytest.raises(JSONSchemaValidationError):
+        validate_json_schema(wrong_type_payload, schema, cls=Draft202012Validator)
+    with pytest.raises(ValidationError):
+        contract.model_validate(wrong_type_payload)
 
 
 def test_annotation_schema_requires_variant_fields() -> None:
@@ -693,11 +830,9 @@ def test_proposed_rule_fixture_uses_the_contract_target_state() -> None:
     assert target["state"] == "present"
     assert "matcher" in target
     assert "match" not in target
-    CategorizationRuleTarget.model_validate({
-        "kind": "rule",
-        "priority": 100,
-        **target,
-    })
+    validated = CategorizationRuleTarget.model_validate(target)
+    assert validated.kind == "rule"
+    assert validated.priority == 100
 
 
 @pytest.mark.parametrize(

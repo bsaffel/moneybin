@@ -52,14 +52,18 @@ def _conditional_schema_branch(
     properties: dict[str, JsonValue] | None = None,
 ) -> dict[str, JsonValue]:
     then: dict[str, JsonValue] = {}
+    conditional_properties = dict(properties or {})
     if required:
         then["required"] = list(required)
+        conditional_properties.update({
+            name: {"not": {"type": "null"}} for name in required
+        })
     if forbidden:
         then["not"] = {
             "anyOf": [{"required": [name]} for name in forbidden],
         }
-    if properties:
-        then["properties"] = properties
+    if conditional_properties:
+        then["properties"] = conditional_properties
     return {
         "if": {
             "properties": {field: {"const": value}},
