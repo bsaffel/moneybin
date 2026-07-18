@@ -109,6 +109,21 @@ def _classes(sql: str, db: Database) -> dict[str, DataClass]:
     return resolve_output_classes(expand_star(parse_cached(sql), snap), snap)
 
 
+def _routing_chain_ctes(depth: int) -> list[str]:
+    """CTE bodies passing ``routing_number`` through ``depth`` levels of aliasing.
+
+    Each level adds one nested scope the classifier must walk, so a large
+    ``depth`` is how a test drives the resolver past ``_MAX_SCOPE_DEPTH``.
+    """
+    ctes = ["c0 AS (SELECT routing_number AS v FROM core.dim_accounts)"]
+    ctes += [f"c{i} AS (SELECT v FROM c{i - 1})" for i in range(1, depth + 1)]  # noqa: S608  # test input string, not executing SQL
+    return ctes
+
+
+def _with_query(ctes: list[str], final_select: str) -> str:
+    return "WITH " + ", ".join(ctes) + " " + final_select
+
+
 def test_direct_column(populated_db: Database) -> None:
     assert _classes("SELECT amount FROM core.fct_transactions", populated_db) == {
         "amount": DataClass.TXN_AMOUNT
@@ -238,21 +253,99 @@ def test_unresolvable_projection_falls_back_to_max_input_tier(
     assert out["credit_limit"].tier is Tier.CRITICAL
 
 
-def test_cte_outer_column_falls_back_to_max_inner_tier(populated_db: Database) -> None:
-    """CTE outer SELECT cannot resolve column to schema directly; falls back to max input tier.
+def test_unqualified_cte_column_resolves_to_base_table_class(
+    populated_db: Database,
+) -> None:
+    """An UNQUALIFIED CTE column resolves precisely, and keeps CRITICAL.
 
-    The CTE inner query references routing_number (CRITICAL) and credit_limit
-    (HIGH). The outer SELECT's routing_number projection hits the fallback (CTE
-    column is not in the schema snapshot), and the max input tier from the whole
-    tree is CRITICAL (routing_number is present). The fallback is conservative —
-    CRITICAL.
+    Renamed from ``test_cte_outer_column_falls_back_to_max_inner_tier``: the
+    CTE-aware classifier resolves this shape rather than falling back, so the
+    old name described a path this query no longer takes. It still earns its
+    place — the outer ``routing_number`` carries no table prefix, so it exercises
+    the single-``selected_sources`` branch of ``_class_via_source_scope`` rather
+    than the aliased branch ``test_cte_column_resolves_to_base_table_class``
+    covers. Asserting the CLASS, not just the tier, is what makes the
+    distinction visible: the old tier-only assertion passed identically whether
+    the answer came from precise resolution or from a CRITICAL fallback.
     """
     out = _classes(
         "WITH acct AS (SELECT routing_number, credit_limit FROM core.dim_accounts) "
         "SELECT routing_number FROM acct",
         populated_db,
     )
-    assert next(iter(out.values())).tier is Tier.CRITICAL
+    assert out == {"routing_number": DataClass.ROUTING_NUMBER}
+
+
+@pytest.mark.parametrize("depth", [17, 30, 60, 200])
+def test_deep_cte_chain_beyond_depth_limit_stays_critical(
+    depth: int, populated_db: Database
+) -> None:
+    """A CTE chain deeper than ``_MAX_SCOPE_DEPTH`` must not under-classify to LOW.
+
+    Regression for the depth-exhaustion leak: once recursion ran out of depth,
+    the column became unresolvable and the floor was computed over the LOCAL CTE
+    body (``SELECT v FROM c15``) — which references no catalog column, so the
+    floor was AGGREGATE (LOW). That LOW propagated outward as a real answer and
+    ``routing_number`` came back in the clear from a ~17-line generated query.
+    The floor must instead be computed over a scope that actually contains
+    catalog columns, which for this query means CRITICAL.
+
+    ``depth=200`` additionally pins that user-supplied SQL cannot exhaust the
+    Python stack: this runs on untrusted input, so a RecursionError is a DoS,
+    not a test failure.
+    """
+    ctes = _routing_chain_ctes(depth)
+    sql = _with_query(ctes, f"SELECT c{depth}.v FROM c{depth}")  # noqa: S608  # test input string, not executing SQL
+
+    out = _classes(sql, populated_db)
+
+    assert out["v"].tier is Tier.CRITICAL
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_union_in_cte_with_one_unresolvable_branch_is_not_low(
+    populated_db: Database,
+) -> None:
+    """A set operation must decline entirely when ANY branch fails to resolve.
+
+    Regression for the partial-union leak: ``_class_at_index`` built its answer
+    from the branches that happened to resolve and dropped the ``None`` ones, so
+    a CTE unioning ``category`` (LOW) with a depth-exhausted chain ending in
+    ``routing_number`` returned CATEGORY — LOW and unmasked. The unresolved
+    branch is precisely the one that might be carrying the CRITICAL value, so
+    the whole position must fall to the conservative floor.
+    """
+    ctes = _routing_chain_ctes(30)
+    ctes.append(
+        "u AS (SELECT category AS v FROM core.fct_transactions "
+        "UNION ALL SELECT c30.v FROM c30)"
+    )
+    sql = _with_query(ctes, "SELECT u.v FROM u")
+
+    out = _classes(sql, populated_db)
+
+    assert out["v"].tier is not Tier.LOW
+    assert out["v"].tier is Tier.CRITICAL
+
+
+def test_column_in_scalar_subquery_resolves_in_its_own_scope(
+    populated_db: Database,
+) -> None:
+    """A column inside an IN-subquery resolves against the subquery's scope.
+
+    ``reports.large_transactions.is_top_100`` has this shape. Resolving the
+    inner column against the OUTER scope (three selected sources → ambiguous)
+    made the whole projection unresolvable and pushed it to a fallback; the
+    inner scope names exactly one source and resolves it exactly.
+    """
+    out = _classes(
+        "WITH base AS (SELECT transaction_id, amount FROM core.fct_transactions), "
+        "top_n AS (SELECT transaction_id FROM base ORDER BY amount DESC LIMIT 10) "
+        "SELECT b.transaction_id IN (SELECT transaction_id FROM top_n) AS flag "
+        "FROM base b",
+        populated_db,
+    )
+    assert out == {"flag": DataClass.RECORD_ID}
 
 
 def test_cte_column_resolves_to_base_table_class(populated_db: Database) -> None:
@@ -405,7 +498,7 @@ def test_fallback_log_omits_raw_sql(
     ``core``/``app`` table backs it, so ``_column_key`` returns ``None`` and
     ``_class_via_source_scope`` doesn't resolve it either (a VALUES row source
     isn't a nested SELECT scope), so classification reaches
-    ``_fallback_class``. The PII literal lives in the VALUES row itself; the
+    ``_conservative_floor``. The PII literal lives in the VALUES row itself; the
     log assertions confirm it never reaches the log line, only its hash.
     """
     snap = get_current_schema_snapshot(populated_db)

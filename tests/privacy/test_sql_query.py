@@ -406,13 +406,39 @@ def test_undeclared_deployed_column_fails_closed(populated_db: Database) -> None
     assert str(result.records[0]["account_id"]).startswith("****")
 
 
+@pytest.mark.parametrize("depth", [17, 30, 60])
+def test_deep_cte_chain_masks_routing_number(
+    depth: int, populated_db: Database
+) -> None:
+    """The depth-exhaustion leak, asserted where it actually mattered: the value.
+
+    A ~17-line generated query hid ``routing_number`` behind enough CTE
+    aliases to exhaust ``_MAX_SCOPE_DEPTH``; the column then floored against the
+    innermost CTE body (no catalog columns → AGGREGATE/LOW) and
+    ``execute_sql_query`` returned the real routing number in the clear. The
+    classification-level regression lives in ``test_sql_lineage.py``; this one
+    pins the end-to-end consequence, so a future refactor that keeps the tier
+    right but breaks position-aligned redaction cannot pass silently.
+    """
+    _seed_account(populated_db)
+    ctes = ["c0 AS (SELECT routing_number AS v FROM core.dim_accounts)"]
+    ctes += [f"c{i} AS (SELECT v FROM c{i - 1})" for i in range(1, depth + 1)]  # noqa: S608  # test input string, not executing SQL
+    sql = "WITH " + ", ".join(ctes) + f" SELECT c{depth}.v FROM c{depth}"  # noqa: S608  # test input string, not executing SQL
+
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["v"] != "021000021"
+    assert str(result.records[0]["v"]).startswith("*")
+
+
 def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> None:
     """``COUNT(*)`` still classifies as AGGREGATE (LOW), not CRITICAL.
 
     Not a guard against blanket fail-closed: ``COUNT(*)`` has no column
-    reference at all, so ``_classify_projection``'s counting-aggregate branch
+    reference at all, so ``_resolve_projection``'s counting-aggregate branch
     returns AGGREGATE before ``_column_key``, ``_class_of_key``,
-    ``_fallback_class``, or ``_coverage_gap_class`` are ever reached — a
+    ``_conservative_floor``, or ``_coverage_gap_class`` are ever reached — a
     maximal fail-closed patch there would leave this test passing unchanged.
     See ``test_unresolvable_column_reference_classifies_by_scope_inputs``
     below for the test that actually exercises (and discriminates) that path.
@@ -437,10 +463,11 @@ def test_unresolvable_column_reference_classifies_by_scope_inputs(
     ``l``, not a real catalog table or a source ``_class_via_source_scope``
     resolves — CTE and plain derived-table aliases resolve through
     ``scope.sources`` (see that function's docstring), but a LATERAL source
-    does not, so ``_column_key`` returns ``None`` for ``l.x`` and
-    classification falls through to ``_fallback_class`` (the ``key is None``
-    branch in ``_classify_projection``), unlike ``COUNT(*)`` above which
-    never gets there. The scope's only real input column is ``t.amount``
+    does not, so ``_column_key`` returns ``None`` for ``l.x``,
+    ``_resolve_projection`` declines (the ``key is None`` branch), and
+    ``_classify_projection`` answers with ``_conservative_floor`` — unlike
+    ``COUNT(*)`` above, which never gets there. The only real input column is
+    ``t.amount``
     (TXN_AMOUNT, HIGH), so the query must classify HIGH and pass the value
     through unmasked — a blanket fail-closed (mask on any unresolved key)
     would flip this to CRITICAL and mask it, which is exactly the

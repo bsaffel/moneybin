@@ -77,6 +77,14 @@ class SqlSchemaError(Exception):
     """Query references a table/column absent from the schema snapshot."""
 
 
+class UnresolvedProjectionError(Exception):
+    """A projection needed the conservative fallback under ``strict=True``.
+
+    Only the build-time report-class deriver sets ``strict``; the runtime
+    ``sql_query`` path always prefers a conservative answer to a refusal.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Parse cache
 # ---------------------------------------------------------------------------
@@ -350,34 +358,61 @@ def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClas
     return _COVERAGE_GAP_CLASS
 
 
-def _fallback_class(
-    scope: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
+def _scope_input_max(
+    select: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
-    """Max-tier class among ``scope``'s input columns; AGGREGATE if none resolve.
+    """Max-tier class among ``select``'s input columns; AGGREGATE if none resolve.
 
-    ``scope`` is the SELECT the unresolved projection belongs to — a single
-    UNION branch, not the whole tree. Scoping per branch keeps alias resolution
-    correct: a UNION can reuse one alias for different tables across branches,
-    so collecting input columns tree-wide would resolve aliases against the
-    wrong branch's table and miss the CRITICAL column we're falling back to
-    protect.
+    Alias resolution is local to ``select``: ``collect_input_columns`` builds the
+    alias map from this subtree alone. That locality is the point — a UNION can
+    reuse one alias for different tables across branches, so a single tree-wide
+    alias map (last-write-wins) would resolve a branch's column against the
+    wrong branch's table and silently drop the CRITICAL column we are falling
+    back to protect. ``_conservative_floor`` restores whole-query coverage by
+    calling this once per scope instead of widening the map.
 
-    "None resolvable" → AGGREGATE (LOW) is correct only when the query is
-    restricted to the classified schemas (core/app via CLASSIFICATION, reports
-    via declared @report class maps): an unclassified-schema query has no input
-    columns here to raise the floor. The caller enforces that restriction (see
-    module docstring); within the classified schemas, any query touching a
-    CRITICAL column raises the fallback floor to CRITICAL. This is now
-    enforced rather than assumed: an undeclared deployed column among the
-    scope's inputs also raises the floor to CRITICAL (via
-    ``_coverage_gap_class``) rather than being silently skipped.
+    An undeclared deployed column among the inputs raises the floor to CRITICAL
+    (via ``_coverage_gap_class``) rather than being silently skipped: the
+    registry is incomplete, so nothing in this scope can be trusted LOW.
 
     Widening note: ``collect_input_columns`` gathers every column referenced
-    anywhere in ``scope`` — including a JOIN condition or WHERE clause — not
-    just the projection being classified, so a query joining an undeclared
-    view raises this floor even when only a declared column is projected.
-    This is intentional (coherent with the max-tier-over-inputs design), not
-    a bug.
+    anywhere in ``select`` — including a JOIN condition or WHERE clause — not
+    just the projection being classified, so a query joining an undeclared view
+    raises this floor even when only a declared column is projected. This is
+    intentional (coherent with the max-tier-over-inputs design), not a bug.
+    """
+    best: DataClass = DataClass.AGGREGATE
+    for key in collect_input_columns(select, snapshot):
+        dc = _class_of_key(key) or _coverage_gap_class(key, sql_for_log)
+        if dc.tier > best.tier:
+            best = dc
+    return best
+
+
+def _conservative_floor(
+    tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
+) -> DataClass:
+    """The tier an unresolved projection takes: max over EVERY scope in ``tree``.
+
+    **Invariant this function exists to hold:** an unresolved column can never
+    yield a tier lower than the conservative fallback computed over a scope that
+    actually contains catalog columns. Computing the floor over the unresolved
+    projection's *own* SELECT breaks it — a CTE body (``SELECT v FROM c15``) or
+    a UNION branch reading only a CTE references no catalog column at all, so
+    its floor is AGGREGATE (LOW), and that LOW then propagates outward as a real
+    answer. That was the leak: a deep CTE chain over ``routing_number`` returned
+    it unmasked once nesting exhausted ``_MAX_SCOPE_DEPTH``.
+
+    Walking every SELECT in the tree — each with its own local alias map, so
+    per-branch alias correctness survives — guarantees the floor sees every
+    catalog column the query can touch, including CTE bodies (which hang off the
+    set operation, not off any one branch) and correlated subqueries.
+
+    "None resolvable" → AGGREGATE (LOW) remains correct only because the caller
+    restricts the query to the classified schemas (core/app via CLASSIFICATION,
+    reports via declared @report class maps) — see the module docstring. Within
+    those schemas, any query touching a CRITICAL column raises this floor to
+    CRITICAL.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without
@@ -389,10 +424,8 @@ def _fallback_class(
         f"sql_lineage: unresolved projection; conservative fallback (sql sha256={sql_hash})"
     )
     best: DataClass = DataClass.AGGREGATE
-    for key in collect_input_columns(scope, snapshot):
-        # An undeclared deployed column in scope raises the floor too: the
-        # registry is incomplete, so nothing in this scope can be trusted LOW.
-        dc = _class_of_key(key) or _coverage_gap_class(key, sql_for_log)
+    for select in tree.find_all(exp.Select):
+        dc = _scope_input_max(select, snapshot, sql_for_log)
         if dc.tier > best.tier:
             best = dc
     return best
@@ -428,8 +461,15 @@ def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
 
 # Depth bound for CTE / derived-table recursion. The deepest reports model
 # (recurring_subscriptions) chains three levels; 16 leaves ample headroom while
-# guaranteeing termination on a pathological nesting. Exhausting it is not a
-# leak: the column becomes unresolvable and takes the conservative fallback.
+# guaranteeing termination on a pathological nesting.
+#
+# Exhausting it makes the column UNRESOLVED, which is only safe because the
+# unresolved answer is produced at the outermost projection by
+# ``_conservative_floor`` — never by the local CTE body, which typically holds
+# no catalog column and would floor at AGGREGATE (LOW). A previous revision of
+# this comment claimed exhaustion "is not a leak" while the code floored
+# locally; it was a leak (a 17-deep chain over ``routing_number`` returned it in
+# the clear). Do not reintroduce a local floor for the nested path.
 _MAX_SCOPE_DEPTH = 16
 
 
@@ -441,12 +481,19 @@ class _ResolveCtx:
     what makes a self-referencing (``WITH RECURSIVE``) CTE terminate instead of
     looping. Every scope is kept alive by the root scope for the duration of the
     call, so the ids cannot be recycled underneath us.
+
+    ``tree`` is the WHOLE query, kept so an unresolved projection can floor
+    against every scope in it rather than against whatever local scope the
+    recursion happened to bottom out in — see ``_conservative_floor``.
+    ``strict`` turns that fallback into an error for the build-time deriver.
     """
 
     snapshot: SchemaSnapshot
     sql_for_log: str
     depth: int
     seen: frozenset[int]
+    tree: exp.Expr
+    strict: bool
 
 
 def _output_index(source: Scope, name: str) -> int | None:
@@ -479,17 +526,26 @@ def _class_at_index(source: Scope, index: int, ctx: _ResolveCtx) -> DataClass | 
         return None
     inner_ctx = replace(ctx, depth=ctx.depth - 1, seen=ctx.seen | {id(source)})
     if source.union_scopes:
-        found = [
-            dc
-            for branch in source.union_scopes
-            if (dc := _class_at_index(branch, index, inner_ctx)) is not None
-        ]
+        # ALL-OR-NOTHING. A set operation draws values from every branch, so a
+        # branch we cannot resolve may be the one supplying the CRITICAL value.
+        # Taking max() over only the branches that happened to resolve silently
+        # drops it — a UNION of `category` (LOW) with an unresolvable deep chain
+        # ending in `routing_number` returned CATEGORY/LOW, unmasked. Declining
+        # outright hands the position to the caller's conservative floor, which
+        # is the rule the top-level union path in resolve_output_classes already
+        # follows.
+        found: list[DataClass] = []
+        for branch in source.union_scopes:
+            dc = _class_at_index(branch, index, inner_ctx)
+            if dc is None:
+                return None
+            found.append(dc)
         return max(found, key=lambda c: c.tier) if found else None
     select = source.expression
     if not isinstance(select, exp.Select) or index >= len(select.selects):
         return None
-    return _classify_projection(
-        select.selects[index], select, source, inner_ctx, _build_alias_map(select)
+    return _resolve_projection(
+        select.selects[index], source, inner_ctx, _build_alias_map(select)
     )
 
 
@@ -500,10 +556,10 @@ def _class_via_source_scope(
 
     This is the fix for the scope-max defect: a CTE reference parses with
     ``db=''``, so ``_build_alias_map`` never registered it and every CTE-alias
-    column fell through to ``_fallback_class`` — whose scope spans the whole
-    outer SELECT including the ``WITH`` subtree, collapsing the rule to "max
-    tier over every column in the query". Resolving to the matching projection
-    INSIDE the source keeps each output column's class its own.
+    column fell through to the conservative floor — which spans the whole outer
+    SELECT including the ``WITH`` subtree, collapsing the rule to "max tier over
+    every column in the query". Resolving to the matching projection INSIDE the
+    source keeps each output column's class its own.
     """
     if scope is None:
         return None
@@ -533,18 +589,63 @@ def _class_via_source_scope(
     return _class_at_index(source, index, ctx)
 
 
-def _classify_projection(
+def _subquery_scopes_by_select(scope: Scope) -> dict[int, Scope]:
+    """``{id(SELECT expression): Scope}`` for every subquery nested under ``scope``.
+
+    Lets a column that physically sits inside a scalar / ``IN`` subquery resolve
+    against the subquery's OWN scope. Resolving it against the enclosing scope
+    instead is what made ``reports.large_transactions.is_top_100`` unresolvable:
+    its ``t.transaction_id IN (SELECT transaction_id FROM top_n)`` names a column
+    that only the inner scope can see, while the outer scope has three selected
+    sources and so declines as ambiguous.
+    """
+    out: dict[int, Scope] = {}
+    stack = list(scope.subquery_scopes)
+    while stack:
+        s = stack.pop()
+        out[id(s.expression)] = s
+        stack.extend(s.subquery_scopes)
+        stack.extend(s.union_scopes)
+    return out
+
+
+def _scope_of_column(
+    col: exp.Column,
+    proj_root: exp.Expr,
+    scope: Scope | None,
+    subscopes: dict[int, Scope],
+) -> Scope | None:
+    """The scope ``col`` belongs to: its nearest enclosing SELECT within ``proj_root``.
+
+    Falls back to the projection's own scope when the column is not nested in a
+    subquery, or when that subquery has no scope we can name.
+    """
+    node = col.parent
+    while node is not None and node is not proj_root:
+        if isinstance(node, exp.Select):
+            return subscopes.get(id(node), scope)
+        node = node.parent
+    return scope
+
+
+def _resolve_projection(
     proj: exp.Expr,
-    select: exp.Expr,
     scope: Scope | None,
     ctx: _ResolveCtx,
     alias_map: dict[str, tuple[str, str]],
-) -> DataClass:
-    # ``select`` is the projection's own SELECT (a single UNION branch), passed
-    # through to _fallback_class so alias resolution stays branch-local.
-    # ``scope`` is its sqlglot Scope, which additionally resolves CTE and
-    # derived-table sources; it is None only when scope analysis failed, in
-    # which case resolution degrades to the alias-map-only behaviour.
+) -> DataClass | None:
+    """Class of ``proj``, or None when any part of it cannot be resolved.
+
+    Declining (rather than answering with a local conservative floor) is what
+    keeps the nested path safe: only the caller at the OUTERMOST projection —
+    which owns the ``WITH`` subtree and therefore a scope containing catalog
+    columns — is allowed to convert "unresolved" into a tier. See
+    ``_conservative_floor``.
+
+    ``scope`` is the projection's sqlglot Scope, which resolves CTE and
+    derived-table sources; it is None only when scope analysis failed, in which
+    case resolution degrades to the alias-map-only behaviour.
+    """
     snapshot = ctx.snapshot
     sql_for_log = ctx.sql_for_log
     inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
@@ -570,18 +671,26 @@ def _classify_projection(
         # Literal / constant expression with no column refs.
         return DataClass.AGGREGATE
 
+    # Built only when the projection actually nests a SELECT (a scalar or IN
+    # subquery); the common case pays nothing.
+    subscopes: dict[int, Scope] = (
+        _subquery_scopes_by_select(scope)
+        if scope is not None and inner.find(exp.Select) is not None
+        else {}
+    )
+
     classes: list[DataClass] = []
     for col in cols:
+        col_scope = _scope_of_column(col, inner, scope, subscopes)
         # A CTE / derived-table column resolves to the projection inside that
         # source. Checked first because such a column has no catalog key at all.
-        via_scope = _class_via_source_scope(col, scope, ctx)
+        via_scope = _class_via_source_scope(col, col_scope, ctx)
         if via_scope is not None:
             classes.append(via_scope)
             continue
         key = _column_key(col, alias_map, snapshot)
         if key is None:
-            # Unresolvable column reference — classify by the SELECT's inputs.
-            return _fallback_class(select, snapshot, sql_for_log)
+            return None  # unresolvable — the outermost caller supplies the floor
         dc = _class_of_key(key)
         if dc is None:
             return _coverage_gap_class(key, sql_for_log)
@@ -589,6 +698,30 @@ def _classify_projection(
 
     # Value-preserving agg or plain expression: highest-tier referenced class.
     return max(classes, key=lambda c: c.tier)
+
+
+def _classify_projection(
+    proj: exp.Expr,
+    scope: Scope | None,
+    ctx: _ResolveCtx,
+    alias_map: dict[str, tuple[str, str]],
+) -> DataClass:
+    """Outermost entry point: always answers, converting "unresolved" to a tier.
+
+    This is the ONLY place allowed to make that conversion — ``proj`` belongs to
+    a top-level branch, so ``ctx.tree`` spans every catalog column the query can
+    touch.
+    """
+    dc = _resolve_projection(proj, scope, ctx, alias_map)
+    if dc is not None:
+        return dc
+    if ctx.strict:
+        # The alias is a SQL identifier, not row data — safe to surface.
+        raise UnresolvedProjectionError(
+            f"projection {proj.alias_or_name or '<unnamed>'!r} is not resolvable "
+            "from source; strict mode forbids the conservative fallback"
+        )
+    return _conservative_floor(ctx.tree, ctx.snapshot, ctx.sql_for_log)
 
 
 def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
@@ -632,12 +765,20 @@ def resolve_output_classes(
     tree: exp.Expr,
     snapshot: SchemaSnapshot,
     sql_for_log: str = "",
+    strict: bool = False,
 ) -> dict[str, DataClass]:
     """Map each output column name (insertion-ordered) to its DataClass.
 
     Output names come from the first branch (SQL semantics). For set operations
     each output position is classified across ALL branches and combined by max
     tier, so a CRITICAL column in any branch masks that position.
+
+    ``strict`` raises ``UnresolvedProjectionError`` instead of taking the
+    conservative fallback. The runtime ``sql_query`` path leaves it False — a
+    user query must never be refused over an expression lineage cannot model.
+    The build-time report-class deriver sets it True, because a derived class
+    map that quietly absorbed a fallback is not the verified artifact it claims
+    to be.
     """
     branches = _union_select_branches(tree)
     if not branches:
@@ -648,13 +789,15 @@ def resolve_output_classes(
         sql_for_log=sql_for_log,
         depth=_MAX_SCOPE_DEPTH,
         seen=frozenset(),
+        tree=tree,
+        strict=strict,
     )
     # Alias scope is per-branch: a UNION may reuse one alias for different
     # tables across branches (legal SQL), so a tree-wide map (last-write-wins)
     # would resolve a branch's column against the wrong table and under-redact.
     per_branch: list[list[DataClass]] = [
         [
-            _classify_projection(proj, sel, scope, ctx, _build_alias_map(sel))
+            _classify_projection(proj, scope, ctx, _build_alias_map(sel))
             for proj in sel.selects
         ]
         for sel, scope in zip(branches, scopes, strict=True)

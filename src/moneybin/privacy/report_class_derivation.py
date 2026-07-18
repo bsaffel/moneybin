@@ -70,12 +70,20 @@ def _is_star_projection(proj: exp.Expr) -> bool:
 
 
 def _assert_no_star(query: exp.Query, model_name: str) -> None:
-    """Reject a final SELECT * (or t.*) — it would silently yield a partial column set."""
-    if any(_is_star_projection(p) for p in query.selects):
-        raise ReportDerivationError(
-            f"{model_name}: final projection uses SELECT *. Derivation needs an "
-            "explicit column list; name the columns in the model."
-        )
+    """Reject ``SELECT *`` (or ``t.*``) in ANY select — not just the final one.
+
+    A star in a CTE body is just as disqualifying as one in the final
+    projection: nothing expands it (the deriver runs without a live catalog for
+    ``reports.*``), so ``_output_index`` cannot name-match through it and the
+    column degrades to a fallback — silently, where this check is meant to be a
+    hard error. Checking only ``query.selects`` left that gap.
+    """
+    for select in query.find_all(exp.Select):
+        if any(_is_star_projection(p) for p in select.selects):
+            raise ReportDerivationError(
+                f"{model_name}: a projection uses SELECT *. Derivation needs an "
+                "explicit column list; name the columns in the model."
+            )
 
 
 def _assert_acyclic(query: exp.Query, model_name: str) -> None:
@@ -138,7 +146,12 @@ def derive_report_classes(
         _assert_no_star(query, model.name)
         _assert_acyclic(query, model.name)
         try:
-            classes = resolve_output_classes(query, snapshot)
+            # strict=True: the runtime classifier answers an unresolvable
+            # projection with a conservative fallback, which is right for user
+            # SQL and wrong here — a derived map that absorbed a fallback would
+            # assert "verified" while carrying a guess. Surface it as a build
+            # failure so the model gets fixed instead.
+            classes = resolve_output_classes(query, snapshot, strict=True)
         except Exception as e:
             raise ReportDerivationError(f"{model.name}: {e}") from e
         schema, _, view = model.name.partition(".")
