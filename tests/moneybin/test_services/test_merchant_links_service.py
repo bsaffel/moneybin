@@ -85,6 +85,41 @@ def test_count_pending_one(db: Database, seeded_pending_decision: None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# accept_impact
+# ---------------------------------------------------------------------------
+
+
+def test_accept_impact_counts_binding_and_every_decision_row(
+    db: Database, seeded_pending_decision: None
+) -> None:
+    """Impact includes the inserted link and named plus sibling decisions."""
+    MerchantLinkDecisionsRepo(db).insert(
+        decision_id="d_sibling",
+        ref_kind="merchant_entity_id",
+        ref_value=_REF_VALUE,
+        source_type=_SOURCE_TYPE,
+        candidate_merchant_id="mSibling",
+        confidence_score=0.4,
+        match_signals={"signal": "fuzzy_name", "value": "sibling"},
+        decided_by="auto",
+        actor="system",
+    )
+    _seed_merchants(db, _CANDIDATE_MERCHANT_ID)
+
+    impact = MerchantLinksService(db).accept_impact(
+        _DECISION_ID,
+        target_merchant_id=_CANDIDATE_MERCHANT_ID,
+    )
+
+    assert impact.candidate_merchant_id == _CANDIDATE_MERCHANT_ID
+    assert impact.blast_radius == {
+        "merchants": 1,
+        "merchant_links": 1,
+        "merchant_link_decisions": 2,
+    }
+
+
+# ---------------------------------------------------------------------------
 # set — accept path
 # ---------------------------------------------------------------------------
 

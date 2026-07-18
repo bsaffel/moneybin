@@ -35,11 +35,12 @@ from typing import Any, Literal
 from fastmcp import FastMCP
 
 from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import ConfirmationBinding, confirm_exact_or_raise
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.elicitation import confirm_or_raise
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
     InvestmentGainsPayload,
@@ -551,37 +552,59 @@ class _MergeProposal:
     candidate_ticker: str | None
     candidate_name: str | None
     match_reason: str | None
-
-
-def _cli_equivalent(decision_id: str, into: str) -> str:
-    return (
-        f"moneybin investments securities links set {decision_id} "
-        f"--accept --into {into}"
-    )
+    provisional_security_id: str
+    blast_radius: dict[str, int]
 
 
 def _load_pending_proposal(decision_id: str) -> _MergeProposal:
     """Read the decision out of the live review queue, or raise if it isn't there."""
     with get_database(read_only=True) as db:
-        groups = SecurityLinksService(db, actor="mcp").pending()
-    for group in groups:
-        for candidate in group.candidates:
-            if candidate.decision_id == decision_id:
-                return _MergeProposal(
-                    decision_id=decision_id,
-                    ref_kind=group.ref_kind,
-                    ref_value=group.ref_value,
-                    provider_ticker=group.provider_ticker,
-                    provider_name=group.provider_name,
-                    candidate_security_id=candidate.candidate_security_id,
-                    candidate_ticker=candidate.candidate_ticker,
-                    candidate_name=candidate.candidate_name,
-                    match_reason=candidate.match_reason,
-                )
+        service = SecurityLinksService(db, actor="mcp")
+        groups = service.pending()
+        for group in groups:
+            for candidate in group.candidates:
+                if candidate.decision_id == decision_id:
+                    impact = service.accept_impact(
+                        decision_id,
+                        into=candidate.candidate_security_id,
+                    )
+                    return _MergeProposal(
+                        decision_id=decision_id,
+                        ref_kind=group.ref_kind,
+                        ref_value=group.ref_value,
+                        provider_ticker=group.provider_ticker,
+                        provider_name=group.provider_name,
+                        candidate_security_id=candidate.candidate_security_id,
+                        candidate_ticker=candidate.candidate_ticker,
+                        candidate_name=candidate.candidate_name,
+                        match_reason=candidate.match_reason,
+                        provisional_security_id=impact.provisional_security_id,
+                        blast_radius=impact.blast_radius,
+                    )
     raise UserError(
         f"No pending security merge decision '{decision_id}'.",
-        code=error_codes.MUTATION_NOT_FOUND,
+        code=error_codes.MUTATION_NOTHING_TO_DO,
         hint="List open decisions with investments_securities_links_pending.",
+    )
+
+
+def _security_link_binding(proposal: _MergeProposal) -> ConfirmationBinding:
+    """Bind approval without exposing the raw provider reference."""
+    return ConfirmationBinding(
+        arguments={
+            "decision_id": proposal.decision_id,
+            "action": "accept",
+            "into": proposal.candidate_security_id,
+        },
+        resolved_ids=(
+            proposal.provisional_security_id,
+            proposal.candidate_security_id,
+        ),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="security_identity_merge",
+        blast_radius=proposal.blast_radius,
     )
 
 
@@ -608,22 +631,6 @@ def _confirm_message(p: _MergeProposal) -> str:
         "not the same instrument, cost basis and every later realized gain will "
         "be wrong. Reversible via system_audit_undo(operation_id).\n\n"
         "Accept this merge?"
-    )
-
-
-async def _confirm_merge_or_raise(p: _MergeProposal) -> None:
-    """Obtain explicit human agreement for a merge, or raise — never fall through.
-
-    Delegates the gate itself to the shared ``confirm_or_raise`` helper (one
-    elicitation pattern across every accept gate); only the prompt and the CLI
-    equivalent are security-specific.
-    """
-    await confirm_or_raise(
-        _confirm_message(p),
-        subject="This merge",
-        unchanged=f"decision '{p.decision_id}' is still pending",
-        cli_equivalent=_cli_equivalent(p.decision_id, p.candidate_security_id),
-        details={"decision_id": p.decision_id},
     )
 
 
@@ -664,6 +671,7 @@ async def investments_securities_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
     into: str | None = None,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[SecurityLinksSetPayload]:
     """Accept (merge) or reject one pending security merge decision.
 
@@ -673,13 +681,12 @@ async def investments_securities_links_set(
     - `action="accept"` + `into=<the decision's own candidate_security_id>`
       MERGES. This REQUIRES explicit human confirmation: the tool prompts the
       user through an MCP elicitation naming both securities and the reason,
-      and merges only if they agree. On a client that cannot prompt (no
-      elicitation capability), accept HARD-FAILS with
-      mutation_confirmation_required and points at the CLI — an agent cannot
-      accept a merge on its own, at any confidence. `into` is also a
-      confirming safety check: it must equal the decision's own candidate (on
-      a tied group the resolver files one decision per candidate), so a
-      mistyped or stale decision_id cannot merge into the wrong security.
+      and merges only if they agree. A client that cannot prompt receives
+      mutation_confirmation_required with a short-lived, payload-bound token
+      for an exact retry. `into` is also a confirming safety check: it must
+      equal the decision's own candidate (on a tied group the resolver files
+      one decision per candidate), so a mistyped or stale decision_id cannot
+      merge into the wrong security.
       Mismatched, empty, or missing `into` raises mutation_invalid_input —
       it is never treated as a reject.
     - `action="reject"` (pass no `into`) REJECTS — keeps the provisional
@@ -709,6 +716,8 @@ async def investments_securities_links_set(
         into: With action="accept", the candidate_security_id to merge into —
             must equal the decision's own candidate_security_id. Invalid with
             action="reject".
+        confirmation_token: Opaque payload-bound token returned to clients that
+            cannot elicit. Used only with action="accept".
     """
     if action not in ("accept", "reject"):
         raise UserError(
@@ -744,7 +753,14 @@ async def investments_securities_links_set(
                 code=error_codes.MUTATION_INVALID_INPUT,
                 hint="Re-read the decision with investments_securities_links_pending.",
             )
-        await _confirm_merge_or_raise(proposal)
+        await confirm_exact_or_raise(
+            binding=_security_link_binding(proposal),
+            recompute=lambda: _security_link_binding(
+                _load_pending_proposal(decision_id)
+            ),
+            message=_confirm_message(proposal),
+            confirmation_token=confirmation_token,
+        )
         await asyncio.to_thread(_apply_accept, decision_id, into)
         status = "accepted"
     return build_envelope(

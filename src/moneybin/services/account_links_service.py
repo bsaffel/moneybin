@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import duckdb
@@ -30,6 +31,15 @@ from moneybin.tables import ACCOUNT_LINK_DECISIONS, ACCOUNT_LINKS, DIM_ACCOUNTS
 from moneybin.utils.parsing import signal_from_match_signals
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AccountLinkAcceptImpact:
+    """Stable identities and physical rows touched by an account merge."""
+
+    provisional_account_id: str
+    candidate_account_id: str
+    blast_radius: dict[str, int]
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
@@ -140,6 +150,62 @@ class AccountLinksService:
         decode live in the repo layer); empty list when the table is absent.
         """
         return self._decisions.history(limit=limit)
+
+    def accept_impact(
+        self,
+        decision_id: str,
+        *,
+        target_account_id: str,
+    ) -> AccountLinkAcceptImpact:
+        """Preview stable identities and rows the account merge will mutate."""
+        decision = self._fetch_decision(decision_id)
+        if decision is None or decision["status"] != "pending":
+            raise UserError(
+                f"No pending account-link decision {decision_id!r}.",
+                code=error_codes.MUTATION_NOTHING_TO_DO,
+            )
+        if target_account_id != decision["candidate_account_id"]:
+            raise UserError(
+                "target_account_id does not match the candidate named in "
+                f"decision {decision_id!r}; pass the decision's own "
+                "candidate_account_id as a confirming safety check.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        provisional_id = str(decision["provisional_account_id"])
+        links = self._db.execute(
+            f"""
+            SELECT ref_kind FROM {ACCOUNT_LINKS.full_name}
+            WHERE account_id = ? AND status = 'accepted'
+            """,  # noqa: S608  # TableRef constant + parameterized value
+            [provisional_id],
+        ).fetchall()
+        if not any(ref_kind == "source_native" for (ref_kind,) in links):
+            raise UserError(
+                f"Cannot apply merge for decision {decision_id!r}: the "
+                "provisional account has no source_native mapping to re-point "
+                "onto the candidate.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        sibling_count_row = self._db.execute(
+            f"""
+            SELECT COUNT(*) FROM {ACCOUNT_LINK_DECISIONS.full_name}
+            WHERE (provisional_account_id = ? OR candidate_account_id = ?)
+              AND decision_id != ?
+              AND status = 'pending'
+              AND reversed_at IS NULL
+            """,  # noqa: S608  # TableRef constant + parameterized values
+            [provisional_id, provisional_id, decision_id],
+        ).fetchone()
+        sibling_count = int(sibling_count_row[0]) if sibling_count_row else 0
+        return AccountLinkAcceptImpact(
+            provisional_account_id=provisional_id,
+            candidate_account_id=str(decision["candidate_account_id"]),
+            blast_radius={
+                "accounts": 2,
+                "account_links": len(links),
+                "account_link_decisions": 1 + sibling_count,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

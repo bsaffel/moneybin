@@ -217,9 +217,9 @@ class TestInvestmentsSecuritiesLinksSet:
         """investments_securities_links_set (accept) returns a valid ResponseEnvelope."""
         setup = _merge_setup()
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -234,9 +234,9 @@ class TestInvestmentsSecuritiesLinksSet:
         """Accepting a decision (after a confirmed elicitation) returns status='accepted'."""
         setup = _merge_setup()
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             data = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -271,10 +271,10 @@ class TestInvestmentsSecuritiesLinksSet:
         setup = _merge_setup()
         other = _mint(name="Some Other Fund", created_by="user")
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
 
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"], action="accept", into=other
@@ -323,6 +323,132 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
     self-accept of a weak inference at any confidence score.
     """
 
+    async def test_accept_returns_bound_token_when_elicitation_is_unavailable(
+        self, mcp_db: object
+    ) -> None:
+        """A degraded client receives an opaque token bound to the live merge."""
+        setup = _merge_setup()
+        ctx = _fake_ctx(supports_elicit=False)
+
+        with patch(
+            "moneybin.mcp.confirmation._active_context",
+            return_value=ctx,
+        ):
+            parsed = (
+                await investments_securities_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    into=setup["survivor"],
+                )
+            ).to_dict()
+
+        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        details = parsed["error"]["details"]
+        assert details["confirmation_token"]
+        assert details["operation_kind"] == "security_identity_merge"
+        assert details["blast_radius"] == {
+            "securities": 2,
+            "security_links": 1,
+            "security_link_decisions": 1,
+            "lot_selections": 0,
+            "manual_investment_transactions": 0,
+        }
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_accept_refuses_when_proposal_impact_changes_after_token(
+        self, mcp_db: object
+    ) -> None:
+        """A new manual row changes the exact merge and invalidates approval."""
+        setup = _merge_setup()
+        with patch("moneybin.mcp.confirmation._active_context", return_value=None):
+            required = (
+                await investments_securities_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    into=setup["survivor"],
+                )
+            ).to_dict()
+        token = required["error"]["details"]["confirmation_token"]
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO raw.manual_investment_transactions (
+                    source_transaction_id, import_id, account_id, security_id,
+                    security_ref, type, trade_date, quantity, price, amount,
+                    created_by
+                ) VALUES (
+                    'manual_token_change', 'imp_1', 'acc_1', ?, 'VTI', 'buy',
+                    DATE '2024-05-01', 10, 100, -1000, 'cli'
+                )
+                """,
+                [setup["provisional"]],
+            )
+
+        parsed = (
+            await investments_securities_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                into=setup["survivor"],
+                confirmation_token=token,
+            )
+        ).to_dict()
+
+        assert parsed["error"]["code"] == "mutation_confirmation_mismatch"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
+    async def test_changed_proposal_consumes_token_against_replay(
+        self, mcp_db: object
+    ) -> None:
+        """A mismatched token cannot be reused after the proposal is restored."""
+        setup = _merge_setup()
+        with patch("moneybin.mcp.confirmation._active_context", return_value=None):
+            required = (
+                await investments_securities_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    into=setup["survivor"],
+                )
+            ).to_dict()
+        token = required["error"]["details"]["confirmation_token"]
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO raw.manual_investment_transactions (
+                    source_transaction_id, import_id, account_id, security_id,
+                    security_ref, type, trade_date, quantity, price, amount,
+                    created_by
+                ) VALUES (
+                    'manual_token_replay', 'imp_1', 'acc_1', ?, 'VTI', 'buy',
+                    DATE '2024-05-01', 10, 100, -1000, 'cli'
+                )
+                """,
+                [setup["provisional"]],
+            )
+        await investments_securities_links_set(
+            decision_id=setup["decision_id"],
+            action="accept",
+            into=setup["survivor"],
+            confirmation_token=token,
+        )
+        with get_database(read_only=False) as db:
+            db.execute(
+                "DELETE FROM raw.manual_investment_transactions "
+                "WHERE source_transaction_id = ?",
+                ["manual_token_replay"],
+            )
+
+        replay = (
+            await investments_securities_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                into=setup["survivor"],
+                confirmation_token=token,
+            )
+        ).to_dict()
+
+        assert replay["error"]["code"] == "mutation_confirmation_replayed"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
     async def test_accept_hard_fails_when_client_cannot_elicit(
         self, mcp_db: object
     ) -> None:
@@ -330,7 +456,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         setup = _merge_setup()
         ctx = _fake_ctx(supports_elicit=False)
 
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -341,10 +467,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
 
         assert parsed["status"] == "error"
         assert parsed["error"]["code"] == "mutation_confirmation_required"
-        # The error must name the CLI equivalent so the user has a way through.
-        hint = parsed["error"]["hint"]
-        assert "moneybin investments securities links set" in hint
-        assert "--accept" in hint and "--into" in hint
+        assert parsed["error"]["details"]["confirmation_token"]
         # Nothing was written: still pending, provisional security still alive.
         assert _decision_status(setup["decision_id"]) == "pending"
         assert _security_exists(setup["provisional"])
@@ -356,10 +479,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         """No MCP request context at all (no client to confirm) must not accept."""
         setup = _merge_setup()
 
-        with patch(
-            "moneybin.mcp.elicitation.get_context",
-            side_effect=RuntimeError("No active context found."),
-        ):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=None):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -378,7 +498,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         setup = _merge_setup()
         ctx = _fake_ctx(supports_elicit=True, elicit_result=DeclinedElicitation())
 
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -388,7 +508,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
             ).to_dict()
 
         assert parsed["status"] == "error"
-        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert parsed["error"]["code"] == "mutation_confirmation_declined"
         assert _decision_status(setup["decision_id"]) == "pending"
         assert _security_exists(setup["provisional"])
         ctx.elicit.assert_awaited_once()
@@ -398,7 +518,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         setup = _merge_setup()
         ctx = _fake_ctx(supports_elicit=True, elicit_result=CancelledElicitation())
 
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"],
@@ -408,7 +528,7 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
             ).to_dict()
 
         assert parsed["status"] == "error"
-        assert parsed["error"]["code"] == "mutation_confirmation_required"
+        assert parsed["error"]["code"] == "mutation_confirmation_declined"
         assert _decision_status(setup["decision_id"]) == "pending"
 
     async def test_elicitation_message_names_both_securities_and_reason(
@@ -417,10 +537,10 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         """The human must see BOTH sides of the fusion and why it was proposed."""
         setup = _merge_setup()
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
 
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             await investments_securities_links_set(
                 decision_id=setup["decision_id"],
                 action="accept",
@@ -444,10 +564,10 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         """decided_by='user' is only truthful once a human actually confirmed."""
         setup = _merge_setup()
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
 
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             await investments_securities_links_set(
                 decision_id=setup["decision_id"],
                 action="accept",
@@ -472,10 +592,10 @@ class TestInvestmentsSecuritiesLinksSetActionInput:
         """An empty-string `into` must NOT silently become a permanent reject."""
         setup = _merge_setup()
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
 
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id=setup["decision_id"], action="accept", into=""
@@ -528,20 +648,20 @@ class TestInvestmentsSecuritiesLinksSetActionInput:
         assert "reject" in parsed["error"]["message"]
         assert _decision_status(setup["decision_id"]) == "pending"
 
-    async def test_unknown_decision_id_is_not_found(self, mcp_db: object) -> None:
+    async def test_unknown_decision_id_is_nothing_to_do(self, mcp_db: object) -> None:
         """A decision_id with no pending decision cannot be accepted."""
         _merge_setup()
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             parsed = (
                 await investments_securities_links_set(
                     decision_id="dnotthere01", action="accept", into="whatever"
                 )
             ).to_dict()
         assert parsed["status"] == "error"
-        assert parsed["error"]["code"] == "mutation_not_found"
+        assert parsed["error"]["code"] == "mutation_nothing_to_do"
         ctx.elicit.assert_not_called()
 
 
@@ -568,9 +688,9 @@ class TestInvestmentsSecuritiesLinksHistory:
         """History rows carry decision_id, status, decided_by, match_reason."""
         setup = _merge_setup()
         ctx = _fake_ctx(
-            supports_elicit=True, elicit_result=AcceptedElicitation(data=None)
+            supports_elicit=True, elicit_result=AcceptedElicitation(data=True)
         )
-        with patch("moneybin.mcp.elicitation.get_context", return_value=ctx):
+        with patch("moneybin.mcp.confirmation._active_context", return_value=ctx):
             await investments_securities_links_set(
                 decision_id=setup["decision_id"],
                 action="accept",

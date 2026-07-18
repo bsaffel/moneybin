@@ -19,11 +19,12 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import ConfirmationBinding, confirm_exact_or_raise
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.elicitation import confirm_or_raise
 from moneybin.privacy.payloads.categories import (
     MerchantsCreatePayload,
     MerchantsPayload,
@@ -187,32 +188,52 @@ class _MerchantBindProposal:
     candidate_merchant_id: str
     candidate_canonical_name: str
     confidence: float | None
-
-
-def _merchant_cli_equivalent(decision_id: str, target_merchant_id: str) -> str:
-    return f"moneybin merchants links set {decision_id} --into {target_merchant_id}"
+    blast_radius: dict[str, int]
 
 
 def _load_pending_merchant_proposal(decision_id: str) -> _MerchantBindProposal:
     """Read the decision out of the live review queue, or raise if it isn't there."""
     with get_database(read_only=True) as db:
-        groups = MerchantLinksService(db, actor="mcp").pending()
-    for group in groups:
-        for candidate in group.candidates:
-            if candidate.decision_id == decision_id:
-                return _MerchantBindProposal(
-                    decision_id=decision_id,
-                    ref_value=group.ref_value,
-                    source_type=group.source_type,
-                    provider_merchant_name=group.provider_merchant_name,
-                    candidate_merchant_id=candidate.candidate_merchant_id,
-                    candidate_canonical_name=candidate.candidate_canonical_name,
-                    confidence=candidate.confidence,
-                )
+        service = MerchantLinksService(db, actor="mcp")
+        groups = service.pending()
+        for group in groups:
+            for candidate in group.candidates:
+                if candidate.decision_id == decision_id:
+                    impact = service.accept_impact(
+                        decision_id,
+                        target_merchant_id=candidate.candidate_merchant_id,
+                    )
+                    return _MerchantBindProposal(
+                        decision_id=decision_id,
+                        ref_value=group.ref_value,
+                        source_type=group.source_type,
+                        provider_merchant_name=group.provider_merchant_name,
+                        candidate_merchant_id=candidate.candidate_merchant_id,
+                        candidate_canonical_name=candidate.candidate_canonical_name,
+                        confidence=candidate.confidence,
+                        blast_radius=impact.blast_radius,
+                    )
     raise UserError(
         f"No pending merchant-link decision '{decision_id}'.",
-        code=error_codes.MUTATION_NOT_FOUND,
+        code=error_codes.MUTATION_NOTHING_TO_DO,
         hint="List open decisions with merchants_links_pending.",
+    )
+
+
+def _merchant_link_binding(proposal: _MerchantBindProposal) -> ConfirmationBinding:
+    """Bind approval without exposing the raw provider reference."""
+    return ConfirmationBinding(
+        arguments={
+            "decision_id": proposal.decision_id,
+            "action": "accept",
+            "target_merchant_id": proposal.candidate_merchant_id,
+        },
+        resolved_ids=(proposal.decision_id, proposal.candidate_merchant_id),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="merchant_identity_bind",
+        blast_radius=proposal.blast_radius,
     )
 
 
@@ -279,6 +300,7 @@ async def merchants_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
     target_merchant_id: str | None = None,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[MerchantLinksSetPayload]:
     """Accept (bind) or reject one pending merchant-link decision.
 
@@ -289,13 +311,12 @@ async def merchants_links_set(
       candidate_merchant_id>` BINDS the provider entity id to that merchant.
       This REQUIRES explicit human confirmation: the tool prompts the user
       through an MCP elicitation naming both sides and the confidence, and binds
-      only if they agree. On a client that cannot prompt (no elicitation
-      capability), accept HARD-FAILS with mutation_confirmation_required and
-      points at the CLI — an agent cannot accept a binding on its own, at any
-      confidence. `target_merchant_id` is also a confirming safety check: it
-      must equal the decision's own candidate. Mismatched, empty, or missing
-      `target_merchant_id` raises mutation_invalid_input — it is never treated
-      as a reject.
+      only if they agree. A client that cannot prompt receives
+      mutation_confirmation_required with a short-lived, payload-bound token
+      for an exact retry. `target_merchant_id` is also a confirming safety
+      check: it must equal the decision's own candidate. Mismatched, empty, or
+      missing `target_merchant_id` raises mutation_invalid_input — it is never
+      treated as a reject.
     - `action="reject"` (pass no `target_merchant_id`) REJECTS this decision and
       every pending sibling candidate for the same provider entity id. The id
       stays unbound; the declined pairing is not re-proposed, and the resolver
@@ -316,6 +337,8 @@ async def merchants_links_set(
         target_merchant_id: With action="accept", the candidate merchant_id to
             bind — must equal the decision's own candidate_merchant_id. Invalid
             with action="reject".
+        confirmation_token: Opaque payload-bound token returned to clients that
+            cannot elicit. Used only with action="accept".
     """
     if action not in ("accept", "reject"):
         raise UserError(
@@ -352,12 +375,13 @@ async def merchants_links_set(
                 code=error_codes.MUTATION_INVALID_INPUT,
                 hint="Re-read the decision with merchants_links_pending.",
             )
-        await confirm_or_raise(
-            _merchant_confirm_message(proposal),
-            subject="This binding",
-            unchanged=f"decision '{decision_id}' is still pending",
-            cli_equivalent=_merchant_cli_equivalent(decision_id, target_merchant_id),
-            details={"decision_id": decision_id},
+        await confirm_exact_or_raise(
+            binding=_merchant_link_binding(proposal),
+            recompute=lambda: _merchant_link_binding(
+                _load_pending_merchant_proposal(decision_id)
+            ),
+            message=_merchant_confirm_message(proposal),
+            confirmation_token=confirmation_token,
         )
         await asyncio.to_thread(_apply_merchant_accept, decision_id, target_merchant_id)
         status = "accepted"

@@ -69,6 +69,14 @@ class PendingMerchantLinkGroup:
     candidates: tuple[PendingMerchantLinkCandidate, ...]
 
 
+@dataclass(frozen=True)
+class MerchantLinkAcceptImpact:
+    """Stable target and physical rows touched by a merchant binding."""
+
+    candidate_merchant_id: str
+    blast_radius: dict[str, int]
+
+
 class MerchantLinksService:
     """Review-queue facade over ``app.merchant_link_decisions`` + ``app.merchant_links``.
 
@@ -158,6 +166,52 @@ class MerchantLinksService:
         Delegates to the repo; empty list when the table is absent.
         """
         return self._decisions.history(limit=limit)
+
+    def accept_impact(
+        self,
+        decision_id: str,
+        *,
+        target_merchant_id: str,
+    ) -> MerchantLinkAcceptImpact:
+        """Preview stable target and rows the merchant binding will mutate."""
+        decision = self._fetch_decision(decision_id)
+        if decision is None or decision["status"] != "pending":
+            raise UserError(
+                f"No pending merchant-link decision {decision_id!r}.",
+                code=error_codes.MUTATION_NOTHING_TO_DO,
+            )
+        if target_merchant_id != decision["candidate_merchant_id"]:
+            raise UserError(
+                "target_merchant_id does not match the candidate named in "
+                f"decision {decision_id!r}; pass the decision's own "
+                "candidate_merchant_id as a confirming safety check.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if not self._merchant_exists(target_merchant_id):
+            raise UserError(
+                f"No merchant found for id {target_merchant_id!r}.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        sibling_count_row = self._db.execute(
+            f"""
+            SELECT COUNT(*) FROM {MERCHANT_LINK_DECISIONS.full_name}
+            WHERE ref_value = ?
+              AND source_type = ?
+              AND decision_id != ?
+              AND status = 'pending'
+              AND reversed_at IS NULL
+            """,  # noqa: S608  # TableRef constant + parameterized values
+            [decision["ref_value"], decision["source_type"], decision_id],
+        ).fetchone()
+        sibling_count = int(sibling_count_row[0]) if sibling_count_row else 0
+        return MerchantLinkAcceptImpact(
+            candidate_merchant_id=str(decision["candidate_merchant_id"]),
+            blast_radius={
+                "merchants": 1,
+                "merchant_links": 1,
+                "merchant_link_decisions": 1 + sibling_count,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers

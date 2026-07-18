@@ -278,6 +278,43 @@ def test_pending_display_name_absent_dim_is_empty_string(
 
 
 # ---------------------------------------------------------------------------
+# accept_impact
+# ---------------------------------------------------------------------------
+
+
+def test_accept_impact_counts_every_row_the_merge_will_mutate(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Impact includes all accepted links and decisions touching the provisional."""
+    AccountLinksRepo(db).insert(
+        link_id="link_prov1_pt0",
+        account_id=_PROV1,
+        ref_kind="persistent_token",
+        ref_value="opaque-token",
+        source_type="plaid",
+        source_origin="plaid_bank",
+        decided_by="auto",
+        actor="system",
+    )
+    _insert_decision(
+        db,
+        decision_id="qp_dec000001",
+        provisional_account_id=_PROV2,
+        candidate_account_id=_PROV1,
+    )
+
+    impact = seeded.accept_impact(_DEC1, target_account_id=_CAND_A)
+
+    assert impact.provisional_account_id == _PROV1
+    assert impact.candidate_account_id == _CAND_A
+    assert impact.blast_radius == {
+        "accounts": 2,
+        "account_links": 2,
+        "account_link_decisions": 3,
+    }
+
+
+# ---------------------------------------------------------------------------
 # set — accept (target_account_id = candidate)
 # ---------------------------------------------------------------------------
 

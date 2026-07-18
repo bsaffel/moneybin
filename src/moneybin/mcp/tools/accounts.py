@@ -30,11 +30,12 @@ from typing import Literal
 from fastmcp import FastMCP
 
 from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import ConfirmationBinding, confirm_exact_or_raise
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.elicitation import confirm_or_raise
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountLinksHistoryPayload,
@@ -454,32 +455,55 @@ class _AccountMergeProposal:
     candidate_display_name: str
     confidence: float | None
     signal: str | None
-
-
-def _account_cli_equivalent(decision_id: str, target_account_id: str) -> str:
-    return f"moneybin accounts links set {decision_id} --into {target_account_id}"
+    blast_radius: dict[str, int]
 
 
 def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
     """Read the decision out of the live review queue, or raise if it isn't there."""
     with get_database(read_only=True) as db:
-        groups = AccountLinksService(db, actor="mcp").pending()
-    for group in groups:
-        for candidate in group.candidates:
-            if candidate.decision_id == decision_id:
-                return _AccountMergeProposal(
-                    decision_id=decision_id,
-                    provisional_account_id=group.provisional_account_id,
-                    provisional_display_name=group.provisional_display_name,
-                    candidate_account_id=candidate.candidate_account_id,
-                    candidate_display_name=candidate.candidate_display_name,
-                    confidence=candidate.confidence,
-                    signal=candidate.signal,
-                )
+        service = AccountLinksService(db, actor="mcp")
+        groups = service.pending()
+        for group in groups:
+            for candidate in group.candidates:
+                if candidate.decision_id == decision_id:
+                    impact = service.accept_impact(
+                        decision_id,
+                        target_account_id=candidate.candidate_account_id,
+                    )
+                    return _AccountMergeProposal(
+                        decision_id=decision_id,
+                        provisional_account_id=group.provisional_account_id,
+                        provisional_display_name=group.provisional_display_name,
+                        candidate_account_id=candidate.candidate_account_id,
+                        candidate_display_name=candidate.candidate_display_name,
+                        confidence=candidate.confidence,
+                        signal=candidate.signal,
+                        blast_radius=impact.blast_radius,
+                    )
     raise UserError(
         f"No pending account-link decision '{decision_id}'.",
-        code=error_codes.MUTATION_NOT_FOUND,
+        code=error_codes.MUTATION_NOTHING_TO_DO,
         hint="List open decisions with accounts_links_pending.",
+    )
+
+
+def _account_link_binding(proposal: _AccountMergeProposal) -> ConfirmationBinding:
+    """Bind approval to one exact live account merge."""
+    return ConfirmationBinding(
+        arguments={
+            "decision_id": proposal.decision_id,
+            "action": "accept",
+            "target_account_id": proposal.candidate_account_id,
+        },
+        resolved_ids=(
+            proposal.provisional_account_id,
+            proposal.candidate_account_id,
+        ),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="account_identity_merge",
+        blast_radius=proposal.blast_radius,
     )
 
 
@@ -548,6 +572,7 @@ async def accounts_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
     target_account_id: str | None = None,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[AccountLinksSetPayload]:
     """Accept (merge) or standalone-reject one pending account-link decision.
 
@@ -557,12 +582,11 @@ async def accounts_links_set(
     - `action="accept"` + `target_account_id=<the decision's own
       candidate_account_id>` MERGES. This REQUIRES explicit human confirmation:
       the tool prompts the user through an MCP elicitation naming both accounts
-      and the matching signal, and merges only if they agree. On a client that
-      cannot prompt (no elicitation capability), accept HARD-FAILS with
-      mutation_confirmation_required and points at the CLI — an agent cannot
-      accept a merge on its own, at any confidence. `target_account_id` is also
-      a confirming safety check: it must equal the decision's own candidate, so
-      a mistyped or stale decision_id cannot merge into the wrong account.
+      and the matching signal, and merges only if they agree. A client that
+      cannot prompt receives mutation_confirmation_required with a short-lived,
+      payload-bound token for an exact retry. `target_account_id` is also a
+      confirming safety check: it must equal the decision's own candidate, so a
+      mistyped or stale decision_id cannot merge into the wrong account.
       Mismatched, empty, or missing `target_account_id` raises
       mutation_invalid_input — it is never treated as a reject.
     - `action="reject"` (pass no `target_account_id`) STANDALONE-REJECTS — the
@@ -587,6 +611,8 @@ async def accounts_links_set(
         target_account_id: With action="accept", the candidate account_id to
             merge into — must equal the decision's own candidate_account_id.
             Invalid with action="reject".
+        confirmation_token: Opaque payload-bound token returned to clients that
+            cannot elicit. Used only with action="accept".
     """
     if action not in ("accept", "reject"):
         raise UserError(
@@ -623,12 +649,13 @@ async def accounts_links_set(
                 code=error_codes.MUTATION_INVALID_INPUT,
                 hint="Re-read the decision with accounts_links_pending.",
             )
-        await confirm_or_raise(
-            _account_confirm_message(proposal),
-            subject="This merge",
-            unchanged=f"decision '{decision_id}' is still pending",
-            cli_equivalent=_account_cli_equivalent(decision_id, target_account_id),
-            details={"decision_id": decision_id},
+        await confirm_exact_or_raise(
+            binding=_account_link_binding(proposal),
+            recompute=lambda: _account_link_binding(
+                _load_pending_account_proposal(decision_id)
+            ),
+            message=_account_confirm_message(proposal),
+            confirmation_token=confirmation_token,
         )
         await asyncio.to_thread(_apply_account_accept, decision_id, target_account_id)
         status = "accepted"
