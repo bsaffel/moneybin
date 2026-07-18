@@ -965,7 +965,14 @@ async def test_import_gsheet_privacy_coarse_render_schema_contract() -> None:
 async def test_import_coarse_transport_variants(mcp_db: object) -> None:
     mcp = isolated_server(register_import_coarse_reads)
 
-    for sections in (["imports"], ["formats"], ["inbox"], None):
+    for sections, expected in (
+        (["imports"], ["imports"]),
+        (["formats"], ["formats"]),
+        (["inbox"], ["inbox"]),
+        (["inbox", "formats", "imports"], ["imports", "formats", "inbox"]),
+        (["inbox", "imports"], ["imports", "inbox"]),
+        (None, ["imports", "formats", "inbox"]),
+    ):
         arguments = {} if sections is None else {"sections": sections}
         structured = await _assert_canonical_variant(
             mcp,
@@ -973,7 +980,6 @@ async def test_import_coarse_transport_variants(mcp_db: object) -> None:
             arguments,
             "sections",
         )
-        expected = ["imports", "formats", "inbox"] if sections is None else sections
         assert [section["kind"] for section in structured["data"]["sections"]] == (
             expected
         )

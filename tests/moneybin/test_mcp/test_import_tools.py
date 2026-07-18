@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -34,6 +36,20 @@ async def test_import_status_coarse_defaults_to_all_sections(
     mcp_db: object,
 ) -> None:
     response = await import_status_coarse()
+
+    assert [section.kind for section in response.data.sections] == [
+        "imports",
+        "formats",
+        "inbox",
+    ]
+
+
+async def test_import_status_coarse_normalizes_selected_section_order(
+    mcp_db: object,
+) -> None:
+    response = await import_status_coarse(
+        sections=["inbox", "imports", "formats"],
+    )
 
     assert [section.kind for section in response.data.sections] == [
         "imports",
@@ -182,6 +198,290 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
     )
     assert wrong_filter.error is not None
     assert wrong_filter.error.code == "IMPORT_CURSOR_INVALID"
+
+
+async def test_import_status_coarse_allows_multiple_canonical_prepends(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for import_id, started_at in (
+            ("imp_a", "2099-01-01 00:00:00"),
+            ("imp_b", "2099-02-01 00:00:00"),
+            ("imp_c", "2099-03-01 00:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [import_id, f"/home/test/imports/{import_id}.csv", started_at],
+            )
+
+    first = await import_status_coarse(sections=["imports"], limit=1)
+    assert [row["import_id"] for row in first.data.sections[0].records] == ["imp_c"]
+    assert first.next_cursor is not None
+
+    with get_database(read_only=False) as db:
+        for import_id, started_at in (
+            ("imp_new_1", "2100-01-01 00:00:00"),
+            ("imp_new_2", "2100-02-01 00:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [import_id, f"/home/test/imports/{import_id}.csv", started_at],
+            )
+
+    second = await import_status_coarse(
+        sections=["imports"],
+        limit=1,
+        cursor=first.next_cursor,
+    )
+    assert [row["import_id"] for row in second.data.sections[0].records] == ["imp_b"]
+    assert second.next_cursor is not None
+
+    third = await import_status_coarse(
+        sections=["imports"],
+        limit=1,
+        cursor=second.next_cursor,
+    )
+    assert [row["import_id"] for row in third.data.sections[0].records] == ["imp_a"]
+    assert third.next_cursor is None
+
+
+async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for import_id in ("imp_a", "imp_b", "imp_c"):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [
+                    import_id,
+                    f"/home/test/imports/{import_id}.csv",
+                    "2099-01-01 00:00:00",
+                ],
+            )
+
+    first = await import_status_coarse(sections=["imports"], limit=1)
+    assert [row["import_id"] for row in first.data.sections[0].records] == ["imp_c"]
+    assert first.next_cursor is not None
+
+    with get_database(read_only=False) as db:
+        for import_id in ("imp_y", "imp_z"):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [
+                    import_id,
+                    f"/home/test/imports/{import_id}.csv",
+                    "2099-01-01 00:00:00",
+                ],
+            )
+
+    second = await import_status_coarse(
+        sections=["imports"],
+        limit=2,
+        cursor=first.next_cursor,
+    )
+    assert [row["import_id"] for row in second.data.sections[0].records] == [
+        "imp_b",
+        "imp_a",
+    ]
+    assert second.next_cursor is None
+
+
+async def test_import_status_coarse_rejects_delete_plus_prepend(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for import_id, started_at in (
+            ("imp_a", "2099-01-01 00:00:00"),
+            ("imp_b", "2099-02-01 00:00:00"),
+            ("imp_c", "2099-03-01 00:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [import_id, f"/home/test/imports/{import_id}.csv", started_at],
+            )
+
+    first = await import_status_coarse(sections=["imports"], limit=1)
+    assert first.next_cursor is not None
+
+    with get_database(read_only=False) as db:
+        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_a'")
+        db.execute(
+            """
+            INSERT INTO raw.import_log (
+                import_id, source_file, source_type, source_origin,
+                account_names, status, started_at
+            ) VALUES (
+                'imp_new', '/tmp/imp_new.csv', 'csv', 'test', '[]', 'complete',
+                '2100-01-01 00:00:00'
+            )
+            """
+        )
+
+    response = await import_status_coarse(
+        sections=["imports"],
+        limit=1,
+        cursor=first.next_cursor,
+    )
+    assert response.error is not None
+    assert response.error.code == "IMPORT_CURSOR_INVALID"
+
+
+async def test_import_status_coarse_rejects_snapshot_anchor_deletion(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for import_id in ("imp_a", "imp_b", "imp_c"):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [
+                    import_id,
+                    f"/home/test/imports/{import_id}.csv",
+                    "2099-01-01 00:00:00",
+                ],
+            )
+
+    first = await import_status_coarse(sections=["imports"], limit=1)
+    assert first.next_cursor is not None
+
+    with get_database(read_only=False) as db:
+        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_c'")
+        db.execute(
+            """
+            INSERT INTO raw.import_log (
+                import_id, source_file, source_type, source_origin,
+                account_names, status, started_at
+            ) VALUES (
+                'imp_z', '/tmp/imp_z.csv', 'csv', 'test', '[]', 'complete',
+                '2099-01-01 00:00:00'
+            )
+            """
+        )
+
+    response = await import_status_coarse(
+        sections=["imports"],
+        limit=1,
+        cursor=first.next_cursor,
+    )
+    assert response.error is not None
+    assert response.error.code == "IMPORT_CURSOR_INVALID"
+
+
+async def test_import_status_coarse_rejects_original_order_mutation(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for import_id, started_at in (
+            ("imp_a", "2099-01-01 00:00:00"),
+            ("imp_b", "2099-02-01 00:00:00"),
+            ("imp_c", "2099-03-01 00:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [import_id, f"/home/test/imports/{import_id}.csv", started_at],
+            )
+
+    first = await import_status_coarse(sections=["imports"], limit=1)
+    assert first.next_cursor is not None
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            UPDATE raw.import_log
+            SET started_at = '2098-01-01 00:00:00'
+            WHERE import_id = 'imp_b'
+            """
+        )
+
+    response = await import_status_coarse(
+        sections=["imports"],
+        limit=1,
+        cursor=first.next_cursor,
+    )
+    assert response.error is not None
+    assert response.error.code == "IMPORT_CURSOR_INVALID"
+
+
+async def test_import_status_coarse_rejects_invalid_snapshot_head(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for import_id in ("imp_a", "imp_b"):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [
+                    import_id,
+                    f"/home/test/imports/{import_id}.csv",
+                    "2099-01-01 00:00:00",
+                ],
+            )
+
+    first = await import_status_coarse(sections=["imports"], limit=1)
+    assert first.next_cursor is not None
+    decoded = json.loads(base64.urlsafe_b64decode(first.next_cursor))
+    decoded["snapshot"]["head"][0] = "not-a-timestamp"
+    invalid_cursor = base64.urlsafe_b64encode(
+        json.dumps(decoded, sort_keys=True, separators=(",", ":")).encode()
+    ).decode()
+
+    response = await import_status_coarse(
+        sections=["imports"],
+        limit=1,
+        cursor=invalid_cursor,
+    )
+    assert response.error is not None
+    assert response.error.code == "IMPORT_CURSOR_INVALID"
 
 
 async def test_import_status_coarse_import_id_returns_one_exact_record(

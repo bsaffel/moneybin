@@ -11,9 +11,12 @@ source_type populates — see ``REVERT_TABLES`` below. ``ImportService.revert``
 revert operation itself lives on the service, not here.
 """
 
+import base64
+import hashlib
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Literal
 
 from moneybin.database import Database
@@ -36,6 +39,20 @@ logger = logging.getLogger(__name__)
 
 _SourceType = Literal[
     "csv", "tsv", "excel", "parquet", "feather", "pipe", "ofx", "manual", "pdf"
+]
+
+_IMPORT_HISTORY_COLUMNS = [
+    "import_id",
+    "source_file",
+    "source_type",
+    "source_origin",
+    "format_name",
+    "status",
+    "rows_imported",
+    "rows_rejected",
+    "detection_confidence",
+    "started_at",
+    "completed_at",
 ]
 
 
@@ -213,7 +230,6 @@ def get_import_history(
     *,
     limit: int = 20,
     import_id: str | None = None,
-    offset: int = 0,
 ) -> list[dict[str, str | int | None]]:
     """Query the import_log. If import_id is given, returns at most one row."""
     if import_id:
@@ -234,40 +250,89 @@ def get_import_history(
                    format_name, status, rows_imported, rows_rejected,
                    detection_confidence, started_at, completed_at
             FROM {IMPORT_LOG.full_name}
-            ORDER BY started_at DESC, import_id DESC
-            LIMIT ? OFFSET ?
+            ORDER BY started_at DESC
+            LIMIT ?
             """,
-            [limit, offset],
+            [limit],
         ).fetchall()
 
-    columns = [
-        "import_id",
-        "source_file",
-        "source_type",
-        "source_origin",
-        "format_name",
-        "status",
-        "rows_imported",
-        "rows_rejected",
-        "detection_confidence",
-        "started_at",
-        "completed_at",
-    ]
-    return [dict(zip(columns, row, strict=True)) for row in rows]
+    return [dict(zip(_IMPORT_HISTORY_COLUMNS, row, strict=True)) for row in rows]
 
 
-def count_import_history(db: Database, *, import_id: str | None = None) -> int:
-    """Return the exact import-log count for the same filter as history reads."""
-    if import_id is None:
-        row = db.execute(
-            f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name}"  # noqa: S608  # TableRef constant
-        ).fetchone()
+@dataclass(frozen=True)
+class ImportHistoryPage:
+    """One page plus a compact identity/order snapshot of import history."""
+
+    records: list[dict[str, str | int | None]]
+    total_count: int
+    head_started_at: str | None
+    head_import_id: str | None
+    snapshot_digest: str
+
+
+def get_import_history_page(
+    db: Database,
+    *,
+    limit: int,
+    offset: int,
+    head_started_at: str | None = None,
+    head_import_id: str | None = None,
+) -> ImportHistoryPage:
+    """Read a totally ordered page bound to one import-history snapshot head."""
+    if limit < 0 or offset < 0:
+        raise ValueError("limit and offset must be non-negative")
+    if (head_started_at is None) != (head_import_id is None):
+        raise ValueError("snapshot head fields must be supplied together")
+
+    if head_started_at is None:
+        rows = db.execute(
+            f"""
+            SELECT import_id, source_file, source_type, source_origin,
+                   format_name, status, rows_imported, rows_rejected,
+                   detection_confidence, started_at, completed_at
+            FROM {IMPORT_LOG.full_name}
+            ORDER BY started_at DESC, import_id DESC
+            """  # noqa: S608  # TableRef constant
+        ).fetchall()
     else:
-        row = db.execute(
-            f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name} WHERE import_id = ?",  # noqa: S608  # TableRef + parameterized value
-            [import_id],
-        ).fetchone()
-    return int(row[0]) if row is not None else 0
+        rows = db.execute(
+            f"""
+            SELECT import_id, source_file, source_type, source_origin,
+                   format_name, status, rows_imported, rows_rejected,
+                   detection_confidence, started_at, completed_at
+            FROM {IMPORT_LOG.full_name}
+            WHERE started_at < CAST(? AS TIMESTAMP)
+               OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
+            ORDER BY started_at DESC, import_id DESC
+            """,  # noqa: S608  # TableRef constant + parameterized snapshot head
+            [head_started_at, head_started_at, head_import_id],
+        ).fetchall()
+
+    resolved_head_started_at = (
+        str(rows[0][9]) if head_started_at is None and rows else head_started_at
+    )
+    resolved_head_import_id = (
+        str(rows[0][0]) if head_import_id is None and rows else head_import_id
+    )
+    digest = hashlib.sha256()
+    for row in rows:
+        identity = json.dumps(
+            [str(row[9]), str(row[0])],
+            separators=(",", ":"),
+        )
+        digest.update(identity.encode())
+        digest.update(b"\n")
+    snapshot_digest = base64.urlsafe_b64encode(digest.digest()).decode().rstrip("=")
+    page_rows = rows[offset : offset + limit]
+    return ImportHistoryPage(
+        records=[
+            dict(zip(_IMPORT_HISTORY_COLUMNS, row, strict=True)) for row in page_rows
+        ],
+        total_count=len(rows),
+        head_started_at=resolved_head_started_at,
+        head_import_id=resolved_head_import_id,
+        snapshot_digest=snapshot_digest,
+    )
 
 
 def find_existing_import(
