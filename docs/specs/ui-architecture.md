@@ -42,8 +42,8 @@ This spec is the foundation only. Out of scope:
 
 | Decision | Choice | Rationale (full reasoning in [ADR-014](../decisions/014-shared-ui-architecture.md)) |
 |---|---|---|
-| Framework | **React** | The MCP Apps client ecosystem (`@mcp-ui/client`, `@modelcontextprotocol/ext-apps`) is React-first; largest library catalog for tables/charts/forms; safest multi-year bet. |
-| Component library | **shadcn/ui + Tailwind + Tremor** | Copy-paste components (owned in-repo, no version lock-in, agent-editable); Tremor for analytics/dashboard widgets; Radix primitives give accessibility by default. |
+| Framework | **React** | The MCP Apps client ecosystem (`@mcp-ui/client`, `@modelcontextprotocol/ext-apps`) is React-first; deepest ecosystem for tables, forms, and data-viz primitives (d3 / SVG-in-React); safest multi-year bet. |
+| Component library | **shadcn/ui + Tailwind**; charts are **house SVG primitives on `d3-scale`/`d3-shape`** (see [Charting](#charting)) | Copy-paste components (owned in-repo, no version lock-in, agent-editable); Radix primitives give accessibility by default. Charts are deliberately **not** a component library: the prescriptive chart grammar (`design-system/charts.md`) would override any library and forbids its default interaction, and the token/DOM/`aria` grammar requires SVG. Corrects the original "+ Tremor" line. |
 | Repo placement | **`ui/` at repo root** (source); built bundle embedded in the Python package | Standard Python+JS hybrid layout (Streamlit, Gradio, Superset). Keeps JS toolchain out of `src/moneybin/` while shipping the bundle in the wheel. |
 | Workspace | **pnpm workspaces + Vite + TypeScript** | Boring, standard. pnpm workspaces give the package boundaries that enforce the discipline contract. |
 | Type sharing | **Codegen from Pydantic JSON Schema** | Python stays the single source of truth; generated TS is committed and CI-gated against drift. |
@@ -82,11 +82,11 @@ moneybin/                          (repo root)
 
 ```mermaid
 flowchart TB
-    subgraph core["ui-core (depends on React, TanStack Query, shadcn, Tremor)"]
+    subgraph core["ui-core (depends on React, TanStack Query, shadcn, d3-scale/d3-shape)"]
         iface["MoneyBinClient (interface)<br/>MoneyBinClientProvider · useClient()"]
         hooks["data hooks (useTransactions, useReportSpending)"]
         comps["domain components (TransactionTable, NetWorthChart)"]
-        prims["primitives (shadcn / Tremor) + RegistrySlot"]
+        prims["primitives (shadcn) + chart primitives (d3-scale/shape) + RegistrySlot"]
         wall["⊘ the wall: ui-core imports NO transport"]
         prims --> comps --> hooks --> iface
     end
@@ -196,6 +196,21 @@ Contributor impact: Python-only contributors need no Node. Frontend contributors
 | Layout | Compact, single-purpose views | Full app shell + sidebar |
 | Network | Zero external calls (via host bridge) | Same-origin API only |
 | Bundle output | One self-contained HTML | Static asset set |
+
+## Charting
+
+Charts are **house-built SVG primitives on `d3-scale` / `d3-shape`**, wrapped in `ui-core` the same way `Amount` and `Icon` wrap their concerns — **not** an off-the-shelf charting component library. This corrects ADR-014's original "Tremor for analytics widgets" line, which conflated shadcn (copy-paste source you own) with Tremor (a versioned npm dependency); the two are not the same lock-in profile, and Tremor buys little here.
+
+**Why house primitives, not a library.** MoneyBin's chart grammar (`design-system/charts.md` — ten forms across twelve specimen cards) is prescriptive down to stroke widths, fill opacities, a custom pin/release tooltip state machine, and a selection model that *forbids* what component libraries do by default (no stroke/ring on marks, hue never repainted, tooltips snap to real data points only). A batteries-included library (Tremor/Recharts) would be overridden almost entirely and fought on interaction — negative value. The forms are a **closed set** (ten, enumerated by data shape in `charts.md`) over **small-n** data (≈24 months), so there is no chart-type-breadth or time-series-density driver that would justify an engine.
+
+- **Substrate: SVG**, required by the grammar — per-mark CSS tokens, DOM ledger-row tooltips, per-mark `aria`, and selection dimming are all SVG/DOM-native and cannot be expressed on a Canvas engine (uPlot, ECharts).
+- **Deps: `d3-scale` + `d3-shape`** (add `d3-hierarchy` when treemap lands) — small, stable, React-agnostic, CSP-clean in the sandboxed iframe.
+- **Interaction is house-built regardless of library** — it is custom in every serious tool (Datadog, for one, rolls its own wholesale). Reference implementations to port already exist per `charts.md` (`buildNw`, heatmap quantization, sankey collision, sparkline amplitude, the pin/release state machine) — translate-not-derive.
+- **Alternatives.** *visx* (SVG primitives pre-wrapped for React) is the near neighbor — viable, but its headline packages (`axis`, `tooltip`, `legend`) are exactly what the grammar overrides, so it adds a multi-package dependency for little gain. *Recharts/Tremor* rejected (override-everything + fights the interaction model). *ECharts/uPlot* rejected (Canvas breaks the SVG-token-DOM grammar). The full PFM + BI/observability survey and cost model behind this were captured in internal research.
+
+**Cost note.** In agentic development the cost driver is iteration loops, not lines of code, which flattens build-vs-buy: hand-rolled SVG is deterministic, while fighting a library's defaults is discovery. The house-primitive delta over a library lands almost entirely on the cheap plumbing layer — a small fraction of the total UI build; the expensive interaction/provenance layer (the bulk of charting) is custom either way. The charting layer is bounded (closed grammar, small-n) — not a month-scale token sink.
+
+**Reserved forms.** The ten-form grammar is correctly scoped for today's domains; a competitor-form survey found exactly three additions to make **when their consuming domain UI is built** (tracked as follow-up work): **treemap** (allocation with many items — investments / detailed spending, where the donut's six-slice cap bites), a **budget/goal progress** form (a linear bullet extending the §03 rollup-bar's marker convention, not a radial gauge — gauges are space-inefficient and off-brand), and **stacked-area over time** (marginal — only if stacked-bar proportion proves insufficient). Adding a form is a thin SVG component + a `charts.md` specimen card + one row in the report→form table — cheap, and a reason not to expand the grammar pre-emptively.
 
 ## Testing strategy
 
