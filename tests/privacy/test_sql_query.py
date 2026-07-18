@@ -378,3 +378,45 @@ def test_reports_uncategorized_queue_masks_account_id(populated_db: Database) ->
     assert result.tier is Tier.CRITICAL
     assert len(result.records) == 1
     assert str(result.records[0]["account_id"]).startswith("****")
+
+
+def test_undeclared_deployed_column_fails_closed(populated_db: Database) -> None:
+    """A deployed column with no declaration masks (coverage gap, not a query bug).
+
+    ``undeclared_view`` is a real deployed ``reports.*`` view — its columns are
+    in the schema snapshot — but it has no ``@report(classes=...)`` declaration
+    and no bridge entry, so it is a genuine coverage gap. This is the shape of
+    #330: the `reports` schema was widened to be queryable, but an undeclared
+    column fell through to the permissive AGGREGATE fallback and returned
+    unmasked. It must now fail closed instead.
+    """
+    _seed_account(populated_db)
+    populated_db.execute(
+        "CREATE OR REPLACE VIEW reports.undeclared_view AS "
+        "SELECT account_id, 1 AS n FROM core.dim_accounts"
+    )
+    result = execute_sql_query(
+        populated_db,
+        "SELECT account_id FROM reports.undeclared_view",
+        max_rows=100,
+    )
+    assert result.output_classes["account_id"].tier is Tier.CRITICAL
+    assert str(result.records[0]["account_id"]).startswith("****")
+
+
+def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> None:
+    """An expression we cannot resolve still classifies by its input columns.
+
+    Guards the other direction from the coverage-gap fix above: a blanket
+    fail-closed implementation would mask this too and wreck the BI surface.
+    ``COUNT(*)`` has no column reference to resolve at all, so it must still
+    classify as AGGREGATE (LOW), not fail closed to CRITICAL.
+    """
+    _seed_txn(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(*) AS n FROM core.fct_transactions",
+        max_rows=100,
+    )
+    assert result.output_classes["n"] is DataClass.AGGREGATE
+    assert result.tier is Tier.LOW

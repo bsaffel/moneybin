@@ -303,6 +303,27 @@ def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     return None
 
 
+# A deployed catalog column with no declaration is a registry gap, not a query
+# problem: every key reaching here came from _column_key, which returns only
+# keys present in snapshot.columns. DataClass has no CRITICAL member (CRITICAL
+# is a Tier); ACCOUNT_IDENTIFIER is the Tier.CRITICAL class redact_records
+# masks. Mirrors _FAIL_CLOSED in reports/_framework/classify.py.
+_COVERAGE_GAP_CLASS = DataClass.ACCOUNT_IDENTIFIER
+
+
+def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClass:
+    schema, table, column = key
+    sql_hash = (
+        hashlib.sha256(sql_for_log.encode()).hexdigest()[:12] if sql_for_log else "n/a"
+    )
+    # schema/table/column are identifiers, not data — safe to log (No PII in logs).
+    logger.warning(
+        f"sql_lineage: undeclared deployed column {schema}.{table}.{column}; "
+        f"failing closed (sql sha256={sql_hash})"
+    )
+    return _COVERAGE_GAP_CLASS
+
+
 def _fallback_class(
     scope: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
@@ -320,7 +341,10 @@ def _fallback_class(
     via declared @report class maps): an unclassified-schema query has no input
     columns here to raise the floor. The caller enforces that restriction (see
     module docstring); within the classified schemas, any query touching a
-    CRITICAL column raises the fallback floor to CRITICAL.
+    CRITICAL column raises the fallback floor to CRITICAL. This is now
+    enforced rather than assumed: an undeclared deployed column among the
+    scope's inputs also raises the floor to CRITICAL (via
+    ``_coverage_gap_class``) rather than being silently skipped.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without
@@ -333,8 +357,10 @@ def _fallback_class(
     )
     best: DataClass = DataClass.AGGREGATE
     for key in collect_input_columns(scope, snapshot):
-        dc = _class_of_key(key)
-        if dc is not None and dc.tier > best.tier:
+        # An undeclared deployed column in scope raises the floor too: the
+        # registry is incomplete, so nothing in this scope can be trusted LOW.
+        dc = _class_of_key(key) or _coverage_gap_class(key, sql_for_log)
+        if dc.tier > best.tier:
             best = dc
     return best
 
@@ -402,9 +428,12 @@ def _classify_projection(
     classes: list[DataClass] = []
     for col in cols:
         key = _column_key(col, alias_map, snapshot)
-        dc = _class_of_key(key) if key is not None else None
-        if dc is None:
+        if key is None:
+            # Unresolvable column reference — classify by the scope's inputs.
             return _fallback_class(scope, snapshot, sql_for_log)
+        dc = _class_of_key(key)
+        if dc is None:
+            return _coverage_gap_class(key, sql_for_log)
         classes.append(dc)
 
     # Value-preserving agg or plain expression: highest-tier referenced class.
