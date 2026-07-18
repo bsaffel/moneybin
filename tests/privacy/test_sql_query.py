@@ -431,30 +431,34 @@ def test_unresolvable_column_reference_classifies_by_scope_inputs(
     populated_db: Database,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A subquery-alias column (`key is None`) classifies by scope, not blanket CRITICAL.
+    """A LATERAL-derived column (`key is None`) classifies by scope, not blanket CRITICAL.
 
-    ``x`` in the outer SELECT refers to the derived table's alias ``s``, not a
-    real catalog table — ``_column_key`` returns ``None`` for it, so
-    classification reaches ``_fallback_class`` (the ``key is None`` branch in
-    ``_classify_projection``), unlike ``COUNT(*)`` above which never gets
-    there. The scope's only real input column is ``amount`` (TXN_AMOUNT,
-    HIGH), so the query must classify HIGH and pass the value through
-    unmasked — a blanket fail-closed (mask on any unresolved key) would flip
-    this to CRITICAL and mask it, which is exactly the over-masking the
-    coverage-gap fix must not introduce.
+    ``x`` in the outer SELECT refers to the LATERAL derived table's alias
+    ``l``, not a real catalog table or a source ``_class_via_source_scope``
+    resolves — CTE and plain derived-table aliases resolve through
+    ``scope.sources`` (see that function's docstring), but a LATERAL source
+    does not, so ``_column_key`` returns ``None`` for ``l.x`` and
+    classification falls through to ``_fallback_class`` (the ``key is None``
+    branch in ``_classify_projection``), unlike ``COUNT(*)`` above which
+    never gets there. The scope's only real input column is ``t.amount``
+    (TXN_AMOUNT, HIGH), so the query must classify HIGH and pass the value
+    through unmasked — a blanket fail-closed (mask on any unresolved key)
+    would flip this to CRITICAL and mask it, which is exactly the
+    over-masking the coverage-gap fix must not introduce.
     """
     _seed_txn(populated_db)
     with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_lineage"):
         result = execute_sql_query(
             populated_db,
-            "SELECT x FROM (SELECT amount AS x FROM core.fct_transactions) s",
+            "SELECT l.x FROM core.fct_transactions t, "
+            "LATERAL (SELECT t.amount AS x) AS l",
             max_rows=100,
         )
     assert result.output_classes["x"] is DataClass.TXN_AMOUNT
     assert result.tier is Tier.HIGH
     assert not str(result.records[0]["x"]).startswith("*")
     # Pins that the `key is None` branch was actually taken. Without this, a
-    # future sqlglot that resolves the subquery alias would classify `x`
-    # directly, and the test would keep passing while silently no longer
-    # exercising the branch it exists to guard.
+    # future sqlglot that resolves the LATERAL alias through scope.sources
+    # would classify `x` directly, and the test would keep passing while
+    # silently no longer exercising the branch it exists to guard.
     assert "unresolved projection; conservative fallback" in caplog.text

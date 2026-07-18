@@ -399,14 +399,19 @@ def test_is_data_query_separates_data_from_metadata() -> None:
 def test_fallback_log_omits_raw_sql(
     populated_db: Database, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The conservative-fallback WARNING logs a hash, never the raw SQL (no PII)."""
+    """The conservative-fallback WARNING logs a hash, never the raw SQL (no PII).
+
+    ``column0`` in a ``VALUES`` row source is not a catalog column at all — no
+    ``core``/``app`` table backs it, so ``_column_key`` returns ``None`` and
+    ``_class_via_source_scope`` doesn't resolve it either (a VALUES row source
+    isn't a nested SELECT scope), so classification reaches
+    ``_fallback_class``. The PII literal lives in the VALUES row itself; the
+    log assertions confirm it never reaches the log line, only its hash.
+    """
     snap = get_current_schema_snapshot(populated_db)
     pii_literal = "Chase acct 123456789"
     # Literal embedded directly (no f-string) so this stays a static test string.
-    sql = (
-        "WITH s AS (SELECT account_id FROM core.fct_transactions "
-        "WHERE description = 'Chase acct 123456789') SELECT account_id FROM s"
-    )
+    sql = "SELECT column0 FROM (VALUES ('Chase acct 123456789')) AS v"
     with caplog.at_level("WARNING"):
         resolve_output_classes(expand_star(parse_cached(sql), snap), snap, sql)
     logged = "\n".join(r.getMessage() for r in caplog.records)
