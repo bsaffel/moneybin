@@ -2,22 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import fcntl  # POSIX-only: project targets macOS/Linux
+import inspect
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal, cast
 
 import duckdb
 from fastmcp import FastMCP
+from pydantic import Field
 
 from moneybin.db_lock import lock_path_for
+from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.system import (
+    AuditDetail,
+    AuditEvents,
+    AuditHistory,
+    CategorizationStatus,
+    DoctorStatus,
     InvariantResultPayload,
+    OverviewStatus,
     RecoveryActionPayload,
     SchemaDriftTable,
+    SystemAuditCoarsePayload,
     SystemAuditEventPayload,
     SystemAuditGetPayload,
     SystemAuditHistoryEntryPayload,
@@ -27,6 +43,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusAccountLinksInfo,
     SystemStatusAccountsInfo,
     SystemStatusCategorizationInfo,
+    SystemStatusCoarsePayload,
     SystemStatusDatabaseConnectionsInfo,
     SystemStatusGsheetInfo,
     SystemStatusGsheetRow,
@@ -40,6 +57,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusTransformsInfo,
     SystemStatusWriter,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
@@ -633,6 +651,307 @@ def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayloa
         ),
         actions=[hint],
     )
+
+
+def _dynamic_coarse_envelope[T](
+    data: T,
+    *,
+    contract_types: list[type[Any]],
+    total_count: int,
+    returned_count: int,
+    next_cursor: str | None = None,
+    actions: list[str] | None = None,
+    degraded: bool = False,
+    degraded_reason: str | None = None,
+) -> ResponseEnvelope[T]:
+    """Build a runtime-classified coarse envelope from its selected variants."""
+    classes = {
+        data_class
+        for contract_type in contract_types
+        for data_class in extract_data_classes(contract_type)
+    }
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(T, redact_typed(data, None))
+    return cast(
+        ResponseEnvelope[T],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=returned_count,
+            next_cursor=next_cursor,
+            actions=actions,
+            degraded=degraded,
+            degraded_reason=degraded_reason,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+
+
+async def _run_tool_body[T](
+    callback: Callable[..., T],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """Delegate without emitting a second public-tool privacy audit."""
+    body = cast(Callable[..., T], inspect.unwrap(callback))
+    return await asyncio.to_thread(body, *args, **kwargs)
+
+
+def _audit_event_payload(event: Any) -> SystemAuditEventPayload:
+    """Project one existing AuditService row into the classified wire row."""
+    return SystemAuditEventPayload(
+        audit_id=event.audit_id,
+        occurred_at=event.occurred_at,
+        actor=event.actor,
+        action=event.action,
+        target_schema=event.target_schema,
+        target_table=event.target_table,
+        target_id=event.target_id,
+        before_value=event.before_value,
+        after_value=event.after_value,
+        parent_audit_id=event.parent_audit_id,
+        operation_id=event.operation_id,
+        context_json=event.context_json,
+        is_undo=event.is_undo,
+        undoes_operation_id=event.undoes_operation_id,
+    )
+
+
+def _audit_cursor(view: Literal["events", "history"], offset: int) -> str:
+    """Encode a view-bound opaque audit pagination cursor."""
+    raw = json.dumps(
+        {"offset": offset, "view": view},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _audit_offset(
+    cursor: str | None,
+    view: Literal["events", "history"],
+) -> int:
+    """Decode an audit cursor and reject malformed or cross-view reuse."""
+    if cursor is None:
+        return 0
+    try:
+        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        value = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid audit cursor") from exc
+    if not isinstance(value, dict):
+        raise ValueError("invalid audit cursor")
+    cursor_payload = cast(dict[str, Any], value)
+    if set(cursor_payload) != {"offset", "view"}:
+        raise ValueError("invalid audit cursor")
+    offset = cursor_payload["offset"]
+    if (
+        cursor_payload["view"] != view
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+    ):
+        raise ValueError("invalid audit cursor")
+    return offset
+
+
+@mcp_tool(dynamic_classification=True, read_only=False)
+async def system_status_coarse(
+    sections: list[Literal["overview", "doctor", "categorization"]] | None = None,
+    detail: Literal["summary", "full"] = "summary",
+) -> ResponseEnvelope[SystemStatusCoarsePayload]:
+    """Return selected system overview, integrity, and categorization sections."""
+    from moneybin.mcp.tools.transactions_categorize import (
+        transactions_categorize_stats,
+    )
+
+    requested = (
+        ["overview", "doctor", "categorization"] if sections is None else sections
+    )
+    if not requested:
+        raise ValueError("At least one system status section is required.")
+    if len(set(requested)) != len(requested):
+        raise ValueError("System status sections must not contain duplicates.")
+
+    selected: list[OverviewStatus | DoctorStatus | CategorizationStatus] = []
+    actions: list[str] = []
+    degraded_reasons: list[str] = []
+    for section in requested:
+        if section == "overview":
+            response = await _run_tool_body(system_status)
+            if response.error is not None:
+                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
+            selected.append(OverviewStatus(overview=response.data))
+        elif section == "doctor":
+            response = await _run_tool_body(system_doctor, full=detail == "full")
+            if response.error is not None:
+                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
+            selected.append(DoctorStatus(doctor=response.data))
+        else:
+            response = await _run_tool_body(
+                transactions_categorize_stats, include_auto=detail == "full"
+            )
+            if response.error is not None:
+                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
+            selected.append(CategorizationStatus(statistics=response.data))
+        actions.extend(response.actions)
+        if response.summary.degraded:
+            reason = response.summary.degraded_reason
+            if reason is not None:
+                degraded_reasons.append(reason)
+
+    payload = SystemStatusCoarsePayload(sections=selected)
+    return _dynamic_coarse_envelope(
+        payload,
+        contract_types=[type(section) for section in selected],
+        total_count=len(selected),
+        returned_count=len(selected),
+        actions=list(dict.fromkeys(actions)),
+        degraded=bool(degraded_reasons),
+        degraded_reason=" ".join(dict.fromkeys(degraded_reasons)) or None,
+    )
+
+
+@mcp_tool(dynamic_classification=True)
+async def system_audit_coarse(
+    view: Literal["events", "history", "detail"] = "events",
+    operation_id: str | None = None,
+    audit_id: str | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 50,
+    cursor: str | None = None,
+) -> ResponseEnvelope[SystemAuditCoarsePayload]:
+    """List audit events or operations, or inspect one operation/event chain."""
+    if view == "detail":
+        if (operation_id is None) == (audit_id is None):
+            raise UserError(
+                "Audit detail requires exactly one of operation_id or audit_id.",
+                code="AUDIT_IDENTIFIER_REQUIRED",
+            )
+        if cursor is not None:
+            raise UserError(
+                "Audit detail does not accept a cursor.",
+                code="AUDIT_CURSOR_NOT_ALLOWED",
+            )
+    elif operation_id is not None or audit_id is not None:
+        raise UserError(
+            "operation_id and audit_id are only valid for audit detail.",
+            code="AUDIT_IDENTIFIER_NOT_ALLOWED",
+        )
+
+    if view == "events":
+        from moneybin.mcp.tools.curation import system_audit
+
+        offset = _audit_offset(cursor, "events")
+        response = await _run_tool_body(system_audit, limit=offset + limit + 1)
+        if response.error is not None:
+            return cast(ResponseEnvelope[SystemAuditCoarsePayload], response)
+        rows = response.data.events
+        page = rows[offset : offset + limit]
+        has_more = len(rows) > offset + limit
+        next_cursor = _audit_cursor("events", offset + limit) if has_more else None
+        payload = AuditEvents(events=page)
+        return _dynamic_coarse_envelope(
+            payload,
+            contract_types=[AuditEvents],
+            total_count=offset + len(page) + (1 if has_more else 0),
+            returned_count=len(page),
+            next_cursor=next_cursor,
+            actions=response.actions,
+        )
+
+    if view == "history":
+        offset = _audit_offset(cursor, "history")
+        response = await _run_tool_body(
+            system_audit_history,
+            limit=offset + limit + 1,
+        )
+        if response.error is not None:
+            return cast(ResponseEnvelope[SystemAuditCoarsePayload], response)
+        rows = response.data.operations
+        page = rows[offset : offset + limit]
+        has_more = len(rows) > offset + limit
+        next_cursor = _audit_cursor("history", offset + limit) if has_more else None
+        payload = AuditHistory(operations=page)
+        return _dynamic_coarse_envelope(
+            payload,
+            contract_types=[AuditHistory],
+            total_count=offset + len(page) + (1 if has_more else 0),
+            returned_count=len(page),
+            next_cursor=next_cursor,
+            actions=response.actions,
+        )
+
+    if operation_id is not None:
+        response = await _run_tool_body(system_audit_get, operation_id)
+        if response.error is not None:
+            return cast(ResponseEnvelope[SystemAuditCoarsePayload], response)
+        payload = AuditDetail(
+            operation_id=operation_id,
+            audit_id=None,
+            events=response.data.events,
+            can_undo=response.data.can_undo,
+            undo_blocked_by=response.data.undo_blocked_by,
+        )
+        return _dynamic_coarse_envelope(
+            payload,
+            contract_types=[AuditDetail],
+            total_count=len(payload.events),
+            returned_count=len(payload.events),
+            actions=response.actions,
+        )
+
+    from moneybin.database import get_database
+    from moneybin.services.audit_service import AuditService
+
+    audit_id_value = cast(str, audit_id)
+    with get_database(read_only=True) as db:
+        events = AuditService(db).chain_for(audit_id_value)
+    if not events:
+        raise UserError(
+            "No audit event found for the supplied audit_id.",
+            code="AUDIT_IDENTIFIER_NOT_FOUND",
+        )
+    payload = AuditDetail(
+        operation_id=None,
+        audit_id=audit_id_value,
+        events=[_audit_event_payload(event) for event in events],
+        can_undo=None,
+        undo_blocked_by=None,
+    )
+    return _dynamic_coarse_envelope(
+        payload,
+        contract_types=[AuditDetail],
+        total_count=len(payload.events),
+        returned_count=len(payload.events),
+        actions=[
+            "Use the event operation_id with system_audit(view='detail', "
+            "operation_id=...) to inspect undoability."
+        ],
+    )
+
+
+def register_system_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 replacement system reads."""
+    register(
+        mcp,
+        system_status_coarse,
+        "system_status",
+        "Return selected operator status sections: overview inventory, integrity "
+        "doctor checks, and categorization coverage. detail='full' deepens the "
+        "doctor scan and includes auto-categorization health.",
+    )
+    register(
+        mcp,
+        system_audit_coarse,
+        "system_audit",
+        "List recent audit events or operation history, or inspect one operation "
+        "or parent audit event in detail. Detail requires exactly one identifier.",
+    )
+    # Plan 6 cutover removals: system_doctor, transactions_categorize_stats,
+    # system_audit_history, and system_audit_get. Their live registrations stay
+    # untouched until the complete standard registry activates atomically.
 
 
 def register_system_tools(mcp: FastMCP) -> None:

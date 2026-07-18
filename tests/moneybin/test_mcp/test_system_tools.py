@@ -8,9 +8,155 @@ from typing import Any
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.mcp.tools.system import register_system_tools, system_status
+from moneybin.mcp.tools.system import (
+    register_system_coarse_reads,
+    register_system_tools,
+    system_audit_coarse,
+    system_status,
+    system_status_coarse,
+)
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
+
+
+@pytest.mark.parametrize("section", ["overview", "doctor", "categorization"])
+async def test_system_status_coarse_dispatches_each_section(section: str) -> None:
+    response = await system_status_coarse(sections=[section])  # pyright: ignore[reportArgumentType]
+
+    assert response.data.sections[0].kind == section
+
+
+async def test_system_status_coarse_defaults_to_fixed_section_order() -> None:
+    response = await system_status_coarse()
+
+    assert [section.kind for section in response.data.sections] == [
+        "overview",
+        "doctor",
+        "categorization",
+    ]
+
+
+async def test_system_status_coarse_rejects_explicit_empty_sections() -> None:
+    response = await system_status_coarse(sections=[])
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+
+
+async def test_system_status_coarse_rejects_duplicate_sections() -> None:
+    response = await system_status_coarse(sections=["overview", "overview"])
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+
+
+async def test_system_status_coarse_full_includes_auto_categorization() -> None:
+    response = await system_status_coarse(
+        sections=["categorization"],
+        detail="full",
+    )
+
+    section = response.data.sections[0]
+    assert section.kind == "categorization"
+    assert hasattr(section.statistics, "auto")
+
+
+async def test_system_audit_coarse_detail_requires_exactly_one_identifier() -> None:
+    missing = await system_audit_coarse(view="detail")
+    duplicate = await system_audit_coarse(
+        view="detail",
+        operation_id="op_demo",
+        audit_id="audit_demo",
+    )
+
+    assert missing.error is not None
+    assert missing.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+    assert duplicate.error is not None
+    assert duplicate.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+
+
+@pytest.mark.parametrize("view", ["events", "history"])
+async def test_system_audit_coarse_rejects_detail_identifier_for_other_views(
+    view: str,
+) -> None:
+    response = await system_audit_coarse(
+        view=view,  # pyright: ignore[reportArgumentType]
+        operation_id="op_demo",
+    )
+
+    assert response.error is not None
+    assert response.error.code == "AUDIT_IDENTIFIER_NOT_ALLOWED"
+
+
+async def test_system_audit_coarse_dispatches_events_and_history() -> None:
+    events = await system_audit_coarse(view="events")
+    history = await system_audit_coarse(view="history")
+
+    assert events.data.kind == "events"
+    assert history.data.kind == "history"
+
+
+async def test_system_audit_coarse_operation_detail(mcp_db: object) -> None:
+    operation_id = _make_tag_op()
+
+    response = await system_audit_coarse(
+        view="detail",
+        operation_id=operation_id,
+    )
+
+    assert response.data.kind == "detail"
+    assert response.data.operation_id == operation_id
+    assert response.data.audit_id is None
+    assert response.data.events[0].operation_id == operation_id
+
+
+async def test_system_audit_coarse_audit_detail(mcp_db: object) -> None:
+    operation_id = _make_tag_op()
+    events = await system_audit_coarse(view="events")
+    audit_id = next(
+        event.audit_id
+        for event in events.data.events
+        if event.operation_id == operation_id
+    )
+
+    response = await system_audit_coarse(
+        view="detail",
+        audit_id=audit_id,
+    )
+
+    assert response.data.kind == "detail"
+    assert response.data.operation_id is None
+    assert response.data.audit_id == audit_id
+    assert response.data.events[0].audit_id == audit_id
+
+
+async def test_system_audit_coarse_paginates_events(mcp_db: object) -> None:
+    _make_tag_op("first")
+    _make_tag_op("second")
+
+    first = await system_audit_coarse(view="events", limit=1)
+    second = await system_audit_coarse(
+        view="events",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert first.summary.returned_count == 1
+    assert first.summary.has_more is True
+    assert first.next_cursor is not None
+    assert second.data.events[0].audit_id != first.data.events[0].audit_id
+
+
+async def test_register_system_coarse_reads_registers_only_replacements() -> None:
+    server = FastMCP("system-coarse")
+
+    register_system_coarse_reads(server)
+    names = {
+        tool.name
+        for tool in await server._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    }
+
+    assert names == {"system_status", "system_audit"}
 
 
 @pytest.mark.unit

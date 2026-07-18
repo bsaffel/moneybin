@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastmcp import FastMCP
+from mcp.types import TextContent
 from pydantic import StrictBool
 
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.tools.system import register_system_coarse_reads
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 from .schema_assertions import (
@@ -111,5 +115,138 @@ async def test_strict_probe_does_not_coerce(bad: str) -> None:
     mcp = isolated_server(register_strict_probe)
 
     response = await call_tool_raw(mcp, "strict_probe", {"enabled": bad})
+
+    assert response.isError is True
+
+
+async def _assert_canonical_variant(
+    mcp: FastMCP,
+    name: str,
+    arguments: dict[str, Any],
+    expected_kind: str,
+) -> dict[str, Any]:
+    response = await call_tool_raw(mcp, name, arguments)
+    text = next(
+        block.text for block in response.content if isinstance(block, TextContent)
+    )
+    assert response.structuredContent is not None
+    assert json.loads(text) == response.structuredContent
+    assert response.structuredContent["data"]["kind"] == expected_kind
+    return response.structuredContent
+
+
+async def test_system_coarse_tools_render_schema_contract() -> None:
+    mcp = isolated_server(register_system_coarse_reads)
+
+    status = await listed_tool(mcp, "system_status")
+    audit = await listed_tool(mcp, "system_audit")
+
+    assert status.outputSchema is None
+    assert audit.outputSchema is None
+    assert status.annotations is not None
+    assert status.annotations.readOnlyHint is False
+    assert audit.annotations is not None
+    assert audit.annotations.readOnlyHint is True
+    sections_schema = status.inputSchema["properties"]["sections"]["anyOf"][0]
+    assert_literal_values(
+        sections_schema,
+        ("items",),
+        {"overview", "doctor", "categorization"},
+    )
+    assert_literal_values(
+        status.inputSchema,
+        ("properties", "detail"),
+        {"summary", "full"},
+    )
+    assert_literal_values(
+        audit.inputSchema,
+        ("properties", "view"),
+        {"events", "history", "detail"},
+    )
+
+
+@pytest.mark.parametrize("section", ["overview", "doctor", "categorization"])
+async def test_system_status_coarse_transport_variants(
+    section: str,
+    mcp_db: object,
+) -> None:
+    mcp = isolated_server(register_system_coarse_reads)
+
+    structured = await _assert_canonical_variant(
+        mcp,
+        "system_status",
+        {"sections": [section]},
+        expected_kind="sections",
+    )
+
+    assert structured["data"]["sections"][0]["kind"] == section
+
+
+async def test_system_coarse_call_emits_one_privacy_audit(mcp_db: object) -> None:
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_system_coarse_reads)
+
+    with patch(
+        "moneybin.mcp.decorator.write_privacy_event",
+        captured.append,
+    ):
+        await call_tool_raw(
+            mcp,
+            "system_status",
+            {"sections": ["overview"]},
+        )
+
+    assert len(captured) == 1
+    assert captured[0]["sensitivity"] == "low"
+
+
+async def test_system_audit_coarse_transport_variants(mcp_db: object) -> None:
+    from moneybin.database import get_database
+    from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
+    from moneybin.services.audit_service import AuditService
+    from moneybin.services.mutation_context import operation
+
+    with get_database(read_only=False) as db, operation() as operation_id:
+        TransactionTagsRepo(db).add(
+            transaction_id="txn_1",
+            tag="schema-contract",
+            actor="cli",
+        )
+    with get_database(read_only=True) as db:
+        audit_id = AuditService(db).events_for_operation(operation_id)[0].audit_id
+
+    mcp = isolated_server(register_system_coarse_reads)
+    await _assert_canonical_variant(mcp, "system_audit", {}, "events")
+    await _assert_canonical_variant(
+        mcp,
+        "system_audit",
+        {"view": "history"},
+        "history",
+    )
+    await _assert_canonical_variant(
+        mcp,
+        "system_audit",
+        {"view": "detail", "audit_id": audit_id},
+        "detail",
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("system_status", {"sections": ["health"]}),
+        ("system_status", {"detail": "verbose"}),
+        ("system_audit", {"view": "list"}),
+        ("system_audit", {"limit": "50"}),
+        ("system_audit", {"unknown": "value"}),
+    ],
+)
+async def test_system_coarse_tools_reject_invalid_raw_arguments(
+    name: str,
+    arguments: dict[str, Any],
+) -> None:
+    mcp = isolated_server(register_system_coarse_reads)
+
+    response = await call_tool_raw(mcp, name, arguments)
 
     assert response.isError is True
