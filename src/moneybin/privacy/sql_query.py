@@ -194,7 +194,7 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     """Run a read-only SQL query with full privacy enforcement.
 
     Pipeline: read-only gate → parse → metadata-or-data routing → (data:
-    core/app schema gate → sqlglot lineage → execute → CRITICAL masking).
+    allowlisted schema gate → sqlglot lineage → execute → CRITICAL masking).
     Returns redacted rows plus the resolved tier and per-column classes.
 
     Args:
