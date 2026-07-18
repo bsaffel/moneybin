@@ -1108,7 +1108,7 @@ class TestImportFilesPdfSign:
         actions = " ".join(result.actions)
         # The in-MCP human gate leads; the terminal CLI stays as the fallback,
         # both branches named.
-        assert "confirm_sign=True" in actions
+        assert "confirm_pdf_sign=True" in actions
         assert "moneybin import files" in actions
         assert "--confirm" in actions
         assert "--sign negative_is_expense" in actions
@@ -1270,7 +1270,7 @@ class TestImportPreviewPdf:
         # The agent is told both branches, and pointed at the in-MCP human gate
         # first — with the terminal as the fallback.
         actions = " ".join(result.actions)
-        assert "confirm_sign=True" in actions
+        assert "confirm_pdf_sign=True" in actions
         assert "moneybin import files" in actions
         assert "--confirm" in actions
         assert "--sign negative_is_expense" in actions
@@ -1636,7 +1636,7 @@ class TestImportConfirmBridge:
         """accept=True on a real card statement refuses and names the right channel.
 
         accept= is the tabular column-mapping signal and never ratifies a PDF. The
-        refusal must route the caller to confirm_sign=True (which elicits the
+        refusal must route the caller to confirm_pdf_sign=True (which elicits the
         human), never crash with a TypeError, and never run the import path (no
         inverted rows land). Uses the committed card fixture so the file on disk
         is genuinely a credit-card statement.
@@ -1659,7 +1659,7 @@ class TestImportConfirmBridge:
         assert result.error.code == "confirm_channel_conflict"
         message = result.error.message
         # The live in-MCP channel, plus the terminal fallback, both branches named.
-        assert "confirm_sign=True" in message
+        assert "confirm_pdf_sign=True" in message
         assert "moneybin import files" in message
         assert "--confirm" in message
         assert "--sign negative_is_expense" in message
@@ -1669,7 +1669,7 @@ class TestImportConfirmBridge:
 
 
 class TestImportConfirmPdfSign:
-    """import_confirm(confirm_sign=True) ratifies a deterministic PDF inversion.
+    """import_confirm(confirm_pdf_sign=True) ratifies a deterministic PDF inversion.
 
     The same credit-card inversion already elicits a human on the bridge and
     tabular channels. These tests pin the third channel to that one gate: a
@@ -1701,7 +1701,7 @@ class TestImportConfirmPdfSign:
             )
         )
 
-    async def test_confirm_sign_elicits_human_then_imports(
+    async def test_confirm_pdf_sign_elicits_human_then_imports(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
         """The human ratifies once; the retry carries that ratification down."""
@@ -1725,7 +1725,7 @@ class TestImportConfirmPdfSign:
             patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
             patch("moneybin.services.inbox_service.InboxService"),
         ):
-            result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
         assert result.error is None
         assert result.data.rows_loaded == 24
@@ -1737,7 +1737,7 @@ class TestImportConfirmPdfSign:
         mock_service.import_file.assert_called_once()
         assert mock_service.import_file.call_args.kwargs["confirm"] is True
 
-    async def test_confirm_sign_declined_imports_nothing(
+    async def test_confirm_pdf_sign_declined_imports_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
         """A refused (or unavailable) elicitation never inverts the ledger."""
@@ -1754,7 +1754,7 @@ class TestImportConfirmPdfSign:
             ),
             patch("moneybin.mcp.elicitation.confirm_or_raise", declined),
         ):
-            result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
         assert result.error is not None
         assert result.error.code == "mutation_confirmation_required"
@@ -1762,7 +1762,7 @@ class TestImportConfirmPdfSign:
         # so no import attempt ran even to surface it.
         mock_service.import_file.assert_not_called()
 
-    async def test_confirm_sign_prompt_names_the_statement_not_a_bridge(
+    async def test_confirm_pdf_sign_prompt_names_the_statement_not_a_bridge(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
         """A deterministic PDF has no bridge recipe; the prompt must not claim one."""
@@ -1783,7 +1783,7 @@ class TestImportConfirmPdfSign:
             patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
             patch("moneybin.services.inbox_service.InboxService"),
         ):
-            await import_confirm(file_path=str(pdf), confirm_sign=True)
+            await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
         assert confirm.await_args is not None
         message = confirm.await_args.args[0]
@@ -1792,7 +1792,7 @@ class TestImportConfirmPdfSign:
         # The concrete flip the human is ratifying, not just an abstract claim.
         assert "39.83" in message
 
-    async def test_confirm_sign_rejected_alongside_bridge_response(
+    async def test_confirm_pdf_sign_rejected_alongside_bridge_response(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
         """The two PDF channels are mutually exclusive, like accept/mapping."""
@@ -1800,21 +1800,21 @@ class TestImportConfirmPdfSign:
         result = await import_confirm(
             file_path=str(pdf),
             bridge_response={"recipe": {}, "rows": []},
-            confirm_sign=True,
+            confirm_pdf_sign=True,
         )
         assert result.error is not None
         assert result.error.code == "confirm_channel_conflict"
 
-    async def test_confirm_sign_rejected_on_tabular_file(
+    async def test_confirm_pdf_sign_rejected_on_tabular_file(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        """Tabular files ratify their inversion through accept=, not confirm_sign=."""
+        """Tabular files ratify their inversion through accept=, not confirm_pdf_sign=."""
         csv_file = tmp_path / "statements" / "card.csv"
         csv_file.parent.mkdir(parents=True)
         csv_file.touch()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        result = await import_confirm(file_path=str(csv_file), confirm_sign=True)
+        result = await import_confirm(file_path=str(csv_file), confirm_pdf_sign=True)
         assert result.error is not None
         assert result.error.code == "confirm_channel_conflict"
 
@@ -1829,13 +1829,13 @@ def test_pdf_sign_actions_lead_with_the_mcp_confirm_path() -> None:
         "/home/a/card.pdf", "looks like a card", channel="pdf"
     )
 
-    assert "confirm_sign=True" in actions[1]
+    assert "confirm_pdf_sign=True" in actions[1]
     # The terminal override for "it is NOT a card" survives as the escape hatch.
     assert any("--sign negative_is_expense" in a for a in actions)
 
 
 class TestImportConfirmPdfSignBridgeEscalation:
-    """confirm_sign on a PDF that turns out to need the bridge, not a sign decision."""
+    """confirm_pdf_sign on a PDF that turns out to need the bridge, not a sign decision."""
 
     async def test_bridge_escalation_returns_payload_without_blank_action(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -1866,7 +1866,7 @@ class TestImportConfirmPdfSignBridgeEscalation:
             ),
             patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
         ):
-            result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
         data = result.data
         assert isinstance(data, dict)
@@ -1879,7 +1879,7 @@ class TestImportConfirmPdfSignBridgeEscalation:
         assert any("bridge_response" in action for action in result.actions)
 
 
-async def test_confirm_sign_rejects_account_name_instead_of_dropping_it(
+async def test_confirm_pdf_sign_rejects_account_name_instead_of_dropping_it(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     """account_name is a tabular signal the PDF sign channel cannot honor.
@@ -1898,7 +1898,7 @@ async def test_confirm_sign_rejects_account_name_instead_of_dropping_it(
         "moneybin.services.import_service.ImportService", return_value=mock_service
     ):
         result = await import_confirm(
-            file_path=str(pdf), confirm_sign=True, account_name="Chase Freedom"
+            file_path=str(pdf), confirm_pdf_sign=True, account_name="Chase Freedom"
         )
 
     assert result.error is not None
@@ -1920,7 +1920,7 @@ async def test_confirm_sign_rejects_account_name_instead_of_dropping_it(
 @pytest.mark.parametrize(
     "channel",
     [
-        {"confirm_sign": True},
+        {"confirm_pdf_sign": True},
         {"bridge_response": {"recipe": {}, "rows": []}},
     ],
     ids=["sign", "bridge"],
@@ -1960,10 +1960,10 @@ async def test_pdf_channels_reject_every_tabular_account_signal(
     mock_service.apply_pdf_bridge_response.assert_not_called()
 
 
-async def test_confirm_sign_without_a_pending_proposal_imports_nothing(
+async def test_confirm_pdf_sign_without_a_pending_proposal_imports_nothing(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    """confirm_sign asserts a sign proposal exists; a false premise must not import.
+    """confirm_pdf_sign asserts a sign proposal exists; a false premise must not import.
 
     The caller is answering a question MoneyBin asked. If no sign gate actually
     fires for this PDF — a stale proposal, a replaced file, the wrong path —
@@ -1997,7 +1997,7 @@ async def test_confirm_sign_without_a_pending_proposal_imports_nothing(
         patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
         patch("moneybin.services.inbox_service.InboxService", archive),
     ):
-        result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+        result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
     assert result.error is not None
     assert result.error.code == "sign_confirmation_not_pending"
@@ -2059,7 +2059,7 @@ class TestConfirmationBindsToTheApprovedBytes:
             ),
             patch("moneybin.services.inbox_service.InboxService"),
         ):
-            result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+            result = await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
 
         assert result.error is not None
         assert result.error.code == "file_changed_during_confirmation"
@@ -2139,3 +2139,41 @@ class TestConfirmationBindsToTheApprovedBytes:
         assert result.error.code == "file_changed_during_confirmation"
         # Only the gating attempt ran — the ratified retry never did.
         assert mock_service.apply_pdf_bridge_response.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "tabular_signal",
+    [{"accept": True}, {"mapping": {"amount": "Amount"}}],
+    ids=["accept", "mapping"],
+)
+async def test_confirm_pdf_sign_rejects_tabular_mapping_signals(
+    tabular_signal: dict[str, object], tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The sign channel takes no column mapping, and says so instead of guessing.
+
+    Sibling coverage to `test_confirm_pdf_sign_rejected_alongside_bridge_response`:
+    each channel selector must refuse the others' signals rather than silently
+    picking one. A caller who learned the CLI's `--accept --confirm-sign`
+    pairing will try exactly this combination.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+
+    mock_service = MagicMock()
+    with patch(
+        "moneybin.services.import_service.ImportService", return_value=mock_service
+    ):
+        result = await import_confirm(
+            file_path=str(pdf),
+            confirm_pdf_sign=True,
+            **tabular_signal,  # pyright: ignore[reportArgumentType]
+        )
+
+    assert result.error is not None
+    assert result.error.code == "confirm_channel_conflict"
+    # Names both the offending signal class and the channel that owns it.
+    assert "mapping" in result.error.message
+    # Refused before any probe or import ran.
+    mock_service.pdf_preview.assert_not_called()
+    mock_service.import_file.assert_not_called()

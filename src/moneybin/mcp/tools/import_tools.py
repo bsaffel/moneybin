@@ -298,7 +298,7 @@ def _sign_confirm_actions(
             "Call import_confirm(file_path=..., accept=True) so MoneyBin can "
             "show the human the tabular sign-inversion approval."
             if channel == "tabular"
-            else "Call import_confirm(file_path=..., confirm_sign=True) so MoneyBin "
+            else "Call import_confirm(file_path=..., confirm_pdf_sign=True) so MoneyBin "
             "can show the human the sign-inversion approval. Do not answer it "
             "yourself — show them sign_sample_rows (what the statement printed vs "
             "what MoneyBin would record) so THEY decide."
@@ -1125,7 +1125,7 @@ def _post_import_actions(import_id: str | None) -> list[str]:
 def _pdf_sign_probe(path: Path) -> None:
     """Re-run the PDF routing machine without importing, to test the premise.
 
-    ``confirm_sign`` asserts that a sign proposal is pending for this file, and
+    ``confirm_pdf_sign`` asserts that a sign proposal is pending for this file, and
     that assertion can be false — a stale proposal, a replaced file, the wrong
     path. Answering it by *starting the import* is destructive when it's false:
     an ordinary statement loads, or seed rows land, and the caller gets success
@@ -1291,7 +1291,7 @@ async def import_confirm(
     file_path: str,
     *,
     accept: bool = False,
-    confirm_sign: bool = False,
+    confirm_pdf_sign: bool = False,
     mapping: dict[str, str] | None = None,
     bridge_response: dict[str, Any] | None = None,
     save_format: bool = True,
@@ -1324,7 +1324,7 @@ async def import_confirm(
     - **PDF sign** — ``import_files``/``import_preview`` returned a
       ``confirmation_required`` with ``reason='sign_convention'`` for a
       deterministic PDF (a credit-card statement, where loading inverts every
-      amount's sign). Pass ``confirm_sign=True`` and MoneyBin puts the evidence
+      amount's sign). Pass ``confirm_pdf_sign=True`` and MoneyBin puts the evidence
       and printed-vs-recorded samples in front of the human; you cannot answer
       for them, and a decline loads nothing.
 
@@ -1347,7 +1347,7 @@ async def import_confirm(
         file_path: Absolute path to the file to import. Must be within the
             user's home directory.
         accept: Accept the proposed mapping as-is (no overrides). Tabular only.
-        confirm_sign: Enter the sign-inversion resolution for a deterministic
+        confirm_pdf_sign: Enter the sign-inversion resolution for a deterministic
             PDF that ``import_files``/``import_preview`` flagged as a credit-card
             statement. Deterministic PDFs only, and mutually exclusive with
             ``bridge_response``/``accept``/``mapping``. Like the bridge channel
@@ -1402,12 +1402,12 @@ async def import_confirm(
                 "(those are the tabular column-mapping channel).",
                 code="confirm_channel_conflict",
             )
-        if confirm_sign:
+        if confirm_pdf_sign:
             # A bridge recipe's own inversion is elicited below, on the bridge
-            # result itself. confirm_sign= drives the deterministic path, which
+            # result itself. confirm_pdf_sign= drives the deterministic path, which
             # would re-derive the recipe and discard the one supplied here.
             raise UserError(
-                "confirm_sign cannot be combined with bridge_response — a bridge "
+                "confirm_pdf_sign cannot be combined with bridge_response — a bridge "
                 "recipe that inverts amounts raises its own human confirmation "
                 "when applied. Call import_confirm(file_path=..., "
                 "bridge_response=...) on its own.",
@@ -1457,10 +1457,10 @@ async def import_confirm(
         )
 
     if path.suffix.lower() == ".pdf":
-        if confirm_sign:
+        if confirm_pdf_sign:
             if accept or mapping:
                 raise UserError(
-                    "confirm_sign cannot be combined with accept= or mapping= "
+                    "confirm_pdf_sign cannot be combined with accept= or mapping= "
                     "(those are the tabular column-mapping channel). A PDF's sign "
                     "confirmation takes no column mapping.",
                     code="confirm_channel_conflict",
@@ -1480,7 +1480,7 @@ async def import_confirm(
         # bridge PDF, write a spurious egress audit row):
         #   * Bridge (native-text extraction) — re-call with bridge_response=.
         #   * Sign convention (credit-card inversion) — re-call with
-        #     confirm_sign=True, which elicits the human above.
+        #     confirm_pdf_sign=True, which elicits the human above.
         # The tabular catch below only serializes ProposedMapping, so running the
         # tabular path here would loop the agent instead.
         quoted = shlex.quote(str(path))
@@ -1490,7 +1490,7 @@ async def import_confirm(
             "extraction), call import_confirm(file_path=..., bridge_response="
             "{'recipe': ..., 'rows': [...]}). If it returned a sign-convention "
             "confirmation (a credit-card statement — confirming inverts every "
-            "amount's sign), call import_confirm(file_path=..., confirm_sign=True) "
+            "amount's sign), call import_confirm(file_path=..., confirm_pdf_sign=True) "
             "and MoneyBin will ask the human to approve the inversion. To skip the "
             f"prompt from a terminal: `moneybin import files {quoted} --confirm` if "
             f"it IS a credit card, or `moneybin import files {quoted} --sign "
@@ -1498,9 +1498,9 @@ async def import_confirm(
             code="confirm_channel_conflict",
         )
 
-    if confirm_sign:
+    if confirm_pdf_sign:
         raise UserError(
-            "confirm_sign applies to deterministic PDF statements only. A tabular "
+            "confirm_pdf_sign applies to deterministic PDF statements only. A tabular "
             "file's sign inversion is confirmed through its mapping ratification: "
             "call import_confirm(file_path=..., accept=True) and MoneyBin will ask "
             "the human to approve the inversion.",
@@ -1741,9 +1741,12 @@ def register_import_tools(mcp: FastMCP) -> None:
         "and nothing loads. "
         "PDF sign: for a deterministic PDF returned with reason='sign_convention' "
         "(a credit-card statement, where loading inverts every amount's sign), pass "
-        "confirm_sign=True — MoneyBin shows the human the evidence and the "
+        "confirm_pdf_sign=True — MoneyBin shows the human the evidence and the "
         "printed-vs-recorded sample rows and asks them to approve. You cannot "
-        "answer that prompt yourself; a decline imports nothing. "
+        "answer that prompt yourself; a decline imports nothing. It selects the "
+        "channel, so do not pass accept=/mapping= with it (that is the CLI's "
+        "separate --accept --confirm-sign tabular pairing, which has no MCP "
+        "equivalent). "
         "Data load is reversible via import_revert; format save "
         "can be undone via system_audit_undo. "
         "Amounts use the accounting convention: negative=expense, "
