@@ -23,7 +23,11 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.confirmation import ConfirmationBinding, confirm_exact_or_raise
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.categories import (
     MerchantsCreatePayload,
@@ -37,7 +41,10 @@ from moneybin.privacy.payloads.merchants import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization import CategorizationService, validate_match_type
-from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.merchant_links_service import (
+    MerchantLinkAcceptImpact,
+    MerchantLinksService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -220,20 +227,25 @@ def _load_pending_merchant_proposal(decision_id: str) -> _MerchantBindProposal:
     )
 
 
-def _merchant_link_binding(proposal: _MerchantBindProposal) -> ConfirmationBinding:
+def _merchant_link_binding(
+    *,
+    decision_id: str,
+    target_merchant_id: str,
+    blast_radius: dict[str, int],
+) -> ConfirmationBinding:
     """Bind approval without exposing the raw provider reference."""
     return ConfirmationBinding(
         arguments={
-            "decision_id": proposal.decision_id,
+            "decision_id": decision_id,
             "action": "accept",
-            "target_merchant_id": proposal.candidate_merchant_id,
+            "target_merchant_id": target_merchant_id,
         },
-        resolved_ids=(proposal.decision_id, proposal.candidate_merchant_id),
+        resolved_ids=(decision_id, target_merchant_id),
         actor="mcp",
         profile=get_settings().profile,
         authorization_context="local-profile",
         operation_kind="merchant_identity_bind",
-        blast_radius=proposal.blast_radius,
+        blast_radius=blast_radius,
     )
 
 
@@ -263,12 +275,28 @@ def _merchant_confirm_message(p: _MerchantBindProposal) -> str:
     )
 
 
-def _apply_merchant_accept(decision_id: str, target_merchant_id: str) -> None:
+def _apply_merchant_accept(
+    decision_id: str,
+    target_merchant_id: str,
+    grant: ConfirmationGrant,
+) -> None:
     # decided_by="user" is truthful only on this path: a human just ratified the
     # binding through the elicitation gate above.
+    def verify(impact: MerchantLinkAcceptImpact) -> None:
+        grant.verify(
+            _merchant_link_binding(
+                decision_id=decision_id,
+                target_merchant_id=target_merchant_id,
+                blast_radius=impact.blast_radius,
+            )
+        )
+
     with get_database(read_only=False) as db:
         MerchantLinksService(db, actor="mcp").set(
-            decision_id, target_merchant_id=target_merchant_id, decided_by="user"
+            decision_id,
+            target_merchant_id=target_merchant_id,
+            decided_by="user",
+            verify_accept=verify,
         )
 
 
@@ -365,25 +393,39 @@ async def merchants_links_set(
                 "action='reject' for that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        proposal = await asyncio.to_thread(_load_pending_merchant_proposal, decision_id)
-        if target_merchant_id != proposal.candidate_merchant_id:
-            # Refuse BEFORE prompting: a doomed binding must not cost the user a
-            # confirmation. The service re-checks this; this is the boundary copy.
-            raise UserError(
-                f"'target_merchant_id' does not match decision '{decision_id}' — "
-                "it must be that decision's own candidate_merchant_id.",
-                code=error_codes.MUTATION_INVALID_INPUT,
-                hint="Re-read the decision with merchants_links_pending.",
+        if confirmation_token is None:
+            proposal = await asyncio.to_thread(
+                _load_pending_merchant_proposal, decision_id
             )
-        await confirm_exact_or_raise(
-            binding=_merchant_link_binding(proposal),
-            recompute=lambda: _merchant_link_binding(
-                _load_pending_merchant_proposal(decision_id)
-            ),
-            message=_merchant_confirm_message(proposal),
+            if target_merchant_id != proposal.candidate_merchant_id:
+                # Refuse BEFORE prompting: a doomed binding must not cost the user a
+                # confirmation. The service re-checks this; this is the boundary copy.
+                raise UserError(
+                    f"'target_merchant_id' does not match decision '{decision_id}' — "
+                    "it must be that decision's own candidate_merchant_id.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint="Re-read the decision with merchants_links_pending.",
+                )
+            binding = _merchant_link_binding(
+                decision_id=decision_id,
+                target_merchant_id=target_merchant_id,
+                blast_radius=proposal.blast_radius,
+            )
+            message = _merchant_confirm_message(proposal)
+        else:
+            binding = None
+            message = ""
+        grant = await grant_confirmation_or_raise(
+            binding=binding,
+            message=message,
             confirmation_token=confirmation_token,
         )
-        await asyncio.to_thread(_apply_merchant_accept, decision_id, target_merchant_id)
+        await asyncio.to_thread(
+            _apply_merchant_accept,
+            decision_id,
+            target_merchant_id,
+            grant,
+        )
         status = "accepted"
     return build_envelope(
         data=MerchantLinksSetPayload(decision_id=decision_id, status=status),
@@ -493,8 +535,9 @@ def register_merchants_tools(mcp: FastMCP) -> None:
         "sides and the confidence) and binds only on their explicit agreement — "
         "the binding attributes every transaction carrying that entity id to the "
         "merchant, so the agent cannot accept one on its own. On a client without "
-        "elicitation, accept fails with mutation_confirmation_required and names "
-        "the CLI equivalent. target_merchant_id must equal the decision's own "
+        "elicitation, accept fails with mutation_confirmation_required and returns "
+        "a short-lived opaque confirmation_token; repeat the exact retry with that "
+        "token. target_merchant_id must equal the decision's own "
         "candidate (mismatched, empty, or missing target_merchant_id raises "
         "mutation_invalid_input — it is NEVER read as a reject). action='reject' "
         "(no target_merchant_id) rejects ALL pending candidates for this provider "

@@ -449,6 +449,55 @@ class TestInvestmentsSecuritiesLinksSetAcceptGate:
         assert replay["error"]["code"] == "mutation_confirmation_replayed"
         assert _decision_status(setup["decision_id"]) == "pending"
 
+    async def test_missing_proposal_after_token_consumes_token_before_reload(
+        self, mcp_db: object
+    ) -> None:
+        """A vanished proposal cannot leave its presented token reusable."""
+        setup = _merge_setup()
+        with patch("moneybin.mcp.confirmation._active_context", return_value=None):
+            required = (
+                await investments_securities_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    into=setup["survivor"],
+                )
+            ).to_dict()
+        token = required["error"]["details"]["confirmation_token"]
+        with get_database(read_only=False) as db:
+            db.execute(
+                "DELETE FROM app.security_link_decisions WHERE decision_id = ?",
+                [setup["decision_id"]],
+            )
+
+        missing = (
+            await investments_securities_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                into=setup["survivor"],
+                confirmation_token=token,
+            )
+        ).to_dict()
+        assert missing["status"] == "error"
+        _insert_decision(
+            decision_id=setup["decision_id"],
+            candidate_security_id=setup["survivor"],
+            provider_ticker="VTI",
+            provider_name="Vanguard Total Stock Mkt ETF",
+            match_reason="fuzzy_name",
+        )
+
+        replay = (
+            await investments_securities_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                into=setup["survivor"],
+                confirmation_token=token,
+            )
+        ).to_dict()
+
+        assert replay["error"]["code"] == "mutation_confirmation_replayed"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
     async def test_accept_hard_fails_when_client_cannot_elicit(
         self, mcp_db: object
     ) -> None:
@@ -761,6 +810,21 @@ class TestInvestmentsSecuritiesLinksRegistration:
         assert "no undo tool yet" not in description
         # The elicitation gate is part of the contract the agent must know.
         assert "confirm" in description.lower()
+        assert "raw.manual_investment_transactions" in description
+
+    async def test_set_description_explains_opaque_token_retry(self) -> None:
+        """Unsupported clients can discover the exact confirmation retry flow."""
+        srv = FastMCP("test")
+        register_investments_tools(srv)
+        tool = next(
+            t
+            for t in await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            if t.name == "investments_securities_links_set"
+        )
+        description = (tool.description or "").lower()
+        assert "opaque" in description
+        assert "confirmation_token" in description
+        assert "exact retry" in description
 
     async def test_set_docstring_names_the_undo_tool(self) -> None:
         """The docstring (the second prose surface) carries the same recovery path."""

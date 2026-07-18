@@ -18,7 +18,10 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_links_service import (
+    AccountLinkAcceptImpact,
+    AccountLinksService,
+)
 from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
@@ -312,6 +315,37 @@ def test_accept_impact_counts_every_row_the_merge_will_mutate(
         "account_links": 2,
         "account_link_decisions": 3,
     }
+
+
+def test_accept_verifier_receives_live_impact_and_failure_rolls_back(
+    seeded: AccountLinksService, db: Database
+) -> None:
+    """Verification runs inside the transaction immediately before any write."""
+    verified = False
+
+    def refuse(impact: AccountLinkAcceptImpact) -> None:
+        nonlocal verified
+        verified = True
+        assert impact.blast_radius == {
+            "accounts": 2,
+            "account_links": 1,
+            "account_link_decisions": 2,
+        }
+        assert _decision_status(db, _DEC1) == "pending"
+        assert _link_rows(db, link_id=_LINK_PROV1)[0][4] == "accepted"
+        raise UserError("Confirmation mismatch", code="mutation_confirmation_mismatch")
+
+    with pytest.raises(UserError, match="Confirmation mismatch"):
+        seeded.set(
+            _DEC1,
+            target_account_id=_CAND_A,
+            verify_accept=refuse,
+        )
+
+    assert verified
+    assert _decision_status(db, _DEC1) == "pending"
+    assert _decision_status(db, _DEC2) == "pending"
+    assert _link_rows(db, link_id=_LINK_PROV1)[0][4] == "accepted"
 
 
 # ---------------------------------------------------------------------------

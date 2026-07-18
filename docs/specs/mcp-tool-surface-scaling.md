@@ -215,8 +215,11 @@ A destructive preview produces a canonical representation of:
 - blast-radius summary.
 
 The subsequent confirmation is bound to that representation, short-lived, and
-single-use. Immediately before commit MoneyBin recomputes the canonical
-representation and refuses expired, replayed, or mismatched approval.
+single-use. Confirmation yields an immutable digest grant. Inside the same
+write transaction that performs the mutation, MoneyBin recomputes the canonical
+representation immediately before the first write and refuses expired,
+replayed, or mismatched approval. No approval check may complete before opening
+a separate mutation transaction.
 
 Capable clients use elicitation over this contract. The elicitation requests an
 explicit boolean and confirms only an accepted `true`, followed by a fresh

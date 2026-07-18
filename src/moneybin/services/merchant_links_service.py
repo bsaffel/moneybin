@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -303,6 +304,7 @@ class MerchantLinksService:
         *,
         target_merchant_id: str | None,
         decided_by: str = "user",
+        verify_accept: Callable[[MerchantLinkAcceptImpact], None] | None = None,
     ) -> None:
         """Accept or reject a pending merchant-link decision atomically.
 
@@ -379,6 +381,13 @@ class MerchantLinksService:
                     raise UserError(
                         f"No merchant found for id {target_merchant_id!r}.",
                         code=error_codes.MUTATION_NOT_FOUND,
+                    )
+                if verify_accept is not None:
+                    verify_accept(
+                        self.accept_impact(
+                            decision_id,
+                            target_merchant_id=target_merchant_id,
+                        )
                     )
                 try:
                     self._links.insert(

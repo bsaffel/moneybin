@@ -177,10 +177,13 @@ and confirm only an accepted `true`, then compare a freshly recomputed binding.
 Do not use FastMCP's deprecated empty-schema elicitation. This elicited boolean
 is not a bare `confirm` tool argument: degraded clients receive an opaque token
 carrying the same binding, and no operation proceeds without exact binding
-verification. Compatible same-intent writes may share one conservatively
-annotated tool; classify validated arguments and confirm only the destructive
-branch. Do not combine reads with writes or operations whose authorization,
-sensitivity, audit, or recovery contracts differ.
+verification. Treat approval as an immutable digest grant; verify that grant
+against live state inside the same write transaction, immediately before the
+first mutation. Never verify and then open a separate mutation transaction.
+Compatible same-intent writes may share one conservatively annotated tool;
+classify validated arguments and confirm only the destructive branch. Do not
+combine reads with writes or operations whose authorization, sensitivity,
+audit, or recovery contracts differ.
 
 ## Surface change discipline
 

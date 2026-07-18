@@ -34,7 +34,11 @@ from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
-from moneybin.mcp.confirmation import ConfirmationBinding, confirm_exact_or_raise
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
@@ -55,6 +59,7 @@ from moneybin.privacy.payloads.balances import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.account_links_service import (
+    AccountLinkAcceptImpact,
     AccountLinksService,
 )
 from moneybin.services.account_service import CLEAR, AccountService
@@ -487,23 +492,29 @@ def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
     )
 
 
-def _account_link_binding(proposal: _AccountMergeProposal) -> ConfirmationBinding:
+def _account_link_binding(
+    *,
+    decision_id: str,
+    target_account_id: str,
+    provisional_account_id: str,
+    blast_radius: dict[str, int],
+) -> ConfirmationBinding:
     """Bind approval to one exact live account merge."""
     return ConfirmationBinding(
         arguments={
-            "decision_id": proposal.decision_id,
+            "decision_id": decision_id,
             "action": "accept",
-            "target_account_id": proposal.candidate_account_id,
+            "target_account_id": target_account_id,
         },
         resolved_ids=(
-            proposal.provisional_account_id,
-            proposal.candidate_account_id,
+            provisional_account_id,
+            target_account_id,
         ),
         actor="mcp",
         profile=get_settings().profile,
         authorization_context="local-profile",
         operation_kind="account_identity_merge",
-        blast_radius=proposal.blast_radius,
+        blast_radius=blast_radius,
     )
 
 
@@ -535,12 +546,29 @@ def _account_confirm_message(p: _AccountMergeProposal) -> str:
     )
 
 
-def _apply_account_accept(decision_id: str, target_account_id: str) -> None:
+def _apply_account_accept(
+    decision_id: str,
+    target_account_id: str,
+    grant: ConfirmationGrant,
+) -> None:
     # decided_by="user" is truthful only on this path: a human just ratified the
     # merge through the elicitation gate above.
+    def verify(impact: AccountLinkAcceptImpact) -> None:
+        grant.verify(
+            _account_link_binding(
+                decision_id=decision_id,
+                target_account_id=target_account_id,
+                provisional_account_id=impact.provisional_account_id,
+                blast_radius=impact.blast_radius,
+            )
+        )
+
     with get_database(read_only=False) as db:
         AccountLinksService(db, actor="mcp").set(
-            decision_id, target_account_id=target_account_id, decided_by="user"
+            decision_id,
+            target_account_id=target_account_id,
+            decided_by="user",
+            verify_accept=verify,
         )
 
 
@@ -639,25 +667,40 @@ async def accounts_links_set(
                 "that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        proposal = await asyncio.to_thread(_load_pending_account_proposal, decision_id)
-        if target_account_id != proposal.candidate_account_id:
-            # Refuse BEFORE prompting: a doomed merge must not cost the user a
-            # confirmation. The service re-checks this; this is the boundary copy.
-            raise UserError(
-                f"'target_account_id' does not match decision '{decision_id}' — "
-                "it must be that decision's own candidate_account_id.",
-                code=error_codes.MUTATION_INVALID_INPUT,
-                hint="Re-read the decision with accounts_links_pending.",
+        if confirmation_token is None:
+            proposal = await asyncio.to_thread(
+                _load_pending_account_proposal, decision_id
             )
-        await confirm_exact_or_raise(
-            binding=_account_link_binding(proposal),
-            recompute=lambda: _account_link_binding(
-                _load_pending_account_proposal(decision_id)
-            ),
-            message=_account_confirm_message(proposal),
+            if target_account_id != proposal.candidate_account_id:
+                # Refuse BEFORE prompting: a doomed merge must not cost the user a
+                # confirmation. The service re-checks this; this is the boundary copy.
+                raise UserError(
+                    f"'target_account_id' does not match decision '{decision_id}' — "
+                    "it must be that decision's own candidate_account_id.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint="Re-read the decision with accounts_links_pending.",
+                )
+            binding = _account_link_binding(
+                decision_id=decision_id,
+                target_account_id=target_account_id,
+                provisional_account_id=proposal.provisional_account_id,
+                blast_radius=proposal.blast_radius,
+            )
+            message = _account_confirm_message(proposal)
+        else:
+            binding = None
+            message = ""
+        grant = await grant_confirmation_or_raise(
+            binding=binding,
+            message=message,
             confirmation_token=confirmation_token,
         )
-        await asyncio.to_thread(_apply_account_accept, decision_id, target_account_id)
+        await asyncio.to_thread(
+            _apply_account_accept,
+            decision_id,
+            target_account_id,
+            grant,
+        )
         status = "accepted"
     return build_envelope(
         data=AccountLinksSetPayload(decision_id=decision_id, status=status),
@@ -852,7 +895,8 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "on their explicit agreement — a merge fuses two accounts' transaction "
         "histories and balances, so the agent cannot accept one on its own. On a "
         "client without elicitation, accept fails with "
-        "mutation_confirmation_required and names the CLI equivalent. "
+        "mutation_confirmation_required and returns a short-lived opaque "
+        "confirmation_token; repeat the exact retry with that token. "
         "target_account_id must equal the decision's own candidate (mismatched, "
         "empty, or missing target_account_id raises mutation_invalid_input — it "
         "is NEVER read as a reject). action='reject' (no target_account_id) keeps "

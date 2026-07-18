@@ -6,7 +6,6 @@ import hashlib
 import json
 import secrets
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -52,6 +51,17 @@ class ConfirmationBinding(BaseModel):
 class _Entry:
     digest: bytes
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class ConfirmationGrant:
+    """Immutable proof that one exact binding received confirmation."""
+
+    _digest: bytes
+
+    def verify(self, binding: ConfirmationBinding) -> None:
+        """Raise unless ``binding`` exactly matches the confirmed digest."""
+        _require_digest(self._digest, binding)
 
 
 def _binding_digest(binding: ConfirmationBinding) -> bytes:
@@ -137,19 +147,17 @@ class ConfirmationBroker:
     def consume(
         self,
         token: str,
-        binding: ConfirmationBinding,
         *,
         now: datetime,
-    ) -> ConfirmationBinding:
-        """Consume ``token`` once if it is live and bound to ``binding``."""
+    ) -> ConfirmationGrant:
+        """Consume ``token`` once and return its live immutable digest grant."""
         with self._lock:
             entry = self._entries.pop(token, None)
         if entry is None:
             raise _replayed_or_unknown()
         if now >= entry.expires_at:
             raise _expired()
-        _require_digest(entry.digest, binding)
-        return binding
+        return ConfirmationGrant(entry.digest)
 
 
 def _utcnow() -> datetime:
@@ -184,18 +192,18 @@ def _confirmation_required(
 confirmation_broker = ConfirmationBroker()
 
 
-async def confirm_exact_or_raise(
+async def grant_confirmation_or_raise(
     *,
-    binding: ConfirmationBinding,
-    recompute: Callable[[], ConfirmationBinding],
+    binding: ConfirmationBinding | None,
     message: str,
     confirmation_token: str | None,
     broker: ConfirmationBroker = confirmation_broker,
-) -> None:
-    """Confirm the exact mutation through elicitation or one opaque token."""
+) -> ConfirmationGrant:
+    """Return a digest grant through elicitation or one consumed opaque token."""
     if confirmation_token is not None:
-        broker.consume(confirmation_token, recompute(), now=_utcnow())
-        return
+        return broker.consume(confirmation_token, now=_utcnow())
+    if binding is None:
+        raise ValueError("binding is required when issuing or eliciting confirmation")
 
     ctx = _active_context()
     if ctx is not None and supports_elicitation(ctx):
@@ -209,8 +217,7 @@ async def confirm_exact_or_raise(
             ),
         )
         if isinstance(result, AcceptedElicitation) and result.data is True:
-            _require_digest(expected_digest, recompute())
-            return
+            return ConfirmationGrant(expected_digest)
         raise _confirmation_declined()
 
     token = broker.issue(binding, now=_utcnow())

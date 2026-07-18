@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -333,6 +334,7 @@ class AccountLinksService:
         *,
         target_account_id: str | None,
         decided_by: str = "user",
+        verify_accept: Callable[[AccountLinkAcceptImpact], None] | None = None,
     ) -> None:
         """Accept (merge) or standalone-reject a pending link decision atomically.
 
@@ -408,6 +410,13 @@ class AccountLinksService:
                         "provisional account has no source_native mapping to "
                         "re-point onto the candidate.",
                         code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    )
+                if verify_accept is not None:
+                    verify_accept(
+                        self.accept_impact(
+                            decision_id,
+                            target_account_id=target_account_id,
+                        )
                     )
                 for link_id, _ref_kind in links:
                     self._links.repoint(

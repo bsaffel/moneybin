@@ -32,6 +32,7 @@ column (``user``/``auto``). The caller supplies both.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -317,7 +318,12 @@ class SecurityLinksService:
         refresh_security_link_pending_gauge(self._db)
 
     def accept_merge(
-        self, decision_id: str, *, into: str, decided_by: str = "user"
+        self,
+        decision_id: str,
+        *,
+        into: str,
+        decided_by: str = "user",
+        verify_accept: Callable[[SecurityLinkAcceptImpact], None] | None = None,
     ) -> None:
         """Merge the provisional security into the decision's candidate, atomically.
 
@@ -420,6 +426,8 @@ class SecurityLinksService:
             # Plan (and validate) BEFORE the first write: a blocked merge should
             # not depend on rollback to leave the database untouched.
             plan = self._plan_lot_selections(provisional, survivor)
+            if verify_accept is not None:
+                verify_accept(self.accept_impact(decision_id, into=into))
 
             event = self._decisions.update_status(
                 decision_id,

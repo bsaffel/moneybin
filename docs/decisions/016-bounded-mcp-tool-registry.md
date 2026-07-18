@@ -58,7 +58,9 @@ from host prompt loading is not recoverable from code.
 10. Destructive confirmation binds canonical validated arguments, resolved IDs,
     actor/context, operation, and blast radius. It is short-lived and
     single-use. Capable-client elicitation uses an explicit boolean and confirms
-    only an accepted `true`; it does not use an empty response schema.
+    only an accepted `true`; it does not use an empty response schema. The
+    resulting digest grant is verified against live state inside the same write
+    transaction that performs the mutation.
 11. All reports register behind one read-only `reports` catalog/runner. Reports
     retain per-entry validation, privacy, metric semantics, and provenance; raw
     SQL remains a separate tool.

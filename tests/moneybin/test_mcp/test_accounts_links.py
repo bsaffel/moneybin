@@ -487,6 +487,55 @@ class TestAccountsLinksSetAcceptGate:
         assert replay["error"]["code"] == "mutation_confirmation_replayed"
         assert _decision_status(setup["decision_id"]) == "pending"
 
+    async def test_missing_proposal_after_token_consumes_token_before_reload(
+        self, mcp_db: object
+    ) -> None:
+        """A vanished proposal cannot leave its presented token reusable."""
+        setup = _merge_setup(decision_id="dg008", provisional="PROV_G08")
+        with patch("moneybin.mcp.confirmation._active_context", return_value=None):
+            required = (
+                await accounts_links_set(
+                    decision_id=setup["decision_id"],
+                    action="accept",
+                    target_account_id=setup["candidate"],
+                )
+            ).to_dict()
+        token = required["error"]["details"]["confirmation_token"]
+        with get_database(read_only=False) as db:
+            db.execute(
+                "DELETE FROM app.account_link_decisions WHERE decision_id = ?",
+                [setup["decision_id"]],
+            )
+
+        missing = (
+            await accounts_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                target_account_id=setup["candidate"],
+                confirmation_token=token,
+            )
+        ).to_dict()
+        assert missing["status"] == "error"
+        _insert_decision(
+            decision_id=setup["decision_id"],
+            provisional_account_id=setup["provisional"],
+            candidate_account_id=setup["candidate"],
+            confidence=0.62,
+            signal="name",
+        )
+
+        replay = (
+            await accounts_links_set(
+                decision_id=setup["decision_id"],
+                action="accept",
+                target_account_id=setup["candidate"],
+                confirmation_token=token,
+            )
+        ).to_dict()
+
+        assert replay["error"]["code"] == "mutation_confirmation_replayed"
+        assert _decision_status(setup["decision_id"]) == "pending"
+
     async def test_accept_hard_fails_when_client_cannot_elicit(
         self, mcp_db: object
     ) -> None:
@@ -876,6 +925,20 @@ class TestAccountsLinksRegistration:
         assert "accounts_links_set" in names
         assert "accounts_links_history" in names
         assert "accounts_links_run" in names
+
+    async def test_set_description_explains_opaque_token_retry(self) -> None:
+        """Unsupported clients can discover the exact confirmation retry flow."""
+        srv = FastMCP("test")
+        register_accounts_tools(srv)
+        tool = next(
+            t
+            for t in await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            if t.name == "accounts_links_set"
+        )
+        description = (tool.description or "").lower()
+        assert "opaque" in description
+        assert "confirmation_token" in description
+        assert "exact retry" in description
 
 
 # ---------------------------------------------------------------------------
