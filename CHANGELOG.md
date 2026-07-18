@@ -34,6 +34,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **Approving a sign inversion now applies only to the file you were shown.**
+  If a statement is replaced on disk while the approval prompt is open, the
+  import is refused instead of applying your answer to the new contents — which
+  could have reversed every amount in a document you never reviewed. Affects all
+  three confirmation paths (spreadsheet, AI-extracted PDF, and card statement).
 - **Choosing an account for a PDF import now fails loudly instead of quietly
   doing something else.** Both PDF import paths only ever supported pinning by
   account id, but passing `account_bindings` or `account_metadata` was accepted

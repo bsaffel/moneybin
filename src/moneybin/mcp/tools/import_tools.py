@@ -180,6 +180,46 @@ def _tabular_confirm_cli_equivalent(
     return shlex.join(parts)
 
 
+def _content_digest(path: Path) -> str:
+    """SHA-256 over a file's bytes, read in chunks (statements can be large)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def _reject_if_changed_during_confirmation(
+    path: Path, digest_at_proposal: str
+) -> None:
+    """Bind a human's sign approval to the exact bytes the proposal came from.
+
+    A confirmation prompt stays open for as long as the person takes to answer
+    (the tool allows 180s), and the retry re-reads the path rather than a
+    snapshot. If the file is replaced inside that window the approval silently
+    transfers to content nobody saw: a different card statement gets its
+    inversion pre-ratified, reversing every amount in a document the human
+    never reviewed. Re-reading the digest is cheap next to that, and refusing
+    costs the user only a re-run.
+
+    The guarded window is the human decision, not the microseconds between
+    hashing and parsing — this closes the gap that is seconds-to-minutes wide,
+    which is the one an ordinary file replacement can land in.
+    """
+    current = await asyncio.to_thread(_content_digest, path)
+    if current == digest_at_proposal:
+        return
+    raise UserError(
+        "This file changed while the confirmation was open, so the approval no "
+        "longer applies to it — nothing was imported. Re-run the import to see "
+        "a proposal for the current contents.",
+        code="file_changed_during_confirmation",
+        details={"file_path": str(path)},
+    )
+
+
 def _reject_unsupported_pdf_account_signals(
     *,
     account_name: str | None,
@@ -1175,6 +1215,7 @@ async def _confirm_pdf_sign_with_human(
             actions=actions,
         )
 
+    digest_at_proposal = await asyncio.to_thread(_content_digest, path)
     try:
         await asyncio.to_thread(_pdf_sign_probe, path)
     except ImportConfirmationRequiredError as e:
@@ -1195,6 +1236,7 @@ async def _confirm_pdf_sign_with_human(
             cli_equivalent=f"moneybin import files {quoted_path} --confirm",
             details={"file_path": str(path)},
         )
+        await _reject_if_changed_during_confirmation(path, digest_at_proposal)
         try:
             result = await asyncio.to_thread(
                 _import_confirm_pdf_sign,
@@ -1370,6 +1412,7 @@ async def import_confirm(
             account_bindings=account_bindings,
             account_metadata=account_metadata,
         )
+        digest_at_proposal = await asyncio.to_thread(_content_digest, path)
         first_attempt = await asyncio.to_thread(
             _import_confirm_bridge,
             str(path),
@@ -1397,6 +1440,7 @@ async def import_confirm(
             ),
             details={"file_path": str(path)},
         )
+        await _reject_if_changed_during_confirmation(path, digest_at_proposal)
         return await asyncio.to_thread(
             _import_confirm_bridge,
             str(path),
@@ -1464,6 +1508,7 @@ async def import_confirm(
             code="confirm_requires_signal",
         )
 
+    digest_at_proposal = await asyncio.to_thread(_content_digest, path)
     try:
         result = await asyncio.to_thread(
             _import_confirm_tabular,
@@ -1498,6 +1543,7 @@ async def import_confirm(
                 ),
                 details={"file_path": str(path)},
             )
+            await _reject_if_changed_during_confirmation(path, digest_at_proposal)
             try:
                 result = await asyncio.to_thread(
                     _import_confirm_tabular,

@@ -21,6 +21,7 @@ from moneybin.mcp.tools.import_tools import (
 )
 from moneybin.services.import_confirmation import (
     BridgePayload,
+    Channel,
     ConfirmationRequired,
     ImportConfirmationRequiredError,
     ProposedMapping,
@@ -2004,3 +2005,137 @@ async def test_confirm_sign_without_a_pending_proposal_imports_nothing(
     mock_service.import_file.assert_not_called()
     confirm.assert_not_awaited()
     archive.for_active_profile_no_db.assert_not_called()
+
+
+class TestConfirmationBindsToTheApprovedBytes:
+    """A sign approval must not transfer to content the human never saw.
+
+    The prompt stays open as long as the person takes to answer (the tool
+    allows 180s) and the retry re-reads the path. If the file is replaced in
+    that window, a different card statement would get its inversion
+    pre-ratified — every amount reversed in a document nobody reviewed. Each
+    test replaces the file from inside the elicitation callback, which is
+    exactly when the real race would land.
+    """
+
+    def _sign_error(self, channel: Channel) -> ImportConfirmationRequiredError:
+        from moneybin.services.import_confirmation import SignConventionProposal
+
+        return ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel=channel,
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_income",
+                    evidence=("Minimum Payment Due",),
+                    sample_rows=[],
+                ),
+                reason="sign_convention",
+            )
+        )
+
+    async def test_pdf_sign_channel_refuses_a_swapped_file(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        pdf = write_card_statement_pdf(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        mock_service = MagicMock()
+        mock_service.pdf_preview.side_effect = self._sign_error("pdf")
+
+        async def _swap_file_while_prompt_is_open(*_a: object, **_k: object) -> None:
+            pdf.write_bytes(b"%PDF-1.4 a completely different statement")
+
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch(
+                "moneybin.mcp.elicitation.confirm_or_raise",
+                AsyncMock(side_effect=_swap_file_while_prompt_is_open),
+            ),
+            patch("moneybin.services.inbox_service.InboxService"),
+        ):
+            result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+
+        assert result.error is not None
+        assert result.error.code == "file_changed_during_confirmation"
+        # The approval never reached the replacement.
+        mock_service.import_file.assert_not_called()
+
+    async def test_tabular_channel_refuses_a_swapped_file(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        csv_file = tmp_path / "statements" / "card.csv"
+        csv_file.parent.mkdir(parents=True)
+        csv_file.write_text("date,amount\n2026-01-01,10.00\n")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = self._sign_error("tabular")
+
+        async def _swap_file_while_prompt_is_open(*_a: object, **_k: object) -> None:
+            csv_file.write_text("date,amount\n2026-02-02,-999.00\n")
+
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch(
+                "moneybin.mcp.elicitation.confirm_or_raise",
+                AsyncMock(side_effect=_swap_file_while_prompt_is_open),
+            ),
+            patch("moneybin.services.inbox_service.InboxService"),
+            patch(
+                "moneybin.extractors.tabular.format_detector.detect_format",
+                side_effect=ValueError("preview unavailable"),
+            ),
+        ):
+            result = await import_confirm(file_path=str(csv_file), accept=True)
+
+        assert result.error is not None
+        assert result.error.code == "file_changed_during_confirmation"
+        # Only the gating attempt ran — the ratified retry never did.
+        assert mock_service.import_file.call_count == 1
+
+    async def test_bridge_channel_refuses_a_swapped_file(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        pdf = tmp_path / "statements" / "chase.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.write_bytes(b"%PDF-1.4 original")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        mock_service = MagicMock()
+        mock_service.apply_pdf_bridge_response.side_effect = self._sign_error("pdf")
+
+        async def _swap_file_while_prompt_is_open(*_a: object, **_k: object) -> None:
+            pdf.write_bytes(b"%PDF-1.4 a completely different statement")
+
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch(
+                "moneybin.mcp.elicitation.confirm_or_raise",
+                AsyncMock(side_effect=_swap_file_while_prompt_is_open),
+            ),
+            patch("moneybin.services.inbox_service.InboxService"),
+        ):
+            result = await import_confirm(
+                file_path=str(pdf), bridge_response={"recipe": {}, "rows": []}
+            )
+
+        assert result.error is not None
+        assert result.error.code == "file_changed_during_confirmation"
+        # Only the gating attempt ran — the ratified retry never did.
+        assert mock_service.apply_pdf_bridge_response.call_count == 1
