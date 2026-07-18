@@ -8,11 +8,15 @@ from typing import Annotated, Literal, Self
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
+    JsonValue,
     StrictBool,
     model_validator,
 )
+
+from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
 
 
 def _reject_whitespace_only(value: str) -> str:
@@ -21,10 +25,54 @@ def _reject_whitespace_only(value: str) -> str:
     return value
 
 
+def _coerce_finite_json_number(value: object) -> Decimal:
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Value must be a finite JSON number or Decimal")
+    else:
+        number = Decimal(str(value))
+    if not number.is_finite():
+        raise ValueError("Value must be a finite JSON number or Decimal")
+    return number
+
+
 def _reject_zero(value: Decimal) -> Decimal:
     if value == 0:
         raise ValueError("Amount must be non-zero")
     return value
+
+
+def _conditional_schema_branch(
+    field: str,
+    value: str,
+    *,
+    required: tuple[str, ...] = (),
+    forbidden: tuple[str, ...] = (),
+    properties: dict[str, JsonValue] | None = None,
+) -> dict[str, JsonValue]:
+    then: dict[str, JsonValue] = {}
+    if required:
+        then["required"] = list(required)
+    if forbidden:
+        then["not"] = {
+            "anyOf": [{"required": [name]} for name in forbidden],
+        }
+    if properties:
+        then["properties"] = properties
+    return {
+        "if": {
+            "properties": {field: {"const": value}},
+            "required": [field],
+        },
+        "then": then,
+    }
+
+
+def _conditional_schema_extra(
+    *branches: dict[str, JsonValue],
+) -> dict[str, JsonValue]:
+    return {"allOf": list(branches)}
 
 
 NonBlankString = Annotated[
@@ -32,19 +80,20 @@ NonBlankString = Annotated[
     Field(min_length=1),
     AfterValidator(_reject_whitespace_only),
 ]
-FiniteDecimal = Annotated[Decimal, Field(allow_inf_nan=False)]
-NonZeroFiniteDecimal = Annotated[
+FiniteDecimal = Annotated[
     Decimal,
+    BeforeValidator(
+        _coerce_finite_json_number,
+        json_schema_input_type=int | float,
+    ),
     Field(allow_inf_nan=False),
+]
+NonZeroFiniteDecimal = Annotated[
+    FiniteDecimal,
     AfterValidator(_reject_zero),
 ]
-MatchType = Literal["exact", "contains", "regex"]
-FeatureCategory = Literal[
-    "mcp-data-sharing",
-    "smart-import-parsing",
-    "ml-categorization",
-    "matching-overview",
-]
+MatchType = CategorizationMatchType
+FeatureCategory = ConsentFeatureCategory
 
 
 class _StrictRequest(BaseModel):
@@ -101,6 +150,25 @@ AnnotationRequest = Annotated[
 class CategorizationDecisionRequest(_StrictRequest):
     """Accept or reject one categorization proposal."""
 
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "decision",
+                "accept",
+                required=("category",),
+            ),
+            _conditional_schema_branch(
+                "decision",
+                "reject",
+                forbidden=(
+                    "category",
+                    "subcategory",
+                    "canonical_merchant_name",
+                ),
+            ),
+        )
+    )
+
     kind: Literal["categorization"]
     decision_id: NonBlankString
     decision: Literal["accept", "reject"]
@@ -137,6 +205,21 @@ ReviewDecisionRequest = Annotated[
 
 
 class _IdentityDecisionRequest(_StrictRequest):
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "decision",
+                "accept",
+                required=("target_id",),
+            ),
+            _conditional_schema_branch(
+                "decision",
+                "reject",
+                forbidden=("target_id",),
+            ),
+        )
+    )
+
     decision_id: NonBlankString
     decision: Literal["accept", "reject"]
     target_id: NonBlankString | None = None
@@ -179,6 +262,30 @@ IdentityDecisionRequest = Annotated[
 class CategoryStateRequest(_StrictRequest):
     """Declare one category's target state."""
 
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "state",
+                "present",
+                required=("category",),
+                properties={"force": {"const": False}},
+            ),
+            _conditional_schema_branch(
+                "state",
+                "inactive",
+                required=("category_id",),
+                forbidden=("category", "subcategory", "description"),
+                properties={"force": {"const": False}},
+            ),
+            _conditional_schema_branch(
+                "state",
+                "absent",
+                required=("category_id",),
+                forbidden=("category", "subcategory", "description"),
+            ),
+        )
+    )
+
     kind: Literal["category"]
     state: Literal["present", "inactive", "absent"]
     category_id: NonBlankString | None = None
@@ -207,6 +314,28 @@ class CategoryStateRequest(_StrictRequest):
 
 class MerchantStateRequest(_StrictRequest):
     """Declare one merchant mapping's target state."""
+
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "state",
+                "present",
+                required=("raw_pattern", "canonical_name"),
+            ),
+            _conditional_schema_branch(
+                "state",
+                "absent",
+                required=("merchant_id",),
+                forbidden=(
+                    "raw_pattern",
+                    "canonical_name",
+                    "match_type",
+                    "category",
+                    "subcategory",
+                ),
+            ),
+        )
+    )
 
     kind: Literal["merchant"]
     state: Literal["present", "absent"]
@@ -246,6 +375,17 @@ TaxonomyStateRequest = Annotated[
 class ConsentStateRequest(_StrictRequest):
     """Declare consent for one feature category."""
 
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch("state", "granted"),
+            _conditional_schema_branch(
+                "state",
+                "revoked",
+                forbidden=("mode",),
+            ),
+        )
+    )
+
     kind: Literal["consent"]
     category: FeatureCategory
     state: Literal["granted", "revoked"]
@@ -268,23 +408,70 @@ class CategorizationRuleMatch(_StrictRequest):
     max_amount: FiniteDecimal | None = None
     account_id: NonBlankString | None = None
 
+    @model_validator(mode="after")
+    def _validate_amount_bounds(self) -> Self:
+        if (
+            self.min_amount is not None
+            and self.max_amount is not None
+            and self.min_amount > self.max_amount
+        ):
+            raise ValueError("min_amount must be less than or equal to max_amount")
+        return self
+
 
 class CategorizationRuleTarget(_StrictRequest):
-    """Declare one categorization rule's target state."""
+    """Declare one categorization rule's target state.
+
+    The Task 4 adapter derives a deterministic name from the target fields;
+    callers cannot provide a separate service-layer rule name.
+    """
+
+    model_config = ConfigDict(
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "state",
+                "present",
+                required=("matcher", "category", "priority"),
+            ),
+            _conditional_schema_branch(
+                "state",
+                "inactive",
+                required=("rule_id",),
+                forbidden=(
+                    "matcher",
+                    "category",
+                    "subcategory",
+                    "priority",
+                ),
+            ),
+            _conditional_schema_branch(
+                "state",
+                "absent",
+                required=("rule_id",),
+                forbidden=(
+                    "matcher",
+                    "category",
+                    "subcategory",
+                    "priority",
+                ),
+            ),
+        )
+    )
 
     kind: Literal["rule"]
     rule_id: NonBlankString | None = None
     state: Literal["present", "inactive", "absent"]
-    match: CategorizationRuleMatch | None = None
+    matcher: CategorizationRuleMatch | None = None
     category: NonBlankString | None = None
+    subcategory: NonBlankString | None = None
     priority: int | None = Field(default=None, ge=0, le=10_000)
 
     @model_validator(mode="after")
     def _validate_state(self) -> Self:
-        replacement_fields = {"match", "category", "priority"}
+        replacement_fields = {"matcher", "category", "subcategory", "priority"}
         if self.state == "present":
-            if self.match is None or self.category is None or self.priority is None:
-                raise ValueError("Present requires match, category, and priority")
+            if self.matcher is None or self.category is None or self.priority is None:
+                raise ValueError("Present requires matcher, category, and priority")
             return self
         if self.rule_id is None:
             raise ValueError(f"{self.state.capitalize()} requires rule_id")

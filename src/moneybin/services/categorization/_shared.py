@@ -12,7 +12,6 @@ from __future__ import annotations
 import difflib
 import logging
 import re
-import typing
 from functools import lru_cache
 from typing import Any, Literal, NamedTuple
 
@@ -21,6 +20,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.tables import CATEGORIES
+from moneybin.vocabulary import (
+    CATEGORIZATION_MATCH_TYPES,
+    CategorizationMatchType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +31,14 @@ logger = logging.getLogger(__name__)
 # `oneOf` is intentionally excluded: it has no pattern branch in
 # `matches_pattern` and would be silently inert if exposed at a public
 # boundary. System-managed exemplar merchants use `InternalMatchType` below.
-MatchType = Literal["exact", "contains", "regex"]
+MatchType = CategorizationMatchType
 
 # Internal match types — adds `oneOf` for the exemplar accumulator. Used by
 # the in-memory matcher pipeline (`_match_exemplar`, `_fetch_merchants`) and
 # the exemplar-merchant creation path in `_categorize_items_inner`.
 InternalMatchType = Literal["exact", "contains", "regex", "oneOf"]
 
-_VALID_MATCH_TYPES: frozenset[MatchType] = frozenset(typing.get_args(MatchType))
+_VALID_MATCH_TYPES: frozenset[MatchType] = CATEGORIZATION_MATCH_TYPES
 
 # OP_SCORES — adopted from Actual Budget's rules/rule-utils.ts. Higher score =
 # more specific match; specificity wins when multiple matchers fire on the same

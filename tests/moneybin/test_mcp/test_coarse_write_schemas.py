@@ -1,7 +1,9 @@
 """Strict contracts for dormant coarse MCP writes."""
 
+import json
 from decimal import Decimal
-from typing import Any
+from pathlib import Path
+from typing import Any, get_args
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -23,12 +25,38 @@ from moneybin.mcp.write_contracts import (
     SplitTarget,
     TaxonomyStateRequest,
 )
+from moneybin.privacy.consent import FEATURE_CATEGORIES
+from moneybin.services.categorization._shared import MatchType as ServiceMatchType
+from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
+
+EVAL_CASES_PATH = Path(__file__).parents[2] / "fixtures/mcp_eval/cases.json"
 
 
 def _variant_schema(schema: dict[str, Any], tag: str) -> dict[str, Any]:
     reference = schema["discriminator"]["mapping"][tag]
     assert reference.startswith("#/$defs/")
     return schema["$defs"][reference.removeprefix("#/$defs/")]
+
+
+def _conditional_then(
+    schema: dict[str, Any],
+    field: str,
+    value: str,
+) -> dict[str, Any]:
+    for condition in schema["allOf"]:
+        if_schema = condition["if"]
+        if if_schema["properties"].get(field, {}).get("const") == value:
+            assert field in if_schema["required"]
+            return condition["then"]
+    raise AssertionError(f"No conditional schema for {field}={value}")
+
+
+def _forbidden_fields(then_schema: dict[str, Any]) -> set[str]:
+    return {
+        required
+        for branch in then_schema["not"]["anyOf"]
+        for required in branch["required"]
+    }
 
 
 def test_annotation_schema_requires_variant_fields() -> None:
@@ -140,9 +168,32 @@ def test_split_amount_is_finite_and_non_zero(amount: Decimal) -> None:
         SplitTarget(amount=amount)
 
 
-@pytest.mark.parametrize("amount", ["1.25", 1, 1.25])
-def test_split_amount_rejects_python_coercion(amount: object) -> None:
-    with pytest.raises(ValidationError, match="Decimal"):
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [(1, Decimal("1")), (-12.5, Decimal("-12.5"))],
+)
+def test_split_amount_accepts_decoded_json_numbers(
+    amount: int | float,
+    expected: Decimal,
+) -> None:
+    split = TypeAdapter(SplitTarget).validate_python({"amount": amount})
+    assert split.amount == expected
+
+
+@pytest.mark.parametrize(
+    "amount",
+    [
+        "1.25",
+        True,
+        False,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        object(),
+    ],
+)
+def test_split_amount_rejects_non_json_or_non_finite_values(amount: object) -> None:
+    with pytest.raises(ValidationError, match="finite JSON number"):
         TypeAdapter(SplitTarget).validate_python({"amount": amount})
 
 
@@ -154,6 +205,15 @@ def test_split_target_preserves_native_decimal() -> None:
         note=None,
     )
     assert split.amount == Decimal("-12.50")
+
+
+def test_decimal_schema_advertises_json_numbers_not_strings() -> None:
+    amount_schema = SplitTarget.model_json_schema()["properties"]["amount"]
+    advertised_types = {
+        branch["type"] for branch in amount_schema.get("anyOf", [amount_schema])
+    }
+    assert advertised_types <= {"integer", "number"}
+    assert "number" in advertised_types
 
 
 @pytest.mark.parametrize(
@@ -205,6 +265,21 @@ def test_review_decisions_accept_complete_variants() -> None:
     })
     assert isinstance(accepted, CategorizationDecisionRequest)
     assert isinstance(rejected, MatchDecisionRequest)
+
+
+def test_categorization_schema_advertises_decision_requirements() -> None:
+    schema = _variant_schema(
+        TypeAdapter(ReviewDecisionRequest).json_schema(),
+        "categorization",
+    )
+    accept = _conditional_then(schema, "decision", "accept")
+    reject = _conditional_then(schema, "decision", "reject")
+    assert set(accept["required"]) == {"category"}
+    assert _forbidden_fields(reject) == {
+        "category",
+        "subcategory",
+        "canonical_merchant_name",
+    }
 
 
 @pytest.mark.parametrize(
@@ -266,6 +341,16 @@ def test_identity_decisions_accept_complete_variants(kind: str) -> None:
     )
     assert accepted.target_id == "target_1"
     assert rejected.target_id is None
+
+
+def test_identity_schemas_advertise_decision_requirements() -> None:
+    schema = TypeAdapter(IdentityDecisionRequest).json_schema()
+    for kind in ("account_link", "merchant_link", "security_link"):
+        variant = _variant_schema(schema, kind)
+        accept = _conditional_then(variant, "decision", "accept")
+        reject = _conditional_then(variant, "decision", "reject")
+        assert set(accept["required"]) == {"target_id"}
+        assert _forbidden_fields(reject) == {"target_id"}
 
 
 @pytest.mark.parametrize(
@@ -335,6 +420,31 @@ def test_category_states_accept_complete_targets_and_strict_force() -> None:
         })
 
 
+def test_category_schema_advertises_state_requirements() -> None:
+    schema = _variant_schema(
+        TypeAdapter(TaxonomyStateRequest).json_schema(),
+        "category",
+    )
+    present = _conditional_then(schema, "state", "present")
+    inactive = _conditional_then(schema, "state", "inactive")
+    absent = _conditional_then(schema, "state", "absent")
+    assert set(present["required"]) == {"category"}
+    assert present["properties"]["force"] == {"const": False}
+    assert set(inactive["required"]) == {"category_id"}
+    assert inactive["properties"]["force"] == {"const": False}
+    assert _forbidden_fields(inactive) == {
+        "category",
+        "subcategory",
+        "description",
+    }
+    assert set(absent["required"]) == {"category_id"}
+    assert _forbidden_fields(absent) == {
+        "category",
+        "subcategory",
+        "description",
+    }
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -380,6 +490,24 @@ def test_merchant_states_accept_complete_targets() -> None:
     assert absent.state == "absent"
 
 
+def test_merchant_schema_advertises_state_requirements() -> None:
+    schema = _variant_schema(
+        TypeAdapter(TaxonomyStateRequest).json_schema(),
+        "merchant",
+    )
+    present = _conditional_then(schema, "state", "present")
+    absent = _conditional_then(schema, "state", "absent")
+    assert set(present["required"]) == {"raw_pattern", "canonical_name"}
+    assert set(absent["required"]) == {"merchant_id"}
+    assert _forbidden_fields(absent) == {
+        "raw_pattern",
+        "canonical_name",
+        "match_type",
+        "category",
+        "subcategory",
+    }
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -412,6 +540,30 @@ def test_consent_state_keeps_omitted_grant_mode_unset() -> None:
     assert request.mode is None
 
 
+def test_consent_schema_advertises_state_requirements() -> None:
+    schema = ConsentStateRequest.model_json_schema()
+    granted = _conditional_then(schema, "state", "granted")
+    revoked = _conditional_then(schema, "state", "revoked")
+    assert granted == {}
+    assert _forbidden_fields(revoked) == {"mode"}
+
+
+def test_contract_enums_match_canonical_service_vocabularies() -> None:
+    consent_schema = ConsentStateRequest.model_json_schema()
+    rule_schema = CategorizationRuleTarget.model_json_schema()
+    matcher_ref = rule_schema["properties"]["matcher"]["anyOf"][0]["$ref"]
+    matcher_schema = rule_schema["$defs"][matcher_ref.removeprefix("#/$defs/")]
+
+    assert set(consent_schema["properties"]["category"]["enum"]) == set(
+        FEATURE_CATEGORIES
+    )
+    assert set(matcher_schema["properties"]["type"]["enum"]) == set(
+        get_args(ServiceMatchType)
+    )
+    assert ServiceMatchType is CategorizationMatchType
+    assert FEATURE_CATEGORIES == frozenset(get_args(ConsentFeatureCategory))
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -419,13 +571,13 @@ def test_consent_state_keeps_omitted_grant_mode_unset() -> None:
         {
             "kind": "rule",
             "state": "present",
-            "match": {"type": "contains", "value": "Cafe"},
+            "matcher": {"type": "contains", "value": "Cafe"},
             "priority": 10,
         },
         {
             "kind": "rule",
             "state": "present",
-            "match": {"type": "contains", "value": "Cafe"},
+            "matcher": {"type": "contains", "value": "Cafe"},
             "category": "Food",
         },
         {"kind": "rule", "state": "inactive"},
@@ -439,12 +591,24 @@ def test_consent_state_keeps_omitted_grant_mode_unset() -> None:
             "kind": "rule",
             "state": "absent",
             "rule_id": "rule_1",
-            "match": {"type": "contains", "value": "Cafe"},
+            "matcher": {"type": "contains", "value": "Cafe"},
         },
         {
             "kind": "rule",
             "state": "present",
-            "match": {"type": "contains", "value": " "},
+            "matcher": {"type": "contains", "value": " "},
+            "category": "Food",
+            "priority": 10,
+        },
+        {
+            "kind": "rule",
+            "state": "present",
+            "matcher": {
+                "type": "contains",
+                "value": "Cafe",
+                "min_amount": -1,
+                "max_amount": -100,
+            },
             "category": "Food",
             "priority": 10,
         },
@@ -460,14 +624,15 @@ def test_rule_target_accepts_complete_present_and_id_only_terminal_states() -> N
         kind="rule",
         rule_id="rule_1",
         state="present",
-        match=CategorizationRuleMatch(
-            type="contains",
-            value="Cafe",
-            min_amount=Decimal("-100"),
-            max_amount=Decimal("-1"),
-            account_id="account_1",
-        ),
+        matcher=CategorizationRuleMatch.model_validate({
+            "type": "contains",
+            "value": "Cafe",
+            "min_amount": -100,
+            "max_amount": -1.25,
+            "account_id": "account_1",
+        }),
         category="Food",
+        subcategory="Dining",
         priority=10,
     )
     inactive = CategorizationRuleTarget(
@@ -480,10 +645,59 @@ def test_rule_target_accepts_complete_present_and_id_only_terminal_states() -> N
         rule_id="rule_1",
         state="absent",
     )
-    assert present.match is not None
-    assert present.match.min_amount == Decimal("-100")
+    assert present.matcher is not None
+    assert present.matcher.min_amount == Decimal("-100")
+    assert present.matcher.max_amount == Decimal("-1.25")
+    assert present.subcategory == "Dining"
     assert inactive.state == "inactive"
     assert absent.state == "absent"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1", True, float("nan"), float("inf"), Decimal("NaN")],
+)
+def test_rule_matcher_amount_bounds_reject_non_json_or_non_finite_values(
+    value: object,
+) -> None:
+    with pytest.raises(ValidationError, match="finite JSON number"):
+        CategorizationRuleMatch(
+            type="contains",
+            value="Cafe",
+            min_amount=value,  # type: ignore[arg-type]  # invalid boundary input
+        )
+
+
+def test_rule_schema_advertises_state_requirements_and_derived_name() -> None:
+    schema = CategorizationRuleTarget.model_json_schema()
+    present = _conditional_then(schema, "state", "present")
+    inactive = _conditional_then(schema, "state", "inactive")
+    absent = _conditional_then(schema, "state", "absent")
+    replacement_fields = {"matcher", "category", "subcategory", "priority"}
+
+    assert set(present["required"]) == {"matcher", "category", "priority"}
+    assert set(inactive["required"]) == {"rule_id"}
+    assert _forbidden_fields(inactive) == replacement_fields
+    assert set(absent["required"]) == {"rule_id"}
+    assert _forbidden_fields(absent) == replacement_fields
+    assert "name" not in schema["properties"]
+    assert "deterministic name" in schema["description"]
+
+
+def test_proposed_rule_fixture_uses_the_contract_target_state() -> None:
+    cases = json.loads(EVAL_CASES_PATH.read_text())
+    case = next(row for row in cases if row["id"] == "categorization-rule-and-review")
+    arguments = case["expectations"]["standard-45"]["calls"][0]["arguments"]
+    target = arguments["rules"][0]
+
+    assert target["state"] == "present"
+    assert "matcher" in target
+    assert "match" not in target
+    CategorizationRuleTarget.model_validate({
+        "kind": "rule",
+        "priority": 100,
+        **target,
+    })
 
 
 @pytest.mark.parametrize(
@@ -492,14 +706,18 @@ def test_rule_target_accepts_complete_present_and_id_only_terminal_states() -> N
         {
             "kind": "rule",
             "state": "present",
-            "match": {"type": "contains", "value": "Cafe", "unexpected": "x"},
+            "matcher": {
+                "type": "contains",
+                "value": "Cafe",
+                "unexpected": "x",
+            },
             "category": "Food",
             "priority": 10,
         },
         {
             "kind": "rule",
             "state": "present",
-            "match": {"type": "contains", "value": "Cafe"},
+            "matcher": {"type": "contains", "value": "Cafe"},
             "category": "Food",
             "priority": 10,
             "unexpected": "x",
