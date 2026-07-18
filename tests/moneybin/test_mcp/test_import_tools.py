@@ -1878,3 +1878,32 @@ class TestImportConfirmPdfSignBridgeEscalation:
         # Every hint must be substantive; a blank string is not a next step.
         assert all(action.strip() for action in result.actions)
         assert any("bridge_response" in action for action in result.actions)
+
+
+async def test_confirm_sign_rejects_account_name_instead_of_dropping_it(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """account_name is a tabular signal the PDF sign channel cannot honor.
+
+    `_import_pdf` takes no account_name — accepting one and forwarding only
+    account_id would silently bind the rows to a filename-derived account
+    instead of the one the caller named. The bridge channel rejects it for
+    exactly this reason; this channel must too.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+
+    mock_service = MagicMock()
+    with patch(
+        "moneybin.services.import_service.ImportService", return_value=mock_service
+    ):
+        result = await import_confirm(
+            file_path=str(pdf), confirm_sign=True, account_name="Chase Freedom"
+        )
+
+    assert result.error is not None
+    assert result.error.code == "sign_account_name_unsupported"
+    assert "account_id" in result.error.message
+    # Refused before any import ran — no rows bound to the wrong account.
+    mock_service.import_file.assert_not_called()

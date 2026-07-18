@@ -1232,7 +1232,8 @@ async def import_confirm(
         confirm_sign: Enter the sign-inversion resolution for a deterministic
             PDF that ``import_files``/``import_preview`` flagged as a credit-card
             statement. Deterministic PDFs only, and mutually exclusive with
-            ``bridge_response``/``accept``/``mapping``. This does NOT ratify the
+            ``bridge_response``/``accept``/``mapping``/``account_name`` (pin the
+            account with ``account_id`` instead). This does NOT ratify the
             inversion itself — it asks MoneyBin to put the proposal in front of
             the human, who approves or declines. A declined (or unavailable)
             prompt imports nothing. Only send this for a PDF actually flagged
@@ -1344,6 +1345,19 @@ async def import_confirm(
                     "(those are the tabular column-mapping channel). A PDF's sign "
                     "confirmation takes no column mapping.",
                     code="confirm_channel_conflict",
+                )
+            if account_name is not None:
+                # Same reason the bridge channel rejects it above: PDF rows
+                # resolve their account from the statement, and `_import_pdf`
+                # takes no account_name. Accepting one here would forward only
+                # account_id and bind the rows to a filename-derived account
+                # instead of the one the caller named — silently, which is worse
+                # than refusing.
+                raise UserError(
+                    "account_name is not supported with confirm_sign — PDF rows "
+                    "resolve the account from the statement; pass account_id to "
+                    "pin rows to an existing account when there is no anchor.",
+                    code="sign_account_name_unsupported",
                 )
             return await _confirm_pdf_sign_with_human(
                 path, save_format=save_format, account_id=account_id
