@@ -78,7 +78,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         sign="negative expense; positive income; ranking uses absolute amount",
         kind="flow",
         valuation_basis="transaction amount ranked by absolute magnitude",
-        fx_basis="source-normalized display currency",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
         time_basis="inclusive full observed transaction period",
         denominator=(
             "account or category median absolute deviation scaled by 1.4826 "
@@ -88,7 +88,9 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         exclusions=(
             "transfers",
             "archived accounts",
-            "category z-scores for fewer than five transactions or zero variation",
+            "account z-scores for zero median absolute deviation",
+            "category z-scores for fewer than five transactions or zero median "
+            "absolute deviation",
         ),
         provenance=("reports.large_transactions",),
     ),

@@ -82,7 +82,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         sign="cost amounts are positive absolute outflows",
         kind="flow",
         valuation_basis="mean observed transaction amount annualized by inferred cadence",
-        fx_basis="source-normalized display currency",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
         time_basis="inclusive rolling 18-month period ending on current date",
         denominator=(
             "six occurrences and fourteen days of interval variation scale confidence"
@@ -106,8 +106,8 @@ def recurring_subscriptions(
 ) -> ReportQuery:
     """Likely-recurring subscription candidates with confidence scores.
 
-    Amounts use the accounting convention (negative = expense, positive =
-    income) in the currency named by summary.display_currency.
+    Average and annualized costs are positive absolute outflows in the currency
+    named by summary.display_currency.
 
     Args:
         db: Open read-only database connection.

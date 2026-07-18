@@ -82,14 +82,19 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         sign="spend is positive absolute outflow; deltas are current minus comparison",
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="source-normalized display currency",
-        time_basis="inclusive calendar-month period",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        time_basis=(
+            "inclusive eligible-data calendar-month period with zero-filled missing "
+            "category-months"
+        ),
         denominator=(
-            "previous-month spend for mom_pct and prior-year spend for yoy_pct; "
-            "null when the denominator is zero"
+            "previous-month spend for mom_pct; prior-year spend for yoy_pct; "
+            "available calendar months up to three for trailing_3mo_avg, including "
+            "zero-spend months"
         ),
         comparison_window=(
-            "previous month, same month one year earlier, and trailing three months"
+            "previous calendar month, same calendar month one year earlier, and "
+            "trailing three calendar months including current month"
         ),
         exclusions=("transfers", "archived accounts", "non-outflows"),
         provenance=("reports.spending_trend",),
@@ -107,8 +112,9 @@ def spending_trend(
 
     Defaults to the last 12 calendar months when both bounds are omitted. YoY
     columns come from the underlying view (all history), so narrowing the window
-    does not null out yoy_pct. Amounts use the accounting convention (negative =
-    expense, positive = income) in the currency named by summary.display_currency.
+    does not null out yoy_pct. Spending amounts are positive absolute outflows;
+    comparison deltas are current spend minus comparison-period spend. Monetary
+    values use the currency named by summary.display_currency.
 
     Args:
         db: Open read-only database connection.

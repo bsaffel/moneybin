@@ -333,3 +333,8 @@ def test_columns_and_classes_must_use_the_same_privacy_class() -> None:
     )
     with pytest.raises(ValueError, match="columns and classes"):
         replace(_build_spec(), columns=mismatched)
+
+
+def test_duplicate_output_column_names_are_rejected() -> None:
+    with pytest.raises(ValueError, match="columns and classes"):
+        replace(_build_spec(), columns=(_COLUMNS[0], _COLUMNS[0]))

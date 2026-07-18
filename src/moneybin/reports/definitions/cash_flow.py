@@ -52,7 +52,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
         sign="negative expense; positive income",
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="source-normalized display currency",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
         time_basis="inclusive calendar-month period",
         denominator=None,
         comparison_window=None,

@@ -275,12 +275,16 @@ class ReportsService:
     ) -> tuple[list[str], list[tuple]]: ...
 ```
 
-Reads `reports.spending_trend` (SQLMesh view). Returns `(columns, rows)` over a window of months with MoM, YoY, and 3-month-trailing deltas.
+Reads `reports.spending_trend` (SQLMesh view). Returns `(columns, rows)` over a
+window of months with MoM, YoY, and 3-month-trailing deltas. The underlying
+view is bounded to the eligible data's minimum and maximum month and
+zero-fills missing category-months, so comparisons use calendar periods rather
+than prior observed rows.
 
 **MCP tool**
 
 - **Name:** `reports_spending`
-- **Description:** "Monthly spending trend with MoM, YoY, and 3-month-trailing deltas. Defaults to the last 12 calendar months."
+- **Description:** "Monthly spending trend with MoM, YoY, and 3-month-trailing deltas. Spending amounts are positive absolute outflows; comparison deltas are current spend minus comparison-period spend. Defaults to the last 12 calendar months."
 - **Sensitivity:** `low` — aggregates only.
 - **Parameters:**
 
@@ -1511,7 +1515,7 @@ Recurring transaction detection — surfaces likely subscriptions, autopay, and 
 
 - **Sensitivity:** `low` — aggregates and merchant labels.
 - **Unique parameters:** `min_confidence: float = 0.5`, `status: str = "active"` (`active` | `inactive` | `all`), `cadence: str | None = None` (`weekly` | `biweekly` | `monthly` | `quarterly` | `yearly` | `irregular`).
-- **Behavior:** Returns `reports.recurring_subscriptions` rows filtered by the above (merchant, cadence, avg_amount, confidence, etc.).
+- **Behavior:** Returns `reports.recurring_subscriptions` rows filtered by the above (merchant, cadence, avg_amount, confidence, etc.). Average and annualized costs are positive absolute outflows in `summary.display_currency`.
 - **CLI:** `moneybin reports recurring [--min-confidence N] [--status STATUS] [--cadence CADENCE]`
 
 ### `reports_merchants`
@@ -1520,7 +1524,7 @@ Top merchants by lifetime activity.
 
 - **Sensitivity:** `low` — aggregates only.
 - **Unique parameters:** `top: int = 25`, `sort: str = "spend"` (`spend` | `count` | `recent`).
-- **Behavior:** Returns `reports.merchant_activity` rows sorted per `sort`, limited to `top`.
+- **Behavior:** Returns `reports.merchant_activity` rows sorted per `sort`, limited to `top`. `total_spend` is positive absolute outflow; `total_outflow` is negative; `total_inflow` is positive; `avg_amount` and `median_amount` are signed. Monetary values use `summary.display_currency`.
 - **CLI:** `moneybin reports merchants [--top N] [--sort spend|count|recent]`
 
 ### `reports_uncategorized`
@@ -1542,7 +1546,7 @@ Categorical view of balance assertions by drift status.
 
 - **Sensitivity:** `medium` — balance amounts.
 - **Unique parameters:** `account: str | None = None` (filter by account name), `status: str = "all"` (`drift` | `warning` | `clean` | `no-data` | `all`), `since: str | None = None` (ISO date; only assertions on or after).
-- **Behavior:** Returns one row per assertion with computed drift from `reports.balance_drift`. Use when you want a status breakdown across all assertions. Amounts use the accounting convention: negative = expense, positive = income. Drift in `summary.display_currency`.
+- **Behavior:** Returns one row per assertion with drift from `reports.balance_drift`. The independent transaction-derived position is reconstructed from `core.fct_balances_daily.reconciliation_delta`; drift is asserted position minus that computed position as of `assertion_date`, in `summary.display_currency`. Rows without a prior anchor are `no-data`.
 - **CLI:** `moneybin reports balance-drift [--account NAME] [--status STATUS] [--since YYYY-MM-DD]`
 
 ### `refresh_run`

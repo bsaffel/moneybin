@@ -138,9 +138,22 @@ MCP: `reports_cashflow`. Tier 1.
 
 **Purpose:** Monthly spending per category with month-over-month and year-over-year deltas. Subsumes the brief's `year_over_year_spending` — the wider grain supports YoY, MoM, and 3-month-trailing comparisons from a single view.
 
-**Grain:** One row per `(year_month, category)`. Outflow-only — this is a spending lens, not a cashflow lens. Consumers comparing income trends should use `reports.cash_flow` and aggregate.
+**Grain:** One row per `(year_month, category)`. The month range is bounded
+to the earliest and latest eligible outflow month, and every category has a
+row for every month in that range; missing category-months carry zero spend and
+zero transactions. Outflow-only — this is a spending lens, not a cashflow
+lens. Consumers comparing income trends should use `reports.cash_flow` and
+aggregate.
 
-**Source:** `core.fct_transactions` filtered to `amount < 0 AND is_transfer = FALSE`, grouped by `(date_trunc('month', txn_date), category)`. Window functions (`LAG`) compute deltas within each category. Category is the denormalized text on `core.fct_transactions`; no join needed.
+**Source:** `core.fct_transactions` filtered to
+`amount < 0 AND is_transfer = FALSE`, grouped by
+`(date_trunc('month', txn_date), category)`, then joined to an eligible-data
+calendar spine from the minimum through maximum grouped month. Window
+functions operate on that dense monthly series, so `LAG(1)`, `LAG(12)`, and
+the three-row average mean previous calendar month, same month one year prior,
+and trailing three calendar months rather than previous observed rows.
+Category is the denormalized text on `core.fct_transactions`; no category
+dimension join is needed.
 
 **Columns:**
 
@@ -148,15 +161,15 @@ MCP: `reports_cashflow`. Tier 1.
 |---|---|---|
 | `year_month` | `DATE` | First-of-month |
 | `category` | `VARCHAR` | Spending category text; NULL for uncategorized |
-| `total_spend` | `DECIMAL(18,2)` | Sum of absolute outflow this month in this category |
-| `txn_count` | `INTEGER` | Outflow transaction count |
+| `total_spend` | `DECIMAL(18,2)` | Sum of absolute outflow this month in this category; zero for a missing category-month |
+| `txn_count` | `INTEGER` | Outflow transaction count; zero for a missing category-month |
 | `prev_month_spend` | `DECIMAL(18,2)` | Spend in the previous calendar month for the same category |
 | `mom_delta` | `DECIMAL(18,2)` | total_spend - prev_month_spend |
 | `mom_pct` | `DECIMAL(8,4)` | mom_delta / prev_month_spend; NULL if prev_month_spend = 0 |
 | `prev_year_spend` | `DECIMAL(18,2)` | Spend in the same calendar month one year prior |
 | `yoy_delta` | `DECIMAL(18,2)` | total_spend - prev_year_spend |
 | `yoy_pct` | `DECIMAL(8,4)` | yoy_delta / prev_year_spend; NULL if prev_year_spend = 0 |
-| `trailing_3mo_avg` | `DECIMAL(18,2)` | Rolling 3-month average ending this month, same category |
+| `trailing_3mo_avg` | `DECIMAL(18,2)` | Rolling average of up to 3 calendar months ending this month, same category; missing category-months contribute zero |
 
 CLI: `moneybin reports spending [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
 MCP: `reports_spending`. Tier 1.
@@ -317,7 +330,15 @@ MCP: `reports_large_transactions`. Tier 1.
 
 **Grain:** One row per `(account_id, assertion_date)` from `app.balance_assertions`.
 
-**Source:** `app.balance_assertions` left-joined with `core.fct_balances_daily` on `(account_id, assertion_date)`. NULL `computed_balance` (assertion exists for a date with no daily balance row) becomes `drift_status = 'no-data'`.
+**Source:** `app.balance_assertions` left-joined with
+`core.fct_balances_daily` on `(account_id, assertion_date)`. The daily model's
+winning `balance` is not an independent comparison when the user assertion
+wins same-date precedence. The independent transaction-derived position is
+therefore reconstructed as
+`fct_balances_daily.balance - fct_balances_daily.reconciliation_delta`, using
+the reconciliation contract defined in `reports-net-worth.md`. A NULL
+`reconciliation_delta` means no prior anchor exists, so `computed_balance`
+stays NULL and the row becomes `status = 'no-data'`.
 
 **Columns:**
 
@@ -327,7 +348,7 @@ MCP: `reports_large_transactions`. Tier 1.
 | `account_name` | `VARCHAR` | Account display name |
 | `assertion_date` | `DATE` | User-asserted balance date |
 | `asserted_balance` | `DECIMAL(18,2)` | User-entered balance for this date |
-| `computed_balance` | `DECIMAL(18,2)` | Carried-forward balance from core.fct_balances_daily; NULL if missing |
+| `computed_balance` | `DECIMAL(18,2)` | Independent transaction-derived position reconstructed as daily winning balance minus reconciliation_delta; NULL without a prior anchor |
 | `drift` | `DECIMAL(18,2)` | asserted_balance - computed_balance |
 | `drift_abs` | `DECIMAL(18,2)` | ABS(drift); for default sort |
 | `drift_pct` | `DECIMAL(8,4)` | drift / asserted_balance; NULL if asserted_balance = 0 |

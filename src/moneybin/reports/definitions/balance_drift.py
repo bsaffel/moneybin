@@ -48,7 +48,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         ),
         OutputColumn(
             "computed_balance",
-            "Carried-forward computed balance as of assertion_date.",
+            "Independent transaction-derived position as of assertion_date.",
             DataClass.BALANCE,
         ),
         OutputColumn(
@@ -75,15 +75,20 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         sign="drift is asserted balance minus computed balance; drift_abs is unsigned",
         kind="position",
         valuation_basis=(
-            "user-asserted balance compared with carried-forward computed balance"
+            "transaction-derived position reconstructed from daily balance minus "
+            "reconciliation_delta"
         ),
-        fx_basis="source-normalized display currency",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
         time_basis=(
-            "positions compared as of assertion_date; freshness measured from "
-            "assertion_date through current date"
+            "asserted and transaction-derived positions compared as of "
+            "assertion_date; freshness measured from assertion_date through "
+            "current date"
         ),
         denominator="asserted_balance for drift_pct; null when asserted balance is zero",
-        comparison_window="asserted and computed positions on assertion_date",
+        comparison_window=(
+            "asserted position versus independent transaction-derived position on "
+            "assertion_date"
+        ),
         exclusions=("archived accounts",),
         provenance=("reports.balance_drift",),
     ),
@@ -97,8 +102,8 @@ def balance_drift(
 ) -> ReportQuery:
     """Balance reconciliation drift: asserted vs computed, one row per assertion.
 
-    Amounts use the accounting convention (negative = expense, positive =
-    income) in the currency named by summary.display_currency.
+    Balances are positions in summary.display_currency. Drift is asserted balance
+    minus the independent transaction-derived position for assertion_date.
 
     Args:
         db: Open read-only database connection.

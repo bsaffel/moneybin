@@ -73,12 +73,12 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
         ),
         kind="flow",
         valuation_basis="transaction amount",
-        fx_basis="source-normalized display currency",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
         time_basis=(
             "inclusive full observed transaction period from first_seen through "
             "last_seen"
         ),
-        denominator=None,
+        denominator="txn_count for avg_amount",
         comparison_window=None,
         exclusions=("transfers", "archived accounts"),
         provenance=("reports.merchant_activity",),
@@ -92,8 +92,9 @@ def merchant_activity(
 ) -> ReportQuery:
     """Per-merchant lifetime activity totals (spend, count, first/last seen).
 
-    Amounts use the accounting convention (negative = expense, positive =
-    income) in the currency named by summary.display_currency.
+    total_spend is positive absolute outflow; total_outflow is negative;
+    total_inflow is positive; avg_amount and median_amount are signed. Monetary
+    values use the currency named by summary.display_currency.
 
     Args:
         db: Open read-only database connection.
