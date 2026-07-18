@@ -150,11 +150,4 @@ async def test_register_report_mcp_registers_tool() -> None:
     # Per-param help still reaches the schema (FastMCP derives it from __doc__).
     assert schema["properties"]["month"].get("description")
     assert schema["properties"]["top"].get("description")
-    output_schema = tool.outputSchema
-    assert output_schema is not None
-    success = next(
-        branch
-        for branch in output_schema["anyOf"]
-        if branch["properties"]["status"].get("const") == "ok"
-    )
-    assert success["properties"]["data"]["type"] == "array"
+    assert tool.outputSchema is None

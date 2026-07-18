@@ -54,12 +54,12 @@ class TestMCPToolDecorator:
     """Tests for the @mcp_tool decorator."""
 
     @pytest.mark.unit
-    def test_decorator_attaches_output_schema(self) -> None:
+    def test_decorator_does_not_attach_output_schema(self) -> None:
         @mcp_tool()
         def sample() -> ResponseEnvelope[AccountListPayload]:  # type: ignore[return]
             ...
 
-        assert sample._mcp_output_schema["type"] == "object"  # type: ignore[attr-defined]
+        assert not hasattr(sample, "_mcp_output_schema")
 
     @pytest.mark.unit
     def test_decorator_sets_sensitivity_attribute(self) -> None:
@@ -134,13 +134,13 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_rejects_non_envelope_return_annotation(self) -> None:
-        """Tools must declare an envelope before an output schema can be derived."""
+        """Tools must declare a parameterized response envelope."""
 
         def my_tool() -> str:
             return "plain string result"
 
         with pytest.raises(
-            PrivacyContractError, match=r"output schema requires ResponseEnvelope\[T\]"
+            PrivacyContractError, match=r"return type must be ResponseEnvelope\[T\]"
         ):
             mcp_tool(dynamic_classification=True)(my_tool)
 
@@ -409,41 +409,44 @@ async def test_register_emits_tool_annotations() -> None:
 
 
 @pytest.mark.unit
-async def test_registered_tool_returns_schema_compatible_wire_envelope() -> None:
-    """FastMCP validates the canonical envelope dictionary, not its dataclass."""
+async def test_registered_result_uses_one_canonical_wire_value() -> None:
+    """Text and structured content use the same serialized envelope."""
     import json
-    import warnings
     from decimal import Decimal
 
     from fastmcp import Client, FastMCP
+    from mcp.types import TextContent
 
+    from moneybin.errors import RecoveryAction
     from moneybin.mcp._registration import register
-    from moneybin.privacy.payloads.sql import SQLQueryPayload
-    from moneybin.protocol.envelope import build_envelope
 
     @mcp_tool(dynamic_classification=True)
-    def decimal_tool() -> ResponseEnvelope[SQLQueryPayload]:
-        rows: list[dict[str, Any]] = [{"amount": Decimal("12.34")}]
-        return build_envelope(
-            data=SQLQueryPayload(rows=rows),
-            sensitivity="high",
-            classes_returned=["txn_amount"],
+    def decimal_tool() -> ResponseEnvelope[Any]:
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=1, returned_count=1),
+            data=[{"amount": Decimal("12.34")}],
+            recovery_actions=[
+                RecoveryAction(
+                    tool="sql_query",
+                    arguments={"query": "SELECT 1"},
+                    rationale="Retry the read.",
+                    confidence="suggested",
+                    idempotent=True,
+                )
+            ],
         )
 
-    mcp = FastMCP("test")
+    mcp = FastMCP("wire-contract")
     register(mcp, decimal_tool, "decimal_tool", "Return a Decimal amount.")
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        async with Client(mcp) as client:
-            [listed] = await client.list_tools()
-            result = await client.call_tool("decimal_tool", {})
+    async with Client(mcp) as client:
+        result = await client.call_tool("decimal_tool", {})
 
-    assert listed.outputSchema is not None
-    assert result.structured_content is not None
-    content = json.loads(result.content[0].text)  # type: ignore[attr-defined]
-    assert content == result.structured_content
-    assert content["status"] == "ok"
-    assert content["data"]["rows"][0]["amount"] == 12.34
-    assert isinstance(content["data"]["rows"][0]["amount"], float)
-    assert not caught
+    text = next(
+        block.text for block in result.content if isinstance(block, TextContent)
+    )
+    structured_content = result.structured_content
+    assert structured_content is not None
+    assert json.loads(text) == structured_content
+    assert structured_content["data"][0]["amount"] == 12.34
+    assert structured_content["recovery_actions"][0]["tool"] == "sql_query"

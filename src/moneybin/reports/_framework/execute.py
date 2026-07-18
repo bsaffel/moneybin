@@ -10,9 +10,7 @@ than live lineage on a user query.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, cast
-
-from pydantic import JsonValue
+from typing import Any
 
 from moneybin.database import Database
 from moneybin.mcp.privacy import tier_to_sensitivity
@@ -22,8 +20,6 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import ReportSpec
-
-ReportRowsPayload = list[dict[str, JsonValue]]
 
 
 @dataclass(frozen=True)
@@ -50,7 +46,7 @@ class ReportResult:
             return ["aggregate"]
         return sorted({c.value for c in self.output_classes.values()})
 
-    def to_envelope(self) -> ResponseEnvelope[ReportRowsPayload]:
+    def to_envelope(self) -> ResponseEnvelope[Any]:
         """Build the standard response envelope from this result.
 
         The ReportResult→envelope mapping is identical for both surfaces (only
@@ -58,7 +54,7 @@ class ReportResult:
         fields it reads.
         """
         return build_envelope(
-            data=cast(ReportRowsPayload, self.records),
+            data=self.records,
             sensitivity=tier_to_sensitivity(self.tier).value,
             total_count=self.total_count,
             classes_returned=self.classes_returned,

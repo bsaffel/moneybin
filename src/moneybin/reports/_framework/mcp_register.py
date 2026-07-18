@@ -22,7 +22,7 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import get_max_rows
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.reports._framework.contract import ReportSpec
-from moneybin.reports._framework.execute import ReportRowsPayload, run_report
+from moneybin.reports._framework.execute import run_report
 
 
 def _build_signature(spec: ReportSpec) -> inspect.Signature:
@@ -35,17 +35,15 @@ def _build_signature(spec: ReportSpec) -> inspect.Signature:
         )
         for p in spec.params
     ]
-    return inspect.Signature(
-        params, return_annotation=ResponseEnvelope[ReportRowsPayload]
-    )
+    return inspect.Signature(params, return_annotation=ResponseEnvelope[Any])
 
 
 def make_tool_fn(
     spec: ReportSpec,
-) -> Callable[..., ResponseEnvelope[ReportRowsPayload]]:
+) -> Callable[..., ResponseEnvelope[Any]]:
     """Build the MCP tool implementation for ``spec`` with an explicit signature."""
 
-    def _impl(**params: Any) -> ResponseEnvelope[ReportRowsPayload]:
+    def _impl(**params: Any) -> ResponseEnvelope[Any]:
         with get_database(read_only=True) as db:
             return run_report(spec, db, max_rows=get_max_rows(), **params).to_envelope()
 
@@ -56,7 +54,7 @@ def make_tool_fn(
     _impl.__annotations__ = {
         p.name: (p.annotation if p.annotation is not None else Any) for p in spec.params
     }
-    _impl.__annotations__["return"] = ResponseEnvelope[ReportRowsPayload]
+    _impl.__annotations__["return"] = ResponseEnvelope[Any]
     return _impl
 
 

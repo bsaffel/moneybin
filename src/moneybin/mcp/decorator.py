@@ -37,7 +37,6 @@ from moneybin.database import (  # noqa: PLC2701 — private import for per-call
     interrupt_and_reset_database,
 )
 from moneybin.errors import UserError, classify_user_error
-from moneybin.mcp.output_schema import output_schema_for
 from moneybin.mcp.privacy import Sensitivity, log_tool_call, tier_to_sensitivity
 from moneybin.privacy.introspection import (
     PrivacyContractError,
@@ -303,7 +302,18 @@ def mcp_tool(
                 f"{fn.__name__} has no return annotation; "
                 "every @mcp_tool must declare -> ResponseEnvelope[T]"
             )
-        output_schema = output_schema_for(return_hint)
+        if typing.get_origin(return_hint) is not ResponseEnvelope:
+            raise PrivacyContractError(
+                f"{fn.__name__} return type must be ResponseEnvelope[T], "
+                f"got {return_hint!r}"
+            )
+        payload_type_args = typing.get_args(return_hint)
+        if not payload_type_args:
+            raise PrivacyContractError(
+                f"{fn.__name__} return type ResponseEnvelope must be parameterized "
+                "(e.g. ResponseEnvelope[AccountListPayload])"
+            )
+        payload_type_arg = payload_type_args[0]
 
         # Derive sensitivity at registration time from the return type annotation.
         # Raises PrivacyContractError if the return type isn't ResponseEnvelope[T]
@@ -314,26 +324,8 @@ def mcp_tool(
             # itself and preserved by the decorator (not stamped over).
             sensitivity = Sensitivity.HIGH
             classes_for_log: list[str] = ["unclassified"]
-            payload_type_arg: Any = None
             has_critical = False
         else:
-            # Unwrap ResponseEnvelope[T] → T. Require the origin to be
-            # ResponseEnvelope specifically, not merely "some generic" — a
-            # `list[Payload]` or `dict[str, Payload]` annotation would otherwise
-            # pass and derive sensitivity from the wrong type argument, bypassing
-            # the envelope contract.
-            if typing.get_origin(return_hint) is not ResponseEnvelope:
-                raise PrivacyContractError(
-                    f"{fn.__name__} return type must be ResponseEnvelope[T], "
-                    f"got {return_hint!r}"
-                )
-            payload_type_args = typing.get_args(return_hint)
-            if not payload_type_args:
-                raise PrivacyContractError(
-                    f"{fn.__name__} return type ResponseEnvelope must be parameterized "
-                    "(e.g. ResponseEnvelope[AccountListPayload])"
-                )
-            payload_type_arg = payload_type_args[0]
             # derive_tier raises PrivacyContractError naming the *payload type*;
             # re-raise naming the tool too, so a registration-time failure points
             # at which @mcp_tool needs the fix, not just the orphaned payload.
@@ -654,7 +646,6 @@ def mcp_tool(
         wrapper._mcp_max_items = max_items  # type: ignore[attr-defined]
         wrapper._mcp_timeout_seconds = timeout_seconds  # type: ignore[attr-defined]
         wrapper._mcp_list_params = list_params  # type: ignore[attr-defined]
-        wrapper._mcp_output_schema = output_schema  # type: ignore[attr-defined]
         return wrapper
 
     return decorator

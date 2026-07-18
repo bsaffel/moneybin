@@ -67,5 +67,4 @@ def register(mcp: FastMCP, fn: Callable[..., Any], name: str, description: str) 
         description=description,
         tags=tags,
         annotations=annotations,
-        output_schema=cast(Any, fn)._mcp_output_schema,
     )(_wire_result_adapter(fn))

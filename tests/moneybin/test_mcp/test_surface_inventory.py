@@ -8,12 +8,11 @@ from mcp.types import Tool, ToolAnnotations
 from moneybin.mcp.surface_inventory import SurfaceInventory
 
 
-def test_inventory_accounts_for_every_serialized_component() -> None:
+def test_inventory_accounts_for_serialized_components() -> None:
     tool = Tool(
         name="example",
         description="Example.",
         inputSchema={"type": "object", "properties": {}},
-        outputSchema={"type": "object", "properties": {}},
         annotations=ToolAnnotations(readOnlyHint=True),
     )
     inventory = SurfaceInventory.from_tools([tool])
@@ -21,7 +20,7 @@ def test_inventory_accounts_for_every_serialized_component() -> None:
     assert inventory.tool_count == 1
     assert row.description_bytes == len(b"Example.")
     assert row.input_schema_bytes > 0
-    assert row.output_schema_bytes > 0
+    assert row.output_schema_bytes == 0
     assert row.annotation_bytes > 0
     assert inventory.total_bytes > row.total_bytes
     assert len(inventory.sha256) == 64

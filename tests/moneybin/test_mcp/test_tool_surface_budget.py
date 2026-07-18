@@ -137,7 +137,7 @@ def test_live_surface_matches_frozen_registry() -> None:
         enforce_description_budget=False,
     )
     assert inventory.total_bytes > 0
-    assert any(tool.output_schema_bytes > 0 for tool in inventory.tools)
+    assert all(tool.output_schema_bytes == 0 for tool in inventory.tools)
 
 
 @pytest.mark.integration
