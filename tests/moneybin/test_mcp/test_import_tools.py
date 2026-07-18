@@ -1708,15 +1708,13 @@ class TestImportConfirmPdfSign:
 
         pdf = self._card_pdf(tmp_path, monkeypatch)
         mock_service = MagicMock()
-        mock_service.import_file.side_effect = [
-            self._sign_error(),
-            ImportResult(
-                file_path=str(pdf),
-                file_type="pdf",
-                transactions=24,
-                import_id="pdf-sign-1",
-            ),
-        ]
+        mock_service.pdf_preview.side_effect = self._sign_error()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(pdf),
+            file_type="pdf",
+            transactions=24,
+            import_id="pdf-sign-1",
+        )
         confirm = AsyncMock()
         with (
             patch(
@@ -1732,10 +1730,11 @@ class TestImportConfirmPdfSign:
         assert result.data.rows_loaded == 24
         assert result.data.import_id == "pdf-sign-1"
         confirm.assert_awaited_once()
-        # The first attempt must NOT pre-ratify — the gate has to fire so the
-        # human sees the proposal; only the retry carries the approval.
-        assert mock_service.import_file.call_args_list[0].kwargs["confirm"] is False
-        assert mock_service.import_file.call_args_list[1].kwargs["confirm"] is True
+        # The proposal is surfaced by the non-mutating probe, so the ONLY write
+        # happens after the human approves — and it carries their ratification.
+        mock_service.pdf_preview.assert_called_once()
+        mock_service.import_file.assert_called_once()
+        assert mock_service.import_file.call_args.kwargs["confirm"] is True
 
     async def test_confirm_sign_declined_imports_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -1743,7 +1742,7 @@ class TestImportConfirmPdfSign:
         """A refused (or unavailable) elicitation never inverts the ledger."""
         pdf = self._card_pdf(tmp_path, monkeypatch)
         mock_service = MagicMock()
-        mock_service.import_file.side_effect = self._sign_error()
+        mock_service.pdf_preview.side_effect = self._sign_error()
         declined = AsyncMock(
             side_effect=UserError("declined", code="mutation_confirmation_required")
         )
@@ -1758,8 +1757,9 @@ class TestImportConfirmPdfSign:
 
         assert result.error is not None
         assert result.error.code == "mutation_confirmation_required"
-        # Exactly one attempt — the gating one. No confirm=True retry ran.
-        assert mock_service.import_file.call_count == 1
+        # A refusal writes NOTHING at all — the proposal came from the probe,
+        # so no import attempt ran even to surface it.
+        mock_service.import_file.assert_not_called()
 
     async def test_confirm_sign_prompt_names_the_statement_not_a_bridge(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -1769,12 +1769,10 @@ class TestImportConfirmPdfSign:
 
         pdf = self._card_pdf(tmp_path, monkeypatch)
         mock_service = MagicMock()
-        mock_service.import_file.side_effect = [
-            self._sign_error(),
-            ImportResult(
-                file_path=str(pdf), file_type="pdf", transactions=1, import_id="x"
-            ),
-        ]
+        mock_service.pdf_preview.side_effect = self._sign_error()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(pdf), file_type="pdf", transactions=1, import_id="x"
+        )
         confirm = AsyncMock()
         with (
             patch(
@@ -1858,7 +1856,7 @@ class TestImportConfirmPdfSignBridgeEscalation:
             )
         )
         mock_service = MagicMock()
-        mock_service.import_file.side_effect = bridge_error
+        mock_service.pdf_preview.side_effect = bridge_error
         confirm = AsyncMock()
         with (
             patch(
@@ -1959,3 +1957,50 @@ async def test_pdf_channels_reject_every_tabular_account_signal(
     # Refused before any import ran — nothing bound to the wrong account.
     mock_service.import_file.assert_not_called()
     mock_service.apply_pdf_bridge_response.assert_not_called()
+
+
+async def test_confirm_sign_without_a_pending_proposal_imports_nothing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """confirm_sign asserts a sign proposal exists; a false premise must not import.
+
+    The caller is answering a question MoneyBin asked. If no sign gate actually
+    fires for this PDF — a stale proposal, a replaced file, the wrong path —
+    then running the import anyway silently does something the caller never
+    requested (loading an ordinary statement, or writing seed rows) and returns
+    success without a human ever being asked. Verify the premise read-only
+    first.
+    """
+    from moneybin.services.import_service import PdfPreviewResult
+
+    pdf = write_card_statement_pdf(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+
+    mock_service = MagicMock()
+    # The probe reports a clean deterministic PDF — no sign proposal pending.
+    mock_service.pdf_preview.return_value = PdfPreviewResult(
+        file_path=str(pdf),
+        deterministic=True,
+        decision_reason="passed",
+        confidence=1.0,
+        row_count=24,
+    )
+    confirm = AsyncMock()
+    archive = MagicMock()
+    with (
+        patch(
+            "moneybin.services.import_service.ImportService",
+            return_value=mock_service,
+        ),
+        patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+        patch("moneybin.services.inbox_service.InboxService", archive),
+    ):
+        result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+
+    assert result.error is not None
+    assert result.error.code == "sign_confirmation_not_pending"
+    # Nothing was written and nobody was asked — the premise failed first.
+    mock_service.import_file.assert_not_called()
+    confirm.assert_not_awaited()
+    archive.for_active_profile_no_db.assert_not_called()

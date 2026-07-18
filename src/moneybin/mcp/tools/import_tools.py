@@ -1082,6 +1082,26 @@ def _post_import_actions(import_id: str | None) -> list[str]:
     ]
 
 
+def _pdf_sign_probe(path: Path) -> None:
+    """Re-run the PDF routing machine without importing, to test the premise.
+
+    ``confirm_sign`` asserts that a sign proposal is pending for this file, and
+    that assertion can be false — a stale proposal, a replaced file, the wrong
+    path. Answering it by *starting the import* is destructive when it's false:
+    an ordinary statement loads, or seed rows land, and the caller gets success
+    for something they never asked for. ``pdf_preview`` runs the same routing
+    state machine with no raw-table writes and no ``raw.import_log`` row, so it
+    can raise the same sign proposal without committing to it. Returns normally
+    only when NO confirmation is pending — the caller treats that as the failed
+    premise. A writable DB is required because the bridge branch writes the
+    Req 14 egress audit row (same reason ``_import_preview_pdf`` does).
+    """
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        ImportService(db).pdf_preview(path)
+
+
 def _import_confirm_pdf_sign(
     path: Path,
     *,
@@ -1156,12 +1176,7 @@ async def _confirm_pdf_sign_with_human(
         )
 
     try:
-        result = await asyncio.to_thread(
-            _import_confirm_pdf_sign,
-            path,
-            save_format=save_format,
-            account_id=account_id,
-        )
+        await asyncio.to_thread(_pdf_sign_probe, path)
     except ImportConfirmationRequiredError as e:
         if e.outcome.reason != "sign_convention":
             # This PDF needs the bridge, not a sign decision. Hand back the
@@ -1190,6 +1205,20 @@ async def _confirm_pdf_sign_with_human(
             )
         except ImportConfirmationRequiredError as retry_error:
             return _pdf_confirmation_envelope(retry_error.outcome)
+    else:
+        # The probe committed to nothing and raised nothing: this PDF has no
+        # pending confirmation of any kind. Importing it here would answer a
+        # question nobody asked, so refuse and name the tool that does import.
+        quoted_path = shlex.quote(str(path))
+        raise UserError(
+            "No sign confirmation is pending for this PDF — it imports without "
+            "one. Nothing was written. If you meant to import it, call "
+            f"import_files(paths=['{path}']); if you expected a sign proposal, "
+            "the file may have changed since it was flagged — re-run "
+            f"import_preview(file_path='{path}') to see its current state "
+            f"(terminal equivalent: moneybin import files {quoted_path}).",
+            code="sign_confirmation_not_pending",
+        )
 
     from moneybin.services.inbox_service import InboxService
 
@@ -1279,10 +1308,12 @@ async def import_confirm(
             account with ``account_id``. This does NOT ratify the
             inversion itself — it asks MoneyBin to put the proposal in front of
             the human, who approves or declines. A declined (or unavailable)
-            prompt imports nothing. Only send this for a PDF actually flagged
-            ``reason="sign_convention"``: on a bridge-eligible PDF it re-extracts
-            the document, which surfaces its text to you and writes an egress
-            audit row, and you get the ``bridge_payload`` back instead.
+            prompt imports nothing. The proposal is re-derived read-only first,
+            so a PDF with no sign confirmation pending raises
+            ``sign_confirmation_not_pending`` and imports nothing rather than
+            loading it unasked. On a bridge-eligible PDF the re-derivation
+            surfaces the document's text to you and writes an egress audit row,
+            and you get the ``bridge_payload`` back instead.
         mapping: Partial field→column override dict. Tabular only.
         bridge_response: PDF bridge reply ``{'recipe': ..., 'rows': [...]}``.
             Mutually exclusive with ``accept``/``mapping``. An inverted recipe

@@ -16,8 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   confirm_sign=True)` shows you the statement's evidence and printed-vs-recorded
   sample rows and asks you to approve; approving imports the statement, and
   declining imports nothing. The assistant cannot answer the prompt on your
-  behalf. Previously this one case sent you to a terminal, even though the
-  same inversion already asked you in place on spreadsheet and
+  behalf, and if the statement turns out to have no such question pending,
+  nothing is imported. Previously this one case sent you to a terminal, even
+  though the same inversion already asked you in place on spreadsheet and
   AI-extracted-PDF imports.
 
 ### Changed
