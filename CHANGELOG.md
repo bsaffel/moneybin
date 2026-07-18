@@ -10,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **An AI assistant can now resolve a credit-card PDF's sign inversion
+  without you leaving the chat.** `import_confirm(file_path=...,
+  confirm_pdf_sign=True)` shows you the statement's evidence and printed-vs-recorded
+  sample rows and asks you to approve; approving imports the statement, and
+  declining imports nothing. The assistant cannot answer the prompt on your
+  behalf, and if the statement turns out to have no such question pending,
+  nothing is imported. Previously this one case sent you to a terminal, even
+  though the same inversion already asked you in place on spreadsheet and
+  AI-extracted-PDF imports.
+
 ### Changed
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with
@@ -23,6 +34,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **Replacing a statement while its approval prompt is open no longer applies
+  your answer to the new file.** Re-saving a corrected export over the same path
+  mid-prompt could previously reverse every amount in a document you never
+  reviewed; the import is now refused instead. Affects all three confirmation
+  paths (spreadsheet, AI-extracted PDF, and card statement).
+- **Choosing an account for a PDF import now fails loudly instead of quietly
+  doing something else.** Both PDF import paths only ever supported pinning by
+  account id, but passing `account_bindings` or `account_metadata` was accepted
+  and then ignored — the transactions landed in an account derived from the
+  statement or the filename while you believed you had chosen one. Those
+  parameters are now refused with a message naming the one that works.
 - **Real credit-card PDF statements now extract their transactions instead of
   falling back to a raw dump.** Chase card statements (and others shaped like
   them) print their transaction table in three ways no synthetic sample did: a

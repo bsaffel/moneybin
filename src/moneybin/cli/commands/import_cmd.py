@@ -1079,7 +1079,12 @@ def import_confirm_command(
     confirm_sign: bool = typer.Option(
         False,
         "--confirm-sign",
-        help="Explicitly approve an inferred tabular sign inversion.",
+        help=(
+            "Explicitly approve an inferred tabular sign inversion (pair with "
+            "--accept). For a PDF statement use `import files <path> --confirm`; "
+            "the MCP equivalent is import_confirm(confirm_pdf_sign=True), which "
+            "asks the human rather than asserting their approval."
+        ),
     ),
     sign: SignConventionType | None = typer.Option(
         None,

@@ -180,6 +180,87 @@ def _tabular_confirm_cli_equivalent(
     return shlex.join(parts)
 
 
+def _content_digest(path: Path) -> str:
+    """SHA-256 over a file's bytes, read in chunks (statements can be large)."""
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def _reject_if_changed_during_confirmation(
+    path: Path, digest_at_proposal: str
+) -> None:
+    """Bind a human's sign approval to the exact bytes the proposal came from.
+
+    A confirmation prompt stays open for as long as the person takes to answer
+    (the tool allows 180s), and the retry re-reads the path rather than a
+    snapshot. If the file is replaced inside that window the approval silently
+    transfers to content nobody saw: a different card statement gets its
+    inversion pre-ratified, reversing every amount in a document the human
+    never reviewed. Re-reading the digest is cheap next to that, and refusing
+    costs the user only a re-run.
+
+    The guarded window is the human decision, not the microseconds between
+    hashing and parsing — this closes the gap that is seconds-to-minutes wide,
+    which is the one an ordinary file replacement can land in.
+    """
+    current = await asyncio.to_thread(_content_digest, path)
+    if current == digest_at_proposal:
+        return
+    raise UserError(
+        "This file changed while the confirmation was open, so the approval no "
+        "longer applies to it — nothing was imported. Re-run the import to see "
+        "a proposal for the current contents.",
+        code="file_changed_during_confirmation",
+        details={"file_path": str(path)},
+    )
+
+
+def _reject_unsupported_pdf_account_signals(
+    *,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> None:
+    """Refuse account-selection signals no PDF channel can honor.
+
+    Both PDF entry points bottom out in a service method that takes only
+    `account_id` — `_import_pdf` for the deterministic/sign channel and
+    `apply_pdf_bridge_response` for the bridge. Every other account signal is
+    tabular-only, so forwarding is not merely unimplemented but impossible
+    without a service-layer change. Accepting one silently would bind the rows
+    to a statement- or filename-derived account while the caller believes they
+    chose one — the failure is invisible at the call site and expensive to
+    notice later, which is exactly when a loud refusal is worth more than a
+    best-effort guess. Shared by both channels so a new signal cannot be
+    rejected on one and dropped on the other.
+    """
+    unsupported = next(
+        (
+            name
+            for name, value in (
+                ("account_name", account_name),
+                ("account_bindings", account_bindings),
+                ("account_metadata", account_metadata),
+            )
+            if value
+        ),
+        None,
+    )
+    if unsupported is None:
+        return
+    raise UserError(
+        f"{unsupported} is not supported for a PDF — PDF rows resolve the "
+        "account from the statement; pass account_id to pin rows to an existing "
+        "account when there is no anchor.",
+        code="pdf_account_signal_unsupported",
+    )
+
+
 def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
     """The agent-facing hint for a PDF bridge confirmation_required.
 
@@ -207,8 +288,8 @@ def _sign_confirm_actions(
 
     Ratifying an inferred card-style convention inverts every amount, and a wrong
     flip corrupts the ledger on this import and on every future replay of the
-    format. An agent cannot ratify it; tabular imports elicit the human in place,
-    while deterministic PDFs retain their explicit CLI recovery.
+    format. An agent cannot ratify it — every channel routes the decision to a
+    human, in place via elicitation, with the terminal as the fallback.
     """
     quoted = shlex.quote(file_path)
     return [
@@ -217,16 +298,17 @@ def _sign_confirm_actions(
             "Call import_confirm(file_path=..., accept=True) so MoneyBin can "
             "show the human the tabular sign-inversion approval."
             if channel == "tabular"
-            else "Show the user sign_sample_rows — what the statement printed vs what "
-            "MoneyBin would record — so THEY decide. Resolve this deterministic PDF "
-            "in a terminal:"
+            else "Call import_confirm(file_path=..., confirm_pdf_sign=True) so MoneyBin "
+            "can show the human the sign-inversion approval. Do not answer it "
+            "yourself — show them sign_sample_rows (what the statement printed vs "
+            "what MoneyBin would record) so THEY decide."
         ),
         (
             f"If it IS a credit card: moneybin import confirm {quoted} --accept "
             "--confirm-sign (records charges as expenses)."
             if channel == "tabular"
-            else f"If it IS a credit card: moneybin import files {quoted} --confirm "
-            "(records charges as expenses)."
+            else f"To decide in a terminal instead: moneybin import files {quoted} "
+            "--confirm (records charges as expenses)."
         ),
         f"If it is NOT a credit card: moneybin import files {quoted} "
         "--sign negative_is_expense (records amounts exactly as printed).",
@@ -975,13 +1057,16 @@ def _import_confirm_bridge(
     )
 
 
-def _sign_confirmation_message(payload: dict[str, Any]) -> str:
-    """Describe the exact ledger-wide change a human must ratify."""
+def _sign_confirmation_message(payload: dict[str, Any], *, source: str) -> str:
+    """Describe the exact ledger-wide change a human must ratify.
+
+    `source` is named by the caller rather than derived from `payload["channel"]`:
+    the bridge and deterministic-PDF paths both carry channel="pdf", and telling
+    a human their deterministic statement is a "bridge recipe" describes a step
+    that never ran.
+    """
     evidence = ", ".join(str(item) for item in payload["sign_evidence"])
     sample_rows = payload["sign_sample_rows"][:3]
-    source = (
-        "PDF bridge recipe" if payload.get("channel") == "pdf" else "tabular import"
-    )
     samples = (
         f"Sample rows (printed amount → MoneyBin amount): {sample_rows}\n\n"
         if sample_rows
@@ -1028,6 +1113,174 @@ def _import_confirm_tabular(
         )
 
 
+def _post_import_actions(import_id: str | None) -> list[str]:
+    """The next-step hints every successful `import_confirm` load returns."""
+    return [
+        f"Use import_revert(import_id='{import_id}') to undo this import.",
+        "Use refresh_run() to rebuild derived tables and apply categorization.",
+        "Use system_status to confirm refreshed counts.",
+    ]
+
+
+def _pdf_sign_probe(path: Path) -> None:
+    """Re-run the PDF routing machine without importing, to test the premise.
+
+    ``confirm_pdf_sign`` asserts that a sign proposal is pending for this file, and
+    that assertion can be false — a stale proposal, a replaced file, the wrong
+    path. Answering it by *starting the import* is destructive when it's false:
+    an ordinary statement loads, or seed rows land, and the caller gets success
+    for something they never asked for. ``pdf_preview`` runs the same routing
+    state machine with no raw-table writes and no ``raw.import_log`` row, so it
+    can raise the same sign proposal without committing to it. Returns normally
+    only when NO confirmation is pending — the caller treats that as the failed
+    premise. A writable DB is required because the bridge branch writes the
+    Req 14 egress audit row (same reason ``_import_preview_pdf`` does).
+    """
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        ImportService(db).pdf_preview(path)
+
+
+def _import_confirm_pdf_sign(
+    path: Path,
+    *,
+    save_format: bool,
+    account_id: str | None,
+    confirm: bool = False,
+) -> ImportResult:
+    """Apply one deterministic-PDF sign confirmation attempt off the event loop.
+
+    `confirm` is the PDF gate's ratification signal (the tabular gate's is
+    `human_sign_confirmation`); `_import_pdf` reads only the former.
+    """
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        return ImportService(db).import_file(
+            path,
+            save_format=save_format,
+            account_id=account_id,
+            actor_kind="agent",
+            confirm=confirm,
+            refresh=False,  # caller can run refresh_run separately
+        )
+
+
+async def _confirm_pdf_sign_with_human(
+    path: Path,
+    *,
+    save_format: bool,
+    account_id: str | None,
+) -> ResponseEnvelope[ImportConfirmPayload]:
+    """Put a deterministic PDF's inferred inversion in front of the human, then load.
+
+    The first attempt deliberately does NOT pre-ratify: the gate has to fire so
+    the human sees the evidence and sample rows the extractor found. Only after
+    they approve does the retry carry `confirm=True`. An agent can reach this
+    function, but it cannot answer the prompt — `confirm_or_raise` raises when
+    the client can't elicit, so nothing loads.
+    """
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        confirmation_payload_dict,
+    )
+
+    def _pdf_confirmation_envelope(
+        outcome: ConfirmationRequired,
+    ) -> ResponseEnvelope[ImportConfirmPayload]:
+        from moneybin.services.import_confirmation import BridgePayload
+
+        if isinstance(outcome.proposed, BridgePayload):
+            # The bridge escalation carries no error_message (it is a request,
+            # not a rejection), so only prepend one when it is actually set.
+            actions = [
+                *([outcome.error_message] if outcome.error_message else []),
+                _bridge_confirm_action(str(path), payload_ref="data.bridge_payload"),
+            ]
+        else:
+            actions = _confirmation_actions(
+                str(path),
+                outcome,
+                accept=False,
+                save_format=save_format,
+                account_id=account_id,
+            )
+        return build_envelope(
+            sensitivity="medium",
+            data={
+                "status": "confirmation_required",
+                **confirmation_payload_dict(outcome),
+            },
+            actions=actions,
+        )
+
+    digest_at_proposal = await asyncio.to_thread(_content_digest, path)
+    try:
+        await asyncio.to_thread(_pdf_sign_probe, path)
+    except ImportConfirmationRequiredError as e:
+        if e.outcome.reason != "sign_convention":
+            # This PDF needs the bridge, not a sign decision. Hand back the
+            # bridge proposal rather than a confusing sign error.
+            return _pdf_confirmation_envelope(e.outcome)
+
+        from moneybin.mcp.elicitation import confirm_or_raise
+
+        quoted_path = shlex.quote(str(path))
+        await confirm_or_raise(
+            _sign_confirmation_message(
+                confirmation_payload_dict(e.outcome), source="PDF statement"
+            ),
+            subject="This PDF sign inversion",
+            unchanged="the PDF was not imported",
+            cli_equivalent=f"moneybin import files {quoted_path} --confirm",
+            details={"file_path": str(path)},
+        )
+        await _reject_if_changed_during_confirmation(path, digest_at_proposal)
+        try:
+            result = await asyncio.to_thread(
+                _import_confirm_pdf_sign,
+                path,
+                save_format=save_format,
+                account_id=account_id,
+                confirm=True,
+            )
+        except ImportConfirmationRequiredError as retry_error:
+            return _pdf_confirmation_envelope(retry_error.outcome)
+    else:
+        # The probe committed to nothing and raised nothing: this PDF has no
+        # pending confirmation of any kind. Importing it here would answer a
+        # question nobody asked, so refuse and name the tool that does import.
+        quoted_path = shlex.quote(str(path))
+        raise UserError(
+            "No sign confirmation is pending for this PDF — it imports without "
+            "one. Nothing was written. If you meant to import it, call "
+            f"import_files(paths=['{path}']); if you expected a sign proposal, "
+            "the file may have changed since it was flagged — re-run "
+            f"import_preview(file_path='{path}') to see its current state "
+            f"(terminal equivalent: moneybin import files {quoted_path}).",
+            code="sign_confirmation_not_pending",
+        )
+
+    from moneybin.services.inbox_service import InboxService
+
+    InboxService.for_active_profile_no_db().archive_confirmed_file(path)
+
+    return build_envelope(
+        sensitivity="medium",
+        data=ImportConfirmPayload(
+            import_id=result.import_id,
+            rows_loaded=result.transactions,
+            # A PDF recipe carves regions out of the document; there is no
+            # source-column mapping and no per-column sample to report.
+            merged_mapping={},
+            sample_values={},
+            sign_correction_suggested=result.sign_correction_suggested,
+        ),
+        actions=_post_import_actions(result.import_id),
+    )
+
+
 @mcp_tool(
     read_only=False,
     idempotent=False,
@@ -1038,6 +1291,7 @@ async def import_confirm(
     file_path: str,
     *,
     accept: bool = False,
+    confirm_pdf_sign: bool = False,
     mapping: dict[str, str] | None = None,
     bridge_response: dict[str, Any] | None = None,
     save_format: bool = True,
@@ -1049,7 +1303,7 @@ async def import_confirm(
     """Confirm or override a proposed mapping, or apply a PDF bridge response.
 
     Terminal ``_confirm`` step of the propose -> review -> confirm workflow.
-    Two channels:
+    Three channels:
 
     - **Tabular** — ``import_files`` returned ``confirmation_required`` for an
       unknown column layout; ratify with ``accept=True`` or a partial
@@ -1067,6 +1321,12 @@ async def import_confirm(
       human-confirmation prompt; an agent cannot approve that inversion. A
       response that fails reconciliation is rejected (``status='invalid'``)
       and nothing loads.
+    - **PDF sign** — ``import_files``/``import_preview`` returned a
+      ``confirmation_required`` with ``reason='sign_convention'`` for a
+      deterministic PDF (a credit-card statement, where loading inverts every
+      amount's sign). Pass ``confirm_pdf_sign=True`` and MoneyBin puts the evidence
+      and printed-vs-recorded samples in front of the human; you cannot answer
+      for them, and a decline loads nothing.
 
     Single-account tabular files (CSVs without an embedded account identifier)
     require ``account_id`` or ``account_name``. PDF rows resolve the account
@@ -1087,6 +1347,21 @@ async def import_confirm(
         file_path: Absolute path to the file to import. Must be within the
             user's home directory.
         accept: Accept the proposed mapping as-is (no overrides). Tabular only.
+        confirm_pdf_sign: Enter the sign-inversion resolution for a deterministic
+            PDF that ``import_files``/``import_preview`` flagged as a credit-card
+            statement. Deterministic PDFs only, and mutually exclusive with
+            ``bridge_response``/``accept``/``mapping``. Like the bridge channel
+            it takes no tabular account signal — ``account_name``,
+            ``account_bindings``, and ``account_metadata`` are refused; pin the
+            account with ``account_id``. This does NOT ratify the
+            inversion itself — it asks MoneyBin to put the proposal in front of
+            the human, who approves or declines. A declined (or unavailable)
+            prompt imports nothing. The proposal is re-derived read-only first,
+            so a PDF with no sign confirmation pending raises
+            ``sign_confirmation_not_pending`` and imports nothing rather than
+            loading it unasked. On a bridge-eligible PDF the re-derivation
+            surfaces the document's text to you and writes an egress audit row,
+            and you get the ``bridge_payload`` back instead.
         mapping: Partial field→column override dict. Tabular only.
         bridge_response: PDF bridge reply ``{'recipe': ..., 'rows': [...]}``.
             Mutually exclusive with ``accept``/``mapping``. An inverted recipe
@@ -1127,16 +1402,23 @@ async def import_confirm(
                 "(those are the tabular column-mapping channel).",
                 code="confirm_channel_conflict",
             )
-        if account_name is not None:
-            # PDF rows resolve their account from the statement; account_name is
-            # a tabular-only signal. Reject it explicitly so it isn't silently
-            # dropped — pin a no-anchor PDF with account_id instead.
+        if confirm_pdf_sign:
+            # A bridge recipe's own inversion is elicited below, on the bridge
+            # result itself. confirm_pdf_sign= drives the deterministic path, which
+            # would re-derive the recipe and discard the one supplied here.
             raise UserError(
-                "account_name is not supported with bridge_response — PDF rows "
-                "resolve the account from the statement; pass account_id to pin "
-                "rows to an existing account when there is no anchor.",
-                code="bridge_account_name_unsupported",
+                "confirm_pdf_sign cannot be combined with bridge_response — a bridge "
+                "recipe that inverts amounts raises its own human confirmation "
+                "when applied. Call import_confirm(file_path=..., "
+                "bridge_response=...) on its own.",
+                code="confirm_channel_conflict",
             )
+        _reject_unsupported_pdf_account_signals(
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+        digest_at_proposal = await asyncio.to_thread(_content_digest, path)
         first_attempt = await asyncio.to_thread(
             _import_confirm_bridge,
             str(path),
@@ -1155,7 +1437,7 @@ async def import_confirm(
 
         quoted_path = shlex.quote(str(path))
         await confirm_or_raise(
-            _sign_confirmation_message(payload),
+            _sign_confirmation_message(payload, source="PDF bridge recipe"),
             subject="This PDF bridge sign inversion",
             unchanged="the PDF was not imported",
             cli_equivalent=(
@@ -1164,6 +1446,7 @@ async def import_confirm(
             ),
             details={"file_path": str(path)},
         )
+        await _reject_if_changed_during_confirmation(path, digest_at_proposal)
         return await asyncio.to_thread(
             _import_confirm_bridge,
             str(path),
@@ -1174,20 +1457,32 @@ async def import_confirm(
         )
 
     if path.suffix.lower() == ".pdf":
-        # A PDF reached the tabular confirm channel (bridge_response is None here
-        # but accept=/mapping= may be set). accept=/mapping= never ratify a PDF —
-        # two kinds of PDF confirmation land here, each with a different recovery,
-        # and both are surfaced honestly rather than routing-to-detect (which would
-        # re-extract the document and, for a bridge PDF, write a spurious egress
-        # audit row):
+        if confirm_pdf_sign:
+            if accept or mapping:
+                raise UserError(
+                    "confirm_pdf_sign cannot be combined with accept= or mapping= "
+                    "(those are the tabular column-mapping channel). A PDF's sign "
+                    "confirmation takes no column mapping.",
+                    code="confirm_channel_conflict",
+                )
+            _reject_unsupported_pdf_account_signals(
+                account_name=account_name,
+                account_bindings=account_bindings,
+                account_metadata=account_metadata,
+            )
+            return await _confirm_pdf_sign_with_human(
+                path, save_format=save_format, account_id=account_id
+            )
+        # A PDF reached the tabular confirm channel with accept=/mapping= set.
+        # Those never ratify a PDF — two kinds of PDF confirmation land here,
+        # each with its own channel, and both are surfaced honestly rather than
+        # routing-to-detect (which would re-extract the document and, for a
+        # bridge PDF, write a spurious egress audit row):
         #   * Bridge (native-text extraction) — re-call with bridge_response=.
-        #   * Sign convention (credit-card inversion) — a deterministic PDF has
-        #     no bridge recipe to re-run, so the human resolves it in a terminal,
-        #     where inverting every amount is a deliberate, visible act. Bridge
-        #     recipes use the MCP elicitation path above. accept=True must never
-        #     silently invert the ledger, and the tabular catch below only
-        #     serializes ProposedMapping, so running the tabular path here would
-        #     loop the agent instead.
+        #   * Sign convention (credit-card inversion) — re-call with
+        #     confirm_pdf_sign=True, which elicits the human above.
+        # The tabular catch below only serializes ProposedMapping, so running the
+        # tabular path here would loop the agent instead.
         quoted = shlex.quote(str(path))
         raise UserError(
             "A PDF confirmation cannot be ratified with accept=/mapping= over MCP. "
@@ -1195,11 +1490,20 @@ async def import_confirm(
             "extraction), call import_confirm(file_path=..., bridge_response="
             "{'recipe': ..., 'rows': [...]}). If it returned a sign-convention "
             "confirmation (a credit-card statement — confirming inverts every "
-            "amount's sign), MCP cannot ratify the deterministic PDF inversion "
-            "in place; resolve it in a terminal: "
-            f"`moneybin import files {quoted} --confirm` if it IS "
-            f"a credit card, or `moneybin import files {quoted} --sign "
+            "amount's sign), call import_confirm(file_path=..., confirm_pdf_sign=True) "
+            "and MoneyBin will ask the human to approve the inversion. To skip the "
+            f"prompt from a terminal: `moneybin import files {quoted} --confirm` if "
+            f"it IS a credit card, or `moneybin import files {quoted} --sign "
             "negative_is_expense` if it is not.",
+            code="confirm_channel_conflict",
+        )
+
+    if confirm_pdf_sign:
+        raise UserError(
+            "confirm_pdf_sign applies to deterministic PDF statements only. A tabular "
+            "file's sign inversion is confirmed through its mapping ratification: "
+            "call import_confirm(file_path=..., accept=True) and MoneyBin will ask "
+            "the human to approve the inversion.",
             code="confirm_channel_conflict",
         )
 
@@ -1210,6 +1514,7 @@ async def import_confirm(
             code="confirm_requires_signal",
         )
 
+    digest_at_proposal = await asyncio.to_thread(_content_digest, path)
     try:
         result = await asyncio.to_thread(
             _import_confirm_tabular,
@@ -1228,7 +1533,7 @@ async def import_confirm(
 
             payload = confirmation_payload_dict(e.outcome)
             await confirm_or_raise(
-                _sign_confirmation_message(payload),
+                _sign_confirmation_message(payload, source="tabular import"),
                 subject="This tabular sign inversion",
                 unchanged="the file was not imported",
                 cli_equivalent=_tabular_confirm_cli_equivalent(
@@ -1244,6 +1549,7 @@ async def import_confirm(
                 ),
                 details={"file_path": str(path)},
             )
+            await _reject_if_changed_during_confirmation(path, digest_at_proposal)
             try:
                 result = await asyncio.to_thread(
                     _import_confirm_tabular,
@@ -1302,11 +1608,7 @@ async def import_confirm(
                 ),
             )
 
-    actions: list[str] = [
-        f"Use import_revert(import_id='{result.import_id}') to undo this import.",
-        "Use refresh_run() to rebuild derived tables and apply categorization.",
-        "Use system_status to confirm refreshed counts.",
-    ]
+    actions: list[str] = _post_import_actions(result.import_id)
     if result.sign_correction_suggested:
         actions.insert(
             0,
@@ -1436,7 +1738,16 @@ def register_import_tools(mcp: FastMCP) -> None:
         "loads, writing raw.tabular_transactions + app.pdf_formats (when "
         "save_format=True); an inverted bridge recipe elicits explicit human "
         "approval before loading. A response that fails reconciliation is rejected "
-        "and nothing loads. Data load is reversible via import_revert; format save "
+        "and nothing loads. "
+        "PDF sign: for a deterministic PDF returned with reason='sign_convention' "
+        "(a credit-card statement, where loading inverts every amount's sign), pass "
+        "confirm_pdf_sign=True — MoneyBin shows the human the evidence and the "
+        "printed-vs-recorded sample rows and asks them to approve. You cannot "
+        "answer that prompt yourself; a decline imports nothing. It selects the "
+        "channel, so do not pass accept=/mapping= with it (that is the CLI's "
+        "separate --accept --confirm-sign tabular pairing, which has no MCP "
+        "equivalent). "
+        "Data load is reversible via import_revert; format save "
         "can be undone via system_audit_undo. "
         "Amounts use the accounting convention: negative=expense, "
         "positive=income; transfers exempt.",
