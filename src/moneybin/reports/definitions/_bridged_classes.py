@@ -20,17 +20,19 @@ columns.
 from __future__ import annotations
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.tables import REPORTS_NET_WORTH, REPORTS_UNCATEGORIZED_QUEUE
 
-# (schema, table) -> {column: DataClass}
+# (schema, table) -> {column: DataClass}. Keyed off the TableRef constants (never
+# hardcoded name strings), matching reports_class_map()'s (view.schema, view.name).
 BRIDGED_REPORT_CLASSES: dict[tuple[str, str], dict[str, DataClass]] = {
-    ("reports", "net_worth"): {
+    (REPORTS_NET_WORTH.schema, REPORTS_NET_WORTH.name): {
         "balance_date": DataClass.TXN_DATE,
         "net_worth": DataClass.BALANCE,
         "account_count": DataClass.AGGREGATE,
         "total_assets": DataClass.BALANCE,
         "total_liabilities": DataClass.BALANCE,
     },
-    ("reports", "uncategorized_queue"): {
+    (REPORTS_UNCATEGORIZED_QUEUE.schema, REPORTS_UNCATEGORIZED_QUEUE.name): {
         "transaction_id": DataClass.RECORD_ID,
         "account_id": DataClass.ACCOUNT_IDENTIFIER,
         "account_name": DataClass.USER_NOTE,
