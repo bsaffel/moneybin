@@ -44,6 +44,26 @@ def test_inventory_omits_bytes_for_absent_components() -> None:
     assert row.annotation_bytes == 0
 
 
+def test_inventory_accounts_for_advertised_output_schema() -> None:
+    inventory = SurfaceInventory.from_tools([
+        Tool(
+            name="example",
+            inputSchema={"type": "object"},
+            outputSchema={"type": "object", "properties": {}},
+        )
+    ])
+    row = inventory.tools[0]
+
+    assert row.output_schema_bytes > 0
+    assert row.total_bytes == (
+        row.description_bytes
+        + row.input_schema_bytes
+        + row.output_schema_bytes
+        + row.annotation_bytes
+        + row.other_bytes
+    )
+
+
 def test_committed_baseline_is_self_consistent() -> None:
     baseline = (
         Path(__file__).parents[2] / "fixtures/mcp_surface/baseline-2026-07-17.json"
