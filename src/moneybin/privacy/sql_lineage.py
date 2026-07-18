@@ -535,6 +535,17 @@ def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
     docstring. Both sources are imported lazily to avoid a privacy<->reports
     import cycle and to keep the CLI cold-start path from eagerly loading
     report runners.
+
+    Coverage (package reports): this maps only the in-tree ``ALL_REPORTS``
+    runners plus the bridge. The framework also ships ``discover_reports()``
+    (``reports/_framework/registry.py``) for package-contributed ``@report``
+    runners, but that scanner is NOT wired into the live server yet, so no
+    ``reports.*`` view outside ``ALL_REPORTS``/the bridge can be deployed today.
+    When package-report discovery IS wired in (M2M), it MUST feed this map too —
+    otherwise a package report with an undeclared CRITICAL column resolves to the
+    unmasked ``AGGREGATE`` fallback, reopening the masking hole the bridge closed.
+    Backstop: ``test_reports_classification.py`` fails if any *deployed*
+    ``reports.*`` view is uncovered here.
     """
     from moneybin.reports._framework.registry import spec_of  # noqa: PLC0415
     from moneybin.reports.definitions import ALL_REPORTS  # noqa: PLC0415

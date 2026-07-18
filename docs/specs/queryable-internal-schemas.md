@@ -162,6 +162,14 @@ surface stays queryable.
   "lineage-as-recommendation" engine** — deferred to a dedicated privacy
   pass. v1 relies on CRITICAL declarations + the content-net floor.
 - `meta` and `seeds` schemas — stay fenced.
+- **Extension/package-contributed report classes.** `reports_class_map`
+  covers the in-tree `ALL_REPORTS` runners plus the transitional bridge. The
+  framework's `discover_reports()` scanner (for package `@report` runners) is
+  not wired into the live server yet; when it is (M2M), it MUST feed
+  `reports_class_map` so package reports' declared classes are covered —
+  otherwise a package report with an undeclared CRITICAL column would leak via
+  the unmasked fallback. The deployed-view completeness test is the backstop
+  until then.
 - Write access to internal schemas — never; `sql_query` stays read-only.
 - The read-only / file-access safety gate (`validate_read_only_query`) is
   unchanged — this spec touches *which schemas* are queryable, never
