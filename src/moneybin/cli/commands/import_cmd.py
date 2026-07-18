@@ -1151,7 +1151,7 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
-    from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
     from moneybin.services.import_service import ImportService  # noqa: PLC0415

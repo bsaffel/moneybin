@@ -179,7 +179,7 @@ def permission_advice(
 
     if errno == _EACCES:
         return (
-            "💡 Check file ownership and permissions "
+            "Check file ownership and permissions "
             "(e.g., chmod 644, or chown to your user).",
             details,
         )
@@ -192,7 +192,7 @@ def permission_advice(
         if protected_root is not None:
             details["protected_root"] = protected_root
             return (
-                f"💡 macOS blocks access to {protected_root} until you grant "
+                f"macOS blocks access to {protected_root} until you grant "
                 "permission. Open System Settings → Privacy & Security → Full "
                 "Disk Access, enable the app running MoneyBin (e.g. your "
                 "terminal), restart it, then retry.",
@@ -200,7 +200,7 @@ def permission_advice(
             )
 
     return (
-        "💡 Something outside the file's own permissions is blocking access "
+        "Something outside the file's own permissions is blocking access "
         "(e.g. a security policy, a sandbox, or an immutable flag).",
         details,
     )
@@ -334,7 +334,10 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         return UserError(
             msg,
             code=error_codes.INFRA_PERMISSION_DENIED,
-            hint=hint,
+            # Decorated here, not in `permission_advice`: the advice text also
+            # feeds the inbox `.error.yml` `suggestion` field, which is
+            # structured data and carries no display affordances.
+            hint=f"💡 {hint}",
             details=details,
         )
     if isinstance(exc, OSError) and not isinstance(exc, TimeoutError):
