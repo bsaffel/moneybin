@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import pytest
@@ -407,3 +408,43 @@ def test_execute_recipe_resolves_yearless_year_from_declared_period_anchors() ->
         (date(2024, 12, 26), Decimal("-100.00")),
         (date(2025, 1, 15), Decimal("40.00")),
     ]
+
+
+def test_missing_end_anchor_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+    """The end-anchor fallback fires routinely — it must not log at WARNING.
+
+    auto-derive defaults end_anchor to "Total:", but most real statements use
+    "Totals"/"TOTAL"/none, so this fallback fires on virtually every successful
+    import. Logging it at WARNING trains operators to ignore real warnings.
+    A missing START anchor is different — that one is genuinely misconfigured
+    and must keep warning.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        RegionAnchors,
+        _carve_region,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    anchors = RegionAnchors(start_anchor="ACTIVITY", end_anchor="Total:")
+    text = "preamble\nACTIVITY\n01/05   COFFEE   25.00\n"
+
+    with caplog.at_level(logging.DEBUG):
+        carved = _carve_region(text, anchors)
+
+    assert "COFFEE" in carved
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings == [], f"routine end-anchor fallback logged at WARNING: {warnings}"
+
+
+def test_missing_start_anchor_still_warns(caplog: pytest.LogCaptureFixture) -> None:
+    """A missing start anchor means a misconfigured recipe — keep it at WARNING."""
+    from moneybin.extractors.pdf.recipe import (
+        RegionAnchors,
+        _carve_region,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    anchors = RegionAnchors(start_anchor="NO_SUCH_HEADER", end_anchor="Total:")
+
+    with caplog.at_level(logging.DEBUG):
+        _carve_region("some text\n", anchors)
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING]
