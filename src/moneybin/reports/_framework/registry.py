@@ -85,6 +85,22 @@ def register_reports_cli(
     return specs
 
 
+def register_generic_reports_tool(mcp: FastMCP) -> None:
+    """Register only the dormant generic ``reports`` MCP contract."""
+    from moneybin.mcp._registration import register
+    from moneybin.mcp.tools.reports import reports
+
+    register(
+        mcp,
+        reports,
+        "reports",
+        "Browse registered financial reports or run one by stable report ID. "
+        "Omit `report_id` to return catalog metadata; supply it to execute a "
+        "registered read-only report. This tool never accepts SQL; use "
+        "`sql_query` separately for arbitrary read-only SQL.",
+    )
+
+
 def discover_reports(module: ModuleType) -> list[Runner]:
     """Return the ``@report`` runners exported by ``module``, in definition order.
 

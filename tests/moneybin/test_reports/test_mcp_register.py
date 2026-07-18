@@ -17,6 +17,8 @@ from moneybin.reports._framework.contract import ParamSpec, ReportQuery, ReportS
 from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.reports._framework.mcp_register import make_tool_fn, register_report_mcp
+from moneybin.reports._framework.registry import register_reports_mcp
+from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
@@ -168,3 +170,13 @@ async def test_register_report_mcp_registers_tool() -> None:
     assert schema["properties"]["month"].get("description")
     assert schema["properties"]["top"].get("description")
     assert tool.outputSchema is None
+
+
+async def test_transitional_report_registrar_does_not_register_generic_tool() -> None:
+    mcp = FastMCP("reports-transition")
+
+    register_reports_mcp(ALL_REPORTS, mcp)
+
+    tools = await mcp.list_tools()
+    assert "reports" not in {tool.name for tool in tools}
+    assert "reports_spending" in {tool.name for tool in tools}

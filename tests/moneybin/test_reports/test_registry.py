@@ -13,6 +13,7 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports._framework.registry import (
     discover_reports,
+    register_generic_reports_tool,
     register_report,
     register_reports,
 )
@@ -76,6 +77,16 @@ async def test_register_reports_wires_both_surfaces() -> None:
     async with Client(mcp) as client:
         tool_names = {t.name for t in await client.list_tools()}
     assert {"reports_alpha", "reports_beta"} <= tool_names
+
+
+async def test_generic_registrar_registers_one_tool_in_isolation() -> None:
+    mcp = FastMCP("reports-contract")
+    register_generic_reports_tool(mcp)
+
+    tools = await mcp.list_tools()
+
+    assert {tool.name for tool in tools} == {"reports"}
+    assert tools[0].output_schema is None
 
 
 def test_register_report_rejects_plain_function() -> None:
