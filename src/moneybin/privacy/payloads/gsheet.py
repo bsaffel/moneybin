@@ -32,7 +32,9 @@ The sheet's *contents* never appear here, only its metadata.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.taxonomy import DataClass
 
@@ -71,6 +73,30 @@ class GsheetConnectionsPayload:
     """Payload for ``gsheet`` and ``gsheet_status`` — list of connections."""
 
     connections: list[GsheetConnectionRow]
+
+
+class GsheetConnectionsView(BaseModel):
+    """Default Google Sheets connection collection projection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["connections"], DataClass.TXN_TYPE] = "connections"
+    connections: list[GsheetConnectionRow]
+
+
+class GsheetStatusView(BaseModel):
+    """Connection-health projection for one or every Google Sheet."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["status"], DataClass.TXN_TYPE] = "status"
+    connections: list[GsheetConnectionRow]
+
+
+GsheetCoarsePayload = Annotated[
+    GsheetConnectionsView | GsheetStatusView,
+    Field(discriminator="kind"),
+]
 
 
 # ---------------------------------------------------------------------------

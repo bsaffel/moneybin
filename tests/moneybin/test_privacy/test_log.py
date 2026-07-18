@@ -13,6 +13,7 @@ import pytest
 
 from moneybin.privacy.log import (
     read_privacy_events,
+    read_privacy_events_page,
     write_privacy_event,
 )
 
@@ -108,3 +109,13 @@ def test_read_respects_max_rows(profile_dir: Path) -> None:
         write_privacy_event(_sample_event() | {"row_count": i})
     rows = read_privacy_events({}, max_rows=3)
     assert len(rows) == 3
+
+
+def test_read_page_returns_exact_total_beyond_legacy_cap(profile_dir: Path) -> None:
+    for i in range(1002):
+        write_privacy_event(_sample_event() | {"row_count": i})
+
+    rows, total = read_privacy_events_page({}, limit=2, offset=1000)
+
+    assert [row["row_count"] for row in rows] == [1, 0]
+    assert total == 1002

@@ -16,7 +16,10 @@ from moneybin.mcp.tools.import_tools import (
     _validate_file_path,  # pyright: ignore[reportPrivateUsage]
     import_confirm,
     import_files,
+    import_formats,
     import_preview,
+    import_status,
+    import_status_coarse,
 )
 from moneybin.services.import_confirmation import (
     BridgePayload,
@@ -25,6 +28,185 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
 )
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
+
+
+async def test_import_status_coarse_defaults_to_all_sections(
+    mcp_db: object,
+) -> None:
+    response = await import_status_coarse()
+
+    assert [section.kind for section in response.data.sections] == [
+        "imports",
+        "formats",
+        "inbox",
+    ]
+
+
+async def test_import_status_coarse_preserves_legacy_section_data(
+    mcp_db: object,
+) -> None:
+    legacy_imports = await import_status(limit=100)
+    legacy_formats = await import_formats()
+    from moneybin.mcp.tools.import_inbox import import_inbox_pending
+
+    legacy_inbox = await import_inbox_pending()
+
+    response = await import_status_coarse()
+    imports, formats, inbox = response.data.sections
+
+    assert imports.records == legacy_imports.data.records
+    assert formats.formats == legacy_formats.data.formats
+    assert formats.pdf_formats == legacy_formats.data.pdf_formats
+    assert inbox.would_process == legacy_inbox.data.would_process
+    assert inbox.ignored == legacy_inbox.data.ignored
+
+
+@pytest.mark.parametrize(
+    ("sections", "import_id", "limit", "cursor", "code"),
+    [
+        ([], None, 100, None, "IMPORT_SECTIONS_REQUIRED"),
+        (
+            ["imports", "imports"],
+            None,
+            100,
+            None,
+            "IMPORT_SECTIONS_DUPLICATE",
+        ),
+        (
+            ["imports", "formats"],
+            "imp_1",
+            100,
+            None,
+            "IMPORT_ID_NOT_ALLOWED",
+        ),
+        (None, "imp_1", 100, None, "IMPORT_ID_NOT_ALLOWED"),
+        (
+            ["formats"],
+            None,
+            10,
+            None,
+            "IMPORT_PAGINATION_NOT_ALLOWED",
+        ),
+        (
+            ["inbox"],
+            None,
+            100,
+            "opaque",
+            "IMPORT_PAGINATION_NOT_ALLOWED",
+        ),
+    ],
+)
+async def test_import_status_coarse_rejects_incompatible_arguments(
+    sections: list[str] | None,
+    import_id: str | None,
+    limit: int,
+    cursor: str | None,
+    code: str,
+) -> None:
+    response = await import_status_coarse(  # type: ignore[arg-type]
+        sections=sections,
+        import_id=import_id,
+        limit=limit,
+        cursor=cursor,
+    )
+
+    assert response.error is not None
+    assert response.error.code == code
+
+
+async def test_import_status_coarse_paginates_exactly_with_total_order(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for import_id in ("imp_a", "imp_b", "imp_c"):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
+                """,
+                [
+                    import_id,
+                    f"/home/test/imports/{import_id}.csv",
+                    "2099-01-01 00:00:00",
+                ],
+            )
+
+    first = await import_status_coarse(sections=["imports"], limit=2)
+    first_section = first.data.sections[0]
+    assert [row["import_id"] for row in first_section.records] == [
+        "imp_c",
+        "imp_b",
+    ]
+    assert first.summary.total_count == 3
+    assert first.summary.returned_count == 2
+    assert first.summary.has_more is True
+    assert first.next_cursor is not None
+    assert any(
+        "sections=['imports']" in action
+        and "limit=2" in action
+        and first.next_cursor in action
+        for action in first.actions
+    )
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO raw.import_log (
+                import_id, source_file, source_type, source_origin,
+                account_names, status, started_at
+            ) VALUES (
+                'imp_new', '/tmp/new.csv', 'csv', 'test', '[]', 'complete',
+                '2100-01-01 00:00:00'
+            )
+            """
+        )
+
+    second = await import_status_coarse(
+        sections=["imports"],
+        limit=2,
+        cursor=first.next_cursor,
+    )
+    assert [row["import_id"] for row in second.data.sections[0].records] == ["imp_a"]
+    assert second.summary.total_count == 3
+    assert second.summary.returned_count == 1
+    assert second.summary.has_more is False
+
+    wrong_filter = await import_status_coarse(
+        sections=["imports", "formats"],
+        limit=2,
+        cursor=first.next_cursor,
+    )
+    assert wrong_filter.error is not None
+    assert wrong_filter.error.code == "IMPORT_CURSOR_INVALID"
+
+
+async def test_import_status_coarse_import_id_returns_one_exact_record(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO raw.import_log (
+                import_id, source_file, source_type, source_origin,
+                account_names, status
+            ) VALUES ('imp_exact', '/tmp/exact.csv', 'csv', 'test', '[]', 'complete')
+            """
+        )
+
+    response = await import_status_coarse(
+        sections=["imports"],
+        import_id="imp_exact",
+    )
+
+    assert response.summary.total_count == 1
+    assert response.summary.returned_count == 1
+    assert response.data.sections[0].records[0]["import_id"] == "imp_exact"
 
 
 def test_valid_path_within_home_returns_resolved_path(

@@ -21,7 +21,11 @@ from moneybin.connectors.gsheet.adapters.base import (
 )
 from moneybin.connectors.gsheet.connection_service import ConnectResult
 from moneybin.connectors.gsheet.pull_service import PullResult
-from moneybin.mcp.tools.gsheet import register_gsheet_tools
+from moneybin.mcp.tools.gsheet import (
+    gsheet_coarse,
+    register_gsheet_coarse_reads,
+    register_gsheet_tools,
+)
 
 
 def _make_connection(
@@ -98,6 +102,16 @@ async def test_register_gsheet_tools_registers_expected_tools() -> None:
     register_gsheet_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert _EXPECTED_GSHEET_TOOLS <= names
+
+
+@pytest.mark.unit
+async def test_register_gsheet_coarse_reads_is_dormant_and_isolated() -> None:
+    srv = FastMCP("test")
+    register_gsheet_coarse_reads(srv)
+
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert names == {"gsheet"}
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +299,92 @@ async def test_gsheet_collection_returns_actions_on_drift(
     # Only the drifted connection should have a reconnect hint.
     assert any("gsheet_reconnect" in a and "conn_drift" in a for a in envelope.actions)
     assert not any("conn_ok" in a for a in envelope.actions)
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_connections_is_default_collection(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = [_make_connection()]
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse()
+
+    assert envelope.data.kind == "connections"
+    assert [row.connection_id for row in envelope.data.connections] == ["conn_abc"]
+    service.list_connections.assert_called_once_with()
+    service.get.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_status_supports_global_summary(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = [
+        _make_connection(connection_id="conn_a"),
+        _make_connection(connection_id="conn_b"),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse(view="status")
+
+    assert envelope.data.kind == "status"
+    assert [row.connection_id for row in envelope.data.connections] == [
+        "conn_a",
+        "conn_b",
+    ]
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_status_supports_one_connection(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.get.return_value = _make_connection(connection_id="conn_a")
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse(view="status", connection_id="conn_a")
+
+    assert envelope.data.kind == "status"
+    assert [row.connection_id for row in envelope.data.connections] == ["conn_a"]
+    service.get.assert_called_once_with("conn_a")
+    service.list_connections.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_gsheet_coarse_connections_rejects_connection_id() -> None:
+    envelope = await gsheet_coarse(
+        view="connections",
+        connection_id="secret-connection-id",
+    )
+
+    assert envelope.error is not None
+    assert envelope.error.code == "GSHEET_CONNECTION_ID_NOT_ALLOWED"
+    assert "secret-connection-id" not in envelope.error.message
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_unknown_status_id_is_sanitized(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.get.return_value = None
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse(
+        view="status",
+        connection_id="secret-connection-id",
+    )
+
+    assert envelope.error is not None
+    assert envelope.error.code == "infra_not_found"
+    assert "secret-connection-id" not in envelope.error.message
 
 
 # ---------------------------------------------------------------------------

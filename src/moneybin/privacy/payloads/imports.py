@@ -31,7 +31,9 @@ Tier derivation summary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.taxonomy import DataClass
 
@@ -240,6 +242,55 @@ class ImportInboxPendingPayload:
 
     would_process: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
     ignored: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
+
+
+# ---------------------------------------------------------------------------
+# Dormant consolidated import_status — selected discriminated sections
+# ---------------------------------------------------------------------------
+
+
+class ImportStatusImportsSection(BaseModel):
+    """Paginated import-log rows inside the dormant consolidated status read."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["imports"], DataClass.TXN_TYPE] = "imports"
+    records: Annotated[list[dict[str, Any]], DataClass.AGGREGATE]
+
+
+class ImportStatusFormatsSection(BaseModel):
+    """Available tabular and PDF formats inside consolidated import status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["formats"], DataClass.TXN_TYPE] = "formats"
+    formats: list[ImportFormatRow]
+    pdf_formats: list[ImportPdfFormatRow] = Field(default_factory=list)
+
+
+class ImportStatusInboxSection(BaseModel):
+    """Pending inbox files inside consolidated import status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["inbox"], DataClass.TXN_TYPE] = "inbox"
+    would_process: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
+    ignored: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
+
+
+ImportStatusSection = Annotated[
+    ImportStatusImportsSection | ImportStatusFormatsSection | ImportStatusInboxSection,
+    Field(discriminator="kind"),
+]
+
+
+class ImportStatusCoarsePayload(BaseModel):
+    """Selected import status sections in deterministic request order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["sections"], DataClass.TXN_TYPE] = "sections"
+    sections: list[ImportStatusSection]
 
 
 # ---------------------------------------------------------------------------

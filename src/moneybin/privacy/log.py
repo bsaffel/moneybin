@@ -19,9 +19,10 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -225,9 +226,56 @@ def read_privacy_events(
     if max_rows <= 0:
         return []
     max_rows = min(max_rows, MAX_LOG_ROWS)
+    out: list[dict[str, Any]] = []
+    for event in _iter_privacy_events(filters):
+        out.append(event)
+        if len(out) >= max_rows:
+            break
+    return out
+
+
+def read_privacy_events_page(
+    filters: dict[str, Any],
+    *,
+    limit: int,
+    offset: int,
+    snapshot_total: int | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return one newest-first page from an exact append-stable snapshot."""
+    if limit < 0 or offset < 0 or (snapshot_total is not None and snapshot_total < 0):
+        raise ValueError("limit, offset, and snapshot_total must be non-negative")
+
+    with _LOCK:
+        if snapshot_total is None:
+            page: list[dict[str, Any]] = []
+            total = 0
+            page_end = offset + limit
+            for event in _iter_privacy_events(filters):
+                if offset <= total < page_end:
+                    page.append(event)
+                total += 1
+            return page, total
+
+        current_total = sum(1 for _ in _iter_privacy_events(filters))
+        if current_total < snapshot_total:
+            raise ValueError("privacy log snapshot is no longer available")
+        prepended = current_total - snapshot_total
+        physical_offset = prepended + offset
+        page = []
+        page_end = physical_offset + limit
+        for index, event in enumerate(_iter_privacy_events(filters)):
+            if physical_offset <= index < page_end:
+                page.append(event)
+            if index >= page_end:
+                break
+        return page, snapshot_total
+
+
+def _iter_privacy_events(filters: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Yield matching privacy events newest-first across current and rotated logs."""
     log_dir = _resolve_privacy_log_dir()
     if not log_dir.exists():
-        return []
+        return
     files = sorted(
         (
             p
@@ -246,7 +294,6 @@ def read_privacy_events(
     if current in files:
         files = [current] + [f for f in files if f != current]
 
-    out: list[dict[str, Any]] = []
     for path in files:
         try:
             text = path.read_text(encoding="utf-8")
@@ -262,8 +309,8 @@ def read_privacy_events(
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if all(event.get(k) == v for k, v in filters.items()):
-                out.append(event)
-                if len(out) >= max_rows:
-                    return out
-    return out
+            if not isinstance(event, dict):
+                continue
+            event_dict = cast(dict[str, Any], event)
+            if all(event_dict.get(k) == v for k, v in filters.items()):
+                yield event_dict

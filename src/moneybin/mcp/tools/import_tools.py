@@ -12,12 +12,18 @@ Tools:
 
 from __future__ import annotations
 
+import base64
+import binascii
+import inspect
+import json
 import logging
 import shlex
+from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
@@ -26,6 +32,8 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
     ImportConfirmPayload,
     ImportFilesPayload,
@@ -36,8 +44,13 @@ from moneybin.privacy.payloads.imports import (
     ImportPerFileRow,
     ImportPreviewPayload,
     ImportRevertPayload,
+    ImportStatusCoarsePayload,
+    ImportStatusFormatsSection,
+    ImportStatusImportsSection,
+    ImportStatusInboxSection,
     ImportStatusPayload,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -780,6 +793,238 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     )
 
 
+def _import_status_cursor(
+    offset: int,
+    *,
+    sections: list[Literal["imports", "formats", "inbox"]],
+    snapshot_total: int,
+) -> str:
+    """Encode an import cursor bound to its exact selected sections."""
+    raw = json.dumps(
+        {
+            "filters": {"import_id": None, "sections": sections},
+            "offset": offset,
+            "snapshot_total": snapshot_total,
+            "tool": "import_status",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _import_status_offset(
+    cursor: str | None,
+    *,
+    sections: list[Literal["imports", "formats", "inbox"]],
+) -> tuple[int, int | None]:
+    """Decode an import cursor and reject malformed or cross-section reuse."""
+    if cursor is None:
+        return 0, None
+    try:
+        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        value = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UserError(
+            "Invalid import pagination cursor.",
+            code="IMPORT_CURSOR_INVALID",
+        ) from exc
+    if not isinstance(value, dict):
+        raise UserError(
+            "Invalid import pagination cursor.",
+            code="IMPORT_CURSOR_INVALID",
+        )
+    payload = cast(dict[str, Any], value)
+    offset = payload.get("offset")
+    snapshot_total = payload.get("snapshot_total")
+    if (
+        set(payload) != {"filters", "offset", "snapshot_total", "tool"}
+        or payload.get("filters") != {"import_id": None, "sections": sections}
+        or payload.get("tool") != "import_status"
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+        or isinstance(snapshot_total, bool)
+        or not isinstance(snapshot_total, int)
+        or snapshot_total < 0
+    ):
+        raise UserError(
+            "Invalid import pagination cursor.",
+            code="IMPORT_CURSOR_INVALID",
+        )
+    return offset, snapshot_total
+
+
+def _import_status_envelope(
+    data: ImportStatusCoarsePayload,
+    *,
+    contract_types: list[type[Any]],
+    total_count: int,
+    returned_count: int,
+    next_cursor: str | None,
+    actions: list[str],
+) -> ResponseEnvelope[ImportStatusCoarsePayload]:
+    """Build and redact a dynamically classified import-status envelope."""
+    classes = {
+        data_class
+        for contract_type in contract_types
+        for data_class in extract_data_classes(contract_type)
+    }
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(ImportStatusCoarsePayload, redact_typed(data, None))
+    envelope = cast(
+        ResponseEnvelope[ImportStatusCoarsePayload],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=returned_count,
+            next_cursor=next_cursor,
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    )
+
+
+@mcp_tool(dynamic_classification=True)
+def import_status_coarse(
+    sections: list[Literal["imports", "formats", "inbox"]] | None = None,
+    import_id: str | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1, le=200)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[ImportStatusCoarsePayload]:
+    """Return selected import history, format, and inbox status sections."""
+    requested: list[Literal["imports", "formats", "inbox"]] = (
+        ["imports", "formats", "inbox"] if sections is None else sections
+    )
+    if not requested:
+        raise UserError(
+            "At least one import status section is required.",
+            code="IMPORT_SECTIONS_REQUIRED",
+        )
+    if len(set(requested)) != len(requested):
+        raise UserError(
+            "Import status sections must not contain duplicates.",
+            code="IMPORT_SECTIONS_DUPLICATE",
+        )
+    if import_id is not None and requested != ["imports"]:
+        raise UserError(
+            "import_id is valid only when imports is the sole section.",
+            code="IMPORT_ID_NOT_ALLOWED",
+        )
+    if import_id is not None and (limit != 100 or cursor is not None):
+        raise UserError(
+            "A single import lookup does not accept pagination overrides.",
+            code="IMPORT_PAGINATION_NOT_ALLOWED",
+        )
+    if "imports" not in requested and (limit != 100 or cursor is not None):
+        raise UserError(
+            "Pagination is valid only when imports is selected.",
+            code="IMPORT_PAGINATION_NOT_ALLOWED",
+        )
+
+    offset, snapshot_total = (
+        _import_status_offset(cursor, sections=requested)
+        if import_id is None and "imports" in requested
+        else (0, None)
+    )
+    selected: list[
+        ImportStatusImportsSection
+        | ImportStatusFormatsSection
+        | ImportStatusInboxSection
+    ] = []
+    contract_types: list[type[Any]] = []
+    total_count = 0
+    returned_count = 0
+    next_cursor: str | None = None
+    actions: list[str] = []
+
+    for section in requested:
+        if section == "imports":
+            from moneybin.loaders import import_log
+
+            with get_database(read_only=True) as db:
+                current_count = import_log.count_import_history(
+                    db,
+                    import_id=import_id,
+                )
+                if snapshot_total is not None and current_count < snapshot_total:
+                    raise UserError(
+                        "Invalid import pagination cursor.",
+                        code="IMPORT_CURSOR_INVALID",
+                    )
+                count = current_count if snapshot_total is None else snapshot_total
+                physical_offset = offset + (
+                    current_count - count if import_id is None else 0
+                )
+                records = import_log.get_import_history(
+                    db,
+                    limit=1 if import_id is not None else limit,
+                    import_id=import_id,
+                    offset=physical_offset,
+                )
+            selected.append(ImportStatusImportsSection(records=records))
+            contract_types.append(ImportStatusImportsSection)
+            total_count += count
+            returned_count += len(records)
+            if import_id is None and offset + len(records) < count:
+                next_cursor = _import_status_cursor(
+                    offset + len(records),
+                    sections=requested,
+                    snapshot_total=count,
+                )
+        elif section == "formats":
+            body = inspect.unwrap(import_formats)
+            response = cast(ResponseEnvelope[ImportFormatsPayload], body())
+            if response.error is not None:
+                return cast(ResponseEnvelope[ImportStatusCoarsePayload], response)
+            formats = ImportStatusFormatsSection(
+                formats=response.data.formats,
+                pdf_formats=response.data.pdf_formats,
+            )
+            selected.append(formats)
+            contract_types.append(ImportStatusFormatsSection)
+            count = len(formats.formats) + len(formats.pdf_formats)
+            total_count += count
+            returned_count += count
+            actions.extend(response.actions)
+        else:
+            from moneybin.mcp.tools.import_inbox import read_import_inbox_pending
+
+            pending = read_import_inbox_pending()
+            inbox = ImportStatusInboxSection(
+                would_process=pending.would_process,
+                ignored=pending.ignored,
+            )
+            selected.append(inbox)
+            contract_types.append(ImportStatusInboxSection)
+            count = len(inbox.would_process) + len(inbox.ignored)
+            total_count += count
+            returned_count += count
+            actions.append("Use import_inbox_sync to drain the inbox")
+
+    if next_cursor is not None:
+        actions.append(
+            f"Continue with import_status(sections={requested!r}, limit={limit}, "
+            f"cursor={next_cursor!r})"
+        )
+    if "imports" in requested:
+        actions.append("Use import_files to import a new file")
+    payload = ImportStatusCoarsePayload(sections=selected)
+    return _import_status_envelope(
+        payload,
+        contract_types=contract_types,
+        total_count=total_count,
+        returned_count=returned_count,
+        next_cursor=next_cursor,
+        actions=list(dict.fromkeys(actions)),
+    )
+
+
 def _import_confirm_bridge(
     file_path: str,
     bridge_response: dict[str, Any],
@@ -1134,6 +1379,21 @@ def import_confirm(
         ),
         actions=actions,
     )
+
+
+def register_import_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 replacement import status read."""
+    register(
+        mcp,
+        import_status_coarse,
+        "import_status",
+        "Read selected import history, available format, and pending inbox "
+        "sections. Import history has exact cursor pagination; import_id is "
+        "valid only when imports is the sole section.",
+        privacy_actor="import_status",
+    )
+    # Plan 6 cutover removals: import_formats and import_inbox_pending. Their
+    # live registrations remain untouched until the atomic registry swap.
 
 
 def register_import_tools(mcp: FastMCP) -> None:

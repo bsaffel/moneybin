@@ -17,7 +17,7 @@ status sees the recovery path without a second tool call.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
 
@@ -35,17 +35,23 @@ from moneybin.error_codes import INFRA_NOT_FOUND
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.gsheet import (
     GsheetAuthPayload,
+    GsheetCoarsePayload,
     GsheetConnectionRow,
     GsheetConnectionsPayload,
+    GsheetConnectionsView,
     GsheetConnectPayload,
     GsheetDetection,
     GsheetDisconnectPayload,
     GsheetInitialPull,
     GsheetPullPayload,
     GsheetPullRow,
+    GsheetStatusView,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -349,6 +355,60 @@ def gsheet_status(
     )
 
 
+def _gsheet_coarse_envelope(
+    data: GsheetConnectionsView | GsheetStatusView,
+) -> ResponseEnvelope[GsheetCoarsePayload]:
+    """Build and redact a dynamically classified Google Sheets view."""
+    contract_type = type(data)
+    classes = extract_data_classes(contract_type)
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(
+        GsheetConnectionsView | GsheetStatusView,
+        redact_typed(data, None),
+    )
+    return cast(
+        ResponseEnvelope[GsheetCoarsePayload],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=len(redacted.connections),
+            returned_count=len(redacted.connections),
+            actions=_drift_hints(redacted.connections),
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+
+
+@mcp_tool(dynamic_classification=True)
+def gsheet_coarse(
+    view: Literal["connections", "status"] = "connections",
+    connection_id: str | None = None,
+) -> ResponseEnvelope[GsheetCoarsePayload]:
+    """Read the Google Sheets connection collection or health status."""
+    if view == "connections" and connection_id is not None:
+        raise UserError(
+            "connection_id is valid only for the status view.",
+            code="GSHEET_CONNECTION_ID_NOT_ALLOWED",
+        )
+
+    with _build_connection_service() as service:
+        if connection_id is None:
+            connections = service.list_connections()
+        else:
+            single = service.get(connection_id)
+            if single is None:
+                raise UserError(
+                    "No Google Sheets connection found for the supplied ID.",
+                    code=INFRA_NOT_FOUND,
+                    hint="Use gsheet(view='connections') to list known IDs.",
+                )
+            connections = [single]
+    rows = [_connection_row(connection) for connection in connections]
+    if view == "connections":
+        return _gsheet_coarse_envelope(GsheetConnectionsView(connections=rows))
+    return _gsheet_coarse_envelope(GsheetStatusView(connections=rows))
+
+
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
 def gsheet_reconnect(
     connection_id: str, yes: bool = False, sign: str | None = None
@@ -430,6 +490,20 @@ def gsheet_disconnect(
             purged=purge,
         ),
     )
+
+
+def register_gsheet_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 replacement Google Sheets read."""
+    register(
+        mcp,
+        gsheet_coarse,
+        "gsheet",
+        "Read every Google Sheets connection or inspect connection health. "
+        "The status view accepts one connection ID; without it status covers all.",
+        privacy_actor="gsheet",
+    )
+    # Plan 6 cutover removal: gsheet_status. The live registrations stay
+    # untouched until the complete standard registry activates atomically.
 
 
 def register_gsheet_tools(mcp: FastMCP) -> None:

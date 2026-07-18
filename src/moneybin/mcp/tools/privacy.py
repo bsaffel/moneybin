@@ -12,22 +12,38 @@ deferred — these tools record and report consent only.
 
 from __future__ import annotations
 
-from typing import Literal
+import base64
+import binascii
+import json
+from dataclasses import replace
+from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.consent import ConsentMode
-from moneybin.privacy.log import MAX_LOG_ROWS, read_privacy_events
+from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.log import (
+    MAX_LOG_ROWS,
+    read_privacy_events,
+    read_privacy_events_page,
+)
 from moneybin.privacy.payloads.consent import (
     ConsentGrantRow,
     ConsentMutationPayload,
+    PrivacyCoarsePayload,
     PrivacyLogPayload,
     PrivacyLogRow,
+    PrivacyLogView,
     PrivacyStatusPayload,
+    PrivacyStatusView,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.consent_service import ConsentService
 
@@ -151,6 +167,177 @@ def privacy_log(
         ),
         total_count=len(events) + 1 if has_more else None,
     )
+
+
+def _privacy_cursor(offset: int, *, snapshot_total: int) -> str:
+    """Encode a cursor bound to the consolidated privacy log query."""
+    raw = json.dumps(
+        {
+            "filters": {},
+            "offset": offset,
+            "snapshot_total": snapshot_total,
+            "tool": "privacy",
+            "view": "log",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _privacy_page_state(cursor: str | None) -> tuple[int, int | None]:
+    """Decode a privacy cursor and reject malformed or cross-query reuse."""
+    if cursor is None:
+        return 0, None
+    try:
+        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        value = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UserError(
+            "Invalid privacy pagination cursor.",
+            code="PRIVACY_CURSOR_INVALID",
+        ) from exc
+    if not isinstance(value, dict):
+        raise UserError(
+            "Invalid privacy pagination cursor.",
+            code="PRIVACY_CURSOR_INVALID",
+        )
+    payload = cast(dict[str, Any], value)
+    offset = payload.get("offset")
+    snapshot_total = payload.get("snapshot_total")
+    if (
+        set(payload) != {"filters", "offset", "snapshot_total", "tool", "view"}
+        or payload.get("filters") != {}
+        or payload.get("tool") != "privacy"
+        or payload.get("view") != "log"
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+        or isinstance(snapshot_total, bool)
+        or not isinstance(snapshot_total, int)
+        or snapshot_total < 0
+    ):
+        raise UserError(
+            "Invalid privacy pagination cursor.",
+            code="PRIVACY_CURSOR_INVALID",
+        )
+    return offset, snapshot_total
+
+
+def _privacy_coarse_envelope(
+    data: PrivacyStatusView | PrivacyLogView,
+    *,
+    total_count: int,
+    returned_count: int,
+    next_cursor: str | None = None,
+    actions: list[str] | None = None,
+) -> ResponseEnvelope[PrivacyCoarsePayload]:
+    """Build and redact one dynamically classified privacy view."""
+    contract_type = type(data)
+    classes = extract_data_classes(contract_type)
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(PrivacyStatusView | PrivacyLogView, redact_typed(data, None))
+    envelope = cast(
+        ResponseEnvelope[PrivacyCoarsePayload],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=returned_count,
+            next_cursor=next_cursor,
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    )
+
+
+@mcp_tool(domain="privacy", dynamic_classification=True)
+def privacy_coarse(
+    view: Literal["status", "log"] = "status",
+    limit: Annotated[int, Field(strict=True, ge=1, le=MAX_LOG_ROWS)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[PrivacyCoarsePayload]:
+    """Read consent status or a deterministic page of privacy-log events."""
+    if view == "status":
+        if limit != 100 or cursor is not None:
+            raise UserError(
+                "Privacy status does not accept pagination overrides.",
+                code="PRIVACY_PAGINATION_NOT_ALLOWED",
+            )
+        with get_database(read_only=True) as db:
+            status = ConsentService(db).status()
+        data = PrivacyStatusView(
+            default_backend=status.default_backend,
+            consent_policy=status.consent_policy,
+            active_grants=[
+                ConsentGrantRow(
+                    feature_category=grant.feature_category,
+                    backend=grant.backend,
+                    consent_mode=grant.consent_mode.value,
+                    granted_at=str(grant.granted_at),
+                )
+                for grant in status.active_grants
+            ],
+        )
+        return _privacy_coarse_envelope(
+            data,
+            total_count=len(data.active_grants),
+            returned_count=len(data.active_grants),
+            actions=["Use privacy_consent_grant to add consent"],
+        )
+
+    offset, snapshot_total = _privacy_page_state(cursor)
+    try:
+        events, total_count = read_privacy_events_page(
+            {},
+            limit=limit,
+            offset=offset,
+            snapshot_total=snapshot_total,
+        )
+    except ValueError as exc:
+        raise UserError(
+            "Invalid privacy pagination cursor.",
+            code="PRIVACY_CURSOR_INVALID",
+        ) from exc
+    rows = [PrivacyLogRow.from_event(event) for event in events]
+    next_cursor = (
+        _privacy_cursor(
+            offset + len(rows),
+            snapshot_total=total_count,
+        )
+        if offset + len(rows) < total_count
+        else None
+    )
+    actions = (
+        [f"Continue with privacy(view='log', limit={limit}, cursor={next_cursor!r})"]
+        if next_cursor is not None
+        else []
+    )
+    return _privacy_coarse_envelope(
+        PrivacyLogView(events=rows),
+        total_count=total_count,
+        returned_count=len(rows),
+        next_cursor=next_cursor,
+        actions=actions,
+    )
+
+
+def register_privacy_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 replacement privacy read."""
+    register(
+        mcp,
+        privacy_coarse,
+        "privacy",
+        "Read active AI consent status or exact, cursor-paginated privacy log "
+        "events. Privacy status does not accept pagination arguments.",
+        privacy_actor="privacy",
+    )
+    # Plan 6 cutover removals: privacy_status and privacy_log. The live
+    # registrations remain untouched until the atomic registry swap.
 
 
 def register_privacy_tools(mcp: FastMCP) -> None:

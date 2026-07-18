@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
@@ -15,7 +15,10 @@ from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.tools.accounts import register_accounts_coarse_reads
+from moneybin.mcp.tools.gsheet import register_gsheet_coarse_reads
+from moneybin.mcp.tools.import_tools import register_import_coarse_reads
 from moneybin.mcp.tools.investments import register_investment_coarse_reads
+from moneybin.mcp.tools.privacy import register_privacy_coarse_reads
 from moneybin.mcp.tools.system import register_system_coarse_reads
 from moneybin.mcp.tools.transactions import register_transaction_coarse_reads
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -925,3 +928,250 @@ async def test_investment_and_transaction_coarse_reject_invalid_raw_arguments(
     response = await call_tool_raw(mcp, name, arguments)
 
     assert response.isError is True
+
+
+async def test_import_gsheet_privacy_coarse_render_schema_contract() -> None:
+    import_mcp = isolated_server(register_import_coarse_reads)
+    gsheet_mcp = isolated_server(register_gsheet_coarse_reads)
+    privacy_mcp = isolated_server(register_privacy_coarse_reads)
+
+    import_tool = await listed_tool(import_mcp, "import_status")
+    gsheet_tool = await listed_tool(gsheet_mcp, "gsheet")
+    privacy_tool = await listed_tool(privacy_mcp, "privacy")
+
+    assert import_tool.outputSchema is None
+    assert gsheet_tool.outputSchema is None
+    assert privacy_tool.outputSchema is None
+    assert_literal_values(
+        import_tool.inputSchema["properties"]["sections"]["anyOf"][0],
+        ("items",),
+        {"imports", "formats", "inbox"},
+    )
+    assert_literal_values(
+        gsheet_tool.inputSchema,
+        ("properties", "view"),
+        {"connections", "status"},
+    )
+    assert_literal_values(
+        privacy_tool.inputSchema,
+        ("properties", "view"),
+        {"status", "log"},
+    )
+    for tool in (import_tool, gsheet_tool, privacy_tool):
+        assert tool.annotations is not None
+        assert tool.annotations.readOnlyHint is True
+
+
+async def test_import_coarse_transport_variants(mcp_db: object) -> None:
+    mcp = isolated_server(register_import_coarse_reads)
+
+    for sections in (["imports"], ["formats"], ["inbox"], None):
+        arguments = {} if sections is None else {"sections": sections}
+        structured = await _assert_canonical_variant(
+            mcp,
+            "import_status",
+            arguments,
+            "sections",
+        )
+        expected = ["imports", "formats", "inbox"] if sections is None else sections
+        assert [section["kind"] for section in structured["data"]["sections"]] == (
+            expected
+        )
+
+
+async def test_gsheet_coarse_transport_variants() -> None:
+    connection = MagicMock(
+        connection_id="conn_a",
+        spreadsheet_id="sheet_a",
+        sheet_gid=0,
+        sheet_name="Transactions",
+        workbook_name="Budget",
+        adapter="transactions",
+        alias=None,
+        account_id=None,
+        account_name=None,
+        status="healthy",
+        last_pull_at=None,
+        last_success_at=None,
+        last_status_reason=None,
+        consecutive_failure_count=0,
+    )
+    service = MagicMock()
+    service.list_connections.return_value = [connection]
+    service.get.return_value = connection
+    mcp = isolated_server(register_gsheet_coarse_reads)
+
+    with patch("moneybin.mcp.tools.gsheet._build_connection_service") as build_service:
+        build_service.return_value.__enter__.return_value = service
+        await _assert_canonical_variant(mcp, "gsheet", {}, "connections")
+        await _assert_canonical_variant(
+            mcp,
+            "gsheet",
+            {"view": "status"},
+            "status",
+        )
+        await _assert_canonical_variant(
+            mcp,
+            "gsheet",
+            {"view": "status", "connection_id": "conn_a"},
+            "status",
+        )
+
+
+async def test_privacy_coarse_transport_variants(mcp_db: object) -> None:
+    mcp = isolated_server(register_privacy_coarse_reads)
+
+    await _assert_canonical_variant(mcp, "privacy", {}, "status")
+    await _assert_canonical_variant(
+        mcp,
+        "privacy",
+        {"view": "log", "limit": 1},
+        "log",
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "registrar", "arguments"),
+    [
+        ("import_status", register_import_coarse_reads, {"sections": "imports"}),
+        ("import_status", register_import_coarse_reads, {"limit": "50"}),
+        ("import_status", register_import_coarse_reads, {"unknown": "value"}),
+        ("gsheet", register_gsheet_coarse_reads, {"view": "list"}),
+        ("gsheet", register_gsheet_coarse_reads, {"connection_id": 123}),
+        ("privacy", register_privacy_coarse_reads, {"view": "events"}),
+        ("privacy", register_privacy_coarse_reads, {"limit": "50"}),
+        ("privacy", register_privacy_coarse_reads, {"unknown": "value"}),
+    ],
+)
+async def test_import_gsheet_privacy_coarse_reject_invalid_raw_arguments(
+    name: str,
+    registrar: Any,
+    arguments: dict[str, Any],
+) -> None:
+    mcp = isolated_server(registrar)
+
+    response = await call_tool_raw(mcp, name, arguments)
+
+    assert response.isError is True
+
+
+@pytest.mark.parametrize(
+    ("name", "registrar", "arguments", "sensitivity", "classes"),
+    [
+        (
+            "import_status",
+            register_import_coarse_reads,
+            {"sections": ["imports"]},
+            "low",
+            {"aggregate", "txn_type"},
+        ),
+        (
+            "import_status",
+            register_import_coarse_reads,
+            {"sections": ["formats"]},
+            "medium",
+            {
+                "aggregate",
+                "description",
+                "institution",
+                "record_id",
+                "timestamp_observability",
+                "txn_type",
+            },
+        ),
+        (
+            "gsheet",
+            register_gsheet_coarse_reads,
+            {},
+            "medium",
+            {
+                "aggregate",
+                "description",
+                "institution",
+                "record_id",
+                "timestamp_observability",
+                "txn_type",
+            },
+        ),
+        (
+            "privacy",
+            register_privacy_coarse_reads,
+            {},
+            "low",
+            {
+                "category",
+                "institution",
+                "timestamp_observability",
+                "txn_type",
+            },
+        ),
+        (
+            "privacy",
+            register_privacy_coarse_reads,
+            {"view": "log", "limit": 1},
+            "low",
+            {
+                "aggregate",
+                "category",
+                "institution",
+                "timestamp_observability",
+                "txn_type",
+            },
+        ),
+    ],
+)
+async def test_import_gsheet_privacy_coarse_emit_one_public_privacy_event(
+    name: str,
+    registrar: Any,
+    arguments: dict[str, Any],
+    sensitivity: str,
+    classes: set[str],
+    mcp_db: object,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(registrar)
+    service = MagicMock()
+    service.list_connections.return_value = []
+
+    with (
+        patch("moneybin.mcp.decorator.write_privacy_event", captured.append),
+        patch("moneybin.mcp.tools.gsheet._build_connection_service") as build_service,
+    ):
+        build_service.return_value.__enter__.return_value = service
+        await call_tool_raw(mcp, name, arguments)
+
+    assert len(captured) == 1
+    assert captured[0]["actor"] == f"mcp.{name}"
+    assert captured[0]["sensitivity"] == sensitivity
+    assert set(captured[0]["classes_returned"]) == classes
+
+
+async def test_import_gsheet_privacy_incompatible_errors_are_canonical(
+    mcp_db: object,
+) -> None:
+    import_mcp = isolated_server(register_import_coarse_reads)
+    gsheet_mcp = isolated_server(register_gsheet_coarse_reads)
+    privacy_mcp = isolated_server(register_privacy_coarse_reads)
+
+    import_error = await _assert_canonical_error(
+        import_mcp,
+        "import_status",
+        {"sections": ["imports", "formats"], "import_id": "secret-import-id"},
+        "IMPORT_ID_NOT_ALLOWED",
+    )
+    gsheet_error = await _assert_canonical_error(
+        gsheet_mcp,
+        "gsheet",
+        {"view": "connections", "connection_id": "secret-connection-id"},
+        "GSHEET_CONNECTION_ID_NOT_ALLOWED",
+    )
+    privacy_error = await _assert_canonical_error(
+        privacy_mcp,
+        "privacy",
+        {"view": "status", "limit": 99},
+        "PRIVACY_PAGINATION_NOT_ALLOWED",
+    )
+
+    assert "secret-import-id" not in import_error["error"]["message"]
+    assert "secret-connection-id" not in gsheet_error["error"]["message"]
+    assert privacy_error["summary"]["sensitivity"] == "low"

@@ -213,6 +213,7 @@ def get_import_history(
     *,
     limit: int = 20,
     import_id: str | None = None,
+    offset: int = 0,
 ) -> list[dict[str, str | int | None]]:
     """Query the import_log. If import_id is given, returns at most one row."""
     if import_id:
@@ -233,10 +234,10 @@ def get_import_history(
                    format_name, status, rows_imported, rows_rejected,
                    detection_confidence, started_at, completed_at
             FROM {IMPORT_LOG.full_name}
-            ORDER BY started_at DESC
-            LIMIT ?
+            ORDER BY started_at DESC, import_id DESC
+            LIMIT ? OFFSET ?
             """,
-            [limit],
+            [limit, offset],
         ).fetchall()
 
     columns = [
@@ -253,6 +254,20 @@ def get_import_history(
         "completed_at",
     ]
     return [dict(zip(columns, row, strict=True)) for row in rows]
+
+
+def count_import_history(db: Database, *, import_id: str | None = None) -> int:
+    """Return the exact import-log count for the same filter as history reads."""
+    if import_id is None:
+        row = db.execute(
+            f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name}"  # noqa: S608  # TableRef constant
+        ).fetchone()
+    else:
+        row = db.execute(
+            f"SELECT COUNT(*) FROM {IMPORT_LOG.full_name} WHERE import_id = ?",  # noqa: S608  # TableRef + parameterized value
+            [import_id],
+        ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def find_existing_import(

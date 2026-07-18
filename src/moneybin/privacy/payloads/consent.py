@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from moneybin.privacy.taxonomy import DataClass
 
 
@@ -109,3 +111,29 @@ class PrivacyLogPayload:
     """Result of privacy_log / `privacy log`."""
 
     events: list[PrivacyLogRow] = field(default_factory=list)
+
+
+class PrivacyStatusView(BaseModel):
+    """Consent configuration and active grants in consolidated privacy."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["status"], DataClass.TXN_TYPE] = "status"
+    default_backend: Annotated[str | None, DataClass.INSTITUTION]
+    consent_policy: Annotated[str, DataClass.TXN_TYPE]
+    active_grants: list[ConsentGrantRow] = Field(default_factory=list)
+
+
+class PrivacyLogView(BaseModel):
+    """One deterministic page of classified privacy-log events."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["log"], DataClass.TXN_TYPE] = "log"
+    events: list[PrivacyLogRow] = Field(default_factory=list)
+
+
+PrivacyCoarsePayload = Annotated[
+    PrivacyStatusView | PrivacyLogView,
+    Field(discriminator="kind"),
+]

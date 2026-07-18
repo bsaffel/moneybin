@@ -144,13 +144,19 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
 @mcp_tool()
 def import_inbox_pending() -> ResponseEnvelope[ImportInboxPendingPayload]:
     """Preview pending items in the active profile's import inbox."""
+    return build_envelope(
+        data=read_import_inbox_pending(),
+        actions=["Use import_inbox_sync to drain the inbox"],
+    )
+
+
+def read_import_inbox_pending() -> ImportInboxPendingPayload:
+    """Return the inbox preview payload without invoking a public tool wrapper."""
     service = InboxService.for_active_profile_no_db()
     list_result = service.enumerate()
-    return build_envelope(
-        data=ImportInboxPendingPayload(
-            would_process=list_result.would_process, ignored=list_result.ignored
-        ),
-        actions=["Use import_inbox_sync to drain the inbox"],
+    return ImportInboxPendingPayload(
+        would_process=list_result.would_process,
+        ignored=list_result.ignored,
     )
 
 
