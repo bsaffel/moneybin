@@ -189,14 +189,27 @@ class TestImportFilesCommand:
         mock_get_database: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """import_file raising ValueError surfaces as a failed-file envelope."""
+        """import_file raising ValueError surfaces as a classified error envelope.
+
+        The classification happens in handle_cli_errors, which owns every
+        exception it recognizes on this path — hence a real `error.code` rather
+        than the bare exception class name.
+        """
+        import json
+
         test_file = tmp_path / "test.ofx"
         test_file.touch()
         mock_import_file.side_effect = ValueError("already imported")
 
         result = runner.invoke(app, ["files", str(test_file)])
-        # ValueError surfaces as exit code 1 on the single-file path.
         assert result.exit_code == 1
+
+        result = runner.invoke(app, ["files", str(test_file), "--output", "json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_invalid_input"
+        assert payload["error"]["message"] == "already imported"
 
     def test_import_files_not_found(
         self,
@@ -429,6 +442,186 @@ class TestImportFilesCommand:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["summary"]["sensitivity"] == "medium"
+
+    def test_failed_file_json_carries_error_code_and_hint(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A failed file's JSON row carries error, error_code, and hint.
+
+        The batch stays "ok" here on purpose: one file imported, so this
+        isolates the per-file projection from the all-failed gate below.
+        `error_code` is what a scripted caller branches on and `hint` is the
+        only thing that tells it how to recover — the classified message alone
+        names the problem without naming the fix.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(b),
+                    status="imported",
+                    source_type="csv",
+                    rows_loaded=3,
+                    import_id="x",
+                ),
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "ok"
+        failed_row = payload["data"]["files"][0]
+        assert failed_row["error"] == "Operation not permitted: a.csv"
+        assert failed_row["error_code"] == "infra_permission_denied"
+        assert failed_row["hint"] == "💡 Grant Full Disk Access, then restart."
+        # The imported row must not sprout empty error keys — a scripted caller
+        # tests for the key's presence, not its truthiness.
+        imported_row = payload["data"]["files"][1]
+        assert "error" not in imported_row
+        assert "error_code" not in imported_row
+        assert "hint" not in imported_row
+
+    def test_unclassified_failure_json_omits_error_code_and_hint(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An unclassified failure reports the class name with no code or hint.
+
+        The privacy invariant: raw ``str(e)`` can embed file contents, so an
+        exception MoneyBin doesn't recognize surfaces only its type name — and
+        must not acquire a code or a hint it was never classified with.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="RuntimeError",
+                ),
+                PerFileResult(
+                    path=str(b),
+                    status="imported",
+                    source_type="csv",
+                    rows_loaded=3,
+                    import_id="x",
+                ),
+            ],
+            transforms_applied=True,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+        assert result.exit_code == 0, result.output
+        failed_row = json.loads(result.stdout)["data"]["files"][0]
+        assert failed_row["error"] == "RuntimeError"
+        assert "error_code" not in failed_row
+        assert "hint" not in failed_row
+
+    def test_all_failed_batch_reports_error_status_and_exits_nonzero(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A batch where every file failed is a failure on the CLI too.
+
+        Parity with the MCP ``import_files`` tool: a nightly script running
+        ``moneybin import files *.csv --output json`` must not read ``ok`` and
+        exit 0 when nothing landed.
+        """
+        import json
+
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(
+                    path=str(a),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: a.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+                PerFileResult(
+                    path=str(b),
+                    status="failed",
+                    source_type=None,
+                    error="Operation not permitted: b.csv",
+                    error_code="infra_permission_denied",
+                    hint="💡 Grant Full Disk Access, then restart.",
+                ),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
+        assert result.exit_code == 1, result.output
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "error"
+        assert payload["error"]["code"] == "infra_permission_denied"
+        # The batch message counts rather than hoisting one file's reason; the
+        # per-file detail stays in data.files[].
+        assert "all 2 file(s)" in payload["error"]["message"]
+        assert len(payload["data"]["files"]) == 2
+
+    def test_all_failed_batch_exits_nonzero_in_text_mode(
+        self,
+        runner: CliRunner,
+        mock_import_files: MagicMock,
+        mock_get_database: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The non-zero exit is not conditional on --output json.
+
+        A shell pipeline checking ``$?`` gets the same verdict as an agent
+        parsing the envelope.
+        """
+        a = tmp_path / "a.csv"
+        b = tmp_path / "b.csv"
+        a.touch()
+        b.touch()
+        mock_import_files.return_value = BatchImportResult(
+            per_file=[
+                PerFileResult(path=str(a), status="failed", source_type=None),
+                PerFileResult(path=str(b), status="failed", source_type=None),
+            ],
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+        )
+        result = runner.invoke(app, ["files", str(a), str(b)])
+        assert result.exit_code == 1, result.output
 
 
 class TestImportStatusCommand:

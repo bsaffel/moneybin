@@ -44,7 +44,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `import_files` previously reported only the exception's class name
   (`PermissionError`), which told the user nothing actionable; each failure now
   carries the classified message, `error_code`, and `hint`. A batch in which
-  every file failed reports `status: "error"` instead of `"ok"`. Exceptions
+  every file failed now reports `status: "error"` instead of `"ok"` on both
+  surfaces — the `import_files` tool and `moneybin import files --output json`,
+  which also exits non-zero so a script checking `$?` no longer proceeds as
+  though the data landed. Exceptions
   MoneyBin does not recognize still report only the class name — raw exception
   text can embed file contents.
 - **`moneybin import preview` no longer prints a raw traceback on failure.** It

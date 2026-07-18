@@ -13,7 +13,6 @@ Tools:
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import shlex
 from pathlib import Path
@@ -23,11 +22,10 @@ from fastmcp import FastMCP
 
 if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
-    from moneybin.services.import_service import BatchImportResult, ImportResult
+    from moneybin.services.import_service import ImportResult
 
 from moneybin.database import get_database
-from moneybin.error_codes import IMPORT_PARSE_ERROR
-from moneybin.errors import ErrorDetail, UserError
+from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.imports import (
@@ -267,7 +265,7 @@ def import_files(
         in summary.display_currency.
     """
     from moneybin.services.import_confirmation import ImportConfirmationRequiredError
-    from moneybin.services.import_service import ImportService
+    from moneybin.services.import_service import ImportService, mark_total_failure
 
     # Validate all paths upfront so a bad path fails before any service call.
     validated = [_validate_file_path(p) for p in paths]
@@ -563,53 +561,7 @@ def import_files(
         sensitivity="medium" if pending_files else "low",
         actions=actions,
     )
-    return _mark_total_failure(envelope, batch)
-
-
-def _mark_total_failure(
-    envelope: ResponseEnvelope[Any], batch: BatchImportResult
-) -> ResponseEnvelope[Any]:
-    """Flip the envelope to status="error" when nothing in the batch imported.
-
-    Partial success is genuine success — a batch with at least one import (or a
-    file still awaiting confirmation) stays "ok". Only an all-failed batch is a
-    failure, and reporting it as "ok" made a totally failed import look like it
-    worked.
-
-    `dataclasses.replace` rather than assignment: `status` is derived from
-    `error` in `__post_init__`, so it only updates when the envelope is rebuilt.
-    `build_error_envelope` is deliberately not used here — it forces `data=[]`,
-    which would discard the per-file `files` payload precisely when the agent
-    needs it to see what broke.
-    """
-    failed = [r for r in batch.per_file if r.status == "failed"]
-    if not failed or len(failed) != len(batch.per_file):
-        return envelope
-
-    # The batch's own message names the count instead of hoisting one file's
-    # reason: with several distinct causes, the first file's message would
-    # over-claim for all of them. Per-file message + code stay in data.files[].
-    first_code = failed[0].error_code
-    # Same first-entry rule as the code: the hint is advice, so a wrong-but-
-    # plausible one is worse than none. It stays paired with the code it was
-    # classified alongside, and every file's own hint stays in data.files[].
-    first_hint = failed[0].hint
-    message = (
-        f"Import failed for all {len(failed)} file(s); "
-        "see data.files[] for each file's error, error_code, and hint."
-    )
-    return dataclasses.replace(
-        envelope,
-        # An unclassified failure has no code of its own. IMPORT_PARSE_ERROR is
-        # the honest fallback: the domain is right and the claim is only that
-        # the file could not be processed — data.files[].error carries whatever
-        # detail is actually known.
-        error=ErrorDetail(
-            message=message,
-            code=first_code or IMPORT_PARSE_ERROR,
-            hint=first_hint,
-        ),
-    )
+    return mark_total_failure(envelope, batch)
 
 
 def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:

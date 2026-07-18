@@ -38,7 +38,7 @@ if TYPE_CHECKING:
         ConfirmationRequired,
         SignConventionProposal,
     )
-    from moneybin.services.import_service import ImportResult
+    from moneybin.services.import_service import BatchImportResult, ImportResult
 
 
 class _FormatTypeFilter(StrEnum):
@@ -323,7 +323,7 @@ def import_files_command(
     from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.protocol.envelope import build_envelope
-    from moneybin.services.import_service import ImportService
+    from moneybin.services.import_service import ImportService, mark_total_failure
 
     # Single-file invocations keep fast-fail on missing paths (typo
     # detection). Multi-file batches defer to ImportService.import_files()
@@ -391,6 +391,11 @@ def import_files_command(
 
     files_list: list[dict[str, Any]] = []
     data: dict[str, Any] = {}
+    # Declared out here, not in the batch branch, so the total-failure gate
+    # after the try block can reach it. Stays None on the single-file path,
+    # which never builds a batch: its failures raise through handle_cli_errors,
+    # which already emits an error envelope and exits 1.
+    batch_result: BatchImportResult | None = None
     try:
         with handle_cli_errors():
             with get_database(read_only=False) as db:
@@ -457,7 +462,7 @@ def import_files_command(
                         "files": files_list,
                     }
                 else:
-                    batch = svc.import_files(
+                    batch_result = svc.import_files(
                         [str(p) for p in file_paths],
                         refresh=refresh,
                         force=force,
@@ -465,7 +470,7 @@ def import_files_command(
                         confirm=confirm,
                         actor_kind="human",
                     )
-                    if any(r.sign_correction_suggested for r in batch.per_file):
+                    if any(r.sign_correction_suggested for r in batch_result.per_file):
                         typer.echo(
                             "⚠️  Sign convention may be inverted for one or "
                             "more imports (running balance suggests negation). "
@@ -473,7 +478,7 @@ def import_files_command(
                             "override.",
                             err=True,
                         )
-                    if any(r.sign_override_replayed for r in batch.per_file):
+                    if any(r.sign_override_replayed for r in batch_result.per_file):
                         typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
                     files_list = [
                         {
@@ -503,18 +508,18 @@ def import_files_command(
                                 else {}
                             ),
                         }
-                        for r in batch.per_file
+                        for r in batch_result.per_file
                     ]
                     data = {
-                        "imported_count": batch.imported_count,
-                        "failed_count": batch.failed_count,
-                        "total_count": batch.total_count,
-                        "transforms_applied": batch.transforms_applied,
-                        "transforms_duration_seconds": batch.transforms_duration_seconds,
+                        "imported_count": batch_result.imported_count,
+                        "failed_count": batch_result.failed_count,
+                        "total_count": batch_result.total_count,
+                        "transforms_applied": batch_result.transforms_applied,
+                        "transforms_duration_seconds": batch_result.transforms_duration_seconds,
                         "files": files_list,
                     }
-                    if batch.transforms_error:
-                        data["transforms_error"] = batch.transforms_error
+                    if batch_result.transforms_error:
+                        data["transforms_error"] = batch_result.transforms_error
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
         from moneybin.services.import_confirmation import (  # noqa: PLC0415
             ImportConfirmationRequiredError,
@@ -622,36 +627,13 @@ def import_files_command(
             )
             raise typer.Exit(1) from _exc
 
-        if not isinstance(_exc, (ValueError, PermissionError)):
-            raise
-
-        # ValueError / PermissionError: surface as a structured failed-file
-        # envelope so --output json stays consistent with the batch contract.
-        error_type = type(_exc).__name__
-        files_list = [
-            {
-                "path": str(file_paths[0]) if len(file_paths) == 1 else "",
-                "status": "failed",
-                "source_type": None,
-                "rows_loaded": 0,
-                "import_id": None,
-                "error": error_type,
-            }
-        ]
-        data = {
-            "imported_count": 0,
-            "failed_count": 1,
-            "total_count": 1,
-            "transforms_applied": False,
-            "transforms_duration_seconds": None,
-            "files": files_list,
-        }
-        envelope = build_envelope(data=data, sensitivity="low")
-        if output == OutputFormat.JSON:
-            render_or_json(envelope, output, cli_actor="import_files_command")
-        else:
-            logger.error(f"❌ {_exc}")
-        raise typer.Exit(1) from _exc
+        # Everything else belongs to handle_cli_errors: it classifies every
+        # exception it recognizes (ValueError, PermissionError, and the
+        # Database*Errors) into a structured error envelope and a typer.Exit,
+        # and re-raises what it does not. Only ImportConfirmationRequiredError
+        # — unclassified by design, so it can carry its proposal — reaches the
+        # branch above.
+        raise
 
     # Bump sensitivity to "medium" when any per-file entry carries a
     # confirmation_payload — those payloads include detector samples
@@ -662,6 +644,11 @@ def import_files_command(
         "medium" if any(f.get("confirmation_payload") for f in files_list) else "low"
     )
     envelope = build_envelope(data=data, sensitivity=batch_sensitivity)
+    if batch_result is not None:
+        # Same gate the MCP import_files tool applies, from the same function:
+        # "every file failed" must read as a failure on both surfaces, or a
+        # script checking .status proceeds as though the data landed.
+        envelope = mark_total_failure(envelope, batch_result)
     if output == OutputFormat.JSON:
         render_or_json(envelope, output, cli_actor="import_files_command")
     elif not quiet:
@@ -683,7 +670,11 @@ def import_files_command(
     # a separate failure surface. Exit non-zero so scripts and agents detect
     # that core tables were not refreshed even when every file imported.
     # Mirrors the fail-loud single-file path that raises on refresh() error.
-    if data.get("transforms_error"):
+    #
+    # The envelope's own status covers the other batch-level failure: an
+    # all-failed batch. Reading it (rather than re-deriving the condition)
+    # keeps the exit code and the reported status from disagreeing.
+    if data.get("transforms_error") or envelope.status == "error":
         raise typer.Exit(1)
 
 
