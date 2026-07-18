@@ -13,6 +13,7 @@ Tools:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import shlex
 from pathlib import Path
@@ -22,10 +23,11 @@ from fastmcp import FastMCP
 
 if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
-    from moneybin.services.import_service import ImportResult
+    from moneybin.services.import_service import BatchImportResult, ImportResult
 
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.error_codes import IMPORT_PARSE_ERROR
+from moneybin.errors import ErrorDetail, UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.imports import (
@@ -374,10 +376,13 @@ def import_files(
             from moneybin.services.import_service import (
                 BatchImportResult,
                 PerFileResult,
+                per_file_failure,
             )
 
-            error_type = type(e).__name__
-            logger.warning(f"Import failed for {validated[0]}: {error_type}")
+            error_message, error_code = per_file_failure(e)
+            # Log the class name, never the message: a classified message is
+            # user-safe but still names the path, and logs stay PII-free.
+            logger.warning(f"Import failed for {validated[0]}: {type(e).__name__}")
             batch = BatchImportResult(
                 per_file=[
                     PerFileResult(
@@ -386,7 +391,8 @@ def import_files(
                         source_type=None,
                         rows_loaded=0,
                         import_id=loaded_import_id,
-                        error=error_type,
+                        error=error_message,
+                        error_code=error_code,
                     )
                 ],
                 transforms_applied=False,
@@ -436,6 +442,7 @@ def import_files(
             rows_loaded=r.rows_loaded,
             import_id=r.import_id,
             error=r.error,
+            error_code=r.error_code,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
             confirmation_payload=r.confirmation_payload,
@@ -537,7 +544,7 @@ def import_files(
         actions.append("Refresh failed after import — call refresh_run to retry")
     actions.append("Use system_status to confirm refreshed counts")
 
-    return build_envelope(
+    envelope = build_envelope(
         data=ImportFilesPayload(
             imported_count=batch.imported_count,
             failed_count=batch.failed_count,
@@ -553,6 +560,45 @@ def import_files(
         # to drive consent prompts, not the per-field annotations directly.
         sensitivity="medium" if pending_files else "low",
         actions=actions,
+    )
+    return _mark_total_failure(envelope, batch)
+
+
+def _mark_total_failure(
+    envelope: ResponseEnvelope[Any], batch: BatchImportResult
+) -> ResponseEnvelope[Any]:
+    """Flip the envelope to status="error" when nothing in the batch imported.
+
+    Partial success is genuine success — a batch with at least one import (or a
+    file still awaiting confirmation) stays "ok". Only an all-failed batch is a
+    failure, and reporting it as "ok" made a totally failed import look like it
+    worked.
+
+    `dataclasses.replace` rather than assignment: `status` is derived from
+    `error` in `__post_init__`, so it only updates when the envelope is rebuilt.
+    `build_error_envelope` is deliberately not used here — it forces `data=[]`,
+    which would discard the per-file `files` payload precisely when the agent
+    needs it to see what broke.
+    """
+    failed = [r for r in batch.per_file if r.status == "failed"]
+    if not failed or len(failed) != len(batch.per_file):
+        return envelope
+
+    # The batch's own message names the count instead of hoisting one file's
+    # reason: with several distinct causes, the first file's message would
+    # over-claim for all of them. Per-file message + code stay in data.files[].
+    first_code = failed[0].error_code
+    message = (
+        f"Import failed for all {len(failed)} file(s); "
+        "see data.files[] for each file's error and error_code."
+    )
+    return dataclasses.replace(
+        envelope,
+        # An unclassified failure has no code of its own. IMPORT_PARSE_ERROR is
+        # the honest fallback: the domain is right and the claim is only that
+        # the file could not be processed — data.files[].error carries whatever
+        # detail is actually known.
+        error=ErrorDetail(message=message, code=first_code or IMPORT_PARSE_ERROR),
     )
 
 

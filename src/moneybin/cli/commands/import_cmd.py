@@ -490,6 +490,9 @@ def import_files_command(
                             "sign_correction_suggested": r.sign_correction_suggested,
                             "sign_override_replayed": r.sign_override_replayed,
                             **({"error": r.error} if r.error else {}),
+                            # Paired with "error" so scripted/agent callers get
+                            # the same stable code the MCP files[] rows carry.
+                            **({"error_code": r.error_code} if r.error_code else {}),
                             **(
                                 {"confirmation_payload": r.confirmation_payload}
                                 if r.confirmation_payload

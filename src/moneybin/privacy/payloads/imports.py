@@ -50,6 +50,10 @@ class ImportPerFileRow:
     rows_loaded: Annotated[int | None, DataClass.AGGREGATE]
     import_id: Annotated[str | None, DataClass.RECORD_ID]
     error: Annotated[str | None, DataClass.DESCRIPTION]
+    # Stable classification of `error` (e.g. infra_permission_denied), or None
+    # when the exception was unclassified and `error` is just its class name.
+    # A closed vocabulary of codes, never free text → TXN_TYPE (LOW).
+    error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.

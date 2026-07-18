@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pytest import MonkeyPatch
 
+from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
@@ -25,6 +26,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
 )
+from moneybin.services.import_service import ImportResult
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
 
 
@@ -1666,3 +1668,115 @@ class TestImportConfirmBridge:
         # Refused before any import ran — nothing loaded, inverted or otherwise.
         mock_service.import_file.assert_not_called()
         mock_service.pdf_preview.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Per-file failure detail: classified message + code, and total-failure status
+# ---------------------------------------------------------------------------
+
+
+class TestImportFilesFailureDetail:
+    """A failed file reports WHY it failed, and a total failure isn't 'ok'."""
+
+    @staticmethod
+    def _locked_csv(tmp_path: Path, name: str = "locked.csv") -> Path:
+        target = tmp_path / name
+        target.write_text("date,amount\n2026-01-01,1.00\n")
+        target.chmod(0o000)
+        return target
+
+    async def test_failure_carries_classified_message_and_code(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """A failed file reports WHY, not just the exception class name."""
+        target = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = await import_files(paths=[str(target)])
+        finally:
+            target.chmod(0o644)
+
+        entry = envelope.data.files[0]
+        assert entry.status == "failed"
+        assert entry.error_code == error_codes.INFRA_PERMISSION_DENIED
+        assert entry.error != "PermissionError"
+        assert entry.error is not None
+        assert "chmod" in entry.error or "permission" in entry.error.lower()
+
+    async def test_unclassified_failure_keeps_class_name_only(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Unclassified exceptions stay opaque on purpose — str(e) may embed PII."""
+        target = tmp_path / "boom.csv"
+        target.write_text("x")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=RuntimeError("account 1234567890 balance $50"),
+        ):
+            envelope = await import_files(paths=[str(target)])
+
+        entry = envelope.data.files[0]
+        assert entry.error == "RuntimeError"
+        assert entry.error_code is None
+        assert "1234567890" not in str(envelope.to_dict())
+
+    async def test_reports_error_status_when_no_file_succeeds(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Zero successes is a failure, not an 'ok' envelope with sad contents."""
+        target = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = await import_files(paths=[str(target)])
+        finally:
+            target.chmod(0o644)
+
+        assert envelope.to_dict()["status"] == "error"
+        assert envelope.error is not None
+        assert envelope.error.code == error_codes.INFRA_PERMISSION_DENIED
+
+    async def test_partial_success_stays_ok(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """One bad file among good ones is partial success, not total failure."""
+        good = tmp_path / "good.csv"
+        good.write_text("date,amount\n2026-01-01,1.00\n")
+        bad = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        def _one(path: Path, **_kw: object) -> ImportResult:
+            # The locked file raises the real OS error the batch loop sees;
+            # only the *successful* half is stubbed, so the failure path
+            # under test stays genuine.
+            if Path(path) == bad:
+                raise PermissionError(13, "Permission denied", str(bad))
+            return ImportResult(file_path=str(path), file_type="tabular")
+
+        try:
+            with patch(
+                "moneybin.services.import_service.ImportService._import_one",
+                side_effect=_one,
+            ):
+                envelope = await import_files(
+                    paths=[str(good), str(bad)], refresh=False
+                )
+        finally:
+            bad.chmod(0o644)
+
+        assert envelope.to_dict()["status"] == "ok"
+        statuses = {f.status for f in envelope.data.files}
+        assert statuses == {"imported", "failed"}

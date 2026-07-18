@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import UserError, classify_user_error
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.account_label import parse_account_label
@@ -156,6 +156,13 @@ class PerFileResult:
     rows_skipped: int = 0
     import_id: str | None = None
     error: str | None = None
+    error_code: str | None = None
+    """Stable error code from `classify_user_error`; None when unclassified.
+
+    Paired with `error`: when this is set, `error` holds the classified
+    (sanitized) message. When None, `error` holds only the exception class
+    name — raw str(e) may embed PII, so unclassified failures stay opaque.
+    """
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -349,6 +356,22 @@ def _validate_explicit_tabular_sign_shape(
             "column; nothing was imported.",
             code="invalid_sign_convention",
         )
+
+
+def per_file_failure(exc: Exception) -> tuple[str, str | None]:
+    """Return (error_message, error_code) safe to put in a PerFileResult.
+
+    Public because the single-file MCP path builds its own PerFileResult and
+    must reach the same verdict this module's batch loop does.
+
+    Classified errors carry their sanitized message and code. Unclassified
+    ones fall back to the class name — raw str(e) may embed PII (see
+    extractors/ofx/extractor.py).
+    """
+    classified = classify_user_error(exc)
+    if classified is None:
+        return type(exc).__name__, None
+    return classified.message, classified.code
 
 
 def _display_label(file_type: str, file_path: Path) -> str:
@@ -3472,15 +3495,17 @@ class ImportService:
                     )
                 )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                # error_type only; raw str(e) may embed PII per extractors/ofx/extractor.py
-                error_type = type(e).__name__
-                logger.warning(f"Import failed for {path}: {error_type}")
+                error_message, error_code = per_file_failure(e)
+                # Log the class name, never the message: a classified message is
+                # user-safe but still names the path, and logs stay PII-free.
+                logger.warning(f"Import failed for {path}: {type(e).__name__}")
                 per_file.append(
                     PerFileResult(
                         path=str(path),
                         status="failed",
                         source_type=None,
-                        error=error_type,
+                        error=error_message,
+                        error_code=error_code,
                     )
                 )
 
