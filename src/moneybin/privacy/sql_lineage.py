@@ -4,21 +4,27 @@
 metadata. ``sql_query`` has no static return type — its shape is the caller's
 query. This module recovers the same per-column ``DataClass`` mapping by
 parsing the SQL, expanding ``*`` against the live schema, and resolving each
-output column to a class via the ``CLASSIFICATION`` registry. The result feeds
-``redact_records`` (CRITICAL masking today; whatever ``_TRANSFORMS`` does
-tomorrow) and sets the per-call envelope sensitivity.
+output column to a class via the ``CLASSIFICATION`` registry (and, for
+``reports`` columns, each report's declared ``@report(classes=…)`` map). The
+result feeds ``redact_records`` (CRITICAL masking today; whatever
+``_TRANSFORMS`` does tomorrow) and sets the per-call envelope sensitivity.
 
 Fail-closed: anything we cannot resolve is treated as the most sensitive
 class the query could touch (max tier over all input columns), so we
 over-redact rather than leak.
 
-Scope: this module classifies columns in the ``core`` and ``app`` schemas
-only — those are the schemas the ``CLASSIFICATION`` registry covers. A query
-that references other schemas (``raw``/``prep``) yields no classifiable input
-columns, so an unresolvable projection falls back to ``AGGREGATE`` (LOW)
-rather than CRITICAL. Callers (the ``sql_query`` wiring) MUST restrict the
-query to classified schemas before relying on this module's masking — see the
-table-allowlist gate in the tool layer.
+Scope: this module classifies columns in the ``core``, ``app``, and
+``reports`` schemas. ``core``/``app`` resolve via the ``CLASSIFICATION``
+registry; ``reports`` resolves via each report's declared
+``@report(classes=…)`` map (ADR-013), because SQLMesh deploys report views
+as ``SELECT *`` pointers lineage cannot classify. Both sources are
+completeness-tested, so every deployed column in these schemas is declared
+and resolves. A query that references any other schema (``raw``/``prep``/
+``meta``) yields no classifiable input columns, so an unresolvable
+projection falls back to ``AGGREGATE`` (LOW) rather than CRITICAL. Callers
+(the ``sql_query`` wiring) MUST restrict the query to the allowlisted
+schemas before relying on this module's masking — see the table-allowlist
+gate in the tool layer.
 
 API note (sqlglot 30.8.0): after ``qualify()``, ``Column.table`` is the
 alias that appeared in the SQL (e.g. ``"t"`` for ``t.amount``) or the
@@ -106,7 +112,7 @@ def parse_cached(sql: str) -> exp.Expr:
 
 @dataclass(frozen=True)
 class SchemaSnapshot:
-    """Catalog columns for core.*/app.* plus a sqlglot MappingSchema.
+    """Catalog columns for core.*/app.*/reports.* plus a sqlglot MappingSchema.
 
     ``columns`` is the (schema, table, column) set for membership checks and
     the conservative fallback. ``mapping`` drives sqlglot star expansion and
@@ -310,9 +316,10 @@ def _fallback_class(
     protect.
 
     "None resolvable" → AGGREGATE (LOW) is correct only when the query is
-    restricted to classified (core/app) schemas: an unclassified-schema query
-    has no input columns here to raise the floor. The caller enforces that
-    restriction (see module docstring); within core/app, any query touching a
+    restricted to the classified schemas (core/app via CLASSIFICATION, reports
+    via declared @report class maps): an unclassified-schema query has no input
+    columns here to raise the floor. The caller enforces that restriction (see
+    module docstring); within the classified schemas, any query touching a
     CRITICAL column raises the fallback floor to CRITICAL.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or

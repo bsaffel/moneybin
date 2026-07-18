@@ -244,7 +244,9 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
                 "Queries are limited to these schemas: "
                 f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
                 code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
-                hint="Use the curated report views; raw/prep are internal schemas.",
+                hint=(
+                    "reports is directly queryable; raw/prep/meta are internal schemas."
+                ),
                 details={"disallowed": sorted(set(disallowed))},
             )
         output_classes = resolve_output_classes(qtree, snapshot, query)
