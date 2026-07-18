@@ -1201,3 +1201,55 @@ def test_shape_reconstruction_stops_at_end_anchor() -> None:
         ["01/05", "COFFEE SHOP", "25.00"],
         ["01/09", "BOOKSTORE", "40.00"],
     ]
+
+
+# ---------------------------------------------------------------------------
+# Sub-dollar amounts printed without a leading zero (real Chase FX statements)
+# ---------------------------------------------------------------------------
+
+
+def test_money_cell_accepts_sub_dollar_amount_without_leading_zero() -> None:
+    """Chase prints a $0.39 foreign-transaction fee as `.39` — no leading zero.
+
+    The money regex required at least one digit before the decimal point, so this
+    cell read as non-money. That made the whole fee row invisible to row-shape
+    collection AND to `execute_recipe`'s field match, dropping $0.39 from the
+    extracted total and failing the +/-1c reconciliation — the statement then
+    escalated to seed instead of deriving.
+    """
+    from moneybin.extractors.pdf.auto_derive import (
+        _is_money_cell,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _is_money_cell(".39")
+    assert _is_money_cell("-.39")
+    # Regression guard: normal amounts must keep working.
+    assert _is_money_cell("0.39")
+    assert _is_money_cell("1,234.56")
+    # …and genuine non-money must still be rejected.
+    assert not _is_money_cell(".")
+    assert not _is_money_cell("EXCHG RATE")
+
+
+def test_shape_reconstruction_collects_leading_decimal_fee_row() -> None:
+    """A `.39` fee row is transaction-shaped and must not be silently skipped."""
+    from moneybin.extractors.pdf.auto_derive import (
+        _synthesize_tables_from_row_shape,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    doc = _make_text_only_doc([
+        "Date of",
+        "Transaction   Merchant Name or Transaction Description   $ Amount",
+        "11/16   PUBLIX #581 MIAMI FL   39.83",
+        "11/18   VTAS ABORDO EXP XC SOLIDARIDAD Q   13.12",
+        "11/19 MEXICAN PESO",
+        "240.00 X 0.054666666 (EXCHG RATE)",
+        "11/19   FOREIGN TRANSACTION FEE   .39",
+        "11/21   PURCHASE INTEREST CHARGE   55.87",
+    ])
+
+    tables = _synthesize_tables_from_row_shape(doc)
+
+    assert len(tables) == 1
+    amounts = [r[-1] for r in tables[0].rows]
+    assert amounts == ["39.83", "13.12", ".39", "55.87"]
