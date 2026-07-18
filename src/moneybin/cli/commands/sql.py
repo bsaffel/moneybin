@@ -1,10 +1,11 @@
 """moneybin sql — privacy-safe ad-hoc SQL (lineage + CRITICAL masking).
 
 The agent/operator path for ad-hoc SQL that runs through the SAME privacy
-enforcement as the ``sql_query`` MCP tool: read-only gate, core/app schema
-restriction, sqlglot column lineage, and CRITICAL masking. Contrast with
-``moneybin db query`` / ``db shell`` / ``db ui``, which are raw, unmasked
-direct-DB access (they emit an operator-bypass banner pointing here).
+enforcement as the ``sql_query`` MCP tool: read-only gate, core/app/reports
+schema restriction, sqlglot column lineage, and CRITICAL masking. Contrast
+with ``moneybin db query`` / ``db shell`` / ``db ui``, which are raw,
+unmasked direct-DB access (they emit an operator-bypass banner pointing
+here).
 """
 
 from __future__ import annotations

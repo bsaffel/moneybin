@@ -17,6 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rename with no deprecation alias — any script or agent calling
   `accounts_set(iso_currency_code=...)` needs to update to `currency_code`.
   The CLI's `moneybin accounts set --currency` flag is unaffected.
+- **`sql_query` (and `moneybin sql query`) can now read the `reports`
+  schema in addition to `core`/`app`.** Report columns are masked by each
+  report's declared privacy classes, same as the typed tools — account and
+  routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
 - **Non-USD transactions and balances are no longer silently relabeled
