@@ -34,6 +34,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **`moneybin import preview` can now read a PDF statement.** It previously
+  rejected every PDF with `Unsupported file type: '.pdf'`, because preview
+  routed all files through the spreadsheet detector — so the only way to ask
+  "will this statement extract cleanly, and how many rows?" without importing
+  was through an AI assistant. The command now reports the extraction verdict,
+  row count, confidence, and any pending credit-card sign confirmation (with
+  the evidence and printed-vs-recorded samples behind it). An unreadable file
+  — common on macOS, where statements sit in a folder your terminal hasn't
+  been granted access to — now explains itself and names the fix instead of
+  printing a stack trace.
 - **A saved statement layout that stops reading correctly now repairs itself
   instead of failing forever.** MoneyBin remembers how to read each statement
   layout the first time it sees one. That saved recipe was a frozen copy, so

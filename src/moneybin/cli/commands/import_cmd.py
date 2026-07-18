@@ -1583,6 +1583,95 @@ def import_revert(
         )
 
 
+def _preview_pdf(source: Path) -> None:
+    """Inspect a PDF statement without importing it.
+
+    PDFs never reach the tabular detector's format/read/column-map stages — a
+    statement's structure is derived by the recipe rung, not by column mapping —
+    so preview routes them to the same ``ImportService.pdf_preview`` the MCP
+    ``import_preview`` tool uses. Without this branch the detector rejected
+    ``.pdf`` outright and the whole PDF debug loop was MCP-only.
+
+    ``read_only=False`` matches the MCP path: a bridge escalation writes the
+    Req 14 egress audit row before raising.
+    """
+    import shlex  # noqa: PLC0415
+
+    from moneybin.database import (  # noqa: PLC0415
+        DatabaseKeyError,
+        get_database,
+    )
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+        ImportConfirmationRequiredError,
+        SignConventionProposal,
+    )
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+
+    try:
+        with get_database(read_only=False) as db:
+            preview = ImportService(db).pdf_preview(source)
+    except DatabaseKeyError as e:
+        logger.error(f"❌ Database is locked: {e}")
+        logger.info("💡 Run 'moneybin db unlock' and retry.")
+        raise typer.Exit(1) from e
+    except PermissionError as e:
+        # Statements routinely live under ~/Documents or ~/Desktop, where macOS
+        # TCC denies reads until the terminal is granted access — pdfplumber's
+        # open() then raises from deep in the extractor. Without this the user
+        # gets a full traceback for what is a one-click OS permission fix.
+        logger.error(f"❌ Cannot read {source.name}: {e.strerror or e}")
+        logger.info(
+            "💡 On macOS, grant your terminal access to this folder under "
+            "System Settings → Privacy & Security → Files and Folders."
+        )
+        raise typer.Exit(1) from e
+    except ImportConfirmationRequiredError as e:
+        # pdf_preview signals both the sign gate and a bridge escalation by
+        # raising. Preview's job is to report what is pending, not to resolve
+        # it, so this is a successful inspection — not an error exit.
+        outcome = e.outcome
+        proposed = outcome.proposed
+        if isinstance(proposed, SignConventionProposal):
+            logger.info(f"Sign convention pending confirmation: {source.name}")
+            logger.info(f"  Proposed:  {proposed.sign_convention}")
+            logger.info(f"  Evidence:  {', '.join(proposed.evidence) or '—'}")
+            for row in proposed.sample_rows[:3]:
+                logger.info(
+                    f"    {row.get('description', '')}: "
+                    f"printed {row.get('as_printed', '')} → "
+                    f"recorded {row.get('as_recorded', '')}"
+                )
+            logger.info(
+                f"💡 Approve with 'moneybin import files {shlex.quote(str(source))} "
+                f"--confirm', or override with '--sign negative_is_expense'."
+            )
+        else:
+            logger.info(
+                f"Deterministic extraction escalated to the assisted reader: "
+                f"{source.name} (reason: {outcome.reason})"
+            )
+            logger.info(
+                "💡 The assisted-reader path runs through an AI agent driving the "
+                "MCP server; from the CLI, apply its result with "
+                "'moneybin import confirm <file> --bridge-response <file>.json'."
+            )
+        return
+
+    verdict = "deterministic" if preview.deterministic else "NOT deterministic"
+    logger.info(f"PDF preview: {source.name}")
+    logger.info(f"  Extraction: {verdict} (reason: {preview.decision_reason})")
+    logger.info(f"  Rows:       {preview.row_count}")
+    logger.info(f"  Confidence: {preview.confidence:.2f}")
+    if preview.fingerprint:
+        issuer = preview.fingerprint.get("issuer", "unknown")
+        logger.info(f"  Layout:     issuer={issuer}")
+    if not preview.deterministic:
+        logger.info(
+            "💡 This statement would be stored as an unparsed seed rather than "
+            "transactions."
+        )
+
+
 @app.command("preview")
 def import_preview(
     file_path: str = typer.Argument(..., help="File to preview"),
@@ -1609,12 +1698,18 @@ def import_preview(
 ) -> None:
     """Preview file structure without importing.
 
-    Runs detection and column-mapping stages without loading any data into
-    the database. Shows detected format, column mapping, and sample rows.
+    Tabular files (CSV/Excel/Parquet): runs detection and column-mapping
+    stages without loading any data. Shows detected format, column mapping,
+    and sample rows.
+
+    PDF statements: runs the deterministic recipe rung and reports whether
+    the statement extracts cleanly, how many rows it would yield, and any
+    pending sign-convention confirmation. Nothing is imported either way.
 
     Examples:
         moneybin import preview ~/Downloads/chase_activity.csv
         moneybin import preview ~/Downloads/transactions.xlsx --sheet Sheet1
+        moneybin import preview ~/Downloads/chase_statement.pdf
     """
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
@@ -1625,6 +1720,12 @@ def import_preview(
     if not source.exists():
         logger.error(f"❌ File not found: {source}")
         raise typer.Exit(1)
+
+    if source.suffix.lower() == ".pdf":
+        # Routed before the tabular stages below: none of format detection,
+        # read_file, or column mapping apply to a statement PDF.
+        _preview_pdf(source)
+        return
 
     overrides = _parse_overrides(override)
 
