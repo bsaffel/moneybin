@@ -25,7 +25,7 @@ Concretely:
 
 2. **React**, because the MCP Apps client ecosystem (`@modelcontextprotocol/ext-apps`, `@mcp-ui/client`) is React-first and the ecosystem for financial UI — tables, forms, and data-viz primitives (d3 / SVG-in-React) — is deepest there. The standard itself is framework-agnostic (postMessage + JSON-RPC), so this is a velocity/ecosystem choice, not a protocol constraint.
 
-3. **shadcn/ui + Tailwind** for components — copy-paste source owned in-repo (no version lock-in, directly agent-editable), Radix accessibility underneath. **Charts are house-built SVG primitives on `d3-scale`/`d3-shape`, not a charting component library** — see the [Charting decision](#charting-decision) below. *(This supersedes the original "+ Tremor for analytics widgets" — see the [Charting decision](#charting-decision) below.)*
+3. **shadcn/ui + Tailwind** for components — copy-paste source owned in-repo (no version lock-in, directly agent-editable), Radix accessibility underneath. **Charts are house-built SVG primitives on `d3-scale`/`d3-shape`, not a charting component library** — see the [Charting decision](#charting-decision) below. *(This supersedes the original "+ Tremor for analytics widgets".)*
 
 4. **Typed `MoneyBinClient` interface + TanStack Query hooks** as the data layer. Components call `useReportSpending()`; the hook calls the injected client; the shell decides which transport implements it. The same component renders on both surfaces unchanged.
 
