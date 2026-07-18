@@ -159,6 +159,31 @@ def _build_snapshot(
     )
 
 
+# Sentinel version for snapshots not built from a live database (the build-time
+# report-class deriver). Negative so it can never collide with a real
+# migration version, which is always >= 0 (see _schema_version).
+_SYNTHETIC_SNAPSHOT_VERSION = -1
+
+
+def snapshot_from_columns(
+    ordered_columns: tuple[tuple[str, str, str], ...],
+) -> SchemaSnapshot:
+    """Build a snapshot from an explicit column list, with no database.
+
+    ``get_current_schema_snapshot`` is the live-catalog counterpart, used by
+    the ``sql_query`` runtime path. This one backs the connectionless
+    build-time report-class deriver (``report_class_derivation.py``), whose
+    caller has no migration version to key the cache on — ``_build_snapshot``
+    is keyed on ``(version, ordered_columns)``, so this passes the reserved
+    negative sentinel instead.
+
+    Column order drives star expansion (see ``_build_snapshot``), so callers
+    that rely on ``SELECT *`` must preserve definition order; the build-time
+    deriver sidesteps this entirely by rejecting ``SELECT *`` outright.
+    """
+    return _build_snapshot(_SYNTHETIC_SNAPSHOT_VERSION, ordered_columns)
+
+
 def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     """Return a SchemaSnapshot whose expensive MappingSchema build is cached.
 
