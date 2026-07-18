@@ -119,12 +119,13 @@ Every essential analysis feature a serious user (and the PFM field) expects, bui
 | **M2F** | Goals | 🗓️ | Allocate balances toward named goals with progress + projected target dates. |
 | **M2G** | Cash-flow projection | 🗓️ | Forward balance from scheduled/recurring items; bundles with M2D. |
 | **M2H** | Anomaly detection | 🗓️ | A window compared against a trailing-N-month baseline. |
-| **M2I** | "Show me the SQL" report lineage | 🗓️ | Every report exposes a stable result/lineage reference. The warehouse trust primitive. |
+| **M2I** | "Show me the SQL" report lineage | 🗓️ | Every report exposes a stable result/lineage reference. The warehouse trust primitive. **Absorbed into M2P.2** — do not schedule independently. |
 | **M2J** | Report subscriptions / digests | 🗓️ | Scheduled report recipes + params + lineage + optional cited prose. |
 | **M2K** | Asset tracking (real estate, vehicles, valuables) | 📐 | Periodic valuations, net-worth integration. [`asset-tracking.md`](specs/asset-tracking.md). |
 | **M2M** | Reference packages: `assets` + `us_tax` | 📐 | Ship at Platinum; `us_tax` builds on M1J investments. Worked examples for community packages. |
 | **M2N** | LLM prose summaries | 🗓️ | Deterministic numbers; AI writes prose only from cited refs. |
 | **M2O** | Queryable internal schemas (`sql_query` reads `reports`, then `raw`/`prep`) | 🚧 | Phase 1 shipped: `sql_query` reads `reports.*` with declared-class masking (ADR-013). Phase 2 (`raw`/`prep` + content-net floor) designed; seed-view queryability falls out for free. [`queryable-internal-schemas.md`](specs/queryable-internal-schemas.md). |
+| **M2P** | Reports surface: one contract, dynamic + materialized reports | 📐 | Umbrella. Ask → answer → crystallize into a verifiable report; three-tier parity (built-in / extension / user-created) with a real graduation path; compounds into a BI tool for your money. **M2P.1** foundation (one contract, derived-and-CI-verified column classes, `reports.*` boundary cleanup, authoring rule) · **M2P.2** dynamic reports (`app.user_reports`, ask→save→verify — absorbs M2I) · **M2P.3** materialization & distribution (promotion path + `/moneybin-create-report`). [`reports-overview.md`](specs/reports-overview.md). |
 
 > **Analysis-Complete gate.** M2 closes when each major report has a correctness scenario checked against synthetic ground truth; categorization and transfer-detection accuracy hold their thresholds; budget/recurring/reimbursement scenarios pass; and every report number is explainable through lineage.
 
