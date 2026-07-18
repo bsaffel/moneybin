@@ -87,10 +87,18 @@ dependencies = [
     #   pygments:     CVE-2026-4539  (via rich → sqlmesh/mcp, ipython) — fixed in 2.20.0
     #   pyjwt:        CVE-2026-32597 (via mcp[crypto])                 — fixed in 2.12.0
     #   joserfc:      CVE-2026-48990 (via authlib → fastmcp)           — fixed in 1.6.7
+    #   mcp:          CVE-2026-52869/52870 (via fastmcp)               — fixed in 1.27.2;
+    #                 CVE-2026-59950 (via same)                        — fixed in 1.28.1
+    #   pillow:       PYSEC-2026-2253/2254/2255/2256/2257, 3451/3452/3453
+    #                 (via pdfplumber)                                 — fixed in 12.3.0
+    #   httplib2:     PYSEC-2026-3444 (via google-api-python-client)   — fixed in 0.32.0
     "cryptography>=48.0.1",
     "pygments>=2.20.0",
     "pyjwt>=2.12.0",
     "joserfc>=1.6.7",
+    "mcp>=1.28.1",
+    "pillow>=12.3.0",
+    "httplib2>=0.32.0",
     # Secret management and key derivation
     "keyring>=25.6.0",
     "argon2-cffi>=23.1.0",
