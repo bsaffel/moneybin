@@ -13,6 +13,7 @@ that ``refresh()``:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -291,12 +292,23 @@ def test_identity_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.unit
 def test_identity_failure_does_not_prevent_other_domain(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Account identity failure still attempts merchant proposal generation."""
+    """Account failure is sanitized and does not block merchant backfill."""
     from moneybin.services import account_links_service, merchant_links_service
 
-    accounts_run = MagicMock(side_effect=RuntimeError("account data"))
-    merchants_run = MagicMock()
+    calls: list[str] = []
+    sensitive_error = "account number 123456789 merchant Secret Shop"
+
+    def _accounts_run() -> None:
+        calls.append("accounts")
+        raise RuntimeError(sensitive_error)
+
+    def _merchants_run() -> None:
+        calls.append("merchants")
+
+    accounts_run = MagicMock(side_effect=_accounts_run)
+    merchants_run = MagicMock(side_effect=_merchants_run)
 
     def _accounts_service(_db: Database) -> Any:
         return MagicMock(run=accounts_run)
@@ -315,11 +327,25 @@ def test_identity_failure_does_not_prevent_other_domain(
         _merchants_service,
     )
 
+    caplog.set_level(logging.ERROR, logger="moneybin.services.refresh")
     result = refresh(MagicMock(), steps=["identity"])
 
     accounts_run.assert_called_once()
     merchants_run.assert_called_once()
+    assert calls == ["accounts", "merchants"]
     assert result.identity_errors == ("accounts",)
+    refresh_records = [
+        record
+        for record in caplog.records
+        if record.name == "moneybin.services.refresh"
+    ]
+    assert len(refresh_records) == 1
+    assert sensitive_error not in refresh_records[0].getMessage()
+    assert (
+        "accounts identity backfill failed: RuntimeError"
+        in refresh_records[0].getMessage()
+    )
+    assert all(record.exc_info is None for record in refresh_records)
 
 
 @pytest.mark.unit

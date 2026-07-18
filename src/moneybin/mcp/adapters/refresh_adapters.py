@@ -113,7 +113,7 @@ def refresh_envelope(
         and "categorize" not in requested
     ):
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
-    if "identity" in requested:
+    if result.error is None and "identity" in requested:
         if "accounts" not in result.identity_errors:
             actions.append(REFRESH_ACCOUNT_LINKS_REVIEW_HINT)
         if "merchants" not in result.identity_errors:
