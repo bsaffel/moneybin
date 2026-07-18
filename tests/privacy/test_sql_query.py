@@ -14,12 +14,13 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.privacy.sql_lineage import reports_class_map
 from moneybin.privacy.sql_query import (
     _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
     execute_sql_query,
     validate_read_only_query,
 )
-from moneybin.privacy.taxonomy import Tier
+from moneybin.privacy.taxonomy import DataClass, Tier
 
 # Every remote URL scheme the read-only validator must reject. Kept in lockstep
 # with the filesystems the connection seal disables (`_DISABLED_FILESYSTEMS` in
@@ -303,3 +304,77 @@ def test_reports_schema_is_queryable() -> None:
     # core/app still allowed; internal schemas still fenced in Phase 1.
     assert {"core", "app"} <= _ALLOWED_QUERY_SCHEMAS
     assert "meta" not in _ALLOWED_QUERY_SCHEMAS
+
+
+def test_reports_class_map_bridges_uncategorized_queue_and_net_worth() -> None:
+    """No-DB sanity: the transitional bridge covers both runner-less views.
+
+    `reports_class_map()` merges `@report(classes=...)` declarations with
+    `BRIDGED_REPORT_CLASSES` (`reports/definitions/_bridged_classes.py`) for
+    views deployed without a runner yet. Pins that `uncategorized_queue`'s
+    `account_id` resolves CRITICAL (`ACCOUNT_IDENTIFIER`) and that
+    `net_worth` is registered, so a bridge-entry regression fails here
+    before it fails as a masking hole in `execute_sql_query`.
+    """
+    mapping = reports_class_map()
+    assert (
+        mapping[("reports", "uncategorized_queue")]["account_id"]
+        is DataClass.ACCOUNT_IDENTIFIER
+    )
+    assert ("reports", "net_worth") in mapping
+
+
+def test_reports_uncategorized_queue_masks_account_id(populated_db: Database) -> None:
+    """A real `reports.*` bridged view masks its CRITICAL column end-to-end.
+
+    Mirrors `sqlmesh/models/reports/uncategorized_queue.sql` over the
+    fixture's `core.*` tables (no scenario/SQLMesh build) so this runs at
+    unit speed. Proves two things together: the `reports` schema is
+    queryable through `execute_sql_query`, and `account_id` — classified
+    CRITICAL by the transitional bridge, unlike `dim_accounts.account_id`
+    which is LOW (see `test_account_id_passes_through_unmasked`) — is
+    actually masked when read through the bridged view, not just declared
+    masked in the class map.
+    """
+    _seed_account(populated_db)
+    populated_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, "
+        " amount_absolute, transaction_direction, description, "
+        " category, is_transfer, source_type, loaded_at, updated_at) "
+        "VALUES ('TXN_UNCAT', 'ACC000123456789', '2025-06-15', -42.50, "
+        " 42.50, 'expense', 'Uncategorized coffee', "
+        " NULL, FALSE, 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    # Local to this (function-scoped) populated_db instance — does not touch
+    # the shared conftest.py fixture other tests depend on.
+    populated_db.execute("""
+        CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+        SELECT
+            t.transaction_id,
+            t.account_id,
+            a.display_name AS account_name,
+            t.transaction_date AS txn_date,
+            t.amount,
+            t.description,
+            t.merchant_id,
+            t.merchant_name AS merchant_normalized,
+            CAST(CURRENT_DATE - t.transaction_date AS INT) AS age_days,
+            ABS(t.amount) * CAST(CURRENT_DATE - t.transaction_date AS INT)
+                AS priority_score,
+            t.source_type,
+            NULL::TEXT AS source_id
+        FROM core.fct_transactions AS t
+        INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
+        WHERE t.category IS NULL AND NOT t.is_transfer AND NOT a.archived
+    """)
+
+    result = execute_sql_query(
+        populated_db,
+        "SELECT account_id FROM reports.uncategorized_queue LIMIT 5",
+        max_rows=5,
+    )
+
+    assert result.tier is Tier.CRITICAL
+    assert len(result.records) == 1
+    assert str(result.records[0]["account_id"]).startswith("****")
