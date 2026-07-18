@@ -146,6 +146,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now states the truth: account/routing numbers are masked, all other fields
   reach the model provider as-is, and there is no consent gate yet.
 
+### Security
+- **CVE fixes via dependency bumps:** `mcp` 1.27.1 → 1.28.1, `pillow`
+  12.2.0 → 12.3.0, `httplib2` 0.31.2 → 0.32.0, closing 12 advisories. The
+  `mcp` ones affect MoneyBin's own MCP server: HTTP transports served
+  session requests without verifying the authenticated principal
+  (CVE-2026-52869), experimental task handlers let any client read or
+  cancel another client's tasks (CVE-2026-52870), and the WebSocket
+  transport had no Host/Origin validation (CVE-2026-59950). `pillow`
+  (reached through PDF import) covers unvalidated PCF glyph dimensions and
+  an `ImageCms` heap-corruption path; `httplib2` (reached through the
+  Google Sheets connector) covers unbounded gzip/deflate decompression of
+  response bodies. `mcp` and `httplib2` are now declared as direct
+  dependencies, since MoneyBin imports both. (#335)
+
 ### Changed
 - **Google Sheets MCP connections can no longer set an inferred sign convention
   themselves.** The agent-settable `sign` input was removed; an inferred
