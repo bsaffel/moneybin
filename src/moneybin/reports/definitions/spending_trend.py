@@ -31,6 +31,12 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         "yoy_pct": DataClass.AGGREGATE,
         "trailing_3mo_avg": DataClass.TXN_AMOUNT,
     },
+    parameter_classes={
+        "from_month": DataClass.TXN_DATE,
+        "to_month": DataClass.TXN_DATE,
+        "category": DataClass.CATEGORY,
+        "compare": DataClass.TXN_TYPE,
+    },
     columns=(
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn("category", "Spending category.", DataClass.CATEGORY),

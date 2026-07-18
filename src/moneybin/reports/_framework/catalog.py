@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import types
+import typing
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -38,6 +39,7 @@ class ServiceReportSpec:
     classes: Mapping[str, DataClass]
     examples: tuple[str, ...]
     executor: Callable[[Database, Mapping[str, JsonValue], int], CatalogReportResult]
+    validator: Callable[[Mapping[str, JsonValue]], None] | None = None
 
     def __post_init__(self) -> None:
         if _REPORT_ID.fullmatch(self.report_id) is None:
@@ -105,10 +107,18 @@ class ReportCatalog:
         limit: int,
     ) -> CatalogReportResult:
         """Validate parameters, then dispatch through the selected report kind."""
+        if limit < 0:
+            raise UserError(
+                "Report limit must be non-negative.",
+                code="REPORT_LIMIT_INVALID",
+                details={"minimum": 0},
+            )
         spec = self.resolve(report_id)
         validated = _validate_parameters(spec, parameters)
         if isinstance(spec, ReportSpec):
             return run_report(spec, db, max_rows=limit, **validated)
+        if spec.validator is not None:
+            spec.validator(validated)
         return spec.executor(db, validated, limit)
 
 
@@ -175,7 +185,7 @@ def _matches_annotation(value: object, annotation: object) -> bool:
 
     origin = get_origin(annotation)
     args = get_args(annotation)
-    if origin in (types.UnionType,):
+    if origin in (types.UnionType, typing.Union):
         return any(_matches_annotation(value, arg) for arg in args)
     if origin is Literal:
         return value in args and any(type(value) is type(arg) for arg in args)

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import typing
+from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from typing import cast
@@ -20,6 +24,7 @@ from moneybin.privacy.payloads.networth import (
     NetWorthSnapshotPayload,
 )
 from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.protocol.envelope import PayloadEncoder
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
@@ -33,7 +38,10 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     ReportSpec,
 )
-from moneybin.reports._framework.execute import CatalogReportResult
+from moneybin.reports._framework.execute import (
+    CatalogReportResult,
+    build_catalog_result,
+)
 from moneybin.reports._framework.registry import (
     extension_report_specs,
     register_extension_report,
@@ -93,8 +101,22 @@ def _sql_report(
         columns=_COLUMNS,
         semantics=_SEMANTICS,
         params=(
-            ParamSpec("count", int, None, True, "Required count."),
-            ParamSpec("label", str | None, None, False, "Optional label."),
+            ParamSpec(
+                "count",
+                int,
+                None,
+                True,
+                "Required count.",
+                DataClass.AGGREGATE,
+            ),
+            ParamSpec(
+                "label",
+                str | None,
+                None,
+                False,
+                "Optional label.",
+                DataClass.USER_NOTE,
+            ),
         ),
         examples=(),
     )
@@ -110,7 +132,16 @@ def _service_report(
         report_id=report_id,
         name=name,
         description="Test service report.",
-        parameters=(ParamSpec("year", int, None, True, "Tax year."),),
+        parameters=(
+            ParamSpec(
+                "year",
+                int,
+                None,
+                True,
+                "Tax year.",
+                DataClass.TXN_DATE,
+            ),
+        ),
         columns=_COLUMNS,
         semantics=_SEMANTICS,
         classes=_CLASSES,
@@ -253,6 +284,44 @@ def test_sql_parameters_are_rejected_before_query_dispatch() -> None:
     db.execute.assert_not_called()
 
 
+def test_legacy_typing_optional_is_validated_like_pep604_union() -> None:
+    report = replace(
+        _sql_report(),
+        params=(
+            ParamSpec(
+                "count",
+                typing.Optional[int],  # noqa: UP045  # legacy union form under test
+                None,
+                False,
+                "Optional count.",
+                DataClass.AGGREGATE,
+            ),
+            ParamSpec(
+                "label",
+                str | None,
+                None,
+                False,
+                "Optional label.",
+                DataClass.USER_NOTE,
+            ),
+        ),
+    )
+    db = _db_with_rows((None,))
+
+    result = ReportCatalog((report,)).execute(
+        db,
+        report_id="core:summary",
+        parameters={},
+        limit=100,
+    )
+
+    assert result.records == [{"value": None}]
+    cast(MagicMock, db.execute).assert_called_once_with(
+        "SELECT ? AS value",
+        [None],
+    )
+
+
 def test_sql_report_dispatch_returns_catalog_result_with_defaults() -> None:
     catalog = ReportCatalog((_sql_report(),))
     db = _db_with_rows((7,))
@@ -301,6 +370,50 @@ def test_service_report_dispatch_uses_same_result_contract() -> None:
     db.execute.assert_not_called()
 
 
+def test_parameter_metadata_is_redacted_deep_frozen_and_json_safe() -> None:
+    executor = MagicMock()
+    spec = ServiceReportSpec(
+        report_id="test:nested",
+        name="nested",
+        description="Nested parameter report.",
+        parameters=(
+            ParamSpec(
+                "accounts",
+                dict[str, list[str]],
+                None,
+                True,
+                "Accounts grouped by label.",
+                DataClass.ACCOUNT_IDENTIFIER,
+            ),
+        ),
+        columns=_COLUMNS,
+        semantics=_SEMANTICS,
+        classes=_CLASSES,
+        examples=(),
+        executor=executor,
+    )
+
+    result = build_catalog_result(
+        spec,
+        parameters={"accounts": {"primary": ["acct_11112222"]}},
+        records=[{"value": 1}],
+        columns=["value"],
+        max_rows=100,
+    )
+
+    assert result.parameters == {
+        "accounts": {"primary": ("****2222",)},
+    }
+    with pytest.raises(TypeError):
+        result.parameters["accounts"] = {}  # type: ignore[index]  # immutable
+    nested = cast(Mapping[str, object], result.parameters["accounts"])
+    with pytest.raises(TypeError):
+        nested["primary"] = ()  # type: ignore[index]  # immutable
+    assert json.loads(json.dumps(result.parameters, cls=PayloadEncoder)) == {
+        "accounts": {"primary": ["****2222"]},
+    }
+
+
 def test_networth_service_report_is_tabular_redacted_and_truncated(
     mocker: MockerFixture,
 ) -> None:
@@ -344,8 +457,8 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
     assert result.report_id == "core:networth"
     assert result.semantics.kind == "position"
     assert result.semantics.valuation_basis == (
-        "latest resolved daily balance, observed or carried forward, on or "
-        "before the resolved balance_date"
+        "resolved transaction-adjusted daily positions on or before the "
+        "resolved balance_date"
     )
     assert result.semantics.fx_basis == (
         "no FX conversion in v1; assumes single-currency inputs"
@@ -372,16 +485,48 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
     db.execute.assert_not_called()
 
 
-def test_networth_service_report_keeps_summary_when_no_accounts(
+def test_networth_parameter_metadata_masks_accounts_but_dispatch_uses_raw_values(
+    mocker: MockerFixture,
+) -> None:
+    current = mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.current",
+        return_value=NetWorthSnapshotPayload(
+            balance_date=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
+            account_count=0,
+            per_account=[],
+        ),
+    )
+
+    result = ReportCatalog((NETWORTH_REPORT,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="core:networth",
+        parameters={"account_ids": ["acct_11112222"]},
+        limit=100,
+    )
+
+    current.assert_called_once_with(
+        as_of_date=None,
+        account_ids=["acct_11112222"],
+    )
+    assert result.parameters == {
+        "as_of": None,
+        "account_ids": ("****2222",),
+    }
+
+
+def test_networth_service_report_preserves_explicit_no_data(
     mocker: MockerFixture,
 ) -> None:
     mocker.patch(
         "moneybin.reports.service_reports.NetworthService.current",
         return_value=NetWorthSnapshotPayload(
-            balance_date=date(2026, 7, 1),
-            net_worth=Decimal("0"),
-            total_assets=Decimal("0"),
-            total_liabilities=Decimal("0"),
+            balance_date=None,
+            net_worth=None,
+            total_assets=None,
+            total_liabilities=None,
             account_count=0,
             per_account=[],
         ),
@@ -396,10 +541,13 @@ def test_networth_service_report_keeps_summary_when_no_accounts(
 
     assert len(result.records) == 1
     assert result.records[0]["account_id"] is None
-    assert result.records[0]["net_worth"] == Decimal("0")
+    assert result.records[0]["balance_date"] is None
+    assert result.records[0]["net_worth"] is None
+    assert result.records[0]["total_assets"] is None
+    assert result.records[0]["total_liabilities"] is None
     assert result.total_count == 1
     assert result.truncated is False
-    assert "zero position dated current local date" in result.semantics.time_basis
+    assert result.period is None
 
 
 def test_networth_history_service_report_preserves_numeric_fidelity(
@@ -442,6 +590,9 @@ def test_networth_history_service_report_preserves_numeric_fidelity(
         interval="monthly",
     )
     assert result.semantics.kind == "position"
+    assert result.semantics.valuation_basis == (
+        "last resolved transaction-adjusted daily position in each selected period"
+    )
     assert result.records == [
         {
             "period": "2026-06-01",
@@ -453,6 +604,92 @@ def test_networth_history_service_report_preserves_numeric_fidelity(
     assert isinstance(result.records[0]["net_worth"], Decimal)
     assert result.truncated is True
     assert result.total_count == 2
+
+
+@pytest.mark.parametrize("kind", ["sql", "service"])
+def test_negative_limit_is_rejected_before_dispatch(kind: str) -> None:
+    executor = MagicMock()
+    report: ReportSpec | ServiceReportSpec
+    report = _sql_report() if kind == "sql" else _service_report(executor)
+    catalog = ReportCatalog((report,))
+    db = MagicMock(spec=Database)
+
+    with pytest.raises(UserError) as raised:
+        catalog.execute(
+            cast(Database, db),
+            report_id=report.report_id,
+            parameters={"count": 1} if kind == "sql" else {"year": 2026},
+            limit=-1,
+        )
+
+    assert raised.value.code == "REPORT_LIMIT_INVALID"
+    assert raised.value.details == {"minimum": 0}
+    executor.assert_not_called()
+    db.execute.assert_not_called()
+
+
+def test_zero_limit_is_valid_and_reports_truncation() -> None:
+    result = ReportCatalog((_sql_report(),)).execute(
+        _db_with_rows((7,)),
+        report_id="core:summary",
+        parameters={"count": 7},
+        limit=0,
+    )
+
+    assert result.records == []
+    assert result.truncated is True
+    assert result.total_count == 1
+
+
+@pytest.mark.parametrize(
+    ("spec", "parameters", "code", "details"),
+    [
+        (
+            NETWORTH_REPORT,
+            {"as_of": "not-a-date"},
+            "REPORT_PARAMETER_INVALID_VALUE",
+            {
+                "report_id": "core:networth",
+                "parameter": "as_of",
+                "expected": "ISO date (YYYY-MM-DD)",
+            },
+        ),
+        (
+            NETWORTH_HISTORY_REPORT,
+            {
+                "from_date": "2026-07-02",
+                "to_date": "2026-07-01",
+            },
+            "REPORT_PARAMETER_INVALID_RANGE",
+            {
+                "report_id": "core:networth_history",
+                "parameters": ["from_date", "to_date"],
+                "relation": "from_date <= to_date",
+            },
+        ),
+    ],
+)
+def test_service_value_validation_runs_before_executor(
+    spec: ServiceReportSpec,
+    parameters: dict[str, object],
+    code: str,
+    details: dict[str, object],
+) -> None:
+    executor = MagicMock()
+    guarded = replace(spec, executor=executor)
+
+    with pytest.raises(UserError) as raised:
+        ReportCatalog((guarded,)).execute(
+            cast(Database, MagicMock(spec=Database)),
+            report_id=guarded.report_id,
+            parameters=parameters,  # type: ignore[arg-type]  # invalid values under test
+            limit=100,
+        )
+
+    assert raised.value.code == code
+    assert raised.value.details == details
+    assert "not-a-date" not in raised.value.message
+    executor.assert_not_called()
 
 
 def test_service_report_metadata_is_frozen() -> None:

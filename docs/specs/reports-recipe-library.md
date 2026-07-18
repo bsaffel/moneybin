@@ -93,6 +93,12 @@ Eight models in v1. Each section: purpose, grain, source, columns (with comments
 
 **Source:** `core.fct_balances_daily` joined with `core.dim_accounts`. Identical query body to today's `core.agg_net_worth` — this is a rename, not a redesign.
 
+Snapshot consumers resolve the last transaction-adjusted daily position on or
+before the requested date. History consumers select the last such resolved
+position in each returned period. If a snapshot has no eligible row,
+`balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null and
+`account_count` is `0`; the service does not manufacture a zero position.
+
 **Columns:**
 
 | Column | Type | Comment |

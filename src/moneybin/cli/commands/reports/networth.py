@@ -42,6 +42,9 @@ def reports_networth(
             )
 
     def _render_text(_: object) -> None:
+        if snapshot.balance_date is None:
+            typer.echo("No net worth data available.")
+            return
         typer.echo(f"Net worth as of {snapshot.balance_date}: {snapshot.net_worth}")
         typer.echo(f"  Assets:      {snapshot.total_assets}")
         typer.echo(f"  Liabilities: {snapshot.total_liabilities}")

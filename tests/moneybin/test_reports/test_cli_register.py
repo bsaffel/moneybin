@@ -45,6 +45,7 @@ def _spec():  # noqa: ANN202 — test helper
         name="balance_drift",
         view=_VIEW,
         classes=_CLASSES,
+        parameter_classes={"top": DataClass.AGGREGATE},
         columns=output_columns(_CLASSES),
         semantics=TEST_SEMANTICS,
     )
@@ -98,6 +99,10 @@ def _windowed_app():  # noqa: ANN202 — test helper
         name="windowed",
         view=_VIEW,
         classes=_CLASSES,
+        parameter_classes={
+            "from_month": DataClass.TXN_DATE,
+            "to_month": DataClass.TXN_DATE,
+        },
         columns=output_columns(_CLASSES),
         semantics=TEST_SEMANTICS,
     )

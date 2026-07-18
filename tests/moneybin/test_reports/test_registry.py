@@ -28,6 +28,7 @@ _CLASSES = {"value": DataClass.AGGREGATE}
     name="alpha",
     view=_VIEW,
     classes=_CLASSES,
+    parameter_classes={"top": DataClass.AGGREGATE},
     columns=output_columns(_CLASSES),
     semantics=TEST_SEMANTICS,
 )
@@ -46,6 +47,7 @@ def _alpha(db: Database, *, top: int = 5) -> ReportQuery:
     name="beta",
     view=_VIEW,
     classes=_CLASSES,
+    parameter_classes={},
     columns=output_columns(_CLASSES),
     semantics=TEST_SEMANTICS,
 )

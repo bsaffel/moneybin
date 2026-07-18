@@ -45,6 +45,10 @@ def _spec():  # noqa: ANN202 — test helper
         name="summary",
         view=_VIEW,
         classes=_CLASSES,
+        parameter_classes={
+            "month": DataClass.TXN_DATE,
+            "top": DataClass.AGGREGATE,
+        },
         columns=output_columns(_CLASSES),
         semantics=TEST_SEMANTICS,
         domain="cashflow",
@@ -79,7 +83,12 @@ def test_make_tool_fn_uses_any_for_unannotated_params() -> None:
         semantics=TEST_SEMANTICS,
         params=(
             ParamSpec(
-                name="raw", annotation=None, default=None, required=False, help=""
+                name="raw",
+                annotation=None,
+                default=None,
+                required=False,
+                help="",
+                data_class=DataClass.USER_NOTE,
             ),
         ),
     )

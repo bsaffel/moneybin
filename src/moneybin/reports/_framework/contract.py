@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Literal
 
 from moneybin.privacy.taxonomy import DataClass
@@ -45,7 +46,8 @@ class ParamSpec:
 
     Maps 1:1 to an MCP-tool argument, a Typer ``--flag``, and the runner
     keyword argument. ``annotation`` is the resolved Python type;
-    ``required`` is true when the parameter has no default.
+    ``required`` is true when the parameter has no default; ``data_class``
+    controls redaction when the effective value is copied into result metadata.
     """
 
     name: str
@@ -53,6 +55,7 @@ class ParamSpec:
     default: Any
     required: bool
     help: str
+    data_class: DataClass
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +119,7 @@ class ReportSpec:
                 "columns and classes must declare the same output fields "
                 "with identical privacy classes"
             )
+        object.__setattr__(self, "classes", MappingProxyType(dict(self.classes)))
 
     @property
     def mcp_tool_name(self) -> str:
@@ -127,6 +131,11 @@ class ReportSpec:
         """Typer command name, e.g. ``large-transactions``."""
         return self.name.replace("_", "-")
 
+    @property
+    def parameters(self) -> tuple[ParamSpec, ...]:
+        """Unified catalog name for declared input parameters."""
+        return self.params
+
 
 def report(
     *,
@@ -134,6 +143,7 @@ def report(
     name: str,
     view: TableRef,
     classes: Mapping[str, DataClass],
+    parameter_classes: Mapping[str, DataClass],
     columns: tuple[OutputColumn, ...],
     semantics: ReportSemantics,
     domain: str | None = None,
@@ -154,6 +164,8 @@ def report(
             undeclared column fails closed at redaction time. Declared (not
             lineage-derived) because the deployed SQLMesh view is a
             ``SELECT *`` pointer lineage can't classify (ADR-013).
+        parameter_classes: Exact runner-parameter→DataClass map used to redact
+            effective parameters before they enter result metadata.
         columns: Ordered output column descriptions and privacy classes.
         semantics: Financial interpretation metadata for the report metrics.
         domain: Optional MCP namespace tag.
@@ -168,6 +180,7 @@ def report(
             name=name,
             view=view,
             classes=classes,
+            parameter_classes=parameter_classes,
             columns=columns,
             semantics=semantics,
             domain=domain,

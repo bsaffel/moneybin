@@ -528,10 +528,15 @@ Free-text → account-ID resolution for natural-language references.
 Net worth across all accounts over time.
 
 - **Sensitivity:** `medium` — aggregate but reveals total financial position.
-- **Unique parameters:** None beyond shared date/months conventions.
-- **Behavior:** Returns time-series `{period, total_assets, total_liabilities, net_worth}` based on balance history. Requires balance data from OFX or Plaid. Degraded response returns latest snapshot only, no history.
-- **Service:** `AccountService.net_worth() -> NetWorthSeries`
-- **CLI:** `moneybin accounts net-worth`
+- **Unique parameters:** `as_of: str | None = None`,
+  `account_ids: list[str] | None = None`.
+- **Behavior:** Returns the last resolved transaction-adjusted daily position on
+  or before `as_of`, plus its per-account breakdown. If no position exists,
+  `balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null,
+  `account_count` is `0`, and the breakdown is empty; absence is not reported as
+  a zero position. Account references in catalog result metadata are masked.
+- **Service:** `NetworthService.current() -> NetWorthSnapshotPayload`
+- **CLI:** `moneybin reports networth`
 
 ### `accounts_set`
 

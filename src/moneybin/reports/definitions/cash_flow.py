@@ -30,6 +30,11 @@ from moneybin.tables import REPORTS_CASH_FLOW
         "net": DataClass.TXN_AMOUNT,
         "txn_count": DataClass.AGGREGATE,
     },
+    parameter_classes={
+        "from_month": DataClass.TXN_DATE,
+        "to_month": DataClass.TXN_DATE,
+        "by": DataClass.TXN_TYPE,
+    },
     columns=(
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
         OutputColumn(

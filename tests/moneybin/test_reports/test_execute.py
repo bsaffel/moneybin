@@ -39,6 +39,7 @@ def _spec() -> ReportSpec:
         name="summary",
         view=_VIEW,
         classes=classes,
+        parameter_classes={"top": DataClass.AGGREGATE},
         columns=output_columns(classes),
         semantics=TEST_SEMANTICS,
     )

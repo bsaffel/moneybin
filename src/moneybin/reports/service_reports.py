@@ -9,6 +9,7 @@ from typing import Literal, cast
 from pydantic import JsonValue
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import ServiceReportSpec
 from moneybin.reports._framework.contract import (
@@ -63,15 +64,14 @@ _SNAPSHOT_SEMANTICS = ReportSemantics(
     ),
     kind="position",
     valuation_basis=(
-        "latest resolved daily balance, observed or carried forward, on or "
-        "before the resolved balance_date"
+        "resolved transaction-adjusted daily positions on or before the "
+        "resolved balance_date"
     ),
     fx_basis="no FX conversion in v1; assumes single-currency inputs",
     time_basis=(
         "point-in-time position at the latest available balance_date on or before "
-        "the requested as_of date; latest available when omitted; when no report "
-        "rows exist, the existing service returns a zero position dated current "
-        "local date"
+        "the requested as_of date; latest available when omitted; balance_date "
+        "and headline amounts are null when no position exists"
     ),
     denominator=None,
     comparison_window=None,
@@ -112,7 +112,9 @@ _HISTORY_SEMANTICS = ReportSemantics(
         "position"
     ),
     kind="position",
-    valuation_basis="last observed net-worth position in each selected period",
+    valuation_basis=(
+        "last resolved transaction-adjusted daily position in each selected period"
+    ),
     fx_basis="no FX conversion in v1; assumes single-currency inputs",
     time_basis=(
         "inclusive from_date/to_date window bucketed daily, weekly, or monthly; "
@@ -128,6 +130,62 @@ _HISTORY_SEMANTICS = ReportSemantics(
     ),
     provenance=("reports.net_worth",),
 )
+
+
+def _validate_iso_date(
+    parameters: Mapping[str, JsonValue],
+    *,
+    report_id: str,
+    parameter: str,
+) -> date | None:
+    value = parameters[parameter]
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(cast(str, value))
+    except ValueError as exc:
+        raise UserError(
+            "Report parameter must be an ISO date.",
+            code="REPORT_PARAMETER_INVALID_VALUE",
+            details={
+                "report_id": report_id,
+                "parameter": parameter,
+                "expected": "ISO date (YYYY-MM-DD)",
+            },
+        ) from exc
+
+
+def _validate_networth_parameters(parameters: Mapping[str, JsonValue]) -> None:
+    _validate_iso_date(
+        parameters,
+        report_id="core:networth",
+        parameter="as_of",
+    )
+
+
+def _validate_networth_history_parameters(
+    parameters: Mapping[str, JsonValue],
+) -> None:
+    from_date = _validate_iso_date(
+        parameters,
+        report_id="core:networth_history",
+        parameter="from_date",
+    )
+    to_date = _validate_iso_date(
+        parameters,
+        report_id="core:networth_history",
+        parameter="to_date",
+    )
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise UserError(
+            "Report date range is invalid.",
+            code="REPORT_PARAMETER_INVALID_RANGE",
+            details={
+                "report_id": "core:networth_history",
+                "parameters": ["from_date", "to_date"],
+                "relation": "from_date <= to_date",
+            },
+        )
 
 
 def _execute_networth(
@@ -184,7 +242,11 @@ def _execute_networth(
             "Use accounts_balance_history to drill into one account",
             "Use accounts to inspect archived or excluded accounts",
         ],
-        period=snapshot.balance_date.isoformat(),
+        period=(
+            snapshot.balance_date.isoformat()
+            if snapshot.balance_date is not None
+            else None
+        ),
     )
 
 
@@ -235,6 +297,7 @@ NETWORTH_REPORT = ServiceReportSpec(
             None,
             False,
             "ISO date (YYYY-MM-DD); latest available when omitted.",
+            DataClass.TXN_DATE,
         ),
         ParamSpec(
             "account_ids",
@@ -242,6 +305,7 @@ NETWORTH_REPORT = ServiceReportSpec(
             None,
             False,
             "Account IDs included in the breakdown; headline totals stay global.",
+            DataClass.ACCOUNT_IDENTIFIER,
         ),
     ),
     columns=_SNAPSHOT_COLUMNS,
@@ -252,6 +316,7 @@ NETWORTH_REPORT = ServiceReportSpec(
         ('reports(report_id="core:networth", parameters={"as_of": "2026-07-01"})'),
     ),
     executor=_execute_networth,
+    validator=_validate_networth_parameters,
 )
 
 NETWORTH_HISTORY_REPORT = ServiceReportSpec(
@@ -268,6 +333,7 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
             None,
             True,
             "Inclusive ISO start date (YYYY-MM-DD).",
+            DataClass.TXN_DATE,
         ),
         ParamSpec(
             "to_date",
@@ -275,6 +341,7 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
             None,
             True,
             "Inclusive ISO end date (YYYY-MM-DD).",
+            DataClass.TXN_DATE,
         ),
         ParamSpec(
             "interval",
@@ -282,6 +349,7 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
             "monthly",
             False,
             "Period bucket: daily, weekly, or monthly.",
+            DataClass.TXN_TYPE,
         ),
     ),
     columns=_HISTORY_COLUMNS,
@@ -295,6 +363,7 @@ NETWORTH_HISTORY_REPORT = ServiceReportSpec(
         ),
     ),
     executor=_execute_networth_history,
+    validator=_validate_networth_history_parameters,
 )
 
 SERVICE_REPORTS: tuple[ServiceReportSpec, ...] = (

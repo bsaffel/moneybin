@@ -9,6 +9,7 @@ types, defaults) and Google-style docstring (summary, Args, Examples). The
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import replace
 
 import pytest
@@ -27,6 +28,11 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY, TableRef
 
 # Placeholder column map for introspection tests that don't assert on classes.
 _CLASSES = {"value": DataClass.AGGREGATE}
+_PARAMETER_CLASSES = {
+    "month": DataClass.TXN_DATE,
+    "top": DataClass.AGGREGATE,
+    "by": DataClass.TXN_TYPE,
+}
 _COLUMNS = (
     OutputColumn(
         name="value",
@@ -78,6 +84,7 @@ def _build_spec(
     name: str = "sample",
     view: TableRef = REPORTS_MERCHANT_ACTIVITY,
     classes: dict[str, DataClass] | None = None,
+    parameter_classes: Mapping[str, DataClass] = _PARAMETER_CLASSES,
     columns: tuple[OutputColumn, ...] = _COLUMNS,
     semantics: ReportSemantics = _SEMANTICS,
     domain: str | None = None,
@@ -88,6 +95,7 @@ def _build_spec(
         name=name,
         view=view,
         classes=_CLASSES if classes is None else classes,
+        parameter_classes=parameter_classes,
         columns=columns,
         semantics=semantics,
         domain=domain,
@@ -125,10 +133,13 @@ def test_build_spec_excludes_db_and_reads_params() -> None:
     assert by_name["month"].default is None
     assert by_name["month"].required is False
     assert by_name["month"].help == "Inclusive month filter (YYYY-MM)."
+    assert by_name["month"].data_class is DataClass.TXN_DATE
 
     assert by_name["top"].default == 25
     assert by_name["top"].annotation is int
+    assert by_name["top"].data_class is DataClass.AGGREGATE
     assert by_name["by"].default == "account"
+    assert by_name["by"].data_class is DataClass.TXN_TYPE
 
 
 def test_build_spec_arg_continuation_line_is_not_parsed_as_new_param() -> None:
@@ -145,7 +156,11 @@ def test_build_spec_arg_continuation_line_is_not_parsed_as_new_param() -> None:
         """
         return ReportQuery("SELECT 1", [])
 
-    spec = _build_spec(runner, name="cont")
+    spec = _build_spec(
+        runner,
+        name="cont",
+        parameter_classes={"fmt": DataClass.TXN_TYPE},
+    )
     by_name = {p.name: p for p in spec.params}
     assert set(by_name) == {"fmt"}
     assert by_name["fmt"].help == "Output date format. default: today when omitted."
@@ -168,7 +183,11 @@ def test_build_spec_description_includes_body_prose_not_args() -> None:
         """
         return ReportQuery("SELECT 1", [])
 
-    spec = _build_spec(runner, name="r")
+    spec = _build_spec(
+        runner,
+        name="r",
+        parameter_classes={"top": DataClass.AGGREGATE},
+    )
     assert spec.description.startswith("Spending rollup by category.")
     assert "accounting convention" in spec.description
     assert "summary.display_currency" in spec.description
@@ -193,7 +212,11 @@ def test_build_spec_bare_word_colon_in_description_is_not_a_section_header() -> 
         """
         return ReportQuery("SELECT 1", [])
 
-    spec = _build_spec(runner, name="r")
+    spec = _build_spec(
+        runner,
+        name="r",
+        parameter_classes={"top": DataClass.AGGREGATE},
+    )
     assert "grouping is by account then category." in spec.description
     by_name = {p.name: p for p in spec.params}
     assert by_name["top"].help == "Maximum rows to return."  # Args still parsed
@@ -213,6 +236,7 @@ def test_report_decorator_attaches_spec_and_returns_function() -> None:
         name="sample",
         view=REPORTS_MERCHANT_ACTIVITY,
         classes=_CLASSES,
+        parameter_classes={"top": DataClass.AGGREGATE},
         columns=_COLUMNS,
         semantics=_SEMANTICS,
     )
@@ -274,6 +298,19 @@ def test_build_spec_rejects_empty_classes() -> None:
         _build_spec(classes={})
 
 
+def test_build_spec_requires_exact_parameter_class_coverage() -> None:
+    with pytest.raises(ValueError, match="parameter_classes"):
+        _build_spec(parameter_classes={"month": DataClass.TXN_DATE})
+
+    with pytest.raises(ValueError, match="parameter_classes"):
+        _build_spec(
+            parameter_classes={
+                **_PARAMETER_CLASSES,
+                "unknown": DataClass.AGGREGATE,
+            }
+        )
+
+
 def test_build_spec_rejects_output_reserved_param() -> None:
     # `output` collides with the shared --output CLI option the registrar
     # injects; without this guard the collision surfaces as a cryptic duplicate-
@@ -283,7 +320,11 @@ def test_build_spec_rejects_output_reserved_param() -> None:
         return ReportQuery("SELECT 1", [])
 
     with pytest.raises(ValueError, match="output"):
-        _build_spec(runner, name="r")
+        _build_spec(
+            runner,
+            name="r",
+            parameter_classes={"output": DataClass.TXN_TYPE},
+        )
 
 
 def test_build_spec_rejects_quiet_reserved_param() -> None:
@@ -292,7 +333,11 @@ def test_build_spec_rejects_quiet_reserved_param() -> None:
         return ReportQuery("SELECT 1", [])
 
     with pytest.raises(ValueError, match="quiet"):
-        _build_spec(runner, name="r")
+        _build_spec(
+            runner,
+            name="r",
+            parameter_classes={"quiet": DataClass.TXN_TYPE},
+        )
 
 
 def test_report_spec_requires_namespaced_id_and_metric_semantics() -> None:
@@ -302,7 +347,10 @@ def test_report_spec_requires_namespaced_id_and_metric_semantics() -> None:
     assert spec.semantics.kind == "count"
 
 
-@pytest.mark.parametrize("field", ["report_id", "columns", "semantics"])
+@pytest.mark.parametrize(
+    "field",
+    ["report_id", "columns", "semantics", "parameter_classes"],
+)
 def test_build_spec_requires_financial_metadata(field: str) -> None:
     assert (
         inspect.signature(build_spec).parameters[field].default
@@ -338,3 +386,14 @@ def test_columns_and_classes_must_use_the_same_privacy_class() -> None:
 def test_duplicate_output_column_names_are_rejected() -> None:
     with pytest.raises(ValueError, match="columns and classes"):
         replace(_build_spec(), columns=(_COLUMNS[0], _COLUMNS[0]))
+
+
+def test_report_spec_defensively_freezes_classes() -> None:
+    classes = dict(_CLASSES)
+    spec = _build_spec(classes=classes)
+
+    classes["value"] = DataClass.TXN_AMOUNT
+
+    assert spec.classes["value"] is DataClass.AGGREGATE
+    with pytest.raises(TypeError):
+        spec.classes["value"] = DataClass.TXN_AMOUNT  # type: ignore[index]  # immutable

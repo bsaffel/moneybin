@@ -23,7 +23,17 @@ from moneybin.privacy.sql_lineage import derive_query_tier
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.classify import classify_columns
-from moneybin.reports._framework.contract import ReportSemantics, ReportSpec
+from moneybin.reports._framework.contract import ParamSpec, ReportSemantics, ReportSpec
+
+type FrozenJsonValue = (
+    None
+    | bool
+    | int
+    | float
+    | str
+    | tuple["FrozenJsonValue", ...]
+    | Mapping[str, "FrozenJsonValue"]
+)
 
 
 @dataclass(frozen=True)
@@ -74,7 +84,7 @@ class CatalogReportResult(ReportResult):
     """A report result tagged with its catalog identity and financial meaning."""
 
     report_id: str
-    parameters: Mapping[str, JsonValue]
+    parameters: Mapping[str, FrozenJsonValue]
     semantics: ReportSemantics
     provenance: tuple[str, ...]
 
@@ -93,6 +103,41 @@ class _CatalogSpec(Protocol):
 
     @property
     def semantics(self) -> ReportSemantics: ...
+
+    @property
+    def parameters(self) -> tuple[ParamSpec, ...]: ...
+
+
+def _redact_and_freeze_parameter(
+    value: JsonValue,
+    data_class: DataClass,
+) -> FrozenJsonValue:
+    """Redact parameter leaves and recursively freeze JSON containers."""
+    if isinstance(value, dict):
+        return MappingProxyType({
+            key: _redact_and_freeze_parameter(item, data_class)
+            for key, item in value.items()
+        })
+    if isinstance(value, list):
+        return tuple(_redact_and_freeze_parameter(item, data_class) for item in value)
+    redacted = redact_records(
+        [{"value": value}],
+        {"value": data_class},
+        consent=None,
+    )[0]["value"]
+    return cast(FrozenJsonValue, redacted)
+
+
+def _parameter_metadata(
+    spec: _CatalogSpec,
+    parameters: Mapping[str, JsonValue],
+) -> Mapping[str, FrozenJsonValue]:
+    """Build immutable, redacted effective-parameter metadata."""
+    classes = {parameter.name: parameter.data_class for parameter in spec.parameters}
+    return MappingProxyType({
+        name: _redact_and_freeze_parameter(value, classes[name])
+        for name, value in parameters.items()
+    })
 
 
 def build_catalog_result(
@@ -117,7 +162,7 @@ def build_catalog_result(
 
     return CatalogReportResult(
         report_id=spec.report_id,
-        parameters=MappingProxyType(dict(parameters)),
+        parameters=_parameter_metadata(spec, parameters),
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
         records=redacted,

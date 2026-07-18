@@ -32,6 +32,11 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
         "annualized_cost": DataClass.TXN_AMOUNT,
         "confidence": DataClass.AGGREGATE,
     },
+    parameter_classes={
+        "min_confidence": DataClass.AGGREGATE,
+        "status": DataClass.TXN_TYPE,
+        "cadence": DataClass.TXN_TYPE,
+    },
     columns=(
         OutputColumn(
             "merchant_id", "Canonical merchant identifier.", DataClass.RECORD_ID

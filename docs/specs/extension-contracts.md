@@ -299,13 +299,13 @@ Packages writing to another package's prefix is not permitted — the writes-cap
 
 A Report is a single decorated **Python runner** over a `reports.*` view. The runner is the report's whole definition — it validates parameters, resolves free-text inputs to ids, and builds a parameterized read-only `SELECT`, returning a `ReportQuery`. The framework introspects the runner's signature and Google-style docstring into a `ReportSpec` and generates a stable report-catalog entry, CLI command, and `TableRef` wiring from that one definition.
 
-> **M3K.2 migration (approved design; not implemented):** the current
-> framework generates one MCP tool per report. Under
+> **M3K.2 catalog foundation (implemented 2026-07-18):** the framework's
+> SQL-backed and service-backed reports now share one internal catalog and
+> result contract. Under
 > [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md), report
-> definitions instead register behind the single read-only `reports`
-> catalog/runner. CLI keeps one ergonomic command per report. This section
-> describes the target contract; current per-report tool behavior remains
-> documented in [`moneybin-mcp.md`](moneybin-mcp.md) until implementation.
+> definitions register behind the single read-only `reports` catalog/runner.
+> The transitional per-report MCP tools and ergonomic CLI commands remain
+> registered with unchanged public names until their scheduled removal.
 
 ```python
 @report(name="cashflow", view=REPORTS_CASH_FLOW)
@@ -414,6 +414,11 @@ Worked example — the shipped `cashflow` runner (`src/moneybin/reports/definiti
         "net": DataClass.TXN_AMOUNT,
         "txn_count": DataClass.AGGREGATE,
     },
+    parameter_classes={
+        "from_month": DataClass.TXN_DATE,
+        "to_month": DataClass.TXN_DATE,
+        "by": DataClass.TXN_TYPE,
+    },
 )
 def cash_flow(
     db: Database,
@@ -449,6 +454,9 @@ How the parts map (introspection rules, `src/moneybin/reports/_framework/introsp
 - The first parameter must be named `db`; every other parameter must be keyword-only (declared after a bare `*`). That shape lets each parameter become a catalog schema property and a Typer `--flag`.
 - The **docstring summary** becomes the catalog/command description; each **`Args:`** entry becomes that parameter's help string; each **`Examples:`** line is captured on `ReportSpec.examples` as a usage hint. (Runtime next-step hints in the response envelope come from the runner's own `ReportQuery.actions`, which the runner sets per call — distinct from the static docstring examples.)
 - Each parameter's resolved type and default flow into both surfaces. The runner raises `ValueError` for invalid enum values; the CLI registrar converts that to a clean `typer.BadParameter` exit.
+- `parameter_classes` is required and must cover the runner's non-`db`
+  parameters exactly. The class is stored on each `ParamSpec`; missing and
+  extra declarations fail registration.
 
 From the `ReportSpec`, the framework generates:
 
@@ -456,7 +464,17 @@ From the `ReportSpec`, the framework generates:
 - **MCP report entry** — stable ID `core:cashflow`, parameter schema derived from the runner, and output/metric metadata consumed by `reports(report_id="core:cashflow", parameters={...})`. M3K.2 replaces the current per-report `mcp_register.py` output with registry registration.
 - **CLI command** — `moneybin reports cashflow [--from-month ...] [--to-month ...] [--by ...]` (`src/moneybin/reports/_framework/cli_register.py`). The command name is `<name>` with underscores rendered as hyphens.
 
-At call time the framework executes the runner's `ReportQuery`, classifies each output column from the report's **declared `classes` map** (`src/moneybin/reports/_framework/classify.py`; an undeclared column fails closed), masks CRITICAL columns through the shared `redact_records` path — the **same redaction bottleneck `sql_query` uses** — and builds the standard response envelope (`src/moneybin/reports/_framework/execute.py`). Both surfaces build identical envelopes via the shared `ReportResult`.
+At call time the framework validates parameters, executes the runner's
+`ReportQuery`, classifies each output column from the report's **declared
+`classes` map** (`src/moneybin/reports/_framework/classify.py`; an undeclared
+column fails closed), masks CRITICAL columns through the shared `redact_records`
+path — the **same redaction bottleneck `sql_query` uses** — and builds the
+standard response envelope (`src/moneybin/reports/_framework/execute.py`).
+Execution receives only the exact validated values. Effective parameters copied
+into result metadata are separately redacted by their declared
+`parameter_classes`, recursively frozen, and JSON-safe; raw account references
+never enter result metadata. Both surfaces build identical envelopes via the
+shared `ReportResult`.
 
 Report column classification is **declared, not lineage-derived** ([ADR-013](../decisions/013-report-classification-declared.md)). SQLMesh deploys each report view as a `SELECT * FROM <internal physical table>` pointer, so lineage on the deployed view body classifies the pointer (not the logic) and would leak; and provenance ≠ sensitivity for derived columns (a z-score of an amount is `AGGREGATE`, not `TXN_AMOUNT`). Reports are a fixed, first-party surface known at design time, so each declares its `column → DataClass` map on `@report` — on the same footing as the `CLASSIFICATION` registry that declares `core`/`app` base truth. A scenario test (`tests/scenarios/test_reports_classification.py`) asserts the declared map covers the real built view's columns and that `account_id` stays CRITICAL. (`sql_query` keeps using lineage — its correct home: an arbitrary agent query reading `core`/`app` directly.)
 

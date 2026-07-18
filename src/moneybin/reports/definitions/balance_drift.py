@@ -33,6 +33,11 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "days_since_assertion": DataClass.AGGREGATE,
         "status": DataClass.TXN_TYPE,
     },
+    parameter_classes={
+        "account": DataClass.ACCOUNT_IDENTIFIER,
+        "status": DataClass.TXN_TYPE,
+        "since": DataClass.TXN_DATE,
+    },
     columns=(
         OutputColumn(
             "account_id", "Owning account identifier.", DataClass.ACCOUNT_IDENTIFIER

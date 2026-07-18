@@ -103,6 +103,42 @@ class TestReportsNetworth:
         assert call_kwargs.get("as_of_date") == date(2026, 1, 1)
 
     @pytest.mark.unit
+    def test_no_data_renders_null_snapshot_coherently(self, runner: CliRunner) -> None:
+        snapshot = NetWorthSnapshotPayload(
+            balance_date=None,  # type: ignore[arg-type]  # target nullable contract
+            net_worth=None,  # type: ignore[arg-type]  # target nullable contract
+            total_assets=None,  # type: ignore[arg-type]  # target nullable contract
+            total_liabilities=None,  # type: ignore[arg-type]  # target nullable contract
+            account_count=0,
+            per_account=[],
+        )
+        with (
+            patch("moneybin.cli.commands.reports.networth.get_database"),
+            patch(
+                "moneybin.cli.commands.reports.networth.NetworthService"
+            ) as mock_service_class,
+        ):
+            mock_service_class.return_value.current.return_value = snapshot
+            text_result = runner.invoke(app, ["reports", "networth"])
+            json_result = runner.invoke(
+                app,
+                ["reports", "networth", "--output", "json"],
+            )
+
+        assert text_result.exit_code == 0, text_result.stderr
+        assert text_result.stdout.strip() == "No net worth data available."
+        assert json_result.exit_code == 0, json_result.stderr
+        payload = json.loads(json_result.stdout)
+        assert payload["data"] == {
+            "balance_date": None,
+            "net_worth": None,
+            "total_assets": None,
+            "total_liabilities": None,
+            "account_count": 0,
+            "per_account": [],
+        }
+
+    @pytest.mark.unit
     def test_account_filter(self, runner: CliRunner) -> None:
         with (
             patch("moneybin.cli.commands.reports.networth.get_database"),

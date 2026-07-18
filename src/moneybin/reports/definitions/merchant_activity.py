@@ -33,6 +33,10 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
         "top_category": DataClass.CATEGORY,
         "account_count": DataClass.AGGREGATE,
     },
+    parameter_classes={
+        "top": DataClass.AGGREGATE,
+        "sort": DataClass.TXN_TYPE,
+    },
     columns=(
         OutputColumn(
             "merchant_id", "Canonical merchant identifier.", DataClass.RECORD_ID

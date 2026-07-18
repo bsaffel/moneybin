@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field, is_dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -99,6 +100,8 @@ class PayloadEncoder(json.JSONEncoder):
         # Existing: Decimal → float
         if isinstance(o, Decimal):
             return float(o)
+        if isinstance(o, Mapping):
+            return dict(cast(Mapping[Any, Any], o))
         # New: dataclass instances → asdict (recurses through nested dataclasses)
         if is_dataclass(o) and not isinstance(o, type):
             return dataclasses.asdict(o)

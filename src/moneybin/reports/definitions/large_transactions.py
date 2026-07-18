@@ -34,6 +34,10 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         "amount_zscore_category": DataClass.AGGREGATE,
         "is_top_100": DataClass.AGGREGATE,
     },
+    parameter_classes={
+        "top": DataClass.AGGREGATE,
+        "anomaly": DataClass.TXN_TYPE,
+    },
     columns=(
         OutputColumn(
             "transaction_id", "Canonical transaction identifier.", DataClass.RECORD_ID
