@@ -119,7 +119,7 @@ Every essential analysis feature a serious user (and the PFM field) expects, bui
 | **M2F** | Goals | 🗓️ | Allocate balances toward named goals with progress + projected target dates. |
 | **M2G** | Cash-flow projection | 🗓️ | Forward balance from scheduled/recurring items; bundles with M2D. |
 | **M2H** | Anomaly detection | 🗓️ | A window compared against a trailing-N-month baseline. |
-| **M2I** | "Show me the SQL" report lineage | 🗓️ | Every report exposes a stable result/lineage reference. The warehouse trust primitive. |
+| **M2I** | "Show me the SQL" report lineage | 🗓️ | Every report exposes a stable result/lineage reference. The warehouse trust primitive. **Absorbed into M2P.2** — do not schedule independently. |
 | **M2J** | Report subscriptions / digests | 🗓️ | Scheduled report recipes + params + lineage + optional cited prose. |
 | **M2K** | Asset tracking (real estate, vehicles, valuables) | 📐 | Periodic valuations, net-worth integration. [`asset-tracking.md`](specs/asset-tracking.md). |
 | **M2M** | Reference packages: `assets` + `us_tax` | 📐 | Ship at Platinum; `us_tax` builds on M1J investments. Worked examples for community packages. |

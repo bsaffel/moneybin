@@ -63,11 +63,23 @@ definition. That single contract is what makes the three tiers uniform.
 | Mode | Backed by | Lives in | Buys you |
 |---|---|---|---|
 | **Dynamic** | a query | `app.*` (user state) | Instant creation from a question; full runtime CRUD |
-| **Materialized** | a SQLMesh `reports.*` view + `@report` runner | the repo / an installed package | **Automation** (precomputation, incremental refresh) and **distribution** (a shareable, installable artifact) |
+| **Materialized** | a SQLMesh `reports.*` view + `@report` runner | the repo / an installed package | **Distribution** (a shareable, installable artifact) and **eligibility for automation** (see below) |
+
+> **What "materialized" does and does not mean today.** All eight shipped
+> `reports.*` models are `kind VIEW` — evaluated at query time, precomputing
+> nothing. Materialization's concrete benefit *today* is distribution: the
+> report becomes a versioned artifact that ships with the repo or a package.
+> What it additionally buys is **eligibility**: only a model in the transform
+> graph can later become `kind FULL`/`INCREMENTAL_BY_TIME_RANGE` and gain real
+> precomputation, and only a model in the graph participates in scheduled
+> refresh. A dynamic report can never be promoted to a materialized kind
+> because it is not in the graph at all. Child specs must not claim
+> precomputation for a `kind VIEW` report.
 
 Built-ins and extensions simply ship already-materialized. A user report starts
 dynamic and may **graduate**: *ask → answer → save as a dynamic report → if it
-proves its worth, materialize it → now it is automated and shareable.* That
+proves its worth, materialize it → now it is shareable, and eligible for
+scheduled refresh and precomputation.* That
 graduation path is how a user-created report earns the same status as an
 extension report rather than merely being declared equal to one.
 
@@ -86,9 +98,16 @@ flowchart LR
 These six decisions are settled and constrain the child specs.
 
 **D1 — Storage is hybrid.** `app.*` is the live source of truth for dynamic
-reports (it is exactly the `app` layer's definition: user state, mutable, not
-derivable from raw — and it inherits encryption, backup, and audit). An
-export/graduate path emits the materialized file form.
+reports — exactly the `app` layer's definition: user state, mutable, not
+derivable from raw. Encryption and backup follow from that placement (they are
+properties of the database file). **Audit does not.** Under
+[Invariant 10](app-integrity-invariant.md), audit coverage comes from routing
+every protected `app.*` write through a `*Repo` in `src/moneybin/repositories/`,
+not from the table's schema. So M2P.2 owes `app.user_reports` a `UserReportRepo`
+— a service issuing raw `INSERT`/`UPDATE`/`DELETE` against it is a contract
+violation, and dynamic reports are precisely the kind of user-authored,
+agent-mutated state that needs recoverability. An export/graduate path emits the
+materialized file form.
 
 **D2 — A report is defined by its query, not its view.** A `reports.*` view is
 an optional backing optimization, not part of the contract. This keeps user
