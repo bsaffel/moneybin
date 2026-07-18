@@ -412,9 +412,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       [--since <duration>] [--metric <family>]
 |
 +-- sql                            -- Privacy-safe ad-hoc SQL (CLI↔MCP parity: sql_query)
-|   +-- query <sql>                -- Read-only SQL over core/app; CRITICAL columns
-|         [--output text|json]        masked via sqlglot lineage (****<last4>). The
-|         [--json-fields a,b]         privacy-safe counterpart to `db query`.
+|   +-- query <sql>                -- Read-only SQL over core/app/reports; CRITICAL
+|         [--output text|json]        columns masked via sqlglot lineage (****<last4>).
+|         [--json-fields a,b]         The privacy-safe counterpart to `db query`.
 |
 +-- db
 |   +-- init [--passphrase]        -- Create encrypted DB (power user)

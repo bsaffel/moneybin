@@ -4,8 +4,8 @@
 This is the shared primitive behind the ``sql_query`` MCP tool and the
 ``moneybin sql query`` CLI command. Both surfaces call
 :func:`execute_sql_query`, so privacy enforcement is
-structural rather than per-surface: the read-only gate, the core/app schema
-restriction, sqlglot column lineage, and CRITICAL masking all run here, below
+structural rather than per-surface: the read-only gate, the queryable-schema
+allowlist, sqlglot column lineage, and CRITICAL masking all run here, below
 the adapters. Neither surface can return rows that skipped redaction, and a
 future third surface inherits the same guarantees by calling this primitive.
 
@@ -43,11 +43,10 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 
 logger = logging.getLogger(__name__)
 
-# Data queries may reference only the schemas the privacy CLASSIFICATION
-# registry covers, so every queryable column has a known data class and the
-# masking guarantee is sound. reports.* is deferred until its views are
-# classified (tracked as a follow-up); raw/prep/meta are internal schemas.
-_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app"})
+# Data queries may reference these schemas: core/app (CLASSIFICATION registry)
+# and reports (declared @report classes, ADR-013). raw/prep land in Phase 2
+# (CRITICAL declarations + content-net floor); meta/seeds stay internal.
+_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app", "reports"})
 
 # --- Read-only / file-access safety gate -----------------------------------
 # DuckDB table-valued functions that read local files or make network requests.
@@ -195,7 +194,7 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     """Run a read-only SQL query with full privacy enforcement.
 
     Pipeline: read-only gate → parse → metadata-or-data routing → (data:
-    core/app schema gate → sqlglot lineage → execute → CRITICAL masking).
+    allowlisted schema gate → sqlglot lineage → execute → CRITICAL masking).
     Returns redacted rows plus the resolved tier and per-column classes.
 
     Args:
@@ -242,9 +241,12 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         disallowed = tables_outside_schemas(qtree, snapshot, _ALLOWED_QUERY_SCHEMAS)
         if disallowed:
             raise UserError(
-                "Queries are limited to the core and app schemas.",
+                "Queries are limited to these schemas: "
+                f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
                 code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
-                hint="Use the curated report views; raw/prep are internal schemas.",
+                hint=(
+                    "reports is directly queryable; raw/prep/meta are internal schemas."
+                ),
                 details={"disallowed": sorted(set(disallowed))},
             )
         output_classes = resolve_output_classes(qtree, snapshot, query)
