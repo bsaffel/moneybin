@@ -13,18 +13,20 @@ from typing import TYPE_CHECKING
 
 from fastmcp.server.dependencies import get_context
 from fastmcp.server.elicitation import AcceptedElicitation
-from pydantic import BaseModel, ConfigDict, JsonValue
+from pydantic import BaseModel, ConfigDict, JsonValue, NonNegativeInt
 
 from moneybin import error_codes
-from moneybin.config import DEFAULT_CONFIRMATION_TTL_SECONDS, get_settings
+from moneybin.config import (
+    DEFAULT_CONFIRMATION_TTL_SECONDS,
+    MAX_CONFIRMATION_TTL_SECONDS,
+    MIN_CONFIRMATION_TTL_SECONDS,
+    get_settings,
+)
 from moneybin.errors import UserError
 from moneybin.mcp.elicitation import supports_elicitation
 
 if TYPE_CHECKING:
     from fastmcp.server.context import Context
-
-_MIN_TTL_SECONDS = 30
-_MAX_TTL_SECONDS = 900
 
 
 class ConfirmationBinding(BaseModel):
@@ -38,7 +40,7 @@ class ConfirmationBinding(BaseModel):
     profile: str
     authorization_context: str
     operation_kind: str
-    blast_radius: dict[str, int]
+    blast_radius: dict[str, NonNegativeInt]
 
     def canonical_bytes(self) -> bytes:
         """Return deterministic JSON bytes for confirmation binding."""
@@ -80,7 +82,7 @@ def _mismatch() -> UserError:
 def _confirmation_declined() -> UserError:
     return UserError(
         "The destructive mutation was not confirmed.",
-        code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+        code=error_codes.MUTATION_CONFIRMATION_DECLINED,
         details={"reason": "declined"},
     )
 
@@ -91,22 +93,18 @@ def _require_digest(expected: bytes, binding: ConfirmationBinding) -> None:
         raise _mismatch()
 
 
-def _require_same_binding(
-    expected: ConfirmationBinding, actual: ConfirmationBinding
-) -> None:
-    _require_digest(_binding_digest(expected), actual)
-
-
 class ConfirmationBroker:
     """Issue and consume process-local, opaque, single-use confirmation tokens."""
 
     def __init__(self, *, ttl_seconds: int | None = None) -> None:
         """Initialize an empty broker with the configured confirmation TTL."""
         if ttl_seconds is not None and not (
-            _MIN_TTL_SECONDS <= ttl_seconds <= _MAX_TTL_SECONDS
+            MIN_CONFIRMATION_TTL_SECONDS <= ttl_seconds <= MAX_CONFIRMATION_TTL_SECONDS
         ):
             raise ValueError(
-                "Confirmation TTL must be between 30 and 900 seconds inclusive."
+                "Confirmation TTL must be between "
+                f"{MIN_CONFIRMATION_TTL_SECONDS} and "
+                f"{MAX_CONFIRMATION_TTL_SECONDS} seconds inclusive."
             )
         self._ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
@@ -130,11 +128,6 @@ class ConfirmationBroker:
             expires_at=now + timedelta(seconds=ttl_seconds),
         )
         with self._lock:
-            self._entries = {
-                token: current
-                for token, current in self._entries.items()
-                if now <= current.expires_at
-            }
             token = secrets.token_urlsafe(32)
             while token in self._entries:
                 token = secrets.token_urlsafe(32)
@@ -153,7 +146,7 @@ class ConfirmationBroker:
             entry = self._entries.pop(token, None)
         if entry is None:
             raise _replayed_or_unknown()
-        if now > entry.expires_at:
+        if now >= entry.expires_at:
             raise _expired()
         _require_digest(entry.digest, binding)
         return binding
@@ -206,6 +199,7 @@ async def confirm_exact_or_raise(
 
     ctx = _active_context()
     if ctx is not None and supports_elicitation(ctx):
+        expected_digest = _binding_digest(binding)
         result = await ctx.elicit(
             message,
             response_type=bool,
@@ -215,7 +209,7 @@ async def confirm_exact_or_raise(
             ),
         )
         if isinstance(result, AcceptedElicitation) and result.data is True:
-            _require_same_binding(binding, recompute())
+            _require_digest(expected_digest, recompute())
             return
         raise _confirmation_declined()
 

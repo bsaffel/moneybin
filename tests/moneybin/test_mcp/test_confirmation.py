@@ -109,11 +109,40 @@ def test_expired_token_is_refused() -> None:
     assert raised.value.code == error_codes.MUTATION_CONFIRMATION_EXPIRED
 
 
-def test_token_is_valid_at_exact_expiration_boundary() -> None:
+def test_token_is_expired_at_exact_expiration_boundary() -> None:
     broker = ConfirmationBroker(ttl_seconds=300)
     token = broker.issue(BINDING, now=NOW)
 
-    assert broker.consume(token, BINDING, now=NOW + timedelta(seconds=300)) == BINDING
+    with pytest.raises(UserError) as raised:
+        broker.consume(token, BINDING, now=NOW + timedelta(seconds=300))
+
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_EXPIRED
+
+
+def test_token_is_valid_immediately_before_expiration() -> None:
+    broker = ConfirmationBroker(ttl_seconds=300)
+    token = broker.issue(BINDING, now=NOW)
+
+    assert (
+        broker.consume(
+            token,
+            BINDING,
+            now=NOW + timedelta(seconds=299, microseconds=999_999),
+        )
+        == BINDING
+    )
+
+
+def test_issuing_another_token_preserves_expired_classification() -> None:
+    broker = ConfirmationBroker(ttl_seconds=300)
+    expired_token = broker.issue(BINDING, now=NOW)
+    later = NOW + timedelta(seconds=301)
+
+    broker.issue(BINDING, now=later)
+    with pytest.raises(UserError) as raised:
+        broker.consume(expired_token, BINDING, now=later)
+
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_EXPIRED
 
 
 @pytest.mark.parametrize("ttl_seconds", [29, 901])
@@ -134,6 +163,11 @@ def test_canonical_binding_ignores_json_object_key_order() -> None:
     token = broker.issue(BINDING, now=NOW)
 
     assert broker.consume(token, reordered, now=NOW) == reordered
+
+
+def test_blast_radius_rejects_negative_counts() -> None:
+    with pytest.raises(ValueError):
+        _make_binding(blast_radius={"transactions": -1})
 
 
 @pytest.mark.asyncio
@@ -210,6 +244,37 @@ async def test_accepted_elicitation_recomputes_and_verifies_binding(
 
 
 @pytest.mark.asyncio
+async def test_elicitation_binds_immutable_pre_await_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = _make_binding()
+
+    async def mutate_during_elicitation(
+        *_args: object, **_kwargs: object
+    ) -> AcceptedElicitation[bool]:
+        binding.blast_radius["transactions"] = 5
+        return AcceptedElicitation(data=True)
+
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(side_effect=mutate_during_elicitation)
+    monkeypatch.setattr("moneybin.mcp.confirmation._active_context", lambda: ctx)
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation", _supports_elicitation
+    )
+
+    with pytest.raises(UserError) as raised:
+        await confirm_exact_or_raise(
+            binding=binding,
+            recompute=lambda: binding,
+            message="Delete four transactions?",
+            confirmation_token=None,
+            broker=ConfirmationBroker(ttl_seconds=300),
+        )
+
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+
+@pytest.mark.asyncio
 async def test_accepted_false_elicitation_refuses_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -230,7 +295,7 @@ async def test_accepted_false_elicitation_refuses_confirmation(
             broker=ConfirmationBroker(ttl_seconds=300),
         )
 
-    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_DECLINED
     assert raised.value.details == {"reason": "declined"}
     recompute.assert_not_called()
 
@@ -285,7 +350,7 @@ async def test_declined_or_cancelled_elicitation_refuses_confirmation(
             broker=ConfirmationBroker(ttl_seconds=300),
         )
 
-    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_DECLINED
     assert raised.value.details == {"reason": "declined"}
     recompute.assert_not_called()
 

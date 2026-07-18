@@ -82,6 +82,7 @@ class TestSpecificCodes:
             "mutation_constraint_violation",
             "mutation_not_found",
             "mutation_ambiguous",
+            "mutation_confirmation_declined",
             "mutation_confirmation_expired",
             "mutation_confirmation_mismatch",
             "mutation_confirmation_replayed",

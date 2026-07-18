@@ -70,6 +70,15 @@ def test_mcp_confirmation_ttl_default() -> None:
 
 
 @pytest.mark.unit
+def test_mcp_confirmation_ttl_constants_define_inclusive_range() -> None:
+    from moneybin import config
+
+    assert config.MIN_CONFIRMATION_TTL_SECONDS == 30
+    assert config.DEFAULT_CONFIRMATION_TTL_SECONDS == 300
+    assert config.MAX_CONFIRMATION_TTL_SECONDS == 900
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("ttl_seconds", [30, 900])
 def test_mcp_confirmation_ttl_accepts_inclusive_bounds(ttl_seconds: int) -> None:
     assert MCPConfig(confirmation_ttl_seconds=ttl_seconds).confirmation_ttl_seconds == (

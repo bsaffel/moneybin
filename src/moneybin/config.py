@@ -234,7 +234,9 @@ class MetricsConfig(BaseModel):
 # imports config, never the reverse. get_database's max_wait default imports
 # this value back. See database-writer-coordination.md.
 DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS: float = 10.0
+MIN_CONFIRMATION_TTL_SECONDS: int = 30
 DEFAULT_CONFIRMATION_TTL_SECONDS: int = 300
+MAX_CONFIRMATION_TTL_SECONDS: int = 900
 
 
 class MCPConfig(BaseModel):
@@ -268,8 +270,8 @@ class MCPConfig(BaseModel):
     )
     confirmation_ttl_seconds: int = Field(
         default=DEFAULT_CONFIRMATION_TTL_SECONDS,
-        ge=30,
-        le=900,
+        ge=MIN_CONFIRMATION_TTL_SECONDS,
+        le=MAX_CONFIRMATION_TTL_SECONDS,
         description=(
             "Lifetime of process-local destructive-mutation confirmation tokens."
         ),

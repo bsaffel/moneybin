@@ -46,6 +46,7 @@ IMPORT_SUPERSEDED = "import_superseded"
 # classifier. The per-domain retrofits in PRs 9a-N migrate write-site
 # raise ValueError/LookupError to explicit UserError(code=MUTATION_*) calls.
 MUTATION_AMBIGUOUS = "mutation_ambiguous"
+MUTATION_CONFIRMATION_DECLINED = "mutation_confirmation_declined"
 MUTATION_CONFIRMATION_EXPIRED = "mutation_confirmation_expired"
 MUTATION_CONFIRMATION_MISMATCH = "mutation_confirmation_mismatch"
 MUTATION_CONFIRMATION_REPLAYED = "mutation_confirmation_replayed"
