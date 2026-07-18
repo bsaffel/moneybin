@@ -10,10 +10,18 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast, get_args, get_origin
 
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.payloads.reports import (
+    ReportCatalogEntry,
+    ReportCatalogPayload,
+    ReportOutputColumn,
+    ReportResultPayload,
+    ReportSemanticsPayload,
+)
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     OutputColumn,
@@ -234,3 +242,112 @@ def get_report_catalog() -> ReportCatalog:
 
     core = (spec_of(runner) for runner in ALL_REPORTS)
     return ReportCatalog((*core, *SERVICE_REPORTS, *extension_report_specs()))
+
+
+def catalog_to_payload(catalog: ReportCatalog) -> ReportCatalogPayload:
+    """Expose the catalog's static, aggregate-only metadata."""
+    return ReportCatalogPayload(
+        reports=[_catalog_entry_to_payload(report) for report in catalog.list()]
+    )
+
+
+def result_to_payload(result: CatalogReportResult) -> ReportResultPayload:
+    """Expose an already-redacted catalog result without touching executor inputs."""
+    return ReportResultPayload(
+        report_id=result.report_id,
+        parameters={
+            name: _thaw_parameter_metadata(value)
+            for name, value in result.parameters.items()
+        },
+        columns=[
+            ReportOutputColumn(
+                name=name,
+                data_class=result.output_classes[name].value,
+            )
+            for name in result.columns
+        ],
+        rows=result.records,
+        semantics=_semantics_to_payload(result.semantics),
+        period=result.period,
+        sensitivity=tier_to_sensitivity(result.tier).value,
+        count=result.total_count,
+        truncated=result.truncated,
+    )
+
+
+def _catalog_entry_to_payload(report: RegisteredReport) -> ReportCatalogEntry:
+    return ReportCatalogEntry(
+        report_id=report.report_id,
+        description=report.description,
+        parameter_schema=_parameter_schema(report),
+        parameter_classes={
+            parameter.name: parameter.data_class.value
+            for parameter in _parameter_specs(report)
+        },
+        examples=list(report.examples),
+        columns=[
+            ReportOutputColumn(
+                name=column.name,
+                description=column.description,
+                data_class=column.data_class.value,
+            )
+            for column in report.columns
+        ],
+        output_classes={
+            name: data_class.value for name, data_class in report.classes.items()
+        },
+        semantics=_semantics_to_payload(report.semantics),
+    )
+
+
+def _parameter_schema(report: RegisteredReport) -> dict[str, JsonValue]:
+    """Build the strict object schema published for one report's parameters."""
+    properties: dict[str, JsonValue] = {}
+    required: list[JsonValue] = []
+    for parameter in _parameter_specs(report):
+        property_schema = TypeAdapter(parameter.annotation).json_schema()
+        property_schema["description"] = parameter.help
+        if parameter.required:
+            required.append(parameter.name)
+        else:
+            property_schema["default"] = parameter.default
+        properties[parameter.name] = property_schema
+
+    schema: dict[str, JsonValue] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": False,
+    }
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _semantics_to_payload(semantics: ReportSemantics) -> ReportSemanticsPayload:
+    return ReportSemanticsPayload(
+        unit=semantics.unit,
+        currency=semantics.currency,
+        sign=semantics.sign,
+        kind=semantics.kind,
+        valuation_basis=semantics.valuation_basis,
+        fx_basis=semantics.fx_basis,
+        time_basis=semantics.time_basis,
+        denominator=semantics.denominator,
+        comparison_window=semantics.comparison_window,
+        exclusions=semantics.exclusions,
+        provenance=semantics.provenance,
+    )
+
+
+def _thaw_parameter_metadata(value: object) -> JsonValue:
+    """Convert only frozen JSON containers from safe result metadata to JSON shapes."""
+    if isinstance(value, Mapping):
+        return {
+            name: _thaw_parameter_metadata(item)
+            for name, item in cast(Mapping[str, object], value).items()
+        }
+    if isinstance(value, tuple):
+        return [
+            _thaw_parameter_metadata(item) for item in cast(tuple[object, ...], value)
+        ]
+    return cast(JsonValue, value)
