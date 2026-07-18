@@ -15,7 +15,7 @@ from moneybin.cli.output import (
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
-from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.envelope import build_envelope, build_error_envelope
 from moneybin.services.doctor_service import DoctorService
 
 logger = logging.getLogger(__name__)
@@ -89,19 +89,22 @@ def doctor_command(
         if failing > 0:
             actions.append("Run with --verbose to see affected transaction IDs")
         base = build_envelope(data=data, sensitivity="low", actions=actions)
-        envelope = (
-            ResponseEnvelope(
-                summary=base.summary,
-                data=data,
-                actions=base.actions,
+        if failing > 0:
+            envelope = build_error_envelope(
                 error=UserError(
                     f"{failing} invariant(s) failing",
                     code="invariant_failure",
                 ),
+                actions=base.actions,
             )
-            if failing > 0
-            else base
-        )
+            # Unlike a typical error envelope, doctor's payload IS the diagnosis
+            # — the per-invariant results and their recovery actions are what the
+            # caller ran the command for. build_error_envelope zeroes `data` by
+            # contract, so restore it here.
+            envelope.data = data
+            envelope.summary = base.summary
+        else:
+            envelope = base
         render_or_json(envelope, output, cli_actor="doctor_command")
         if failing > 0:
             raise typer.Exit(1)

@@ -33,4 +33,19 @@ def register(mcp: FastMCP, fn: Callable[..., Any], name: str, description: str) 
         idempotentHint=getattr(fn, "_mcp_idempotent", True),
         openWorldHint=getattr(fn, "_mcp_open_world", False),
     )
-    mcp.tool(name=name, description=description, tags=tags, annotations=annotations)(fn)
+    # output_schema=None disables FastMCP's output validation. `ResponseEnvelope[T]`
+    # declares `data: T`, but an error envelope carries `data=[]` by contract — so a
+    # derived schema rejects every classified error, and the agent gets an
+    # "Output validation error" string instead of the error envelope. This was
+    # previously implicit: the envelope held a `UserError`, which pydantic cannot
+    # schema-ize, so FastMCP silently derived no schema at all. Making the envelope
+    # serializable turned validation on and surfaced the conflict. Declaring it here
+    # keeps the shipped behavior and makes the reason greppable. Re-enabling schemas
+    # requires the envelope contract to admit an empty `data` on the error path.
+    mcp.tool(
+        name=name,
+        description=description,
+        tags=tags,
+        annotations=annotations,
+        output_schema=None,
+    )(fn)

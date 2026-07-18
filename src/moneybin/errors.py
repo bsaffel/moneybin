@@ -112,6 +112,37 @@ class UserError(Exception):
         return d
 
 
+class ErrorDetail(BaseModel):
+    """The wire representation of a failure, carried on ResponseEnvelope.
+
+    Distinct from `UserError`, which is the *raiseable* exception. Pydantic
+    cannot generate a schema for an Exception subclass, so an envelope holding
+    a UserError silently serialized to just its message string — dropping
+    `code`, `hint`, and `details` for every tool. This model is what actually
+    reaches the agent.
+
+    `recovery_actions` deliberately does NOT live here: the envelope's
+    top-level field is the single canonical wire location for those.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    message: str
+    code: str
+    hint: str | None = None
+    details: dict[str, Any] | None = None
+
+    @classmethod
+    def from_user_error(cls, error: UserError) -> ErrorDetail:
+        """Project a raised UserError onto its wire shape."""
+        return cls(
+            message=error.message,
+            code=error.code,
+            hint=error.hint,
+            details=error.details,
+        )
+
+
 def classify_user_error(exc: BaseException) -> UserError | None:
     """Map a known exception to a ``UserError``, or ``None`` if unexpected.
 

@@ -457,6 +457,48 @@ class TestMatchesTools:
                 # A time-series view must carry the decision timestamp.
                 assert entry["decided_at"]
 
+    async def test_tool_raised_error_carries_code_and_status_on_the_wire(
+        self, matches_env: dict[str, str]
+    ) -> None:
+        """A tool-body error reaches the agent with its full envelope intact.
+
+        Distinct from the ValidationErrorMiddleware assertion in
+        TestMCPFirstRunSetup: that path calls `to_dict()` explicitly, so it
+        stayed green while the *tool return* path — which FastMCP serializes
+        from the dataclass — silently dropped `status`, `error.code`, and
+        `error.hint`. This exercises the path that actually broke.
+        """
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.types import TextContent
+
+        server_params = StdioServerParameters(
+            command="uv",  # noqa: S607
+            args=["run", "moneybin", "mcp", "serve"],
+            env=_server_env(matches_env),
+        )
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "transactions_matches_set",
+                    {"match_id": "e2e_no_such_match", "status": "accepted"},
+                )
+
+        content = result.content[0]
+        assert isinstance(content, TextContent)
+        envelope = json.loads(content.text)
+        assert envelope["status"] == "error", (
+            f"status must survive dataclass serialization, got: {envelope}"
+        )
+        assert envelope["error"]["code"] == "mutation_not_found", (
+            f"error.code must survive dataclass serialization, got: {envelope}"
+        )
+        # recovery_actions ride the envelope's top-level field, not the error.
+        assert envelope["recovery_actions"][0]["tool"] == (
+            "transactions_matches_pending"
+        )
+
     async def test_transactions_matches_run_registered(
         self, matches_env: dict[str, str]
     ) -> None:

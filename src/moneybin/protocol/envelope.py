@@ -19,7 +19,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel
 
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import ErrorDetail, RecoveryAction, UserError
 
 
 class DetailLevel(StrEnum):
@@ -144,13 +144,25 @@ class ResponseEnvelope[T]:
     summary: SummaryMeta
     data: T
     actions: list[str] = field(default_factory=list)
-    error: UserError | None = None
+    error: ErrorDetail | None = None
     next_cursor: str | None = None
     recovery_actions: list[RecoveryAction] | None = None
+    # Derived in __post_init__, never caller-supplied — see the method's docstring.
+    status: Literal["ok", "error"] = "ok"
     # Internal observability only: per-call DataClass names for dynamic-SQL tools,
     # read by the @mcp_tool decorator to log accurate classes_returned.
     # NOT part of the wire contract — never emitted by to_dict().
     classes_returned: list[str] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        """Derive `status` from `error` so the two can never disagree.
+
+        `status` is a real field rather than a `to_dict()` computation because
+        FastMCP serializes this dataclass directly; anything computed only in
+        `to_dict()` never reaches the wire. Any caller-supplied value is
+        overwritten on purpose.
+        """
+        self.status = "error" if self.error is not None else "ok"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization.
@@ -169,42 +181,16 @@ class ResponseEnvelope[T]:
         else:
             data_serialized = self.data
         d: dict[str, Any] = {
-            "status": "error" if self.error is not None else "ok",
+            "status": self.status,
             "summary": self.summary.to_dict(),
             "data": data_serialized,
             "actions": self.actions,
         }
-        # Effective recovery_actions: the envelope-level field is the canonical
-        # wire location, but fall back to the error's own list when the
-        # envelope field wasn't populated — e.g. a caller building
-        # ResponseEnvelope(error=UserError(..., recovery_actions=[...]))
-        # directly, bypassing build_error_envelope. Without this fallback the
-        # actions would vanish (nested error copy is stripped below, top-level
-        # not emitted). An explicit suppression via recovery_actions=[] is a
-        # non-None empty list, so it is honored — not overridden by the error.
-        effective_recovery = self.recovery_actions
-        if (
-            effective_recovery is None
-            and self.error is not None
-            and self.error.recovery_actions is not None
-        ):
-            effective_recovery = self.error.recovery_actions
-
         if self.error is not None:
-            # Strip recovery_actions from the nested error dict: the envelope
-            # top-level field (emitted below from effective_recovery) is the
-            # single canonical wire location. Without this strip, an explicit
-            # suppression via recovery_actions=[] would still leak the
-            # original actions through error.to_dict() — defeating the
-            # redaction use case. Direct UserError.to_dict() callers (logging,
-            # debugging) still see recovery_actions; only the envelope-nested
-            # form drops the field.
-            err_dict = self.error.to_dict()
-            err_dict.pop("recovery_actions", None)
-            d["error"] = err_dict
+            d["error"] = self.error.model_dump(exclude_none=True)
         if self.next_cursor is not None:
             d["next_cursor"] = self.next_cursor
-        if effective_recovery is not None:
+        if self.recovery_actions is not None:
             # Coerce plain dicts defensively: callers SHOULD pass
             # RecoveryAction instances (the type annotation says so), but a
             # dict slipping in (e.g., from deserialized JSON) would otherwise
@@ -212,7 +198,7 @@ class ResponseEnvelope[T]:
             # internal failure at the wire boundary.
             d["recovery_actions"] = [
                 ra if isinstance(ra, dict) else ra.model_dump()
-                for ra in effective_recovery
+                for ra in self.recovery_actions
             ]
         return d
 
@@ -447,6 +433,6 @@ def build_error_envelope(
         summary=summary,
         data=[],
         actions=actions or [],
-        error=error,
+        error=ErrorDetail.from_user_error(error),
         recovery_actions=recovery_actions,
     )
