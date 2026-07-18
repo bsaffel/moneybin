@@ -12,6 +12,20 @@ The single icon vocabulary — 19 glyphs, custom-drawn to the grammar: 20×20 gr
 
 `Icon.jsx` also carries a reserve set drawn ahead of need (tagging, planning, connections, alerts, utility). Reserve glyphs render but are untyped and unlisted in `Icon.names`: promote one into `Icon.d.ts` + the vocabulary card only when a shipping surface needs it — never before.
 
+**"Shipping surface" means shipped app code.** A design spec *earmarks* a glyph; it does not promote it. A reserve glyph is fine in a mockup, but it must move to core before it reaches the product.
+
+### Earmarked, not promoted
+
+`eye` / `eye-off` — earmarked by the vault passphrase reveal. They stay in the reserve until the v1 vault screen ships; at that point the type union, `Icon.names`, the vocabulary card, and the `off` prop below are promoted **together**, as one API change.
+
+**Composed toggle — specified, not yet implemented.** When the promotion lands, the pair ships as one composed state on `Icon`, never a page-level one-off SVG and never two separate glyph names in the markup:
+
+```jsx
+<Icon name="eye" off />   {/* specified; the `off` prop does not exist yet */}
+```
+
+The slash draws and undraws via `stroke-dashoffset` over `--motion-fast` (120ms) — the redaction stroke. The shared eye outline never moves and the pupil fades; only the strokes that differ animate. The masked *value* swaps instantly per `motion.md` ("Amounts never animate"); only the glyph transitions.
+
 ## Rules (binding)
 
 - **Icons are sparing.** An icon never appears without a visible label except in a collapsed nav rail or an icon-only control — and then `title` (tooltip + aria-label) is mandatory.
