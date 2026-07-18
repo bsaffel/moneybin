@@ -252,6 +252,27 @@ class TestBuildEnvelope:
         assert envelope.summary.has_more is True
 
     @pytest.mark.unit
+    def test_explicit_returned_count_without_total_derives_total(self) -> None:
+        envelope = build_envelope(data={"rows": [1, 2]}, returned_count=2)
+
+        assert envelope.summary.returned_count == 2
+        assert envelope.summary.total_count == 2
+        assert envelope.summary.has_more is False
+
+    @pytest.mark.unit
+    def test_negative_explicit_returned_count_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="returned_count must be non-negative"):
+            build_envelope(data=[], returned_count=-1)
+
+    @pytest.mark.unit
+    def test_explicit_returned_count_cannot_exceed_total(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="total_count must be greater than or equal to returned_count",
+        ):
+            build_envelope(data=[], returned_count=2, total_count=1)
+
+    @pytest.mark.unit
     def test_build_with_period(self) -> None:
         envelope = build_envelope(
             data=[],

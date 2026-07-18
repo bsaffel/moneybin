@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from moneybin.privacy.taxonomy import DataClass
 
@@ -44,6 +44,19 @@ class ReportCatalogEntry(BaseModel):
     columns: Annotated[list[ReportOutputColumn], DataClass.AGGREGATE]
     output_classes: Annotated[dict[str, str], DataClass.AGGREGATE]
     semantics: Annotated[ReportSemanticsPayload, DataClass.AGGREGATE]
+
+    @model_validator(mode="after")
+    def validate_output_columns(self) -> Self:
+        """Require one exact privacy-class declaration per output column."""
+        declared = {column.name: column.data_class for column in self.columns}
+        if len(declared) != len(self.columns):
+            raise ValueError("duplicate output column")
+        if declared != self.output_classes:
+            raise ValueError(
+                "columns and output_classes must declare the same output fields "
+                "with identical privacy classes"
+            )
+        return self
 
 
 class ReportCatalogPayload(BaseModel):

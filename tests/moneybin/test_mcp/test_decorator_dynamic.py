@@ -13,6 +13,11 @@ from unittest.mock import patch
 import pytest
 
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.privacy.payloads.reports import (
+    ReportOutputColumn,
+    ReportResultPayload,
+    ReportSemanticsPayload,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 
@@ -54,6 +59,59 @@ async def test_dynamic_tool_logs_per_call_classes() -> None:
     event = captured[0]
     assert event["classes_returned"] == ["account_identifier", "txn_amount"]
     assert event["sensitivity"] == "high"
+
+
+@pytest.mark.unit
+async def test_dynamic_report_audit_logs_actual_returned_row_count() -> None:
+    captured: list[Any] = []
+
+    def _capture_event(event: Any) -> None:
+        captured.append(event)
+
+    @mcp_tool(dynamic_classification=True)
+    def _report_tool() -> ResponseEnvelope[Any]:
+        payload = ReportResultPayload(
+            report_id="core:spending",
+            parameters={},
+            semantics=ReportSemanticsPayload(
+                unit="currency",
+                currency=None,
+                sign="signed",
+                kind="flow",
+                valuation_basis="transaction amount",
+                fx_basis="no FX conversion",
+                time_basis="calendar month",
+                denominator=None,
+                comparison_window=None,
+                exclusions=(),
+                provenance=("reports.spending",),
+            ),
+            columns=[
+                ReportOutputColumn(
+                    name="amount",
+                    description="Signed money amount.",
+                    data_class="txn_amount",
+                ),
+            ],
+            rows=[{"amount": -5}, {"amount": -8}],
+            sensitivity="high",
+            count=2,
+            truncated=False,
+            period="2026-07",
+        )
+        return build_envelope(
+            data=payload,
+            sensitivity="high",
+            returned_count=len(payload.rows),
+            total_count=2,
+            classes_returned=["txn_amount"],
+        )
+
+    with patch("moneybin.mcp.decorator.write_privacy_event", _capture_event):
+        envelope = await _report_tool()  # type: ignore[arg-type]
+
+    assert envelope.summary.returned_count == 2
+    assert captured[0]["row_count"] == 2
 
 
 @pytest.mark.unit

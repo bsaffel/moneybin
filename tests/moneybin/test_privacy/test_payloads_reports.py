@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, cast, get_args, get_origin, get_type_hints
 from unittest.mock import MagicMock
 
-from pydantic import JsonValue, TypeAdapter
+import pytest
+from jsonschema import validate as validate_json_schema
+from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from moneybin.privacy.introspection import derive_tier
 from moneybin.privacy.payloads.reports import (
+    ReportCatalogEntry,
     ReportCatalogPayload,
+    ReportOutputColumn,
     ReportResultPayload,
     ReportsPayload,
 )
@@ -144,6 +150,80 @@ def test_catalog_entry_includes_complete_static_metadata() -> None:
     assert entry.semantics.provenance == ("reports.spending",)
 
 
+def test_catalog_unannotated_parameter_accepts_any_json_value() -> None:
+    spec = replace(
+        _SPEC,
+        parameters=(
+            ParamSpec(
+                "raw",
+                None,
+                None,
+                False,
+                "Any JSON value.",
+                DataClass.AGGREGATE,
+            ),
+        ),
+    )
+
+    schema = catalog_to_payload(ReportCatalog((spec,))).reports[0].parameter_schema
+    properties = cast(dict[str, dict[str, JsonValue]], schema["properties"])
+
+    assert schema["additionalProperties"] is False
+    assert "type" not in properties["raw"]
+    validate_json_schema({"raw": {"nested": [1, True, None]}}, schema)
+    with pytest.raises(JSONSchemaValidationError):
+        validate_json_schema({"unexpected": 1}, schema)
+
+
+def test_catalog_entry_rejects_output_class_mismatch() -> None:
+    semantics = catalog_to_payload(ReportCatalog((_SPEC,))).reports[0].semantics
+
+    with pytest.raises(ValidationError, match="columns and output_classes"):
+        ReportCatalogEntry(
+            report_id="core:spending",
+            description="Monthly spending totals.",
+            parameter_schema={},
+            parameter_classes={},
+            examples=[],
+            columns=[
+                ReportOutputColumn(
+                    name="date",
+                    description="Calendar date.",
+                    data_class="txn_date",
+                ),
+            ],
+            output_classes={"date": "txn_amount"},
+            semantics=semantics,
+        )
+
+
+def test_catalog_entry_rejects_duplicate_output_columns() -> None:
+    semantics = catalog_to_payload(ReportCatalog((_SPEC,))).reports[0].semantics
+
+    with pytest.raises(ValidationError, match="duplicate output column"):
+        ReportCatalogEntry(
+            report_id="core:spending",
+            description="Monthly spending totals.",
+            parameter_schema={},
+            parameter_classes={},
+            examples=[],
+            columns=[
+                ReportOutputColumn(
+                    name="date",
+                    description="Calendar date.",
+                    data_class="txn_date",
+                ),
+                ReportOutputColumn(
+                    name="date",
+                    description="Duplicate date.",
+                    data_class="txn_date",
+                ),
+            ],
+            output_classes={"date": "txn_date"},
+            semantics=semantics,
+        )
+
+
 def test_result_repeats_semantics_provenance_and_runtime_classification() -> None:
     payload = result_to_payload(_CATALOG_RESULT)
 
@@ -174,12 +254,84 @@ def test_result_parameters_thaw_only_safe_frozen_json_shapes() -> None:
 
 def test_result_payload_preserves_runtime_numeric_and_date_types() -> None:
     payload = result_to_payload(_CATALOG_RESULT)
-    envelope = build_envelope(data=payload)
+    envelope = build_envelope(
+        data=payload,
+        returned_count=len(payload.rows),
+        total_count=_CATALOG_RESULT.total_count,
+    )
     encoded = json.loads(envelope.to_json())
 
     assert isinstance(encoded["data"]["rows"][0]["amount"], float)
     assert encoded["data"]["rows"][0]["amount"] == 42.5
     assert encoded["data"]["rows"][0]["date"] == "2026-07-01"
+    assert envelope.summary.returned_count == 1
+    assert envelope.summary.total_count == 1
+    assert envelope.summary.has_more is False
+
+
+def test_result_payload_explicit_count_overrides_multiple_list_fields() -> None:
+    result = replace(
+        _CATALOG_RESULT,
+        records=[
+            {"date": date(2026, 7, 1), "amount": Decimal("42.50")},
+            {"date": date(2026, 7, 2), "amount": Decimal("10.00")},
+        ],
+        total_count=2,
+    )
+    payload = result_to_payload(result)
+
+    envelope = build_envelope(
+        data=payload,
+        returned_count=len(payload.rows),
+        total_count=result.total_count,
+    )
+
+    assert envelope.summary.returned_count == 2
+    assert envelope.summary.total_count == 2
+    assert envelope.summary.has_more is False
+
+
+def test_result_payload_explicit_count_marks_truncated_result() -> None:
+    result = replace(
+        _CATALOG_RESULT,
+        records=[
+            {"date": date(2026, 7, 1), "amount": Decimal("42.50")},
+            {"date": date(2026, 7, 2), "amount": Decimal("10.00")},
+        ],
+        total_count=3,
+        truncated=True,
+    )
+    payload = result_to_payload(result)
+
+    envelope = build_envelope(
+        data=payload,
+        returned_count=len(payload.rows),
+        total_count=result.total_count,
+    )
+
+    assert envelope.summary.returned_count == 2
+    assert envelope.summary.total_count == 3
+    assert envelope.summary.has_more is True
+
+
+def test_result_payload_explicit_count_preserves_zero_limit_result() -> None:
+    result = replace(
+        _CATALOG_RESULT,
+        records=[],
+        total_count=1,
+        truncated=True,
+    )
+    payload = result_to_payload(result)
+
+    envelope = build_envelope(
+        data=payload,
+        returned_count=len(payload.rows),
+        total_count=result.total_count,
+    )
+
+    assert envelope.summary.returned_count == 0
+    assert envelope.summary.total_count == 1
+    assert envelope.summary.has_more is True
 
 
 def test_result_row_contract_is_not_falsely_annotated_as_aggregate() -> None:

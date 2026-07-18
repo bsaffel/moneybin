@@ -234,6 +234,7 @@ def build_envelope(
     data: Any,
     sensitivity: Literal["low", "medium", "high", "critical"] = "low",
     total_count: int | None = None,
+    returned_count: int | None = None,
     next_cursor: str | None = None,
     period: str | None = None,
     display_currency: str = "USD",
@@ -261,6 +262,8 @@ def build_envelope(
             effective tier from the return type and governs redaction.
         total_count: Total matching records (if known and different from
             returned count). When None, inferred from data length.
+        returned_count: Explicit number of result rows returned. When provided,
+            overrides payload-shape heuristics and must not exceed total_count.
         next_cursor: Opaque pagination token. When provided, ``summary.has_more``
             is forced to ``True`` regardless of count comparison.
         period: Human-readable period string (e.g., ``"2026-01 to 2026-04"``).
@@ -281,21 +284,32 @@ def build_envelope(
         A fully populated ResponseEnvelope.
     """
     data_any: Any = data  # widen to Any to avoid union-narrowing issues below
-    if isinstance(data_any, list):
-        returned = len(cast(list[Any], data_any))
-    elif is_dataclass(data_any) and not isinstance(data_any, type):
-        returned = _count_typed_payload(data_any)
-    elif isinstance(data_any, BaseModel):
-        returned = _count_pydantic_payload(data_any)
+    if returned_count is not None:
+        if returned_count < 0:
+            raise ValueError("returned_count must be non-negative")
+        actual_total = total_count if total_count is not None else returned_count
+        if actual_total < returned_count:
+            raise ValueError(
+                "total_count must be greater than or equal to returned_count"
+            )
+        returned = returned_count
     else:
-        returned = 1
+        if isinstance(data_any, list):
+            returned = len(cast(list[Any], data_any))
+        elif is_dataclass(data_any) and not isinstance(data_any, type):
+            returned = _count_typed_payload(data_any)
+        elif isinstance(data_any, BaseModel):
+            returned = _count_pydantic_payload(data_any)
+        else:
+            returned = 1
 
-    actual_total = total_count if total_count is not None else returned
-    # For write-result payloads (aggregate dataclasses with no primary row list),
-    # _count_typed_payload returns 0 from an empty error_details field.  When the
-    # caller explicitly supplied total_count, treat all inputs as "returned".
-    if returned == 0 and total_count is not None and total_count > 0:
-        returned = actual_total
+        actual_total = total_count if total_count is not None else returned
+        # For write-result payloads (aggregate dataclasses with no primary row
+        # list), _count_typed_payload returns 0 from an empty error_details
+        # field. When the caller explicitly supplied total_count, treat all
+        # inputs as "returned".
+        if returned == 0 and total_count is not None and total_count > 0:
+            returned = actual_total
     has_more = next_cursor is not None or actual_total > returned
 
     summary = SummaryMeta(

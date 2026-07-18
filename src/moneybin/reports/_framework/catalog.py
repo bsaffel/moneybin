@@ -305,7 +305,8 @@ def _parameter_schema(report: RegisteredReport) -> dict[str, JsonValue]:
     properties: dict[str, JsonValue] = {}
     required: list[JsonValue] = []
     for parameter in _parameter_specs(report):
-        property_schema = TypeAdapter(parameter.annotation).json_schema()
+        annotation = Any if parameter.annotation is None else parameter.annotation
+        property_schema = TypeAdapter(annotation).json_schema()
         property_schema["description"] = parameter.help
         if parameter.required:
             required.append(parameter.name)
