@@ -1,10 +1,11 @@
 # Feature: Queryable Internal Schemas
 
 ## Status
-draft
+in-progress
 
 ## Milestone
-M2O (provisional — reconcile against the roadmap at `draft → ready`).
+M2O. Phase 1 (`reports.*`) implemented; Phase 2 (`raw`/`prep` + content-net
+floor) designed.
 
 ## Type
 Feature — extends the `sql_query` surface. Builds on the declared-class
