@@ -29,12 +29,11 @@ from moneybin.services.schema_catalog import build_schema_doc
 
 @mcp_tool(dynamic_classification=True)
 def sql_query(query: str) -> ResponseEnvelope[Any]:
-    """Execute a read-only SQL query against the core and app schemas.
+    """Execute a read-only SQL query against the core, app, and reports schemas.
 
     Only SELECT, WITH, DESCRIBE, SHOW, PRAGMA, and EXPLAIN queries are allowed.
     Writes and file-access functions are blocked. Data queries may reference
-    only the ``core`` and ``app`` schemas (use the reports_* tools for curated
-    report views); other schemas are refused.
+    the ``core``, ``app``, and ``reports`` schemas; other schemas are refused.
 
     Amounts use the accounting convention: negative = expense, positive = income.
     Currency is named in summary.display_currency.

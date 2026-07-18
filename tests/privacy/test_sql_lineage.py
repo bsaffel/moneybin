@@ -15,11 +15,13 @@ import yaml
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
     SqlParseError,
+    _class_of_key,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
     expand_star,
     get_current_schema_snapshot,
     is_data_query,
     parse_cached,
+    reports_class_map,
     resolve_output_classes,
     tables_outside_schemas,
 )
@@ -378,3 +380,42 @@ def test_scalar_subquery_count_does_not_downgrade(populated_db: Database) -> Non
         populated_db,
     )
     assert out == {"total": DataClass.TXN_AMOUNT}
+
+
+# ---------------------------------------------------------------------------
+# Task 1: Reports declared-class lookup
+# ---------------------------------------------------------------------------
+
+
+def test_reports_class_map_is_keyed_by_reports_schema() -> None:
+    m = reports_class_map()
+    assert m, "expected at least one @report in ALL_REPORTS"
+    assert all(schema == "reports" for (schema, _table) in m)
+
+
+def test_reports_class_map_account_id_is_critical() -> None:
+    # Every report that exposes account_id must declare it CRITICAL (ADR-013).
+    m = reports_class_map()
+    for cols in m.values():
+        if "account_id" in cols:
+            assert cols["account_id"] is DataClass.ACCOUNT_IDENTIFIER
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Resolve reports.* columns in _class_of_key
+# ---------------------------------------------------------------------------
+
+
+def test_class_of_key_resolves_reports_via_declared_map() -> None:
+    # Pick a real declared (schema, table, column) and assert it resolves.
+    (schema, table), cols = next(iter(reports_class_map().items()))
+    col, expected = next(iter(cols.items()))
+    assert _class_of_key((schema, table, col)) is expected
+
+
+def test_class_of_key_unknown_reports_column_is_none() -> None:
+    # Real declared report table, but a column it does not declare -> None.
+    # (Completeness guarantees real columns ARE declared; this probes the
+    # known-table / unknown-column path specifically.)
+    (schema, table), _cols = next(iter(reports_class_map().items()))
+    assert _class_of_key((schema, table, "no_such_column_xyz")) is None

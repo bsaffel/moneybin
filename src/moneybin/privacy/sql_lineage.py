@@ -4,21 +4,27 @@
 metadata. ``sql_query`` has no static return type — its shape is the caller's
 query. This module recovers the same per-column ``DataClass`` mapping by
 parsing the SQL, expanding ``*`` against the live schema, and resolving each
-output column to a class via the ``CLASSIFICATION`` registry. The result feeds
-``redact_records`` (CRITICAL masking today; whatever ``_TRANSFORMS`` does
-tomorrow) and sets the per-call envelope sensitivity.
+output column to a class via the ``CLASSIFICATION`` registry (and, for
+``reports`` columns, each report's declared ``@report(classes=…)`` map). The
+result feeds ``redact_records`` (CRITICAL masking today; whatever
+``_TRANSFORMS`` does tomorrow) and sets the per-call envelope sensitivity.
 
 Fail-closed: anything we cannot resolve is treated as the most sensitive
 class the query could touch (max tier over all input columns), so we
 over-redact rather than leak.
 
-Scope: this module classifies columns in the ``core`` and ``app`` schemas
-only — those are the schemas the ``CLASSIFICATION`` registry covers. A query
-that references other schemas (``raw``/``prep``) yields no classifiable input
-columns, so an unresolvable projection falls back to ``AGGREGATE`` (LOW)
-rather than CRITICAL. Callers (the ``sql_query`` wiring) MUST restrict the
-query to classified schemas before relying on this module's masking — see the
-table-allowlist gate in the tool layer.
+Scope: this module classifies columns in the ``core``, ``app``, and
+``reports`` schemas. ``core``/``app`` resolve via the ``CLASSIFICATION``
+registry; ``reports`` resolves via each report's declared
+``@report(classes=…)`` map (ADR-013), because SQLMesh deploys report views
+as ``SELECT *`` pointers lineage cannot classify. Both sources are
+completeness-tested, so every deployed column in these schemas is declared
+and resolves. A query that references any other schema (``raw``/``prep``/
+``meta``) yields no classifiable input columns, so an unresolvable
+projection falls back to ``AGGREGATE`` (LOW) rather than CRITICAL. Callers
+(the ``sql_query`` wiring) MUST restrict the query to the allowlisted
+schemas before relying on this module's masking — see the table-allowlist
+gate in the tool layer.
 
 API note (sqlglot 30.8.0): after ``qualify()``, ``Column.table`` is the
 alias that appeared in the SQL (e.g. ``"t"`` for ``t.amount``) or the
@@ -106,7 +112,7 @@ def parse_cached(sql: str) -> exp.Expr:
 
 @dataclass(frozen=True)
 class SchemaSnapshot:
-    """Catalog columns for core.*/app.* plus a sqlglot MappingSchema.
+    """Catalog columns for core.*/app.*/reports.* plus a sqlglot MappingSchema.
 
     ``columns`` is the (schema, table, column) set for membership checks and
     the conservative fallback. ``mapping`` drives sqlglot star expansion and
@@ -157,10 +163,11 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
     """Return a SchemaSnapshot whose expensive MappingSchema build is cached.
 
     Per call this issues two cheap catalog queries (the migration version and
-    the core/app column list); both are sub-millisecond on a local DuckDB and
-    dwarfed by the per-call connection open. The costly part — building the
-    sqlglot ``MappingSchema`` — is memoised by ``_build_snapshot`` keyed on
-    (version, ordered columns), so it runs only when the schema actually changes.
+    the core/app/reports column list); both are sub-millisecond on a local
+    DuckDB and dwarfed by the per-call connection open. The costly part —
+    building the sqlglot ``MappingSchema`` — is memoised by ``_build_snapshot``
+    keyed on (version, ordered columns), so it runs only when the schema
+    actually changes.
 
     Columns are ordered by ``column_index`` (DuckDB's definition order) so star
     expansion matches the runtime column order — see ``_build_snapshot``.
@@ -170,7 +177,7 @@ def get_current_schema_snapshot(db: Database) -> SchemaSnapshot:
         """
         SELECT schema_name, table_name, column_name
         FROM duckdb_columns()
-        WHERE schema_name IN ('core', 'app')
+        WHERE schema_name IN ('core', 'app', 'reports')
         ORDER BY schema_name, table_name, column_index
         """
     ).fetchall()
@@ -285,7 +292,15 @@ def collect_input_columns(
 
 def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     schema, table, column = key
-    return CLASSIFICATION.get((schema, table), {}).get(column)
+    dc = CLASSIFICATION.get((schema, table), {}).get(column)
+    if dc is not None:
+        return dc
+    # reports.* columns are declared on the @report runner, not in
+    # CLASSIFICATION — SQLMesh deploys the view as a `SELECT *` pointer that
+    # lineage can't classify (ADR-013).
+    if schema == "reports":
+        return reports_class_map().get((schema, table), {}).get(column)
+    return None
 
 
 def _fallback_class(
@@ -301,9 +316,10 @@ def _fallback_class(
     protect.
 
     "None resolvable" → AGGREGATE (LOW) is correct only when the query is
-    restricted to classified (core/app) schemas: an unclassified-schema query
-    has no input columns here to raise the floor. The caller enforces that
-    restriction (see module docstring); within core/app, any query touching a
+    restricted to the classified schemas (core/app via CLASSIFICATION, reports
+    via declared @report class maps): an unclassified-schema query has no input
+    columns here to raise the floor. The caller enforces that restriction (see
+    module docstring); within the classified schemas, any query touching a
     CRITICAL column raises the fallback floor to CRITICAL.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
@@ -500,3 +516,52 @@ def derive_query_tier(output_classes: dict[str, DataClass]) -> Tier:
     if not output_classes:
         return Tier.LOW
     return max(c.tier for c in output_classes.values())
+
+
+# ---------------------------------------------------------------------------
+# Reports declared-class lookup
+# ---------------------------------------------------------------------------
+
+
+@functools.cache
+def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
+    """(schema, table) -> {column: DataClass}, merged from two sources.
+
+    Reports declare their classes on @report(classes=...) (ADR-013); lineage
+    can't derive them because SQLMesh deploys reports.* as `SELECT *` pointers.
+    A deployed reports.* view without an @report runner yet (net_worth,
+    uncategorized_queue) is covered by the transitional bridge in
+    reports/definitions/_bridged_classes.py instead — see that module's
+    docstring. Both sources are imported lazily to avoid a privacy<->reports
+    import cycle and to keep the CLI cold-start path from eagerly loading
+    report runners.
+
+    Coverage (package reports): this maps only the in-tree ``ALL_REPORTS``
+    runners plus the bridge. The framework also ships ``discover_reports()``
+    (``reports/_framework/registry.py``) for package-contributed ``@report``
+    runners, but that scanner is NOT wired into the live server yet, so no
+    ``reports.*`` view outside ``ALL_REPORTS``/the bridge can be deployed today.
+    When package-report discovery IS wired in (M2M), it MUST feed this map too —
+    otherwise a package report with an undeclared CRITICAL column resolves to the
+    unmasked ``AGGREGATE`` fallback, reopening the masking hole the bridge closed.
+    Backstop: ``test_reports_classification.py`` fails if any *deployed*
+    ``reports.*`` view is uncovered here.
+    """
+    from moneybin.reports._framework.registry import spec_of  # noqa: PLC0415
+    from moneybin.reports.definitions import ALL_REPORTS  # noqa: PLC0415
+    from moneybin.reports.definitions._bridged_classes import (  # noqa: PLC0415
+        BRIDGED_REPORT_CLASSES,
+    )
+
+    out: dict[tuple[str, str], dict[str, DataClass]] = {}
+    for runner in ALL_REPORTS:
+        spec = spec_of(runner)
+        out[(spec.view.schema, spec.view.name)] = dict(spec.classes)
+    for key, cols in BRIDGED_REPORT_CLASSES.items():
+        if key in out:
+            raise RuntimeError(
+                f"reports class bridge {key} duplicates an @report runner; "
+                "remove the bridge entry now that the view has a runner"
+            )
+        out[key] = dict(cols)
+    return out
