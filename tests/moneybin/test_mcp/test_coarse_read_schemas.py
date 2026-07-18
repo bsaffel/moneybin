@@ -136,6 +136,24 @@ async def _assert_canonical_variant(
     return response.structuredContent
 
 
+async def _assert_canonical_error(
+    mcp: FastMCP,
+    name: str,
+    arguments: dict[str, Any],
+    expected_code: str,
+) -> dict[str, Any]:
+    response = await call_tool_raw(mcp, name, arguments)
+    text = next(
+        block.text for block in response.content if isinstance(block, TextContent)
+    )
+    assert response.isError is False
+    assert response.structuredContent is not None
+    assert json.loads(text) == response.structuredContent
+    assert response.structuredContent["status"] == "error"
+    assert response.structuredContent["error"]["code"] == expected_code
+    return response.structuredContent
+
+
 async def test_system_coarse_tools_render_schema_contract() -> None:
     mcp = isolated_server(register_system_coarse_reads)
 
@@ -345,33 +363,75 @@ async def test_accounts_coarse_transport_variants(
 
 
 @pytest.mark.parametrize(
-    ("name", "arguments", "sensitivity"),
+    ("name", "arguments", "sensitivity", "classes"),
     [
-        ("accounts", {}, "critical"),
+        (
+            "accounts",
+            {},
+            "critical",
+            {
+                "balance",
+                "currency",
+                "institution",
+                "institution_account_number",
+                "record_id",
+                "txn_type",
+                "user_note",
+            },
+        ),
         (
             "accounts",
             {"view": "detail", "reference": "CHECKING"},
             "critical",
+            {
+                "balance",
+                "currency",
+                "institution",
+                "institution_account_number",
+                "record_id",
+                "routing_number",
+                "txn_type",
+                "user_note",
+            },
         ),
-        ("accounts", {"view": "summary"}, "low"),
+        ("accounts", {"view": "summary"}, "low", {"aggregate"}),
         (
             "accounts",
             {"view": "resolve", "query": "checking"},
             "medium",
+            {"aggregate", "institution", "record_id", "txn_type", "user_note"},
         ),
-        ("accounts_balances", {}, "high"),
+        (
+            "accounts_balances",
+            {},
+            "high",
+            {"balance", "record_id", "txn_date", "txn_type"},
+        ),
         (
             "accounts_balances",
             {"view": "history", "reference": "CHECKING"},
             "high",
+            {"balance", "record_id", "txn_date", "txn_type"},
         ),
-        ("accounts_balances", {"view": "assertions"}, "high"),
+        (
+            "accounts_balances",
+            {"view": "assertions"},
+            "high",
+            {
+                "balance",
+                "record_id",
+                "timestamp_observability",
+                "txn_date",
+                "user_note",
+            },
+        ),
     ],
 )
 async def test_accounts_coarse_call_emits_one_public_privacy_event(
     name: str,
     arguments: dict[str, Any],
     sensitivity: str,
+    classes: set[str],
     mcp_db: object,
 ) -> None:
     captured: list[dict[str, Any]] = []
@@ -386,7 +446,182 @@ async def test_accounts_coarse_call_emits_one_public_privacy_event(
     assert len(captured) == 1
     assert captured[0]["actor"] == f"mcp.{name}"
     assert captured[0]["sensitivity"] == sensitivity
-    assert captured[0]["classes_returned"] != ["unclassified"]
+    assert set(captured[0]["classes_returned"]) == classes
+
+
+async def test_accounts_coarse_masks_sensitive_account_fields(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            UPDATE core.dim_accounts
+            SET last_four = '1234'
+            WHERE account_id = 'ACC001'
+            """
+        )
+    mcp = isolated_server(register_accounts_coarse_reads)
+
+    listed = await _assert_canonical_variant(mcp, "accounts", {}, "list")
+    detail = await _assert_canonical_variant(
+        mcp,
+        "accounts",
+        {"view": "detail", "reference": "ACC001"},
+        "detail",
+    )
+
+    account_row = next(
+        row for row in listed["data"]["rows"] if row["account_id"] == "ACC001"
+    )
+    assert account_row["last_four"] == "****1234"
+    assert detail["data"]["account"]["last_four"] == "****1234"
+    assert detail["data"]["account"]["routing_number"] == "*****"
+
+
+async def test_accounts_coarse_raw_errors_are_canonical_and_sanitized(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            UPDATE core.dim_accounts
+            SET display_name = 'Savings'
+            WHERE account_id IN ('ACC001', 'ACC002')
+            """
+        )
+    mcp = isolated_server(register_accounts_coarse_reads)
+
+    ambiguous = await _assert_canonical_error(
+        mcp,
+        "accounts",
+        {"view": "detail", "reference": "Savings"},
+        "ENTITY_REFERENCE_AMBIGUOUS",
+    )
+    missing_reference = "secret-account-123456789"
+    missing = await _assert_canonical_error(
+        mcp,
+        "accounts",
+        {"view": "detail", "reference": missing_reference},
+        "ENTITY_REFERENCE_NOT_FOUND",
+    )
+
+    assert ambiguous["error"]["details"]["candidate_ids"] == ["ACC001", "ACC002"]
+    assert "Savings" not in ambiguous["error"]["message"]
+    assert missing["error"]["details"]["candidate_ids"] == []
+    assert missing_reference not in missing["error"]["message"]
+
+
+async def test_accounts_coarse_raw_cursors_reject_cross_filter_reuse(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_balances_daily (
+                account_id, balance_date, balance, is_observed,
+                observation_source, reconciliation_delta
+            ) VALUES
+                ('ACC001', '2025-06-29', 100.00, TRUE, 'ofx', NULL),
+                ('ACC001', '2025-06-30', 125.00, TRUE, 'ofx', NULL)
+            """
+        )
+    mcp = isolated_server(register_accounts_coarse_reads)
+
+    account_page = await _assert_canonical_variant(
+        mcp,
+        "accounts",
+        {"view": "list", "include_closed": True, "limit": 1},
+        "list",
+    )
+    await _assert_canonical_error(
+        mcp,
+        "accounts",
+        {
+            "view": "list",
+            "include_closed": False,
+            "limit": 1,
+            "cursor": account_page["next_cursor"],
+        },
+        "ACCOUNT_CURSOR_INVALID",
+    )
+
+    resolve_page = await _assert_canonical_variant(
+        mcp,
+        "accounts",
+        {"view": "resolve", "query": "bank", "limit": 1},
+        "resolve",
+    )
+    await _assert_canonical_error(
+        mcp,
+        "accounts",
+        {
+            "view": "resolve",
+            "query": "checking",
+            "limit": 1,
+            "cursor": resolve_page["next_cursor"],
+        },
+        "ACCOUNT_CURSOR_INVALID",
+    )
+
+    balance_page = await _assert_canonical_variant(
+        mcp,
+        "accounts_balances",
+        {
+            "view": "history",
+            "reference": "ACC001",
+            "start": "2025-06-29",
+            "end": "2025-06-30",
+            "limit": 1,
+        },
+        "history",
+    )
+    await _assert_canonical_error(
+        mcp,
+        "accounts_balances",
+        {
+            "view": "history",
+            "reference": "ACC001",
+            "start": "2025-06-30",
+            "end": "2025-06-30",
+            "limit": 1,
+            "cursor": balance_page["next_cursor"],
+        },
+        "BALANCE_CURSOR_INVALID",
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "code"),
+    [
+        (
+            {"view": "summary", "include_closed": True},
+            "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+        ),
+        (
+            {"view": "resolve", "query": "checking", "include_closed": True},
+            "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+        ),
+        (
+            {"view": "detail", "reference": "ACC001", "limit": 1},
+            "ACCOUNT_LIMIT_NOT_ALLOWED",
+        ),
+        ({"view": "summary", "limit": 1}, "ACCOUNT_LIMIT_NOT_ALLOWED"),
+    ],
+)
+async def test_accounts_coarse_raw_rejects_unused_arguments(
+    arguments: dict[str, Any],
+    code: str,
+    mcp_db: object,
+) -> None:
+    mcp = isolated_server(register_accounts_coarse_reads)
+
+    await _assert_canonical_error(mcp, "accounts", arguments, code)
 
 
 @pytest.mark.parametrize(

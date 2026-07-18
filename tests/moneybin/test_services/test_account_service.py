@@ -896,6 +896,22 @@ class TestAccountServiceResolve:
         assert len(payload.matches) == 2
 
     @pytest.mark.unit
+    def test_unlimited_results_have_stable_account_id_tiebreak(
+        self, extended_db: Database
+    ) -> None:
+        """Equal-confidence matches are complete and ordered by stable ID."""
+        for account_id in ("tie_c", "tie_a", "tie_b"):
+            _insert_dim_account(extended_db, account_id, display_name="zzzz")
+
+        payload = AccountService(extended_db).resolve("zzzz", limit=None)
+
+        assert [match.account_id for match in payload.matches] == [
+            "tie_a",
+            "tie_b",
+            "tie_c",
+        ]
+
+    @pytest.mark.unit
     def test_negative_limit_returns_empty(self, extended_db: Database) -> None:
         """Negative limit returns empty payload.
 

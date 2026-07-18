@@ -417,8 +417,14 @@ def accounts_resolve(
     cutoff used by the tabular importer) emits an action hint suggesting the
     agent verify with the user.
     """
-    from moneybin.config import get_settings
+    return _resolve_accounts(query=query, limit=limit)
 
+
+def _resolve_accounts(
+    query: str,
+    limit: int | None,
+) -> ResponseEnvelope[AccountResolvePayload]:
+    """Resolve account candidates for both legacy and coarse read surfaces."""
     with get_database(read_only=True) as db:
         payload = AccountService(db).resolve(query=query, limit=limit)
     threshold = get_settings().providers.tabular.account_match_threshold
@@ -831,10 +837,15 @@ def _coarse_envelope[T](
     )
 
 
-def _coarse_cursor(tool: str, view: str, offset: int) -> str:
-    """Encode a tool- and view-bound opaque offset cursor."""
+def _coarse_cursor(
+    tool: str,
+    view: str,
+    offset: int,
+    filters: dict[str, object],
+) -> str:
+    """Encode a cursor bound to its complete canonical query state."""
     raw = json.dumps(
-        {"offset": offset, "tool": tool, "view": view},
+        {"filters": filters, "offset": offset, "tool": tool, "view": view},
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
@@ -846,8 +857,9 @@ def _coarse_offset(
     *,
     tool: Literal["accounts", "accounts_balances"],
     view: str,
+    filters: dict[str, object],
 ) -> int:
-    """Decode an opaque cursor and reject malformed or cross-view reuse."""
+    """Decode an opaque cursor and reject cross-query reuse."""
     if cursor is None:
         return 0
     code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
@@ -861,7 +873,8 @@ def _coarse_offset(
     payload = cast(dict[str, Any], value)
     offset = payload.get("offset")
     if (
-        set(payload) != {"offset", "tool", "view"}
+        set(payload) != {"filters", "offset", "tool", "view"}
+        or payload.get("filters") != filters
         or payload.get("tool") != tool
         or payload.get("view") != view
         or isinstance(offset, bool)
@@ -879,12 +892,13 @@ def _page[T](
     view: str,
     limit: int,
     cursor: str | None,
+    filters: dict[str, object],
 ) -> tuple[list[T], str | None]:
     """Return one deterministic offset page and its next cursor."""
-    offset = _coarse_offset(cursor, tool=tool, view=view)
+    offset = _coarse_offset(cursor, tool=tool, view=view, filters=filters)
     selected = rows[offset : offset + limit]
     next_cursor = (
-        _coarse_cursor(tool, view, offset + limit)
+        _coarse_cursor(tool, view, offset + limit, filters)
         if len(rows) > offset + limit
         else None
     )
@@ -953,18 +967,21 @@ def _account_actions(
     view: Literal["list", "resolve"],
     limit: int,
     next_cursor: str | None,
+    include_closed: bool = False,
+    query: str | None = None,
 ) -> list[str]:
     """Preserve legacy hints and add a continuation on the replacement surface."""
     selected = list(actions)
     if next_cursor is not None:
         if view == "list":
             selected.append(
-                f"Continue with accounts(view='list', limit={limit}, "
+                f"Continue with accounts(view='list', "
+                f"include_closed={include_closed!r}, limit={limit}, "
                 f"cursor='{next_cursor}')"
             )
         else:
             selected.append(
-                f"Continue with accounts(view='resolve', query=<same query>, "
+                f"Continue with accounts(view='resolve', query={query!r}, "
                 f"limit={limit}, cursor='{next_cursor}')"
             )
     return list(dict.fromkeys(selected))
@@ -1019,8 +1036,19 @@ async def accounts_coarse(
             "This account view does not accept a pagination cursor.",
             code="ACCOUNT_CURSOR_NOT_ALLOWED",
         )
+    if view in ("summary", "resolve") and include_closed:
+        raise UserError(
+            "include_closed is not valid for this account view.",
+            code="ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+        )
+    if view in ("detail", "summary") and limit != 100:
+        raise UserError(
+            "limit is not valid for this account view.",
+            code="ACCOUNT_LIMIT_NOT_ALLOWED",
+        )
 
     if view == "list":
+        filters: dict[str, object] = {"include_closed": bool(include_closed)}
         response = await _run_account_read(
             accounts,
             include_archived=bool(include_closed),
@@ -1032,6 +1060,7 @@ async def accounts_coarse(
             view="list",
             limit=limit,
             cursor=cursor,
+            filters=filters,
         )
         payload = AccountsListView(rows=page)
         return _coarse_envelope(
@@ -1046,6 +1075,7 @@ async def accounts_coarse(
                 view="list",
                 limit=limit,
                 next_cursor=next_cursor,
+                include_closed=bool(include_closed),
             ),
         )
 
@@ -1077,23 +1107,26 @@ async def accounts_coarse(
             actions=response.actions,
         )
 
-    offset = _coarse_offset(cursor, tool="accounts", view="resolve")
+    canonical_query = cast(str, query).lower().strip()
+    filters = {"query": canonical_query}
     response = await _run_account_read(
-        accounts_resolve,
+        _resolve_accounts,
         query=cast(str, query),
-        limit=offset + limit + 1,
+        limit=None,
     )
-    matches = response.data.matches
-    page = matches[offset : offset + limit]
-    has_more = len(matches) > offset + limit
-    next_cursor = (
-        _coarse_cursor("accounts", "resolve", offset + limit) if has_more else None
+    page, next_cursor = _page(
+        response.data.matches,
+        tool="accounts",
+        view="resolve",
+        limit=limit,
+        cursor=cursor,
+        filters=filters,
     )
     payload = AccountsResolveView(matches=page)
     return _coarse_envelope(
         payload,
         contract_type=AccountsResolveView,
-        total_count=offset + len(page) + (1 if has_more else 0),
+        total_count=len(response.data.matches),
         returned_count=len(page),
         next_cursor=next_cursor,
         display_currency=response.summary.display_currency,
@@ -1102,6 +1135,7 @@ async def accounts_coarse(
             view="resolve",
             limit=limit,
             next_cursor=next_cursor,
+            query=cast(str, query),
         ),
     )
 
@@ -1123,14 +1157,22 @@ def _balance_actions(
     view: Literal["latest", "history", "assertions"],
     limit: int,
     next_cursor: str | None,
+    reference: str | None,
+    start: _date | None,
+    end: _date | None,
 ) -> list[str]:
     """Preserve balance hints and add a public continuation hint."""
     selected = list(actions)
     if next_cursor is not None:
-        selected.append(
-            f"Continue with accounts_balances(view='{view}', limit={limit}, "
-            f"cursor='{next_cursor}', preserving the same filters)"
-        )
+        arguments = [f"view='{view}'"]
+        if reference is not None:
+            arguments.append(f"reference={reference!r}")
+        if start is not None:
+            arguments.append(f"start={start.isoformat()!r}")
+        if end is not None:
+            arguments.append(f"end={end.isoformat()!r}")
+        arguments.extend((f"limit={limit}", f"cursor='{next_cursor}'"))
+        selected.append(f"Continue with accounts_balances({', '.join(arguments)})")
     return list(dict.fromkeys(selected))
 
 
@@ -1161,10 +1203,15 @@ async def accounts_balances_coarse(
         )
 
     account_id = (
-        await _resolve_account_reference(reference, include_closed=False)
+        await _resolve_account_reference(reference, include_closed=True)
         if reference is not None
         else None
     )
+    filters: dict[str, object] = {
+        "account_id": account_id,
+        "end": end.isoformat() if end is not None else None,
+        "start": start.isoformat() if start is not None else None,
+    }
 
     if view == "latest":
         response = await _run_account_read(
@@ -1178,6 +1225,7 @@ async def accounts_balances_coarse(
             view="latest",
             limit=limit,
             cursor=cursor,
+            filters=filters,
         )
         payload = AccountsBalancesLatestView(observations=page)
         contract_type = AccountsBalancesLatestView
@@ -1194,6 +1242,7 @@ async def accounts_balances_coarse(
             view="history",
             limit=limit,
             cursor=cursor,
+            filters=filters,
         )
         payload = AccountsBalancesHistoryView(observations=page)
         contract_type = AccountsBalancesHistoryView
@@ -1208,6 +1257,7 @@ async def accounts_balances_coarse(
             view="assertions",
             limit=limit,
             cursor=cursor,
+            filters=filters,
         )
         payload = AccountsBalancesAssertionsView(assertions=page)
         contract_type = AccountsBalancesAssertionsView
@@ -1229,6 +1279,9 @@ async def accounts_balances_coarse(
             view=view,
             limit=limit,
             next_cursor=next_cursor,
+            reference=reference,
+            start=start,
+            end=end,
         ),
     )
 

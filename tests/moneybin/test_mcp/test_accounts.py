@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Any, Literal
 
 import pytest
 from fastmcp import FastMCP
@@ -83,6 +84,34 @@ def _seed_balance_data() -> None:
             INSERT INTO app.balance_assertions (
                 account_id, assertion_date, balance, notes
             ) VALUES ('ACC001', '2025-06-30', 4975.00, 'statement')
+            """
+        )
+
+
+def _seed_archived_balance_data() -> None:
+    """Insert one archived account with observations and an assertion."""
+    _seed_named_account(
+        "ARCHIVED_BALANCE",
+        display_name="Old Checking",
+        account_type="CHECKING",
+        archived=True,
+    )
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_balances_daily (
+                account_id, balance_date, balance, is_observed,
+                observation_source, reconciliation_delta
+            ) VALUES
+                ('ARCHIVED_BALANCE', '2025-06-29', 100.00, TRUE, 'ofx', NULL),
+                ('ARCHIVED_BALANCE', '2025-06-30', 125.00, TRUE, 'ofx', NULL)
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO app.balance_assertions (
+                account_id, assertion_date, balance, notes
+            ) VALUES ('ARCHIVED_BALANCE', '2025-06-30', 125.00, 'final statement')
             """
         )
 
@@ -160,6 +189,68 @@ class TestDormantCoarseAccountReads:
         assert second.summary.has_more is False
 
     @pytest.mark.unit
+    async def test_account_list_cursor_binds_include_closed_and_action(
+        self, mcp_db: Path
+    ) -> None:
+        first = await accounts_coarse(view="list", include_closed=True, limit=1)
+        assert first.next_cursor is not None
+        assert (
+            f"Continue with accounts(view='list', include_closed=True, limit=1, "
+            f"cursor='{first.next_cursor}')"
+        ) in first.actions
+
+        reused = await accounts_coarse(
+            view="list",
+            include_closed=False,
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+        assert reused.error is not None
+        assert reused.error.code == "ACCOUNT_CURSOR_INVALID"
+
+    @pytest.mark.unit
+    async def test_account_resolve_paginates_exact_stable_ties_and_binds_query(
+        self, mcp_db: Path
+    ) -> None:
+        for account_id in ("tie_c", "tie_a", "tie_b"):
+            _seed_named_account(account_id, display_name="zzzz")
+
+        seen: list[str] = []
+        cursor: str | None = None
+        for _ in range(3):
+            response = await accounts_coarse(
+                view="resolve",
+                query="zzzz",
+                limit=1,
+                cursor=cursor,
+            )
+            assert response.summary.total_count == 3
+            assert response.summary.returned_count == 1
+            seen.append(response.data.matches[0].account_id)
+            if response.next_cursor is not None:
+                assert (
+                    f"Continue with accounts(view='resolve', query='zzzz', "
+                    f"limit=1, cursor='{response.next_cursor}')"
+                ) in response.actions
+            cursor = response.next_cursor
+
+        assert seen == ["tie_a", "tie_b", "tie_c"]
+        assert len(set(seen)) == 3
+        assert cursor is None
+
+        first = await accounts_coarse(view="resolve", query="zzzz", limit=1)
+        assert first.next_cursor is not None
+        reused = await accounts_coarse(
+            view="resolve",
+            query="different",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+        assert reused.error is not None
+        assert reused.error.code == "ACCOUNT_CURSOR_INVALID"
+
+    @pytest.mark.unit
     async def test_account_list_include_closed_is_strict_and_effective(
         self, mcp_db: Path
     ) -> None:
@@ -194,6 +285,22 @@ class TestDormantCoarseAccountReads:
             (
                 {"view": "summary", "cursor": "opaque"},
                 "ACCOUNT_CURSOR_NOT_ALLOWED",
+            ),
+            (
+                {"view": "summary", "include_closed": True},
+                "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+            ),
+            (
+                {"view": "resolve", "query": "checking", "include_closed": True},
+                "ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+            ),
+            (
+                {"view": "detail", "reference": "ACC001", "limit": 1},
+                "ACCOUNT_LIMIT_NOT_ALLOWED",
+            ),
+            (
+                {"view": "summary", "limit": 1},
+                "ACCOUNT_LIMIT_NOT_ALLOWED",
             ),
         ],
     )
@@ -230,6 +337,66 @@ class TestDormantCoarseAccountReads:
         assert history.summary.period == "2025-06-30 to 2025-06-30"
         assert assertions.data.kind == "assertions"
         assert [row.account_id for row in assertions.data.assertions] == ["ACC001"]
+
+    @pytest.mark.unit
+    async def test_balance_history_cursor_binds_filters_and_action(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_balance_data()
+        first = await accounts_balances_coarse(
+            view="history",
+            reference="CHECKING",
+            start=date(2025, 6, 29),
+            end=date(2025, 6, 30),
+            limit=1,
+        )
+        assert first.next_cursor is not None
+        assert (
+            "Continue with accounts_balances(view='history', "
+            "reference='CHECKING', start='2025-06-29', end='2025-06-30', "
+            f"limit=1, cursor='{first.next_cursor}')"
+        ) in first.actions
+
+        reused = await accounts_balances_coarse(
+            view="history",
+            reference="CHECKING",
+            start=date(2025, 6, 30),
+            end=date(2025, 6, 30),
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+        assert reused.error is not None
+        assert reused.error.code == "BALANCE_CURSOR_INVALID"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "view",
+        ["latest", "history", "assertions"],
+    )
+    async def test_balance_views_accept_exact_archived_account_id(
+        self,
+        view: Literal["latest", "history", "assertions"],
+        mcp_db: Path,
+    ) -> None:
+        _seed_archived_balance_data()
+        kwargs: dict[str, Any] = {
+            "view": view,
+            "reference": "ARCHIVED_BALANCE",
+        }
+        if view == "history":
+            kwargs["start"] = date(2025, 6, 29)
+            kwargs["end"] = date(2025, 6, 30)
+
+        response = await accounts_balances_coarse(**kwargs)  # type: ignore[arg-type]
+
+        assert response.error is None
+        if response.data.kind == "assertions":
+            ids = [row.account_id for row in response.data.assertions]
+        else:
+            ids = [row.account_id for row in response.data.observations]
+        assert ids
+        assert set(ids) == {"ARCHIVED_BALANCE"}
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
