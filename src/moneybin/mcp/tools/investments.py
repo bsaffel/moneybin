@@ -27,12 +27,16 @@ accounts_links_*).
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import base64
+import binascii
+import json
+from dataclasses import dataclass, replace
 from datetime import date as _date
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 from moneybin import error_codes
 from moneybin.config import get_settings
@@ -45,6 +49,8 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
     InvestmentGainsPayload,
@@ -53,13 +59,27 @@ from moneybin.privacy.payloads.investments import (
     InvestmentLotsPayload,
     InvestmentLotsSelectPayload,
     InvestmentRecordPayload,
+    InvestmentsCoarsePayload,
     InvestmentSecuritiesPayload,
     InvestmentSecuritySetPayload,
+    InvestmentsEventsView,
+    InvestmentsGainsView,
+    InvestmentsHoldingsView,
+    InvestmentsLotsView,
+    InvestmentsSecuritiesView,
     SecurityLinksHistoryPayload,
     SecurityLinksPendingPayload,
     SecurityLinksSetPayload,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.account_service import AccountService
+from moneybin.services.entity_reference import (
+    AmbiguousEntity,
+    EntityCandidate,
+    MissingEntity,
+    resolve_entity_reference,
+)
 from moneybin.services.investment_service import InvestmentService
 from moneybin.services.security_links_service import (
     SecurityLinkAcceptImpact,
@@ -839,6 +859,388 @@ def investments_securities_links_history(
             "Use investments_securities_links_pending for the active review queue"
         ],
     )
+
+
+# ─── Dormant coarse read replacement ──────────────────────────────────────
+
+
+def _resolve_coarse_reference(
+    reference: str,
+    candidates: list[EntityCandidate],
+    *,
+    noun: Literal["account", "security"],
+) -> str:
+    """Resolve one filter reference without echoing it in errors."""
+    resolution = resolve_entity_reference(reference, candidates)
+    if isinstance(resolution, AmbiguousEntity):
+        raise UserError(
+            f"The {noun} reference matches multiple {noun}s.",
+            code="ENTITY_REFERENCE_AMBIGUOUS",
+            details={"candidate_ids": list(resolution.candidate_ids)},
+        )
+    if isinstance(resolution, MissingEntity):
+        raise UserError(
+            f"The {noun} reference did not match a {noun}.",
+            code="ENTITY_REFERENCE_NOT_FOUND",
+            details={"candidate_ids": []},
+        )
+    return resolution.entity_id
+
+
+def _coarse_account_candidates(service: AccountService) -> list[EntityCandidate]:
+    """Project active accounts into the shared resolver shape."""
+    payload = service.list_accounts(include_archived=False, type_filter=None)
+    return [
+        EntityCandidate(
+            entity_id=row.account_id,
+            display_name=row.display_name or row.account_id,
+            aliases=tuple(
+                value
+                for value in (
+                    row.institution_name,
+                    row.account_type,
+                    row.account_subtype,
+                )
+                if value is not None
+            ),
+        )
+        for row in payload.rows
+    ]
+
+
+def _coarse_security_candidates(
+    service: InvestmentService,
+) -> list[EntityCandidate]:
+    """Project securities into the shared resolver shape."""
+    return [
+        EntityCandidate(
+            entity_id=row.security_id,
+            display_name=row.name,
+            aliases=tuple(
+                value
+                for value in (
+                    row.ticker,
+                    (
+                        f"{row.ticker}.{row.exchange}"
+                        if row.ticker is not None and row.exchange is not None
+                        else None
+                    ),
+                    row.cusip,
+                    row.isin,
+                    row.figi,
+                    row.coingecko_id,
+                )
+                if value is not None
+            ),
+        )
+        for row in service.list_securities().rows
+    ]
+
+
+def _investment_cursor(
+    view: str,
+    offset: int,
+    filters: dict[str, object],
+) -> str:
+    """Encode an investment cursor bound to canonical query state."""
+    raw = json.dumps(
+        {
+            "filters": filters,
+            "offset": offset,
+            "tool": "investments",
+            "view": view,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _investment_offset(
+    cursor: str | None,
+    *,
+    view: str,
+    filters: dict[str, object],
+) -> int:
+    """Decode an investment cursor and reject cross-query reuse."""
+    if cursor is None:
+        return 0
+    try:
+        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        value = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="INVESTMENT_CURSOR_INVALID",
+        ) from exc
+    if not isinstance(value, dict):
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="INVESTMENT_CURSOR_INVALID",
+        )
+    payload = cast(dict[str, Any], value)
+    offset = payload.get("offset")
+    if (
+        set(payload) != {"filters", "offset", "tool", "view"}
+        or payload.get("filters") != filters
+        or payload.get("tool") != "investments"
+        or payload.get("view") != view
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+    ):
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="INVESTMENT_CURSOR_INVALID",
+        )
+    return offset
+
+
+def _investment_period(start: _date | None, end: _date | None) -> str | None:
+    """Render the selected investment date window."""
+    if start is not None and end is not None:
+        return f"{start.isoformat()} to {end.isoformat()}"
+    if start is not None:
+        return f"from {start.isoformat()}"
+    if end is not None:
+        return f"through {end.isoformat()}"
+    return None
+
+
+def _investment_actions(
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    *,
+    account: str | None,
+    security: str | None,
+    start: _date | None,
+    end: _date | None,
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Return replacement-only hints with an executable continuation."""
+    by_view = {
+        "events": [
+            "Use investments(view='holdings') for current positions",
+            "Use investments(view='gains') for realized gain/loss",
+        ],
+        "holdings": [
+            "Use investments(view='lots') for per-lot basis",
+            "Use investments(view='gains') for realized gain/loss",
+        ],
+        "lots": [
+            "Use investments_lots_select to override FIFO for a disposal",
+            "Use investments(view='gains') for realized gain/loss",
+        ],
+        "gains": ["Use investments(view='lots') for lot-level detail"],
+        "securities": [
+            "Use investments_securities_set to add or update a catalog entry"
+        ],
+    }
+    actions = list(by_view[view])
+    if next_cursor is not None:
+        arguments = [f"view={view!r}"]
+        if account is not None:
+            arguments.append(f"account={account!r}")
+        if security is not None:
+            arguments.append(f"security={security!r}")
+        if start is not None:
+            arguments.append(f"start={start.isoformat()!r}")
+        if end is not None:
+            arguments.append(f"end={end.isoformat()!r}")
+        arguments.extend((f"limit={limit}", f"cursor={next_cursor!r}"))
+        actions.append(f"Continue with investments({', '.join(arguments)})")
+    return actions
+
+
+def _investment_coarse_envelope(
+    data: InvestmentsCoarsePayload,
+    *,
+    total_count: int,
+    next_cursor: str | None,
+    period: str | None,
+    actions: list[str],
+) -> ResponseEnvelope[InvestmentsCoarsePayload]:
+    """Build a runtime-classified investment envelope."""
+    contract_type = type(data)
+    classes = extract_data_classes(contract_type)
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(InvestmentsCoarsePayload, redact_typed(data, None))
+    envelope = cast(
+        ResponseEnvelope[InvestmentsCoarsePayload],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=len(data.rows),
+            next_cursor=next_cursor,
+            period=period,
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    )
+
+
+@mcp_tool(dynamic_classification=True)
+def investments_coarse(
+    view: Literal["events", "holdings", "lots", "gains", "securities"] = "holdings",
+    account: str | None = None,
+    security: str | None = None,
+    start: _date | None = None,
+    end: _date | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[InvestmentsCoarsePayload]:
+    """Return one paginated investment projection selected by a closed view."""
+    if view not in ("events", "gains") and (start is not None or end is not None):
+        raise UserError(
+            "start and end are only valid for investment events and gains.",
+            code="INVESTMENT_DATES_NOT_ALLOWED",
+        )
+    if view == "securities" and account is not None:
+        raise UserError(
+            "account is not valid for the securities catalog.",
+            code="INVESTMENT_ACCOUNT_NOT_ALLOWED",
+        )
+    if start is not None and end is not None and start > end:
+        raise UserError(
+            "Investment start must not be after end.",
+            code="INVESTMENT_DATE_RANGE_INVALID",
+        )
+
+    with get_database(read_only=True) as db:
+        service = InvestmentService(db)
+        account_id = (
+            _resolve_coarse_reference(
+                account,
+                _coarse_account_candidates(AccountService(db)),
+                noun="account",
+            )
+            if account is not None
+            else None
+        )
+        security_id = (
+            _resolve_coarse_reference(
+                security,
+                _coarse_security_candidates(service),
+                noun="security",
+            )
+            if security is not None
+            else None
+        )
+        filters: dict[str, object] = {
+            "account_id": account_id,
+            "end": end.isoformat() if end is not None else None,
+            "security_id": security_id,
+            "start": start.isoformat() if start is not None else None,
+        }
+        offset = _investment_offset(cursor, view=view, filters=filters)
+
+        if view == "events":
+            result = service.list_events(
+                account_ref=account_id,
+                security_ref=security_id,
+                date_from=start,
+                date_to=end,
+            )
+            all_rows = InvestmentEventsPayload.from_result(result)
+            page = all_rows.rows[offset : offset + limit]
+            data: InvestmentsCoarsePayload = InvestmentsEventsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "holdings":
+            result = service.holdings(
+                account_ref=account_id,
+                security_ref=security_id,
+            )
+            all_rows = InvestmentHoldingsPayload.from_result(result)
+            page = all_rows.rows[offset : offset + limit]
+            data = InvestmentsHoldingsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "lots":
+            result = service.lots(
+                account_ref=account_id,
+                security_ref=security_id,
+            )
+            all_rows = InvestmentLotsPayload.from_result(result)
+            page = all_rows.rows[offset : offset + limit]
+            data = InvestmentsLotsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "gains":
+            result = service.gains(
+                account_ref=account_id,
+                security_ref=security_id,
+                date_from=start,
+                date_to=end,
+            )
+            all_rows = InvestmentGainsPayload.from_result(result)
+            page = all_rows.rows[offset : offset + limit]
+            data = InvestmentsGainsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        else:
+            result = service.list_securities()
+            all_rows = InvestmentSecuritiesPayload.from_result(result)
+            filtered_rows = (
+                [row for row in all_rows.rows if row.security_id == security_id]
+                if security_id is not None
+                else all_rows.rows
+            )
+            page = filtered_rows[offset : offset + limit]
+            all_rows = InvestmentSecuritiesPayload(
+                rows=filtered_rows,
+                warnings=all_rows.warnings,
+            )
+            data = InvestmentsSecuritiesView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+
+    total_count = len(all_rows.rows)
+    next_cursor = (
+        _investment_cursor(view, offset + limit, filters)
+        if total_count > offset + limit
+        else None
+    )
+    return _investment_coarse_envelope(
+        data,
+        total_count=total_count,
+        next_cursor=next_cursor,
+        period=_investment_period(start, end),
+        actions=_investment_actions(
+            view,
+            account=account,
+            security=security,
+            start=start,
+            end=end,
+            limit=limit,
+            next_cursor=next_cursor,
+        ),
+    )
+
+
+def register_investment_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 replacement investment read."""
+    register(
+        mcp,
+        investments_coarse,
+        "investments",
+        "Return investment events, holdings, open tax lots, realized gains, "
+        "or securities through one typed view. Amounts use the investment "
+        "ledger sign convention and the currency in summary.display_currency.",
+        privacy_actor="investments",
+    )
+    # Plan 6 removes investments_holdings, investments_lots,
+    # investments_gains, and investments_securities from the live registry.
 
 
 # ─── Registration ──────────────────────────────────────────────────────────

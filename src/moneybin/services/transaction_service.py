@@ -116,6 +116,14 @@ class TransactionGetResult:
     next_cursor: str | None
 
 
+@dataclass(slots=True)
+class OperationalTransactionResult:
+    """Resolved operational query page with an exact filtered total."""
+
+    transactions: list[Transaction]
+    total_count: int
+
+
 @dataclass(frozen=True, slots=True)
 class ManualEntryRawResult:
     """Raw-write outcome for a single manual entry.
@@ -262,89 +270,25 @@ class TransactionService:
         else:
             offset = 0
 
-        conditions: list[str] = []
-        params: list[object] = []
-
+        account_ids: list[str] | None = None
         if accounts:
             account_ids = self._resolve_account_ids(accounts)
             if not account_ids:
                 return TransactionGetResult(transactions=[], next_cursor=None)
-            placeholders = ", ".join("?" * len(account_ids))
-            conditions.append(f"account_id IN ({placeholders})")
-            params.extend(account_ids)
-
-        if date_from:
-            conditions.append("transaction_date >= ?")
-            params.append(date_from)
-        if date_to:
-            conditions.append("transaction_date <= ?")
-            params.append(date_to)
-
-        if categories:
-            placeholders = ", ".join("?" * len(categories))
-            conditions.append(f"category IN ({placeholders})")
-            params.extend(categories)
-
-        if amount_min is not None:
-            conditions.append("amount >= ?")
-            params.append(amount_min)
-        if amount_max is not None:
-            conditions.append("amount <= ?")
-            params.append(amount_max)
-
-        if description:
-            # Escape LIKE-special characters in the user's pattern so a
-            # query for ``description="%"`` (or "_") does not match every
-            # row. The `!` escape is paired with the ``ESCAPE '!'`` clause
-            # below; `!!` is the literal `!`. DuckDB requires the escape
-            # character to be a single character and to be declared per-
-            # predicate.
-            escaped = (
-                description.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-            )
-            conditions.append(
-                "(description ILIKE ? ESCAPE '!' OR memo ILIKE ? ESCAPE '!')"
-            )
-            like = f"%{escaped}%"
-            params.extend([like, like])
-
-        if uncategorized_only:
-            conditions.append("categorized_by IS NULL")
-
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-
-        sql = f"""
-            SELECT
-                transaction_id, account_id, transaction_date, amount,
-                description, memo, source_type, category, subcategory,
-                notes, tags, splits
-            FROM {FCT_TRANSACTIONS.full_name}
-            {where}
-            ORDER BY transaction_date DESC, transaction_id
-            LIMIT ? OFFSET ?
-        """  # noqa: S608  # TableRef constant, not user input
-
-        rows = self._db.execute(sql, [*params, limit + 1, offset]).fetchall()
-        has_more = len(rows) > limit
-        rows = rows[:limit]
-
-        transactions = [
-            Transaction(
-                transaction_id=str(row[0]),
-                account_id=str(row[1]),
-                transaction_date=str(row[2]),
-                amount=Decimal(str(row[3])),
-                description=str(row[4]),
-                memo=str(row[5]) if row[5] else None,
-                source_type=str(row[6]),
-                category=str(row[7]) if row[7] else None,
-                subcategory=str(row[8]) if row[8] else None,
-                notes=[dict(n) for n in row[9]] if row[9] else None,
-                tags=list(row[10]) if row[10] else None,
-                splits=[dict(s) for s in row[11]] if row[11] else None,
-            )
-            for row in rows
-        ]
+        page = self._query_transactions(
+            account_ids=account_ids,
+            date_from=date_from,
+            date_to=date_to,
+            categories=categories,
+            merchant_id=None,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            text=description,
+            uncategorized_only=uncategorized_only,
+            limit=limit,
+            offset=offset,
+        )
+        has_more = page.total_count > offset + limit
 
         next_cursor = (
             base64.b64encode(str(offset + limit).encode()).decode()
@@ -353,9 +297,138 @@ class TransactionService:
         )
 
         logger.info(
-            f"transactions_get returned {len(transactions)} rows (offset={offset}, has_more={has_more})"
+            f"transactions_get returned {len(page.transactions)} rows "
+            f"(offset={offset}, has_more={has_more})"
         )
-        return TransactionGetResult(transactions=transactions, next_cursor=next_cursor)
+        return TransactionGetResult(
+            transactions=page.transactions,
+            next_cursor=next_cursor,
+        )
+
+    def query_operational(
+        self,
+        *,
+        account_id: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        merchant_id: str | None = None,
+        category: str | None = None,
+        amount_min: Decimal | None = None,
+        amount_max: Decimal | None = None,
+        text: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> OperationalTransactionResult:
+        """Query the cutover operational surface with already-resolved IDs."""
+        if limit < 1:
+            raise ValueError(f"limit must be >= 1, got {limit}")
+        if offset < 0:
+            raise ValueError(f"offset must be >= 0, got {offset}")
+        return self._query_transactions(
+            account_ids=[account_id] if account_id is not None else None,
+            date_from=date_from,
+            date_to=date_to,
+            categories=[category] if category is not None else None,
+            merchant_id=merchant_id,
+            amount_min=amount_min,
+            amount_max=amount_max,
+            text=text,
+            uncategorized_only=False,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _query_transactions(
+        self,
+        *,
+        account_ids: list[str] | None,
+        date_from: str | None,
+        date_to: str | None,
+        categories: list[str] | None,
+        merchant_id: str | None,
+        amount_min: Decimal | None,
+        amount_max: Decimal | None,
+        text: str | None,
+        uncategorized_only: bool,
+        limit: int,
+        offset: int,
+    ) -> OperationalTransactionResult:
+        """Run the shared parameterized transaction filter and page query."""
+        conditions: list[str] = []
+        params: list[object] = []
+
+        if account_ids:
+            placeholders = ", ".join("?" * len(account_ids))
+            conditions.append(f"account_id IN ({placeholders})")
+            params.extend(account_ids)
+        if date_from:
+            conditions.append("transaction_date >= ?")
+            params.append(date_from)
+        if date_to:
+            conditions.append("transaction_date <= ?")
+            params.append(date_to)
+        if categories:
+            placeholders = ", ".join("?" * len(categories))
+            conditions.append(f"category IN ({placeholders})")
+            params.extend(categories)
+        if merchant_id is not None:
+            conditions.append("merchant_id = ?")
+            params.append(merchant_id)
+        if amount_min is not None:
+            conditions.append("amount >= ?")
+            params.append(amount_min)
+        if amount_max is not None:
+            conditions.append("amount <= ?")
+            params.append(amount_max)
+        if text:
+            escaped = text.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            conditions.append(
+                "(description ILIKE ? ESCAPE '!' OR memo ILIKE ? ESCAPE '!')"
+            )
+            like = f"%{escaped}%"
+            params.extend([like, like])
+        if uncategorized_only:
+            conditions.append("categorized_by IS NULL")
+
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        total_row = self._db.execute(
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} {where}",  # noqa: S608  # TableRef + fixed predicates
+            params,
+        ).fetchone()
+        total_count = int(total_row[0]) if total_row is not None else 0
+        rows = self._db.execute(
+            f"""
+            SELECT
+                transaction_id, account_id, transaction_date, amount,
+                description, memo, source_type, category, subcategory,
+                notes, tags, splits
+            FROM {FCT_TRANSACTIONS.full_name}
+            {where}
+            ORDER BY transaction_date DESC, transaction_id
+            LIMIT ? OFFSET ?
+            """,  # noqa: S608  # TableRef + fixed predicates
+            [*params, limit, offset],
+        ).fetchall()
+        return OperationalTransactionResult(
+            transactions=[
+                Transaction(
+                    transaction_id=str(row[0]),
+                    account_id=str(row[1]),
+                    transaction_date=str(row[2]),
+                    amount=Decimal(str(row[3])),
+                    description=str(row[4]),
+                    memo=str(row[5]) if row[5] else None,
+                    source_type=str(row[6]),
+                    category=str(row[7]) if row[7] else None,
+                    subcategory=str(row[8]) if row[8] else None,
+                    notes=[dict(n) for n in row[9]] if row[9] else None,
+                    tags=list(row[10]) if row[10] else None,
+                    splits=[dict(s) for s in row[11]] if row[11] else None,
+                )
+                for row in rows
+            ],
+            total_count=total_count,
+        )
 
     # ------------------------------------------------------------------
     # Manual entry — raw-write half (spec Req 1–6, Task 7a).

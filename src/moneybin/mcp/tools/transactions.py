@@ -13,12 +13,19 @@ Tools:
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
+from dataclasses import replace
+from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import BeforeValidator, Field
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.transactions import (
@@ -33,8 +40,70 @@ from moneybin.privacy.payloads.transactions import (
     TransactionRow,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.account_service import AccountService
+from moneybin.services.categorization import CategorizationService
+from moneybin.services.entity_reference import (
+    AmbiguousEntity,
+    EntityCandidate,
+    MissingEntity,
+    resolve_entity_reference,
+)
 from moneybin.services.matching_service import MatchingService
-from moneybin.services.transaction_service import TransactionService
+from moneybin.services.transaction_service import (
+    OperationalTransactionResult,
+    TransactionGetResult,
+    TransactionService,
+)
+
+
+def _decimal_from_json_number(value: object) -> Decimal:
+    """Convert only real JSON numbers to an exact finite Decimal."""
+    if isinstance(value, Decimal):
+        parsed = value
+    elif isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError("amount filters must be JSON numbers")
+    else:
+        parsed = Decimal(str(value))
+    if not parsed.is_finite():
+        raise ValueError("amount filters must be finite")
+    return parsed
+
+
+_JSONDecimal = Annotated[
+    Decimal,
+    BeforeValidator(
+        _decimal_from_json_number,
+        json_schema_input_type=int | float,
+    ),
+]
+
+
+def _transaction_payload(
+    result: TransactionGetResult | OperationalTransactionResult,
+    *,
+    next_cursor: str | None,
+) -> TransactionGetPayload:
+    """Map either shared service result into the canonical transaction payload."""
+    return TransactionGetPayload(
+        transactions=[
+            TransactionRow(
+                transaction_id=t.transaction_id,
+                account_id=t.account_id,
+                transaction_date=t.transaction_date,
+                amount=t.amount,
+                description=t.description,
+                memo=t.memo,
+                source_type=t.source_type,
+                category=t.category,
+                subcategory=t.subcategory,
+                notes=t.notes,
+                tags=t.tags,
+                splits=t.splits,
+            )
+            for t in result.transactions
+        ],
+        next_cursor=next_cursor,
+    )
 
 
 @mcp_tool(read_only=True)
@@ -84,26 +153,7 @@ def transactions_get(
             limit=limit,
             cursor=cursor,
         )
-    payload = TransactionGetPayload(
-        transactions=[
-            TransactionRow(
-                transaction_id=t.transaction_id,
-                account_id=t.account_id,
-                transaction_date=t.transaction_date,
-                amount=t.amount,
-                description=t.description,
-                memo=t.memo,
-                source_type=t.source_type,
-                category=t.category,
-                subcategory=t.subcategory,
-                notes=t.notes,
-                tags=t.tags,
-                splits=t.splits,
-            )
-            for t in result.transactions
-        ],
-        next_cursor=result.next_cursor,
-    )
+    payload = _transaction_payload(result, next_cursor=result.next_cursor)
     return build_envelope(
         data=payload,
         next_cursor=result.next_cursor,
@@ -113,6 +163,281 @@ def transactions_get(
             "Use transactions_categorize_commit to categorize uncategorized transactions",
         ],
     )
+
+
+def _resolve_transaction_reference(
+    reference: str,
+    candidates: list[EntityCandidate],
+    *,
+    noun: Literal["account", "merchant"],
+) -> str:
+    """Resolve one transaction filter without echoing it in errors."""
+    resolution = resolve_entity_reference(reference, candidates)
+    if isinstance(resolution, AmbiguousEntity):
+        raise UserError(
+            f"The {noun} reference matches multiple {noun}s.",
+            code="ENTITY_REFERENCE_AMBIGUOUS",
+            details={"candidate_ids": list(resolution.candidate_ids)},
+        )
+    if isinstance(resolution, MissingEntity):
+        raise UserError(
+            f"The {noun} reference did not match a {noun}.",
+            code="ENTITY_REFERENCE_NOT_FOUND",
+            details={"candidate_ids": []},
+        )
+    return resolution.entity_id
+
+
+def _transaction_account_candidates(service: AccountService) -> list[EntityCandidate]:
+    """Project active accounts into the shared resolver shape."""
+    return [
+        EntityCandidate(
+            entity_id=row.account_id,
+            display_name=row.display_name or row.account_id,
+            aliases=tuple(
+                value
+                for value in (
+                    row.institution_name,
+                    row.account_type,
+                    row.account_subtype,
+                )
+                if value is not None
+            ),
+        )
+        for row in service.list_accounts(
+            include_archived=False,
+            type_filter=None,
+        ).rows
+    ]
+
+
+def _transaction_merchant_candidates(
+    service: CategorizationService,
+) -> list[EntityCandidate]:
+    """Project canonical merchants and raw aliases into the shared resolver."""
+    return [
+        EntityCandidate(
+            entity_id=row.merchant_id,
+            display_name=row.canonical_name,
+            aliases=(row.raw_pattern,) if row.raw_pattern is not None else (),
+        )
+        for row in service.list_merchants().merchants
+    ]
+
+
+def _transaction_cursor(offset: int, filters: dict[str, object]) -> str:
+    """Encode a transaction cursor bound to canonical query state."""
+    raw = json.dumps(
+        {"filters": filters, "offset": offset, "tool": "transactions"},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _transaction_offset(
+    cursor: str | None,
+    *,
+    filters: dict[str, object],
+) -> int:
+    """Decode a transaction cursor and reject cross-filter reuse."""
+    if cursor is None:
+        return 0
+    try:
+        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        value = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="TRANSACTION_CURSOR_INVALID",
+        ) from exc
+    if not isinstance(value, dict):
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="TRANSACTION_CURSOR_INVALID",
+        )
+    payload = cast(dict[str, Any], value)
+    offset = payload.get("offset")
+    if (
+        set(payload) != {"filters", "offset", "tool"}
+        or payload.get("filters") != filters
+        or payload.get("tool") != "transactions"
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+    ):
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="TRANSACTION_CURSOR_INVALID",
+        )
+    return offset
+
+
+def _transaction_period(start: date | None, end: date | None) -> str | None:
+    """Render the selected transaction date window."""
+    if start is not None and end is not None:
+        return f"{start.isoformat()} to {end.isoformat()}"
+    if start is not None:
+        return f"from {start.isoformat()}"
+    if end is not None:
+        return f"through {end.isoformat()}"
+    return None
+
+
+def _transaction_actions(
+    *,
+    account: str | None,
+    start: date | None,
+    end: date | None,
+    merchant: str | None,
+    category: str | None,
+    min_amount: Decimal | None,
+    max_amount: Decimal | None,
+    text: str | None,
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Return operational hints with a complete continuation call."""
+    actions = [
+        "Use reports(report_id='core:spending') for category breakdowns",
+        "Use transactions_categorize_commit to categorize uncategorized transactions",
+    ]
+    if next_cursor is not None:
+        arguments: list[str] = []
+        if account is not None:
+            arguments.append(f"account={account!r}")
+        if start is not None:
+            arguments.append(f"start={start.isoformat()!r}")
+        if end is not None:
+            arguments.append(f"end={end.isoformat()!r}")
+        if merchant is not None:
+            arguments.append(f"merchant={merchant!r}")
+        if category is not None:
+            arguments.append(f"category={category!r}")
+        if min_amount is not None:
+            arguments.append(f"min_amount={str(min_amount)}")
+        if max_amount is not None:
+            arguments.append(f"max_amount={str(max_amount)}")
+        if text is not None:
+            arguments.append(f"text={text!r}")
+        arguments.extend((f"limit={limit}", f"cursor={next_cursor!r}"))
+        actions.append(f"Continue with transactions({', '.join(arguments)})")
+    return actions
+
+
+@mcp_tool(read_only=True)
+def transactions_coarse(
+    account: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    merchant: str | None = None,
+    category: str | None = None,
+    min_amount: _JSONDecimal | None = None,
+    max_amount: _JSONDecimal | None = None,
+    text: str | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[TransactionGetPayload]:
+    """Query operational transactions with resolved filters and exact pagination."""
+    if start is not None and end is not None and start > end:
+        raise UserError(
+            "Transaction start must not be after end.",
+            code="TRANSACTION_DATE_RANGE_INVALID",
+        )
+    if min_amount is not None and max_amount is not None and min_amount > max_amount:
+        raise UserError(
+            "Transaction min_amount must not exceed max_amount.",
+            code="TRANSACTION_AMOUNT_RANGE_INVALID",
+        )
+
+    with get_database(read_only=True) as db:
+        account_id = (
+            _resolve_transaction_reference(
+                account,
+                _transaction_account_candidates(AccountService(db)),
+                noun="account",
+            )
+            if account is not None
+            else None
+        )
+        merchant_id = (
+            _resolve_transaction_reference(
+                merchant,
+                _transaction_merchant_candidates(CategorizationService(db)),
+                noun="merchant",
+            )
+            if merchant is not None
+            else None
+        )
+        filters: dict[str, object] = {
+            "account_id": account_id,
+            "category": category,
+            "end": end.isoformat() if end is not None else None,
+            "max_amount": str(max_amount) if max_amount is not None else None,
+            "merchant_id": merchant_id,
+            "min_amount": str(min_amount) if min_amount is not None else None,
+            "start": start.isoformat() if start is not None else None,
+            "text": text.casefold() if text is not None else None,
+        }
+        offset = _transaction_offset(cursor, filters=filters)
+        result = TransactionService(db).query_operational(
+            account_id=account_id,
+            date_from=start.isoformat() if start is not None else None,
+            date_to=end.isoformat() if end is not None else None,
+            merchant_id=merchant_id,
+            category=category,
+            amount_min=min_amount,
+            amount_max=max_amount,
+            text=text,
+            limit=limit,
+            offset=offset,
+        )
+
+    next_cursor = (
+        _transaction_cursor(offset + limit, filters)
+        if result.total_count > offset + limit
+        else None
+    )
+    payload = _transaction_payload(result, next_cursor=next_cursor)
+    envelope = build_envelope(
+        data=payload,
+        total_count=result.total_count,
+        returned_count=len(result.transactions),
+        next_cursor=next_cursor,
+        period=_transaction_period(start, end),
+        actions=_transaction_actions(
+            account=account,
+            start=start,
+            end=end,
+            merchant=merchant,
+            category=category,
+            min_amount=min_amount,
+            max_amount=max_amount,
+            text=text,
+            limit=limit,
+            next_cursor=next_cursor,
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    )
+
+
+def register_transaction_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 replacement operational transaction read."""
+    register(
+        mcp,
+        transactions_coarse,
+        "transactions",
+        "Query operational transactions by resolved account or merchant, date, "
+        "category, amount, and text with exact cursor pagination. Amounts use "
+        "the accounting convention: negative = expense, positive = income; "
+        "transfers exempt. Currency is named by summary.display_currency.",
+        privacy_actor="transactions",
+    )
+    # Plan 6 removes transactions_get from the live registry. Largest and
+    # anomalous transaction analysis remains in the reports catalog.
 
 
 def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:

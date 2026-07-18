@@ -58,7 +58,7 @@ class TransactionRow:
 
 @dataclass(frozen=True, slots=True)
 class TransactionGetPayload:
-    """Payload for transactions_get."""
+    """Operational transaction payload shared by live and dormant reads."""
 
     transactions: list[TransactionRow]
     next_cursor: Annotated[str | None, DataClass.AGGREGATE]

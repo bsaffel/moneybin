@@ -25,6 +25,7 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp.tools.investments import (
     investments,
+    investments_coarse,
     investments_gains,
     investments_holdings,
     investments_lots,
@@ -32,6 +33,7 @@ from moneybin.mcp.tools.investments import (
     investments_record,
     investments_securities,
     investments_securities_set,
+    register_investment_coarse_reads,
     register_investments_tools,
 )
 from moneybin.repositories.securities_repo import SecuritiesRepo
@@ -231,10 +233,173 @@ class TestRegistration:
             "investments_securities_links_history",
         }
 
+    @pytest.mark.unit
+    async def test_coarse_registrar_registers_only_replacement(self) -> None:
+        srv = FastMCP("test")
+        register_investment_coarse_reads(srv)
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert names == {"investments"}
+
 
 # ---------------------------------------------------------------------------
 # Read tools
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_coarse_views_are_typed(
+    view: str,
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+
+    response = await investments_coarse(view=view)  # pyright: ignore[reportArgumentType]
+
+    assert response.data.kind == view
+
+
+@pytest.mark.parametrize(
+    ("view", "arguments", "code"),
+    [
+        (
+            "holdings",
+            {"start": date(2024, 1, 1)},
+            "INVESTMENT_DATES_NOT_ALLOWED",
+        ),
+        ("lots", {"end": date(2024, 12, 31)}, "INVESTMENT_DATES_NOT_ALLOWED"),
+        ("securities", {"account": _ACCOUNT}, "INVESTMENT_ACCOUNT_NOT_ALLOWED"),
+    ],
+)
+async def test_investment_coarse_rejects_unused_arguments(
+    view: str,
+    arguments: dict[str, object],
+    code: str,
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+
+    response = await investments_coarse(  # pyright: ignore[reportArgumentType]
+        view=view,
+        **arguments,
+    )
+
+    assert response.error is not None
+    assert response.error.code == code
+
+
+async def test_investment_coarse_paginates_with_exact_counts(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+    _insert_event(
+        investment_transaction_id="evt_2",
+        security_id=sec,
+        trade_date=date(2024, 1, 16),
+    )
+
+    first = await investments_coarse(
+        view="events",
+        account=_ACCOUNT,
+        security="AAPL",
+        start=date(2024, 1, 1),
+        end=date(2024, 12, 31),
+        limit=1,
+    )
+    second = await investments_coarse(
+        view="events",
+        account=_ACCOUNT,
+        security="AAPL",
+        start=date(2024, 1, 1),
+        end=date(2024, 12, 31),
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert first.summary.total_count == 2
+    assert first.summary.returned_count == 1
+    assert first.summary.has_more is True
+    assert first.next_cursor is not None
+    assert second.summary.total_count == 2
+    assert second.summary.returned_count == 1
+    assert second.summary.has_more is False
+    assert second.next_cursor is None
+    assert {
+        first.data.rows[0].investment_transaction_id,
+        second.data.rows[0].investment_transaction_id,
+    } == {"evt_1", "evt_2"}
+    continuation = next(
+        action for action in first.actions if action.startswith("Continue with ")
+    )
+    for argument in (
+        "view='events'",
+        f"account={_ACCOUNT!r}",
+        "security='AAPL'",
+        "start='2024-01-01'",
+        "end='2024-12-31'",
+        "limit=1",
+        f"cursor={first.next_cursor!r}",
+    ):
+        assert argument in continuation
+
+
+async def test_investment_coarse_cursor_is_bound_to_filters(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+    _insert_event(
+        investment_transaction_id="evt_2",
+        security_id=sec,
+        trade_date=date(2024, 1, 16),
+    )
+    first = await investments_coarse(view="events", limit=1)
+
+    response = await investments_coarse(
+        view="events",
+        start=date(2024, 1, 16),
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_coarse_returns_sanitized_ambiguity(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    _add_security(security_id="sec_a", name="Shared Fund", ticker=None)
+    _add_security(security_id="sec_b", name="Shared Fund", ticker=None)
+
+    response = await investments_coarse(
+        view="events",
+        security="Shared Fund",
+    )
+
+    assert response.error is not None
+    assert response.error.code == "ENTITY_REFERENCE_AMBIGUOUS"
+    assert response.error.details == {"candidate_ids": ["sec_a", "sec_b"]}
+    assert "Shared Fund" not in response.error.message
+
+
+async def test_investment_coarse_binds_resolved_security_id(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security(security_id="sec_1", name="Indexed Fund", ticker="IDX")
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+
+    response = await investments_coarse(view="events", security="Indexed   Fund")
+
+    assert response.error is None
+    assert [row.investment_transaction_id for row in response.data.rows] == ["evt_1"]
 
 
 class TestInvestmentsLedger:

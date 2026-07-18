@@ -11,10 +11,13 @@ from fastmcp import FastMCP
 from mcp.types import TextContent
 from pydantic import StrictBool
 
+from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.tools.accounts import register_accounts_coarse_reads
+from moneybin.mcp.tools.investments import register_investment_coarse_reads
 from moneybin.mcp.tools.system import register_system_coarse_reads
+from moneybin.mcp.tools.transactions import register_transaction_coarse_reads
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 from .schema_assertions import (
@@ -642,6 +645,282 @@ async def test_accounts_coarse_tools_reject_invalid_raw_arguments(
     arguments: dict[str, Any],
 ) -> None:
     mcp = isolated_server(register_accounts_coarse_reads)
+
+    response = await call_tool_raw(mcp, name, arguments)
+
+    assert response.isError is True
+
+
+async def test_investment_and_transaction_coarse_tools_render_schema_contract() -> None:
+    investments_mcp = isolated_server(register_investment_coarse_reads)
+    transactions_mcp = isolated_server(register_transaction_coarse_reads)
+
+    investments = await listed_tool(investments_mcp, "investments")
+    transactions = await listed_tool(transactions_mcp, "transactions")
+
+    assert investments.outputSchema is None
+    assert transactions.outputSchema is None
+    assert investments.annotations is not None
+    assert investments.annotations.readOnlyHint is True
+    assert transactions.annotations is not None
+    assert transactions.annotations.readOnlyHint is True
+    assert_literal_values(
+        investments.inputSchema,
+        ("properties", "view"),
+        {"events", "holdings", "lots", "gains", "securities"},
+    )
+    for field in ("start", "end"):
+        investment_date = investments.inputSchema["properties"][field]["anyOf"][0]
+        transaction_date = transactions.inputSchema["properties"][field]["anyOf"][0]
+        assert investment_date["type"] == "string"
+        assert investment_date["format"] == "date"
+        assert transaction_date["type"] == "string"
+        assert transaction_date["format"] == "date"
+    for field in ("min_amount", "max_amount"):
+        amount_schema = json.dumps(transactions.inputSchema["properties"][field])
+        assert '"number"' in amount_schema
+        assert '"string"' not in amount_schema
+
+
+async def test_transaction_coarse_transport_is_canonical_and_numeric(
+    mcp_db: object,
+) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter,
+                notes, tags, splits
+            ) VALUES (
+                'txn_schema', 'ACC001', '2025-06-01', -25.50,
+                25.50, 'expense', 'Schema probe', 'DEBIT', false, 'USD',
+                'ofx', '2025-06-01', CURRENT_TIMESTAMP, 2025, 6, 1, 0,
+                '2025-06', '2025-Q2', NULL, NULL, NULL
+            )
+            """
+        )
+    mcp = isolated_server(register_transaction_coarse_reads)
+
+    response = await call_tool_raw(
+        mcp,
+        "transactions",
+        {"min_amount": -100.0},
+    )
+    text = next(
+        block.text for block in response.content if isinstance(block, TextContent)
+    )
+
+    assert response.isError is False
+    assert response.structuredContent is not None
+    assert json.loads(text) == response.structuredContent
+    amount = response.structuredContent["data"]["transactions"][0]["amount"]
+    assert isinstance(amount, int | float)
+    assert amount == -25.5
+
+
+@pytest.mark.parametrize(
+    ("view", "sensitivity"),
+    [
+        ("events", "high"),
+        ("holdings", "high"),
+        ("lots", "high"),
+        ("gains", "high"),
+        ("securities", "low"),
+    ],
+)
+async def test_investment_coarse_transport_variants(
+    view: str,
+    sensitivity: str,
+    mcp_db: object,
+) -> None:
+    from tests.moneybin.db_helpers import create_core_dim_stub_views
+
+    with get_database(read_only=False) as db:
+        create_core_dim_stub_views(db)
+    mcp = isolated_server(register_investment_coarse_reads)
+
+    structured = await _assert_canonical_variant(
+        mcp,
+        "investments",
+        {"view": view},
+        view,
+    )
+
+    assert structured["summary"]["sensitivity"] == sensitivity
+
+
+@pytest.mark.parametrize(
+    ("name", "registrar", "arguments", "sensitivity", "classes"),
+    [
+        (
+            "investments",
+            register_investment_coarse_reads,
+            {"view": "events"},
+            "high",
+            {
+                "aggregate",
+                "currency",
+                "description",
+                "record_id",
+                "txn_amount",
+                "txn_date",
+                "txn_type",
+            },
+        ),
+        (
+            "investments",
+            register_investment_coarse_reads,
+            {"view": "holdings"},
+            "high",
+            {"aggregate", "balance", "currency", "record_id", "txn_amount"},
+        ),
+        (
+            "investments",
+            register_investment_coarse_reads,
+            {"view": "lots"},
+            "high",
+            {
+                "aggregate",
+                "balance",
+                "currency",
+                "record_id",
+                "txn_amount",
+                "txn_date",
+                "txn_type",
+            },
+        ),
+        (
+            "investments",
+            register_investment_coarse_reads,
+            {"view": "gains"},
+            "high",
+            {
+                "aggregate",
+                "balance",
+                "currency",
+                "record_id",
+                "txn_amount",
+                "txn_date",
+                "txn_type",
+            },
+        ),
+        (
+            "investments",
+            register_investment_coarse_reads,
+            {"view": "securities"},
+            "low",
+            {"aggregate", "currency", "record_id", "txn_type"},
+        ),
+        (
+            "transactions",
+            register_transaction_coarse_reads,
+            {},
+            "high",
+            {
+                "aggregate",
+                "category",
+                "description",
+                "record_id",
+                "txn_amount",
+                "txn_date",
+                "txn_type",
+                "user_note",
+            },
+        ),
+    ],
+)
+async def test_investment_and_transaction_coarse_emit_one_public_privacy_event(
+    name: str,
+    registrar: Any,
+    arguments: dict[str, Any],
+    sensitivity: str,
+    classes: set[str],
+    mcp_db: object,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    if name == "investments":
+        from tests.moneybin.db_helpers import create_core_dim_stub_views
+
+        with get_database(read_only=False) as db:
+            create_core_dim_stub_views(db)
+    mcp = isolated_server(registrar)
+
+    with patch(
+        "moneybin.mcp.decorator.write_privacy_event",
+        captured.append,
+    ):
+        await call_tool_raw(mcp, name, arguments)
+
+    assert len(captured) == 1
+    assert captured[0]["actor"] == f"mcp.{name}"
+    assert captured[0]["sensitivity"] == sensitivity
+    assert set(captured[0]["classes_returned"]) == classes
+
+
+async def test_investment_and_transaction_raw_errors_are_sanitized(
+    mcp_db: object,
+) -> None:
+    from tests.moneybin.db_helpers import create_core_dim_stub_views
+
+    with get_database(read_only=False) as db:
+        create_core_dim_stub_views(db)
+        db.execute(
+            """
+            UPDATE core.dim_accounts
+            SET display_name = 'Shared Account'
+            WHERE account_id IN ('ACC001', 'ACC002')
+            """
+        )
+    investments_mcp = isolated_server(register_investment_coarse_reads)
+    transactions_mcp = isolated_server(register_transaction_coarse_reads)
+
+    investments_error = await _assert_canonical_error(
+        investments_mcp,
+        "investments",
+        {"view": "events", "account": "Shared Account"},
+        "ENTITY_REFERENCE_AMBIGUOUS",
+    )
+    missing_merchant = "secret-merchant-123456789"
+    transactions_error = await _assert_canonical_error(
+        transactions_mcp,
+        "transactions",
+        {"merchant": missing_merchant},
+        "ENTITY_REFERENCE_NOT_FOUND",
+    )
+
+    assert investments_error["error"]["details"]["candidate_ids"] == [
+        "ACC001",
+        "ACC002",
+    ]
+    assert "Shared Account" not in investments_error["error"]["message"]
+    assert transactions_error["error"]["details"]["candidate_ids"] == []
+    assert missing_merchant not in transactions_error["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("name", "registrar", "arguments"),
+    [
+        ("investments", register_investment_coarse_reads, {"view": "portfolio"}),
+        ("investments", register_investment_coarse_reads, {"limit": "50"}),
+        ("investments", register_investment_coarse_reads, {"start": 20250101}),
+        ("investments", register_investment_coarse_reads, {"unknown": "value"}),
+        ("transactions", register_transaction_coarse_reads, {"limit": "50"}),
+        ("transactions", register_transaction_coarse_reads, {"min_amount": "-50.00"}),
+        ("transactions", register_transaction_coarse_reads, {"start": 20250101}),
+        ("transactions", register_transaction_coarse_reads, {"unknown": "value"}),
+    ],
+)
+async def test_investment_and_transaction_coarse_reject_invalid_raw_arguments(
+    name: str,
+    registrar: Any,
+    arguments: dict[str, Any],
+) -> None:
+    mcp = isolated_server(registrar)
 
     response = await call_tool_raw(mcp, name, arguments)
 
