@@ -4,8 +4,8 @@
 This is the shared primitive behind the ``sql_query`` MCP tool and the
 ``moneybin sql query`` CLI command. Both surfaces call
 :func:`execute_sql_query`, so privacy enforcement is
-structural rather than per-surface: the read-only gate, the core/app schema
-restriction, sqlglot column lineage, and CRITICAL masking all run here, below
+structural rather than per-surface: the read-only gate, the queryable-schema
+allowlist, sqlglot column lineage, and CRITICAL masking all run here, below
 the adapters. Neither surface can return rows that skipped redaction, and a
 future third surface inherits the same guarantees by calling this primitive.
 
