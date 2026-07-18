@@ -299,7 +299,7 @@ async def test_investment_coarse_paginates_with_exact_counts(
     _insert_event(
         investment_transaction_id="evt_2",
         security_id=sec,
-        trade_date=date(2024, 1, 16),
+        trade_date=date(2024, 1, 15),
     )
 
     first = await investments_coarse(
@@ -328,10 +328,10 @@ async def test_investment_coarse_paginates_with_exact_counts(
     assert second.summary.returned_count == 1
     assert second.summary.has_more is False
     assert second.next_cursor is None
-    assert {
+    assert [
         first.data.rows[0].investment_transaction_id,
         second.data.rows[0].investment_transaction_id,
-    } == {"evt_1", "evt_2"}
+    ] == ["evt_1", "evt_2"]
     continuation = next(
         action for action in first.actions if action.startswith("Continue with ")
     )

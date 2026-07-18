@@ -158,6 +158,37 @@ async def test_transactions_coarse_preserves_operational_query_semantics(
 
 
 @pytest.mark.unit
+async def test_transactions_coarse_preserves_archived_account_id_parity(
+    mcp_db: object,
+) -> None:
+    _insert_transactions()
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            UPDATE core.dim_accounts
+            SET archived = TRUE, display_name = 'Archived Checking'
+            WHERE account_id = 'ACC001'
+            """
+        )
+
+    legacy = await transactions_get(accounts=["ACC001"], limit=100)
+    coarse = await transactions_coarse(account="ACC001", limit=100)
+
+    assert coarse.data.transactions == legacy.data.transactions
+    assert [row.transaction_id for row in coarse.data.transactions] == [
+        "txn_1",
+        "txn_2",
+    ]
+
+    by_name = await transactions_coarse(account="Archived Checking")
+
+    assert by_name.error is not None
+    assert by_name.error.code == "ENTITY_REFERENCE_NOT_FOUND"
+    assert by_name.error.details == {"candidate_ids": []}
+    assert "Archived Checking" not in by_name.error.message
+
+
+@pytest.mark.unit
 async def test_transactions_coarse_resolves_merchant_filter(
     mcp_db: object,
 ) -> None:
@@ -203,10 +234,10 @@ async def test_transactions_coarse_paginates_with_exact_counts(
     assert second.summary.returned_count == 1
     assert second.summary.has_more is False
     assert second.next_cursor is None
-    assert {
+    assert [
         first.data.transactions[0].transaction_id,
         second.data.transactions[0].transaction_id,
-    } == {"txn_1", "txn_2"}
+    ] == ["txn_1", "txn_2"]
     continuation = next(
         action for action in first.actions if action.startswith("Continue with ")
     )

@@ -188,9 +188,17 @@ def _resolve_transaction_reference(
     return resolution.entity_id
 
 
-def _transaction_account_candidates(service: AccountService) -> list[EntityCandidate]:
-    """Project active accounts into the shared resolver shape."""
-    return [
+def _resolve_transaction_account(reference: str, service: AccountService) -> str:
+    """Resolve exact account IDs across history and names among active accounts."""
+    rows = service.list_accounts(
+        include_archived=True,
+        type_filter=None,
+    ).rows
+    for row in rows:
+        if row.account_id == reference:
+            return row.account_id
+
+    candidates = [
         EntityCandidate(
             entity_id=row.account_id,
             display_name=row.display_name or row.account_id,
@@ -204,11 +212,10 @@ def _transaction_account_candidates(service: AccountService) -> list[EntityCandi
                 if value is not None
             ),
         )
-        for row in service.list_accounts(
-            include_archived=False,
-            type_filter=None,
-        ).rows
+        for row in rows
+        if not row.archived
     ]
+    return _resolve_transaction_reference(reference, candidates, noun="account")
 
 
 def _transaction_merchant_candidates(
@@ -352,10 +359,9 @@ def transactions_coarse(
 
     with get_database(read_only=True) as db:
         account_id = (
-            _resolve_transaction_reference(
+            _resolve_transaction_account(
                 account,
-                _transaction_account_candidates(AccountService(db)),
-                noun="account",
+                AccountService(db),
             )
             if account is not None
             else None
