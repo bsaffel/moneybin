@@ -1,70 +1,68 @@
-<!-- Last reviewed: 2026-07-13 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Roadmap
 
-MoneyBin is pre-v1. This page describes direction, not dates or release
-promises. For what you can rely on today, start with [What Works
-Today](features.md). For the dated record of shipped changes, see the
-[Changelog](../CHANGELOG.md).
+MoneyBin is pre-v1. This page shows direction, not dates or release promises.
+For capabilities you can use now, see [What Works Today](features.md); for the
+dated record of changes, see the [Changelog](../CHANGELOG.md).
 
-## Today
+## What works today
 
 MoneyBin is a local-first financial data platform for people comfortable with a
 CLI, SQL, or an MCP-enabled AI client. It imports financial files, supports
 Plaid sync for cash, credit-card, and investment accounts, stores each profile
-in an encrypted DuckDB database, and provides auditable reports,
-categorization, investment accounting, and data-quality checks.
+in an encrypted DuckDB database, and provides reports, categorization,
+investment accounting, reversible edits, and data-quality checks.
 
 The Plaid link, sync, and reconcile flow is author-tested against a production
-account but still needs non-author validation. The fastest safe way to explore
-MoneyBin is the synthetic `moneybin demo` profile. The current install path and
-supported workflows are documented in the [guides](guides/README.md).
+account but still needs non-author validation. Start with the synthetic
+`moneybin demo` profile to explore the product without real financial data.
 
-## Now
+## Status
 
-- **Make evaluation and installation less developer-only.** Publish a
-  reproducible package, improve first-run guidance, and make the demo path a
-  reliable way to reach a useful first answer without real financial data.
-- **Finish the trust-critical data flows.** Continue hardening account and
-  security identity, import confirmation, reconciliation, and Plaid validation
-  so a user can understand what was imported, changed, or needs review.
-- **Complete investment reporting.** The investment ledger, Plaid ingestion,
-  cost basis, and realized-gain calculations exist; market prices and
-  net-worth integration remain work in progress.
+| Mark | Meaning |
+|---|---|
+| ✅ shipped | Merged and usable today. |
+| 🚧 in progress | Work has started; the outcome is not complete yet. |
+| 📐 designed | A public technical design exists; implementation has not started. |
+| 🗓️ planned | Direction is set, but implementation has not started. |
 
-## Next
+## Milestones
 
-- **Deepen analysis and ownership.** Budgeting, recurring-transaction review,
-  export bundles, multi-currency support, and richer report lineage build on
-  the current warehouse.
-- **Add a local visual workflow.** A web interface will focus first on review,
-  data quality, accounts, and reports rather than replacing the CLI or MCP
-  surfaces.
-- **Make customization safer.** Contributor-facing report, package, and
-  provider contracts will mature alongside worked examples and validation
-  tooling.
+| Milestone | Focus | Current state |
+|---|---|---|
+| **M0 — Foundation** | Secure local storage and shared product infrastructure | ✅ shipped |
+| **M1 — Ingestion Core** | Trustworthy financial data in one warehouse | 🚧 core imports and investment foundations are shipped; validation and completion work remains. |
+| **M2 — Analysis & Reports** | Traceable answers built on the warehouse | 🚧 core reports are shipped; deeper analysis is planned. |
+| **M3 — Productization & Distribution** | Easier evaluation, installation, and future product surfaces | 🚧 the demo path is shipped; broader distribution and product surfaces are planned. |
 
-## Later
+## Current and planned increments
 
-- **Remote and hosted use.** Authenticated remote MCP, optional hosted storage,
-  and self-hosted operations require their own explicit security, consent, and
-  operational contracts. They are not part of today's local product.
-- **Additional data sources and domains.** More connectors, asset tracking, tax
-  helpers, and specialized packages will follow demonstrated user need and a
-  stable extension model.
+| Address | Outcome | Status |
+|---|---|---|
+| **M0** | Encryption, multi-profile storage, database coordination, CLI/MCP foundations, privacy controls, and integrity checks | ✅ shipped |
+| **M1A–M1F** | Tabular and financial-file imports, inbox workflow, matching, categorization, account/transaction curation, and Google Sheets | ✅ shipped |
+| **M1G** | Plaid cash, credit-card, and investment sync | ✅ shipped; broader validation continues |
+| **M1J** | Investment ledger, tax lots, cost basis, realized gains, and Plaid investment ingestion | ✅ shipped; market prices and net-worth integration remain planned |
+| **M1H, M1Q** | Import confirmation and contributor extension contracts | 🚧 in progress |
+| **M1K–M1P** | Multi-currency, recovery, export bundles, and anonymized fixtures | 📐 designed or 🗓️ planned |
+| **M2A–M2B** | Curated reports plus net-worth and balance tracking | ✅ shipped |
+| **M2C–M2P** | Budgets, recurring review, goals, projections, packages, and richer report lineage | 📐 designed or 🗓️ planned |
+| **M3A** | Safe evaluator path with `moneybin demo` and first-run improvements | ✅ demo shipped; remaining first-run work is 🗓️ planned |
+| **M3B** | Packaging and tester distribution | 🗓️ planned; release automation is in place, but a published package is not yet available |
+| **M3C** | Local web UI for review, data quality, accounts, and reports | 📐 designed |
+| **M3D, M3H, M3J** | Remote MCP, an optional hosted tier, and self-host operations | 🗓️ planned; none are part of today's local product |
 
-## Not a Near-Term Promise
+## Boundaries
 
-MoneyBin is not currently planning a native mobile app, household-shared
-budgets, or a general-purpose accounting system. It also does not claim a
-finished self-hosted server or polished consumer experience today. The
-[audience guide](audience.md) recommends better-established alternatives when
-those needs are primary.
+The local web UI and any hosted tier are planned milestones, not available
+products or release promises. MoneyBin is also not planning a native mobile
+app, household-shared budgets, or a general-purpose accounting system in the
+near term. The [audience guide](audience.md) points to better-established
+alternatives when those needs are primary.
 
-## Engineering Design References
+## Design references
 
-The repository keeps implementation history and current technical contracts in
-[`docs/specs/`](specs/) and [`docs/decisions/`](decisions/). Some older design
-documents use milestone labels such as `M1` or `M3`; those are engineering
-reference labels, not a public delivery calendar. Only specs that define a
-durable current or contributor-facing contract should be read as public design
-commitments.
+The repository publishes current contributor-facing contracts in
+[`docs/specs/`](specs/) and [decisions](decisions/). Their status may be more
+granular than this page; this roadmap is the canonical map of public milestone
+addresses and product direction.

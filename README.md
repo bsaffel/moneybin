@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-13 -->
+<!-- Last reviewed: 2026-07-18 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <picture>
@@ -8,10 +8,10 @@
 
   **Your finances, understood by AI.**
 
-  A local-first financial data platform: one encrypted database, open interfaces,<br>
-  and answers you can trace back to their source.
+  A local-first financial data platform: one encrypted database, open
+  interfaces, and answers you can trace back to their source.
 
-  [Try the demo](#try-it) · [What works today](docs/features.md) · [Architecture](docs/architecture.md)
+  [Try the demo](#try-it-safely) · [What works today](docs/features.md) · [Read the architecture](docs/architecture.md)
 
   [![CI](https://github.com/bsaffel/moneybin/actions/workflows/ci.yml/badge.svg)](https://github.com/bsaffel/moneybin/actions/workflows/ci.yml)
   [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8A6A1C.svg)](LICENSE)
@@ -19,52 +19,60 @@
 </div>
 <!-- markdownlint-enable MD033 MD041 -->
 
-MoneyBin imports financial data into an encrypted [DuckDB](https://duckdb.org)
-database on your machine. You can work with the same canonical data through the
-CLI, SQL, or an AI assistant over
-[MCP](https://modelcontextprotocol.io)—without handing ownership of the database
-to another financial app.
+MoneyBin turns bank files, spreadsheets, and connected-account data into one
+encrypted [DuckDB](https://duckdb.org) database on your machine. Work with it
+from the terminal, query it with SQL, or let an MCP-compatible assistant help
+you investigate it. The database is yours; no separate hosted financial app
+owns the canonical copy.
 
-<!-- markdownlint-disable MD033 -->
-<p align="center">
-  <img
-    src="docs/assets/moneybin-interface-preview.png"
-    alt="MoneyBin transaction interface design preview with a spending chart, SQL-backed filters, and ledger rows"
-    width="820"
-  >
-</p>
-<!-- markdownlint-enable MD033 -->
+That matters when you want to change tools, rebuild a report, or audit an
+answer instead of accepting a dashboard's conclusion.
 
-> **Design preview with synthetic data.** The browser interface is in
-> development. The encrypted database, import pipeline, CLI, SQL access,
-> reports, and MCP server are available today.
+It is for people who want more than a dashboard and less than a pile of
+spreadsheets: a durable financial data layer that an AI assistant can
+inspect without becoming the source of truth.
 
-## Why MoneyBin
+## Why this exists
 
-### Own the database
+Personal finance data tends to fragment. A bank export has history, a
+spreadsheet has corrections, an aggregator has recent activity, and an AI
+answer has no obvious way to show where it came from. MoneyBin gives those
+inputs one modeled home and keeps the reasoning inspectable.
 
-Each profile is one AES-256-GCM-encrypted DuckDB file under `~/.moneybin/`. No
-vendor account is required for local use, and the database remains useful
-outside any single UI or AI model.
+- **Own the data.** Each profile is an AES-256-GCM-encrypted DuckDB file. Use
+  it locally without a vendor account, back it up like a file, and query it
+  with tools you already trust.
+- **Keep one canonical record.** Imports are recorded as batches, duplicate
+  records are reconciled across sources, and corrections live separately from
+  the source data. Re-importing overlapping history should not create a second
+  ledger.
+- **Ask better questions.** The CLI, SQL interface, and MCP server operate on
+  the same modeled tables. An assistant can help investigate spending or net
+  worth while you retain a direct route to the rows and queries behind it.
 
-### Ask or query
+## The workflow
 
-Use natural language through an MCP-compatible assistant, structured CLI
-commands, or SQL. All three surfaces operate on the same modeled data instead
-of maintaining separate answers.
+```mermaid
+flowchart LR
+    sources["Files or connected accounts"] --> data["Encrypted local database"]
+    data --> answers["CLI, SQL, and MCP"]
+    answers --> review["Inspectable answers and corrections"]
+```
 
-### Inspect the evidence
+Start with files you already have, such as CSV, OFX/QFX/QBO, Excel, Parquet,
+or a bank-statement PDF with selectable text. MoneyBin can also pull connected
+bank data through Plaid and live tabular data from Google Sheets. Those inputs
+flow through one pipeline before reports, SQL, and AI tools read them.
 
-Imports are deduplicated and recorded as reversible batches. Reports and tools
-can return provenance and SQL, so a convenient answer does not have to be a
-black box.
+That separation is intentional. An import is evidence, derived tables are
+rebuildable, and your notes, tags, categories, and other edits are auditable
+state rather than hidden changes to the source file.
 
-## Try it
+## Try it safely
 
-MoneyBin is currently installed from source. macOS is the primary target, Linux
-is supported, and Windows is not yet tested. You need Python 3.12+,
-[uv](https://docs.astral.sh/uv/), and Git. MoneyBin runs on demand—there is no
-daemon, container, or open network port for local use.
+MoneyBin currently installs from source. macOS is the primary target; Linux is
+supported, and Windows has not yet been tested. You need Python 3.12+,
+[uv](https://docs.astral.sh/uv/), and Git.
 
 ```bash
 git clone https://github.com/bsaffel/moneybin.git
@@ -73,56 +81,142 @@ make setup
 moneybin demo
 ```
 
-`moneybin demo` creates an isolated profile with synthetic data, runs the full
-pipeline, checks the resulting database, and prints a first answer. It never
-touches a real profile.
+`moneybin demo` creates a dedicated profile populated only with deterministic
+synthetic data. It runs the normal pipeline, checks the result, and prints a
+first net-worth answer. Re-running it rebuilds that demo profile; it never
+imports or changes a real profile.
 
-From there, try the same data through different interfaces:
+Choose a demo shape with `--persona basic`, `--persona family`, or
+`--persona freelancer`. Pass `--seed` to reproduce the same dataset while you
+evaluate a query or MCP workflow before pointing it at personal history.
+
+Use the demo to ask a few concrete questions:
 
 ```bash
-moneybin reports networth
+moneybin reports spending
+moneybin reports cashflow
 moneybin sql query "SELECT * FROM reports.net_worth LIMIT 10"
-moneybin mcp install --client claude-desktop
 ```
 
-See the [data import guide](docs/guides/data-import.md) for CSV, OFX/QFX/QBO,
-Excel, Parquet, PDF, Plaid, and Google Sheets sources, or the
-[MCP guide](docs/guides/mcp-server.md) for supported AI clients and tool
-behavior.
+The demo command switches the active profile to `demo` after a clean run. If
+you already had one, it prints the command to switch back.
 
-## Current state
+## Bring your own data
 
-MoneyBin is pre-v1 and in daily use by its author. Today it includes encrypted
-multi-profile storage, deterministic imports, cross-source deduplication,
-transfer detection, categorization, Plaid sync for cash, credit-card, and
-investment accounts, investment lots and gains, curated reports, ad-hoc SQL,
-reversible edits, integrity checks, a CLI, and an MCP server.
+When you are ready to work with real data, create a separate profile and point
+MoneyBin at an export you can keep:
 
-It does not yet have a published package or Homebrew install, polished first-run
-onboarding, the browser interface shown above, or the planned hosted service.
-Plaid's link, sync, and reconcile round trip is built and author-tested against
-a production account, but still needs non-author validation. The exact
-capability boundary lives in [What Works Today](docs/features.md); future work
-lives in the [roadmap](docs/roadmap.md).
+```bash
+moneybin profile create personal
+moneybin import files ~/Downloads/checking.qfx
+moneybin reports networth
+```
 
-## Documentation
+The import command refreshes derived data automatically. You can safely repeat
+an overlapping import: MoneyBin records the batch and uses source identifiers
+and content-based matching to avoid double-counting. Before a large first
+import, create an encrypted backup:
 
-- [What Works Today](docs/features.md) — shipped capabilities and their limits
-- [Guides](docs/guides/) — imports, CLI, MCP, SQL, security, and operations
-- [Architecture](docs/architecture.md) — data flow, guarantees, and extension boundaries
-- [Roadmap](docs/roadmap.md) — current priorities without speculative dates
+```bash
+moneybin db backup
+moneybin import files ~/Downloads/transactions.csv
+moneybin reports spending
+```
 
-For a critical comparison with other tools, see
-[Where MoneyBin Fits](docs/comparison.md) and [Who It Is For](docs/audience.md).
+Use the [data import guide](docs/guides/data-import.md) for source-specific
+paths, including migrations from Tiller, Mint, YNAB, and generic CSV exports.
+It also documents what data survives an import and how to revert a batch.
+
+You do not have to abandon your current workflow on day one. Start with an
+export, inspect the imported rows, and keep the source files as your fallback.
+MoneyBin preserves the source evidence and records how each import was handled,
+so you can validate totals before making it the place you return to every
+month. The goal is confidence, not a migration leap of faith.
+
+## Use an assistant without hiding the data model
+
+MoneyBin exposes a local MCP server for AI clients such as Claude Desktop,
+Claude Code, Cursor, VS Code, Gemini CLI, and Codex. The installer writes the
+appropriate local client configuration:
+
+```bash
+moneybin mcp install --client claude-code --profile personal
+```
+
+Once connected, use the assistant for questions that benefit from exploration:
+
+> What changed in my dining spending over the last three months, and which
+> merchants explain it?
+
+> Show my current net worth and the accounts with the largest month-over-month
+> change.
+
+The MCP server, CLI, and read-only SQL interface are peers over the same data.
+Tool responses include structured results and next-step hints; you can always
+fall back to the CLI or SQL when you want to verify a conclusion yourself.
+
+### Know the AI boundary
+
+MoneyBin's MCP server runs locally and does not phone home. The AI client you
+connect to may still send your prompt and MoneyBin tool results to its model
+provider. Treat a question to a cloud-hosted assistant as sharing the returned
+financial data with that provider.
+
+LLM-assisted categorization is opt-in. Before it sends a categorization prompt,
+MoneyBin removes amounts, dates, and account identifiers, but that redaction is
+not a substitute for choosing an AI provider whose terms you accept. The
+[threat model](docs/guides/threat-model.md) explains the boundary in detail.
+
+## What you can rely on today
+
+MoneyBin is pre-v1 and in daily use by its author. Its working center is a
+local, source-backed ledger for people comfortable with a terminal or an
+MCP-enabled client.
+
+The everyday loop is working: import or sync data, let MoneyBin rebuild the
+canonical tables, review what needs attention, and ask for reports or direct
+queries. It covers balances, spending, cash flow, recurring activity, and net
+worth without forcing you into a separate reporting store.
+
+The model also carries curation state—categories, merchants, notes, tags, and
+splits—without overwriting source data. An investment ledger supports positions,
+tax lots, and realized gains; its limitations are documented plainly before you
+rely on it for a tax workflow.
+
+The detailed boundary—including source support, known limitations, and which
+workflows have been exercised end to end—is in [What Works Today](docs/features.md).
+
+## What it is not
+
+MoneyBin is not yet a finished consumer app. It has no published package or
+Homebrew install, no polished first-run onboarding, and no browser dashboard or
+native mobile app. It is also not a replacement for collaborative household
+budgeting, envelope budgeting, professional bookkeeping, or tax-form filing.
+
+The investment ledger supports cost basis and realized gains, but it is not yet
+a tax-preparation product. If you need a mature visual finance app, shared
+budgets, plain-text double-entry accounting, or tax workflows today, read the
+[honest fit guide](docs/audience.md) before migrating.
+
+## Read next
+
+- [What Works Today](docs/features.md) — the shipped capability boundary and
+  known limits
+- [Data import](docs/guides/data-import.md) — bring over history from files,
+  spreadsheets, or another finance tool
+- [MCP server](docs/guides/mcp-server.md) — connect an AI client and understand
+  the tool contract
+- [Database and security](docs/guides/database-security.md) — encryption,
+  backups, profiles, and key management
+- [Architecture](docs/architecture.md) — the guarantees and data layers behind
+  the user-facing surfaces
+- [Where MoneyBin Fits](docs/comparison.md) — a critical comparison with other
+  tools
 
 ## Contributing
 
-Bug reports, focused feature proposals, and pull requests are welcome. Start
-with [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and project
-conventions. Use [GitHub Discussions](https://github.com/bsaffel/moneybin/discussions)
-for broader questions and design conversations.
-
-## License
-
-[AGPL-3.0](LICENSE). See [Licensing](docs/licensing.md) for the practical meaning
-of the license and the relationship between self-hosted and planned hosted use.
+This is an open-source project under [AGPL-3.0](LICENSE). Bug reports, focused
+feature proposals, and pull requests are welcome. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md), and use
+[GitHub Discussions](https://github.com/bsaffel/moneybin/discussions) for
+broader questions and design conversations.

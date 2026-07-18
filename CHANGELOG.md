@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-09 -->
+<!-- Last reviewed: 2026-07-18 -->
 
 # Changelog
 
@@ -146,8 +146,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   two-mortgage-category ambiguity in favour of `LNP-MTG`) and added 9 — 6 finer
   categories from the 29 unmapped Plaid detailed codes, plus a 3-category
   **Family & Kids** group (`FAM`/`FAM-ACT`/`FAM-SUP`) folded in after a
-  cross-aggregator comprehensiveness crosswalk against MX, Mint, Monarch, and
-  Maybe validated coverage; `class` reconciled end-to-end (no reclasses needed).
+  coverage audit identified the gap; `class` reconciled end-to-end (no
+  reclasses needed).
   Net 108 − 5 + 9 → 112 categories. Seed validation now
   enforces a valid-class invariant, an enumerated coverage report, and an orphan
   allowlist. Purely additive on the M1V bridge — no consumer query changes. (#298)
@@ -864,6 +864,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - `pyproject.toml` PyPI-publish-ready metadata (description, classifiers, URLs, keywords). Bumped setuptools floor to ≥77.0 for PEP 639 license metadata.
 
 ### Changed
+- **Public project documentation and branding refreshed.** The README, roadmap,
+  and public technical-reference index now focus on the local CLI, SQL, and MCP
+  workflows available today, with clearer navigation and updated project marks.
+  (#323)
 - **`sql_query` now reports per-query sensitivity instead of a fixed tier.**
   `summary.sensitivity` reflects the highest-tier data class present in the
   actual output columns (e.g. `"low"` for a pure `COUNT(*)` aggregate,
@@ -917,7 +921,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **`app.categories` and `app.merchants` views retired.** The resolved-dimension views (seeds + user state + overrides) now live as SQLMesh-managed `core.dim_categories` and `core.dim_merchants`. Consumer code already routed through the `TableRef` constants; no API change.
 - **Milestone taxonomy re-unified into phase-aligned milestones (2026-05-30).** Replaced the flat M0–M3F grid — where the numbers had stopped tracking the build sequence — with four phase milestones: **M0 Foundation, M1 Ingestion Core, M2 Analysis & Reports, M3 Productization & Distribution**, each with lettered increments (`M1J`) and `.N` work items, and each closed by a test-functionality gate. The phase *is* the gate, so testing batches at four milestones rather than per-increment. `docs/roadmap.md` carries the new scheme and the old→new mapping; dated CHANGELOG history keeps its original labels.
 - **Milestone terminology unified.** Retired "Level 0/1" + "Wave 2A/2B/2C/Wave 3" dual systems for one consistent **milestone** convention: M0, M1, M2A, M2B, M2C, M3A, M3B, M3C, M3D, M3E, Post-launch. M3 decomposes into sub-milestones because it has parallel domain (Plaid/investments/multi-currency) and surface (Web UI/hosted) tracks. M3E closing = launch.
-- **README significantly tightened** — from ~196 lines to ~115 lines. Storefront pattern: tagline preserved, status callout + Why-bullets + How-It-Works diagram + Quick Start + 5×5 ✓/✗ comparison + Documentation/Community/Contributing/License pointers. In-README roadmap matrix removed (lives in `docs/roadmap.md`); detailed feature inventory removed (lives in `docs/features.md`); 8-column comparison table replaced with tight 5×5 (full version in `docs/comparison.md`); License essay condensed (full rationale in `docs/licensing.md`). Modeled on Bitwarden, Plausible, DuckDB, SQLMesh peer-set conventions.
+- **README significantly tightened** — from ~196 lines to ~115 lines. Storefront pattern: tagline preserved, status callout + Why-bullets + How-It-Works diagram + Quick Start + 5×5 ✓/✗ comparison + Documentation/Community/Contributing/License pointers. In-README roadmap matrix removed (lives in `docs/roadmap.md`); detailed feature inventory removed (lives in `docs/features.md`); 8-column comparison table replaced with tight 5×5 (full version in `docs/comparison.md`); License essay condensed (full rationale in `docs/licensing.md`).
 - `.claude/rules/shipping.md` extended with the post-implementation checklist for `CHANGELOG.md`, `docs/roadmap.md`, `docs/features.md`. Documents what does and doesn't earn a CHANGELOG entry.
 - `CONTRIBUTING.md` "Where the strategy lives" expanded to include the new docs and a one-line CHANGELOG rule.
 - **Spec rename for surface symmetry.** `docs/specs/mcp-tool-surface.md` → `docs/specs/moneybin-mcp.md`; `docs/specs/cli-restructure.md` → `docs/specs/moneybin-cli.md`. Establishes the `moneybin-<surface>.md` naming pattern (extends to a future `moneybin-rest-api.md`). New cross-surface spec [`docs/specs/moneybin-capabilities.md`](docs/specs/moneybin-capabilities.md) maps user-facing capabilities to per-surface registered names; the `.claude/rules/mcp-server.md` "Surface change discipline" rule now requires every tool/command PR to update both the surface-specific spec AND the capabilities map. `git log --follow` works across the rename for history; bookmarks to the old paths should be updated.
