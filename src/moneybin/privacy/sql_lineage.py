@@ -277,19 +277,48 @@ def expand_star(tree: exp.Expr, snapshot: SchemaSnapshot) -> exp.Expr:
     return _qualified(tree, snapshot)
 
 
+def _scope_source_names(tree: exp.Expr) -> frozenset[str]:
+    """Every name bound by a CTE or a derived-table alias anywhere in ``tree``.
+
+    These names SHADOW a same-named base table — that is plain SQL semantics,
+    not a security rule: given ``WITH dim_accounts AS (…) SELECT … FROM
+    dim_accounts``, the reference is the CTE and the catalog table is invisible.
+    ``_column_key`` uses this to refuse the catalog for such a reference.
+
+    Deliberately whole-query rather than per-scope: a name bound anywhere is at
+    worst declined here and answered by ``_conservative_floor``, so a too-wide
+    set over-redacts, while a too-narrow one under-redacts.
+    """
+    names = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+    names |= {sub.alias for sub in tree.find_all(exp.Subquery)}
+    return frozenset(n for n in names if n)
+
+
 def _column_key(
     col: exp.Column,
     alias_map: dict[str, tuple[str, str]],
     snapshot: SchemaSnapshot,
+    shadowed: frozenset[str] = frozenset(),
 ) -> tuple[str, str, str] | None:
     """Map a qualified Column to (schema, table, column), or None if unresolved.
 
     After qualify(), col.table is the alias or dealiased table name.
     col.db is NOT populated. We resolve via the alias_map.
+
+    ``shadowed`` names CTEs / derived tables (see ``_scope_source_names``); a
+    column qualified by one of them NEVER resolves against the catalog. Both
+    lookups below would otherwise produce a false-positive catalog hit for a
+    CTE named after a real table: ``_build_alias_map`` walks ``Table`` nodes
+    *inside* CTE bodies, so ``core.dim_accounts`` self-registers under the bare
+    key ``dim_accounts``, and the bare-name scan matches any CTE named like a
+    catalog table. Callers on the *resolution* path must pass it;
+    ``collect_input_columns`` deliberately does not (see its docstring).
     """
     name = col.name
     table_ref = col.table  # alias or real table name
     if not table_ref:
+        return None
+    if table_ref in shadowed:
         return None
 
     # Resolve alias → (schema, real_table)
@@ -309,7 +338,15 @@ def _column_key(
 def collect_input_columns(
     tree: exp.Expr, snapshot: SchemaSnapshot
 ) -> set[tuple[str, str, str]]:
-    """All (schema, table, column) tuples referenced anywhere in the query."""
+    """All (schema, table, column) tuples referenced anywhere in the query.
+
+    Intentionally does NOT pass ``shadowed`` to ``_column_key``. Its only
+    consumer is ``_scope_input_max``, which computes a conservative *floor* —
+    there, resolving a CTE-qualified column to a same-named catalog table can
+    only ADD a class to the max, never remove one, so the shadowing imprecision
+    is safe and the extra reach is desirable. On the resolution path the same
+    imprecision is a leak, which is why ``_resolve_projection`` does pass it.
+    """
     alias_map = _build_alias_map(tree)
     found: set[tuple[str, str, str]] = set()
     for col in tree.find_all(exp.Column):
@@ -486,6 +523,11 @@ class _ResolveCtx:
     against every scope in it rather than against whatever local scope the
     recursion happened to bottom out in — see ``_conservative_floor``.
     ``strict`` turns that fallback into an error for the build-time deriver.
+
+    ``shadowed`` is every CTE / derived-table name bound anywhere in ``tree``
+    (see ``_scope_source_names``). Computed once per call and carried unchanged
+    through the recursion, because a name bound by the outer query still shadows
+    the catalog inside a nested scope.
     """
 
     snapshot: SchemaSnapshot
@@ -494,6 +536,7 @@ class _ResolveCtx:
     seen: frozenset[int]
     tree: exp.Expr
     strict: bool
+    shadowed: frozenset[str]
 
 
 def _output_index(source: Scope, name: str) -> int | None:
@@ -503,6 +546,16 @@ def _output_index(source: Scope, name: str) -> int | None:
     its output NAMES from the first branch while drawing VALUES from every
     branch. Matching later branches by name would miss the branch that supplies
     a CRITICAL value under a different local alias, and under-redact.
+
+    Unwraps ``exp.Union`` only — deliberately narrower than
+    ``_union_select_branches``, which must handle ``exp.SetOperation`` because
+    nothing above it can supply a fallback. Here an ``EXCEPT`` / ``INTERSECT``
+    scope falls out of the loop as a non-Select and returns None, which the
+    caller turns into the conservative floor. That is safe (a floor is never
+    lower than the per-position answer), so widening this to ``SetOperation``
+    would only trade over-redaction for precision — not a correctness fix, and
+    it is not made here. Do NOT widen it without re-checking that
+    ``_class_at_index`` still refuses to average away the right operand.
     """
     select = source.expression
     while isinstance(select, exp.Union):
@@ -549,17 +602,33 @@ def _class_at_index(source: Scope, index: int, ctx: _ResolveCtx) -> DataClass | 
     )
 
 
-def _class_via_source_scope(
-    col: exp.Column, scope: Scope | None, ctx: _ResolveCtx
-) -> DataClass | None:
-    """Resolve ``col`` through a CTE / derived-table source, or None if it isn't one.
+def _source_scope_of(col: exp.Column, scope: Scope | None) -> Scope | None:
+    """The CTE / derived-table Scope ``col`` reads from, or None if it reads a table.
 
-    This is the fix for the scope-max defect: a CTE reference parses with
-    ``db=''``, so ``_build_alias_map`` never registered it and every CTE-alias
-    column fell through to the conservative floor — which spans the whole outer
-    SELECT including the ``WITH`` subtree, collapsing the rule to "max tier over
-    every column in the query". Resolving to the matching projection INSIDE the
-    source keeps each output column's class its own.
+    Split out from the resolution step (``_class_in_source_scope``) to make one
+    invariant expressible by the caller:
+
+        **A column whose table reference names a CTE or derived table is NEVER
+        resolved against the catalog. Its class comes from inside that scope,
+        or from the conservative floor — never from a same-named catalog
+        table.**
+
+    This is ordinary SQL semantics before it is a security rule: a CTE shadows a
+    same-named base table, so resolving ``dim_accounts.account_type`` against
+    ``core.dim_accounts`` is simply the wrong answer. It is *also* a leak, and
+    was the one this split closes: when resolution inside the scope declined
+    (depth exhausted), control used to fall through to ``_column_key``, which
+    resolved the CTE name to a catalog row and returned that permissive class as
+    a confident answer — so the decline never reached ``_conservative_floor``.
+    Same root cause as the depth-exhaustion leak, through a different door.
+    Returning the Scope here lets the caller distinguish "not a scope source"
+    (fall through to the catalog) from "scope source we could not resolve"
+    (decline, and let the floor answer).
+
+    A CTE reference parses with ``db=''``, so ``_build_alias_map`` never
+    registers it; resolving to the matching projection INSIDE the source is what
+    keeps each output column's class its own instead of collapsing to "max tier
+    over every column in the query".
     """
     if scope is None:
         return None
@@ -581,8 +650,18 @@ def _class_via_source_scope(
         if len(selected) != 1:
             return None
         source = next(iter(selected.values()))[1]
-    if not isinstance(source, Scope):
-        return None  # a real exp.Table — the alias-map path handles it
+    # A real exp.Table (or nothing) — the alias-map path handles it.
+    return source if isinstance(source, Scope) else None
+
+
+def _class_in_source_scope(
+    col: exp.Column, source: Scope, ctx: _ResolveCtx
+) -> DataClass | None:
+    """Class of ``col`` as produced by the CTE / derived-table scope it reads from.
+
+    None means "this scope could not answer" — never "look somewhere else". See
+    ``_source_scope_of`` for the invariant that makes the difference load-bearing.
+    """
     index = _output_index(source, col.name)
     if index is None:
         return None
@@ -682,13 +761,20 @@ def _resolve_projection(
     classes: list[DataClass] = []
     for col in cols:
         col_scope = _scope_of_column(col, inner, scope, subscopes)
-        # A CTE / derived-table column resolves to the projection inside that
-        # source. Checked first because such a column has no catalog key at all.
-        via_scope = _class_via_source_scope(col, col_scope, ctx)
-        if via_scope is not None:
-            classes.append(via_scope)
+        source_scope = _source_scope_of(col, col_scope)
+        if source_scope is not None:
+            # INVARIANT: a CTE / derived-table column resolves INSIDE that
+            # source or not at all — never against the catalog. Declining here
+            # (rather than falling through to _column_key) is the whole point:
+            # the catalog holds a same-named table whose class is unrelated, and
+            # answering from it converts this decline into a confident, wrong,
+            # usually more permissive class. Fall to the conservative floor.
+            dc_scope = _class_in_source_scope(col, source_scope, ctx)
+            if dc_scope is None:
+                return None
+            classes.append(dc_scope)
             continue
-        key = _column_key(col, alias_map, snapshot)
+        key = _column_key(col, alias_map, snapshot, ctx.shadowed)
         if key is None:
             return None  # unresolvable — the outermost caller supplies the floor
         dc = _class_of_key(key)
@@ -725,19 +811,38 @@ def _classify_projection(
 
 
 def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
-    """Top-level SELECT branches of a (possibly nested) set operation.
+    """Top-level SELECT branches a set operation can draw output VALUES from.
 
-    A plain SELECT returns ``[self]``. A UNION/EXCEPT/INTERSECT (all subclass
-    ``exp.Union``) returns every branch's SELECT. ``tree.find(exp.Select)``
-    alone would see only the first branch and let a CRITICAL column in a later
-    branch leak: the result takes the first branch's column NAMES but its VALUES
-    come from every branch by position, so each position must be classified
-    across all branches.
+    A plain SELECT returns ``[self]``. The set operations split by value
+    provenance, NOT by a shared base class — on sqlglot 30.8.0 ``exp.Except``
+    and ``exp.Intersect`` do NOT subclass ``exp.Union``; all three subclass
+    ``exp.SetOperation``. (An earlier revision of this docstring asserted the
+    common-``Union`` hierarchy; it is false, and dispatching on ``exp.Union``
+    alone silently dropped branches — see below.)
+
+    - ``UNION`` / ``UNION ALL`` draw values from BOTH branches, so both are
+      returned and each output position is classified across all of them. The
+      result takes the first branch's column NAMES but its VALUES come from
+      every branch by position, so classifying only the first would let a
+      CRITICAL column in a later branch leak.
+    - ``EXCEPT`` / ``INTERSECT`` emit rows drawn from the LEFT branch only
+      (the right operand filters, it does not contribute values), so only the
+      left branch is returned.
+
+    Recursing on ``node.left`` also matters for correctness, not just clarity:
+    ``tree.find(exp.Select)`` walks breadth-first, so for
+    ``(A UNION B) EXCEPT C`` it returns C — the wrong branch entirely, taking
+    output names and classes from the operand that contributes no values while
+    A and B go unclassified.
     """
     if isinstance(node, exp.Union):
         return _union_select_branches(node.left) + _union_select_branches(node.right)
+    if isinstance(node, exp.SetOperation):  # EXCEPT / INTERSECT — left values only
+        return _union_select_branches(node.left)
     if isinstance(node, exp.Select):
         return [node]
+    if isinstance(node, exp.Subquery):  # parenthesised operand, e.g. (A UNION B)
+        return _union_select_branches(node.this)
     inner = node.find(exp.Select)
     return [inner] if inner is not None else []
 
@@ -791,6 +896,7 @@ def resolve_output_classes(
         seen=frozenset(),
         tree=tree,
         strict=strict,
+        shadowed=_scope_source_names(tree),
     )
     # Alias scope is per-branch: a UNION may reuse one alias for different
     # tables across branches (legal SQL), so a tree-wide map (last-write-wins)
@@ -823,8 +929,16 @@ def is_data_query(tree: exp.Expr) -> bool:
     False for DESCRIBE / SHOW / PRAGMA / EXPLAIN, whose output is schema or
     plan text, not classified row data — callers route those past the lineage
     gate and treat them as LOW.
+
+    Must test ``exp.SetOperation``, not ``exp.Union``: on sqlglot 30.8.0
+    ``exp.Except`` / ``exp.Intersect`` are siblings of ``exp.Union`` under
+    ``SetOperation``, so a bare ``exp.Union`` check answered False for a
+    top-level ``EXCEPT`` / ``INTERSECT`` and routed a row-returning query down
+    the metadata path — skipping BOTH the schema allowlist and CRITICAL
+    masking. ``SELECT routing_number FROM core.dim_accounts EXCEPT SELECT …``
+    returned the routing number in the clear at LOW.
     """
-    return isinstance(tree, (exp.Select, exp.Union))
+    return isinstance(tree, (exp.Select, exp.SetOperation))
 
 
 def tables_outside_schemas(

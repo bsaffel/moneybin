@@ -277,6 +277,96 @@ def test_truncation_sets_total_count(populated_db: Database) -> None:
     assert result.total_count > len(result.records)
 
 
+# ---------------------------------------------------------------------------
+# End-to-end masking for the shadowing + set-operation under-classification
+# leaks. These assert on the RETURNED VALUE, not just the tier: the tier is
+# what the classifier says, the value is what the user actually receives.
+# ---------------------------------------------------------------------------
+
+# 5 resolves inside the CTE scope; 16/30/60 exhaust _MAX_SCOPE_DEPTH and must
+# reach the conservative floor rather than the same-named catalog table.
+_SHADOW_DEPTHS = [5, 16, 30, 60]
+
+_ROUTING_NUMBER = "021000021"
+
+
+def _shadowing_query(depth: int, *, alias_form: bool) -> str:
+    """A ``routing_number`` chain hidden behind a CTE named like a catalog table."""
+    ctes = ["c0 AS (SELECT routing_number AS account_type FROM core.dim_accounts)"]
+    ctes += [
+        f"c{i} AS (SELECT account_type FROM c{i - 1})"  # noqa: S608  # test input string, not executing SQL
+        for i in range(1, depth + 1)
+    ]
+    if alias_form:
+        tail = f"SELECT dim_accounts.account_type FROM c{depth} AS dim_accounts"  # noqa: S608  # test input string, not executing SQL
+    else:
+        ctes.append(f"dim_accounts AS (SELECT account_type FROM c{depth})")  # noqa: S608  # test input string, not executing SQL
+        tail = "SELECT dim_accounts.account_type FROM dim_accounts"
+    return "WITH " + ", ".join(ctes) + " " + tail
+
+
+@pytest.mark.parametrize("alias_form", [False, True], ids=["with-name", "from-alias"])
+@pytest.mark.parametrize("depth", _SHADOW_DEPTHS)
+def test_shadowing_cte_does_not_return_routing_number_in_the_clear(
+    depth: int, alias_form: bool, populated_db: Database
+) -> None:
+    """The end-to-end proof that the shadowing leak is closed.
+
+    A CTE named ``dim_accounts`` (or a FROM-alias of that name) used to resolve
+    against ``core.dim_accounts`` once the chain exhausted ``_MAX_SCOPE_DEPTH``,
+    yielding TXN_TYPE/LOW and returning the real routing number unmasked. The
+    lineage-level regressions live in ``test_sql_lineage.py``; this pins the
+    user-visible outcome, which is the thing that actually leaked.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db, _shadowing_query(depth, alias_form=alias_form), max_rows=100
+    )
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["account_type"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+def test_except_query_is_classified_and_masked(populated_db: Database) -> None:
+    """``EXCEPT`` returns rows, so it must be masked like any other data query.
+
+    ``is_data_query`` tested ``exp.Union``, which ``exp.Except`` does not
+    subclass, so a top-level EXCEPT was routed down the DESCRIBE/SHOW path:
+    ``is_metadata=True``, tier LOW, no masking. The routing number came back in
+    the clear.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT routing_number FROM core.dim_accounts "
+        "EXCEPT SELECT account_type FROM core.dim_accounts",
+        max_rows=100,
+    )
+    assert result.is_metadata is False
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["routing_number"] == "*****"
+    assert _ROUTING_NUMBER not in str(result.records)
+
+
+@pytest.mark.parametrize("op", ["EXCEPT", "INTERSECT"])
+def test_set_operation_cannot_bypass_the_schema_allowlist(
+    op: str, populated_db: Database
+) -> None:
+    """The metadata path skipped the schema gate too — raw.* became readable.
+
+    The masking bypass was only half the damage: metadata queries never reach
+    ``tables_outside_schemas``, so ``SELECT ... FROM raw.x EXCEPT ...`` returned
+    unclassified raw-schema rows that a plain SELECT refuses outright.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            f"SELECT account_id FROM raw.ofx_transactions {op} SELECT 'x'",  # noqa: S608  # test input string, not executing SQL
+            max_rows=100,
+        )
+    assert ei.value.code == error_codes.SQL_SCHEMA_NOT_ALLOWED
+
+
 def test_unaliased_aggregate_critical_masked(populated_db: Database) -> None:
     """Unaliased MIN(routing_number) is masked despite the sqlglot/DuckDB name split.
 

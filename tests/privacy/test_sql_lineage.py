@@ -237,13 +237,16 @@ def test_unresolvable_projection_falls_back_to_max_input_tier(
         col: object,
         alias_map: object,
         snapshot: object,
+        shadowed: object = frozenset(),
     ) -> object:
-        # _column_key(col, alias_map, snapshot) — fail only for 'credit_limit'
+        # _column_key(col, alias_map, snapshot, shadowed) — fail only for
+        # 'credit_limit'. ``shadowed`` defaults so the call sites that omit it
+        # (collect_input_columns) keep working through the patch.
         from sqlglot import exp as _exp
 
         if isinstance(col, _exp.Column) and col.name == "credit_limit":
             return None
-        return real(col, alias_map, snapshot)  # type: ignore[arg-type]
+        return real(col, alias_map, snapshot, shadowed)  # type: ignore[arg-type]
 
     monkeypatch.setattr(lin, "_column_key", flaky)  # pyright: ignore[reportPrivateUsage]
 
@@ -487,6 +490,181 @@ def test_is_data_query_separates_data_from_metadata() -> None:
     assert not is_data_query(parse_cached("SHOW TABLES"))
     assert not is_data_query(parse_cached("PRAGMA database_list"))
     assert not is_data_query(parse_cached("EXPLAIN SELECT 1"))
+
+
+@pytest.mark.parametrize("op", ["EXCEPT", "INTERSECT"])
+def test_set_operations_are_data_queries(op: str) -> None:
+    """EXCEPT / INTERSECT return rows, so they must NOT route as metadata.
+
+    Regression for a schema-gate + masking bypass. On sqlglot 30.8.0
+    ``exp.Except`` and ``exp.Intersect`` are siblings of ``exp.Union`` under
+    ``exp.SetOperation`` — they do NOT subclass ``exp.Union``. The old
+    ``isinstance(tree, (exp.Select, exp.Union))`` therefore answered False for a
+    top-level ``EXCEPT``, and ``execute_sql_query`` sent it down the
+    DESCRIBE/SHOW branch: no table allowlist, no lineage, no masking, tier LOW.
+    """
+    sql = f"SELECT a FROM t {op} SELECT b FROM u"  # noqa: S608  # test input string, not executing SQL
+    assert is_data_query(parse_cached(sql))
+
+
+def test_nested_set_operation_classifies_the_value_bearing_branches(
+    populated_db: Database,
+) -> None:
+    """``A UNION B EXCEPT C`` takes its classes from A and B, not from C.
+
+    ``_union_select_branches`` fell through to ``tree.find(exp.Select)`` for a
+    set operation that wasn't an ``exp.Union``. ``find`` walks breadth-first, so
+    for ``Except(left=Union(A, B), right=C)`` it returned **C** — the operand
+    that contributes no output values — and A and B were never classified. Here
+    C is the LOW branch, so misreading it as the source returned TXN_TYPE/LOW
+    for a column carrying routing numbers.
+    """
+    out = _classes(
+        "SELECT routing_number AS v FROM core.dim_accounts "
+        "UNION SELECT routing_number AS v FROM core.dim_accounts "
+        "EXCEPT SELECT account_type AS v FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"v": DataClass.ROUTING_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_except_takes_classes_from_the_left_branch_only(
+    populated_db: Database,
+) -> None:
+    """``EXCEPT``/``INTERSECT`` emit LEFT-branch values; the right only filters.
+
+    The counterpart to ``test_union_classifies_every_branch_by_position``: a
+    UNION must take the max across branches because both supply values, but
+    widening that rule to EXCEPT would over-redact every difference query. Pins
+    that the asymmetry is deliberate, so a future "just treat all SetOperations
+    like UNION" simplification has to argue with a test.
+    """
+    out = _classes(
+        "SELECT account_type AS v FROM core.dim_accounts "
+        "EXCEPT SELECT routing_number AS v FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"v": DataClass.TXN_TYPE}
+    assert derive_query_tier(out) is Tier.LOW
+
+
+# ---------------------------------------------------------------------------
+# A CTE / derived table named after a catalog table must never resolve to it
+# ---------------------------------------------------------------------------
+
+
+def _shadow_chain(depth: int) -> list[str]:
+    """A ``routing_number`` chain ``depth`` levels deep, aliased to ``account_type``.
+
+    The alias matters: ``account_type`` is a real ``core.dim_accounts`` column
+    classified TXN_TYPE (LOW), so a classifier that resolves the shadowing name
+    against the catalog produces a plausible LOW answer instead of declining.
+    """
+    ctes = ["c0 AS (SELECT routing_number AS account_type FROM core.dim_accounts)"]
+    ctes += [
+        f"c{i} AS (SELECT account_type FROM c{i - 1})"  # noqa: S608  # test input string, not executing SQL
+        for i in range(1, depth + 1)
+    ]
+    return ctes
+
+
+# 5 resolves inside the scope; 16/30/60 exhaust _MAX_SCOPE_DEPTH and must reach
+# the conservative floor instead of the catalog.
+_SHADOW_DEPTHS = [5, 16, 30, 60]
+
+
+@pytest.mark.parametrize("depth", _SHADOW_DEPTHS)
+def test_cte_named_after_catalog_table_never_resolves_to_it(
+    depth: int, populated_db: Database
+) -> None:
+    """A CTE named ``dim_accounts`` must not borrow ``core.dim_accounts``'s classes.
+
+    Regression for a depth-independent under-classification leak. Once the chain
+    exhausted ``_MAX_SCOPE_DEPTH``, ``_class_via_source_scope`` correctly
+    DECLINED — but control fell through to ``_column_key``, which resolved the
+    CTE name ``dim_accounts`` to the catalog table by two independent paths
+    (``_build_alias_map`` walks Table nodes inside CTE bodies, so
+    ``core.dim_accounts`` self-registers under the bare key; and the bare-name
+    catalog scan matches any CTE named like a real table). The decline became a
+    confident TXN_TYPE/LOW and the routing number came back in the clear.
+    """
+    ctes = _shadow_chain(depth)
+    ctes.append(f"dim_accounts AS (SELECT account_type FROM c{depth})")  # noqa: S608  # test input string, not executing SQL
+    sql = _with_query(ctes, "SELECT dim_accounts.account_type FROM dim_accounts")
+
+    out = _classes(sql, populated_db)
+
+    assert out["account_type"] is DataClass.ROUTING_NUMBER
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+@pytest.mark.parametrize("depth", _SHADOW_DEPTHS)
+def test_cte_aliased_to_a_catalog_table_name_never_resolves_to_it(
+    depth: int, populated_db: Database
+) -> None:
+    """``FROM c{n} AS dim_accounts`` shadows just as a ``WITH`` name does.
+
+    The same leak without the WITH-naming trick: the shadowing name arrives as a
+    FROM-clause alias instead. Pins that the fix keys on "this reference names a
+    Scope source", not on the syntax that bound the name.
+    """
+    sql = _with_query(
+        _shadow_chain(depth),
+        f"SELECT dim_accounts.account_type FROM c{depth} AS dim_accounts",  # noqa: S608  # test input string, not executing SQL
+    )
+
+    out = _classes(sql, populated_db)
+
+    assert out["account_type"] is DataClass.ROUTING_NUMBER
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_shadowing_cte_resolves_by_semantics_not_by_the_depth_guard(
+    populated_db: Database,
+) -> None:
+    """A shadowing CTE with NO depth exhaustion resolves to its own true source.
+
+    Separates the two mechanisms. The parametrized tests above pass at depth 60
+    even if shadowing is handled only by the conservative floor; this one has one
+    level of nesting, so the floor is not what saves it — the column must resolve
+    THROUGH the CTE to ``routing_number``. If the catalog were consulted, the
+    answer would be TXN_TYPE (LOW), which is also what a broken floor would never
+    produce — so an exact-class assertion distinguishes all three outcomes.
+    """
+    out = _classes(
+        "WITH dim_accounts AS "
+        "(SELECT routing_number AS account_type FROM core.dim_accounts) "
+        "SELECT account_type FROM dim_accounts",
+        populated_db,
+    )
+    assert out == {"account_type": DataClass.ROUTING_NUMBER}
+
+
+def test_derived_table_named_after_catalog_table_never_resolves_to_it(
+    populated_db: Database,
+) -> None:
+    """The non-CTE shadowing form: a derived table aliased to a catalog name."""
+    out = _classes(
+        "SELECT dim_accounts.account_type FROM "
+        "(SELECT routing_number AS account_type FROM core.dim_accounts) AS dim_accounts",
+        populated_db,
+    )
+    assert out == {"account_type": DataClass.ROUTING_NUMBER}
+
+
+def test_shadowing_does_not_over_redact_the_unshadowed_table(
+    populated_db: Database,
+) -> None:
+    """The fix must not blanket-raise every query touching a shadowed name.
+
+    Guards the other direction: ``core.dim_accounts.account_type`` read directly,
+    with no CTE in sight, still classifies TXN_TYPE (LOW). A fix that declined on
+    the bare NAME rather than on "names a Scope source in this query" would push
+    this to CRITICAL and quietly mask ordinary queries.
+    """
+    out = _classes("SELECT account_type FROM core.dim_accounts", populated_db)
+    assert out == {"account_type": DataClass.TXN_TYPE}
 
 
 def test_fallback_log_omits_raw_sql(
