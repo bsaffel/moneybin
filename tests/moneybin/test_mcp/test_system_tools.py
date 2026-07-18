@@ -147,6 +147,120 @@ async def test_system_audit_coarse_paginates_events(mcp_db: object) -> None:
     assert second.data.events[0].audit_id != first.data.events[0].audit_id
 
 
+async def test_system_audit_coarse_paginates_tied_events_without_gaps(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    timestamp = "2099-07-18 12:00:00"
+    expected = ["audit-c", "audit-b", "audit-a"]
+    with get_database(read_only=False) as db:
+        for audit_id in ("audit-a", "audit-c", "audit-b"):
+            db.execute(
+                """
+                INSERT INTO app.audit_log (
+                    audit_id, occurred_at, actor, action, target_schema,
+                    target_table, target_id, operation_id
+                ) VALUES (?, ?, 'cli', 'tag.add', 'app', 'transaction_tags', ?, ?)
+                """,
+                [audit_id, timestamp, audit_id, f"op-{audit_id}"],
+            )
+
+    observed: list[str] = []
+    cursor: str | None = None
+    for _ in expected:
+        response = await system_audit_coarse(
+            view="events",
+            limit=1,
+            cursor=cursor,
+        )
+        observed.append(response.data.events[0].audit_id)
+        cursor = response.next_cursor
+
+    assert observed == expected
+    assert cursor is None
+
+
+async def test_system_audit_coarse_paginates_history(mcp_db: object) -> None:
+    expected = {_make_tag_op(tag) for tag in ("history-a", "history-b", "history-c")}
+    observed: set[str] = set()
+    cursor: str | None = None
+
+    while True:
+        response = await system_audit_coarse(
+            view="history",
+            limit=1,
+            cursor=cursor,
+        )
+        observed.add(response.data.operations[0].operation_id)
+        cursor = response.next_cursor
+        if cursor is None:
+            break
+
+    assert observed == expected
+
+
+async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
+    mcp_db: object,
+) -> None:
+    _make_tag_op("cursor-a")
+    _make_tag_op("cursor-b")
+    first = await system_audit_coarse(view="events", limit=1)
+
+    malformed = await system_audit_coarse(view="events", cursor="not-base64")
+    cross_view = await system_audit_coarse(
+        view="history",
+        cursor=first.next_cursor,
+    )
+
+    assert malformed.error is not None
+    assert malformed.error.code == "infra_invalid_input"
+    assert cross_view.error is not None
+    assert cross_view.error.code == "infra_invalid_input"
+
+
+async def test_system_audit_coarse_returns_only_replacement_actions(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+    from moneybin.services.audit_service import AuditService
+
+    operation_id = _make_tag_op("actions-a")
+    _make_tag_op("actions-b")
+    with get_database(read_only=True) as db:
+        audit_id = AuditService(db).events_for_operation(operation_id)[0].audit_id
+
+    events = await system_audit_coarse(view="events", limit=1)
+    history = await system_audit_coarse(view="history", limit=1)
+    operation_detail = await system_audit_coarse(
+        view="detail",
+        operation_id=operation_id,
+    )
+    audit_detail = await system_audit_coarse(
+        view="detail",
+        audit_id=audit_id,
+    )
+
+    assert events.actions == [
+        "Inspect an operation with system_audit(view='detail', operation_id=...)",
+        "Continue with "
+        f"system_audit(view='events', limit=1, cursor='{events.next_cursor}')",
+    ]
+    assert history.actions == [
+        "Inspect an operation with system_audit(view='detail', operation_id=...)",
+        "Reverse an operation with system_audit_undo(operation_id=...)",
+        "Continue with "
+        f"system_audit(view='history', limit=1, cursor='{history.next_cursor}')",
+    ]
+    assert operation_detail.actions == [
+        f"Reverse with system_audit_undo(operation_id='{operation_id}')",
+    ]
+    assert audit_detail.actions == [
+        "Use the event operation_id with system_audit(view='detail', "
+        "operation_id=...) to inspect undoability.",
+    ]
+
+
 async def test_register_system_coarse_reads_registers_only_replacements() -> None:
     server = FastMCP("system-coarse")
 

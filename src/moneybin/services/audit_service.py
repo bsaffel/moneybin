@@ -182,7 +182,7 @@ class AuditService:
         to_ts: str | None = None,
         limit: int = 100,
     ) -> list[AuditEvent]:
-        """Return filtered events ordered by ``occurred_at DESC``."""
+        """Return filtered events in stable newest-first order."""
         clauses: list[str] = []
         params: list[Any] = []
         if actor is not None:
@@ -213,7 +213,7 @@ class AuditService:
                    operation_id, context_json, {self._undo_columns_sql()}
               FROM app.audit_log
               {where}
-              ORDER BY occurred_at DESC
+              ORDER BY occurred_at DESC, audit_id DESC
               LIMIT ?
             """,  # noqa: S608  # undo-columns fragment is a controlled literal
             params,

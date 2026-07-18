@@ -757,6 +757,26 @@ def _audit_offset(
     return offset
 
 
+def _audit_list_actions(
+    view: Literal["events", "history"],
+    *,
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Return hints that remain valid on the consolidated public surface."""
+    actions = [
+        "Inspect an operation with system_audit(view='detail', operation_id=...)"
+    ]
+    if view == "history":
+        actions.append("Reverse an operation with system_audit_undo(operation_id=...)")
+    if next_cursor is not None:
+        actions.append(
+            f"Continue with system_audit(view='{view}', limit={limit}, "
+            f"cursor='{next_cursor}')"
+        )
+    return actions
+
+
 @mcp_tool(dynamic_classification=True, read_only=False)
 async def system_status_coarse(
     sections: list[Literal["overview", "doctor", "categorization"]] | None = None,
@@ -858,7 +878,11 @@ async def system_audit_coarse(
             total_count=offset + len(page) + (1 if has_more else 0),
             returned_count=len(page),
             next_cursor=next_cursor,
-            actions=response.actions,
+            actions=_audit_list_actions(
+                "events",
+                limit=limit,
+                next_cursor=next_cursor,
+            ),
         )
 
     if view == "history":
@@ -880,7 +904,11 @@ async def system_audit_coarse(
             total_count=offset + len(page) + (1 if has_more else 0),
             returned_count=len(page),
             next_cursor=next_cursor,
-            actions=response.actions,
+            actions=_audit_list_actions(
+                "history",
+                limit=limit,
+                next_cursor=next_cursor,
+            ),
         )
 
     if operation_id is not None:
@@ -941,6 +969,7 @@ def register_system_coarse_reads(mcp: FastMCP) -> None:
         "Return selected operator status sections: overview inventory, integrity "
         "doctor checks, and categorization coverage. detail='full' deepens the "
         "doctor scan and includes auto-categorization health.",
+        privacy_actor="system_status",
     )
     register(
         mcp,
@@ -948,6 +977,7 @@ def register_system_coarse_reads(mcp: FastMCP) -> None:
         "system_audit",
         "List recent audit events or operation history, or inspect one operation "
         "or parent audit event in detail. Detail requires exactly one identifier.",
+        privacy_actor="system_audit",
     )
     # Plan 6 cutover removals: system_doctor, transactions_categorize_stats,
     # system_audit_history, and system_audit_get. Their live registrations stay

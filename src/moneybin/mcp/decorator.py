@@ -28,7 +28,9 @@ import inspect
 import logging
 import time
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, cast
 
 from moneybin import error_codes
@@ -49,6 +51,21 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 from moneybin.services.mutation_context import operation
 
 logger = logging.getLogger(__name__)
+
+_public_privacy_actor: ContextVar[str | None] = ContextVar(
+    "mcp_public_privacy_actor",
+    default=None,
+)
+
+
+@contextmanager
+def privacy_actor_scope(actor: str | None) -> Generator[None]:
+    """Attribute one registered invocation to an explicit public tool name."""
+    token = _public_privacy_actor.set(actor)
+    try:
+        yield
+    finally:
+        _public_privacy_actor.reset(token)
 
 
 class _UnsetType:
@@ -386,7 +403,7 @@ def mcp_tool(
                 ev_sensitivity = sensitivity.value
                 ev_classes = classes_for_log
             event = build_tool_call_event(
-                actor=f"mcp.{fn.__name__}",
+                actor=f"mcp.{_public_privacy_actor.get() or fn.__name__}",
                 sensitivity=ev_sensitivity,
                 classes_returned=ev_classes,
                 # Generic envelope type erased; _envelope_row_count handles Any.
@@ -419,7 +436,7 @@ def mcp_tool(
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
-            log_tool_call(fn.__name__, sensitivity)
+            log_tool_call(_public_privacy_actor.get() or fn.__name__, sensitivity)
             # Resolve cap: explicit per-tool override wins; otherwise inherit settings.
             cap_attr = cast(
                 "int | None | _UnsetType",

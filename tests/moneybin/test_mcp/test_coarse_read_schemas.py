@@ -182,7 +182,21 @@ async def test_system_status_coarse_transport_variants(
     assert structured["data"]["sections"][0]["kind"] == section
 
 
-async def test_system_coarse_call_emits_one_privacy_audit(mcp_db: object) -> None:
+@pytest.mark.parametrize(
+    ("name", "arguments", "sensitivity"),
+    [
+        ("system_status", {"sections": ["overview"]}, "low"),
+        ("system_status", {"sections": []}, "low"),
+        ("system_audit", {"view": "events"}, "high"),
+        ("system_audit", {"view": "detail"}, "low"),
+    ],
+)
+async def test_system_coarse_call_emits_public_privacy_actor(
+    name: str,
+    arguments: dict[str, Any],
+    sensitivity: str,
+    mcp_db: object,
+) -> None:
     captured: list[dict[str, Any]] = []
     mcp = isolated_server(register_system_coarse_reads)
 
@@ -190,14 +204,11 @@ async def test_system_coarse_call_emits_one_privacy_audit(mcp_db: object) -> Non
         "moneybin.mcp.decorator.write_privacy_event",
         captured.append,
     ):
-        await call_tool_raw(
-            mcp,
-            "system_status",
-            {"sections": ["overview"]},
-        )
+        await call_tool_raw(mcp, name, arguments)
 
     assert len(captured) == 1
-    assert captured[0]["sensitivity"] == "low"
+    assert captured[0]["actor"] == f"mcp.{name}"
+    assert captured[0]["sensitivity"] == sensitivity
 
 
 async def test_system_audit_coarse_transport_variants(mcp_db: object) -> None:

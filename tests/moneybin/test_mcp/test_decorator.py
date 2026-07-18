@@ -409,6 +409,54 @@ async def test_register_emits_tool_annotations() -> None:
 
 
 @pytest.mark.unit
+async def test_register_privacy_actor_override_preserves_default_actor() -> None:
+    """An explicit public actor changes only that registration's provenance."""
+    from fastmcp import Client, FastMCP
+
+    from moneybin.mcp._registration import register
+    from moneybin.protocol.envelope import build_envelope
+
+    captured: list[dict[str, Any]] = []
+
+    @mcp_tool(dynamic_classification=True)
+    def internal_default() -> ResponseEnvelope[Any]:
+        return build_envelope(
+            data={"ok": True},
+            classes_returned=["txn_type"],
+        )
+
+    @mcp_tool(dynamic_classification=True)
+    def internal_replacement() -> ResponseEnvelope[Any]:
+        return build_envelope(
+            data={"ok": True},
+            classes_returned=["txn_type"],
+        )
+
+    mcp = FastMCP("privacy-actor")
+    register(mcp, internal_default, "public_default", "Default provenance.")
+    register(
+        mcp,
+        internal_replacement,
+        "public_replacement",
+        "Replacement provenance.",
+        privacy_actor="public_replacement",
+    )
+
+    with patch(
+        "moneybin.mcp.decorator.write_privacy_event",
+        captured.append,
+    ):
+        async with Client(mcp) as client:
+            await client.call_tool("public_default", {})
+            await client.call_tool("public_replacement", {})
+
+    assert [event["actor"] for event in captured] == [
+        "mcp.internal_default",
+        "mcp.public_replacement",
+    ]
+
+
+@pytest.mark.unit
 async def test_registered_result_uses_one_canonical_wire_value() -> None:
     """Text and structured content use the same serialized envelope."""
     import json
