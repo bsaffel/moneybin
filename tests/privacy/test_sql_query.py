@@ -405,12 +405,15 @@ def test_undeclared_deployed_column_fails_closed(populated_db: Database) -> None
 
 
 def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> None:
-    """An expression we cannot resolve still classifies by its input columns.
+    """``COUNT(*)`` still classifies as AGGREGATE (LOW), not CRITICAL.
 
-    Guards the other direction from the coverage-gap fix above: a blanket
-    fail-closed implementation would mask this too and wreck the BI surface.
-    ``COUNT(*)`` has no column reference to resolve at all, so it must still
-    classify as AGGREGATE (LOW), not fail closed to CRITICAL.
+    Not a guard against blanket fail-closed: ``COUNT(*)`` has no column
+    reference at all, so ``_classify_projection``'s counting-aggregate branch
+    returns AGGREGATE before ``_column_key``, ``_class_of_key``,
+    ``_fallback_class``, or ``_coverage_gap_class`` are ever reached — a
+    maximal fail-closed patch there would leave this test passing unchanged.
+    See ``test_unresolvable_column_reference_classifies_by_scope_inputs``
+    below for the test that actually exercises (and discriminates) that path.
     """
     _seed_txn(populated_db)
     result = execute_sql_query(
@@ -420,3 +423,29 @@ def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> N
     )
     assert result.output_classes["n"] is DataClass.AGGREGATE
     assert result.tier is Tier.LOW
+
+
+def test_unresolvable_column_reference_classifies_by_scope_inputs(
+    populated_db: Database,
+) -> None:
+    """A subquery-alias column (`key is None`) classifies by scope, not blanket CRITICAL.
+
+    ``x`` in the outer SELECT refers to the derived table's alias ``s``, not a
+    real catalog table — ``_column_key`` returns ``None`` for it, so
+    classification reaches ``_fallback_class`` (the ``key is None`` branch in
+    ``_classify_projection``), unlike ``COUNT(*)`` above which never gets
+    there. The scope's only real input column is ``amount`` (TXN_AMOUNT,
+    HIGH), so the query must classify HIGH and pass the value through
+    unmasked — a blanket fail-closed (mask on any unresolved key) would flip
+    this to CRITICAL and mask it, which is exactly the over-masking the
+    coverage-gap fix must not introduce.
+    """
+    _seed_txn(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT x FROM (SELECT amount AS x FROM core.fct_transactions) s",
+        max_rows=100,
+    )
+    assert result.output_classes["x"] is DataClass.TXN_AMOUNT
+    assert result.tier is Tier.HIGH
+    assert not str(result.records[0]["x"]).startswith("*")

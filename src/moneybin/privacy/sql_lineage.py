@@ -345,6 +345,13 @@ def _fallback_class(
     enforced rather than assumed: an undeclared deployed column among the
     scope's inputs also raises the floor to CRITICAL (via
     ``_coverage_gap_class``) rather than being silently skipped.
+
+    Widening note: ``collect_input_columns`` gathers every column referenced
+    anywhere in ``scope`` — including a JOIN condition or WHERE clause — not
+    just the projection being classified, so a query joining an undeclared
+    view raises this floor even when only a declared column is projected.
+    This is intentional (coherent with the max-tier-over-inputs design), not
+    a bug.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without
