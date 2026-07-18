@@ -73,8 +73,9 @@ def test_classify_permission_error_eperm_under_documents() -> None:
     """EPERM + Darwin + protected root gets the Full-Disk-Access hint.
 
     The PermissionError is CONSTRUCTED, not provoked: a TCC denial cannot be
-    reproduced in CI. This asserts our branching, not macOS's behavior — the
-    macOS fact is recorded with its evidence in the design doc.
+    reproduced in CI. This asserts our branching, not macOS's behavior — that a
+    TCC denial reports errno 1 EPERM (vs. errno 13 EACCES for a mode denial) is
+    an observed fact, verified by hand probe 2026-07-18.
     """
     path = Path.home() / "Documents" / "statement.pdf"
     exc = PermissionError(1, "Operation not permitted", str(path))

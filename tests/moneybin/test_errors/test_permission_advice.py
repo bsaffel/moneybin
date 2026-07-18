@@ -1,9 +1,10 @@
 """Table-driven tests for the permission-failure advice policy.
 
 Split deliberately from OS behavior: this file tests OUR branching given
-(errno, platform, path). The claim that macOS reports EPERM for a TCC denial
-is an observed fact recorded in the design doc, verified by hand — it is not
-asserted here, because a test that fabricates the input cannot verify the OS.
+(errno, platform, path). That macOS reports EPERM (errno 1, "Operation not
+permitted") for a TCC denial while a mode denial reports EACCES (errno 13) is
+an observed fact, verified by hand probe 2026-07-18 — it is not asserted here,
+because a test that fabricates the input cannot verify the OS.
 """
 
 from pathlib import Path
@@ -59,6 +60,20 @@ def test_eperm_without_a_path_stays_generic() -> None:
     """
     hint, details = permission_advice(EPERM, "Darwin", None)
     assert "Full Disk Access" not in hint
+    assert details.get("protected_root") is None
+
+
+def test_unrelated_errno_under_protected_root_stays_generic() -> None:
+    """Only EPERM may reach the protected-root test — not "anything but EACCES".
+
+    Every other condition of the conjunction is satisfied (Darwin, a path under
+    ~/Documents), so a pass here proves the errno arm alone held. Guarding on
+    `!= EACCES` instead of `== EPERM` would hand System-Settings advice to any
+    future errno that happened to land in this branch.
+    """
+    hint, details = permission_advice(99, "Darwin", Path.home() / "Documents/a.pdf")
+    assert "Full Disk Access" not in hint
+    assert "System Settings" not in hint
     assert details.get("protected_root") is None
 
 

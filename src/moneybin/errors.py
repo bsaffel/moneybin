@@ -145,9 +145,11 @@ class ErrorDetail(BaseModel):
         )
 
 
-# macOS gates these three directories behind a TCC grant; a denied read raises
-# EPERM (not EACCES) and fails at `Path.exists()`, before any open(). Verified
-# by probe 2026-07-18 — see the design doc for the evidence table.
+# macOS gates these three directories behind a TCC grant. Verified by probe
+# 2026-07-18: a POSIX mode denial (`chmod 000`) raises errno 13 EACCES
+# "Permission denied" at `open()`, while a TCC denial raises errno 1 EPERM
+# "Operation not permitted" at `Path.exists()` — `pathlib` only swallows
+# ENOENT/ENOTDIR/EBADF/ELOOP, so EPERM propagates before any open.
 _MACOS_PROTECTED_ROOTS = ("Documents", "Desktop", "Downloads")
 _EPERM = 1
 _EACCES = 13
@@ -182,16 +184,20 @@ def permission_advice(
             details,
         )
 
-    protected_root = _protected_root_for(platform, path)
-    if protected_root is not None:
-        details["protected_root"] = protected_root
-        return (
-            f"💡 macOS blocks access to {protected_root} until you grant "
-            "permission. Open System Settings → Privacy & Security → Full Disk "
-            "Access, enable the app running MoneyBin (e.g. your terminal), "
-            "restart it, then retry.",
-            details,
-        )
+    # The errno check is half the conjunction, not a formality: any errno that
+    # is neither EACCES nor EPERM must fall through to the generic hint rather
+    # than reach the protected-root test below.
+    if errno == _EPERM:
+        protected_root = _protected_root_for(platform, path)
+        if protected_root is not None:
+            details["protected_root"] = protected_root
+            return (
+                f"💡 macOS blocks access to {protected_root} until you grant "
+                "permission. Open System Settings → Privacy & Security → Full "
+                "Disk Access, enable the app running MoneyBin (e.g. your "
+                "terminal), restart it, then retry.",
+                details,
+            )
 
     return (
         "💡 Something outside the file's own permissions is blocking access "
@@ -205,6 +211,13 @@ def _protected_root_for(platform: str, path: Path | None) -> str | None:
     if platform != "Darwin" or path is None:
         return None
     try:
+        # Non-strict `resolve()` is load-bearing, not laziness: under a live TCC
+        # denial the OS refuses to stat the path, and non-strict `realpath`
+        # answers with the joined path instead of raising — which is the only
+        # reason the root comparison below still recognizes the denial.
+        # `strict=True` would raise here on exactly the failure this function
+        # exists to classify, silently downgrading every real TCC block to the
+        # generic hint while every test (whose paths do resolve) stayed green.
         resolved = path.expanduser().resolve()
     except OSError:
         # An unresolvable path simply isn't classifiable — stay generic rather
