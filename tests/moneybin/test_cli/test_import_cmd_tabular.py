@@ -412,5 +412,12 @@ class TestPreview:
 
         assert result.exit_code == 1
         assert not isinstance(result.exception, PermissionError)
-        assert any(r.message.startswith("❌ ") for r in caplog.records)
+        # Both guards must stand alone: the ❌ record has to name THIS failure
+        # (not merely be some classified error), and the 💡 hint has to be the
+        # mode-denial one. Asserting only `startswith("❌ ")` would pass for any
+        # classified error at all.
+        assert any(
+            r.message.startswith("❌ ") and "Permission denied" in r.message
+            for r in caplog.records
+        )
         assert "chmod" in caplog.text

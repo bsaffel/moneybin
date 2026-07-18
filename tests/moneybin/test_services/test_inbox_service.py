@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import stat
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -857,6 +857,59 @@ class TestSyncFailure:
         assert entry["error_code"] == "schema_mismatch"
         assert "moneybin db migrate" in str(entry["suggestion"])
         assert "sidecar" not in entry  # vanished — no sidecar written
+
+    def test_permission_suggestion_differs_for_tcc_and_mode_denial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chmod advice is right for EACCES and useless for a macOS TCC denial.
+
+        A macOS privacy (TCC) denial arrives as EPERM on a protected root, and
+        no amount of chmod/chown clears it — so the sidecar must not hand both
+        denials the same suggestion.
+
+        Driven through ``sync()`` rather than by calling ``_suggestion_for``
+        directly: that is how every sibling classification test here works, and
+        it is the only shape that also proves ``_handle_failure`` forwards the
+        exception. A direct call would still pass if the call site never did.
+        """
+        from moneybin.services import inbox_service as mod
+
+        def _sync_with(error: PermissionError, profile: str) -> dict[str, object]:
+            class FakeImportService:
+                def __init__(self, db: object) -> None:
+                    pass
+
+                def import_file(self, path: str, **kwargs: object) -> object:
+                    raise error
+
+            monkeypatch.setattr(mod, "ImportService", FakeImportService)
+            db = MagicMock(spec=Database)
+            # Separate profiles so the two syncs get separate inbox trees.
+            svc = InboxService(db=db, settings=_make_settings(tmp_path, profile))
+            svc.ensure_layout()
+            (svc.inbox_dir / "x.csv").write_text("a\n1\n")
+            return svc.sync(year_month="2026-05").failed[0]
+
+        mode_entry = _sync_with(
+            PermissionError(13, "Permission denied", str(tmp_path / "a.csv")), "mode"
+        )
+        assert mode_entry["error_code"] == "permission_error"
+        assert "chmod" in str(mode_entry["suggestion"])
+
+        tcc_error = PermissionError(
+            1, "Operation not permitted", str(Path.home() / "Documents" / "a.csv")
+        )
+        # Same patch target as the sibling tests in test_error_classification:
+        # `moneybin.errors.platform` IS the stdlib module object, so setting
+        # `system` on it applies wherever `platform.system` is resolved —
+        # including InboxService. Pinning Darwin keeps the macOS branch
+        # reachable on any CI host, since `permission_advice` takes the
+        # platform from its caller rather than detecting it.
+        with patch("moneybin.errors.platform.system", return_value="Darwin"):
+            tcc_entry = _sync_with(tcc_error, "tcc")
+        assert tcc_entry["error_code"] == "permission_error"
+        assert "Full Disk Access" in str(tcc_entry["suggestion"])
+        assert "chmod" not in str(tcc_entry["suggestion"])
 
 
 class TestSyncBusy:

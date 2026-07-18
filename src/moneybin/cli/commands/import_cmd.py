@@ -1618,7 +1618,7 @@ def import_preview(
         moneybin import preview ~/Downloads/chase_activity.csv
         moneybin import preview ~/Downloads/transactions.xlsx --sheet Sheet1
     """
-    from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
+    from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import read_file
