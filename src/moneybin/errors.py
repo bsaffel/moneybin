@@ -13,7 +13,9 @@ translated into user-facing messages.
 
 from __future__ import annotations
 
+import platform
 from decimal import InvalidOperation
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -143,6 +145,78 @@ class ErrorDetail(BaseModel):
         )
 
 
+# macOS gates these three directories behind a TCC grant; a denied read raises
+# EPERM (not EACCES) and fails at `Path.exists()`, before any open(). Verified
+# by probe 2026-07-18 — see the design doc for the evidence table.
+_MACOS_PROTECTED_ROOTS = ("Documents", "Desktop", "Downloads")
+_EPERM = 1
+_EACCES = 13
+
+
+def permission_advice(
+    errno: int, platform: str, path: Path | None
+) -> tuple[str, dict[str, Any]]:
+    """Return (hint, details) for a permission failure.
+
+    Performs no platform detection of its own: `platform` is the caller's
+    `platform.system()` value, so the policy stays testable on any host.
+    (Path resolution does touch the filesystem — only to canonicalize the
+    path handed in, never to read the target.)
+
+    `path` is None when the exception carried no filename. That stays
+    generic rather than falling back to the working directory, which is not
+    the path that failed.
+
+    The macOS Full-Disk-Access advice fires ONLY on the conjunction of
+    EPERM + Darwin + a protected root. EPERM alone is not proof of TCC —
+    immutable (`uchg`) flags and sandbox denials produce it too — and sending
+    someone to System Settings for one of those is a confident wrong answer,
+    which is worse than an honest vague one.
+    """
+    details: dict[str, Any] = {"errno": errno, "platform": platform}
+
+    if errno == _EACCES:
+        return (
+            "💡 Check file ownership and permissions "
+            "(e.g., chmod 644, or chown to your user).",
+            details,
+        )
+
+    protected_root = _protected_root_for(platform, path)
+    if protected_root is not None:
+        details["protected_root"] = protected_root
+        return (
+            f"💡 macOS blocks access to {protected_root} until you grant "
+            "permission. Open System Settings → Privacy & Security → Full Disk "
+            "Access, enable the app running MoneyBin (e.g. your terminal), "
+            "restart it, then retry.",
+            details,
+        )
+
+    return (
+        "💡 Something outside the file's own permissions is blocking access "
+        "(e.g. a security policy, a sandbox, or an immutable flag).",
+        details,
+    )
+
+
+def _protected_root_for(platform: str, path: Path | None) -> str | None:
+    """Return the `~/<root>` label if `path` sits under a TCC-gated directory."""
+    if platform != "Darwin" or path is None:
+        return None
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        # An unresolvable path simply isn't classifiable — stay generic rather
+        # than guess, per the conjunction rule above.
+        return None
+    home = Path.home()
+    for root in _MACOS_PROTECTED_ROOTS:
+        if resolved.is_relative_to(home / root):
+            return f"~/{root}"
+    return None
+
+
 def classify_user_error(exc: BaseException) -> UserError | None:
     """Map a known exception to a ``UserError``, or ``None`` if unexpected.
 
@@ -235,6 +309,21 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         # end users don't need the errno number.
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
         return UserError(msg, code=error_codes.INFRA_FILE_NOT_FOUND)
+    if isinstance(exc, PermissionError):
+        # Above the generic OSError branch on purpose: PermissionError is an
+        # OSError subclass and would otherwise be swallowed into
+        # INFRA_IO_ERROR with an unactionable "Operation not permitted".
+        # None, not cwd: cwd is not the path that failed, and guessing from it
+        # could aim the Full-Disk-Access advice at an unrelated EPERM.
+        target = Path(exc.filename) if exc.filename else None
+        hint, details = permission_advice(exc.errno or 0, platform.system(), target)
+        msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
+        return UserError(
+            msg,
+            code=error_codes.INFRA_PERMISSION_DENIED,
+            hint=hint,
+            details=details,
+        )
     if isinstance(exc, OSError) and not isinstance(exc, TimeoutError):
         msg = f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)
         return UserError(msg, code=error_codes.INFRA_IO_ERROR)
