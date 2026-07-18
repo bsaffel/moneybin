@@ -114,13 +114,20 @@ MCP: `reports_networth` (point-in-time), `reports_networth_history` (time series
 
 **Grain:** One row per `(year_month, account_id, category)`. Wide-grain — consumers `GROUP BY` further, or aggregate over the whole table for a single net number.
 
-**Source:** `core.fct_transactions` joined with `core.dim_accounts` for `account_name`. Category is the denormalized `category` text already on `core.fct_transactions` (resolved at categorization time from `app.transaction_categories`); no join to a categories dim is needed for any v1 report. Excludes transactions where `is_transfer = TRUE` (transfers are intra-portfolio movements, not cash flow). Excludes transactions in archived accounts.
+**Source:** `core.fct_transactions` joined with `core.dim_accounts` for
+`account_name`. Calendar month is derived from `transaction_date` with
+`STRFTIME(DATE_TRUNC('MONTH', transaction_date), '%Y-%m')`. Category is the
+denormalized `category` text already on `core.fct_transactions` (resolved at
+categorization time from `app.transaction_categories`); no join to a categories
+dim is needed for any v1 report. Excludes transactions where
+`is_transfer = TRUE` (transfers are intra-portfolio movements, not cash flow).
+Excludes transactions in archived accounts.
 
 **Columns:**
 
 | Column | Type | Comment |
 |---|---|---|
-| `year_month` | `DATE` | First-of-month for the calendar month |
+| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
 | `account_id` | `VARCHAR` | Owning account (joinable to core.dim_accounts) |
 | `account_name` | `VARCHAR` | Account display name (resolved from app.account_settings if overridden) |
 | `category` | `VARCHAR` | Spending category text from core.fct_transactions; NULL for uncategorized |
@@ -147,19 +154,20 @@ aggregate.
 
 **Source:** `core.fct_transactions` filtered to
 `amount < 0 AND is_transfer = FALSE`, grouped by
-`(date_trunc('month', txn_date), category)`, then joined to an eligible-data
-calendar spine from the minimum through maximum grouped month. Window
-functions operate on that dense monthly series, so `LAG(1)`, `LAG(12)`, and
-the three-row average mean previous calendar month, same month one year prior,
-and trailing three calendar months rather than previous observed rows.
-Category is the denormalized text on `core.fct_transactions`; no category
-dimension join is needed.
+`(DATE_TRUNC('MONTH', transaction_date), category)`, then joined to an
+eligible-data calendar spine from the minimum through maximum grouped month.
+Window functions operate on that dense monthly series before `year_month` is
+formatted with `STRFTIME(month_date, '%Y-%m')`, so `LAG(1)`, `LAG(12)`, and the
+three-row average mean previous calendar month, same month one year prior, and
+trailing three calendar months rather than previous observed rows. Category is
+the denormalized text on `core.fct_transactions`; no category dimension join
+is needed.
 
 **Columns:**
 
 | Column | Type | Comment |
 |---|---|---|
-| `year_month` | `DATE` | First-of-month |
+| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
 | `category` | `VARCHAR` | Spending category text; NULL for uncategorized |
 | `total_spend` | `DECIMAL(18,2)` | Sum of absolute outflow this month in this category; zero for a missing category-month |
 | `txn_count` | `INTEGER` | Outflow transaction count; zero for a missing category-month |
@@ -447,7 +455,7 @@ ORDER BY year_month;
 -- Spending by category, last 12 months
 SELECT category, SUM(outflow) AS total_outflow
 FROM reports.cash_flow
-WHERE year_month >= date_trunc('month', current_date - INTERVAL '12 months')
+WHERE year_month >= STRFTIME(CURRENT_DATE - INTERVAL '12 MONTHS', '%Y-%m')
 GROUP BY category
 ORDER BY total_outflow ASC;
 

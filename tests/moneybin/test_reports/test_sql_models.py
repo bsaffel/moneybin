@@ -49,10 +49,7 @@ def model_db(
     database.close()
 
 
-def test_balance_drift_uses_independent_transaction_derived_position(
-    model_db: Database,
-) -> None:
-    """Assertion drift compares against the pre-assertion computed position."""
+def _install_balance_drift_sources(model_db: Database) -> None:
     model_db.execute("""
         CREATE TABLE core.dim_accounts (
             account_id VARCHAR,
@@ -70,16 +67,23 @@ def test_balance_drift_uses_independent_transaction_derived_position(
     """)
     model_db.execute(
         """
+        INSERT INTO core.dim_accounts VALUES (?, ?, ?)
+        """,
+        ["checking", "Checking", False],
+    )
+
+
+def test_balance_drift_uses_independent_transaction_derived_position(
+    model_db: Database,
+) -> None:
+    """Assertion drift compares against the pre-assertion computed position."""
+    _install_balance_drift_sources(model_db)
+    model_db.execute(
+        """
         INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
         VALUES (?, ?, ?)
         """,
         ["checking", "2026-04-01", Decimal("1200.00")],
-    )
-    model_db.execute(
-        """
-        INSERT INTO core.dim_accounts VALUES (?, ?, ?)
-        """,
-        ["checking", "Checking", False],
     )
     # Independently derived: the transaction-based position is $1,000 and the
     # user assertion is $1,200, so fct_balances_daily resets to $1,200 and
@@ -111,6 +115,34 @@ def test_balance_drift_uses_independent_transaction_derived_position(
         Decimal("200.00"),
         "drift",
     )
+
+
+def test_balance_drift_without_prior_anchor_is_no_data(model_db: Database) -> None:
+    """An assertion without a prior anchor has no independent comparison."""
+    _install_balance_drift_sources(model_db)
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES (?, ?, ?)
+        """,
+        ["checking", "2026-04-01", Decimal("1200.00")],
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?)
+        """,
+        ["checking", "2026-04-01", Decimal("1200.00"), None],
+    )
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        """
+        SELECT computed_balance, drift, status
+        FROM reports.balance_drift
+        """
+    ).fetchone()
+    assert row == (None, None, "no-data")
 
 
 def test_spending_trend_uses_zero_filled_calendar_months(
