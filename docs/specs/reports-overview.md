@@ -160,10 +160,12 @@ Each is independently shippable. Dependencies run A → B → C.
 ### A — Foundation: one contract, coherent surface (M2P.1)
 
 Define the contract both modes satisfy, and make today's surface honest.
-Implements D3, D4, D5. Builds class derivation + CI verification; moves
-`uncategorized_queue` out of `reports.*`; resolves `net_worth`'s status; retires
-the #330 transitional bridge; writes the report-authoring rule
-(`.claude/rules/reports.md`).
+Implements D3, D4, D5. Fixes the fail-open/fail-closed asymmetry that was #330's
+mechanism-level root cause; builds class derivation + CI verification; deletes
+the #330 transitional bridge (derivation subsumes it); moves
+`uncategorized_queue` out of `reports.*`; writes the report-authoring rule
+(`.claude/rules/reports.md`). Specified in
+[`reports-foundation.md`](reports-foundation.md).
 
 ### B — Dynamic reports: the ask→save→verify loop (M2P.2)
 
@@ -207,11 +209,17 @@ never reveal what you failed to declare — it must enumerate the *exposed* set.
 
 ## Open questions
 
-- **`net_worth`'s status.** It is user-facing (it powers `reports_networth`), so
-  under D3 it stays in `reports.*` and must be classified. Does it become a
-  proper materialized report with a runner, or remain the documented
-  `NetworthService`-backed exception that `extension-contracts.md` records?
-  Resolve in A.
+- **Is a bespoke-tool report a permanent sanctioned category, or a migration
+  state?** `net_worth` is user-facing, so under D3 it stays in `reports.*` and
+  must be classified — but D4's derivation classifies it like any other view, so
+  this stopped being a privacy question. What remains is tool ergonomics: its
+  `NetworthService`-backed tools are hand-written because `@report` *couples*
+  declaring a contract with generating a tool, and a generated `reports_networth`
+  would collide with the shipped one. The question has consequences because M2P.2
+  and M2P.3 create reports at runtime, and those cannot have hand-written tools —
+  so generation-required is the dominant future population and bespoke tools are
+  a legacy of one. **Resolve in C**, alongside the `extension-contracts.md` M3I
+  addressing reconciliation.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
 - **Dynamic reports over floored columns** — see the section above. Resolve in B.
