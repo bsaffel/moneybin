@@ -8,6 +8,7 @@ from moneybin.reports._framework.contract import ReportQuery, ReportSpec
 from moneybin.reports._framework.execute import ReportResult, run_report
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.tables import TableRef
+from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_summary")
 
@@ -27,15 +28,19 @@ def _summary(db: Database, *, top: int = 50) -> ReportQuery:
 
 
 def _spec() -> ReportSpec:
+    classes = {
+        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "amount": DataClass.TXN_AMOUNT,
+        "txn_count": DataClass.AGGREGATE,
+    }
     return build_spec(
         _summary,
+        report_id="test:summary",
         name="summary",
         view=_VIEW,
-        classes={
-            "account_id": DataClass.ACCOUNT_IDENTIFIER,
-            "amount": DataClass.TXN_AMOUNT,
-            "txn_count": DataClass.AGGREGATE,
-        },
+        classes=classes,
+        columns=output_columns(classes),
+        semantics=TEST_SEMANTICS,
     )
 
 

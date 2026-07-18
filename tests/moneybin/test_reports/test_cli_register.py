@@ -21,8 +21,10 @@ from moneybin.reports._framework.contract import ReportQuery
 from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.tables import TableRef
+from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_summary")
+_CLASSES = {"account_id": DataClass.ACCOUNT_IDENTIFIER}
 _runner_cli = CliRunner()
 
 
@@ -39,9 +41,12 @@ def _runner(db: Database, *, top: int = 25) -> ReportQuery:
 def _spec():  # noqa: ANN202 — test helper
     return build_spec(
         _runner,
+        report_id="test:balance_drift",
         name="balance_drift",
         view=_VIEW,
-        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+        classes=_CLASSES,
+        columns=output_columns(_CLASSES),
+        semantics=TEST_SEMANTICS,
     )
 
 
@@ -89,9 +94,12 @@ def _windowed_app():  # noqa: ANN202 — test helper
     app = typer.Typer()
     spec = build_spec(
         _windowed_runner,
+        report_id="test:windowed",
         name="windowed",
         view=_VIEW,
-        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+        classes=_CLASSES,
+        columns=output_columns(_CLASSES),
+        semantics=TEST_SEMANTICS,
     )
     register_report_cli(spec, app)
     app.command("noop")(lambda: None)

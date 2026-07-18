@@ -12,7 +12,10 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.reports._framework.contract import Runner
+from moneybin.privacy.taxonomy import DataClass
+from moneybin.reports._framework.contract import ReportSemantics, Runner
+from moneybin.reports._framework.registry import spec_of
+from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.reports.definitions.balance_drift import balance_drift
 from moneybin.reports.definitions.cash_flow import cash_flow
 from moneybin.reports.definitions.large_transactions import large_transactions
@@ -22,12 +25,61 @@ from moneybin.reports.definitions.spending_trend import spending_trend
 
 pytestmark = pytest.mark.unit
 
+_CORE_REPORT_IDS = {
+    "spending": "core:spending",
+    "cashflow": "core:cashflow",
+    "recurring": "core:recurring",
+    "merchants": "core:merchants",
+    "large_transactions": "core:large_transactions",
+    "balance_drift": "core:balance_drift",
+}
+_FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
+
 
 def _rows(db: Database, runner: Runner, **params: Any) -> list[dict[str, Any]]:
     rq = runner(db, **params)
     cur = db.execute(rq.sql, list(rq.params))
     cols = [d[0] for d in cur.description] if cur.description else []
     return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
+
+
+def test_core_report_definitions_have_complete_financial_semantics() -> None:
+    specs = {spec.name: spec for spec in map(spec_of, ALL_REPORTS)}
+
+    assert {name: spec.report_id for name, spec in specs.items()} == _CORE_REPORT_IDS
+    for name, spec in specs.items():
+        assert spec.columns
+        assert all(column.description for column in spec.columns)
+        assert {column.name: column.data_class for column in spec.columns} == dict(
+            spec.classes
+        )
+
+        semantics = spec.semantics
+        assert isinstance(semantics, ReportSemantics)
+        assert semantics.unit
+        assert semantics.sign
+        assert semantics.valuation_basis
+        assert semantics.fx_basis
+        assert semantics.time_basis
+        assert semantics.exclusions
+        assert semantics.provenance == (spec.view.full_name,)
+
+        monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
+        assert monetary_classes.intersection(spec.classes.values())
+        assert semantics.unit == "currency"
+        assert semantics.currency == "summary.display_currency"
+
+        if name in _FLOW_REPORTS:
+            assert semantics.kind == "flow"
+            assert "inclusive" in semantics.time_basis
+        else:
+            assert semantics.kind == "position"
+            assert semantics.comparison_window
+            assert semantics.denominator
+            assert semantics.time_basis == (
+                "positions compared as of assertion_date; freshness measured "
+                "from assertion_date through current date"
+            )
 
 
 def _install_cash_flow_view(db: Database) -> None:

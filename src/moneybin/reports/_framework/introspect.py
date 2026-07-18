@@ -15,7 +15,9 @@ from typing import cast
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    OutputColumn,
     ParamSpec,
+    ReportSemantics,
     ReportSpec,
     Runner,
     TableRef,
@@ -59,9 +61,12 @@ def _section_tag(stripped: str) -> str | None:
 def build_spec(
     fn: Runner,
     *,
+    report_id: str,
     name: str,
     view: TableRef,
     classes: Mapping[str, DataClass],
+    columns: tuple[OutputColumn, ...],
+    semantics: ReportSemantics,
     domain: str | None = None,
 ) -> ReportSpec:
     """Introspect ``fn`` into a :class:`ReportSpec`.
@@ -125,11 +130,14 @@ def build_spec(
         )
 
     return ReportSpec(
+        report_id=report_id,
         name=name,
         description=summary,
         view=view,
         runner=fn,
         classes=dict(classes),
+        columns=columns,
+        semantics=semantics,
         params=tuple(param_specs),
         examples=examples,
         domain=domain,

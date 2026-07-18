@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    report,
+)
 from moneybin.reports.definitions._shared import CASHFLOW_GROUPINGS, resolve_window
 from moneybin.tables import REPORTS_CASH_FLOW
 
 
 @report(
+    report_id="core:cashflow",
     name="cashflow",
     view=REPORTS_CASH_FLOW,
     classes={
@@ -24,6 +30,35 @@ from moneybin.tables import REPORTS_CASH_FLOW
         "net": DataClass.TXN_AMOUNT,
         "txn_count": DataClass.AGGREGATE,
     },
+    columns=(
+        OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
+        OutputColumn(
+            "account_id", "Owning account identifier.", DataClass.ACCOUNT_IDENTIFIER
+        ),
+        OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
+        OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn("inflow", "Sum of positive amounts.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "outflow", "Sum of negative amounts, kept negative.", DataClass.TXN_AMOUNT
+        ),
+        OutputColumn("net", "Inflow plus outflow.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "txn_count", "Non-transfer transaction count.", DataClass.AGGREGATE
+        ),
+    ),
+    semantics=ReportSemantics(
+        unit="currency",
+        currency="summary.display_currency",
+        sign="negative expense; positive income",
+        kind="flow",
+        valuation_basis="transaction amount",
+        fx_basis="source-normalized display currency",
+        time_basis="inclusive calendar-month period",
+        denominator=None,
+        comparison_window=None,
+        exclusions=("transfers", "archived accounts"),
+        provenance=("reports.cash_flow",),
+    ),
 )
 def cash_flow(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

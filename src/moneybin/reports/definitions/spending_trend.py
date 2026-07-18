@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    report,
+)
 from moneybin.reports.definitions._shared import SPENDING_COMPARES, resolve_window
 from moneybin.tables import REPORTS_SPENDING_TREND
 
 
 @report(
+    report_id="core:spending",
     name="spending",
     view=REPORTS_SPENDING_TREND,
     classes={
@@ -25,6 +31,69 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         "yoy_pct": DataClass.AGGREGATE,
         "trailing_3mo_avg": DataClass.TXN_AMOUNT,
     },
+    columns=(
+        OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
+        OutputColumn("category", "Spending category.", DataClass.CATEGORY),
+        OutputColumn(
+            "total_spend",
+            "Absolute outflow in the month and category.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "prev_month_spend",
+            "Spend in the previous calendar month.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "mom_delta",
+            "Current spend minus previous-month spend.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "mom_pct",
+            "Month-over-month delta divided by previous-month spend.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "prev_year_spend",
+            "Spend in the same calendar month one year earlier.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "yoy_delta",
+            "Current spend minus same-month prior-year spend.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "yoy_pct",
+            "Year-over-year delta divided by prior-year spend.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "trailing_3mo_avg",
+            "Rolling three-month average ending in the current month.",
+            DataClass.TXN_AMOUNT,
+        ),
+    ),
+    semantics=ReportSemantics(
+        unit="currency",
+        currency="summary.display_currency",
+        sign="spend is positive absolute outflow; deltas are current minus comparison",
+        kind="flow",
+        valuation_basis="transaction amount",
+        fx_basis="source-normalized display currency",
+        time_basis="inclusive calendar-month period",
+        denominator=(
+            "previous-month spend for mom_pct and prior-year spend for yoy_pct; "
+            "null when the denominator is zero"
+        ),
+        comparison_window=(
+            "previous month, same month one year earlier, and trailing three months"
+        ),
+        exclusions=("transfers", "archived accounts", "non-outflows"),
+        provenance=("reports.spending_trend",),
+    ),
 )
 def spending_trend(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

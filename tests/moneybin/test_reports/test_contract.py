@@ -8,12 +8,17 @@ types, defaults) and Google-style docstring (summary, Args, Examples). The
 
 from __future__ import annotations
 
+import inspect
+from dataclasses import replace
+
 import pytest
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    OutputColumn,
     ReportQuery,
+    ReportSemantics,
     ReportSpec,
     report,
 )
@@ -22,6 +27,26 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY, TableRef
 
 # Placeholder column map for introspection tests that don't assert on classes.
 _CLASSES = {"value": DataClass.AGGREGATE}
+_COLUMNS = (
+    OutputColumn(
+        name="value",
+        description="Aggregate value.",
+        data_class=DataClass.AGGREGATE,
+    ),
+)
+_SEMANTICS = ReportSemantics(
+    unit="count",
+    currency=None,
+    sign="non-negative",
+    kind="count",
+    valuation_basis=None,
+    fx_basis=None,
+    time_basis="point-in-time query result",
+    denominator=None,
+    comparison_window=None,
+    exclusions=(),
+    provenance=("reports.merchant_activity",),
+)
 
 
 def _sample(
@@ -46,6 +71,29 @@ def _sample(
     return ReportQuery("SELECT 1", [])
 
 
+def _build_spec(
+    runner: object = _sample,
+    *,
+    report_id: str = "test:sample",
+    name: str = "sample",
+    view: TableRef = REPORTS_MERCHANT_ACTIVITY,
+    classes: dict[str, DataClass] | None = None,
+    columns: tuple[OutputColumn, ...] = _COLUMNS,
+    semantics: ReportSemantics = _SEMANTICS,
+    domain: str | None = None,
+) -> ReportSpec:
+    return build_spec(
+        runner,  # type: ignore[arg-type]
+        report_id=report_id,
+        name=name,
+        view=view,
+        classes=_CLASSES if classes is None else classes,
+        columns=columns,
+        semantics=semantics,
+        domain=domain,
+    )
+
+
 def test_report_query_is_frozen_with_sql_and_params() -> None:
     rq = ReportQuery("SELECT ?", [3])
     assert rq.sql == "SELECT ?"
@@ -55,29 +103,22 @@ def test_report_query_is_frozen_with_sql_and_params() -> None:
 
 
 def test_build_spec_reads_name_view_and_description() -> None:
-    spec = build_spec(
-        _sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-    )
+    spec = _build_spec()
     assert spec.name == "sample"
     assert spec.view == REPORTS_MERCHANT_ACTIVITY
     assert spec.description == "Sample rollup, grouped per ``by``."
 
 
 def test_build_spec_derives_surface_names() -> None:
-    spec = build_spec(
-        _sample,
+    spec = _build_spec(
         name="large_transactions",
-        view=REPORTS_MERCHANT_ACTIVITY,
-        classes=_CLASSES,
     )
     assert spec.mcp_tool_name == "reports_large_transactions"
     assert spec.cli_name == "large-transactions"
 
 
 def test_build_spec_excludes_db_and_reads_params() -> None:
-    spec = build_spec(
-        _sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-    )
+    spec = _build_spec()
     by_name = {p.name: p for p in spec.params}
     assert set(by_name) == {"month", "top", "by"}  # db excluded
 
@@ -104,9 +145,7 @@ def test_build_spec_arg_continuation_line_is_not_parsed_as_new_param() -> None:
         """
         return ReportQuery("SELECT 1", [])
 
-    spec = build_spec(
-        runner, name="cont", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-    )
+    spec = _build_spec(runner, name="cont")
     by_name = {p.name: p for p in spec.params}
     assert set(by_name) == {"fmt"}
     assert by_name["fmt"].help == "Output date format. default: today when omitted."
@@ -129,9 +168,7 @@ def test_build_spec_description_includes_body_prose_not_args() -> None:
         """
         return ReportQuery("SELECT 1", [])
 
-    spec = build_spec(
-        runner, name="r", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-    )
+    spec = _build_spec(runner, name="r")
     assert spec.description.startswith("Spending rollup by category.")
     assert "accounting convention" in spec.description
     assert "summary.display_currency" in spec.description
@@ -156,18 +193,14 @@ def test_build_spec_bare_word_colon_in_description_is_not_a_section_header() -> 
         """
         return ReportQuery("SELECT 1", [])
 
-    spec = build_spec(
-        runner, name="r", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-    )
+    spec = _build_spec(runner, name="r")
     assert "grouping is by account then category." in spec.description
     by_name = {p.name: p for p in spec.params}
     assert by_name["top"].help == "Maximum rows to return."  # Args still parsed
 
 
 def test_build_spec_reads_examples() -> None:
-    spec = build_spec(
-        _sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-    )
+    spec = _build_spec()
     assert spec.examples == (
         "reports_sample(top=5)",
         'reports_sample(by="category", month="2024-01")',
@@ -175,7 +208,14 @@ def test_build_spec_reads_examples() -> None:
 
 
 def test_report_decorator_attaches_spec_and_returns_function() -> None:
-    @report(name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES)
+    @report(
+        report_id="test:sample",
+        name="sample",
+        view=REPORTS_MERCHANT_ACTIVITY,
+        classes=_CLASSES,
+        columns=_COLUMNS,
+        semantics=_SEMANTICS,
+    )
     def runner(db: Database, *, top: int = 10) -> ReportQuery:
         """One-line summary."""
         return ReportQuery("SELECT 1", [])
@@ -191,9 +231,7 @@ def test_build_spec_requires_docstring() -> None:
         return ReportQuery("SELECT 1", [])
 
     with pytest.raises(ValueError, match="docstring"):
-        build_spec(
-            no_doc, name="nodoc", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-        )
+        _build_spec(no_doc, name="nodoc")
 
 
 def test_build_spec_requires_db_first_param() -> None:
@@ -202,9 +240,7 @@ def test_build_spec_requires_db_first_param() -> None:
         return ReportQuery("SELECT 1", [])
 
     with pytest.raises(ValueError, match="db"):
-        build_spec(
-            wrong_first, name="wrong", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-        )
+        _build_spec(wrong_first, name="wrong")
 
 
 def test_build_spec_requires_keyword_only_params() -> None:
@@ -213,26 +249,21 @@ def test_build_spec_requires_keyword_only_params() -> None:
         return ReportQuery("SELECT 1", [])
 
     with pytest.raises(ValueError, match="keyword-only"):
-        build_spec(
-            positional, name="pos", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
-        )
+        _build_spec(positional, name="pos")
 
 
 def test_build_spec_rejects_non_reports_view() -> None:
     with pytest.raises(ValueError, match="reports"):
-        build_spec(
+        _build_spec(
             _sample,
             name="bad",
             view=TableRef("core", "fct_transactions"),
-            classes=_CLASSES,
         )
 
 
 def test_build_spec_accepts_custom_table_ref() -> None:
     view = TableRef("reports", "sample")
-    spec = build_spec(
-        _sample, name="sample", view=view, classes=_CLASSES, domain="merchants"
-    )
+    spec = _build_spec(view=view, domain="merchants")
     assert spec.view.full_name == "reports.sample"
     assert spec.domain == "merchants"
 
@@ -240,7 +271,7 @@ def test_build_spec_accepts_custom_table_ref() -> None:
 def test_build_spec_rejects_empty_classes() -> None:
     # Every report must declare its column privacy contract (ADR-013).
     with pytest.raises(ValueError, match="classes"):
-        build_spec(_sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes={})
+        _build_spec(classes={})
 
 
 def test_build_spec_rejects_output_reserved_param() -> None:
@@ -252,7 +283,7 @@ def test_build_spec_rejects_output_reserved_param() -> None:
         return ReportQuery("SELECT 1", [])
 
     with pytest.raises(ValueError, match="output"):
-        build_spec(runner, name="r", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES)
+        _build_spec(runner, name="r")
 
 
 def test_build_spec_rejects_quiet_reserved_param() -> None:
@@ -261,4 +292,44 @@ def test_build_spec_rejects_quiet_reserved_param() -> None:
         return ReportQuery("SELECT 1", [])
 
     with pytest.raises(ValueError, match="quiet"):
-        build_spec(runner, name="r", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES)
+        _build_spec(runner, name="r")
+
+
+def test_report_spec_requires_namespaced_id_and_metric_semantics() -> None:
+    spec = _build_spec(report_id="core:spending")
+
+    assert spec.report_id == "core:spending"
+    assert spec.semantics.kind == "count"
+
+
+@pytest.mark.parametrize("field", ["report_id", "columns", "semantics"])
+def test_build_spec_requires_financial_metadata(field: str) -> None:
+    assert (
+        inspect.signature(build_spec).parameters[field].default
+        is inspect.Parameter.empty
+    )
+    assert (
+        inspect.signature(report).parameters[field].default is inspect.Parameter.empty
+    )
+
+
+def test_invalid_report_id_is_rejected() -> None:
+    with pytest.raises(ValueError, match="namespace:name"):
+        replace(_build_spec(), report_id="sample")
+
+
+def test_columns_and_classes_must_name_the_same_output_fields() -> None:
+    with pytest.raises(ValueError, match="columns and classes"):
+        replace(_build_spec(), columns=())
+
+
+def test_columns_and_classes_must_use_the_same_privacy_class() -> None:
+    mismatched = (
+        OutputColumn(
+            name="value",
+            description="Aggregate value.",
+            data_class=DataClass.TXN_AMOUNT,
+        ),
+    )
+    with pytest.raises(ValueError, match="columns and classes"):
+        replace(_build_spec(), columns=mismatched)

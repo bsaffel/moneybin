@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    report,
+)
 from moneybin.reports.definitions._shared import MERCHANTS_SORTS
 from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
 
 
 @report(
+    report_id="core:merchants",
     name="merchants",
     view=REPORTS_MERCHANT_ACTIVITY,
     classes={
@@ -27,6 +33,56 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
         "top_category": DataClass.CATEGORY,
         "account_count": DataClass.AGGREGATE,
     },
+    columns=(
+        OutputColumn(
+            "merchant_id", "Canonical merchant identifier.", DataClass.RECORD_ID
+        ),
+        OutputColumn(
+            "merchant_normalized",
+            "Canonical merchant label or uncategorized bucket.",
+            DataClass.MERCHANT_NAME,
+        ),
+        OutputColumn("total_spend", "Lifetime absolute outflow.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "total_inflow", "Lifetime sum of positive amounts.", DataClass.TXN_AMOUNT
+        ),
+        OutputColumn(
+            "total_outflow",
+            "Lifetime sum of negative amounts, kept negative.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn("txn_count", "Transaction count.", DataClass.AGGREGATE),
+        OutputColumn("avg_amount", "Mean signed amount.", DataClass.TXN_AMOUNT),
+        OutputColumn("median_amount", "Median signed amount.", DataClass.TXN_AMOUNT),
+        OutputColumn("first_seen", "Earliest transaction date.", DataClass.TXN_DATE),
+        OutputColumn("last_seen", "Latest transaction date.", DataClass.TXN_DATE),
+        OutputColumn(
+            "active_months",
+            "Distinct active calendar-month count.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn("top_category", "Modal category.", DataClass.CATEGORY),
+        OutputColumn("account_count", "Distinct account count.", DataClass.AGGREGATE),
+    ),
+    semantics=ReportSemantics(
+        unit="currency",
+        currency="summary.display_currency",
+        sign=(
+            "spend is positive absolute outflow; outflow is negative; inflow is "
+            "positive; average and median are signed"
+        ),
+        kind="flow",
+        valuation_basis="transaction amount",
+        fx_basis="source-normalized display currency",
+        time_basis=(
+            "inclusive full observed transaction period from first_seen through "
+            "last_seen"
+        ),
+        denominator=None,
+        comparison_window=None,
+        exclusions=("transfers", "archived accounts"),
+        provenance=("reports.merchant_activity",),
+    ),
 )
 def merchant_activity(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

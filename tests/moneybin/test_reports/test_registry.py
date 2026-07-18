@@ -17,12 +17,20 @@ from moneybin.reports._framework.registry import (
     register_reports,
 )
 from moneybin.tables import TableRef
+from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_summary")
 _CLASSES = {"value": DataClass.AGGREGATE}
 
 
-@report(name="alpha", view=_VIEW, classes=_CLASSES)
+@report(
+    report_id="test:alpha",
+    name="alpha",
+    view=_VIEW,
+    classes=_CLASSES,
+    columns=output_columns(_CLASSES),
+    semantics=TEST_SEMANTICS,
+)
 def _alpha(db: Database, *, top: int = 5) -> ReportQuery:
     """Alpha report.
 
@@ -33,7 +41,14 @@ def _alpha(db: Database, *, top: int = 5) -> ReportQuery:
     return ReportQuery("SELECT 1", [])
 
 
-@report(name="beta", view=_VIEW, classes=_CLASSES)
+@report(
+    report_id="test:beta",
+    name="beta",
+    view=_VIEW,
+    classes=_CLASSES,
+    columns=output_columns(_CLASSES),
+    semantics=TEST_SEMANTICS,
+)
 def _beta(db: Database) -> ReportQuery:
     """Beta report.
 

@@ -18,8 +18,10 @@ from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.reports._framework.mcp_register import make_tool_fn, register_report_mcp
 from moneybin.tables import TableRef
+from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_summary")
+_CLASSES = {"account_id": DataClass.ACCOUNT_IDENTIFIER}
 
 
 def _runner(db: Database, *, month: str | None = None, top: int = 25) -> ReportQuery:
@@ -39,9 +41,12 @@ def _runner(db: Database, *, month: str | None = None, top: int = 25) -> ReportQ
 def _spec():  # noqa: ANN202 — test helper
     return build_spec(
         _runner,
+        report_id="test:summary",
         name="summary",
         view=_VIEW,
-        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+        classes=_CLASSES,
+        columns=output_columns(_CLASSES),
+        semantics=TEST_SEMANTICS,
         domain="cashflow",
     )
 
@@ -64,11 +69,14 @@ def test_make_tool_fn_uses_any_for_unannotated_params() -> None:
     from typing import Any
 
     spec = ReportSpec(
+        report_id="test:unannotated",
         name="unannotated",
         description="Per-account summary.",
         view=_VIEW,
         runner=_runner,
-        classes={"account_id": DataClass.ACCOUNT_IDENTIFIER},
+        classes=_CLASSES,
+        columns=output_columns(_CLASSES),
+        semantics=TEST_SEMANTICS,
         params=(
             ParamSpec(
                 name="raw", annotation=None, default=None, required=False, help=""

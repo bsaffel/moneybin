@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    report,
+)
 from moneybin.reports.definitions._shared import DRIFT_STATUSES, validate_date
 from moneybin.services.account_service import AccountService
 from moneybin.tables import REPORTS_BALANCE_DRIFT
 
 
 @report(
+    report_id="core:balance_drift",
     name="balance_drift",
     view=REPORTS_BALANCE_DRIFT,
     classes={
@@ -27,6 +33,60 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "days_since_assertion": DataClass.AGGREGATE,
         "status": DataClass.TXN_TYPE,
     },
+    columns=(
+        OutputColumn(
+            "account_id", "Owning account identifier.", DataClass.ACCOUNT_IDENTIFIER
+        ),
+        OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
+        OutputColumn(
+            "assertion_date", "User-asserted balance date.", DataClass.TXN_DATE
+        ),
+        OutputColumn(
+            "asserted_balance",
+            "User-entered balance as of assertion_date.",
+            DataClass.BALANCE,
+        ),
+        OutputColumn(
+            "computed_balance",
+            "Carried-forward computed balance as of assertion_date.",
+            DataClass.BALANCE,
+        ),
+        OutputColumn(
+            "drift",
+            "Asserted balance minus computed balance.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn("drift_abs", "Absolute balance drift.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "drift_pct",
+            "Drift divided by asserted balance.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "days_since_assertion",
+            "Days from assertion_date through current date.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn("status", "Reconciliation status bucket.", DataClass.TXN_TYPE),
+    ),
+    semantics=ReportSemantics(
+        unit="currency",
+        currency="summary.display_currency",
+        sign="drift is asserted balance minus computed balance; drift_abs is unsigned",
+        kind="position",
+        valuation_basis=(
+            "user-asserted balance compared with carried-forward computed balance"
+        ),
+        fx_basis="source-normalized display currency",
+        time_basis=(
+            "positions compared as of assertion_date; freshness measured from "
+            "assertion_date through current date"
+        ),
+        denominator="asserted_balance for drift_pct; null when asserted balance is zero",
+        comparison_window="asserted and computed positions on assertion_date",
+        exclusions=("archived accounts",),
+        provenance=("reports.balance_drift",),
+    ),
 )
 def balance_drift(
     db: Database,
