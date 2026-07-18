@@ -472,6 +472,11 @@ def _attempt_self_heal(
 
     fresh = derive_recipe(doc, _EMPTY_METADATA)
     if fresh is None:
+        logger.info(
+            f"Saved format {saved_format.name!r} failed reconciliation and the "
+            f"document could not be re-derived ({derivation_failure_reason(doc)})"
+            f" — routing to seed"
+        )
         return None
 
     if failed.recipe is not None and fresh.sign_convention != (
@@ -505,6 +510,11 @@ def _attempt_self_heal(
         card_markers=credit_card_markers(doc),
     )
     if retry.outcome != "transactions":
+        logger.info(
+            f"Saved format {saved_format.name!r} failed reconciliation and the "
+            f"re-derived recipe did not reconcile either (reason={retry.reason})"
+            f" — routing to seed"
+        )
         return None
 
     logger.info(
@@ -761,9 +771,12 @@ def _run_recipe_pipeline(
         # Balance values intentionally omitted — `.claude/rules/security.md`
         # forbids logging financial values; the reason code suffices.
         _format_name = matched_format_name or "unknown"
+        # States the failure, not the outcome: route_pdf_import re-derives before
+        # deciding, so a "falling back to seed" claim here is contradicted by the
+        # very next log line whenever the repair succeeds.
         logger.warning(
             f"Replay recipe for format {_format_name!r} failed reconciliation "
-            f"(reason={recon.reason}) — falling back to seed"
+            f"(reason={recon.reason}) — attempting re-derivation"
         )
         return RouteDecision(
             outcome="seed",
