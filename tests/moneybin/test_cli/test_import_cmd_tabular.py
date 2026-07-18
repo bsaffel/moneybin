@@ -387,3 +387,30 @@ class TestPreview:
 
         assert result.exit_code == 0
         assert any("parses as a transaction" in r.message for r in caplog.records)
+
+    def test_permission_error_is_classified_not_raw(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Preview must classify a read denial — every sibling import command does.
+
+        Both the ❌ message and the 💡 hint route through the logger to stderr
+        (per cli.md), which CliRunner keeps out of ``result.output`` — so assert
+        on caplog. ``result.exception`` is the load-bearing check: an unwrapped
+        PermissionError also yields exit code 1 under CliRunner, so the exit
+        code alone cannot distinguish classified from unhandled.
+        """
+        import logging
+
+        target = tmp_path / "locked.csv"
+        target.write_text("Date,Amount,Description\n2026-01-01,1.00,Coffee\n")
+        target.chmod(0o000)
+        try:
+            with caplog.at_level(logging.INFO):
+                result = runner.invoke(app, ["preview", str(target)])
+        finally:
+            target.chmod(0o644)
+
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, PermissionError)
+        assert any(r.message.startswith("❌ ") for r in caplog.records)
+        assert "chmod" in caplog.text
