@@ -1833,3 +1833,48 @@ def test_pdf_sign_actions_lead_with_the_mcp_confirm_path() -> None:
     assert "confirm_sign=True" in actions[1]
     # The terminal override for "it is NOT a card" survives as the escape hatch.
     assert any("--sign negative_is_expense" in a for a in actions)
+
+
+class TestImportConfirmPdfSignBridgeEscalation:
+    """confirm_sign on a PDF that turns out to need the bridge, not a sign decision."""
+
+    async def test_bridge_escalation_returns_payload_without_blank_action(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The bridge request carries no error_message — no empty action may leak."""
+        pdf = write_card_statement_pdf(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        bridge_error = ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="pdf",
+                confidence=_make_confidence(score=0.3, tier="low"),
+                proposed=BridgePayload(
+                    payload={"document_text": "…", "transparency_notice": "…"}
+                ),
+                reason="unknown_layout",
+            )
+        )
+        mock_service = MagicMock()
+        mock_service.import_file.side_effect = bridge_error
+        confirm = AsyncMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+        ):
+            result = await import_confirm(file_path=str(pdf), confirm_sign=True)
+
+        data = result.data
+        assert isinstance(data, dict)
+        assert data["status"] == "confirmation_required"
+        assert data["bridge_payload"] is not None
+        # A bridge request is not a sign decision — the human is never asked.
+        confirm.assert_not_awaited()
+        # Every hint must be substantive; a blank string is not a next step.
+        assert all(action.strip() for action in result.actions)
+        assert any("bridge_response" in action for action in result.actions)

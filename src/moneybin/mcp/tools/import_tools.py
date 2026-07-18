@@ -1032,6 +1032,15 @@ def _import_confirm_tabular(
         )
 
 
+def _post_import_actions(import_id: str | None) -> list[str]:
+    """The next-step hints every successful `import_confirm` load returns."""
+    return [
+        f"Use import_revert(import_id='{import_id}') to undo this import.",
+        "Use refresh_run() to rebuild derived tables and apply categorization.",
+        "Use system_status to confirm refreshed counts.",
+    ]
+
+
 def _import_confirm_pdf_sign(
     path: Path,
     *,
@@ -1079,24 +1088,30 @@ async def _confirm_pdf_sign_with_human(
     def _pdf_confirmation_envelope(
         outcome: ConfirmationRequired,
     ) -> ResponseEnvelope[ImportConfirmPayload]:
+        from moneybin.services.import_confirmation import BridgePayload
+
+        if isinstance(outcome.proposed, BridgePayload):
+            # The bridge escalation carries no error_message (it is a request,
+            # not a rejection), so only prepend one when it is actually set.
+            actions = [
+                *([outcome.error_message] if outcome.error_message else []),
+                _bridge_confirm_action(str(path), payload_ref="data.bridge_payload"),
+            ]
+        else:
+            actions = _confirmation_actions(
+                str(path),
+                outcome,
+                accept=False,
+                save_format=save_format,
+                account_id=account_id,
+            )
         return build_envelope(
             sensitivity="medium",
             data={
                 "status": "confirmation_required",
                 **confirmation_payload_dict(outcome),
             },
-            actions=(
-                _sign_confirm_actions(
-                    str(path), outcome.error_message, channel=outcome.channel
-                )
-                if outcome.reason == "sign_convention"
-                else [
-                    outcome.error_message,
-                    _bridge_confirm_action(
-                        str(path), payload_ref="data.bridge_payload"
-                    ),
-                ]
-            ),
+            actions=actions,
         )
 
     try:
@@ -1150,11 +1165,7 @@ async def _confirm_pdf_sign_with_human(
             sample_values={},
             sign_correction_suggested=result.sign_correction_suggested,
         ),
-        actions=[
-            f"Use import_revert(import_id='{result.import_id}') to undo this import.",
-            "Use refresh_run() to rebuild derived tables and apply categorization.",
-            "Use system_status to confirm refreshed counts.",
-        ],
+        actions=_post_import_actions(result.import_id),
     )
 
 
@@ -1224,7 +1235,10 @@ async def import_confirm(
             ``bridge_response``/``accept``/``mapping``. This does NOT ratify the
             inversion itself — it asks MoneyBin to put the proposal in front of
             the human, who approves or declines. A declined (or unavailable)
-            prompt imports nothing.
+            prompt imports nothing. Only send this for a PDF actually flagged
+            ``reason="sign_convention"``: on a bridge-eligible PDF it re-extracts
+            the document, which surfaces its text to you and writes an egress
+            audit row, and you get the ``bridge_payload`` back instead.
         mapping: Partial field→column override dict. Tabular only.
         bridge_response: PDF bridge reply ``{'recipe': ..., 'rows': [...]}``.
             Mutually exclusive with ``accept``/``mapping``. An inverted recipe
@@ -1467,11 +1481,7 @@ async def import_confirm(
                 ),
             )
 
-    actions: list[str] = [
-        f"Use import_revert(import_id='{result.import_id}') to undo this import.",
-        "Use refresh_run() to rebuild derived tables and apply categorization.",
-        "Use system_status to confirm refreshed counts.",
-    ]
+    actions: list[str] = _post_import_actions(result.import_id)
     if result.sign_correction_suggested:
         actions.insert(
             0,
