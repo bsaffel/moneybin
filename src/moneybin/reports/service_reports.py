@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import date
 from typing import Literal, cast
@@ -40,7 +41,7 @@ _SNAPSHOT_COLUMNS = (
     OutputColumn(
         "account_id",
         "Canonical account identifier for the breakdown row.",
-        DataClass.ACCOUNT_IDENTIFIER,
+        DataClass.RECORD_ID,
     ),
     OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
     OutputColumn(
@@ -89,7 +90,7 @@ _HISTORY_COLUMNS = (
     ),
     OutputColumn(
         "net_worth",
-        "Last net-worth position observed in the period.",
+        "Resolved transaction-adjusted period-end position.",
         DataClass.BALANCE,
     ),
     OutputColumn(
@@ -131,6 +132,20 @@ _HISTORY_SEMANTICS = ReportSemantics(
     provenance=("reports.net_worth",),
 )
 
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def _invalid_iso_date(report_id: str, parameter: str) -> UserError:
+    return UserError(
+        "Report parameter must be an ISO date.",
+        code="REPORT_PARAMETER_INVALID_VALUE",
+        details={
+            "report_id": report_id,
+            "parameter": parameter,
+            "expected": "ISO date (YYYY-MM-DD)",
+        },
+    )
+
 
 def _validate_iso_date(
     parameters: Mapping[str, JsonValue],
@@ -141,18 +156,13 @@ def _validate_iso_date(
     value = parameters[parameter]
     if value is None:
         return None
+    text = cast(str, value)
+    if _ISO_DATE.fullmatch(text) is None:
+        raise _invalid_iso_date(report_id, parameter)
     try:
-        return date.fromisoformat(cast(str, value))
+        return date.fromisoformat(text)
     except ValueError as exc:
-        raise UserError(
-            "Report parameter must be an ISO date.",
-            code="REPORT_PARAMETER_INVALID_VALUE",
-            details={
-                "report_id": report_id,
-                "parameter": parameter,
-                "expected": "ISO date (YYYY-MM-DD)",
-            },
-        ) from exc
+        raise _invalid_iso_date(report_id, parameter) from exc
 
 
 def _validate_networth_parameters(parameters: Mapping[str, JsonValue]) -> None:

@@ -10,10 +10,9 @@ See ``mcp-architecture.md`` section 4 for design rationale.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, cast
@@ -21,6 +20,26 @@ from typing import Any, Literal, cast
 from pydantic import BaseModel
 
 from moneybin.errors import RecoveryAction, UserError
+
+
+def _serialize_payload(value: Any) -> Any:
+    """Recursively expose payload containers without copying scalar leaves."""
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            item.name: _serialize_payload(getattr(value, item.name))
+            for item in fields(value)
+        }
+    if isinstance(value, BaseModel):
+        try:
+            return _serialize_payload(value.model_dump())
+        except Exception:  # noqa: BLE001,S110  # preserve existing fallback contract
+            return value
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[Any, Any], value)
+        return {key: _serialize_payload(item) for key, item in mapping.items()}
+    if isinstance(value, (tuple, list)):
+        return [_serialize_payload(item) for item in value]
+    return value
 
 
 class DetailLevel(StrEnum):
@@ -76,8 +95,9 @@ class PayloadEncoder(json.JSONEncoder):
     """JSON encoder for envelope payloads.
 
     Extends the original Decimal-to-float semantics to also handle typed
-    dataclass and Pydantic model payloads so ``to_json()`` works on both
-    bare-dict and typed-payload envelopes.
+    dataclass, Pydantic model, immutable mapping, and sequence payloads through
+    one recursive field walker so ``to_json()`` works on both bare-dict and
+    typed-payload envelopes without ``deepcopy``.
 
     MoneyBin holds money as `Decimal` internally for precision-safe arithmetic;
     on the wire we emit JSON numbers so agents and JSON tooling consume them
@@ -100,22 +120,9 @@ class PayloadEncoder(json.JSONEncoder):
         # Existing: Decimal → float
         if isinstance(o, Decimal):
             return float(o)
-        if isinstance(o, Mapping):
-            return dict(cast(Mapping[Any, Any], o))
-        # New: dataclass instances → asdict (recurses through nested dataclasses)
-        if is_dataclass(o) and not isinstance(o, type):
-            return dataclasses.asdict(o)
-        # New: Pydantic v2 models → model_dump. isinstance(BaseModel) — NOT a
-        # duck-type `hasattr("model_dump")` — because MagicMock auto-generates
-        # any non-dunder attribute. With the duck check, a mock returned from a
-        # mocked service flowed into model_dump() which returned ANOTHER mock,
-        # and the JSON encoder looped allocating ~10 KiB per pass until the
-        # process OOMed. See test_payload_encoder_does_not_chain_mock_model_dump.
-        if isinstance(o, BaseModel):
-            try:
-                return o.model_dump()
-            except Exception:  # noqa: BLE001,S110 — fall through to str()
-                pass
+        converted = _serialize_payload(o)
+        if converted is not o:
+            return converted
         # Existing fallback: str(o) for datetime, UUID, Enum, etc.
         try:
             return super().default(o)
@@ -158,19 +165,10 @@ class ResponseEnvelope[T]:
     def to_dict(self) -> dict[str, Any]:
         """Convert to a plain dict suitable for JSON serialization.
 
-        Typed payloads (dataclass, Pydantic) are recursively serialized
-        via ``dataclasses.asdict`` / ``model_dump``; bare dicts/lists pass
-        through unchanged.
+        Typed payloads and JSON containers are recursively converted without
+        deep-copying scalar leaves.
         """
-        data_serialized: Any
-        if is_dataclass(self.data) and not isinstance(self.data, type):
-            data_serialized = dataclasses.asdict(self.data)
-        elif isinstance(self.data, BaseModel):
-            # isinstance(BaseModel), not duck-type — see PayloadEncoder.default
-            # comment for the MagicMock-chain leak this guards against.
-            data_serialized = self.data.model_dump()
-        else:
-            data_serialized = self.data
+        data_serialized = _serialize_payload(self.data)
         d: dict[str, Any] = {
             "status": "error" if self.error is not None else "ok",
             "summary": self.summary.to_dict(),
@@ -347,7 +345,7 @@ def _count_typed_payload(data: Any) -> int:
       ``ignored``), not row collections, so no single list represents the
       "returned" count.
     """
-    return _count_primary_lists(data, [f.name for f in dataclasses.fields(data)])
+    return _count_primary_lists(data, [item.name for item in fields(data)])
 
 
 def _count_pydantic_payload(data: BaseModel) -> int:

@@ -4,17 +4,22 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from decimal import Decimal
+from types import MappingProxyType
 
 import pytest
 
 from moneybin import error_codes
+from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import (
     DetailLevel,
     ResponseEnvelope,
     SummaryMeta,
     build_envelope,
 )
+from moneybin.reports._framework.contract import ReportSemantics
+from moneybin.reports._framework.execute import CatalogReportResult
 
 
 class TestDetailLevel:
@@ -93,6 +98,71 @@ class TestResponseEnvelope:
         # see `_DecimalEncoder` docstring for the wire contract.
         assert parsed["data"][0]["amount"] == 42.5
         assert isinstance(parsed["data"][0]["amount"], float)
+
+    @pytest.mark.unit
+    def test_catalog_result_with_frozen_metadata_serializes_canonically(self) -> None:
+        result = CatalogReportResult(
+            report_id="core:networth",
+            parameters=MappingProxyType({
+                "account_map": MappingProxyType({
+                    "entry_count": 1,
+                    "redacted": True,
+                }),
+                "groupings": ("asset", "liability"),
+            }),
+            semantics=ReportSemantics(
+                unit="currency",
+                currency="summary.display_currency",
+                sign="signed position",
+                kind="position",
+                valuation_basis="resolved daily position",
+                fx_basis="no conversion",
+                time_basis="point in time",
+                denominator=None,
+                comparison_window=None,
+                exclusions=(),
+                provenance=("reports.net_worth",),
+            ),
+            provenance=("reports.net_worth",),
+            records=[
+                {
+                    "balance_date": date(2026, 7, 1),
+                    "net_worth": Decimal("1234.56000000"),
+                }
+            ],
+            columns=["balance_date", "net_worth"],
+            output_classes={
+                "balance_date": DataClass.TXN_DATE,
+                "net_worth": DataClass.BALANCE,
+            },
+            tier=Tier.HIGH,
+            total_count=1,
+            truncated=False,
+        )
+        envelope = build_envelope(data=result, sensitivity="high")
+
+        as_dict = envelope.to_dict()
+
+        assert as_dict["data"]["parameters"] == {
+            "account_map": {"entry_count": 1, "redacted": True},
+            "groupings": ["asset", "liability"],
+        }
+        assert "classes_returned" not in as_dict["data"]
+        assert as_dict["data"]["records"][0]["net_worth"] == Decimal("1234.56000000")
+        assert as_dict["data"]["records"][0]["balance_date"] == date(2026, 7, 1)
+
+        normalized = json.loads(envelope.to_json())
+        assert normalized["data"]["parameters"] == {
+            "account_map": {"entry_count": 1, "redacted": True},
+            "groupings": ["asset", "liability"],
+        }
+        assert normalized["data"]["records"] == [
+            {
+                "balance_date": "2026-07-01",
+                "net_worth": 1234.56,
+            }
+        ]
+        assert isinstance(normalized["data"]["records"][0]["net_worth"], float)
 
     @pytest.mark.unit
     def test_empty_actions_default(self) -> None:

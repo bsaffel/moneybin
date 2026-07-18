@@ -114,6 +114,11 @@ def _redact_and_freeze_parameter(
 ) -> FrozenJsonValue:
     """Redact parameter leaves and recursively freeze JSON containers."""
     if isinstance(value, dict):
+        if data_class.tier >= Tier.MEDIUM:
+            return MappingProxyType({
+                "entry_count": len(value),
+                "redacted": True,
+            })
         return MappingProxyType({
             key: _redact_and_freeze_parameter(item, data_class)
             for key, item in value.items()

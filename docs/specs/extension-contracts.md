@@ -473,8 +473,12 @@ standard response envelope (`src/moneybin/reports/_framework/execute.py`).
 Execution receives only the exact validated values. Effective parameters copied
 into result metadata are separately redacted by their declared
 `parameter_classes`, recursively frozen, and JSON-safe; raw account references
-never enter result metadata. Both surfaces build identical envelopes via the
-shared `ReportResult`.
+never enter result metadata. Mapping parameters at medium, high, or critical
+sensitivity collapse to `{entry_count, redacted: true}` because one
+`parameter_classes` declaration cannot classify arbitrary keys separately from
+values; low-tier mappings retain their recursively frozen JSON shape. Exact
+mapping keys and values remain local to executor dispatch. Both surfaces build
+identical envelopes via the shared `ReportResult`.
 
 Report column classification is **declared, not lineage-derived** ([ADR-013](../decisions/013-report-classification-declared.md)). SQLMesh deploys each report view as a `SELECT * FROM <internal physical table>` pointer, so lineage on the deployed view body classifies the pointer (not the logic) and would leak; and provenance ≠ sensitivity for derived columns (a z-score of an amount is `AGGREGATE`, not `TXN_AMOUNT`). Reports are a fixed, first-party surface known at design time, so each declares its `column → DataClass` map on `@report` — on the same footing as the `CLASSIFICATION` registry that declares `core`/`app` base truth. A scenario test (`tests/scenarios/test_reports_classification.py`) asserts the declared map covers the real built view's columns and that `account_id` stays CRITICAL. (`sql_query` keeps using lineage — its correct home: an arbitrary agent query reading `core`/`app` directly.)
 

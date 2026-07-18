@@ -527,7 +527,9 @@ Free-text → account-ID resolution for natural-language references.
 
 Net worth across all accounts over time.
 
-- **Sensitivity:** `medium` — aggregate but reveals total financial position.
+- **Sensitivity:** `high` — the snapshot includes row-level account balances in
+  addition to headline totals. Canonical account IDs are opaque `RECORD_ID`
+  values; balances, not those IDs, determine the tier.
 - **Unique parameters:** `as_of: str | None = None`,
   `account_ids: list[str] | None = None`.
 - **Behavior:** Returns the last resolved transaction-adjusted daily position on

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import typer
+from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
 from moneybin.database import Database
@@ -370,8 +371,33 @@ def test_service_report_dispatch_uses_same_result_contract() -> None:
     db.execute.assert_not_called()
 
 
-def test_parameter_metadata_is_redacted_deep_frozen_and_json_safe() -> None:
-    executor = MagicMock()
+@pytest.mark.parametrize(
+    "sensitive_class",
+    [
+        DataClass.USER_NOTE,
+        DataClass.BALANCE,
+        DataClass.ACCOUNT_IDENTIFIER,
+    ],
+)
+def test_sensitive_mapping_parameter_metadata_is_summarized_without_keys(
+    sensitive_class: DataClass,
+) -> None:
+    dispatched: dict[str, JsonValue] = {}
+
+    def executor(
+        db: Database,  # noqa: ARG001  # contract handle
+        parameters: Mapping[str, JsonValue],
+        limit: int,
+    ) -> CatalogReportResult:
+        dispatched.update(parameters)
+        return build_catalog_result(
+            spec,
+            parameters=parameters,
+            records=[{"value": 1}],
+            columns=["value"],
+            max_rows=limit,
+        )
+
     spec = ServiceReportSpec(
         report_id="test:nested",
         name="nested",
@@ -379,11 +405,61 @@ def test_parameter_metadata_is_redacted_deep_frozen_and_json_safe() -> None:
         parameters=(
             ParamSpec(
                 "accounts",
+                dict[str, str],
+                None,
+                True,
+                "Account-reference mapping.",
+                sensitive_class,
+            ),
+        ),
+        columns=_COLUMNS,
+        semantics=_SEMANTICS,
+        classes=_CLASSES,
+        examples=(),
+        executor=executor,
+    )
+    raw_accounts: dict[str, JsonValue] = {
+        "acct_key_11112222": "acct_value_99998888",
+    }
+
+    result = ReportCatalog((spec,)).execute(
+        cast(Database, MagicMock(spec=Database)),
+        report_id="test:nested",
+        parameters={"accounts": raw_accounts},
+        limit=100,
+    )
+
+    assert dispatched["accounts"] == raw_accounts
+    assert result.parameters == {
+        "accounts": {"entry_count": 1, "redacted": True},
+    }
+    with pytest.raises(TypeError):
+        result.parameters["accounts"] = {}  # type: ignore[index]  # immutable
+    nested = cast(Mapping[str, object], result.parameters["accounts"])
+    with pytest.raises(TypeError):
+        nested["entry_count"] = 2  # type: ignore[index]  # immutable
+    normalized = json.loads(json.dumps(result.parameters, cls=PayloadEncoder))
+    assert normalized == {
+        "accounts": {"entry_count": 1, "redacted": True},
+    }
+    assert "acct_key_11112222" not in json.dumps(normalized)
+    assert "acct_value_99998888" not in json.dumps(normalized)
+
+
+def test_low_mapping_parameter_metadata_retains_frozen_json_shape() -> None:
+    executor = MagicMock()
+    spec = ServiceReportSpec(
+        report_id="test:low_mapping",
+        name="low_mapping",
+        description="Low-safe mapping report.",
+        parameters=(
+            ParamSpec(
+                "categories",
                 dict[str, list[str]],
                 None,
                 True,
-                "Accounts grouped by label.",
-                DataClass.ACCOUNT_IDENTIFIER,
+                "Category mapping.",
+                DataClass.CATEGORY,
             ),
         ),
         columns=_COLUMNS,
@@ -395,22 +471,14 @@ def test_parameter_metadata_is_redacted_deep_frozen_and_json_safe() -> None:
 
     result = build_catalog_result(
         spec,
-        parameters={"accounts": {"primary": ["acct_11112222"]}},
+        parameters={"categories": {"food": ["groceries", "dining"]}},
         records=[{"value": 1}],
         columns=["value"],
         max_rows=100,
     )
 
     assert result.parameters == {
-        "accounts": {"primary": ("****2222",)},
-    }
-    with pytest.raises(TypeError):
-        result.parameters["accounts"] = {}  # type: ignore[index]  # immutable
-    nested = cast(Mapping[str, object], result.parameters["accounts"])
-    with pytest.raises(TypeError):
-        nested["primary"] = ()  # type: ignore[index]  # immutable
-    assert json.loads(json.dumps(result.parameters, cls=PayloadEncoder)) == {
-        "accounts": {"primary": ["****2222"]},
+        "categories": {"food": ("groceries", "dining")},
     }
 
 
@@ -471,13 +539,14 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
             "total_assets": Decimal("1500.12000000"),
             "total_liabilities": Decimal("-265.56000000"),
             "account_count": 2,
-            "account_id": "****2222",
+            "account_id": "acct_11112222",
             "account_name": "Checking",
             "account_balance": Decimal("500.12000000"),
             "observation_source": "asserted",
         }
     ]
-    assert result.tier is Tier.CRITICAL
+    assert result.output_classes["account_id"] is DataClass.RECORD_ID
+    assert result.tier is Tier.HIGH
     assert result.truncated is True
     assert result.total_count == 2
     envelope = result.to_envelope().to_dict()
@@ -593,6 +662,10 @@ def test_networth_history_service_report_preserves_numeric_fidelity(
     assert result.semantics.valuation_basis == (
         "last resolved transaction-adjusted daily position in each selected period"
     )
+    columns = {column.name: column for column in NETWORTH_HISTORY_REPORT.columns}
+    assert columns["net_worth"].description == (
+        "Resolved transaction-adjusted period-end position."
+    )
     assert result.records == [
         {
             "period": "2026-06-01",
@@ -655,6 +728,36 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
             },
         ),
         (
+            NETWORTH_REPORT,
+            {"as_of": "20260702"},
+            "REPORT_PARAMETER_INVALID_VALUE",
+            {
+                "report_id": "core:networth",
+                "parameter": "as_of",
+                "expected": "ISO date (YYYY-MM-DD)",
+            },
+        ),
+        (
+            NETWORTH_REPORT,
+            {"as_of": "2026-W27-4"},
+            "REPORT_PARAMETER_INVALID_VALUE",
+            {
+                "report_id": "core:networth",
+                "parameter": "as_of",
+                "expected": "ISO date (YYYY-MM-DD)",
+            },
+        ),
+        (
+            NETWORTH_REPORT,
+            {"as_of": "2026-02-30"},
+            "REPORT_PARAMETER_INVALID_VALUE",
+            {
+                "report_id": "core:networth",
+                "parameter": "as_of",
+                "expected": "ISO date (YYYY-MM-DD)",
+            },
+        ),
+        (
             NETWORTH_HISTORY_REPORT,
             {
                 "from_date": "2026-07-02",
@@ -688,7 +791,13 @@ def test_service_value_validation_runs_before_executor(
 
     assert raised.value.code == code
     assert raised.value.details == details
-    assert "not-a-date" not in raised.value.message
+    serialized_error = json.dumps({
+        "message": raised.value.message,
+        "details": raised.value.details,
+    })
+    for value in parameters.values():
+        if isinstance(value, str):
+            assert value not in serialized_error
     executor.assert_not_called()
 
 
