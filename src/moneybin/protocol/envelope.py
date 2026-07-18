@@ -134,8 +134,12 @@ class ResponseEnvelope[T]:
     - ``summary``: metadata for the AI (counts, truncation, sensitivity)
     - ``data``: the payload — typed object or bare dict/list
     - ``actions``: contextual next-step hints
-    - ``error``: populated when the tool failed with a classified user error;
-      ``data`` is empty in this case
+    - ``error``: populated when the tool failed; this field (mirrored by
+      ``status``) is the canonical failure signal. Envelopes built by
+      ``build_error_envelope`` carry an empty ``data``, but a tool MAY attach
+      ``error`` to a payload-carrying envelope when the payload itself explains
+      the failure — ``import_files`` keeps its per-file ``files[]`` results on
+      an all-failed batch. Never infer "``data`` is empty" from ``error``.
     - ``next_cursor``: opaque pagination token when more results are available
     - ``recovery_actions``: structured actions an agent can execute to fix
       a failure; carried from the UserError when present
@@ -401,10 +405,15 @@ def build_error_envelope(
     error early-return unifies with any ``-> ResponseEnvelope[T]`` tool
     signature without a per-call-site ``# type: ignore[return-value]``.
 
-    ``data`` is an empty list — the ``error`` field is the canonical signal
-    that the tool failed. Sensitivity defaults to ``low`` because error
-    messages must not leak row-level data. ``actions`` preserves any
-    caller-provided next-step hints (e.g. CLI fallbacks on stub tools).
+    ``data`` is an empty list for every envelope built here — the ``error``
+    field is the canonical signal that the tool failed. The converse does not
+    hold: ``error`` on an envelope does NOT imply empty ``data``, because a
+    tool may attach ``error`` to a payload-carrying envelope when the payload
+    explains the failure (see ``ResponseEnvelope.error``). Use this builder
+    when there is no payload worth returning; attach ``error`` directly when
+    there is. Sensitivity defaults to ``low`` because error messages must not
+    leak row-level data. ``actions`` preserves any caller-provided next-step
+    hints (e.g. CLI fallbacks on stub tools).
 
     ``recovery_actions`` precedence:
 

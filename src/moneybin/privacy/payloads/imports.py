@@ -54,6 +54,10 @@ class ImportPerFileRow:
     # when the exception was unclassified and `error` is just its class name.
     # A closed vocabulary of codes, never free text → TXN_TYPE (LOW).
     error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
+    # Actionable recovery advice paired with `error_code` (e.g. the chmod/chown
+    # or macOS Full-Disk-Access instruction). Prose that may name the failing
+    # path, exactly like `error` → DESCRIPTION (MEDIUM).
+    hint: Annotated[str | None, DataClass.DESCRIPTION] = None
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.

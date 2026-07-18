@@ -163,6 +163,15 @@ class PerFileResult:
     (sanitized) message. When None, `error` holds only the exception class
     name — raw str(e) may embed PII, so unclassified failures stay opaque.
     """
+    hint: str | None = None
+    """Actionable recovery advice from the classified `UserError`; None when
+    unclassified.
+
+    Set together with `error_code` and from the same source. This is what makes
+    a permission failure fixable — the chmod/chown advice on EACCES, the macOS
+    Full-Disk-Access walkthrough on a TCC block. Like `error`, it never comes
+    from raw str(e).
+    """
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
     sign_override_replayed: bool = False
@@ -358,20 +367,21 @@ def _validate_explicit_tabular_sign_shape(
         )
 
 
-def per_file_failure(exc: Exception) -> tuple[str, str | None]:
-    """Return (error_message, error_code) safe to put in a PerFileResult.
+def per_file_failure(exc: Exception) -> tuple[str, str | None, str | None]:
+    """Return (error_message, error_code, hint) safe to put in a PerFileResult.
 
     Public because the single-file MCP path builds its own PerFileResult and
     must reach the same verdict this module's batch loop does.
 
-    Classified errors carry their sanitized message and code. Unclassified
-    ones fall back to the class name — raw str(e) may embed PII (see
-    extractors/ofx/extractor.py).
+    Classified errors carry their sanitized message, code, and recovery hint.
+    Unclassified ones fall back to the class name with no code and no hint —
+    raw str(e) may embed PII (see extractors/ofx/extractor.py), and there is
+    no advice to give for an exception we didn't recognize.
     """
     classified = classify_user_error(exc)
     if classified is None:
-        return type(exc).__name__, None
-    return classified.message, classified.code
+        return type(exc).__name__, None, None
+    return classified.message, classified.code, classified.hint
 
 
 def _display_label(file_type: str, file_path: Path) -> str:
@@ -3495,7 +3505,7 @@ class ImportService:
                     )
                 )
             except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
-                error_message, error_code = per_file_failure(e)
+                error_message, error_code, error_hint = per_file_failure(e)
                 # Log the class name, never the message: a classified message is
                 # user-safe but still names the path, and logs stay PII-free.
                 logger.warning(f"Import failed for {path}: {type(e).__name__}")
@@ -3506,6 +3516,7 @@ class ImportService:
                         source_type=None,
                         error=error_message,
                         error_code=error_code,
+                        hint=error_hint,
                     )
                 )
 

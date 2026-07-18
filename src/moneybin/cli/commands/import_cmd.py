@@ -493,6 +493,10 @@ def import_files_command(
                             # Paired with "error" so scripted/agent callers get
                             # the same stable code the MCP files[] rows carry.
                             **({"error_code": r.error_code} if r.error_code else {}),
+                            # The recovery advice travels with the code — a
+                            # scripted caller hitting a TCC block needs the fix,
+                            # not just the classification.
+                            **({"hint": r.hint} if r.hint else {}),
                             **(
                                 {"confirmation_payload": r.confirmation_payload}
                                 if r.confirmation_payload

@@ -1706,6 +1706,83 @@ class TestImportFilesFailureDetail:
         assert entry.error is not None
         assert "chmod" in entry.error or "permission" in entry.error.lower()
 
+    async def test_failure_carries_actionable_hint(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The classified hint reaches the agent — the fix, not just the code."""
+        target = self._locked_csv(tmp_path)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = await import_files(paths=[str(target)])
+        finally:
+            target.chmod(0o644)
+
+        entry = envelope.data.files[0]
+        assert entry.hint is not None
+        assert "chmod" in entry.hint
+        # The batch-level error carries it too, so an agent reading only the
+        # envelope's error still gets the recovery step.
+        assert envelope.error is not None
+        assert envelope.error.hint == entry.hint
+
+    async def test_unclassified_failure_carries_no_hint(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """No classification means no advice — never invent one from str(e)."""
+        target = tmp_path / "boom.csv"
+        target.write_text("x")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+
+        with patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=RuntimeError("account 1234567890 balance $50"),
+        ):
+            envelope = await import_files(paths=[str(target)])
+
+        entry = envelope.data.files[0]
+        assert entry.hint is None
+        assert envelope.error is not None
+        assert envelope.error.hint is None
+        # The unclassified batch falls back to the domain code, per spec.
+        assert envelope.error.code == error_codes.IMPORT_PARSE_ERROR
+        assert "1234567890" not in str(envelope.to_dict())
+
+    async def test_all_failed_names_count_and_keeps_distinct_codes(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """Two files, two causes: the batch counts, the rows keep their own."""
+        locked = self._locked_csv(tmp_path)
+        missing = tmp_path / "nope.csv"  # never created — FileNotFoundError
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.import_tools.get_database", _fake_database
+        )
+        try:
+            envelope = await import_files(
+                paths=[str(locked), str(missing)], refresh=False
+            )
+        finally:
+            locked.chmod(0o644)
+
+        assert envelope.to_dict()["status"] == "error"
+        assert envelope.error is not None
+        # Names the count rather than hoisting one file's cause over both.
+        assert "all 2 file(s)" in envelope.error.message
+        by_path = {f.path: f for f in envelope.data.files}
+        assert by_path[str(locked)].error_code == error_codes.INFRA_PERMISSION_DENIED
+        assert by_path[str(missing)].error_code == error_codes.INFRA_FILE_NOT_FOUND
+        # Each row keeps its own advice: the mode denial is fixable, the
+        # missing file has no recovery step to offer.
+        assert by_path[str(locked)].hint is not None
+        assert "chmod" in by_path[str(locked)].hint
+        assert by_path[str(missing)].hint is None
+
     async def test_unclassified_failure_keeps_class_name_only(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
@@ -1780,3 +1857,14 @@ class TestImportFilesFailureDetail:
         assert envelope.to_dict()["status"] == "ok"
         statuses = {f.status for f in envelope.data.files}
         assert statuses == {"imported", "failed"}
+        # The service's own batch loop — not the MCP single-file path — built
+        # this failure row, so assert its content, not just its status.
+        failed_row = next(f for f in envelope.data.files if f.status == "failed")
+        assert failed_row.error_code == error_codes.INFRA_PERMISSION_DENIED
+        assert failed_row.error is not None
+        assert failed_row.error != "PermissionError"
+        assert "Permission denied" in failed_row.error
+        assert failed_row.hint is not None
+        assert "chmod" in failed_row.hint
+        # Partial success stays a success envelope — no batch-level error.
+        assert envelope.error is None

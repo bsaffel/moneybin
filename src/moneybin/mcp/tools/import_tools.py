@@ -379,7 +379,7 @@ def import_files(
                 per_file_failure,
             )
 
-            error_message, error_code = per_file_failure(e)
+            error_message, error_code, error_hint = per_file_failure(e)
             # Log the class name, never the message: a classified message is
             # user-safe but still names the path, and logs stay PII-free.
             logger.warning(f"Import failed for {validated[0]}: {type(e).__name__}")
@@ -393,6 +393,7 @@ def import_files(
                         import_id=loaded_import_id,
                         error=error_message,
                         error_code=error_code,
+                        hint=error_hint,
                     )
                 ],
                 transforms_applied=False,
@@ -443,6 +444,7 @@ def import_files(
             import_id=r.import_id,
             error=r.error,
             error_code=r.error_code,
+            hint=r.hint,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
             confirmation_payload=r.confirmation_payload,
@@ -588,9 +590,13 @@ def _mark_total_failure(
     # reason: with several distinct causes, the first file's message would
     # over-claim for all of them. Per-file message + code stay in data.files[].
     first_code = failed[0].error_code
+    # Same first-entry rule as the code: the hint is advice, so a wrong-but-
+    # plausible one is worse than none. It stays paired with the code it was
+    # classified alongside, and every file's own hint stays in data.files[].
+    first_hint = failed[0].hint
     message = (
         f"Import failed for all {len(failed)} file(s); "
-        "see data.files[] for each file's error and error_code."
+        "see data.files[] for each file's error, error_code, and hint."
     )
     return dataclasses.replace(
         envelope,
@@ -598,7 +604,11 @@ def _mark_total_failure(
         # the honest fallback: the domain is right and the claim is only that
         # the file could not be processed — data.files[].error carries whatever
         # detail is actually known.
-        error=ErrorDetail(message=message, code=first_code or IMPORT_PARSE_ERROR),
+        error=ErrorDetail(
+            message=message,
+            code=first_code or IMPORT_PARSE_ERROR,
+            hint=first_hint,
+        ),
     )
 
 
