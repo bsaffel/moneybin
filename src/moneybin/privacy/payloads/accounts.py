@@ -15,8 +15,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from moneybin.privacy.payloads.balances import (
+    BalanceAssertionRow,
+    BalanceObservationRow,
+)
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.utils.parsing import signal_from_match_signals
 
@@ -101,6 +107,88 @@ class AccountResolvePayload:
     """Payload for accounts_resolve."""
 
     matches: list[AccountResolutionItem]
+
+
+# ---------------------------------------------------------------------------
+# Dormant coarse account and balance reads
+# ---------------------------------------------------------------------------
+
+
+class AccountsListView(BaseModel):
+    """Paginated account collection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["list"] = "list"
+    rows: list[AccountSummary]
+
+
+class AccountsDetailView(BaseModel):
+    """One deterministically resolved account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["detail"] = "detail"
+    account: AccountDetail
+
+
+class AccountsSummaryView(BaseModel):
+    """Aggregate account-count snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["summary"] = "summary"
+    summary: AccountSummaryStats
+
+
+class AccountsResolveView(BaseModel):
+    """Ranked fuzzy account-reference candidates."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["resolve"] = "resolve"
+    matches: list[AccountResolutionItem]
+
+
+AccountsCoarsePayload = Annotated[
+    AccountsListView | AccountsDetailView | AccountsSummaryView | AccountsResolveView,
+    Field(discriminator="kind"),
+]
+
+
+class AccountsBalancesLatestView(BaseModel):
+    """Most recent balance observations."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["latest"] = "latest"
+    observations: list[BalanceObservationRow]
+
+
+class AccountsBalancesHistoryView(BaseModel):
+    """Daily balance history for one resolved account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["history"] = "history"
+    observations: list[BalanceObservationRow]
+
+
+class AccountsBalancesAssertionsView(BaseModel):
+    """Manual balance assertions, optionally filtered to one account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["assertions"] = "assertions"
+    assertions: list[BalanceAssertionRow]
+
+
+AccountsBalancesCoarsePayload = Annotated[
+    AccountsBalancesLatestView
+    | AccountsBalancesHistoryView
+    | AccountsBalancesAssertionsView,
+    Field(discriminator="kind"),
+]
 
 
 @dataclass(frozen=True, slots=True)

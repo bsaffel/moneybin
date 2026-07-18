@@ -22,12 +22,18 @@ deferred to the M1L audit-undo consumer.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import base64
+import binascii
+import inspect
+import json
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import date as _date
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import Field, StrictBool
 
 from moneybin import error_codes
 from moneybin.config import get_settings
@@ -40,6 +46,8 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountLinksHistoryPayload,
@@ -48,7 +56,16 @@ from moneybin.privacy.payloads.accounts import (
     AccountLinksSetPayload,
     AccountListPayload,
     AccountResolvePayload,
+    AccountsBalancesAssertionsView,
+    AccountsBalancesCoarsePayload,
+    AccountsBalancesHistoryView,
+    AccountsBalancesLatestView,
+    AccountsCoarsePayload,
+    AccountsDetailView,
     AccountSettingsPayload,
+    AccountsListView,
+    AccountsResolveView,
+    AccountsSummaryView,
     AccountSummaryStats,
 )
 from moneybin.privacy.payloads.balances import (
@@ -57,6 +74,7 @@ from moneybin.privacy.payloads.balances import (
     BalanceAssertionPayload,
     BalanceObservationListPayload,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
@@ -64,6 +82,12 @@ from moneybin.services.account_links_service import (
 )
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.balance_service import BalanceService
+from moneybin.services.entity_reference import (
+    AmbiguousEntity,
+    EntityCandidate,
+    MissingEntity,
+    resolve_entity_reference,
+)
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
@@ -756,6 +780,482 @@ def accounts_links_run() -> ResponseEnvelope[AccountLinksRunPayload]:
         data=AccountLinksRunPayload(new_proposals=new_proposals),
         actions=["Use accounts_links_pending to review the proposed merges"],
     )
+
+
+# ─── Dormant coarse read replacements ─────────────────────────────────────
+
+
+async def _run_account_read[T](
+    callback: Callable[..., T],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """Delegate to an existing read body without a second privacy audit."""
+    body = cast(Callable[..., T], inspect.unwrap(callback))
+    return await asyncio.to_thread(body, *args, **kwargs)
+
+
+def _coarse_envelope[T](
+    data: T,
+    *,
+    contract_type: type[Any],
+    total_count: int,
+    returned_count: int,
+    next_cursor: str | None = None,
+    period: str | None = None,
+    display_currency: str = "USD",
+    actions: list[str] | None = None,
+) -> ResponseEnvelope[T]:
+    """Build and redact a dynamically classified account-read envelope."""
+    classes = extract_data_classes(contract_type)
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(T, redact_typed(data, None))
+    envelope = cast(
+        ResponseEnvelope[T],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=returned_count,
+            next_cursor=next_cursor,
+            period=period,
+            display_currency=display_currency,
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    )
+
+
+def _coarse_cursor(tool: str, view: str, offset: int) -> str:
+    """Encode a tool- and view-bound opaque offset cursor."""
+    raw = json.dumps(
+        {"offset": offset, "tool": tool, "view": view},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _coarse_offset(
+    cursor: str | None,
+    *,
+    tool: Literal["accounts", "accounts_balances"],
+    view: str,
+) -> int:
+    """Decode an opaque cursor and reject malformed or cross-view reuse."""
+    if cursor is None:
+        return 0
+    code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
+    try:
+        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        value = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UserError("Invalid pagination cursor.", code=code) from exc
+    if not isinstance(value, dict):
+        raise UserError("Invalid pagination cursor.", code=code)
+    payload = cast(dict[str, Any], value)
+    offset = payload.get("offset")
+    if (
+        set(payload) != {"offset", "tool", "view"}
+        or payload.get("tool") != tool
+        or payload.get("view") != view
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+    ):
+        raise UserError("Invalid pagination cursor.", code=code)
+    return offset
+
+
+def _page[T](
+    rows: list[T],
+    *,
+    tool: Literal["accounts", "accounts_balances"],
+    view: str,
+    limit: int,
+    cursor: str | None,
+) -> tuple[list[T], str | None]:
+    """Return one deterministic offset page and its next cursor."""
+    offset = _coarse_offset(cursor, tool=tool, view=view)
+    selected = rows[offset : offset + limit]
+    next_cursor = (
+        _coarse_cursor(tool, view, offset + limit)
+        if len(rows) > offset + limit
+        else None
+    )
+    return selected, next_cursor
+
+
+def _account_candidates(payload: AccountListPayload) -> list[EntityCandidate]:
+    """Project account rows into the shared deterministic resolver contract."""
+    candidates: list[EntityCandidate] = []
+    for account in payload.rows:
+        display_name = account.display_name or account.account_id
+        aliases = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    account.institution_name,
+                    account.account_type,
+                    account.account_subtype,
+                )
+                if value is not None and value != display_name
+            )
+        )
+        candidates.append(
+            EntityCandidate(
+                entity_id=account.account_id,
+                display_name=display_name,
+                aliases=aliases,
+            )
+        )
+    return candidates
+
+
+async def _resolve_account_reference(
+    reference: str,
+    *,
+    include_closed: bool,
+) -> str:
+    """Resolve a user-facing account reference through the shared ladder."""
+    response = await _run_account_read(
+        accounts,
+        include_archived=include_closed,
+        type_filter=None,
+    )
+    resolution = resolve_entity_reference(
+        reference,
+        _account_candidates(response.data),
+    )
+    if isinstance(resolution, AmbiguousEntity):
+        raise UserError(
+            "The account reference matches multiple accounts.",
+            code="ENTITY_REFERENCE_AMBIGUOUS",
+            details={"candidate_ids": list(resolution.candidate_ids)},
+        )
+    if isinstance(resolution, MissingEntity):
+        raise UserError(
+            "The account reference did not match an account.",
+            code="ENTITY_REFERENCE_NOT_FOUND",
+            details={"candidate_ids": []},
+        )
+    return resolution.entity_id
+
+
+def _account_actions(
+    actions: list[str],
+    *,
+    view: Literal["list", "resolve"],
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Preserve legacy hints and add a continuation on the replacement surface."""
+    selected = list(actions)
+    if next_cursor is not None:
+        if view == "list":
+            selected.append(
+                f"Continue with accounts(view='list', limit={limit}, "
+                f"cursor='{next_cursor}')"
+            )
+        else:
+            selected.append(
+                f"Continue with accounts(view='resolve', query=<same query>, "
+                f"limit={limit}, cursor='{next_cursor}')"
+            )
+    return list(dict.fromkeys(selected))
+
+
+@mcp_tool(dynamic_classification=True)
+async def accounts_coarse(
+    view: Literal["list", "detail", "summary", "resolve"] = "list",
+    reference: str | None = None,
+    query: str | None = None,
+    include_closed: StrictBool = False,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[AccountsCoarsePayload]:
+    """List, inspect, summarize, or resolve accounts through one read contract."""
+    if view in ("list", "summary"):
+        if reference is not None:
+            raise UserError(
+                "reference is not valid for this account view.",
+                code="ACCOUNT_REFERENCE_NOT_ALLOWED",
+            )
+        if query is not None:
+            raise UserError(
+                "query is not valid for this account view.",
+                code="ACCOUNT_QUERY_NOT_ALLOWED",
+            )
+    elif view == "detail":
+        if reference is None:
+            raise UserError(
+                "Account detail requires a reference.",
+                code="ACCOUNT_REFERENCE_REQUIRED",
+            )
+        if query is not None:
+            raise UserError(
+                "query is not valid for account detail.",
+                code="ACCOUNT_QUERY_NOT_ALLOWED",
+            )
+    else:
+        if query is None:
+            raise UserError(
+                "Account resolution requires a query.",
+                code="ACCOUNT_QUERY_REQUIRED",
+            )
+        if reference is not None:
+            raise UserError(
+                "reference is not valid for account resolution.",
+                code="ACCOUNT_REFERENCE_NOT_ALLOWED",
+            )
+
+    if view in ("detail", "summary") and cursor is not None:
+        raise UserError(
+            "This account view does not accept a pagination cursor.",
+            code="ACCOUNT_CURSOR_NOT_ALLOWED",
+        )
+
+    if view == "list":
+        response = await _run_account_read(
+            accounts,
+            include_archived=bool(include_closed),
+            type_filter=None,
+        )
+        page, next_cursor = _page(
+            response.data.rows,
+            tool="accounts",
+            view="list",
+            limit=limit,
+            cursor=cursor,
+        )
+        payload = AccountsListView(rows=page)
+        return _coarse_envelope(
+            payload,
+            contract_type=AccountsListView,
+            total_count=len(response.data.rows),
+            returned_count=len(page),
+            next_cursor=next_cursor,
+            display_currency=response.summary.display_currency,
+            actions=_account_actions(
+                response.actions,
+                view="list",
+                limit=limit,
+                next_cursor=next_cursor,
+            ),
+        )
+
+    if view == "detail":
+        account_id = await _resolve_account_reference(
+            cast(str, reference),
+            include_closed=bool(include_closed),
+        )
+        response = await _run_account_read(accounts_get, account_id)
+        payload = AccountsDetailView(account=response.data)
+        return _coarse_envelope(
+            payload,
+            contract_type=AccountsDetailView,
+            total_count=response.summary.total_count,
+            returned_count=response.summary.returned_count,
+            display_currency=response.summary.display_currency,
+            actions=response.actions,
+        )
+
+    if view == "summary":
+        response = await _run_account_read(accounts_summary)
+        payload = AccountsSummaryView(summary=response.data)
+        return _coarse_envelope(
+            payload,
+            contract_type=AccountsSummaryView,
+            total_count=response.summary.total_count,
+            returned_count=response.summary.returned_count,
+            display_currency=response.summary.display_currency,
+            actions=response.actions,
+        )
+
+    offset = _coarse_offset(cursor, tool="accounts", view="resolve")
+    response = await _run_account_read(
+        accounts_resolve,
+        query=cast(str, query),
+        limit=offset + limit + 1,
+    )
+    matches = response.data.matches
+    page = matches[offset : offset + limit]
+    has_more = len(matches) > offset + limit
+    next_cursor = (
+        _coarse_cursor("accounts", "resolve", offset + limit) if has_more else None
+    )
+    payload = AccountsResolveView(matches=page)
+    return _coarse_envelope(
+        payload,
+        contract_type=AccountsResolveView,
+        total_count=offset + len(page) + (1 if has_more else 0),
+        returned_count=len(page),
+        next_cursor=next_cursor,
+        display_currency=response.summary.display_currency,
+        actions=_account_actions(
+            response.actions,
+            view="resolve",
+            limit=limit,
+            next_cursor=next_cursor,
+        ),
+    )
+
+
+def _history_period(start: _date | None, end: _date | None) -> str | None:
+    """Render the selected history window in envelope metadata."""
+    if start is not None and end is not None:
+        return f"{start.isoformat()} to {end.isoformat()}"
+    if start is not None:
+        return f"from {start.isoformat()}"
+    if end is not None:
+        return f"through {end.isoformat()}"
+    return None
+
+
+def _balance_actions(
+    actions: list[str],
+    *,
+    view: Literal["latest", "history", "assertions"],
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Preserve balance hints and add a public continuation hint."""
+    selected = list(actions)
+    if next_cursor is not None:
+        selected.append(
+            f"Continue with accounts_balances(view='{view}', limit={limit}, "
+            f"cursor='{next_cursor}', preserving the same filters)"
+        )
+    return list(dict.fromkeys(selected))
+
+
+@mcp_tool(dynamic_classification=True)
+async def accounts_balances_coarse(
+    view: Literal["latest", "history", "assertions"] = "latest",
+    reference: str | None = None,
+    start: _date | None = None,
+    end: _date | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[AccountsBalancesCoarsePayload]:
+    """Return latest balances, one account's history, or manual assertions."""
+    if view != "history" and (start is not None or end is not None):
+        raise UserError(
+            "start and end are only valid for balance history.",
+            code="BALANCE_DATES_NOT_ALLOWED",
+        )
+    if view == "history" and reference is None:
+        raise UserError(
+            "Balance history requires an account reference.",
+            code="ACCOUNT_REFERENCE_REQUIRED",
+        )
+    if start is not None and end is not None and start > end:
+        raise UserError(
+            "Balance history start must not be after end.",
+            code="BALANCE_DATE_RANGE_INVALID",
+        )
+
+    account_id = (
+        await _resolve_account_reference(reference, include_closed=False)
+        if reference is not None
+        else None
+    )
+
+    if view == "latest":
+        response = await _run_account_read(
+            accounts_balances,
+            account_ids=[account_id] if account_id is not None else None,
+            as_of_date=None,
+        )
+        page, next_cursor = _page(
+            response.data.observations,
+            tool="accounts_balances",
+            view="latest",
+            limit=limit,
+            cursor=cursor,
+        )
+        payload = AccountsBalancesLatestView(observations=page)
+        contract_type = AccountsBalancesLatestView
+    elif view == "history":
+        response = await _run_account_read(
+            accounts_balance_history,
+            cast(str, account_id),
+            from_date=start.isoformat() if start is not None else None,
+            to_date=end.isoformat() if end is not None else None,
+        )
+        page, next_cursor = _page(
+            response.data.observations,
+            tool="accounts_balances",
+            view="history",
+            limit=limit,
+            cursor=cursor,
+        )
+        payload = AccountsBalancesHistoryView(observations=page)
+        contract_type = AccountsBalancesHistoryView
+    else:
+        response = await _run_account_read(
+            accounts_balance_assertions,
+            account_id,
+        )
+        page, next_cursor = _page(
+            response.data.assertions,
+            tool="accounts_balances",
+            view="assertions",
+            limit=limit,
+            cursor=cursor,
+        )
+        payload = AccountsBalancesAssertionsView(assertions=page)
+        contract_type = AccountsBalancesAssertionsView
+
+    return _coarse_envelope(
+        payload,
+        contract_type=contract_type,
+        total_count=(
+            len(response.data.observations)
+            if view in ("latest", "history")
+            else len(response.data.assertions)
+        ),
+        returned_count=len(page),
+        next_cursor=next_cursor,
+        period=_history_period(start, end) if view == "history" else None,
+        display_currency=response.summary.display_currency,
+        actions=_balance_actions(
+            response.actions,
+            view=view,
+            limit=limit,
+            next_cursor=next_cursor,
+        ),
+    )
+
+
+def register_accounts_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 replacement account reads."""
+    register(
+        mcp,
+        accounts_coarse,
+        "accounts",
+        "List accounts, inspect one deterministic reference, summarize the "
+        "portfolio, or return ranked resolution candidates. Amounts are in "
+        "the currency named by summary.display_currency.",
+        privacy_actor="accounts",
+    )
+    register(
+        mcp,
+        accounts_balances_coarse,
+        "accounts_balances",
+        "Return latest account balances, one resolved account's daily history, "
+        "or manual balance assertions. Amounts are positions in the currency "
+        "named by summary.display_currency.",
+        privacy_actor="accounts_balances",
+    )
+    # Plan 6 cutover removals: accounts_get, accounts_summary, accounts_resolve,
+    # accounts_balance_history, and accounts_balance_assertions. The live
+    # registrations stay untouched until the complete registry activates.
 
 
 # ─── Registration ──────────────────────────────────────────────────────────

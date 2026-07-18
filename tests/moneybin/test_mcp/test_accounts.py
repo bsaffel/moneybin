@@ -9,6 +9,7 @@ the rename / include / archive / unarchive narrow tools.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,11 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.accounts import (
+    accounts_balances_coarse,
+    accounts_coarse,
     accounts_resolve,
     accounts_set,
+    register_accounts_coarse_reads,
     register_accounts_tools,
 )
 
@@ -29,6 +33,8 @@ def _seed_named_account(
     display_name: str | None,
     account_subtype: str | None = None,
     institution_name: str = "Test Bank",
+    account_type: str = "CHECKING",
+    archived: bool = False,
 ) -> None:
     """Insert a fully-named row directly into core.dim_accounts.
 
@@ -43,12 +49,241 @@ def _seed_named_account(
             INSERT INTO core.dim_accounts (
                 account_id, routing_number, account_type, institution_name,
                 institution_fid, source_type, source_file, extracted_at,
-                loaded_at, updated_at, display_name, account_subtype
-            ) VALUES (?, NULL, 'CHECKING', ?, NULL, 'ofx', 'test.qfx',
-                      '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)
+                loaded_at, updated_at, display_name, account_subtype, archived
+            ) VALUES (?, NULL, ?, ?, NULL, 'ofx', 'test.qfx',
+                      '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?)
             """,
-            [account_id, institution_name, display_name, account_subtype],
+            [
+                account_id,
+                account_type,
+                institution_name,
+                display_name,
+                account_subtype,
+                archived,
+            ],
         )
+
+
+def _seed_balance_data() -> None:
+    """Insert daily observations and one assertion for coarse balance views."""
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_balances_daily (
+                account_id, balance_date, balance, is_observed,
+                observation_source, reconciliation_delta
+            ) VALUES
+                ('ACC001', '2025-06-29', 4900.00, TRUE, 'ofx', NULL),
+                ('ACC001', '2025-06-30', 5000.00, TRUE, 'ofx', 25.00),
+                ('ACC002', '2025-06-30', 15000.00, TRUE, 'ofx', NULL)
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO app.balance_assertions (
+                account_id, assertion_date, balance, notes
+            ) VALUES ('ACC001', '2025-06-30', 4975.00, 'statement')
+            """
+        )
+
+
+class TestDormantCoarseAccountReads:
+    """Contract tests for the Plan 6 account-read replacements."""
+
+    @pytest.mark.unit
+    async def test_account_detail_uses_shared_reference_resolution(
+        self, mcp_db: Path
+    ) -> None:
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE core.dim_accounts SET display_name = ? WHERE account_id = ?",
+                ["Checking", "ACC001"],
+            )
+
+        response = await accounts_coarse(view="detail", reference="Checking")
+
+        assert response.data.kind == "detail"
+        assert response.data.account.account_id == "ACC001"
+
+    @pytest.mark.unit
+    async def test_account_detail_refuses_ambiguous_reference(
+        self, mcp_db: Path
+    ) -> None:
+        savings_ids = ["SAVINGS_B", "SAVINGS_A"]
+        for account_id in savings_ids:
+            _seed_named_account(
+                account_id,
+                display_name="Savings",
+                account_type="SAVINGS",
+            )
+
+        response = await accounts_coarse(view="detail", reference="Savings")
+
+        assert response.error is not None
+        assert response.error.code == "ENTITY_REFERENCE_AMBIGUOUS"
+        assert response.error.details == {
+            "candidate_ids": sorted(["ACC002", *savings_ids])
+        }
+
+    @pytest.mark.unit
+    async def test_account_detail_returns_structured_missing_reference(
+        self, mcp_db: Path
+    ) -> None:
+        response = await accounts_coarse(view="detail", reference="Vacation")
+
+        assert response.error is not None
+        assert response.error.code == "ENTITY_REFERENCE_NOT_FOUND"
+        assert response.error.details == {"candidate_ids": []}
+
+    @pytest.mark.unit
+    async def test_account_list_paginates_with_exact_counts(self, mcp_db: Path) -> None:
+        first = await accounts_coarse(view="list", limit=1)
+
+        assert first.data.kind == "list"
+        assert len(first.data.rows) == 1
+        assert first.summary.total_count == 2
+        assert first.summary.returned_count == 1
+        assert first.summary.has_more is True
+        assert first.next_cursor is not None
+
+        second = await accounts_coarse(
+            view="list",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+        assert second.data.kind == "list"
+        assert len(second.data.rows) == 1
+        assert second.data.rows[0].account_id != first.data.rows[0].account_id
+        assert second.summary.total_count == 2
+        assert second.summary.returned_count == 1
+        assert second.summary.has_more is False
+
+    @pytest.mark.unit
+    async def test_account_list_include_closed_is_strict_and_effective(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_named_account("CLOSED_ID", display_name="Closed", archived=True)
+
+        active = await accounts_coarse(view="list")
+        all_accounts = await accounts_coarse(view="list", include_closed=True)
+
+        assert {row.account_id for row in active.data.rows} == {"ACC001", "ACC002"}
+        assert {row.account_id for row in all_accounts.data.rows} == {
+            "ACC001",
+            "ACC002",
+            "CLOSED_ID",
+        }
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("kwargs", "code"),
+        [
+            ({"view": "list", "reference": "ACC001"}, "ACCOUNT_REFERENCE_NOT_ALLOWED"),
+            ({"view": "summary", "query": "checking"}, "ACCOUNT_QUERY_NOT_ALLOWED"),
+            ({"view": "detail"}, "ACCOUNT_REFERENCE_REQUIRED"),
+            (
+                {"view": "detail", "reference": "ACC001", "query": "checking"},
+                "ACCOUNT_QUERY_NOT_ALLOWED",
+            ),
+            ({"view": "resolve"}, "ACCOUNT_QUERY_REQUIRED"),
+            (
+                {"view": "resolve", "query": "checking", "reference": "ACC001"},
+                "ACCOUNT_REFERENCE_NOT_ALLOWED",
+            ),
+            (
+                {"view": "summary", "cursor": "opaque"},
+                "ACCOUNT_CURSOR_NOT_ALLOWED",
+            ),
+        ],
+    )
+    async def test_account_views_reject_invalid_combinations(
+        self,
+        kwargs: dict[str, object],
+        code: str,
+        mcp_db: Path,
+    ) -> None:
+        response = await accounts_coarse(**kwargs)  # type: ignore[arg-type]
+
+        assert response.error is not None
+        assert response.error.code == code
+
+    @pytest.mark.unit
+    async def test_balance_views_resolve_references_and_preserve_period(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_balance_data()
+
+        history = await accounts_balances_coarse(
+            view="history",
+            reference="CHECKING",
+            start=date(2025, 6, 30),
+            end=date(2025, 6, 30),
+        )
+        assertions = await accounts_balances_coarse(
+            view="assertions",
+            reference="CHECKING",
+        )
+
+        assert history.data.kind == "history"
+        assert [row.account_id for row in history.data.observations] == ["ACC001"]
+        assert history.summary.period == "2025-06-30 to 2025-06-30"
+        assert assertions.data.kind == "assertions"
+        assert [row.account_id for row in assertions.data.assertions] == ["ACC001"]
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("kwargs", "code"),
+        [
+            (
+                {"view": "latest", "start": "2025-01-01"},
+                "BALANCE_DATES_NOT_ALLOWED",
+            ),
+            (
+                {"view": "assertions", "end": "2025-01-31"},
+                "BALANCE_DATES_NOT_ALLOWED",
+            ),
+            ({"view": "history"}, "ACCOUNT_REFERENCE_REQUIRED"),
+            (
+                {"view": "latest", "cursor": "not-a-cursor"},
+                "BALANCE_CURSOR_INVALID",
+            ),
+        ],
+    )
+    async def test_balance_views_reject_invalid_combinations(
+        self,
+        kwargs: dict[str, object],
+        code: str,
+        mcp_db: Path,
+    ) -> None:
+        response = await accounts_balances_coarse(**kwargs)  # type: ignore[arg-type]
+
+        assert response.error is not None
+        assert response.error.code == code
+
+    @pytest.mark.unit
+    async def test_dormant_registrar_only_registers_replacement_reads(self) -> None:
+        srv = FastMCP("test")
+        register_accounts_coarse_reads(srv)
+
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+        assert names == {"accounts", "accounts_balances"}
+
+    @pytest.mark.unit
+    async def test_live_registrar_remains_unchanged(self) -> None:
+        srv = FastMCP("test")
+        register_accounts_tools(srv)
+
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+        assert "accounts" in names
+        assert "accounts_get" in names
+        assert "accounts_summary" in names
+        assert "accounts_resolve" in names
+        assert "accounts_balances" in names
+        assert "accounts_balance_history" in names
+        assert "accounts_balance_assertions" in names
 
 
 class TestAccountsResolveRegistration:

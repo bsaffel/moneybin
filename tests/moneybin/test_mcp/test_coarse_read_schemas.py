@@ -13,6 +13,7 @@ from pydantic import StrictBool
 
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.tools.accounts import register_accounts_coarse_reads
 from moneybin.mcp.tools.system import register_system_coarse_reads
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -257,6 +258,155 @@ async def test_system_coarse_tools_reject_invalid_raw_arguments(
     arguments: dict[str, Any],
 ) -> None:
     mcp = isolated_server(register_system_coarse_reads)
+
+    response = await call_tool_raw(mcp, name, arguments)
+
+    assert response.isError is True
+
+
+async def test_accounts_coarse_tools_render_schema_contract() -> None:
+    mcp = isolated_server(register_accounts_coarse_reads)
+
+    accounts = await listed_tool(mcp, "accounts")
+    balances = await listed_tool(mcp, "accounts_balances")
+
+    assert accounts.outputSchema is None
+    assert balances.outputSchema is None
+    assert accounts.annotations is not None
+    assert accounts.annotations.readOnlyHint is True
+    assert balances.annotations is not None
+    assert balances.annotations.readOnlyHint is True
+    assert_literal_values(
+        accounts.inputSchema,
+        ("properties", "view"),
+        {"list", "detail", "summary", "resolve"},
+    )
+    assert_literal_values(
+        balances.inputSchema,
+        ("properties", "view"),
+        {"latest", "history", "assertions"},
+    )
+    assert accounts.inputSchema["properties"]["include_closed"]["type"] == "boolean"
+    for field in ("start", "end"):
+        date_schema = balances.inputSchema["properties"][field]["anyOf"][0]
+        assert date_schema["type"] == "string"
+        assert date_schema["format"] == "date"
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "kind", "sensitivity"),
+    [
+        ("accounts", {}, "list", "critical"),
+        (
+            "accounts",
+            {"view": "detail", "reference": "CHECKING"},
+            "detail",
+            "critical",
+        ),
+        ("accounts", {"view": "summary"}, "summary", "low"),
+        (
+            "accounts",
+            {"view": "resolve", "query": "checking"},
+            "resolve",
+            "medium",
+        ),
+        ("accounts_balances", {}, "latest", "high"),
+        (
+            "accounts_balances",
+            {
+                "view": "history",
+                "reference": "CHECKING",
+                "start": "2025-01-01",
+                "end": "2025-12-31",
+            },
+            "history",
+            "high",
+        ),
+        (
+            "accounts_balances",
+            {"view": "assertions"},
+            "assertions",
+            "high",
+        ),
+    ],
+)
+async def test_accounts_coarse_transport_variants(
+    name: str,
+    arguments: dict[str, Any],
+    kind: str,
+    sensitivity: str,
+    mcp_db: object,
+) -> None:
+    mcp = isolated_server(register_accounts_coarse_reads)
+
+    structured = await _assert_canonical_variant(mcp, name, arguments, kind)
+
+    assert structured["summary"]["sensitivity"] == sensitivity
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "sensitivity"),
+    [
+        ("accounts", {}, "critical"),
+        (
+            "accounts",
+            {"view": "detail", "reference": "CHECKING"},
+            "critical",
+        ),
+        ("accounts", {"view": "summary"}, "low"),
+        (
+            "accounts",
+            {"view": "resolve", "query": "checking"},
+            "medium",
+        ),
+        ("accounts_balances", {}, "high"),
+        (
+            "accounts_balances",
+            {"view": "history", "reference": "CHECKING"},
+            "high",
+        ),
+        ("accounts_balances", {"view": "assertions"}, "high"),
+    ],
+)
+async def test_accounts_coarse_call_emits_one_public_privacy_event(
+    name: str,
+    arguments: dict[str, Any],
+    sensitivity: str,
+    mcp_db: object,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_accounts_coarse_reads)
+
+    with patch(
+        "moneybin.mcp.decorator.write_privacy_event",
+        captured.append,
+    ):
+        await call_tool_raw(mcp, name, arguments)
+
+    assert len(captured) == 1
+    assert captured[0]["actor"] == f"mcp.{name}"
+    assert captured[0]["sensitivity"] == sensitivity
+    assert captured[0]["classes_returned"] != ["unclassified"]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("accounts", {"view": "all"}),
+        ("accounts", {"include_closed": "false"}),
+        ("accounts", {"limit": "50"}),
+        ("accounts", {"unknown": "value"}),
+        ("accounts_balances", {"view": "reconcile"}),
+        ("accounts_balances", {"limit": "50"}),
+        ("accounts_balances", {"start": 20250101}),
+        ("accounts_balances", {"unknown": "value"}),
+    ],
+)
+async def test_accounts_coarse_tools_reject_invalid_raw_arguments(
+    name: str,
+    arguments: dict[str, Any],
+) -> None:
+    mcp = isolated_server(register_accounts_coarse_reads)
 
     response = await call_tool_raw(mcp, name, arguments)
 
