@@ -34,6 +34,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **A saved statement layout that stops reading correctly now repairs itself
+  instead of failing forever.** MoneyBin remembers how to read each statement
+  layout the first time it sees one. That saved recipe was a frozen copy, so
+  when an extraction bug was fixed, every layout already saved kept the old
+  broken behavior — the fix could never reach it, and each new statement of that
+  layout landed as an unparsed dump. Now, when a saved layout stops balancing,
+  MoneyBin re-reads the statement from scratch and, if the fresh read balances to
+  the cent, imports it and updates the saved layout. Two things it will not do on
+  its own: replace a layout you or the assisted reader authored, or change a
+  statement's income/expense direction — both still stop and ask. The repair is
+  recorded in the audit log and can be undone.
 - **Replacing a statement while its approval prompt is open no longer applies
   your answer to the new file.** Re-saving a corrected export over the same path
   mid-prompt could previously reverse every amount in a document you never

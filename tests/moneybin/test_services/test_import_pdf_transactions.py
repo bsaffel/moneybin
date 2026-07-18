@@ -1287,3 +1287,95 @@ def test_transaction_ids_are_stable_across_sign_conventions(
 
     assert as_expense == as_income
     assert len(as_expense) == 2  # sanity: the fixture's two rows, not an empty set
+
+
+@pytest.mark.integration
+def test_a_saved_recipe_that_stops_reconciling_is_repaired_and_versioned(
+    db: Database, tmp_path: Path
+) -> None:
+    """A recipe frozen under older derivation logic is re-derived and persisted.
+
+    The service half of self-healing replay. Routing proves the fresh recipe
+    reconciles; the service must then write it back via ``bump_version`` — a
+    repair that lands the rows but leaves ``app.pdf_formats`` still holding the
+    broken recipe would re-break on the very next statement of this layout.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+    recipe, _, version = _saved_pdf_format(db)
+    assert version == 1
+
+    # Freeze a recipe that can no longer read the whole statement: this Amount
+    # pattern requires a leading "-", so the +150.00 charge stops matching and
+    # the rows come up short of the balance delta. Stands in for any derivation
+    # bug fixed after a recipe was already persisted.
+    name_row = db.execute("SELECT name FROM app.pdf_formats").fetchone()
+    assert name_row is not None
+    broken = {
+        **recipe,
+        "fields": [
+            {**f, "pattern": r"-\$?[\d,]+\.\d{2}"} if f["name"] == "Amount" else f
+            for f in recipe["fields"]
+        ],
+    }
+    PdfFormatsRepo(db).bump_version(
+        name_row[0], broken, reason="test: simulate a stale saved recipe", actor="test"
+    )
+
+    result = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"), refresh=False
+    )
+
+    # The statement lands in full rather than seeding.
+    assert result.transactions == 2
+
+    healed, sign_column, healed_version = _saved_pdf_format(db)
+    amount_pattern = next(
+        f["pattern"] for f in healed["fields"] if f["name"] == "Amount"
+    )
+    assert amount_pattern != r"-\$?[\d,]+\.\d{2}"  # repaired, not left broken
+    # 1 (first-contact save_new) + 1 (the corruption above) + 1 (the repair).
+    assert healed_version == 3
+    # The repair fixes a pattern and nothing else: polarity is untouched.
+    assert healed["sign_convention"] == "negative_is_income"
+    assert sign_column == "negative_is_income"
+
+
+@pytest.mark.integration
+def test_no_save_format_lands_the_rows_but_does_not_persist_the_repair(
+    db: Database, tmp_path: Path
+) -> None:
+    """`save_format=False` suppresses the repair write, not the import itself.
+
+    Same promise the flag makes everywhere else: this statement will not teach
+    ``app.pdf_formats`` anything. The user still gets their rows.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+    recipe, _, _ = _saved_pdf_format(db)
+    name_row = db.execute("SELECT name FROM app.pdf_formats").fetchone()
+    assert name_row is not None
+    broken = {
+        **recipe,
+        "fields": [
+            {**f, "pattern": r"-\$?[\d,]+\.\d{2}"} if f["name"] == "Amount" else f
+            for f in recipe["fields"]
+        ],
+    }
+    PdfFormatsRepo(db).bump_version(
+        name_row[0], broken, reason="test: simulate a stale saved recipe", actor="test"
+    )
+
+    result = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"),
+        refresh=False,
+        save_format=False,
+    )
+
+    assert result.transactions == 2  # the rows still land
+    _, _, version = _saved_pdf_format(db)
+    assert version == 2  # save_new + the corruption; the repair was NOT written

@@ -2478,6 +2478,54 @@ class ImportService:
                 exc_info=True,
             )
 
+    def _persist_self_healed_recipe(
+        self, decision: "RouteDecision", *, import_id: str
+    ) -> None:
+        """Write back a recipe that routing re-derived after a replay stopped reconciling.
+
+        Without this the repair is per-import: the rows land, but
+        ``app.pdf_formats`` still holds the recipe that couldn't read them, so the
+        next statement of this layout fails reconciliation all over again. The
+        point of self-healing is that the format stops being broken.
+
+        Bumped rather than overwritten, like every other recipe write here — the
+        prior recipe stays in ``audit_log.before_value`` so an operator can see
+        what changed and undo it. Best-effort: the rows are already committed and
+        no bookkeeping failure may roll them back.
+
+        Callers gate on ``save_format``: this rewrites a saved recipe, which is
+        exactly what ``--no-save-format`` asks the import not to do.
+        """
+        name = decision.matched_format_name
+        recipe = decision.recipe
+        # A re-derived decision carries both by construction (see
+        # _attempt_self_heal). The guard satisfies the type checker.
+        if name is None or recipe is None:  # pragma: no cover
+            return
+        try:
+            self._pdf_formats.bump_version(
+                name=name,
+                new_recipe=recipe.model_dump(),
+                reason=(
+                    "saved recipe stopped reconciling; re-derived from the "
+                    "statement and proven against it"
+                ),
+                # "system": a detection repaired its own earlier detection. No
+                # human asserted anything here.
+                actor="system",
+            )
+            logger.info(
+                f"PDF format {name!r} recipe repaired by re-derivation "
+                f"(import_id={import_id[:8]}...)"
+            )
+        except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+            logger.warning(
+                f"PDF bump_version failed for re-derived format {name!r} "
+                f"(import_id={import_id[:8]}...) — this import landed but the "
+                f"saved recipe is still stale and will fail again",
+                exc_info=True,
+            )
+
     def _import_pdf(
         self,
         file_path: Path,
@@ -3051,7 +3099,13 @@ class ImportService:
             # --no-save-format is what a user reaches for on a one-off or
             # sensitive statement they don't want teaching the saved profile.
             if sign_override is not None and save_format:
+                # Takes precedence deliberately: it re-persists decision.recipe,
+                # which on a re-derived decision IS the repaired recipe — so the
+                # repair still lands and the two paths don't spend two versions
+                # (and two audit rows) on one import.
                 self._persist_replayed_sign_override(decision, import_id=import_id)
+            elif decision.rederived and save_format:
+                self._persist_self_healed_recipe(decision, import_id=import_id)
             try:
                 self._pdf_formats.record_use(decision.matched_format_name)
             except Exception:  # noqa: BLE001 — observability bump must not roll back data

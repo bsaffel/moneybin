@@ -28,7 +28,7 @@ LLM extraction enters the loop.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -72,9 +72,20 @@ from moneybin.metrics.registry import (
     PDF_RECIPE_HIT_TOTAL,
     PDF_REPLAY_GUARD_FAILURE_TOTAL,
 )
-from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+from moneybin.repositories.pdf_formats_repo import PdfFormat, PdfFormatsRepo
 
 logger = logging.getLogger(__name__)
+
+#: Metadata placeholder for derive_recipe, which documents its StatementMetadata
+#: parameter as forward-compatible and unused. Safe to share: the dataclass is
+#: frozen.
+_EMPTY_METADATA = StatementMetadata(
+    account_id=None,
+    period_start=None,
+    period_end=None,
+    opening_balance=None,
+    closing_balance=None,
+)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -124,6 +135,11 @@ class RouteDecision:
     # The service surfaces these as the evidence behind a negative_is_income
     # proposal — an inversion the user cannot see the basis for is not reviewable.
     card_markers: tuple[str, ...] = ()
+    # True when a saved recipe stopped reconciling and was repaired by
+    # re-deriving from this document (see _attempt_self_heal). The recipe on
+    # this decision is then the FRESH one, not what app.pdf_formats holds, so
+    # the service must persist it via bump_version rather than record_use alone.
+    rederived: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +415,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # Steps 2-5 (execute → reconcile) are shared with the Phase 2b
     # bridge-apply path; see _run_recipe_pipeline.
     matched_name = saved_format.name if saved_format is not None else None
-    return _run_recipe_pipeline(
+    decision = _run_recipe_pipeline(
         recipe,
         document_text,
         fp,
@@ -407,6 +423,95 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         matched_format_name=matched_name,
         card_markers=credit_card_markers(doc),
     )
+
+    if decision.reason == "replay_reconciliation_failed" and saved_format is not None:
+        healed = _attempt_self_heal(doc, document_text, fp, saved_format, decision)
+        if healed is not None:
+            return healed
+    return decision
+
+
+def _attempt_self_heal(
+    doc: PdfDocument,
+    document_text: str,
+    fp: dict[str, Any],
+    saved_format: PdfFormat,
+    failed: RouteDecision,
+) -> RouteDecision | None:
+    """Re-derive a saved recipe that stopped reconciling; None if unrepairable.
+
+    A persisted recipe is a frozen snapshot of the derivation logic that produced
+    it, so a fix to auto_derive can never reach a format already in
+    app.pdf_formats — the saved copy keeps mis-parsing forever and every future
+    statement of that layout seeds. This adds the missing rung to the existing
+    escalation ladder: replay → **re-derive** → seed.
+
+    Repair is deliberately narrow, because a recipe rewrite the user never sees
+    is exactly the kind of magic that has to stay bounded:
+
+    - **Only machine-derived formats** (``source == "detected"``). A bridge- or
+      manually-authored recipe encodes human intent; replacing it with an
+      auto-derived guess would silently discard that work.
+    - **Never a sign-convention change.** ``bump_version`` mirrors the recipe's
+      ``sign_convention`` into the column every reader trusts, so an unguarded
+      heal could invert every amount on the statement with no human in the loop.
+      Repairing a *pattern* is safe; flipping *polarity* is not.
+
+    The fresh recipe earns its place by clearing the same ±1c reconciliation gate
+    a first-contact recipe must clear — it is proven against this document, not
+    assumed. Anything short of that returns None and the caller keeps the
+    original seed decision.
+    """
+    if saved_format.source != "detected":
+        logger.info(
+            f"Saved format {saved_format.name!r} failed reconciliation but its "
+            f"source is {saved_format.source!r}, not 'detected' — declining to "
+            f"overwrite a human-authored recipe; routing to seed"
+        )
+        return None
+
+    fresh = derive_recipe(doc, _EMPTY_METADATA)
+    if fresh is None:
+        return None
+
+    if failed.recipe is not None and fresh.sign_convention != (
+        failed.recipe.sign_convention
+    ):
+        logger.warning(
+            f"Re-derived recipe for format {saved_format.name!r} changes the sign "
+            f"convention ({failed.recipe.sign_convention} → "
+            f"{fresh.sign_convention}) — refusing to invert the ledger without "
+            f"review; routing to seed"
+        )
+        return None
+
+    # Carry the human's ratification forward. The sign convention is identical
+    # (guarded above), so the decision the user already made still holds; letting
+    # it reset to False would re-prompt for an inversion they have signed off on.
+    if failed.recipe is not None:
+        fresh.sign_ratified = failed.recipe.sign_ratified
+
+    # recipe_source="auto_derive": the recipe is freshly derived, so it carries no
+    # metadata_anchors of its own and must fall back to DEFAULT_ANCHORS — and the
+    # replay-guard metrics already fired for the failed attempt above.
+    # matched_format_name is kept so the repair updates the EXISTING format row
+    # instead of colliding with it via save_new (which raises on a duplicate name).
+    retry = _run_recipe_pipeline(
+        fresh,
+        document_text,
+        fp,
+        recipe_source="auto_derive",
+        matched_format_name=saved_format.name,
+        card_markers=credit_card_markers(doc),
+    )
+    if retry.outcome != "transactions":
+        return None
+
+    logger.info(
+        f"Saved format {saved_format.name!r} failed reconciliation but a "
+        f"re-derived recipe reconciles — repairing the saved recipe in place"
+    )
+    return replace(retry, rederived=True)
 
 
 def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:
