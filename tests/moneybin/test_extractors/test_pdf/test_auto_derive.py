@@ -1253,3 +1253,39 @@ def test_shape_reconstruction_collects_leading_decimal_fee_row() -> None:
     assert len(tables) == 1
     amounts = [r[-1] for r in tables[0].rows]
     assert amounts == ["39.83", "13.12", ".39", "55.87"]
+
+
+def test_derived_recipe_executes_a_sub_dollar_fee_row_end_to_end() -> None:
+    """The derived amount_pattern must also match a `.39` fee, not just the cell test.
+
+    Two independent sites had to change for the sub-dollar fix: the money-cell
+    predicate that decides a row is transaction-shaped, and the `amount_pattern`
+    that `execute_recipe` fullmatches at extraction time. The cell predicate is
+    pinned upstream by `test_shape_reconstruction_collects_leading_decimal_fee_row`,
+    which stops at table synthesis and never reaches `_build_fields` — so
+    reverting `amount_pattern` alone would leave the row collected and then
+    silently dropped at execution, exactly the failure this fix closes, with a
+    green suite. Driving derivation and execution together makes that revert fail.
+    """
+    from moneybin.extractors.pdf.recipe import execute_recipe
+
+    # The plain single-line-header shape on purpose: the only variable under
+    # test is the sub-dollar amount, so the fixture must not also exercise
+    # wrapped-header reconstruction.
+    text_lines = [
+        "Chase Bank",
+        "ACCOUNT ACTIVITY",
+        "Date         Description          Amount",
+        "01/02/2024   COFFEE SHOP          -4.50",
+        "01/05/2024   FOREIGN TXN FEE      .39",
+        "01/09/2024   GROCERY MART         -73.21",
+    ]
+    recipe = derive_recipe(_make_text_only_doc(text_lines), _EMPTY_META)
+    assert recipe is not None
+
+    rows = execute_recipe(recipe, "\n".join(text_lines))
+
+    amounts = [row["Amount"] for row in rows.rows]
+    assert amounts == [Decimal("-4.50"), Decimal("0.39"), Decimal("-73.21")], (
+        f"sub-dollar fee dropped at execution; extracted {amounts}"
+    )

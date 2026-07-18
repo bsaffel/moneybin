@@ -1303,7 +1303,7 @@ async def import_confirm(
     """Confirm or override a proposed mapping, or apply a PDF bridge response.
 
     Terminal ``_confirm`` step of the propose -> review -> confirm workflow.
-    Two channels:
+    Three channels:
 
     - **Tabular** — ``import_files`` returned ``confirmation_required`` for an
       unknown column layout; ratify with ``accept=True`` or a partial
@@ -1321,6 +1321,12 @@ async def import_confirm(
       human-confirmation prompt; an agent cannot approve that inversion. A
       response that fails reconciliation is rejected (``status='invalid'``)
       and nothing loads.
+    - **PDF sign** — ``import_files``/``import_preview`` returned a
+      ``confirmation_required`` with ``reason='sign_convention'`` for a
+      deterministic PDF (a credit-card statement, where loading inverts every
+      amount's sign). Pass ``confirm_sign=True`` and MoneyBin puts the evidence
+      and printed-vs-recorded samples in front of the human; you cannot answer
+      for them, and a decline loads nothing.
 
     Single-account tabular files (CSVs without an embedded account identifier)
     require ``account_id`` or ``account_name``. PDF rows resolve the account
