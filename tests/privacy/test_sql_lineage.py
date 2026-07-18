@@ -255,6 +255,95 @@ def test_cte_outer_column_falls_back_to_max_inner_tier(populated_db: Database) -
     assert next(iter(out.values())).tier is Tier.CRITICAL
 
 
+def test_cte_column_resolves_to_base_table_class(populated_db: Database) -> None:
+    """A CTE-alias column classifies as its underlying base column, not by scope max."""
+    out = _classes(
+        "WITH c AS (SELECT account_id, amount FROM core.fct_transactions) "
+        "SELECT c.account_id FROM c",
+        populated_db,
+    )
+    # RECORD_ID (LOW), NOT TXN_AMOUNT (HIGH) inherited from `amount` in the CTE.
+    assert out == {"account_id": DataClass.RECORD_ID}
+
+
+def test_cte_does_not_leak_tier_across_unrelated_projections(
+    populated_db: Database,
+) -> None:
+    """A projection must not inherit tier from a CTE column it does not depend on."""
+    out = _classes(
+        "WITH c AS (SELECT account_id, amount FROM core.fct_transactions) "
+        "SELECT COUNT(*) AS n FROM c",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_nested_cte_chain_resolves(populated_db: Database) -> None:
+    """Three CTE levels (the recurring_subscriptions shape) still resolve."""
+    out = _classes(
+        "WITH a AS (SELECT account_id, amount FROM core.fct_transactions), "
+        "b AS (SELECT account_id, amount FROM a), "
+        "c AS (SELECT account_id FROM b) "
+        "SELECT c.account_id FROM c",
+        populated_db,
+    )
+    assert out == {"account_id": DataClass.RECORD_ID}
+
+
+def test_cte_preserves_critical_class_through_alias_rename(
+    populated_db: Database,
+) -> None:
+    """Precision must not under-redact: a renamed CRITICAL column stays CRITICAL.
+
+    The CTE aliases ``routing_number`` to ``r``; resolving the outer ``r`` to
+    the CTE's projection must carry ROUTING_NUMBER (CRITICAL) through, not the
+    ``account_type`` (LOW) sitting beside it.
+    """
+    out = _classes(
+        "WITH c AS (SELECT routing_number AS r, account_type FROM core.dim_accounts) "
+        "SELECT c.r, c.account_type FROM c",
+        populated_db,
+    )
+    assert out["r"] is DataClass.ROUTING_NUMBER
+    assert out["account_type"].tier is Tier.LOW
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_cte_over_union_takes_max_tier_across_branches(populated_db: Database) -> None:
+    """A CTE whose body is a UNION classifies the position across ALL branches."""
+    out = _classes(
+        "WITH c AS ("
+        "SELECT description AS v FROM core.fct_transactions "
+        "UNION ALL "
+        "SELECT routing_number AS v FROM core.dim_accounts"
+        ") SELECT c.v FROM c",
+        populated_db,
+    )
+    assert out["v"] is DataClass.ROUTING_NUMBER
+
+
+def test_recursive_cte_is_cycle_safe(populated_db: Database) -> None:
+    """A self-referencing CTE terminates, and still masks the CRITICAL position.
+
+    The seen-scope guard is what stops the self-reference from recursing
+    forever. Both projections are asserted because termination alone is not the
+    property that matters: position 1 must still resolve CRITICAL, proving the
+    cycle guard bails conservatively instead of losing the routing number.
+    """
+    sql = (
+        "WITH RECURSIVE r AS ("
+        "SELECT account_id, routing_number FROM core.dim_accounts "
+        "UNION ALL "
+        "SELECT account_id, routing_number FROM r"
+        ") SELECT r.account_id, r.routing_number FROM r"
+    )
+    out = _classes(sql, populated_db)
+    # Position 0 is account_id in every branch — RECORD_ID is exact, not a leak.
+    assert out["account_id"] is DataClass.RECORD_ID
+    assert out["routing_number"] is DataClass.ROUTING_NUMBER
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
 def test_union_classifies_every_branch_by_position(populated_db: Database) -> None:
     """A CRITICAL column in a later UNION branch masks the output position.
 

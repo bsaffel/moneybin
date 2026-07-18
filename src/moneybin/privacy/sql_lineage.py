@@ -40,7 +40,7 @@ import functools
 import hashlib
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 import duckdb
@@ -48,6 +48,7 @@ import sqlglot
 from sqlglot import MappingSchema, exp
 from sqlglot.errors import OptimizeError, ParseError
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.optimizer.scope import Scope, build_scope
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
@@ -425,15 +426,127 @@ def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
     return False
 
 
+# Depth bound for CTE / derived-table recursion. The deepest reports model
+# (recurring_subscriptions) chains three levels; 16 leaves ample headroom while
+# guaranteeing termination on a pathological nesting. Exhausting it is not a
+# leak: the column becomes unresolvable and takes the conservative fallback.
+_MAX_SCOPE_DEPTH = 16
+
+
+@dataclass(frozen=True)
+class _ResolveCtx:
+    """Per-call resolution state threaded through nested-scope recursion.
+
+    ``seen`` holds ``id()`` of the scopes already entered on this path, which is
+    what makes a self-referencing (``WITH RECURSIVE``) CTE terminate instead of
+    looping. Every scope is kept alive by the root scope for the duration of the
+    call, so the ids cannot be recycled underneath us.
+    """
+
+    snapshot: SchemaSnapshot
+    sql_for_log: str
+    depth: int
+    seen: frozenset[int]
+
+
+def _output_index(source: Scope, name: str) -> int | None:
+    """Position of output column ``name`` within nested scope ``source``.
+
+    Resolution is positional rather than by-name because a set operation takes
+    its output NAMES from the first branch while drawing VALUES from every
+    branch. Matching later branches by name would miss the branch that supplies
+    a CRITICAL value under a different local alias, and under-redact.
+    """
+    select = source.expression
+    while isinstance(select, exp.Union):
+        select = select.left
+    if not isinstance(select, exp.Select):
+        return None
+    for i, proj in enumerate(select.selects):
+        if proj.alias_or_name == name:
+            return i
+    return None
+
+
+def _class_at_index(source: Scope, index: int, ctx: _ResolveCtx) -> DataClass | None:
+    """Class of nested scope ``source``'s output column at ``index``.
+
+    Returns None when the position cannot be resolved (depth exhausted, cycle,
+    unexpanded star, or a shape we don't model) so the caller applies its own
+    conservative fallback rather than inventing a permissive answer here.
+    """
+    if ctx.depth <= 0 or id(source) in ctx.seen:
+        return None
+    inner_ctx = replace(ctx, depth=ctx.depth - 1, seen=ctx.seen | {id(source)})
+    if source.union_scopes:
+        found = [
+            dc
+            for branch in source.union_scopes
+            if (dc := _class_at_index(branch, index, inner_ctx)) is not None
+        ]
+        return max(found, key=lambda c: c.tier) if found else None
+    select = source.expression
+    if not isinstance(select, exp.Select) or index >= len(select.selects):
+        return None
+    return _classify_projection(
+        select.selects[index], select, source, inner_ctx, _build_alias_map(select)
+    )
+
+
+def _class_via_source_scope(
+    col: exp.Column, scope: Scope | None, ctx: _ResolveCtx
+) -> DataClass | None:
+    """Resolve ``col`` through a CTE / derived-table source, or None if it isn't one.
+
+    This is the fix for the scope-max defect: a CTE reference parses with
+    ``db=''``, so ``_build_alias_map`` never registered it and every CTE-alias
+    column fell through to ``_fallback_class`` — whose scope spans the whole
+    outer SELECT including the ``WITH`` subtree, collapsing the rule to "max
+    tier over every column in the query". Resolving to the matching projection
+    INSIDE the source keeps each output column's class its own.
+    """
+    if scope is None:
+        return None
+    if col.table:
+        source = scope.sources.get(col.table)
+    else:
+        # Unqualified column in a single-source SELECT: SQL semantics leave no
+        # ambiguity about where it came from. Not a convenience — the build-time
+        # deriver classifies model source WITHOUT running qualify(), so the
+        # outer SELECT of a CTE-backed model (merchant_activity,
+        # recurring_subscriptions) reaches here with col.table == "".
+        #
+        # ``selected_sources``, NOT ``sources``: the latter holds every CTE bound
+        # by the WITH clause whether or not this SELECT reads it, so a
+        # three-CTE model would look multi-source and never resolve. With two or
+        # more genuinely selected sources the reference IS ambiguous, so we
+        # decline and let the conservative fallback answer rather than guess.
+        selected = scope.selected_sources
+        if len(selected) != 1:
+            return None
+        source = next(iter(selected.values()))[1]
+    if not isinstance(source, Scope):
+        return None  # a real exp.Table — the alias-map path handles it
+    index = _output_index(source, col.name)
+    if index is None:
+        return None
+    return _class_at_index(source, index, ctx)
+
+
 def _classify_projection(
     proj: exp.Expr,
-    scope: exp.Expr,
+    select: exp.Expr,
+    scope: Scope | None,
+    ctx: _ResolveCtx,
     alias_map: dict[str, tuple[str, str]],
-    snapshot: SchemaSnapshot,
-    sql_for_log: str,
 ) -> DataClass:
-    # ``scope`` is the projection's own SELECT (a single UNION branch), passed
+    # ``select`` is the projection's own SELECT (a single UNION branch), passed
     # through to _fallback_class so alias resolution stays branch-local.
+    # ``scope`` is its sqlglot Scope, which additionally resolves CTE and
+    # derived-table sources; it is None only when scope analysis failed, in
+    # which case resolution degrades to the alias-map-only behaviour.
+    snapshot = ctx.snapshot
+    sql_for_log = ctx.sql_for_log
     inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
 
     # A counting aggregate at the projection's TOP level collapses values to a
@@ -459,10 +572,16 @@ def _classify_projection(
 
     classes: list[DataClass] = []
     for col in cols:
+        # A CTE / derived-table column resolves to the projection inside that
+        # source. Checked first because such a column has no catalog key at all.
+        via_scope = _class_via_source_scope(col, scope, ctx)
+        if via_scope is not None:
+            classes.append(via_scope)
+            continue
         key = _column_key(col, alias_map, snapshot)
         if key is None:
-            # Unresolvable column reference — classify by the scope's inputs.
-            return _fallback_class(scope, snapshot, sql_for_log)
+            # Unresolvable column reference — classify by the SELECT's inputs.
+            return _fallback_class(select, snapshot, sql_for_log)
         dc = _class_of_key(key)
         if dc is None:
             return _coverage_gap_class(key, sql_for_log)
@@ -490,6 +609,25 @@ def _union_select_branches(node: exp.Expr) -> list[exp.Select]:
     return [inner] if inner is not None else []
 
 
+def _branch_scopes(tree: exp.Expr, branches: list[exp.Select]) -> list[Scope | None]:
+    """Each branch SELECT's sqlglot Scope, positionally aligned with ``branches``.
+
+    A None entry means scope analysis could not describe that branch; the
+    classifier then degrades to alias-map-only resolution — the pre-existing,
+    strictly more conservative behaviour — rather than failing the query.
+    """
+    try:
+        root = build_scope(tree)
+    except Exception as e:  # noqa: BLE001  # sqlglot raises untyped errors on exotic ASTs
+        # Identifier-free: the exception text can carry SQL fragments (PII).
+        logger.debug(f"sql_lineage: scope analysis unavailable ({type(e).__name__})")
+        return [None] * len(branches)
+    if root is None:
+        return [None] * len(branches)
+    by_expression = {id(scope.expression): scope for scope in root.traverse()}
+    return [by_expression.get(id(sel)) for sel in branches]
+
+
 def resolve_output_classes(
     tree: exp.Expr,
     snapshot: SchemaSnapshot,
@@ -504,17 +642,22 @@ def resolve_output_classes(
     branches = _union_select_branches(tree)
     if not branches:
         raise SqlSchemaError("Query has no SELECT projection")
+    scopes = _branch_scopes(tree, branches)
+    ctx = _ResolveCtx(
+        snapshot=snapshot,
+        sql_for_log=sql_for_log,
+        depth=_MAX_SCOPE_DEPTH,
+        seen=frozenset(),
+    )
     # Alias scope is per-branch: a UNION may reuse one alias for different
     # tables across branches (legal SQL), so a tree-wide map (last-write-wins)
     # would resolve a branch's column against the wrong table and under-redact.
     per_branch: list[list[DataClass]] = [
         [
-            _classify_projection(
-                proj, sel, _build_alias_map(sel), snapshot, sql_for_log
-            )
+            _classify_projection(proj, sel, scope, ctx, _build_alias_map(sel))
             for proj in sel.selects
         ]
-        for sel in branches
+        for sel, scope in zip(branches, scopes, strict=True)
     ]
     out: dict[str, DataClass] = {}
     for i, proj in enumerate(branches[0].selects):
