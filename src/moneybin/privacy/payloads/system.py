@@ -340,9 +340,10 @@ class RefreshRunPayload:
 
     The ``*_error`` fields are DESCRIPTION (Tier.MEDIUM): SQLMesh / step error
     type names are non-PII but we conservatively classify them as DESCRIPTION
-    since error strings in adjacent tooling sometimes embed model paths. They
-    are emitted as stable ``null`` keys (not omitted when absent) so agents see
-    a consistent shape — matching the ``self_heal_actions`` stable-key intent.
+    since error strings in adjacent tooling sometimes embed model paths.
+    ``identity_errors`` contains only fixed domain labels and is therefore
+    TXN_TYPE (Tier.LOW). These fields are emitted as stable keys so agents see a
+    consistent shape — matching the ``self_heal_actions`` stable-key intent.
     """
 
     applied: Annotated[bool, DataClass.TXN_TYPE]
@@ -350,6 +351,7 @@ class RefreshRunPayload:
     error: Annotated[str | None, DataClass.DESCRIPTION]
     matching_error: Annotated[str | None, DataClass.DESCRIPTION]
     categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
+    identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
     self_heal_actions: list[SelfHealActionRow]
 
 

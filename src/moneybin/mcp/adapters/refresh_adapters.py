@@ -20,6 +20,12 @@ REFRESH_CATEGORIZE_FOLLOWUP_HINT = (
     "Run refresh_run(steps=['categorize']) to apply rules/merchants "
     "to newly-matched rows."
 )
+REFRESH_ACCOUNT_LINKS_REVIEW_HINT = (
+    'Review pending account identity proposals with reviews(kind="account_links").'
+)
+REFRESH_MERCHANT_LINKS_REVIEW_HINT = (
+    'Review pending merchant identity proposals with reviews(kind="merchant_links").'
+)
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
@@ -107,6 +113,11 @@ def refresh_envelope(
         and "categorize" not in requested
     ):
         actions.append(REFRESH_CATEGORIZE_FOLLOWUP_HINT)
+    if "identity" in requested:
+        if "accounts" not in result.identity_errors:
+            actions.append(REFRESH_ACCOUNT_LINKS_REVIEW_HINT)
+        if "merchants" not in result.identity_errors:
+            actions.append(REFRESH_MERCHANT_LINKS_REVIEW_HINT)
     recovery = _step_crash_recovery_actions(result)
     # `or None` (omit the key when empty) is correct here: refresh always uses
     # build_envelope, whose ResponseEnvelope.error is None, so there is no
@@ -120,6 +131,7 @@ def refresh_envelope(
             error=result.error,
             matching_error=result.matching_error,
             categorization_error=result.categorization_error,
+            identity_errors=list(result.identity_errors),
             self_heal_actions=[
                 SelfHealActionRow(
                     recipe_id=r.recipe_id,

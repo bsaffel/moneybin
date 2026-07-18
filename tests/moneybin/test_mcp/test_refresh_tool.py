@@ -82,6 +82,27 @@ async def test_refresh_run_steps_none_calls_service_with_none() -> None:
 
 
 @pytest.mark.unit
+async def test_refresh_run_identity_errors_are_typed_and_point_to_reviews() -> None:
+    """Identity backfill exposes only failed domains and review next steps."""
+    fake_result = RefreshResult(
+        applied=False,
+        duration_seconds=None,
+        identity_errors=(),
+    )
+    with (
+        patch("moneybin.mcp.tools.refresh.refresh", return_value=fake_result),
+        patch("moneybin.mcp.tools.refresh.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        envelope = await refresh_run(steps=["identity"])
+
+    assert envelope.data.identity_errors == []
+    actions = " ".join(envelope.actions)
+    assert 'reviews(kind="account_links")' in actions
+    assert 'reviews(kind="merchant_links")' in actions
+
+
+@pytest.mark.unit
 async def test_refresh_run_emits_followup_hint_when_match_without_categorize() -> None:
     """When match is requested but categorize is omitted, actions[] hints at categorize."""
     fake_result = RefreshResult(applied=True, duration_seconds=1.0, error=None)

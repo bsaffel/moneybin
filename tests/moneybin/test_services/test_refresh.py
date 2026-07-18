@@ -20,7 +20,9 @@ from unittest.mock import MagicMock, patch
 import duckdb
 import pytest
 
+from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.services import matching_service
 from moneybin.services.refresh import RefreshResult, refresh
 from moneybin.services.transform_service import ApplyResult
 
@@ -31,7 +33,7 @@ def _make_apply_result(applied: bool = True) -> ApplyResult:
 
 @pytest.fixture
 def patched_services() -> Iterator[dict[str, MagicMock]]:
-    """Patch all four step backends and yield handles for call inspection."""
+    """Patch all refresh backends and yield handles for call inspection."""
     gsheet_pull = MagicMock(return_value=[])
     matcher_run = MagicMock(
         return_value=MagicMock(has_matches=False, has_pending=False)
@@ -41,6 +43,7 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         return_value={"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
     )
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
+    identity = MagicMock(return_value=())
 
     # Patches target the consumer module (moneybin.services.refresh) where
     # each name is bound — refresh.py imports TransformService at module level
@@ -67,6 +70,11 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
             "moneybin.services.auto_rule_service.AutoRuleService",
             return_value=MagicMock(stats=auto_stats),
         ),
+        patch(
+            "moneybin.services.refresh._run_identity_step",
+            identity,
+            create=True,
+        ),
     ):
         yield {
             "gsheet_pull": gsheet_pull,
@@ -74,7 +82,61 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
             "transform_apply": transform_apply,
             "categorize_pending": categorize_pending,
             "auto_stats": auto_stats,
+            "identity": identity,
         }
+
+
+def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) -> None:
+    """Patch each stage with a call marker so cascade order stays observable."""
+
+    def _gsheet(_db: Database) -> list[Any]:
+        calls.append("gsheet")
+        return []
+
+    def _match(_self: matching_service.MatchingService) -> Any:
+        calls.append("match")
+        return MagicMock(has_matches=False, has_pending=False)
+
+    def _transform(_db: Database) -> Any:
+        service = MagicMock()
+
+        def _apply() -> ApplyResult:
+            calls.append("transform")
+            return _make_apply_result()
+
+        service.apply.side_effect = _apply
+        return service
+
+    def _categorize(_db: Database) -> str | None:
+        calls.append("categorize")
+        return None
+
+    def _identity(_db: Database) -> tuple[str, ...]:
+        calls.append("identity")
+        return ()
+
+    monkeypatch.setattr(
+        "moneybin.services.refresh._run_gsheet_step",
+        _gsheet,
+    )
+    monkeypatch.setattr(
+        matching_service.MatchingService,
+        "run",
+        _match,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.refresh.TransformService",
+        _transform,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.refresh._run_categorize_step",
+        _categorize,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.refresh._run_identity_step",
+        _identity,
+        raising=False,
+    )
 
 
 @pytest.mark.unit
@@ -85,6 +147,7 @@ def test_refresh_result_has_error_surfacing_fields() -> None:
     r = RefreshResult(applied=True, duration_seconds=1.0)
     assert r.matching_error is None
     assert r.categorization_error is None
+    assert r.identity_errors == ()
     assert r.self_heal_actions == ()
 
     rec = SelfHealRecord(
@@ -98,10 +161,12 @@ def test_refresh_result_has_error_surfacing_fields() -> None:
         duration_seconds=1.0,
         matching_error="boom",
         categorization_error="bang",
+        identity_errors=("accounts",),
         self_heal_actions=(rec,),
     )
     assert r2.matching_error == "boom"
     assert r2.categorization_error == "bang"
+    assert r2.identity_errors == ("accounts",)
     assert r2.self_heal_actions[0].recipe_id == "orphan_categorizations_cleanup"
 
 
@@ -189,7 +254,7 @@ def test_refresh_categorizer_missing_tables_is_not_an_error(
 def test_refresh_steps_none_runs_full_cascade(
     patched_services: dict[str, MagicMock],
 ) -> None:
-    """``steps=None`` (default) preserves current behavior: all four steps run."""
+    """``steps=None`` (default) runs every canonical refresh stage."""
     result = refresh(MagicMock())
     assert isinstance(result, RefreshResult)
     assert result.applied is True
@@ -197,6 +262,64 @@ def test_refresh_steps_none_runs_full_cascade(
     assert patched_services["matcher_run"].call_count == 1
     assert patched_services["transform_apply"].call_count == 1
     assert patched_services["categorize_pending"].call_count == 1
+    assert patched_services["identity"].call_count == 1
+
+
+@pytest.mark.unit
+def test_identity_runs_after_categorize(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Identity proposal generation is the final canonical refresh stage."""
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    refresh(MagicMock())
+
+    assert calls == ["gsheet", "match", "transform", "categorize", "identity"]
+
+
+@pytest.mark.unit
+def test_identity_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Identity can generate proposals without rebuilding derived tables."""
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    result = refresh(MagicMock(), steps=["identity"])
+
+    assert calls == ["identity"]
+    assert result.applied is False
+
+
+@pytest.mark.unit
+def test_identity_failure_does_not_prevent_other_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Account identity failure still attempts merchant proposal generation."""
+    from moneybin.services import account_links_service, merchant_links_service
+
+    accounts_run = MagicMock(side_effect=RuntimeError("account data"))
+    merchants_run = MagicMock()
+
+    def _accounts_service(_db: Database) -> Any:
+        return MagicMock(run=accounts_run)
+
+    def _merchants_service(_db: Database) -> Any:
+        return MagicMock(run=merchants_run)
+
+    monkeypatch.setattr(
+        account_links_service,
+        "AccountLinksService",
+        _accounts_service,
+    )
+    monkeypatch.setattr(
+        merchant_links_service,
+        "MerchantLinksService",
+        _merchants_service,
+    )
+
+    result = refresh(MagicMock(), steps=["identity"])
+
+    accounts_run.assert_called_once()
+    merchants_run.assert_called_once()
+    assert result.identity_errors == ("accounts",)
 
 
 @pytest.mark.unit
@@ -273,6 +396,7 @@ def test_refresh_unknown_step_raises_user_error(
     assert "match" in (excinfo.value.hint or "")
     assert "transform" in (excinfo.value.hint or "")
     assert "categorize" in (excinfo.value.hint or "")
+    assert "identity" in (excinfo.value.hint or "")
     # None of the step backends should run when validation fails.
     assert patched_services["gsheet_pull"].call_count == 0
     assert patched_services["matcher_run"].call_count == 0
