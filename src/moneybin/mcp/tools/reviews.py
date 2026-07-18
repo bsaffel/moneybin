@@ -1,0 +1,651 @@
+"""Dormant normalized read across MoneyBin's five review queues."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import json
+from dataclasses import replace
+from decimal import Decimal
+from typing import Annotated, Any, Literal, cast
+
+from fastmcp import FastMCP
+from pydantic import Field
+
+from moneybin.database import Database, get_database
+from moneybin.errors import UserError
+from moneybin.mcp._registration import register
+from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
+from moneybin.privacy.payloads.accounts import LinkHistoryRow, LinkPendingGroup
+from moneybin.privacy.payloads.categorize import PendingTxnRow
+from moneybin.privacy.payloads.investments import (
+    SecurityLinkHistoryRow,
+    SecurityLinkPendingGroup,
+)
+from moneybin.privacy.payloads.merchants import (
+    MerchantLinkHistoryRow,
+    MerchantLinkPendingGroup,
+)
+from moneybin.privacy.payloads.reviews import (
+    AccountLinkHistoryDetails,
+    AccountLinkPendingDetails,
+    AccountLinkReviewRow,
+    CategorizationHistoryDetails,
+    CategorizationPendingDetails,
+    CategorizationReviewRow,
+    MatchHistoryDetails,
+    MatchPendingDetails,
+    MatchReviewRow,
+    MerchantLinkHistoryDetails,
+    MerchantLinkPendingDetails,
+    MerchantLinkReviewRow,
+    ReviewCount,
+    ReviewQueueKind,
+    ReviewsAccountLinksView,
+    ReviewsCategorizationView,
+    ReviewsCoarsePayload,
+    ReviewsMatchesView,
+    ReviewsMerchantLinksView,
+    ReviewsSecurityLinksView,
+    ReviewsSummaryView,
+    ReviewStatus,
+    SecurityLinkHistoryDetails,
+    SecurityLinkPendingDetails,
+    SecurityLinkReviewRow,
+)
+from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
+from moneybin.privacy.redaction import redact_typed
+from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.categorization import CategorizationService
+from moneybin.services.matching_service import MatchingService
+from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.security_links_service import SecurityLinksService
+
+_QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
+    "categorization",
+    "matches",
+    "account_links",
+    "merchant_links",
+    "security_links",
+)
+
+
+def _text(value: object | None) -> str | None:
+    """Return a stable textual timestamp/date without inventing one."""
+    return str(value) if value is not None else None
+
+
+def _review_cursor(kind: ReviewQueueKind, status: ReviewStatus, offset: int) -> str:
+    """Encode a cursor bound to its exact queue and collection state."""
+    raw = json.dumps(
+        {
+            "filters": {},
+            "kind": kind,
+            "offset": offset,
+            "status": status,
+            "tool": "reviews",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode()
+
+
+def _review_offset(
+    cursor: str | None,
+    *,
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+) -> int:
+    """Decode a cursor and reject cross-queue or cross-status reuse."""
+    if cursor is None:
+        return 0
+    try:
+        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
+        value = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UserError(
+            "Invalid review pagination cursor.",
+            code="REVIEW_CURSOR_INVALID",
+        ) from exc
+    if not isinstance(value, dict):
+        raise UserError(
+            "Invalid review pagination cursor.",
+            code="REVIEW_CURSOR_INVALID",
+        )
+    payload = cast(dict[str, Any], value)
+    offset = payload.get("offset")
+    if (
+        set(payload) != {"filters", "kind", "offset", "status", "tool"}
+        or payload.get("filters") != {}
+        or payload.get("kind") != kind
+        or payload.get("status") != status
+        or payload.get("tool") != "reviews"
+        or isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 0
+    ):
+        raise UserError(
+            "Invalid review pagination cursor.",
+            code="REVIEW_CURSOR_INVALID",
+        )
+    return offset
+
+
+def _review_envelope[T](
+    data: T,
+    *,
+    contract_type: type[Any],
+    total_count: int,
+    returned_count: int,
+    next_cursor: str | None = None,
+    actions: list[str] | None = None,
+) -> ResponseEnvelope[T]:
+    """Build and redact a dynamically classified review envelope."""
+    classes = extract_data_classes(contract_type)
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(T, redact_typed(data, None))
+    envelope = cast(
+        ResponseEnvelope[T],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=returned_count,
+            next_cursor=next_cursor,
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    )
+
+
+def _pending_categorization_rows(
+    service: CategorizationService,
+) -> list[CategorizationReviewRow]:
+    """Project the existing uncategorized queue into normalized rows."""
+    try:
+        raw_rows = service.list_uncategorized_transactions(limit=None) or []
+    except UserError as exc:
+        if exc.code != "schema_out_of_date" or service.count_uncategorized() != 0:
+            raise
+        raw_rows = []
+    ordered = sorted(
+        raw_rows,
+        key=lambda row: (
+            _text(row.get("txn_date")) or "",
+            str(row["transaction_id"]),
+        ),
+        reverse=True,
+    )
+    result: list[CategorizationReviewRow] = []
+    for row in ordered:
+        transaction = PendingTxnRow(
+            transaction_id=str(row["transaction_id"]),
+            transaction_date=_text(row.get("txn_date")),
+            amount=(
+                float(cast(Decimal, row["amount"]))
+                if row.get("amount") is not None
+                else None
+            ),
+            description=cast(str | None, row.get("description")),
+            memo=cast(str | None, row.get("memo")),
+            account_id=cast(str | None, row.get("account_id")),
+            age_days=(
+                int(cast(int, row["age_days"]))
+                if row.get("age_days") is not None
+                else None
+            ),
+            pending_transfer_match=bool(row.get("pending_transfer_match", False)),
+        )
+        summary = transaction.description or f"Transaction {transaction.transaction_id}"
+        result.append(
+            CategorizationReviewRow(
+                decision_id=transaction.transaction_id,
+                status="pending",
+                created_at=transaction.transaction_date,
+                summary=summary,
+                details=CategorizationPendingDetails(transaction=transaction),
+            )
+        )
+    return result
+
+
+def _categorization_history_rows(
+    service: CategorizationService,
+) -> list[CategorizationReviewRow]:
+    """Project persisted transaction-category decisions into history rows."""
+    result: list[CategorizationReviewRow] = []
+    for row in service.list_categorization_history():
+        category = str(row["category"])
+        subcategory = cast(str | None, row.get("subcategory"))
+        summary = f"{category} / {subcategory}" if subcategory else category
+        transaction_id = str(row["transaction_id"])
+        result.append(
+            CategorizationReviewRow(
+                decision_id=transaction_id,
+                status="categorized",
+                created_at=_text(row.get("categorized_at")),
+                summary=summary,
+                details=CategorizationHistoryDetails(
+                    transaction_id=transaction_id,
+                    category_id=cast(str | None, row.get("category_id")),
+                    category=category,
+                    subcategory=subcategory,
+                    categorized_by=str(row.get("categorized_by") or "unknown"),
+                    merchant_id=cast(str | None, row.get("merchant_id")),
+                    confidence=(
+                        float(cast(Decimal, row["confidence"]))
+                        if row.get("confidence") is not None
+                        else None
+                    ),
+                    rule_id=cast(str | None, row.get("rule_id")),
+                    source_type=str(row.get("source_type") or "internal"),
+                ),
+            )
+        )
+    return result
+
+
+def _pending_match_rows(service: MatchingService) -> list[MatchReviewRow]:
+    """Project the complete pending match decision queue."""
+    raw_rows = service.get_pending(limit=None)
+    ordered = sorted(
+        raw_rows,
+        key=lambda row: (
+            -float(row.get("confidence_score") or 0.0),
+            str(row["match_id"]),
+        ),
+    )
+    result: list[MatchReviewRow] = []
+    for row in ordered:
+        match = MatchPendingRow(
+            match_id=str(row["match_id"]),
+            match_type=str(row.get("match_type") or "dedup"),
+            match_tier=cast(str | None, row.get("match_tier")),
+            confidence_score=float(row.get("confidence_score") or 0.0),
+            source_type_a=str(row["source_type_a"]),
+            source_transaction_id_a=str(row["source_transaction_id_a"]),
+            source_type_b=str(row["source_type_b"]),
+            source_transaction_id_b=str(row["source_transaction_id_b"]),
+            match_status=str(row["match_status"]),
+            component_key=str(row["component_key"]),
+        )
+        result.append(
+            MatchReviewRow(
+                decision_id=match.match_id,
+                status=match.match_status,
+                created_at=_text(row.get("decided_at")),
+                summary=(
+                    f"{match.match_type} match at "
+                    f"{match.confidence_score:.2f} confidence"
+                ),
+                details=MatchPendingDetails(match=match),
+            )
+        )
+    return result
+
+
+def _match_history_rows(service: MatchingService) -> list[MatchReviewRow]:
+    """Project the actual match history path."""
+    result: list[MatchReviewRow] = []
+    for row in service.get_log(limit=None):
+        match = MatchHistoryRow(
+            match_id=str(row["match_id"]),
+            match_type=str(row.get("match_type") or "dedup"),
+            match_status=str(row["match_status"]),
+            confidence_score=float(row.get("confidence_score") or 0.0),
+            decided_by=str(row.get("decided_by") or "unknown"),
+            decided_at=_text(row.get("decided_at")),
+        )
+        result.append(
+            MatchReviewRow(
+                decision_id=match.match_id,
+                status=match.match_status,
+                created_at=match.decided_at,
+                summary=f"{match.match_type} match {match.match_status}",
+                details=MatchHistoryDetails(match=match),
+            )
+        )
+    return result
+
+
+def _pending_account_link_rows(
+    service: AccountLinksService,
+) -> list[AccountLinkReviewRow]:
+    """Project grouped pending account-link review units."""
+    timestamp_by_id = {
+        str(row["decision_id"]): _text(row.get("decided_at"))
+        for row in service.history(limit=None)
+    }
+    result: list[AccountLinkReviewRow] = []
+    for group in service.pending():
+        payload = LinkPendingGroup.from_domain(group)
+        if not payload.candidates:
+            continue
+        decision_id = payload.candidates[0].decision_id
+        label = payload.provisional_display_name or payload.provisional_account_id
+        result.append(
+            AccountLinkReviewRow(
+                decision_id=decision_id,
+                status="pending",
+                created_at=timestamp_by_id.get(decision_id),
+                summary=f"{label}: {len(payload.candidates)} account candidate(s)",
+                details=AccountLinkPendingDetails(group=payload),
+            )
+        )
+    return result
+
+
+def _account_link_history_rows(
+    service: AccountLinksService,
+) -> list[AccountLinkReviewRow]:
+    """Project the actual account-link history path."""
+    result: list[AccountLinkReviewRow] = []
+    for raw in service.history(limit=None):
+        decision = LinkHistoryRow.from_decision_row(raw)
+        result.append(
+            AccountLinkReviewRow(
+                decision_id=decision.decision_id,
+                status=decision.status,
+                created_at=decision.decided_at,
+                summary=(
+                    f"Account {decision.provisional_account_id} to "
+                    f"{decision.candidate_account_id}: {decision.status}"
+                ),
+                details=AccountLinkHistoryDetails(decision=decision),
+            )
+        )
+    return result
+
+
+def _pending_merchant_link_rows(
+    service: MerchantLinksService,
+) -> list[MerchantLinkReviewRow]:
+    """Project grouped pending merchant-link review units."""
+    timestamp_by_id = {
+        str(row["decision_id"]): _text(row.get("decided_at"))
+        for row in service.history(limit=None)
+    }
+    result: list[MerchantLinkReviewRow] = []
+    for group in service.pending():
+        payload = MerchantLinkPendingGroup.from_domain(group)
+        if not payload.candidates:
+            continue
+        decision_id = payload.candidates[0].decision_id
+        label = payload.provider_merchant_name or payload.ref_value
+        result.append(
+            MerchantLinkReviewRow(
+                decision_id=decision_id,
+                status="pending",
+                created_at=timestamp_by_id.get(decision_id),
+                summary=f"{label}: {len(payload.candidates)} merchant candidate(s)",
+                details=MerchantLinkPendingDetails(group=payload),
+            )
+        )
+    return result
+
+
+def _merchant_link_history_rows(
+    service: MerchantLinksService,
+) -> list[MerchantLinkReviewRow]:
+    """Project the actual merchant-link history path."""
+    result: list[MerchantLinkReviewRow] = []
+    for raw in service.history(limit=None):
+        decision = MerchantLinkHistoryRow.from_decision_row(raw)
+        label = decision.provider_merchant_name or decision.ref_value
+        result.append(
+            MerchantLinkReviewRow(
+                decision_id=decision.decision_id,
+                status=decision.status,
+                created_at=decision.decided_at,
+                summary=f"{label}: {decision.status}",
+                details=MerchantLinkHistoryDetails(decision=decision),
+            )
+        )
+    return result
+
+
+def _pending_security_link_rows(
+    service: SecurityLinksService,
+) -> list[SecurityLinkReviewRow]:
+    """Project grouped pending security-link review units."""
+    timestamp_by_id = {
+        str(row["decision_id"]): _text(row.get("decided_at"))
+        for row in service.history(limit=None)
+    }
+    result: list[SecurityLinkReviewRow] = []
+    for group in service.pending():
+        payload = SecurityLinkPendingGroup.from_domain(group)
+        if not payload.candidates:
+            continue
+        decision_id = payload.candidates[0].decision_id
+        label = payload.provider_ticker or payload.provider_name or payload.ref_value
+        result.append(
+            SecurityLinkReviewRow(
+                decision_id=decision_id,
+                status="pending",
+                created_at=timestamp_by_id.get(decision_id),
+                summary=f"{label}: {len(payload.candidates)} security candidate(s)",
+                details=SecurityLinkPendingDetails(group=payload),
+            )
+        )
+    return result
+
+
+def _security_link_history_rows(
+    service: SecurityLinksService,
+) -> list[SecurityLinkReviewRow]:
+    """Project the actual security-link history path."""
+    result: list[SecurityLinkReviewRow] = []
+    for raw in service.history(limit=None):
+        decision = SecurityLinkHistoryRow.from_decision_row(raw)
+        label = decision.provider_ticker or decision.provider_name or decision.ref_value
+        result.append(
+            SecurityLinkReviewRow(
+                decision_id=decision.decision_id,
+                status=decision.status,
+                created_at=decision.decided_at,
+                summary=f"{label}: {decision.status}",
+                details=SecurityLinkHistoryDetails(decision=decision),
+            )
+        )
+    return result
+
+
+def _load_review_view(
+    db: Database,
+    *,
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+) -> ReviewsCoarsePayload:
+    """Load one complete normalized collection through its existing service."""
+    if kind == "categorization":
+        service = CategorizationService(db)
+        rows = (
+            _pending_categorization_rows(service)
+            if status == "pending"
+            else _categorization_history_rows(service)
+        )
+        return ReviewsCategorizationView(status=status, rows=rows)
+    if kind == "matches":
+        match_service = MatchingService(db)
+        rows = (
+            _pending_match_rows(match_service)
+            if status == "pending"
+            else _match_history_rows(match_service)
+        )
+        return ReviewsMatchesView(status=status, rows=rows)
+    if kind == "account_links":
+        account_service = AccountLinksService(db, actor="mcp")
+        rows = (
+            _pending_account_link_rows(account_service)
+            if status == "pending"
+            else _account_link_history_rows(account_service)
+        )
+        return ReviewsAccountLinksView(status=status, rows=rows)
+    if kind == "merchant_links":
+        merchant_service = MerchantLinksService(db, actor="mcp")
+        rows = (
+            _pending_merchant_link_rows(merchant_service)
+            if status == "pending"
+            else _merchant_link_history_rows(merchant_service)
+        )
+        return ReviewsMerchantLinksView(status=status, rows=rows)
+    security_service = SecurityLinksService(db, actor="mcp")
+    rows = (
+        _pending_security_link_rows(security_service)
+        if status == "pending"
+        else _security_link_history_rows(security_service)
+    )
+    return ReviewsSecurityLinksView(status=status, rows=rows)
+
+
+def _view_rows(
+    view: ReviewsCoarsePayload,
+) -> list[Any]:
+    """Return rows from a non-summary review view."""
+    if isinstance(view, ReviewsSummaryView):
+        raise TypeError("Summary view has counts, not review rows")
+    return list(view.rows)
+
+
+def _review_actions(
+    *,
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Return queue-native decision and continuation actions."""
+    if status == "history":
+        actions = [
+            f"Open the active queue with reviews(kind={kind!r}, status='pending')"
+        ]
+    else:
+        decision_tool = {
+            "categorization": "transactions_categorize_commit",
+            "matches": "transactions_matches_set",
+            "account_links": "accounts_links_set",
+            "merchant_links": "merchants_links_set",
+            "security_links": "investments_securities_links_set",
+        }[kind]
+        actions = [f"Use {decision_tool} to decide a row from this queue"]
+    if next_cursor is not None:
+        actions.append(
+            f"Continue with reviews(kind={kind!r}, status={status!r}, "
+            f"limit={limit}, cursor='{next_cursor}')"
+        )
+    return actions
+
+
+def _summary_actions() -> list[str]:
+    """Return executable drill-down calls for every normalized collection."""
+    return [
+        f"Open reviews(kind={kind!r}, status={status!r}, limit=100)"
+        for kind in _QUEUE_KINDS
+        for status in ("pending", "history")
+    ]
+
+
+@mcp_tool(dynamic_classification=True)
+def reviews_coarse(
+    kind: Literal[
+        "summary",
+        "categorization",
+        "matches",
+        "account_links",
+        "merchant_links",
+        "security_links",
+    ] = "summary",
+    status: ReviewStatus = "pending",
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[ReviewsCoarsePayload]:
+    """Summarize or read one normalized review collection."""
+    if kind == "summary":
+        if limit != 100 or cursor is not None:
+            raise UserError(
+                "Review summary does not accept pagination overrides.",
+                code="REVIEW_PAGINATION_NOT_ALLOWED",
+            )
+        if status != "pending":
+            raise UserError(
+                "status is not valid for review summary.",
+                code="REVIEW_STATUS_NOT_ALLOWED",
+            )
+        with get_database(read_only=True) as db:
+            counts = [
+                ReviewCount(
+                    kind=queue_kind,
+                    status=queue_status,
+                    count=len(
+                        _view_rows(
+                            _load_review_view(
+                                db,
+                                kind=queue_kind,
+                                status=queue_status,
+                            )
+                        )
+                    ),
+                )
+                for queue_kind in _QUEUE_KINDS
+                for queue_status in cast(
+                    tuple[ReviewStatus, ...], ("pending", "history")
+                )
+            ]
+        payload = ReviewsSummaryView(
+            counts=counts,
+            total=sum(count.count for count in counts),
+        )
+        return _review_envelope(
+            payload,
+            contract_type=ReviewsSummaryView,
+            total_count=len(payload.counts),
+            returned_count=len(payload.counts),
+            actions=_summary_actions(),
+        )
+
+    queue_kind = kind
+    offset = _review_offset(cursor, kind=queue_kind, status=status)
+    with get_database(read_only=True) as db:
+        complete = _load_review_view(db, kind=queue_kind, status=status)
+    rows = _view_rows(complete)
+    page = rows[offset : offset + limit]
+    next_cursor = (
+        _review_cursor(queue_kind, status, offset + limit)
+        if len(rows) > offset + limit
+        else None
+    )
+    payload = complete.model_copy(update={"rows": page})
+    return _review_envelope(
+        payload,
+        contract_type=type(complete),
+        total_count=len(rows),
+        returned_count=len(page),
+        next_cursor=next_cursor,
+        actions=_review_actions(
+            kind=queue_kind,
+            status=status,
+            limit=limit,
+            next_cursor=next_cursor,
+        ),
+    )
+
+
+def register_review_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 normalized review read."""
+    register(
+        mcp,
+        reviews_coarse,
+        "reviews",
+        "Return exact review counts or one normalized pending/history queue "
+        "with deterministic cursor pagination.",
+        privacy_actor="reviews",
+    )

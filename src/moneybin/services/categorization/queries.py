@@ -217,7 +217,7 @@ class CategorizationQueries:
     def list_uncategorized_transactions(
         self,
         *,
-        limit: int,
+        limit: int | None,
         sort: Literal["date", "impact"] = "date",
         min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
@@ -241,7 +241,11 @@ class CategorizationQueries:
         if sort not in {"date", "impact"}:
             raise ValueError(f"Unknown sort: {sort!r}; expected 'date' or 'impact'")
 
-        order = "priority_score DESC" if sort == "impact" else "txn_date DESC"
+        order = (
+            "priority_score DESC, transaction_id ASC"
+            if sort == "impact"
+            else "txn_date DESC, transaction_id ASC"
+        )
         sql = f"""
             SELECT transaction_id, account_id, account_name, txn_date, amount,
                    description, merchant_id, merchant_normalized, age_days,
@@ -253,8 +257,10 @@ class CategorizationQueries:
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
-        sql += f" ORDER BY {order} LIMIT ?"  # noqa: S608  # order from allowlisted set
-        params.append(limit)
+        sql += f" ORDER BY {order}"  # noqa: S608  # order from allowlisted set
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
 
         try:
             result = self._db.execute(sql, params)
@@ -277,6 +283,23 @@ class CategorizationQueries:
         for row in result_rows:
             row["pending_transfer_match"] = row["transaction_id"] in pending_matches
         return result_rows
+
+    def list_categorization_history(self) -> list[dict[str, Any]]:
+        """Return persisted transaction-category decisions in stable newest-first order."""
+        try:
+            result = self._db.execute(
+                f"""
+                SELECT transaction_id, category, subcategory, category_id,
+                       categorized_at, categorized_by, merchant_id, confidence,
+                       rule_id, source_type
+                FROM {TRANSACTION_CATEGORIES.full_name}
+                ORDER BY categorized_at DESC NULLS LAST, transaction_id DESC
+                """  # noqa: S608  # TableRef constant, no user values
+            )
+            columns = [desc[0] for desc in result.description]
+            return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+        except duckdb.CatalogException:
+            return []
 
     def _transactions_with_pending_matches(self) -> set[str]:
         """Return gold transaction_ids that have an unresolved match decision.

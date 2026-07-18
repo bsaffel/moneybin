@@ -526,7 +526,7 @@ class CategorizationService:
     def list_uncategorized_transactions(
         self,
         *,
-        limit: int,
+        limit: int | None,
         sort: Literal["date", "impact"] = "date",
         min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
@@ -543,6 +543,10 @@ class CategorizationService:
             min_amount=min_amount,
             account_id=account_id,
         )
+
+    def list_categorization_history(self) -> list[dict[str, Any]]:
+        """Return persisted transaction-category decisions newest first."""
+        return self._queries.list_categorization_history()
 
     def count_uncategorized(self) -> int:
         """Return the number of transactions without a category assignment."""

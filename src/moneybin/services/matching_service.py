@@ -159,7 +159,7 @@ class MatchingService:
         self._match_repo().reverse(match_id, reversed_by=reversed_by, actor=actor)
 
     def get_log(
-        self, *, limit: int = 50, match_type: str | None = None
+        self, *, limit: int | None = 50, match_type: str | None = None
     ) -> list[dict[str, Any]]:
         """Return recent match decisions for display.
 

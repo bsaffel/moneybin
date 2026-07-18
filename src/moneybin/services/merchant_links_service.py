@@ -161,7 +161,7 @@ class MerchantLinksService:
             )
         return result
 
-    def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.
 
         Delegates to the repo; empty list when the table is absent.
