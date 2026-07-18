@@ -10,6 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **An AI assistant can now resolve a credit-card PDF's sign inversion
+  without you leaving the chat.** `import_confirm(file_path=...,
+  confirm_sign=True)` shows you the statement's evidence and printed-vs-recorded
+  sample rows and asks you to approve; approving imports the statement, and
+  declining imports nothing. The assistant cannot answer the prompt on your
+  behalf. Previously this one case sent you to a terminal, even though the
+  same inversion already asked you in place on spreadsheet and
+  AI-extracted-PDF imports.
+
 ### Changed
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with
