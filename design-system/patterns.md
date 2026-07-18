@@ -148,7 +148,11 @@ One field, three grammars — the palette is a router, not a search page.
   SAVED REPORTS / ACTIONS. The active row holds `--accent-verdigris-tint`, the
   same selection thread as a tinted table row and a chart's verdigris anchor.
 - **A `>` or `SELECT` prefix** flips the field to `--font-data` and treats the
-  input as SQL; `⏎` opens the query in a new console tab, already run.
+  input as SQL; `⏎` opens the query in a new console tab, already run. The
+  palette is not a privileged path: auto-run goes through the **same read-only
+  validation as every other SQL surface**, and a statement that fails it opens
+  in the console *unrun*, with the reason stated. The palette never executes
+  what the console would refuse.
 - **Keys** — `↑↓` move, `⏎` opens, `esc` closes (it is a floating layer, §07).
 
 The ask action renders as the `▸_` caret row, never an icon — see `ai-surface.md`

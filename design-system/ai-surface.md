@@ -43,8 +43,16 @@ asks once, states what it covers, and gets out of the way.
 |---|---|---|
 | 0 / 1 | Aggregates, schema, structure | Flows. No gate. |
 | 2 | Rows — descriptions, amounts, dates | Stops at a consent gate that **still answers with the aggregate**. |
-| Critical | Account numbers, SSNs, credentials | Never leaves the machine. Not gated — excluded. |
+| Critical | Account numbers, routing numbers | **Always masked.** Never sent unmasked, and no consent tier unlocks the real value. |
 
+- **Critical fields are masked, not withheld.** State this precisely in UI copy:
+  they leave as deterministic placeholders preserving the last four digits
+  (`****1234`), so an answer can still name an account without exposing it. Copy
+  that promises critical data "never leaves your machine" is **wrong** — the
+  guarantee is *never unmasked*, which is a claim about mechanism rather than
+  about completeness, and it is the one the code actually keeps. The binding
+  source is the repo's privacy-and-AI-trust spec and the redaction module; this
+  doc restates them and never widens them.
 - **The gate is one modal** — the floating layer of `patterns.md` §07, same
   anatomy as every other. It is not a banner, an interstitial, or a nag.
 - **The grant is revocable in one stated command.** The revocation is named at

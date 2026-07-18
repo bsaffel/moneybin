@@ -16,7 +16,9 @@ The single icon vocabulary — 19 glyphs, custom-drawn to the grammar: 20×20 gr
 
 ### Earmarked, not promoted
 
-`eye` / `eye-off` — earmarked by the vault passphrase reveal. They stay in the reserve until the v1 vault screen ships; at that point the type union, `Icon.names`, the vocabulary card, and the `off` prop below are promoted **together**, as one API change.
+`eye` / `eye-off` — earmarked by the vault passphrase reveal. Both glyphs stay in the reserve until the v1 vault screen ships.
+
+**What the promotion adds.** Only `eye` enters the public vocabulary — the type union, `Icon.names`, and the vocabulary card — together with the `off` prop below, as one API change. `eye-off` stays an *internal* glyph id backing the `off` state and is deliberately never a public name: two public names would let a caller swap one component for another and lose the shared-outline transition the toggle exists to provide.
 
 **Composed toggle — specified, not yet implemented.** When the promotion lands, the pair ships as one composed state on `Icon`, never a page-level one-off SVG and never two separate glyph names in the markup:
 

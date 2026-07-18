@@ -125,6 +125,23 @@ The converter carries only the **9 components**. The remaining **30** cards are
   - **Charset fix applied to source:** the hand-authored guideline HTML lacked
     `<meta charset="utf-8">`, so `−`/`·`/`▲▼` rendered as mojibake. A
     `<meta charset>` was injected into each `guidelines/*.html`. Keep it.
+- **4 root prose docs** — `charts.md`, `motion.md`, `patterns.md`,
+  `ai-surface.md`. These are the binding grammar and they publish **verbatim**
+  to the mirror root: add them to the plan writes and upload alongside the
+  guidelines. They carry no `@dsCard` marker, so the pane never registers them
+  as cards — they sit as readable files, exactly like `styles.css`.
+  - **Copy them; never summarize them into the mirror.** A hand-written digest
+    is a second copy of the grammar that drifts against the source.
+    `.design-sync/conventions.md` (→ `readmeHeader`, prepended to the mirror's
+    `README.md`) carries only a *routing table* naming the four docs plus the
+    handful of most-violated rules — discovery is pushed, the grammar is pulled.
+  - **Why they live at design-system root and not `guidelines/`:** the
+    converter's `guidelinesGlob` is `.md`-only, so prose in `guidelines/` would
+    be picked up and registered as a specimen card. Root placement avoids that.
+    It does *not* affect the upload path, which bypasses the converter.
+  - Before 2026-07, none of these published at all — the mirror carried only
+    components, cards, `styles.css`, and `ui_kits`, so an agent designing in
+    claude.ai had no binding grammar in reach.
 - **`ui_kits/web_app/index.html`** — the "Dashboard home" 1440×900 card
   (`@dsCard` + `@startingPoint`). References `../../styles.css` (resolves at
   `ui_kits/web_app/` depth). Synced via the same hand-upload path as guidelines
