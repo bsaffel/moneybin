@@ -102,6 +102,20 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     **Implementation note (PR 2):** the taxonomy module (`src/moneybin/error_codes.py`) also declares `infra_*`, `sync_*`, and `gsheet_*` prefixes to absorb existing non-recovery error codes (`infra_database_locked`, `infra_io_error`, `sync_error`, `gsheet_error`, etc.) without leaving them unprefixed. `sync_*` (mediated providers) and `gsheet_*` (user-controlled storage) are distinct connector domains per the `_connect`/`_link` verb split in `surface-design.md`. These prefixes are *not* part of the recovery contract — they exist purely for taxonomy completeness so `test_error_codes::test_every_code_uses_valid_prefix` can be enforced repo-wide. New recovery codes must use one of the six prefixes in the table above.
 
+    **`infra_permission_denied`.** Fires when the OS refuses access to a file the user named — distinct from `infra_file_not_found`, which means the path does not exist. The three failures it separates are not interchangeable, so the code alone is not the whole answer; `permission_advice()` (`src/moneybin/errors.py`) classifies the `OSError`'s `errno` and returns the matching `hint`:
+
+    | Condition | `hint` |
+    |---|---|
+    | `EACCES` (errno 13) | Check the file's ownership and mode. |
+    | `EPERM` (errno 1) + Darwin + path under `~/Documents`, `~/Desktop`, or `~/Downloads` | Grant the app running MoneyBin Full Disk Access in System Settings → Privacy & Security, restart it, retry. |
+    | anything else | Honest generic: something outside the file's own permissions is blocking access (security policy, sandbox, immutable flag). |
+
+    The macOS branch requires the full conjunction. `EPERM` alone is not proof of a TCC denial — immutable (`uchg`) flags and sandbox denials raise it too — and sending someone to System Settings for one of those is a confidently wrong answer, which is worse than an honest vague one.
+
+    `details` carries `errno` and `platform` on every permission failure, plus `protected_root` (`Documents` / `Desktop` / `Downloads`) when the macOS branch fires. Those are the fields an agent branches on.
+
+    The macOS remedy is delivered via `hint`, **not** `recovery_actions`: a `RecoveryAction` requires a `tool` naming an MCP tool (`min_length=1`, `extra="forbid"`), so the type cannot express an action the user must take outside the app. Extending it to do so is explicitly out of scope — smuggling human instructions into `rationale` while naming an unrelated tool is a strained one-off, not a convention to promote.
+
 4. **`operation_id` schema addition.** `app.audit_log` gains three columns:
 
     | Column | Type | Purpose |

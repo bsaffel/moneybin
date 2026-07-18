@@ -23,6 +23,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **Error codes, hints, and `status` now actually reach MCP callers.** Every
+  tool's error response carried only the message: the envelope held the
+  exception object itself, which could not be serialized, so `error.code`,
+  `error.hint`, `error.details`, and the top-level `status` field were silently
+  dropped on the way out. Agents branching on `error.code` saw nothing to branch
+  on, and no test caught it — the one assertion that checked `error.code`
+  exercised a code path that rebuilt the envelope by hand rather than the one
+  tools actually return through. The envelope now carries a structured error
+  value and a real `status` field, so both arrive intact on every tool.
+- **A permission-denied import now tells you how to fix it.** Importing a file
+  the OS refuses to open returns the new `infra_permission_denied` code with a
+  hint matched to the actual cause: a file-mode problem says to check ownership
+  and permissions, while a macOS block on `~/Documents`, `~/Desktop`, or
+  `~/Downloads` says to grant Full Disk Access in System Settings → Privacy &
+  Security and restart the app — the only step that works, and one no amount of
+  `chmod` would have achieved. A denial that is neither says so plainly rather
+  than guessing. The inbox no longer suggests `chmod` for a macOS access block.
+- **A file that fails to import now reports why.** Per-file failures in
+  `import_files` previously reported only the exception's class name
+  (`PermissionError`), which told the user nothing actionable; each failure now
+  carries the classified message, `error_code`, and `hint`. A batch in which
+  every file failed reports `status: "error"` instead of `"ok"`. Exceptions
+  MoneyBin does not recognize still report only the class name — raw exception
+  text can embed file contents.
+- **`moneybin import preview` no longer prints a raw traceback on failure.** It
+  now emits the same classified error every sibling import command does.
 - **Real credit-card PDF statements now extract their transactions instead of
   falling back to a raw dump.** Chase card statements (and others shaped like
   them) print their transaction table in three ways no synthetic sample did: a
