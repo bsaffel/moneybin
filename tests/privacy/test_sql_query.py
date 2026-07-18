@@ -9,6 +9,8 @@ inherit identical behavior structurally.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from moneybin import error_codes
@@ -427,6 +429,7 @@ def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> N
 
 def test_unresolvable_column_reference_classifies_by_scope_inputs(
     populated_db: Database,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A subquery-alias column (`key is None`) classifies by scope, not blanket CRITICAL.
 
@@ -441,11 +444,17 @@ def test_unresolvable_column_reference_classifies_by_scope_inputs(
     coverage-gap fix must not introduce.
     """
     _seed_txn(populated_db)
-    result = execute_sql_query(
-        populated_db,
-        "SELECT x FROM (SELECT amount AS x FROM core.fct_transactions) s",
-        max_rows=100,
-    )
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_lineage"):
+        result = execute_sql_query(
+            populated_db,
+            "SELECT x FROM (SELECT amount AS x FROM core.fct_transactions) s",
+            max_rows=100,
+        )
     assert result.output_classes["x"] is DataClass.TXN_AMOUNT
     assert result.tier is Tier.HIGH
     assert not str(result.records[0]["x"]).startswith("*")
+    # Pins that the `key is None` branch was actually taken. Without this, a
+    # future sqlglot that resolves the subquery alias would classify `x`
+    # directly, and the test would keep passing while silently no longer
+    # exercising the branch it exists to guard.
+    assert "unresolved projection; conservative fallback" in caplog.text
