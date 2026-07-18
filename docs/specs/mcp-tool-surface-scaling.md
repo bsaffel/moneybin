@@ -218,10 +218,14 @@ The subsequent confirmation is bound to that representation, short-lived, and
 single-use. Immediately before commit MoneyBin recomputes the canonical
 representation and refuses expired, replayed, or mismatched approval.
 
-Capable clients use elicitation over this contract. Degraded clients use an
-opaque confirmation token carrying the same binding. Confirmation prevents the
-wrong mutation; `system_audit_undo` remains the recovery path when intent later
-changes.
+Capable clients use elicitation over this contract. The elicitation requests an
+explicit boolean and confirms only an accepted `true`, followed by a fresh
+binding comparison. This avoids FastMCP's deprecated empty-schema elicitation,
+which can render a non-functional form in supported clients. The boolean is
+elicitation response data, not a bare `confirm` tool argument. Degraded clients
+use an opaque confirmation token carrying the same binding. Confirmation
+prevents the wrong mutation; `system_audit_undo` remains the recovery path when
+intent later changes.
 
 ### 6. Entity references fail loud
 

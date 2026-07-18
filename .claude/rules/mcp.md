@@ -172,12 +172,15 @@ blast-radius summary. Approval is short-lived and single-use. Recompute the
 canonical representation immediately before commit and distinguish expired,
 replayed, mismatched, and nothing-to-do results.
 
-Use MCP elicitation when the client supports it. Degraded clients receive an
-opaque confirmation token carrying the same binding. A bare boolean `confirm`
-is not sufficient for new operations. Compatible same-intent writes may share
-one conservatively annotated tool; classify validated arguments and confirm
-only the destructive branch. Do not combine reads with writes or operations
-whose authorization, sensitivity, audit, or recovery contracts differ.
+Use MCP elicitation when the client supports it. Request an explicit boolean
+and confirm only an accepted `true`, then compare a freshly recomputed binding.
+Do not use FastMCP's deprecated empty-schema elicitation. This elicited boolean
+is not a bare `confirm` tool argument: degraded clients receive an opaque token
+carrying the same binding, and no operation proceeds without exact binding
+verification. Compatible same-intent writes may share one conservatively
+annotated tool; classify validated arguments and confirm only the destructive
+branch. Do not combine reads with writes or operations whose authorization,
+sensitivity, audit, or recovery contracts differ.
 
 ## Surface change discipline
 

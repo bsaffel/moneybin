@@ -234,6 +234,7 @@ class MetricsConfig(BaseModel):
 # imports config, never the reverse. get_database's max_wait default imports
 # this value back. See database-writer-coordination.md.
 DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS: float = 10.0
+DEFAULT_CONFIRMATION_TTL_SECONDS: int = 300
 
 
 class MCPConfig(BaseModel):
@@ -263,6 +264,14 @@ class MCPConfig(BaseModel):
             "list[X] / Sequence[X] / tuple[X, ...]. Exceeding returns a "
             "ResponseEnvelope.error with code='too_many_items'. Parallels max_rows "
             "for read responses. See docs/specs/moneybin-mcp.md §Collection size cap."
+        ),
+    )
+    confirmation_ttl_seconds: int = Field(
+        default=DEFAULT_CONFIRMATION_TTL_SECONDS,
+        ge=30,
+        le=900,
+        description=(
+            "Lifetime of process-local destructive-mutation confirmation tokens."
         ),
     )
     tool_timeout_seconds: float = Field(

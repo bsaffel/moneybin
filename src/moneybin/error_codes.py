@@ -46,6 +46,9 @@ IMPORT_SUPERSEDED = "import_superseded"
 # classifier. The per-domain retrofits in PRs 9a-N migrate write-site
 # raise ValueError/LookupError to explicit UserError(code=MUTATION_*) calls.
 MUTATION_AMBIGUOUS = "mutation_ambiguous"
+MUTATION_CONFIRMATION_EXPIRED = "mutation_confirmation_expired"
+MUTATION_CONFIRMATION_MISMATCH = "mutation_confirmation_mismatch"
+MUTATION_CONFIRMATION_REPLAYED = "mutation_confirmation_replayed"
 # The mutation needs explicit human agreement the caller could not obtain: the
 # client cannot elicit, there is no active session to ask, or the human
 # declined. Raised INSTEAD of mutating — never alongside a partial write. The
@@ -54,6 +57,7 @@ MUTATION_CONFIRMATION_REQUIRED = "mutation_confirmation_required"
 MUTATION_CONSTRAINT_VIOLATION = "mutation_constraint_violation"
 MUTATION_INVALID_INPUT = "mutation_invalid_input"
 MUTATION_NOT_FOUND = "mutation_not_found"
+MUTATION_NOTHING_TO_DO = "mutation_nothing_to_do"
 
 
 # ---------------------------------------------------------------------------
