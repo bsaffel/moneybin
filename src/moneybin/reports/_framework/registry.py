@@ -1,9 +1,10 @@
-"""Discover ``@report`` runners and register them on the MCP and CLI surfaces.
+"""Discover ``@report`` runners and register them on explicit surfaces.
 
 In-tree reports are collected from an explicit list (the ``definitions``
 package's exports); ``discover_reports`` scans a module's members for the same
-``_report_spec`` marker so a package (Plan 4) can contribute reports the same
-way.
+``_report_spec`` marker. Extensions join the process-local catalog and their
+own Typer app through ``register_extension_reports`` without touching MCP.
+The combined core MCP+CLI registrars remain transitional until Plan 6.
 
 Cold-start: the per-surface registrars are imported lazily inside each function
 so importing this module from the CLI path never pulls ``fastmcp`` (via
@@ -30,6 +31,32 @@ def register_extension_report(spec: ReportSpec) -> None:
     if spec.report_id in _extension_reports:
         raise ValueError(f"duplicate extension report_id: {spec.report_id}")
     _extension_reports[spec.report_id] = spec
+
+
+def register_extension_reports(
+    runners: Iterable[Runner], app: typer.Typer
+) -> list[ReportSpec]:
+    """Register extension runners in the process catalog and their own CLI app."""
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from moneybin.reports._framework.cli_register import register_report_cli
+
+    specs = [spec_of(runner) for runner in runners]
+    batch_ids = [spec.report_id for spec in specs]
+    duplicate_ids = {
+        report_id for report_id in batch_ids if batch_ids.count(report_id) > 1
+    }
+    current_ids = {report.report_id for report in get_report_catalog().list()}
+    duplicate_ids.update(current_ids.intersection(batch_ids))
+    if duplicate_ids:
+        raise ValueError(
+            f"duplicate extension report_id: {', '.join(sorted(duplicate_ids))}"
+        )
+
+    for spec in specs:
+        register_extension_report(spec)
+    for spec in specs:
+        register_report_cli(spec, app)
+    return specs
 
 
 def extension_report_specs() -> tuple[ReportSpec, ...]:

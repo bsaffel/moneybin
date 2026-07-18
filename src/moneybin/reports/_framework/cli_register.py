@@ -2,8 +2,8 @@
 
 Builds a command whose ``__signature__`` carries the report's params (each as a
 ``typer.Option``, flag auto-derived from the name) plus the shared
-``--output`` / ``--quiet`` options, then runs the report through ``run_report``
-and renders text or a JSON envelope via the shared ``render_or_json`` helper.
+``--output`` / ``--quiet`` options, then runs the stable report ID through the
+shared catalog and renders text or a JSON envelope via ``render_or_json``.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
     def _impl(**kwargs: Any) -> None:
         # Deferred so importing this module (at CLI command registration) does
         # not pull execute → sql_lineage → sqlglot into the CLI cold-start path.
-        from moneybin.reports._framework.execute import run_report
+        from moneybin.reports._framework.catalog import get_report_catalog
 
         output: OutputFormat = kwargs.pop("output")
         # quiet has nothing to silence here: the text renderer emits only the
@@ -79,7 +79,12 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
             # raise typer.BadParameter would bypass that envelope (Typer prints
             # plain text, exit 2) — breaking the JSON contract for agents.
             with get_database(read_only=True) as db:
-                result = run_report(spec, db, max_rows=_CLI_MAX_ROWS, **kwargs)
+                result = get_report_catalog().execute(
+                    db,
+                    report_id=spec.report_id,
+                    parameters=kwargs,
+                    limit=_CLI_MAX_ROWS,
+                )
 
             def _render_text(_: ResponseEnvelope[Any]) -> None:
                 if result.records:

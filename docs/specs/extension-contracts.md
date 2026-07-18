@@ -297,15 +297,16 @@ Packages writing to another package's prefix is not permitted — the writes-cap
 
 ### What a Report is
 
-A Report is a single decorated **Python runner** over a `reports.*` view. The runner is the report's whole definition — it validates parameters, resolves free-text inputs to ids, and builds a parameterized read-only `SELECT`, returning a `ReportQuery`. The framework introspects the runner's signature and Google-style docstring into a `ReportSpec` and generates a stable report-catalog entry, CLI command, and `TableRef` wiring from that one definition.
+A Report is a single decorated **Python runner** over a `reports.*` view. The runner is the report's whole definition — it validates parameters, resolves free-text inputs to ids, and builds a parameterized read-only `SELECT`, returning a `ReportQuery`. The framework introspects the runner's signature and Google-style docstring into a `ReportSpec`, registers a stable report-catalog entry and CLI command, and carries the runner's declared `TableRef`.
 
 > **M3K.2 catalog foundation (implemented 2026-07-18):** the framework's
-> SQL-backed and service-backed reports now share one internal catalog and
-> result contract. Under
-> [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md), report
-> definitions register behind the single read-only `reports` catalog/runner.
-> The transitional per-report MCP tools and ergonomic CLI commands remain
-> registered with unchanged public names until their scheduled removal.
+> SQL-backed and service-backed reports share one internal catalog and result
+> contract. Core and explicitly installed extension reports receive ergonomic
+> CLI commands that execute by stable catalog ID. The dormant generic
+> `reports` MCP contract consumes that same union after the Plan 6 atomic
+> cutover; until then the live 105-tool registry stays frozen. The invariant is
+> permanent: adding a report changes catalog and CLI surfaces, never MCP tool
+> count.
 
 ```python
 @report(name="cashflow", view=REPORTS_CASH_FLOW)
@@ -331,35 +332,22 @@ src/moneybin/packages/assets/
 └── reports/assets_summary.py           → @report(name="assets_summary", view=REPORTS_ASSETS_SUMMARY)
 ```
 
-The package's `register()` calls `discover_reports(<reports module>)` and feeds the runners to the same `register_reports` path core uses — no separate manifest. The report inherits the package's prefix and Quality Scale.
+The package's explicit CLI registration calls
+`register_extension_reports(discover_reports(<reports module>), package_app)`.
+That lifecycle preflights duplicate stable IDs, adds the runners to the
+process-local report catalog, and adds one generated command to the
+extension-owned Typer app for each report. It does not accept a `FastMCP`
+object and does not call the transitional core MCP registrar. The report
+inherits the package's prefix and Quality Scale.
 
-**Scenario B — Standalone report extension:** A contributor adds a single report — either in-tree (PR against MoneyBin Core) or as an installable PyPI package (`moneybin-report-<name>`). The view ships as a SQLMesh model; the runner is a `@report`-decorated module.
-
-Minimal manifest for the standalone case:
-
-```yaml
-name: report_seasonal_spending
-type: report                              # tells the framework this is a Report, not a full Package
-display_name: Seasonal Spending Report
-version: 1.0.0
-quality_scale: bronze
-
-publisher: { name: Community Contributor, verified: false }
-
-description: |
-  Breaks down spending by season (winter/spring/summer/fall) and year.
-
-capabilities:
-  reads:
-    - core.fct_transactions
-    - core.dim_categories
-  writes:
-    - reports.seasonal_spending           # exactly one view, must match name
-  network: []
-  secrets: []
-```
-
-The `type: report` flag changes framework validation: a Report extension contributes exactly one view in `reports.*` plus its `@report` runner and may NOT include other `services/`, `models/{raw,core,app,prep}/`, or `schema/` subdirectories. Its stable report ID is namespaced and derived at registration; a short alias is accepted only when unambiguous. The runner's `view=` must resolve to that one `reports.*` view.
+**Scenario B — Standalone report extension (future):** A contributor adds a
+single report, either in-tree or as an installable distribution. The durable
+distribution, manifest, validation, and auto-discovery contract remains future
+work. The current package manifest does not implement a standalone
+`type: report` variant, and the framework does not scan installed packages or
+local directories for report runners. Until that public contract is designed,
+callers install a decorated runner explicitly through
+`register_extension_reports`; no implicit import or auto-wiring occurs.
 
 ### Naming conventions
 
@@ -396,7 +384,7 @@ not a default.
 
 ### Auto-generation of report surfaces
 
-A report contributor writes one `@report`-decorated runner. The framework introspects the runner's **signature** (parameter names, resolved types, defaults) and its **Google-style docstring** (summary, `Args:`, `Examples:`) into a `ReportSpec`, then generates the report-catalog entry, CLI command, and `TableRef` wiring from that single definition.
+A report contributor writes one `@report`-decorated runner. The framework introspects the runner's **signature** (parameter names, resolved types, defaults) and its **Google-style docstring** (summary, `Args:`, `Examples:`) into a `ReportSpec`, then registers the report-catalog entry and CLI command from that single definition. The spec carries the runner's declared `TableRef` for execution and provenance.
 
 Worked example — the shipped `cashflow` runner (`src/moneybin/reports/definitions/cash_flow.py`):
 
@@ -453,7 +441,7 @@ How the parts map (introspection rules, `src/moneybin/reports/_framework/introsp
 
 - The first parameter must be named `db`; every other parameter must be keyword-only (declared after a bare `*`). That shape lets each parameter become a catalog schema property and a Typer `--flag`.
 - The **docstring summary** becomes the catalog/command description; each **`Args:`** entry becomes that parameter's help string; each **`Examples:`** line is captured on `ReportSpec.examples` as a usage hint. (Runtime next-step hints in the response envelope come from the runner's own `ReportQuery.actions`, which the runner sets per call — distinct from the static docstring examples.)
-- Each parameter's resolved type and default flow into both surfaces. The runner raises `ValueError` for invalid enum values; the CLI registrar converts that to a clean `typer.BadParameter` exit.
+- Each parameter's resolved type and default flow into both surfaces. The runner raises `ValueError` for invalid enum values; the CLI's shared classified-error path returns the normal JSON error envelope for agent callers.
 - `parameter_classes` is required and must cover the runner's non-`db`
   parameters exactly. The class is stored on each `ParamSpec`; missing and
   extra declarations fail registration.
@@ -461,7 +449,7 @@ How the parts map (introspection rules, `src/moneybin/reports/_framework/introsp
 From the `ReportSpec`, the framework generates:
 
 - **`TableRef` wiring** — the runner declares `view=REPORTS_CASH_FLOW` (a `TableRef` constant); the spec carries it for execution and schema lineage.
-- **MCP report entry** — stable ID `core:cashflow`, parameter schema derived from the runner, and output/metric metadata consumed by `reports(report_id="core:cashflow", parameters={...})`. M3K.2 replaces the current per-report `mcp_register.py` output with registry registration.
+- **MCP report entry** — stable ID `core:cashflow`, parameter schema derived from the runner, and output/metric metadata consumed by the one generic `reports(report_id="core:cashflow", parameters={...})` contract after Plan 6. Installing the entry never generates a per-report MCP tool.
 - **CLI command** — `moneybin reports cashflow [--from-month ...] [--to-month ...] [--by ...]` (`src/moneybin/reports/_framework/cli_register.py`). The command name is `<name>` with underscores rendered as hyphens.
 
 At call time the framework validates parameters, executes the runner's
@@ -482,7 +470,7 @@ identical envelopes via the shared `ReportResult`.
 
 Report column classification is **declared, not lineage-derived** ([ADR-013](../decisions/013-report-classification-declared.md)). SQLMesh deploys each report view as a `SELECT * FROM <internal physical table>` pointer, so lineage on the deployed view body classifies the pointer (not the logic) and would leak; and provenance ≠ sensitivity for derived columns (a z-score of an amount is `AGGREGATE`, not `TXN_AMOUNT`). Reports are a fixed, first-party surface known at design time, so each declares its `column → DataClass` map on `@report` — on the same footing as the `CLASSIFICATION` registry that declares `core`/`app` base truth. A scenario test (`tests/scenarios/test_reports_classification.py`) asserts the declared map covers the real built view's columns and that `account_id` stays CRITICAL. (`sql_query` keeps using lineage — its correct home: an arbitrary agent query reading `core`/`app` directly.)
 
-The six in-tree view-backed reports — `cashflow`, `spending`, `recurring`, `merchants`, `large_transactions`, `balance_drift` — ship through this framework as `@report` runners in `src/moneybin/reports/definitions/`. They are wired via an explicit `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`; packages contribute reports through the same `@report` decorator and the `discover_reports` scanner. `reports_networth` / `reports_networth_history` stay hand-written (`NetworthService`-backed, not single-view reads) — a documented exception, not part of `ALL_REPORTS`. `reports_budget` was removed (it synthesized from `BudgetService` rather than a `reports.*` view; it returns through the framework once M3C ships a `reports.budget` view).
+The six in-tree view-backed reports — `cashflow`, `spending`, `recurring`, `merchants`, `large_transactions`, `balance_drift` — ship through this framework as `@report` runners in `src/moneybin/reports/definitions/`. They are wired via an explicit `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`; extensions may use `discover_reports` to collect decorated runners but must pass that explicit collection to `register_extension_reports`. The `networth` / `networth-history` CLI commands stay hand-written for their established flags and text layouts, while their execution uses the same `ReportCatalog` and service-backed specs. `reports_budget` was removed (it synthesized from `BudgetService` rather than a `reports.*` view; it returns through the framework once M3C ships a `reports.budget` view).
 
 ### Documentation requirements
 

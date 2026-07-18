@@ -119,19 +119,21 @@ def test_cli_command_accepts_hyphenated_window_flags() -> None:
     app = _windowed_app()
     captured: dict[str, object] = {}
 
-    def _fake_run_report(
-        spec: object, db: object, *, max_rows: int, **kwargs: object
+    def _fake_execute(
+        db: object,
+        *,
+        report_id: str,
+        parameters: dict[str, object],
+        limit: int,
     ) -> ReportResult:
-        captured.update(kwargs)
+        captured.update(parameters)
         return _result()
 
     with (
         patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
-        patch(
-            "moneybin.reports._framework.execute.run_report",
-            side_effect=_fake_run_report,
-        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
+        mock_catalog.return_value.execute.side_effect = _fake_execute
         result = _runner_cli.invoke(
             app,
             [
@@ -167,11 +169,9 @@ def test_cli_command_json_output_emits_envelope() -> None:
     app = _multi_command_app()
     with (
         patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
-        patch(
-            "moneybin.reports._framework.execute.run_report",
-            return_value=_result(),
-        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
+        mock_catalog.return_value.execute.return_value = _result()
         result = _runner_cli.invoke(
             app, ["balance-drift", "--top", "5", "--output", "json"]
         )
@@ -188,12 +188,10 @@ def test_cli_command_passes_classes_returned_to_audit() -> None:
     app = _multi_command_app()
     with (
         patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
-        patch(
-            "moneybin.reports._framework.execute.run_report",
-            return_value=_result(),
-        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
         patch("moneybin.reports._framework.cli_register.render_or_json") as mock_render,
     ):
+        mock_catalog.return_value.execute.return_value = _result()
         result = _runner_cli.invoke(
             app, ["balance-drift", "--top", "5", "--output", "json"]
         )
@@ -212,14 +210,40 @@ def test_cli_command_value_error_emits_json_error_envelope() -> None:
     app = _multi_command_app()
     with (
         patch("moneybin.reports._framework.cli_register.get_database", MagicMock()),
-        patch(
-            "moneybin.reports._framework.execute.run_report",
-            side_effect=ValueError("Unknown status: bogus"),
-        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
     ):
+        mock_catalog.return_value.execute.side_effect = ValueError(
+            "Unknown status: bogus"
+        )
         result = _runner_cli.invoke(app, ["balance-drift", "--output", "json"])
     assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)
     assert payload["status"] == "error"
     assert payload["error"]["code"] == error_codes.INFRA_INVALID_INPUT
     assert "Unknown status: bogus" in payload["error"]["message"]
+
+
+def test_cli_command_executes_stable_report_id_through_catalog() -> None:
+    app = _multi_command_app()
+    database = MagicMock()
+    database_context = MagicMock()
+    database_context.__enter__.return_value = database
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=database_context,
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _result()
+        result = _runner_cli.invoke(
+            app, ["balance-drift", "--top", "5", "--output", "json"]
+        )
+
+    assert result.exit_code == 0, result.output
+    mock_catalog.return_value.execute.assert_called_once_with(
+        database,
+        report_id="test:balance_drift",
+        parameters={"top": 5},
+        limit=1_000_000,
+    )

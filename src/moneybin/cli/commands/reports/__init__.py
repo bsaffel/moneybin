@@ -4,7 +4,7 @@ The view-backed reports (cashflow, spending, recurring, merchants,
 large-transactions, balance-drift) are generated from ``@report`` runners in
 ``moneybin.reports.definitions`` and registered via ``register_reports_cli``.
 ``networth`` / ``networth-history`` are NetworthService-backed and stay
-hand-written.
+hand-written for flag and text ergonomics while executing through the catalog.
 """
 
 from __future__ import annotations

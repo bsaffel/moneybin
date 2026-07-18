@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import logging
-from datetime import date as _date
+from typing import cast
 
 import typer
+from pydantic import JsonValue
 
 from moneybin.cli.output import (
     OutputFormat,
@@ -15,10 +15,9 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
-from moneybin.protocol.envelope import build_envelope
-from moneybin.services.networth_service import NetworthService
-
-logger = logging.getLogger(__name__)
+from moneybin.reports._framework.cli_register import (
+    _CLI_MAX_ROWS,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701 — shared report cap
+)
 
 
 def reports_networth(
@@ -35,33 +34,47 @@ def reports_networth(
 ) -> None:
     """Show current or as-of net worth + per-account breakdown."""
     with handle_cli_errors():
+        from moneybin.reports._framework.catalog import (  # noqa: PLC0415 — defer catalog import
+            get_report_catalog,
+        )
+
         with get_database(read_only=True) as db:
-            as_of_date = _date.fromisoformat(as_of) if as_of else None
-            snapshot = NetworthService(db).current(
-                as_of_date=as_of_date, account_ids=account
+            result = get_report_catalog().execute(
+                db,
+                report_id="core:networth",
+                parameters={
+                    "as_of": as_of,
+                    "account_ids": cast(JsonValue, account),
+                },
+                limit=_CLI_MAX_ROWS,
             )
 
     def _render_text(_: object) -> None:
-        if snapshot.balance_date is None:
+        if not result.records or result.records[0]["balance_date"] is None:
             typer.echo("No net worth data available.")
             return
-        typer.echo(f"Net worth as of {snapshot.balance_date}: {snapshot.net_worth}")
-        typer.echo(f"  Assets:      {snapshot.total_assets}")
-        typer.echo(f"  Liabilities: {snapshot.total_liabilities}")
-        typer.echo(f"  Accounts:    {snapshot.account_count}")
-        if snapshot.per_account:
+        snapshot = result.records[0]
+        typer.echo(
+            f"Net worth as of {snapshot['balance_date']}: {snapshot['net_worth']}"
+        )
+        typer.echo(f"  Assets:      {snapshot['total_assets']}")
+        typer.echo(f"  Liabilities: {snapshot['total_liabilities']}")
+        typer.echo(f"  Accounts:    {snapshot['account_count']}")
+        accounts = [row for row in result.records if row["account_id"] is not None]
+        if accounts:
             typer.echo("Per-account breakdown:")
-            for row in snapshot.per_account:
+            for row in accounts:
                 typer.echo(
-                    f"  {row.display_name:<40} {row.balance:>14}  "
-                    f"({row.observation_source})"
+                    f"  {row['account_name']!s:<40} {row['account_balance']!s:>14}  "
+                    f"({row['observation_source']})"
                 )
 
     render_or_json(
-        build_envelope(data=snapshot, sensitivity="low"),
+        result.to_envelope(),
         output,
         render_fn=_render_text,
         cli_actor="reports_networth",
+        classes_returned=result.classes_returned,
     )
 
 
@@ -76,28 +89,39 @@ def reports_networth_history(
 ) -> None:
     """Net worth time series with period-over-period change."""
     with handle_cli_errors():
+        from moneybin.reports._framework.catalog import (  # noqa: PLC0415 — defer catalog import
+            get_report_catalog,
+        )
+
         with get_database(read_only=True) as db:
-            parsed_from = _date.fromisoformat(from_date)
-            parsed_to = _date.fromisoformat(to_date)
-            payload = NetworthService(db).history(
-                parsed_from, parsed_to, interval=interval
+            result = get_report_catalog().execute(
+                db,
+                report_id="core:networth_history",
+                parameters={
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "interval": interval,
+                },
+                limit=_CLI_MAX_ROWS,
             )
 
     def _render_text(_: object) -> None:
         typer.echo("period      net_worth     change_abs    change_pct")
-        for point in payload.points:
-            change_abs = point.change_abs if point.change_abs is not None else "-"
+        for point in result.records:
+            change_abs = point["change_abs"] if point["change_abs"] is not None else "-"
             change_pct = (
-                f"{point.change_pct:.2%}" if point.change_pct is not None else "-"
+                f"{point['change_pct']:.2%}" if point["change_pct"] is not None else "-"
             )
             typer.echo(
-                f"{point.period:<12} {point.net_worth:>12} {change_abs!s:>13} "
+                f"{point['period']!s:<12} {point['net_worth']!s:>12} "
+                f"{change_abs!s:>13} "
                 f"{change_pct:>10}"
             )
 
     render_or_json(
-        build_envelope(data=payload, sensitivity="low"),
+        result.to_envelope(),
         output,
         render_fn=_render_text,
         cli_actor="reports_networth_history",
+        classes_returned=result.classes_returned,
     )
