@@ -525,18 +525,32 @@ def derive_query_tier(output_classes: dict[str, DataClass]) -> Tier:
 
 @functools.cache
 def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
-    """(schema, table) -> {column: DataClass} from every @report's declared map.
+    """(schema, table) -> {column: DataClass}, merged from two sources.
 
     Reports declare their classes on @report(classes=...) (ADR-013); lineage
     can't derive them because SQLMesh deploys reports.* as `SELECT *` pointers.
-    Imported lazily to avoid a privacy<->reports import cycle and to keep the
-    CLI cold-start path from eagerly loading report runners.
+    A deployed reports.* view without an @report runner yet (net_worth,
+    uncategorized_queue) is covered by the transitional bridge in
+    reports/definitions/_bridged_classes.py instead — see that module's
+    docstring. Both sources are imported lazily to avoid a privacy<->reports
+    import cycle and to keep the CLI cold-start path from eagerly loading
+    report runners.
     """
     from moneybin.reports._framework.registry import spec_of  # noqa: PLC0415
     from moneybin.reports.definitions import ALL_REPORTS  # noqa: PLC0415
+    from moneybin.reports.definitions._bridged_classes import (  # noqa: PLC0415
+        BRIDGED_REPORT_CLASSES,
+    )
 
     out: dict[tuple[str, str], dict[str, DataClass]] = {}
     for runner in ALL_REPORTS:
         spec = spec_of(runner)
         out[(spec.view.schema, spec.view.name)] = dict(spec.classes)
+    for key, cols in BRIDGED_REPORT_CLASSES.items():
+        if key in out:
+            raise RuntimeError(
+                f"reports class bridge {key} duplicates an @report runner; "
+                "remove the bridge entry now that the view has a runner"
+            )
+        out[key] = dict(cols)
     return out
