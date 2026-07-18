@@ -180,6 +180,47 @@ def _tabular_confirm_cli_equivalent(
     return shlex.join(parts)
 
 
+def _reject_unsupported_pdf_account_signals(
+    *,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> None:
+    """Refuse account-selection signals no PDF channel can honor.
+
+    Both PDF entry points bottom out in a service method that takes only
+    `account_id` — `_import_pdf` for the deterministic/sign channel and
+    `apply_pdf_bridge_response` for the bridge. Every other account signal is
+    tabular-only, so forwarding is not merely unimplemented but impossible
+    without a service-layer change. Accepting one silently would bind the rows
+    to a statement- or filename-derived account while the caller believes they
+    chose one — the failure is invisible at the call site and expensive to
+    notice later, which is exactly when a loud refusal is worth more than a
+    best-effort guess. Shared by both channels so a new signal cannot be
+    rejected on one and dropped on the other.
+    """
+    unsupported = next(
+        (
+            name
+            for name, value in (
+                ("account_name", account_name),
+                ("account_bindings", account_bindings),
+                ("account_metadata", account_metadata),
+            )
+            if value
+        ),
+        None,
+    )
+    if unsupported is None:
+        return
+    raise UserError(
+        f"{unsupported} is not supported for a PDF — PDF rows resolve the "
+        "account from the statement; pass account_id to pin rows to an existing "
+        "account when there is no anchor.",
+        code="pdf_account_signal_unsupported",
+    )
+
+
 def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
     """The agent-facing hint for a PDF bridge confirmation_required.
 
@@ -1232,8 +1273,10 @@ async def import_confirm(
         confirm_sign: Enter the sign-inversion resolution for a deterministic
             PDF that ``import_files``/``import_preview`` flagged as a credit-card
             statement. Deterministic PDFs only, and mutually exclusive with
-            ``bridge_response``/``accept``/``mapping``/``account_name`` (pin the
-            account with ``account_id`` instead). This does NOT ratify the
+            ``bridge_response``/``accept``/``mapping``. Like the bridge channel
+            it takes no tabular account signal — ``account_name``,
+            ``account_bindings``, and ``account_metadata`` are refused; pin the
+            account with ``account_id``. This does NOT ratify the
             inversion itself — it asks MoneyBin to put the proposal in front of
             the human, who approves or declines. A declined (or unavailable)
             prompt imports nothing. Only send this for a PDF actually flagged
@@ -1291,16 +1334,11 @@ async def import_confirm(
                 "bridge_response=...) on its own.",
                 code="confirm_channel_conflict",
             )
-        if account_name is not None:
-            # PDF rows resolve their account from the statement; account_name is
-            # a tabular-only signal. Reject it explicitly so it isn't silently
-            # dropped — pin a no-anchor PDF with account_id instead.
-            raise UserError(
-                "account_name is not supported with bridge_response — PDF rows "
-                "resolve the account from the statement; pass account_id to pin "
-                "rows to an existing account when there is no anchor.",
-                code="bridge_account_name_unsupported",
-            )
+        _reject_unsupported_pdf_account_signals(
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
         first_attempt = await asyncio.to_thread(
             _import_confirm_bridge,
             str(path),
@@ -1346,19 +1384,11 @@ async def import_confirm(
                     "confirmation takes no column mapping.",
                     code="confirm_channel_conflict",
                 )
-            if account_name is not None:
-                # Same reason the bridge channel rejects it above: PDF rows
-                # resolve their account from the statement, and `_import_pdf`
-                # takes no account_name. Accepting one here would forward only
-                # account_id and bind the rows to a filename-derived account
-                # instead of the one the caller named — silently, which is worse
-                # than refusing.
-                raise UserError(
-                    "account_name is not supported with confirm_sign — PDF rows "
-                    "resolve the account from the statement; pass account_id to "
-                    "pin rows to an existing account when there is no anchor.",
-                    code="sign_account_name_unsupported",
-                )
+            _reject_unsupported_pdf_account_signals(
+                account_name=account_name,
+                account_bindings=account_bindings,
+                account_metadata=account_metadata,
+            )
             return await _confirm_pdf_sign_with_human(
                 path, save_format=save_format, account_id=account_id
             )

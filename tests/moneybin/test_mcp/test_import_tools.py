@@ -1600,7 +1600,7 @@ class TestImportConfirmBridge:
             account_name="Chase Checking",
         )
         assert result.error is not None
-        assert result.error.code == "bridge_account_name_unsupported"
+        assert result.error.code == "pdf_account_signal_unsupported"
 
     async def test_invalid_path_precedes_account_name_guard(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -1903,7 +1903,59 @@ async def test_confirm_sign_rejects_account_name_instead_of_dropping_it(
         )
 
     assert result.error is not None
-    assert result.error.code == "sign_account_name_unsupported"
+    assert result.error.code == "pdf_account_signal_unsupported"
     assert "account_id" in result.error.message
     # Refused before any import ran — no rows bound to the wrong account.
     mock_service.import_file.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "signal",
+    [
+        {"account_name": "Chase Freedom"},
+        {"account_bindings": {"stmt-4387": "acct-123"}},
+        {"account_metadata": {"stmt-4387": {"display_name": "Freedom"}}},
+    ],
+    ids=["account_name", "account_bindings", "account_metadata"],
+)
+@pytest.mark.parametrize(
+    "channel",
+    [
+        {"confirm_sign": True},
+        {"bridge_response": {"recipe": {}, "rows": []}},
+    ],
+    ids=["sign", "bridge"],
+)
+async def test_pdf_channels_reject_every_tabular_account_signal(
+    channel: dict[str, object],
+    signal: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Neither PDF channel may silently discard an account-selection signal.
+
+    `_import_pdf` and `apply_pdf_bridge_response` both take only `account_id`.
+    Any other account signal cannot be honored, so it must be refused rather
+    than dropped — a drop binds the rows to a statement- or filename-derived
+    account while the caller believes they chose one. The full matrix is pinned
+    here so a fourth signal can't be added on one channel and forgotten on the
+    other.
+    """
+    pdf = write_card_statement_pdf(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("moneybin.mcp.tools.import_tools.get_database", _fake_database)
+
+    mock_service = MagicMock()
+    with patch(
+        "moneybin.services.import_service.ImportService", return_value=mock_service
+    ):
+        result = await import_confirm(file_path=str(pdf), **channel, **signal)  # pyright: ignore[reportArgumentType]
+
+    assert result.error is not None
+    assert result.error.code == "pdf_account_signal_unsupported"
+    # The message must name the offending parameter and the supported one.
+    assert next(iter(signal)) in result.error.message
+    assert "account_id" in result.error.message
+    # Refused before any import ran — nothing bound to the wrong account.
+    mock_service.import_file.assert_not_called()
+    mock_service.apply_pdf_bridge_response.assert_not_called()

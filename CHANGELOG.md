@@ -33,6 +33,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **Choosing an account for a PDF import now fails loudly instead of quietly
+  doing something else.** Both PDF import paths only ever supported pinning by
+  account id, but passing `account_bindings` or `account_metadata` was accepted
+  and then ignored — the transactions landed in an account derived from the
+  statement or the filename while you believed you had chosen one. Those
+  parameters are now refused with a message naming the one that works.
 - **Real credit-card PDF statements now extract their transactions instead of
   falling back to a raw dump.** Chase card statements (and others shaped like
   them) print their transaction table in three ways no synthetic sample did: a
