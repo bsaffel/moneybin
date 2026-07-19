@@ -88,6 +88,65 @@ def _issue_coarse_preview(
         )
 
 
+def _valid_bridge_response() -> dict[str, object]:
+    """Return a valid recipe shape that reaches PDF extraction."""
+    return {
+        "recipe": {
+            "row_region": {
+                "start_anchor": "Transactions",
+                "end_anchor": "Total:",
+            },
+            "row_split": r"\s{2,}",
+            "fields": [
+                {
+                    "name": "Date",
+                    "pattern": r"\d{2}/\d{2}/\d{4}",
+                    "cast": "date",
+                    "date_format": "%m/%d/%Y",
+                },
+                {"name": "Description", "pattern": r".+", "cast": "str"},
+                {
+                    "name": "Amount",
+                    "pattern": r"-?\$?[\d,]+\.\d{2}",
+                    "cast": "decimal",
+                },
+            ],
+            "sign_convention": "negative_is_expense",
+            "routing": "transactions",
+        },
+        "rows": [
+            {
+                "Date": "01/15/2024",
+                "Description": "Coffee",
+                "Amount": "-4.50",
+            }
+        ],
+    }
+
+
+def _track_completed_rollbacks(
+    monkeypatch: MonkeyPatch,
+    events: list[str],
+) -> None:
+    """Append a marker only after the real database rollback returns."""
+    from moneybin.database import Database
+
+    real_rollback = Database.rollback
+
+    def observed_rollback(db: Database) -> None:
+        real_rollback(db)
+        events.append("rollback")
+
+    monkeypatch.setattr(Database, "rollback", observed_rollback)
+
+
+def _event_counter(events: list[str], event: str) -> MagicMock:
+    """Return a counter mock that records each increment in event order."""
+    metric = MagicMock()
+    metric.labels.return_value.inc.side_effect = lambda: events.append(event)
+    return metric
+
+
 async def test_import_preview_binds_parse_hash_and_storage_to_one_byte_read(
     mcp_db: object,
     tmp_path: Path,
@@ -467,7 +526,11 @@ async def test_import_confirm_invalid_bridge_flushes_observation_once_after_roll
     ) -> object:
         observations = kwargs["observations"]
         assert isinstance(observations, MetricObservations)
-        observations.counter(metric, labels={"outcome": "invalid"})
+        observations.counter(
+            metric,
+            labels={"outcome": "invalid"},
+            disposition="rollback",
+        )
         return SimpleNamespace(
             outcome="invalid",
             import_id=None,
@@ -595,6 +658,152 @@ async def test_import_confirm_success_flushes_observations_exactly_once(
     counter.labels.return_value.inc.assert_called_once_with()
     histogram.labels.assert_called_once_with(source_type="tabular")
     histogram.labels.return_value.observe.assert_called_once_with(0.25)
+
+
+async def test_import_confirm_malformed_bridge_observes_failure_after_rollback(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF malformed bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    events: list[str] = []
+    failure = _event_counter(events, "failure")
+    success = MagicMock()
+
+    from moneybin.metrics import registry
+
+    _track_completed_rollbacks(monkeypatch, events)
+    monkeypatch.setattr(registry, "PDF_BRIDGE_EGRESS_TOTAL", failure)
+    monkeypatch.setattr(registry, "IMPORT_RECORDS_TOTAL", success)
+
+    response = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"rows": []},
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+    assert events == ["rollback", "failure"]
+    failure.labels.assert_called_once_with(outcome="invalid")
+    success.labels.assert_not_called()
+
+
+async def test_import_confirm_bridge_extraction_failure_observed_after_rollback(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.extractors.pdf.ir import PdfDocument
+
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF extraction failure fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    events: list[str] = []
+    failure = _event_counter(events, "failure")
+    success = MagicMock()
+
+    from moneybin.metrics import registry
+
+    class FailingExtractor:
+        def extract(
+            self,
+            _path: Path,
+            *,
+            source_bytes: bytes | None = None,
+        ) -> PdfDocument:
+            del source_bytes
+            raise ValueError("could not extract text from PDF")
+
+    _track_completed_rollbacks(monkeypatch, events)
+    monkeypatch.setattr(
+        "moneybin.extractors.pdf.extractor.PDFExtractor",
+        FailingExtractor,
+    )
+    monkeypatch.setattr(registry, "PDF_IMPORT_TOTAL", failure)
+    monkeypatch.setattr(registry, "IMPORT_RECORDS_TOTAL", success)
+
+    response = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=_valid_bridge_response(),
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+    assert events == ["rollback", "failure"]
+    failure.labels.assert_called_once_with(outcome="failed", rung="bridge")
+    success.labels.assert_not_called()
+
+
+async def test_import_confirm_tabular_transform_failures_observed_after_rollback(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Coffee,-4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    events: list[str] = []
+    batch_failure = _event_counter(events, "batch_failure")
+    transform_failure = _event_counter(events, "transform_failure")
+    success = MagicMock()
+
+    from moneybin.metrics import registry
+
+    def fail_transform(**_kwargs: object) -> object:
+        raise ValueError("bad transform")
+
+    _track_completed_rollbacks(monkeypatch, events)
+    monkeypatch.setattr(
+        "moneybin.extractors.tabular.transforms.transform_dataframe",
+        fail_transform,
+    )
+    monkeypatch.setattr(
+        "moneybin.extractors.tabular.extractor.TABULAR_IMPORT_BATCHES",
+        batch_failure,
+    )
+    monkeypatch.setattr(
+        "moneybin.services.import_service.IMPORT_ERRORS_TOTAL",
+        transform_failure,
+    )
+    monkeypatch.setattr(registry, "IMPORT_RECORDS_TOTAL", success)
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+    assert events == ["rollback", "batch_failure", "transform_failure"]
+    batch_failure.labels.assert_called_once_with(status="failed")
+    transform_failure.labels.assert_called_once_with(
+        source_type="csv",
+        error_type="transform",
+    )
+    success.labels.assert_not_called()
 
 
 @pytest.mark.parametrize(

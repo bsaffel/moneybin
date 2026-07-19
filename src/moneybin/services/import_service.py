@@ -1863,10 +1863,17 @@ class ImportService:
                 rows_total=len(df),
                 rows_imported=0,
                 rows_rejected=len(df),
+                emit_metrics=emit_metrics,
+                observations=observations,
+                metric_disposition="rollback",
             )
-            IMPORT_ERRORS_TOTAL.labels(
-                source_type=source_type, error_type="transform"
-            ).inc()
+            record_counter(
+                IMPORT_ERRORS_TOTAL,
+                labels={"source_type": source_type, "error_type": "transform"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
             raise ValueError(f"Transform failed: {e}") from e
 
         # Stage 5: Load — one account record per unique account
@@ -2285,6 +2292,7 @@ class ImportService:
                 labels={"outcome": "invalid"},
                 emit_metrics=emit_metrics,
                 observations=observations,
+                disposition="rollback",
             )
             raise
         expected_row_count = len(response.rows)
@@ -2308,6 +2316,7 @@ class ImportService:
                 labels={"outcome": "failed", "rung": "bridge"},
                 emit_metrics=emit_metrics,
                 observations=observations,
+                disposition="rollback",
             )
             raise
         actual_row_count = len(decision.rows)
@@ -2321,6 +2330,7 @@ class ImportService:
                 labels={"outcome": "invalid"},
                 emit_metrics=emit_metrics,
                 observations=observations,
+                disposition="rollback",
             )
             logger.info(
                 f"PDF bridge apply rejected: reason={decision.reason} "
@@ -3135,6 +3145,7 @@ class ImportService:
                 labels={"outcome": "failed", "rung": rung},
                 emit_metrics=emit_metrics,
                 observations=observations,
+                disposition="rollback",
             )
             raise
 

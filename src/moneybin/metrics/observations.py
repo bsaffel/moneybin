@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+ObservationDisposition = Literal["commit", "rollback"]
+
 
 @dataclass(frozen=True)
 class _Observation:
@@ -15,6 +17,7 @@ class _Observation:
     metric: Any
     value: float
     labels: dict[str, str]
+    disposition: ObservationDisposition
 
 
 @dataclass
@@ -30,9 +33,10 @@ class MetricObservations:
         *,
         labels: dict[str, str],
         amount: float = 1,
+        disposition: ObservationDisposition = "commit",
     ) -> None:
         """Defer a counter increment."""
-        self._items.append(_Observation("counter", metric, amount, labels))
+        self._items.append(_Observation("counter", metric, amount, labels, disposition))
 
     def observe(
         self,
@@ -40,19 +44,22 @@ class MetricObservations:
         value: float,
         *,
         labels: dict[str, str],
+        disposition: ObservationDisposition = "commit",
     ) -> None:
         """Defer a histogram observation."""
-        self._items.append(_Observation("observe", metric, value, labels))
+        self._items.append(_Observation("observe", metric, value, labels, disposition))
 
     def callback(self, callback: Callable[[], None]) -> None:
         """Defer a metric refresh that must query committed database state."""
         self._callbacks.append(callback)
 
-    def flush(self) -> None:
-        """Apply each buffered mutation exactly once."""
+    def flush(self, disposition: ObservationDisposition = "commit") -> None:
+        """Apply one terminal disposition and discard the opposite set."""
         items, self._items = self._items, []
         callbacks, self._callbacks = self._callbacks, []
         for item in items:
+            if item.disposition != disposition:
+                continue
             child = item.metric.labels(**item.labels) if item.labels else item.metric
             if item.kind == "counter":
                 if item.value == 1:
@@ -61,8 +68,9 @@ class MetricObservations:
                     child.inc(item.value)
             else:
                 child.observe(item.value)
-        for callback in callbacks:
-            callback()
+        if disposition == "commit":
+            for callback in callbacks:
+                callback()
 
 
 def record_counter(
@@ -72,10 +80,16 @@ def record_counter(
     emit_metrics: bool,
     observations: MetricObservations | None,
     amount: float = 1,
+    disposition: ObservationDisposition = "commit",
 ) -> None:
     """Record now, defer, or suppress a counter mutation."""
     if observations is not None:
-        observations.counter(metric, labels=labels, amount=amount)
+        observations.counter(
+            metric,
+            labels=labels,
+            amount=amount,
+            disposition=disposition,
+        )
     elif emit_metrics:
         child = metric.labels(**labels) if labels else metric
         if amount == 1:
@@ -91,10 +105,16 @@ def record_observation(
     labels: dict[str, str],
     emit_metrics: bool,
     observations: MetricObservations | None,
+    disposition: ObservationDisposition = "commit",
 ) -> None:
     """Record now, defer, or suppress a histogram observation."""
     if observations is not None:
-        observations.observe(metric, value, labels=labels)
+        observations.observe(
+            metric,
+            value,
+            labels=labels,
+            disposition=disposition,
+        )
     elif emit_metrics:
         child = metric.labels(**labels) if labels else metric
         child.observe(value)

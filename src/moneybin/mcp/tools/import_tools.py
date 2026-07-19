@@ -1757,7 +1757,7 @@ def import_confirm_coarse(
                 )
                 if bridge_result.outcome == "invalid":
                     db.rollback()
-                    observations.flush()
+                    observations.flush("rollback")
                     return cast(
                         ResponseEnvelope[ImportConfirmCoarsePayload],
                         _import_dynamic_envelope(
@@ -1831,9 +1831,10 @@ def import_confirm_coarse(
                 time.monotonic() - started,
                 labels={"source_type": source_type},
             )
-            observations.flush()
+            observations.flush("commit")
         except BaseException:
             db.rollback()
+            observations.flush("rollback")
             raise
 
     source_type = "pdf" if channel == "pdf" else "tabular"
