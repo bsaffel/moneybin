@@ -510,7 +510,9 @@ unmapped required fields. Rank candidates by:
   `split_debit_credit`
 - If single amount column where negatives are income (e.g., credit card statement
   convention) → `negative_is_income` (detected if header contains "credit" or if
-  the context suggests credit card)
+  the context suggests credit card), then require an explicit human sign
+  confirmation after the column mapping is settled; mapping acceptance alone
+  never ratifies the ledger-wide inversion.
 
 #### Step 6 — Multi-account detection
 

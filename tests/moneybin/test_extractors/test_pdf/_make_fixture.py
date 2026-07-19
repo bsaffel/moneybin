@@ -331,3 +331,74 @@ _statement(
     ],
     period=("01/01/2024", "01/31/2024"),
 )
+
+# ── chase_card_unruled.pdf ────────────────────────────────────────────────────
+# The real-world Chase CREDIT-CARD shape that F10 exposed — the one every other
+# fixture failed to reproduce, so the suite passed while every real statement
+# seeded. Three defeats in one document:
+#   (A) the column header is WRAPPED across two physical lines ("Date of" above
+#       "Transaction  Merchant ...  $ Amount"), so no single line splits into a
+#       date-led >=3-cell header and the name-based reconstructor finds nothing;
+#   (B) section sub-headers ("PAYMENTS AND OTHER CREDITS" / "PURCHASE" /
+#       "INTEREST CHARGED") interleave the rows;
+#   (C) rows print MM/DD with NO year — the year lives only on the
+#       "Opening/Closing Date" line, and the cycle crosses year-end (Dec→Jan).
+# Charges positive, payments negative → the card (negative_is_income) convention.
+#
+# Ground truth (hand-derived, before any sign flip — reconciliation sums the
+# amounts as printed):
+#   opening 100.00 + (-50.00 + 25.00 + 40.00 + 5.00) = 120.00 closing ✓ (Δ +20.00)
+#   MM/DD → year from the 12/23/24–01/22/25 cycle: 12/xx→2024, 01/xx→2025.
+out_card_unruled = fixtures / "chase_card_unruled.pdf"
+c7 = canvas.Canvas(str(out_card_unruled), pagesize=letter)
+c7.setFont("Courier", 10)
+
+_card_preamble = [
+    "CHASE FREEDOM UNLIMITED",
+    "Account Number: 4387",
+    "Minimum Payment Due: $25.00",
+    "Credit Limit: $10,000",
+    "Payment Due Date: 02/19/25",
+    "Opening/Closing Date   12/23/24 - 01/22/25",
+    "Previous Balance: $100.00",
+    "New Balance: $120.00",
+    "ACCOUNT ACTIVITY",
+]
+card_y = 740
+for _line in _card_preamble:
+    c7.drawString(72, card_y, _line)
+    card_y -= 16
+
+# Two-physical-line column header: "Date of" sits above the rest of the header.
+c7.drawString(72, card_y, "Date of")
+card_y -= 12
+c7.drawString(72, card_y, "Transaction")
+c7.drawString(180, card_y, "Merchant Name or Transaction Description")
+c7.drawString(430, card_y, "$ Amount")
+card_y -= 20
+
+# Section sub-headers interleaved with (date, description, amount-as-printed) rows.
+_card_sections = [
+    ("PAYMENTS AND OTHER CREDITS", [("12/26", "PAYMENT THANK YOU", "-50.00")]),
+    (
+        "PURCHASE",
+        [
+            ("12/28", "COFFEE SHOP", "25.00"),
+            ("01/05", "BOOKSTORE", "40.00"),
+        ],
+    ),
+    ("INTEREST CHARGED", [("01/20", "PURCHASE INTEREST CHARGE", "5.00")]),
+]
+for _title, _rows in _card_sections:
+    c7.drawString(72, card_y, _title)
+    card_y -= 16
+    for _date, _desc, _amount in _rows:
+        c7.drawString(72, card_y, _date)
+        c7.drawString(180, card_y, _desc)
+        c7.drawString(430, card_y, _amount)
+        card_y -= 16
+
+# End-of-table sentinel (_END_ANCHOR_CANDIDATES) so the carve region is bounded.
+c7.drawString(72, card_y - 4, "Totals Year-to-Date")
+c7.save()
+print(f"wrote {out_card_unruled}")  # noqa: T201  # one-shot generator script

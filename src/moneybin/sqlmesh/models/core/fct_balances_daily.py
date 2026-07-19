@@ -97,6 +97,7 @@ def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
         "is_observed": "BOOLEAN",
         "observation_source": "VARCHAR",
         "reconciliation_delta": "DECIMAL(18, 2)",
+        "currency_code": "VARCHAR",
     },
     column_descriptions={
         "account_id": "Foreign key to core.dim_accounts.account_id",
@@ -105,6 +106,7 @@ def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
         "is_observed": "TRUE if an authoritative observation exists for this date",
         "observation_source": "source_type of the winning observation (ofx, tabular, assertion, plaid); NULL if interpolated",
         "reconciliation_delta": "Difference between observed and transaction-derived balance; NULL on interpolated days and on the first observation",
+        "currency_code": "ISO 4217 currency code, carried forward from the winning observation (or its interpolated predecessor) on each day",
     },
     description=(
         "One row per account per day, from that account's first observation to the "
@@ -132,7 +134,7 @@ def execute(
 
     obs: pd.DataFrame = context.fetchdf(
         f"""
-        SELECT account_id, balance_date, balance, source_type, updated_at
+        SELECT account_id, balance_date, balance, source_type, updated_at, currency_code
         FROM {fct_balances_table}
         ORDER BY account_id, balance_date
         """  # noqa: S608  # table name from context.resolve_table(), not user input
@@ -184,10 +186,11 @@ def execute(
             pd.to_datetime(winners["balance_date"]).dt.date  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType]
         )
         observed_lookup: pd.DataFrame = winners.set_index("balance_date")[  # type: ignore[reportUnknownMemberType]
-            ["balance", "source_type"]
+            ["balance", "source_type", "currency_code"]
         ]
 
         carry: Decimal | None = None
+        carry_currency: str | None = None
         for d in spine:
             txn_raw = acct_txns.get(d) if not acct_txns.empty else None  # type: ignore[call-overload] — Series.get accepts date keys at runtime
             txn_adj = _to_decimal(txn_raw)  # type: ignore[reportUnknownArgumentType] — txn_raw type unknown from pandas stubs
@@ -195,6 +198,7 @@ def execute(
             if d in observed_lookup.index:  # type: ignore[reportUnknownMemberType]
                 obs_balance = _to_decimal(observed_lookup.loc[d, "balance"])  # type: ignore[reportUnknownMemberType, reportUnknownArgumentType] — pandas .loc stubs return Unknown; safe at runtime
                 obs_source: str = str(observed_lookup.loc[d, "source_type"])  # type: ignore[reportUnknownMemberType]
+                obs_currency = observed_lookup.loc[d, "currency_code"]  # type: ignore[reportUnknownMemberType]
                 delta: Decimal | None
                 if carry is not None:
                     delta = obs_balance - (carry + txn_adj)
@@ -208,8 +212,10 @@ def execute(
                     "is_observed": True,
                     "observation_source": obs_source,
                     "reconciliation_delta": delta,
+                    "currency_code": obs_currency,
                 })
                 carry = obs_balance
+                carry_currency = obs_currency
             else:
                 assert carry is not None, (  # noqa: S101 — invariant, not user input
                     "interpolated branch reached before first observation — "
@@ -223,6 +229,7 @@ def execute(
                     "is_observed": False,
                     "observation_source": None,
                     "reconciliation_delta": None,
+                    "currency_code": carry_currency,
                 })
 
     # Build with an explicit pyarrow schema so DuckDB receives DECIMAL(18, 2)
@@ -238,6 +245,7 @@ def execute(
         pa.field("is_observed", pa.bool_()),
         pa.field("observation_source", pa.string()),
         pa.field("reconciliation_delta", pa.decimal128(18, 2)),
+        pa.field("currency_code", pa.string()),
     ])
     table = pa.Table.from_pylist(rows, schema=schema)
     yield table.to_pandas(types_mapper=pd.ArrowDtype)

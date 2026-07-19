@@ -583,3 +583,36 @@ class TestDisambiguateCollidingFitids:
 
         assert rewritten == 0
         assert all(r["source_transaction_id"] == "123" for r in rows)
+
+
+@pytest.mark.unit
+def test_extract_transactions_captures_curdef(
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
+) -> None:
+    """Statement-level CURDEF lands on every transaction row's currency_code."""
+    extractor = OFXExtractor(extractor_config)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
+
+    transactions = results["transactions"]
+    assert "currency_code" in transactions.columns
+    assert len(transactions) == 3
+    for row in transactions.iter_rows(named=True):
+        assert row["currency_code"] == "USD"
+
+
+@pytest.mark.unit
+def test_extract_balances_captures_curdef(
+    sample_ofx_file: Path, extractor_config: OFXProviderConfig
+) -> None:
+    """Statement-level CURDEF lands on the balance row's currency_code."""
+    extractor = OFXExtractor(extractor_config)
+    results = extractor.extract_from_file(
+        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+    )
+
+    balances = results["balances"]
+    assert "currency_code" in balances.columns
+    first_row = balances.row(0, named=True)
+    assert first_row["currency_code"] == "USD"

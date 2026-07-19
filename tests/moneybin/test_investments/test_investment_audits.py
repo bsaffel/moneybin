@@ -132,7 +132,7 @@ def _seed_account(db: Database, account_id: str) -> None:
         """
         INSERT INTO core.dim_accounts (
             account_id, account_type, institution_name, source_type, source_file,
-            extracted_at, loaded_at, updated_at, display_name, iso_currency_code,
+            extracted_at, loaded_at, updated_at, display_name, currency_code,
             archived, include_in_net_worth
         ) VALUES (?, 'INVESTMENT', 'Alpha Brokerage', 'plaid', 'sync_job-1',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,

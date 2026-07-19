@@ -33,7 +33,7 @@ Related specs and docs:
 ## Requirements
 
 1. **Per-account settings table `app.account_settings`.** One row per `account_id` (foreign key to `core.dim_accounts`). Plaid-parity metadata fields plus two lifecycle flags. Absence of a row means "all defaults." See [Data Model](#data-model).
-2. **Plaid Parity metadata fields:** `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`. These mirror Plaid's account object structure so future Plaid sync (`sync-plaid.md`) can populate them automatically.
+2. **Plaid Parity metadata fields:** `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`. These mirror Plaid's account object structure so future Plaid sync (`sync-plaid.md`) can populate them automatically.
 3. **Lifecycle flags:** `archived` (BOOLEAN, default FALSE) and `include_in_net_worth` (BOOLEAN, default TRUE).
 4. **Archive cascades, unarchive does not restore.** Setting `archived = TRUE` automatically sets `include_in_net_worth = FALSE` in the same write. Setting `archived = FALSE` does NOT touch `include_in_net_worth` — the user must re-include explicitly. Rationale: archive expresses "this account is retired," and forcing the user to also flip the net worth flag is a footgun; restoring it on unarchive would silently re-include accounts the user might have intentionally excluded for unrelated reasons.
 5. **Default list hides archived accounts.** `accounts list` (and `accounts`) omit accounts with `archived = TRUE`. `--include-archived` (CLI) and `include_archived: true` (MCP) reveal them with an explicit annotation.
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     last_four            VARCHAR,                                  -- Last 4 digits of account number (mirrors Plaid mask); validated ^[0-9]{4}$
     account_subtype      VARCHAR,                                  -- Plaid-style subtype (checking, savings, credit card, mortgage, ...); open vocabulary, soft-validated against canonical Plaid list
     holder_category      VARCHAR,                                  -- 'personal' / 'business' / 'joint'; open vocabulary, soft-validated
-    iso_currency_code    VARCHAR,                                  -- ISO-4217 (USD, EUR, ...); NULL defaults to USD until multi-currency.md ships
+    currency_code        VARCHAR,                                  -- ISO-4217 (USD, EUR, ...); NULL inherits core.dim_accounts.currency_code's own fallback (see below)
     credit_limit         DECIMAL(18, 2),                           -- User-asserted credit limit on credit cards / lines (drives utilization metrics)
     archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from agg_net_worth
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to agg_net_worth (independent toggle, but archive cascades to FALSE)
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
 | `last_four` | exactly 4 chars, `^[0-9]{4}$` |
 | `account_subtype` | 1–32 chars |
 | `holder_category` | 1–32 chars |
-| `iso_currency_code` | exactly 3 uppercase letters, `^[A-Z]{3}$` |
+| `currency_code` | exactly 3 uppercase letters, `^[A-Z]{3}$` |
 | `credit_limit` | non-negative `DECIMAL(18,2)` |
 
 Service-layer validation rather than SQL CHECK keeps the table forgiving of historical rows if Plaid sync ever back-fills with looser data.
@@ -94,7 +94,7 @@ elected-but-unimplemented method would silently miscompute cost basis (see
 that spec's Cost-Basis Engine section). `NULL` falls back to the global FIFO
 default.
 
-**Open question — Plaid precedence (deferred to `sync-plaid.md`):** When Plaid sync ships and starts populating `official_name` / `last_four` / `account_subtype` / `holder_category` / `iso_currency_code` automatically, what happens if the user has already written a value? Options: (i) Plaid wins on resync, (ii) user wins, (iii) per-field "user_modified" tracking. For v1 (no Plaid yet) this doesn't matter. The table shape is forward-compatible with all three; pick one when `sync-plaid.md` is designed.
+**Open question — Plaid precedence (deferred to `sync-plaid.md`):** When Plaid sync ships and starts populating `official_name` / `last_four` / `account_subtype` / `holder_category` / `currency_code` automatically, what happens if the user has already written a value? Options: (i) Plaid wins on resync, (ii) user wins, (iii) per-field "user_modified" tracking. For v1 (no Plaid yet) this doesn't matter. The table shape is forward-compatible with all three; pick one when `sync-plaid.md` is designed.
 
 ### Modified SQLMesh model: `core.dim_accounts`
 
@@ -109,7 +109,7 @@ New columns (added to the final SELECT):
 | `last_four` | `s.last_four` | Pass-through |
 | `account_subtype` | `s.account_subtype` | Pass-through |
 | `holder_category` | `s.holder_category` | Pass-through |
-| `iso_currency_code` | `COALESCE(s.iso_currency_code, 'USD')` | USD default until multi-currency.md |
+| `currency_code` | `COALESCE(s.currency_code, 'USD')` | USD is the last-resort fallback when no account-level currency was ever set; `multi-currency.md` M1K.1 Part A (2026-07-17) added the no-guess capture/inheritance layers upstream of this default — the true no-silent-blend guard that removes this fallback is Part B |
 | `credit_limit` | `s.credit_limit` | Pass-through |
 | `archived` | `COALESCE(s.archived, FALSE)` | Default FALSE for accounts with no settings row |
 | `include_in_net_worth` | `COALESCE(s.include_in_net_worth, TRUE)` | Default TRUE |
@@ -187,7 +187,7 @@ Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix)
 
 | Tool | Params | Returns |
 |---|---|---|
-| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `iso_currency_code`, `credit_limit`, `default_cost_basis_method` (added by [`investments-data-model.md`](investments-data-model.md); `fifo`/`hifo`/`specific`/`average`). Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived=True` cascades `include_in_net_worth=False` atomically; unarchive does NOT auto-restore include. | updated settings row + optional `warnings: [...]`; data includes `cascaded_include_in_net_worth: false` when `is_archived=True` was the cause. Response data emits `archived` (not `is_archived`) as the field name. |
+| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `default_cost_basis_method` (added by [`investments-data-model.md`](investments-data-model.md); `fifo`/`hifo`/`specific`/`average`). Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived=True` cascades `include_in_net_worth=False` atomically; unarchive does NOT auto-restore include. | updated settings row + optional `warnings: [...]`; data includes `cascaded_include_in_net_worth: false` when `is_archived=True` was the cause. Response data emits `archived` (not `is_archived`) as the field name. |
 
 ### Soft-validation in MCP
 
@@ -294,7 +294,7 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 - **Hard delete of accounts.** Archive is the only v1 lifecycle terminator. Hard delete is dangerous (orphans transactions and balance observations, breaks audit trails) and rare. The data warehouse principle: data goes in, data does not get destructively removed.
 - **Vanity / cosmetic fields** — `sort_order`, `color`, `notes`. Not part of v1's "structural metadata" framing. Easy to add later via migration if a real consumer surfaces.
 - **Account groups, tags, or hierarchies.** `holder_category` (personal / business / joint) provides the only grouping affordance v1 needs.
-- **Multi-currency arithmetic.** `iso_currency_code` is recorded per account but no conversion happens in v1. `multi-currency.md` (M1K) handles home-currency conversion.
+- **Multi-currency arithmetic.** `currency_code` is recorded per account but no conversion happens in v1. `multi-currency.md` (M1K) handles home-currency conversion.
 - **Plaid sync precedence rules.** When Plaid sync lands and back-fills metadata fields, conflict resolution between user-set and Plaid-set values is decided in [`sync-plaid.md`](sync-plaid.md), not here.
 - **Closed enum for `account_subtype` / `holder_category`.** Open vocabulary with soft validation; closed enums age badly.
 - **`accounts list` pagination.** v1 assumes account counts in the dozens, not thousands. Pagination if/when a real user crosses 100 accounts.

@@ -7,14 +7,17 @@ Business logic is tested in the service and extractor tests.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from _pytest.logging import LogCaptureFixture
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
+from moneybin.database import Database
 from moneybin.services.import_service import ImportResult
 
 runner = CliRunner()
@@ -169,6 +172,100 @@ class TestImportFileValidation:
         )
 
         assert result.exit_code == 0
+
+
+class TestImportSignShapeValidation:
+    """Real CLI paths reject sign conventions that cannot read their mapping."""
+
+    def test_import_files_rejects_split_sign_for_single_mapping(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """``import files --sign`` fails before creating an import batch."""
+        csv_file = tmp_path / "single.csv"
+        csv_file.write_text(
+            "Date,Description,Amount\n2026-01-05,Coffee,-4.75\n",
+            encoding="utf-8",
+        )
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--mapping",
+                "transaction_date=Date",
+                "--mapping",
+                "description=Description",
+                "--mapping",
+                "amount=Amount",
+                "--sign",
+                "split_debit_credit",
+                "--account-id",
+                "acct-single",
+                "--confirm",
+                "--no-save-format",
+                "--no-refresh",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "single amount column" in caplog.text
+        assert "--sign negative_is_expense" in caplog.text
+        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        assert log_rows is not None and log_rows[0] == 0
+
+    def test_import_confirm_rejects_single_sign_for_split_mapping(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: LogCaptureFixture,
+    ) -> None:
+        """``import confirm --sign`` shares the pre-batch shape boundary."""
+        csv_file = tmp_path / "split.csv"
+        csv_file.write_text(
+            "Date,Description,Debit,Credit\n2026-01-05,Coffee,4.75,\n",
+            encoding="utf-8",
+        )
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--mapping",
+                "transaction_date=Date",
+                "--mapping",
+                "description=Description",
+                "--mapping",
+                "debit_amount=Debit",
+                "--mapping",
+                "credit_amount=Credit",
+                "--sign",
+                "negative_is_expense",
+                "--account-id",
+                "acct-split",
+                "--no-save-format",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "debit/credit pair" in caplog.text
+        assert "--sign split_debit_credit" in caplog.text
+        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        assert log_rows is not None and log_rows[0] == 0
 
 
 class TestListFormats:

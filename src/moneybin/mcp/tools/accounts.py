@@ -74,7 +74,7 @@ def accounts(
 
     Returns the resolved view from core.dim_accounts including display_name,
     institution_name, account_type, account_subtype, holder_category,
-    iso_currency_code, archived, include_in_net_worth, last_four, and
+    currency_code, archived, include_in_net_worth, last_four, and
     credit_limit. CRITICAL-tier fields (last_four) are masked by the
     middleware; the raw values never leave the service layer unredacted.
     """
@@ -135,7 +135,7 @@ _CLEARABLE_FIELDS: frozenset[str] = frozenset({
     "last_four",
     "account_subtype",
     "holder_category",
-    "iso_currency_code",
+    "currency_code",
     "credit_limit",
     "display_name",
     "default_cost_basis_method",
@@ -149,7 +149,7 @@ def accounts_set(
     last_four: str | None = None,
     account_subtype: str | None = None,
     holder_category: str | None = None,
-    iso_currency_code: str | None = None,
+    currency_code: str | None = None,
     credit_limit: float | None = None,
     display_name: str | None = None,
     default_cost_basis_method: str | None = None,
@@ -165,7 +165,7 @@ def accounts_set(
 
     Structural fields (Plaid-parity metadata):
       ``official_name``, ``last_four``, ``account_subtype``, ``holder_category``,
-      ``iso_currency_code``, ``credit_limit``.
+      ``currency_code``, ``credit_limit``.
 
     Behavioral fields:
       ``display_name`` — text override for the account's resolved name.
@@ -179,7 +179,7 @@ def accounts_set(
     Pass ``None`` to leave a field unchanged. To explicitly clear a text field
     back to NULL, include its name in ``clear_fields``. Valid clearable names:
     ``"official_name"``, ``"last_four"``, ``"account_subtype"``,
-    ``"holder_category"``, ``"iso_currency_code"``, ``"credit_limit"``,
+    ``"holder_category"``, ``"currency_code"``, ``"credit_limit"``,
     ``"display_name"``, ``"default_cost_basis_method"``. Booleans
     (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
     explicit value.
@@ -199,7 +199,7 @@ def accounts_set(
         "last_four": last_four,
         "account_subtype": account_subtype,
         "holder_category": holder_category,
-        "iso_currency_code": iso_currency_code,
+        "currency_code": currency_code,
         "credit_limit": Decimal(str(credit_limit))
         if credit_limit is not None
         else None,
@@ -231,7 +231,7 @@ def accounts_set(
         last_four=d.get("last_four"),  # type: ignore[arg-type]
         account_subtype=d.get("account_subtype"),  # type: ignore[arg-type]
         holder_category=d.get("holder_category"),  # type: ignore[arg-type]
-        iso_currency_code=d.get("iso_currency_code"),  # type: ignore[arg-type]
+        currency_code=d.get("currency_code"),  # type: ignore[arg-type]
         credit_limit=d.get("credit_limit"),  # type: ignore[arg-type]
         default_cost_basis_method=d.get("default_cost_basis_method"),  # type: ignore[arg-type]
         include_in_net_worth=bool(d["include_in_net_worth"]),
@@ -723,7 +723,7 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "invalid values raise mutation_invalid_input), include_in_net_worth, "
         "is_archived. Structural fields: "
         "official_name, last_four, account_subtype, holder_category, "
-        "iso_currency_code, credit_limit. Pass None to leave a field "
+        "currency_code, credit_limit. Pass None to leave a field "
         "unchanged; include a text field's name in clear_fields to clear it "
         "(booleans are not clearable). Archiving (is_archived=True) cascades "
         "include_in_net_worth=False atomically; unarchive does NOT restore "

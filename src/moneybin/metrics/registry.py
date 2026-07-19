@@ -147,6 +147,15 @@ PDF_SIGN_GATE_TOTAL = Counter(
     ["outcome"],  # values: "proposed", "confirmed", "overridden"
 )
 
+# Tabular imports can infer the same whole-ledger inversion from a ``credit``
+# header. Keep its outcomes separate from PDFs so an unexpected rise points to
+# the channel whose detector needs attention.
+TABULAR_SIGN_GATE_TOTAL = Counter(
+    "moneybin_tabular_sign_gate_total",
+    "Tabular sign-convention gate outcomes by resolution.",
+    ["outcome"],  # values: "proposed", "confirmed", "overridden"
+)
+
 # ── Smart import confirmation ────────────────────────────────────────────────
 
 IMPORT_CONFIRMATIONS_TOTAL = Counter(

@@ -1,4 +1,4 @@
-"""Tests for service-layer slug + note-text validators."""
+"""Tests for service-layer slug + note-text + currency-code validators."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import pytest
 from moneybin.services._validators import (
     NOTE_MAX_LEN,
     InvalidSlugError,
+    validate_currency_code,
     validate_note_text,
     validate_slug,
 )
@@ -62,3 +63,26 @@ def test_validate_note_text_rejects_empty() -> None:
 def test_validate_note_text_rejects_whitespace_only(whitespace: str) -> None:
     with pytest.raises(ValueError):
         validate_note_text(whitespace)
+
+
+@pytest.mark.parametrize("good", ["USD", "EUR", "JPY", "GBP"])
+def test_validate_currency_code_accepts(good: str) -> None:
+    validate_currency_code(good)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "usd",  # lowercase
+        "US",  # too short
+        "USDD",  # too long
+        "US1",  # digit
+        "",
+        "USD\n",  # trailing newline — re.match + $ would let this through
+    ],
+)
+def test_validate_currency_code_rejects(bad: str) -> None:
+    with pytest.raises(
+        ValueError, match="currency_code must be exactly 3 uppercase letters"
+    ):
+        validate_currency_code(bad)

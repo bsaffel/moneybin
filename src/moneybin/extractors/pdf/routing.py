@@ -59,7 +59,13 @@ from moneybin.extractors.pdf.confidence import is_high_confidence, score
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint, match_format
 from moneybin.extractors.pdf.ir import PdfDocument
 from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
-from moneybin.extractors.pdf.recipe import FieldExtraction, Recipe, execute_recipe
+from moneybin.extractors.pdf.recipe import (
+    FieldExtraction,
+    Recipe,
+    YearlessDateError,
+    execute_recipe,
+    group_anchors,
+)
 from moneybin.extractors.pdf.reconciliation import reconcile
 from moneybin.metrics.registry import (
     PDF_EXTRACTION_CONFIDENCE,
@@ -227,11 +233,31 @@ def _canonicalize_rows(
 
     Build the per-field mapping once from recipe.fields and reuse it across
     every row so the work is O(rows · fields) once, not per-cell-per-call.
+
+    Multiple source columns can canonicalise to ``description`` — a wrapped row
+    reconstructed by shape splits into several middle cells (merchant + a
+    post-date or reference column), each named ``Description_n`` so
+    ``execute_recipe`` keeps them distinct, and every such name matches
+    ``DESC_NAME_RE``. Their values are JOINED in field order rather than
+    overwritten, so no merchant/detail component is silently dropped. Only
+    ``description`` is joined: it is the sole string-cast key a recipe can
+    legitimately repeat (two ``amount``/``date`` columns would be a malformed
+    recipe, and joining cast Decimals/dates is meaningless).
     """
     if not rows:
         return rows
     key_map = {f.name: _canonical_key(f) for f in recipe.fields}
-    return [{key_map.get(k, k.lower()): v for k, v in row.items()} for row in rows]
+    canonical: list[dict[str, Any]] = []
+    for row in rows:
+        merged: dict[str, Any] = {}
+        for k, v in row.items():
+            ckey = key_map.get(k, k.lower())
+            if ckey == "description" and ckey in merged:
+                merged[ckey] = f"{merged[ckey]} {v}".strip()
+            else:
+                merged[ckey] = v
+        canonical.append(merged)
+    return canonical
 
 
 def _compute_confidence(recipe: Recipe, rows: list[dict[str, Any]]) -> float:
@@ -484,6 +510,45 @@ def _run_recipe_pipeline(
             fp=fp,
             card_markers=card_markers,
         )
+    except YearlessDateError:
+        # A year-less row couldn't be placed in time (no capturable period, or a
+        # date beyond posting drift). Fail the WHOLE extraction rather than let the
+        # executor silently drop the row. Both reasons are bridge-eligible so an
+        # agent can supply the period anchors the deterministic path lacked; on a
+        # saved-recipe replay use the replay reason + guard flag + the same
+        # replay-failure telemetry the reconciliation path emits, so a saved format
+        # whose year-less rows stop resolving is counted rather than silently
+        # escaping the guard metric. (First-contact uses transaction_table_underivable
+        # — a recipe existed but a row wouldn't cast; it is bridge-eligible either
+        # way, so the label difference from reconciliation_failed is cosmetic.)
+        if is_saved_replay:
+            PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_failed").inc()
+            PDF_REPLAY_GUARD_FAILURE_TOTAL.inc()
+        logger.warning(
+            "execute_recipe: year-less date row unresolvable — routing to bridge"
+        )
+        return RouteDecision(
+            outcome="seed",
+            recipe=recipe,
+            rows=[],
+            metadata=StatementMetadata(
+                account_id=None,
+                period_start=None,
+                period_end=None,
+                opening_balance=None,
+                closing_balance=None,
+            ),
+            confidence=0.0,
+            reason=(
+                "replay_reconciliation_failed"
+                if is_saved_replay
+                else "transaction_table_underivable"
+            ),
+            replay_guard_failed=is_saved_replay,
+            matched_format_name=matched_format_name,
+            fp=fp,
+            card_markers=card_markers,
+        )
     rows = _canonicalize_rows(recipe, extracted.rows)
 
     if not rows:
@@ -534,26 +599,17 @@ def _run_recipe_pipeline(
     # ------------------------------------------------------------------
     # 4. Capture metadata
     # ------------------------------------------------------------------
-    # Replay path: use the saved recipe's metadata_anchors so a bridge-
-    # authored or manually corrected format with non-default balance/account
-    # labels can actually find its values on replay. Group by field name so
-    # multiple FieldExtraction entries with the same name (alternative
-    # patterns for the same field — e.g. the two default account_id anchors
-    # "Account Number: \\S+" and "Account ending in \\d+") are preserved as
-    # ordered alternatives. Without grouping, capture_metadata only sees the
-    # first pattern per name.
-    #
-    # Tri-state semantics on Recipe.metadata_anchors:
-    #   * None        → no anchors authored; fall back to DEFAULT_ANCHORS
-    #   * non-empty   → use the listed anchors verbatim
-    #   * empty list  → caller deliberately declines metadata capture
-    #                    (Phase 2b bridge-authored recipes for statement
-    #                    formats with no balance lines)
+    # Replay path: use the saved recipe's metadata_anchors so a bridge-authored or
+    # manually corrected format with non-default balance/account labels can find
+    # its values on replay. group_anchors regroups the flat FieldExtraction list
+    # into capture_metadata's {name: [pattern, ...]} shape — preserving multiple
+    # alternative patterns per field (e.g. the two default account_id anchors) and
+    # the tri-state None / [] / populated semantics of metadata_anchors (see its
+    # docstring). First-contact path (use_recipe_anchors False) leaves anchors_dict
+    # None so capture falls back to DEFAULT_ANCHORS.
     anchors_dict: dict[str, list[str]] | None = None
-    if use_recipe_anchors and recipe.metadata_anchors is not None:
-        anchors_dict = {}
-        for f in recipe.metadata_anchors:
-            anchors_dict.setdefault(f.name, []).append(f.pattern)
+    if use_recipe_anchors:
+        anchors_dict = group_anchors(recipe.metadata_anchors)
     metadata = capture_metadata(document_text, anchors=anchors_dict)
 
     if not metadata.is_complete_for_reconciliation():

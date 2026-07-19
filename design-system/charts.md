@@ -13,9 +13,21 @@ one wins. Sample data throughout; the grammar is what ships. Never hardcode hex
 - **Interpolation**: linear only, never splines. Gaps never bridged — stepped carry-forward is the honest form for balance data.
 - **Area fills**: ≤ 8% opacity.
 - **Signs**: printed in the glyph, never color alone. Income `+`, spend `−` (U+2212), transfers/savings unsigned in neutral. This applies to chart labels too (sankey, donut legends, stacked bars) — not just Amount components.
-- **Color**: a lone series is always brass (`--accent-brass`). Comparisons draw `--chart-1..8` in order, six max, then group to Other. A category keeps its hue in every view (Housing = chart-1 everywhere; see **Category color** below). A single-measure bar chart *of categories* may opt into category hue; every other lone series (e.g. spend-by-weekday) stays brass. Income/expense pair is `--pos-income`/`--neg-expense`. Never blue as accent.
+- **Color**: three tiers by job (see **Annotation ladder** below) — **gilt** (`--accent-gilt`) fills (bars, areas, dots), **brass** (`--accent-brass`) derived lines and provenance text, **verdigris** interaction only. A lone value-over-time line is brass; a lone bar/area/dot is a gilt fill. Comparisons draw `--chart-1..8` in order, six max, then group to Other. A category keeps its hue in every view (Housing = chart-1 everywhere; see **Category color** below). A single-measure bar chart *of categories* may opt into category hue; every other lone series (e.g. spend-by-weekday) stays gilt. Income/expense pair is `--pos-income`/`--neg-expense`. Never blue as accent.
 - **Disclosure over decoration**: a clipped axis says so on the chart ("axis clipped · zero not shown", mono 11px, top-right). Independent scales say so. "Other" says what it absorbed.
 - **Focus**: every interactive control gets `outline: 2px solid var(--focus)` on `:focus-visible`. Chart SVGs carry `role="img"` + `aria-label`.
+
+### Annotation ladder
+
+Every mark takes its color from its *job*, not its series:
+
+- **Gilt (`--accent-gilt`) = fills** — bars, areas. One bright hex both themes. A *labeled* bar carries its value in height + label (WCAG 1.4.11), so bars stay unedged and gold even on the light surface; only an interactive control's gilt fill (a button) takes a 1px `--accent-brass` edge to hold its 3:1 boundary on light. An **unlabeled** data fill — heatmap cells, a default histogram bar with no per-bar count — has no label to lean on, so it uses `--data-fill` (gilt on dark, deepening to brass on light) to clear the 3:1 graphics floor on its own.
+- **Point-markers on a value line = neutral `--text-primary`, not gilt.** An observed statement reading or a per-month net dot is not a fill — it is an ink annotation (matching the histogram median marker and the rollup prior-period tick), so it stays high-contrast on both themes and reads distinct from the brass line it rides (a gilt dot is only 2.5:1 on light and blends into the brass line at 1.97:1). On hover it opens to a hollow ring (`fill:var(--bg-surface); stroke:var(--text-primary)`) and pins the value tooltip — provenance rung 3. The chart layer renders the interaction; this is the visual contract it is configured to.
+- **Brass (`--accent-brass`) = derived lines and provenance text** — the value-over-time line, avg (dashed) and trend (solid) lines, SQL chips, WHERE labels, overlines. Theme-responsive so it stays legible as text on both surfaces.
+- **Verdigris (`--accent-verdigris`) = interaction only** — hover/selected states, pinned-tooltip accents, clickable legend entries. Never a data encoding (its dark value equals `--chart-2`; keep verdigris in chart slot 2 so a categorical chart never double-encodes it).
+- **Ink (`--text-secondary` / `--text-faint`) = axes and labels only** — never on bars.
+
+Rationale: nothing legible sits *on* a gilt fill — ink is ~1.06:1 (isoluminant) and brass is ~1.4:1 (dark) / ~2.0:1 (light), neither clearing the 3:1 floor against gilt — which is exactly why labels and annotations sit above or beside a bar, never on it. Brass clears 3:1 only against a bare surface (~4.8:1 on the dark canvas), where derived lines and provenance text live.
 
 ### Category color
 
@@ -26,7 +38,9 @@ Housing=chart-1  Groceries=chart-2  Transport=chart-3  Insurance=chart-4
 Dining=chart-5   Utilities=chart-6  Travel=chart-7     Other=chart-8
 ```
 
-**Single-measure category bars** (ranked or column of one measure) default to **brass** — one measure, one color. They *may* opt into coloring each bar by its category hue from the map above: the category label sits beside each bar, so hue is a reinforcing channel, not the sole encoding, and it keeps a category's color consistent across ranked / column / stacked / share / donut. Brass stays the default; category-hue is the opt-in, and it must use this same fixed map. Non-category single series (spend-by-weekday — days carry no palette identity) stay brass.
+**Single-measure category bars** (ranked or column of one measure) default to **gilt** (bars are fills) — one measure, one color. They *may* opt into coloring each bar by its category hue from the map above: the category label sits beside each bar, so hue is a reinforcing channel, not the sole encoding, and it keeps a category's color consistent across ranked / column / stacked / share / donut. Gilt stays the default; category-hue is the opt-in, and it must use this same fixed map. Non-category single series (spend-by-weekday — days carry no palette identity) stay gilt. (Single-series value-over-time *lines* are brass — a derived line, not a fill.)
+
+The categorical `--chart-1..8` ramp was re-reviewed against a desaturated ramp and a brass-anchored ramp and **stands unchanged**: *charts pop, chrome recedes* — the categorical ramp is the one surface sanctioned to outrank the ink/brass restraint around it; its chroma is intentional, not drift.
 
 ## The provenance ladder (three rungs)
 
@@ -37,25 +51,25 @@ Dining=chart-5   Utilities=chart-6  Travel=chart-7     Other=chart-8
 ## Per-form rules
 
 ### 01 Line & area (value over time) — `charts-line-area.html`
-Default for anything temporal. Three stances: **A interpolated** (default, brass 1.75px line, 7% area), **B stepped** as-observed (dots = statements, no interpolation), **C prior-year ghost** (dashed `--text-faint` 1.25px, shared scale, disclosed).
+Default for anything temporal. Three stances: **A interpolated** (default, brass 1.75px line, 7% gilt area), **B stepped** as-observed (dots = statements, no interpolation), **C prior-year ghost** (dashed `--text-faint` 1.25px, shared scale, disclosed).
 
 ### 02 Cash flow (signed quantity) — `charts-cashflow-diverging.html` — diverging is the default
-Income bars up, spending bars down from one emphasized $0 line; net traced in brass with dots on the shared axis. **Canonical net trace** (Overview and Analytics must match — they had drifted): net line `stroke:var(--accent-brass)`, `stroke-width:2.5`, no pointer events (bars own hover); net dots one per month, `r:2.9`, `fill:var(--accent-brass)`, each with a 1px `var(--bg-surface)` halo (`stroke:var(--bg-surface); stroke-width:1`) so markers read where they cross the bars. Legend glyphs carry the sign ("+ INCOME", "− SPENDING"). **Grouped side-by-side pairs are fine when the sign rides an explicit glyph** — the "+ INCOME" / "− SPENDING" legend and signed labels, never color alone; diverging stays the default because it also puts the sign in the geometry (income up, spending down). Stacked composition: six groups max, Other absorbs the tail.
+Income bars up, spending bars down from one emphasized $0 line; net traced in brass with dots on the shared axis. **Canonical net trace** (Overview and Analytics must match — they had drifted): net line `stroke:var(--accent-brass)`, `stroke-width:2.5`, no pointer events (bars own hover); net dots one per month, `r:2.9`, `fill:var(--text-primary)` (a neutral point-marker, not a fill — ink reads distinct from the brass net line on both themes), each with a 1px `var(--bg-surface)` halo (`stroke:var(--bg-surface); stroke-width:1`) so markers read where they cross the bars. Legend glyphs carry the sign ("+ INCOME", "− SPENDING"). **Grouped side-by-side pairs are fine when the sign rides an explicit glyph** — the "+ INCOME" / "− SPENDING" legend and signed labels, never color alone; diverging stays the default because it also puts the sign in the geometry (income up, spending down). Stacked composition: six groups max, Other absorbs the tail.
 
 ### 03 Rollup bars (horizontal) — `charts-rollup-bars.html`
-One measure stays brass. A **prior-period tick** per bar marks comparison without a second series: `var(--text-primary)`, ~2px × 14px, 1px radius — a neutral light annotation, **never a `--chart-*` hue** (a palette color would imply a second data series), matching the histogram-median marker convention. It must be **keyed**: a brass swatch for the current period + the light tick labelled with the prior period (e.g. "June" / "May (prior month)"). Scale max + exclusions go in the audit strip. Amounts right-aligned mono with explicit −.
+One measure stays gilt (bars are fills). A **prior-period tick** per bar marks comparison without a second series: `var(--text-primary)`, ~2px × 14px, 1px radius — a neutral light annotation, **never a `--chart-*` hue** (a palette color would imply a second data series), matching the histogram-median marker convention. It must be **keyed**: a gilt swatch for the current period + the light tick labelled with the prior period (e.g. "June" / "May (prior month)"). Scale max + exclusions go in the audit strip. Amounts right-aligned mono with explicit −.
 
 ### 04 Sparklines — `charts-sparklines.html`
 Shape without axes; **never a number source** — the Amount beside it is. **Amplitude ∝ |30d Δ| ÷ balance, full at 6%**: near-flat accounts render flat instead of dramatizing noise. Scales independent, disclosed in audit.
 
 ### 05 Calendar heatmap — `charts-heatmap.html`
-Rhythm, not precision. **Five quantized brass bins, edges $25/$50/$75/$100 per day**, dollar endpoints printed on the legend ("$0 … $100+ / DAY"). Empty days stay `--bg-inset` with a hairline. Debits only, transfers excluded.
+Rhythm, not precision. **Five quantized `--data-fill` bins (gilt on dark, brass on light), edges $25/$50/$75/$100 per day**, dollar endpoints printed on the legend ("$0 … $100+ / DAY"). Empty days stay `--bg-inset` with a hairline. Debits only, transfers excluded. The low bins are intentionally faint — a low-spend day is a light cell, and that faintness *is* the reading (WCAG 1.4.11 essential-presentation): the bins are **not** held to a per-cell 3:1, since forcing it would erase the low-vs-high signal; the ramp plus the legend's dollar endpoints carry the scale.
 
 ### 06 Flow / sankey — `charts-flow.html`
 Ribbon height ∝ dollars on one scale. Resting fill-opacity **0.55** (hover 0.8), 2.5px gaps between ribbons at the source node. Labels signed; label rows keep ≥13px separation (collision pass). Categories keep their hues.
 
 ### 07 Histogram — `charts-histogram.html`
-Shape of spending, not its sum. Uneven bucket widths labeled, never hidden. Median marked on the axis. n= printed in the meta; counts printed above bars in deep audit. Single measure = brass at 85%.
+Shape of spending, not its sum. Uneven bucket widths labeled, never hidden. Median marked on the axis. n= printed in the meta; counts printed above bars in deep audit. Single measure = `--data-fill` at 85% — theme-responsive (gilt on dark, brass on light), because the default state has no per-bar label to satisfy the 1.4.11 exception, so the fill itself must clear the 3:1 floor (count labels stay brass, audit only).
 
 ### 08 Waterfall — `charts-waterfall.html`
 Signed pair colors for flows, one categorical hue for market effects, computed anchors (`--bg-inset` + strong border). Dashed carry links. Clipped baseline printed on the chart.
@@ -83,6 +97,16 @@ A saved report declares the chart forms that fit its **data shape**, in recommen
 | daily | Heatmap (§05) |
 
 Every name maps to a per-form rule above — no new forms: **Step** = §01's stepped/as-observed stance · **Net line** = §02's signed net trace drawn on its own axis · **Grouped** = §02's grouped pair · **Share** = §10's full-width single-bar proportion (vs. Stacked's per-month columns) · **Column** = §03's rollup bar rotated vertical (same grammar) · **Ranked** = §03 as specimen'd (horizontal).
+
+## Selection (anchored dim, no outlines)
+
+Selecting a mark never draws on the canvas. The selected mark keeps its full hue and geometry; every non-selected mark drops to **35% opacity**; and exactly **one** verdigris furniture anchor names the selected member, by fixed precedence:
+
+1. **Axis tick + label** — when the member is a position on a labeled axis (a column, bar, histogram bucket, heatmap week, or point on a time line): a 2px verdigris tick under the position, its axis label turned verdigris. The default.
+2. **Legend entry** — when the selection is a *category across marks* (stacked, multi-series): the swatch row already names it, so per-mark ticks would multiply.
+3. **Amount readout** — when the form has neither an axis row nor a legend (allocation band, donut slice).
+
+Never more than one anchor. Hover is distinct and dims nothing — it shows the ledger-row tooltip. Hue is never repainted; no strokes, rings, or inset outlines on marks, ever (a stroke shrinks the mark and falsifies the encoding; a ring is ornament that grows with the selection). Where a chart selection filters an adjacent table, the tick, the verdigris-tinted rows, and the WHERE pill share one verdigris thread.
 
 ## Interaction rules (not visible in the static specimens)
 

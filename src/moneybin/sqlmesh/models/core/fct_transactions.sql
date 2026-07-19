@@ -71,7 +71,7 @@ WITH notes_agg AS (
     t.location_country,
     t.location_latitude,
     t.location_longitude,
-    t.currency_code,
+    COALESCE(t.currency_code, a.currency_code) AS currency_code,
     t.canonical_source_type AS source_type,
     t.source_count,
     t.match_confidence,
@@ -103,6 +103,8 @@ WITH notes_agg AS (
     ON t.transaction_id = bt_debit.debit_transaction_id
   LEFT JOIN core.bridge_transfers AS bt_credit
     ON t.transaction_id = bt_credit.credit_transaction_id
+  LEFT JOIN core.dim_accounts AS a
+    ON t.account_id = a.account_id
   LEFT JOIN notes_agg AS n
     ON t.transaction_id = n.transaction_id
   LEFT JOIN tags_agg AS tg
@@ -138,7 +140,7 @@ SELECT
   location_country, /* Merchant country code */
   location_latitude, /* Merchant latitude coordinate */
   location_longitude, /* Merchant longitude coordinate */
-  currency_code, /* ISO 4217 currency code */
+  currency_code, /* ISO 4217 currency code; the transaction's own captured currency, else inherited from core.dim_accounts.currency_code */
   source_type, /* Canonical source type: highest-priority source in the merge group */
   source_count, /* Number of contributing source rows (1 for unmatched, 2+ for merged) */
   match_confidence, /* Match confidence score; NULL for unmatched records */

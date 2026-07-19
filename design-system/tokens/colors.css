@@ -1,4 +1,29 @@
 /* MoneyBin color tokens — dark is the reference theme (default on :root); light is a peer mapping. */
+/*
+ * Accent — one metal family, three tiers with disjoint jobs (never blue):
+ *
+ *   BRASS  speaks — identity + provenance TEXT: WHERE labels, SQL chips,
+ *     overlines, avg/trend annotation lines. The only tier that carries small
+ *     text, so it is theme-responsive: no single hex clears 4.5:1 on both the
+ *     dark and the light surfaces (dark needs it lighter, light needs it
+ *     darker), and text legibility outranks a shared hex.
+ *   GILT   fills — golden fills: chart bars, marker dots, the primary button,
+ *     selected-surface tints. One bright hex both themes. An interactive
+ *     control's gilt fill (a button) carries a 1px --accent-brass edge so its
+ *     boundary clears 3:1 on the light surface; a labeled chart bar relies on
+ *     its height and label instead (WCAG 1.4.11), so bars stay unedged and gold.
+ *   VERDIGRIS responds — interaction only: selected rows/segments, active
+ *     filters, links, workflow states. Never a data encoding. Its dark value
+ *     equals --chart-2, and it is kept in chart slot 2 so a categorical chart
+ *     never double-encodes it.
+ *
+ * Text on a gilt fill is --on-accent-gilt (ink, both themes); --focus stays
+ * brass-family (identity, not selection — verdigris would make keyboard focus
+ * and selection indistinguishable). The wordmark "Bin" and the DuckKey are
+ * identity marks rendered on the surface, so they use --brand-gold: bright gilt
+ * on dark, deepening to brass on light (the surface-relative sibling of the
+ * logo's plate-relative --mark-coin).
+ */
 :root {
   --bg-base: #141311;
   --bg-surface: #1B1916;
@@ -9,15 +34,32 @@
   --text-primary: #E9E4DB;
   --text-secondary: #A39C90;
   --text-faint: #6E685E;
-  --accent-brass: #C79B3B;
-  --accent-brass-strong: #D9B054;
-  --on-accent-brass: #141311;  /* readable fg on a brass fill (dark ink on the bright brass) */
+  /* brass — provenance/identity text; theme-responsive (4.9:1 surface, 4.6:1 raised) */
+  --accent-brass: #A6832C;
+  --accent-brass-strong: #B89238;  /* brass-text hover — brightens on dark */
+  --on-accent-brass: #141311;  /* ink where brass is ever a fill (rare post-tiering) */
+  /* gilt — golden fills; one bright hex both themes, control fills edged on light */
+  --accent-gilt: #C79B3B;
+  --accent-gilt-strong: #D6A845;  /* gilt-fill hover — brightens on dark */
+  --accent-gilt-tint: #3A3120;  /* selected-surface wash */
+  --on-accent-gilt: #141311;  /* ink on a gilt fill — 7.2:1 */
+  /* verdigris — interaction only, never a data encoding; dark value == --chart-2 */
+  --accent-verdigris: #56A8A0;
+  --accent-verdigris-tint: #1E332F;
   --pos-income: #45B27B;
   --neg-expense: #E0684F;
-  --focus: #D9B054;
+  --focus: #D9B054;  /* identity, not selection — deliberately not verdigris */
   /* logo mark — auto-contrast plate/coin for the current surface (paper plate on the dark theme) */
   --mark-plate: #E9E4DB;
   --mark-coin: #8A6A1C;
+  /* brand-gold — wordmark "Bin" + DuckKey; bright gilt on the dark lead theme */
+  --brand-gold: var(--accent-gilt);
+  /* data-fill — gilt for UNLABELED data marks (heatmap cells, default histogram bars);
+     theme-responsive like --brand-gold. A labeled bar leans on its value label to carry
+     meaning (WCAG 1.4.11) so it stays plain --accent-gilt, but an unlabeled mark must
+     clear the 3:1 graphics floor on its own — and gilt washes out on the light paper
+     (2.5:1 at full strength), so the fill deepens to brass there. */
+  --data-fill: var(--accent-gilt);
   /* categorical chart palette (shared across themes; equal-lightness oklch, hue-spread) */
   --chart-1: #C79B3B;
   --chart-2: #56A8A0;
@@ -39,13 +81,26 @@
   --text-primary: #1C1A16;
   --text-secondary: #5C564C;
   --text-faint: #8B8477;
+  /* brass — deepens on paper for text legibility (4.9:1 surface) */
   --accent-brass: #8A6A1C;
-  --accent-brass-strong: #6E541A;  /* light-theme hover deepens (not brightens) so on-accent text stays legible */
-  --on-accent-brass: #FFFFFF;  /* readable fg on the dark-brass fill */
+  --accent-brass-strong: #6E5416;  /* brass-text hover — deepens on light */
+  --on-accent-brass: #FFFFFF;
+  /* gilt — same bright gold as dark; control fills carry a brass edge on light (4.9:1) */
+  --accent-gilt: #C79B3B;
+  --accent-gilt-strong: #B8862A;  /* gilt-fill hover — deepens on light */
+  --accent-gilt-tint: #EFE6CF;  /* selected-surface wash (visible on paper) */
+  --on-accent-gilt: #1C1A16;  /* ink on a gilt fill — 6.8:1 */
+  /* verdigris — interaction only (chip text sits on surface, not on the tint) */
+  --accent-verdigris: #2E7D74;
+  --accent-verdigris-tint: #DDEAE6;
   --pos-income: #157A52;
   --neg-expense: #B03A24;
   --focus: #8A6A1C;
   /* logo mark — ink plate on the light theme's light surfaces */
   --mark-plate: #1C1A16;
   --mark-coin: #C79B3B;
+  /* brand-gold — deepens to brass on light so identity marks stay legible */
+  --brand-gold: var(--accent-brass);
+  /* data-fill — deepens to brass on paper so an unlabeled mark clears 3:1 (opaque 4.9:1) */
+  --data-fill: var(--accent-brass);
 }

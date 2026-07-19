@@ -41,7 +41,7 @@ mcp = FastMCP(
 
         Money amounts are JSON numbers in `summary.display_currency`; negative = expense, positive = income (transfers exempt). Month-bucket fields (year_month, period) are 'YYYY-MM' strings.
 
-        Sensitivity tiers low/medium/high. Without consent, tools degrade to aggregates — they never fail.
+        Sensitivity tiers low/medium/high/critical are logged per call (critical = account/routing numbers, always masked before results leave this server). All other fields — amounts, descriptions, dates — reach the model provider as-is. There is no consent gate yet — treat any tool result as sent to the provider.
         """
     ),
     # mask_error_details wraps unclassified exceptions in a generic ToolError.
