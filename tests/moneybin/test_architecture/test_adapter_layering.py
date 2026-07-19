@@ -171,6 +171,8 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     # flatten to one allowlist entry per imported name. These are all
     # pure utilities (load_builtin_formats: reads bundled YAML; merge_formats:
     # pure dict merge) or pure reads (load_formats_from_db: SELECT only).
+    # MCP catalog reads now route through ImportService; its only remaining
+    # direct formats import is the built-in fallback for an unavailable DB.
     (
         "cli/commands/import_cmd.py",
         "moneybin.extractors.tabular.formats",
@@ -190,16 +192,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.formats",
         "load_builtin_formats",
-    ),
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.formats",
-        "load_formats_from_db",
-    ),
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.formats",
-        "merge_formats",
     ),
 })
 

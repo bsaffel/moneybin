@@ -297,6 +297,7 @@ class ImportSavedFormatDeletePayload:
 
     format_name: Annotated[str, DataClass.RECORD_ID]
     status: Annotated[Literal["deleted"], DataClass.TXN_TYPE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
 # ---------------------------------------------------------------------------

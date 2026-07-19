@@ -147,7 +147,7 @@
     "capability_id": "transactions.categorize.rules.read",
     "mcp_tools": ["transactions_categorize_rules"],
     "cli_commands": ["transactions categorize rules list", "transactions categorize auto rules", "transactions categorize auto stats"],
-    "service_methods": ["moneybin.services.categorization.CategorizationService.list_rule_snapshots", "moneybin.services.categorization.CategorizationService.list_rule_history", "moneybin.services.auto_rule_service.AutoRuleService.list_active_rules", "moneybin.services.auto_rule_service.AutoRuleService.stats"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.list_rules", "moneybin.services.categorization.CategorizationService.list_rule_snapshots", "moneybin.services.categorization.CategorizationService.list_rule_history", "moneybin.services.auto_rule_service.AutoRuleService.list_active_rules", "moneybin.services.auto_rule_service.AutoRuleService.stats"],
     "observable_outcomes": ["identical active, inactive, and audit-backed historical rule state"],
     "exemption": null
   },
@@ -227,7 +227,7 @@
     "capability_id": "import.status",
     "mcp_tools": ["import_status"],
     "cli_commands": ["import status", "import history", "import inbox list", "import formats list", "import formats show"],
-    "service_methods": ["moneybin.loaders.import_log.get_import_history", "moneybin.loaders.import_log.get_import_history_page", "moneybin.extractors.tabular.formats.load_builtin_formats", "moneybin.extractors.tabular.formats.load_formats_from_db", "moneybin.repositories.pdf_formats_repo.PdfFormatsRepo.list_all"],
+    "service_methods": ["moneybin.loaders.import_log.get_import_history", "moneybin.loaders.import_log.get_import_history_page", "moneybin.services.import_service.ImportService.list_formats"],
     "observable_outcomes": ["identical import IDs, terminal states, source types, row counts, labels, errors, and saved-format metadata"],
     "exemption": null
   },
@@ -235,8 +235,8 @@
     "capability_id": "import.revert",
     "mcp_tools": ["import_revert"],
     "cli_commands": ["import revert", "import formats delete"],
-    "service_methods": ["moneybin.services.import_service.ImportService.revert", "moneybin.services.import_service.ImportService.delete_saved_format"],
-    "observable_outcomes": ["the selected import's raw rows are removed and its status becomes reverted", "the selected user-saved format is audit-deleted while built-ins remain immutable"],
+    "service_methods": ["moneybin.services.import_service.ImportService.revert", "moneybin.services.import_service.ImportService.plan_saved_format_delete", "moneybin.services.import_service.ImportService.delete_saved_format_confirmed", "moneybin.services.import_service.ImportService.delete_saved_format"],
+    "observable_outcomes": ["the selected import's raw rows are removed and its status becomes reverted", "the exact confirmed user-saved format is audit-deleted with an undoable operation ID while built-ins remain immutable"],
     "exemption": null
   },
   {

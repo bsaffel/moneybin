@@ -278,6 +278,12 @@ def test_flagged_routes_map_their_actual_owners() -> None:
         in rows["transactions.categorize.run"].service_methods
     )
     assert (
+        "transactions categorize rules list"
+        in rows["transactions.categorize.rules.read"].cli_commands
+        and "moneybin.services.categorization.CategorizationService.list_rules"
+        in rows["transactions.categorize.rules.read"].service_methods
+    )
+    assert (
         "categories delete" in rows["taxonomy.set"].cli_commands
         and "moneybin.services.categorization.CategorizationService.delete_category"
         in rows["taxonomy.set"].service_methods
@@ -285,11 +291,10 @@ def test_flagged_routes_map_their_actual_owners() -> None:
     assert {"import formats list", "import formats show"} <= set(
         rows["import.status"].cli_commands
     )
-    assert {
-        "moneybin.extractors.tabular.formats.load_builtin_formats",
-        "moneybin.extractors.tabular.formats.load_formats_from_db",
-        "moneybin.repositories.pdf_formats_repo.PdfFormatsRepo.list_all",
-    } <= set(rows["import.status"].service_methods)
+    assert (
+        "moneybin.services.import_service.ImportService.list_formats"
+        in rows["import.status"].service_methods
+    )
     assert (
         "moneybin.services.import_service.ImportService.delete_saved_format"
         in rows["import.revert"].service_methods
@@ -302,8 +307,8 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
     from unittest.mock import MagicMock
 
     from moneybin.cli.commands import categories as categories_cli
-    from moneybin.cli.commands import import_cmd
     from moneybin.cli.commands.transactions import categorize as categorize_cli
+    from moneybin.cli.commands.transactions.categorize import rules as rules_cli
     from moneybin.extractors.tabular.formats import load_builtin_formats
 
     db = MagicMock()
@@ -324,6 +329,7 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
         return categorization_service
 
     monkeypatch.setattr(categorize_cli, "get_database", db_factory)
+    monkeypatch.setattr(rules_cli, "get_database", db_factory)
     monkeypatch.setattr(
         "moneybin.services.categorization.CategorizationService",
         categorization_factory,
@@ -335,6 +341,13 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
     )
     assert stats.exit_code == 0, stats.output
     categorization_service.categorization_stats.assert_called_once_with()
+    categorization_service.list_rules.return_value.rules = []
+    listed_rules = CliRunner().invoke(
+        app,
+        ["transactions", "categorize", "rules", "list", "--output", "json"],
+    )
+    assert listed_rules.exit_code == 0, listed_rules.output
+    categorization_service.list_rules.assert_called_once_with()
 
     delete_service = MagicMock()
 
@@ -358,20 +371,17 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
     )
 
     builtin = load_builtin_formats()
+    import_service = MagicMock()
+    import_service.list_formats.return_value = (builtin, builtin, [])
 
-    def load_all_formats(_: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-        return builtin, builtin
+    def import_service_factory(_: Any) -> MagicMock:
+        return import_service
 
-    def load_pdf_formats(_: Any) -> list[Any]:
-        return []
-
-    monkeypatch.setattr(
-        import_cmd,
-        "_load_all_formats",
-        load_all_formats,
-    )
-    monkeypatch.setattr(import_cmd, "_load_pdf_formats", load_pdf_formats)
     monkeypatch.setattr("moneybin.database.get_database", db_factory)
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService",
+        import_service_factory,
+    )
     listed = CliRunner().invoke(
         app,
         ["import", "formats", "list", "--output", "json"],
@@ -381,6 +391,7 @@ def test_flagged_cli_routes_execute_the_mapped_owner(
         ["import", "formats", "show", next(iter(builtin)), "--output", "json"],
     )
     assert listed.exit_code == shown.exit_code == 0
+    assert import_service.list_formats.call_count == 2
     assert json.loads(listed.stdout)["formats"]
     assert json.loads(shown.stdout)["format"]["name"] == next(iter(builtin))
 
@@ -429,37 +440,48 @@ def _seed_transaction(path: Path, transaction_id: str) -> None:
         )
 
 
-def _seed_review_proposals(path: Path) -> None:
-    """Seed audited, nonzero match and account-identity review state."""
-    from moneybin.repositories.account_link_decisions_repo import (
-        AccountLinkDecisionsRepo,
-    )
-    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+def _seed_refresh_sources(path: Path) -> None:
+    """Seed source facts that the match and identity stages must turn into reviews."""
+    from moneybin.repositories.account_links_repo import AccountLinksRepo
 
     _select_database(path)
     with get_database(read_only=False) as db:
-        MatchDecisionsRepo(db).insert(
-            match_id="parity_match",
-            source_transaction_id_a="parity_a",
-            source_type_a="csv",
-            source_origin_a="parity",
-            source_transaction_id_b="parity_b",
-            source_type_b="ofx",
-            source_origin_b="parity",
-            account_id="ACC001",
-            confidence_score=0.9,
-            match_signals={"date_distance": 0},
-            match_tier="3",
-            match_status="pending",
-            decided_by="auto",
-            actor="test",
+        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+        db.execute(
+            """
+            CREATE OR REPLACE VIEW prep.int_transactions__unioned AS
+            SELECT *
+            FROM (
+                VALUES
+                    ('parity_csv', 'ACC001', DATE '2026-04-10',
+                     DECIMAL '-12.34', 'Parity Coffee', 'csv',
+                     'parity_csv', 'parity.csv', 'USD'),
+                    ('parity_ofx', 'ACC001', DATE '2026-04-10',
+                     DECIMAL '-12.34', 'Parity Coffee', 'ofx',
+                     'parity_ofx', 'parity.ofx', 'USD')
+            ) AS source(
+                source_transaction_id, account_id, transaction_date, amount,
+                description, source_type, source_origin, source_file,
+                currency_code
+            )
+            """
         )
-        AccountLinkDecisionsRepo(db).insert(
-            decision_id="parity_identity",
-            provisional_account_id="ACC001",
-            candidate_account_id="ACC002",
-            confidence_score=0.8,
-            match_signals={"signal": "name", "value": "parity"},
+        db.execute(
+            """
+            UPDATE core.dim_accounts
+            SET display_name = 'Parity Checking',
+                institution_name = 'Parity Bank',
+                last_four = '4242'
+            WHERE account_id IN ('ACC001', 'ACC002')
+            """
+        )
+        AccountLinksRepo(db).insert(
+            link_id="paritylink01",
+            account_id="ACC001",
+            ref_kind="source_native",
+            ref_value="parity-checking",
+            source_type="csv",
+            source_origin="parity",
             decided_by="auto",
             actor="test",
         )
@@ -502,8 +524,27 @@ async def test_refresh_match_identity_has_same_observable_outcome(
     tmp_path: Path,
 ) -> None:
     cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
-    _seed_review_proposals(cli_path)
-    _seed_review_proposals(mcp_path)
+    _seed_refresh_sources(cli_path)
+    _seed_refresh_sources(mcp_path)
+    match_query = """
+        SELECT source_transaction_id_a, source_transaction_id_b, match_status
+        FROM app.match_decisions
+        WHERE source_transaction_id_a IN ('parity_csv', 'parity_ofx')
+           OR source_transaction_id_b IN ('parity_csv', 'parity_ofx')
+        ORDER BY source_transaction_id_a, source_transaction_id_b
+    """
+    identity_query = """
+        SELECT provisional_account_id, candidate_account_id, status
+        FROM app.account_link_decisions
+        WHERE provisional_account_id IN ('ACC001', 'ACC002')
+          AND candidate_account_id IN ('ACC001', 'ACC002')
+        ORDER BY provisional_account_id, candidate_account_id
+    """
+    assert _query_rows(cli_path, match_query) == []
+    assert _query_rows(mcp_path, match_query) == []
+    assert _query_rows(cli_path, identity_query) == []
+    assert _query_rows(mcp_path, identity_query) == []
+
     _select_database(cli_path)
     cli = CliRunner().invoke(
         app,
@@ -524,22 +565,18 @@ async def test_refresh_match_identity_has_same_observable_outcome(
     cli_data = json.loads(cli.stdout)["data"]
     assert cli_data["matching_error"] == mcp["data"]["matching_error"]
     assert cli_data["identity_errors"] == mcp["data"]["identity_errors"]
-    table_queries = {
-        "match_decisions": "SELECT COUNT(*) FROM app.match_decisions",
-        "account_link_decisions": "SELECT COUNT(*) FROM app.account_link_decisions",
-        "merchant_link_decisions": "SELECT COUNT(*) FROM app.merchant_link_decisions",
-    }
-    cli_counts = {
-        table: _query_rows(cli_path, query)[0][0]
-        for table, query in table_queries.items()
-    }
-    mcp_counts = {
-        table: _query_rows(mcp_path, query)[0][0]
-        for table, query in table_queries.items()
-    }
-    assert cli_counts == mcp_counts
-    assert cli_counts["match_decisions"] >= 1
-    assert cli_counts["account_link_decisions"] >= 1
+    assert cli_data["matching_error"] is None
+    assert cli_data["identity_errors"] == []
+    cli_matches = _query_rows(cli_path, match_query)
+    mcp_matches = _query_rows(mcp_path, match_query)
+    cli_identity = _query_rows(cli_path, identity_query)
+    mcp_identity = _query_rows(mcp_path, identity_query)
+    assert cli_matches == mcp_matches
+    assert cli_identity == mcp_identity
+    assert len(cli_matches) == 1
+    assert set(cli_matches[0][:2]) == {"parity_csv", "parity_ofx"}
+    assert len(cli_identity) == 1
+    assert set(cli_identity[0][:2]) == {"ACC001", "ACC002"}
 
 
 @pytest.mark.unit
@@ -830,13 +867,21 @@ async def test_saved_format_deletion_has_same_audited_outcome(
     assert cli.exit_code == 0, cli.output
 
     _select_database(mcp_path)
+    required = await import_revert_coarse(
+        operation="delete_saved_format",
+        format_name="parity_saved",
+    )
+    assert required.error is not None
+    assert required.error.details is not None
     mcp = (
         await import_revert_coarse(
             operation="delete_saved_format",
             format_name="parity_saved",
+            confirmation_token=str(required.error.details["confirmation_token"]),
         )
     ).to_dict()
     assert mcp["data"]["status"] == "deleted"
+    assert mcp["data"]["operation_id"]
 
     state_query = """
         SELECT COUNT(*)

@@ -69,7 +69,7 @@ is added.
 | Refresh | `refresh_run` | `refresh`, match/identity commands, `transform apply` | Same selected step outcomes and proposal state |
 | SQL | `sql_query`, `sql_schema` | `sql query` | Same rows, classification, cap, and CRITICAL masking |
 
-Three parity gaps discovered by executing this model were closed as part of
+Five parity gaps discovered by executing this model were closed as part of
 the implementation:
 
 1. `accounts(view="summary")` now has `moneybin accounts summary`.

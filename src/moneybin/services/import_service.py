@@ -7,8 +7,10 @@ MCP tools call this same service — no duplication.
 
 import dataclasses
 import hashlib
+import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -19,6 +21,8 @@ import duckdb
 if TYPE_CHECKING:
     from moneybin.extractors.pdf.ir import PdfDocument
     from moneybin.extractors.pdf.routing import RouteDecision
+    from moneybin.extractors.tabular.formats import TabularFormat
+    from moneybin.repositories.pdf_formats_repo import PdfFormat
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -141,6 +145,19 @@ class ImportResult:
             lines.append("  Core tables rebuilt (dim_accounts, fct_transactions)")
 
         return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class SavedFormatDeletePlan:
+    """Exact live state bound to one saved-format deletion approval."""
+
+    format_name: str
+    state_sha256: str
+
+    @property
+    def blast_radius(self) -> dict[str, int]:
+        """Return the one-row destructive impact for confirmation metadata."""
+        return {"saved_formats": 1}
 
 
 @dataclass(frozen=True)
@@ -3678,6 +3695,91 @@ class ImportService:
             transforms_duration_seconds=duration_seconds,
             transforms_error=error,
         )
+
+    def list_formats(
+        self,
+    ) -> tuple[
+        dict[str, "TabularFormat"],
+        dict[str, "TabularFormat"],
+        list["PdfFormat"],
+    ]:
+        """Return the complete tabular/PDF format catalog for either surface."""
+        from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+            load_builtin_formats,
+            load_formats_from_db,
+            merge_formats,
+        )
+
+        builtin = load_builtin_formats()
+        formats = merge_formats(builtin, load_formats_from_db(self._db))
+        try:
+            pdf_formats = PdfFormatsRepo(self._db).list_all()
+        except Exception:  # noqa: BLE001  # PDF catalog is optional to tabular reads.
+            logger.debug("PDF formats unavailable; returning tabular formats only")
+            pdf_formats = []
+        return formats, builtin, pdf_formats
+
+    def plan_saved_format_delete(self, format_name: str) -> SavedFormatDeletePlan:
+        """Return the exact current saved-format state for confirmation binding."""
+        from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+            load_builtin_formats,
+        )
+        from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415
+            TabularFormatsRepo,
+        )
+
+        if format_name in load_builtin_formats():
+            raise UserError(
+                f"Built-in format {format_name!r} cannot be deleted.",
+                code="saved_format_builtin_immutable",
+            )
+        row = TabularFormatsRepo(self._db).get(format_name)
+        if row is None:
+            raise UserError(
+                f"Saved format {format_name!r} was not found.",
+                code="saved_format_not_found",
+            )
+        canonical = json.dumps(
+            row,
+            default=str,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return SavedFormatDeletePlan(
+            format_name=format_name,
+            state_sha256=hashlib.sha256(canonical).hexdigest(),
+        )
+
+    def delete_saved_format_confirmed(
+        self,
+        format_name: str,
+        *,
+        actor: str,
+        verify: Callable[[SavedFormatDeletePlan], None],
+    ) -> str:
+        """Revalidate and audit-delete one saved format in the same transaction."""
+        from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415
+            TabularFormatsRepo,
+        )
+
+        self._db.begin()
+        try:
+            live = self.plan_saved_format_delete(format_name)
+            verify(live)
+            event = TabularFormatsRepo(self._db).delete(
+                format_name,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            if event is None:  # pragma: no cover - live plan proved row existence
+                raise RuntimeError(
+                    "saved format disappeared inside its write transaction"
+                )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return event.operation_id
 
     def delete_saved_format(
         self,

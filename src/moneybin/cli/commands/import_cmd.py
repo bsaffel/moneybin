@@ -1366,11 +1366,11 @@ def formats_list(
         moneybin import formats list --type=tabular --output json
     """
     from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
 
     try:
         with get_database(read_only=True) as db:
-            all_formats, builtin = _load_all_formats(db)
-            pdf_formats = _load_pdf_formats(db)
+            all_formats, builtin, pdf_formats = ImportService(db).list_formats()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, builtin = _load_all_formats(None)
         pdf_formats = _load_pdf_formats(None)
@@ -1483,11 +1483,11 @@ def formats_show(
         moneybin import formats show chase_a1b2c3d4e5f6
     """
     from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
 
     try:
         with get_database(read_only=True) as db:
-            all_formats, _ = _load_all_formats(db)
-            pdf_formats_list = _load_pdf_formats(db)
+            all_formats, _, pdf_formats_list = ImportService(db).list_formats()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, _ = _load_all_formats(None)
         pdf_formats_list = _load_pdf_formats(None)

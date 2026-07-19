@@ -1,5 +1,5 @@
 {
-  "sha256": "d1a3568d31ff4fd746f05eccc0d2db0b69c77884698a111ffae614f54f9fcc4f",
+  "sha256": "40f0ea40932b7251fef00184bb0e3614b9ea3af0e050cb5b4aa9750502baeca8",
   "tool_count": 45,
   "tools": [
     {
@@ -1333,10 +1333,94 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Revert one completed import.",
+        "description": "Revert one completed import or delete one user-saved format. Import reversion permanently removes its raw rows; saved-format deletion writes app.tabular_formats, requires exact payload-bound confirmation, and is recoverable with system_audit_undo.",
         "inputSchema": {
           "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "operation": {
+                    "const": "delete_saved_format"
+                  }
+                },
+                "required": [
+                  "operation"
+                ]
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "import_id"
+                      ]
+                    }
+                  ]
+                },
+                "properties": {
+                  "format_name": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "format_name"
+                ]
+              }
+            },
+            {
+              "if": {
+                "not": {
+                  "properties": {
+                    "operation": {
+                      "const": "delete_saved_format"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "format_name"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "confirmation_token"
+                      ]
+                    }
+                  ]
+                },
+                "properties": {
+                  "import_id": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "import_id"
+                ]
+              }
+            }
+          ],
           "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "format_name": {
               "anyOf": [
                 {
@@ -1377,12 +1461,12 @@
         },
         "name": "import_revert"
       },
-      "description_bytes": 28,
-      "input_schema_bytes": 312,
+      "description_bytes": 247,
+      "input_schema_bytes": 916,
       "name": "import_revert",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 532
+      "total_bytes": 1355
     },
     {
       "annotation_bytes": 89,
@@ -4288,5 +4372,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 43299
+  "total_bytes": 44122
 }

@@ -30,10 +30,17 @@ from pydantic import Field, TypeAdapter
 
 if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
+    from moneybin.services.import_service import SavedFormatDeletePlan
 
+from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
@@ -79,6 +86,41 @@ _IMPORT_STATUS_SECTION_ORDER: tuple[Literal["imports", "formats", "inbox"], ...]
     "formats",
     "inbox",
 )
+_IMPORT_REVERT_INPUT_SCHEMA_EXTRA: dict[str, Any] = {
+    "allOf": [
+        {
+            "if": {
+                "properties": {"operation": {"const": "delete_saved_format"}},
+                "required": ["operation"],
+            },
+            "then": {
+                "properties": {"format_name": {"type": "string", "minLength": 1}},
+                "required": ["format_name"],
+                "not": {"anyOf": [{"required": ["import_id"]}]},
+            },
+        },
+        {
+            "if": {
+                "not": {
+                    "properties": {
+                        "operation": {"const": "delete_saved_format"},
+                    },
+                    "required": ["operation"],
+                }
+            },
+            "then": {
+                "properties": {"import_id": {"type": "string", "minLength": 1}},
+                "required": ["import_id"],
+                "not": {
+                    "anyOf": [
+                        {"required": ["format_name"]},
+                        {"required": ["confirmation_token"]},
+                    ]
+                },
+            },
+        },
+    ]
+}
 
 
 def _validate_file_path(file_path: str) -> Path:
@@ -930,34 +972,74 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     )
 
 
-def _delete_saved_format(
+def _saved_format_delete_binding(
+    plan: SavedFormatDeletePlan,
+) -> ConfirmationBinding:
+    """Bind deletion approval to one saved format's exact live row state."""
+    return ConfirmationBinding(
+        arguments={
+            "operation": "delete_saved_format",
+            "format_name": plan.format_name,
+            "state_sha256": plan.state_sha256,
+        },
+        resolved_ids=(plan.format_name,),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="saved_format_delete",
+        blast_radius=plan.blast_radius,
+    )
+
+
+async def _delete_saved_format(
     format_name: str,
+    *,
+    confirmation_token: str | None,
 ) -> ResponseEnvelope[ImportSavedFormatDeletePayload]:
-    """Audit-delete one user-saved tabular format; built-ins are immutable."""
+    """Confirm and audit-delete one exact user-saved tabular format."""
     from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
+    with get_database(read_only=True) as db:
+        plan = ImportService(db).plan_saved_format_delete(format_name)
+    binding = _saved_format_delete_binding(plan)
+    grant: ConfirmationGrant = await grant_confirmation_or_raise(
+        binding=binding if confirmation_token is None else None,
+        message=(
+            f"Delete the exact saved import format {format_name!r}? "
+            "The audited row can be restored with "
+            "system_audit_undo(operation_id)."
+        ),
+        confirmation_token=confirmation_token,
+    )
     with get_database(read_only=False) as db:
-        status = ImportService(db).delete_saved_format(format_name, actor="mcp")
-    if status == "builtin":
-        return build_error_envelope(
-            error=UserError(
-                f"Built-in format {format_name!r} cannot be deleted.",
-                code="saved_format_builtin_immutable",
-            )
-        )
-    if status == "not_found":
-        return build_error_envelope(
-            error=UserError(
-                f"Saved format {format_name!r} was not found.",
-                code="saved_format_not_found",
-            )
+        operation_id = ImportService(db).delete_saved_format_confirmed(
+            format_name,
+            actor="mcp",
+            verify=lambda live: grant.verify(_saved_format_delete_binding(live)),
         )
     return build_envelope(
         data=ImportSavedFormatDeletePayload(
             format_name=format_name,
             status="deleted",
+            operation_id=operation_id,
         ),
         actions=["Use import_status(sections=['formats']) to verify the format list."],
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit",
+                arguments={"view": "detail", "operation_id": operation_id},
+                rationale="Inspect the exact saved-format deletion and undoability.",
+                confidence="suggested",
+                idempotent=True,
+            ),
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": operation_id},
+                rationale="Restore the audited saved-format row.",
+                confidence="certain",
+                idempotent=False,
+            ),
+        ],
     )
 
 
@@ -970,41 +1052,33 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     institution, document kind, routing target, and replay statistics. Use
     ``import_preview`` to test a tabular format against a specific file.
     """
-    from moneybin.extractors.tabular.formats import (
-        load_builtin_formats,
-        load_formats_from_db,
-        merge_formats,
-    )
-    from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
 
-    builtin = load_builtin_formats()
     pdf_format_rows: list[ImportPdfFormatRow] = []
     try:
         with get_database(read_only=True) as db:
-            formats = merge_formats(builtin, load_formats_from_db(db))
-            # Independent try/except: app.pdf_formats may be absent on
-            # pre-V027 DBs. A failure here must not clobber the tabular
-            # formats already merged above.
-            try:
-                for pf in PdfFormatsRepo(db).list_all():
-                    pdf_format_rows.append(
-                        ImportPdfFormatRow(
-                            name=pf.name,
-                            institution_name=pf.institution_name,
-                            document_kind=pf.document_kind,
-                            routing=pf.routing,
-                            front_end=pf.front_end,
-                            version=pf.version,
-                            times_used=pf.times_used,
-                            last_used_at=pf.last_used_at.isoformat()
-                            if pf.last_used_at is not None
-                            else None,
-                        )
+            formats, _, pdf_formats = ImportService(db).list_formats()
+            for pf in pdf_formats:
+                pdf_format_rows.append(
+                    ImportPdfFormatRow(
+                        name=pf.name,
+                        institution_name=pf.institution_name,
+                        document_kind=pf.document_kind,
+                        routing=pf.routing,
+                        front_end=pf.front_end,
+                        version=pf.version,
+                        times_used=pf.times_used,
+                        last_used_at=pf.last_used_at.isoformat()
+                        if pf.last_used_at is not None
+                        else None,
                     )
-            except Exception:  # noqa: BLE001 -- pre-V027 DB; fall back to empty
-                pdf_format_rows = []
+                )
     except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in only
-        formats = builtin
+        from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+            load_builtin_formats,
+        )
+
+        formats = load_builtin_formats()
 
     format_rows = [
         ImportFormatRow(
@@ -1946,16 +2020,18 @@ def import_files_coarse(
 
 
 @mcp_tool(read_only=False, destructive=True, idempotent=False)
-def import_revert_coarse(
+async def import_revert_coarse(
     import_id: str | None = None,
     operation: Literal["revert_import", "delete_saved_format"] = "revert_import",
     format_name: str | None = None,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload]:
     """Revert one import or audit-delete one user-saved format."""
     if operation == "revert_import":
-        if not import_id or format_name is not None:
+        if not import_id or format_name is not None or confirmation_token is not None:
             raise UserError(
-                "operation='revert_import' requires exactly import_id.",
+                "operation='revert_import' requires exactly import_id and does "
+                "not accept confirmation_token.",
                 code="import_revert_invalid_target",
             )
     elif import_id is not None or not format_name:
@@ -1967,7 +2043,10 @@ def import_revert_coarse(
     if operation == "delete_saved_format":
         return cast(
             ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload],
-            _delete_saved_format(cast(str, format_name)),
+            await _delete_saved_format(
+                cast(str, format_name),
+                confirmation_token=confirmation_token,
+            ),
         )
 
     response = import_revert(import_id=cast(str, import_id))
@@ -2037,7 +2116,14 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "import_status",
             "Read import history, formats, and inbox state.",
         ),
-        (import_revert_coarse, "import_revert", "Revert one completed import."),
+        (
+            import_revert_coarse,
+            "import_revert",
+            "Revert one completed import or delete one user-saved format. Import "
+            "reversion permanently removes its raw rows; saved-format deletion "
+            "writes app.tabular_formats, requires exact payload-bound confirmation, "
+            "and is recoverable with system_audit_undo.",
+        ),
         (
             import_inbox_sync_coarse,
             "import_inbox_sync",
@@ -2055,6 +2141,9 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             name,
             description,
             privacy_actor=name,
+            input_schema_extra=(
+                _IMPORT_REVERT_INPUT_SCHEMA_EXTRA if name == "import_revert" else None
+            ),
         )
 
 

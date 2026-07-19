@@ -9,13 +9,14 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pytest import MonkeyPatch
 
 import moneybin.mcp.tools.import_tools as import_tools_module
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
     _bridge_confirm_action,  # pyright: ignore[reportPrivateUsage]
@@ -46,7 +47,8 @@ async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> N
     registrar = import_tools_module.register_import_workflow_tools
     mcp = isolated_server(registrar)
 
-    names = {tool.name for tool in await mcp._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {tool.name for tool in tools}
 
     assert names == {
         "import_files",
@@ -59,6 +61,11 @@ async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> N
     }
     assert "import_formats" not in names
     assert "import_inbox_pending" not in names
+    revert = next(tool for tool in tools if tool.name == "import_revert")
+    assert "saved format" in (revert.description or "").lower()
+    assert "confirmation" in (revert.description or "").lower()
+    assert "system_audit_undo" in (revert.description or "")
+    assert "confirmation_token" in revert.parameters["properties"]
 
 
 @pytest.mark.parametrize(
@@ -108,29 +115,140 @@ async def test_import_revert_deletes_a_saved_format_with_audit(
     with get_database(read_only=False) as db:
         save_format_to_db(db, saved, actor="test")
 
-    result = (
-        await import_revert_coarse(
-            operation="delete_saved_format",
-            format_name="parity_saved",
-        )
-    ).to_dict()
+    required = await import_revert_coarse(
+        operation="delete_saved_format",
+        format_name="parity_saved",
+    )
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+    assert required.error.details is not None
+    assert required.error.details["operation_kind"] == "saved_format_delete"
+    assert required.error.details["blast_radius"] == {"saved_formats": 1}
 
-    assert result["data"] == {
-        "format_name": "parity_saved",
-        "status": "deleted",
-    }
+    result = await import_revert_coarse(
+        operation="delete_saved_format",
+        format_name="parity_saved",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert result.error is None
+    assert result.data.format_name == "parity_saved"
+    assert result.data.status == "deleted"
+    assert result.data.operation_id.startswith("op_")
+    recovery = cast(list[RecoveryAction], result.recovery_actions or [])
+    assert [action.tool for action in recovery] == [
+        "system_audit",
+        "system_audit_undo",
+    ]
     with get_database(read_only=True) as db:
         assert "parity_saved" not in load_formats_from_db(db)
         audit = db.execute(
             """
-            SELECT action, actor
+            SELECT action, actor, operation_id
             FROM app.audit_log
             WHERE action = 'tabular_format.delete'
             ORDER BY occurred_at DESC
             LIMIT 1
             """
         ).fetchone()
-    assert audit == ("tabular_format.delete", "mcp")
+    assert audit == ("tabular_format.delete", "mcp", result.data.operation_id)
+
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    undo = await system_audit_undo(result.data.operation_id)
+    assert undo.error is None
+    with get_database(read_only=True) as db:
+        assert "parity_saved" in load_formats_from_db(db)
+
+
+async def test_import_revert_rejects_stale_saved_format_confirmation(
+    mcp_db: Path,
+) -> None:
+    from moneybin.database import get_database
+    from moneybin.extractors.tabular.formats import (
+        TabularFormat,
+        load_formats_from_db,
+        save_format_to_db,
+    )
+
+    original = TabularFormat(
+        name="stale_saved",
+        institution_name="Before",
+        header_signature=["Date", "Amount"],
+        field_mapping={"transaction_date": "Date", "amount": "Amount"},
+        sign_convention="negative_is_expense",
+        date_format="%m/%d/%Y",
+    )
+    with get_database(read_only=False) as db:
+        save_format_to_db(db, original, actor="test")
+    required = await import_revert_coarse(
+        operation="delete_saved_format",
+        format_name="stale_saved",
+    )
+    assert required.error is not None
+    assert required.error.details is not None
+
+    changed = original.model_copy(update={"institution_name": "After"})
+    with get_database(read_only=False) as db:
+        save_format_to_db(db, changed, actor="test")
+
+    result = await import_revert_coarse(
+        operation="delete_saved_format",
+        format_name="stale_saved",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert result.error is not None
+    assert result.error.code == "mutation_confirmation_mismatch"
+    with get_database(read_only=True) as db:
+        assert "stale_saved" in load_formats_from_db(db)
+
+
+async def test_import_revert_confirmation_is_bound_to_one_format(
+    mcp_db: Path,
+) -> None:
+    from moneybin.database import get_database
+    from moneybin.extractors.tabular.formats import (
+        TabularFormat,
+        load_formats_from_db,
+        save_format_to_db,
+    )
+
+    for name in ("bound_a", "bound_b"):
+        with get_database(read_only=False) as db:
+            save_format_to_db(
+                db,
+                TabularFormat(
+                    name=name,
+                    institution_name="Parity",
+                    header_signature=["Date", "Amount"],
+                    field_mapping={
+                        "transaction_date": "Date",
+                        "amount": "Amount",
+                    },
+                    sign_convention="negative_is_expense",
+                    date_format="%m/%d/%Y",
+                ),
+                actor="test",
+            )
+    required = await import_revert_coarse(
+        operation="delete_saved_format",
+        format_name="bound_a",
+    )
+    assert required.error is not None
+    assert required.error.details is not None
+
+    result = await import_revert_coarse(
+        operation="delete_saved_format",
+        format_name="bound_b",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert result.error is not None
+    assert result.error.code == "mutation_confirmation_mismatch"
+    with get_database(read_only=True) as db:
+        saved = load_formats_from_db(db)
+    assert {"bound_a", "bound_b"} <= set(saved)
 
 
 async def test_import_revert_refuses_builtin_format_deletion(mcp_db: Path) -> None:
