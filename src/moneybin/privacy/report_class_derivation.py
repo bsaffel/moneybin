@@ -48,6 +48,11 @@ from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
 logger = logging.getLogger(__name__)
 
 _REPORTS_SCHEMA = "reports"
+# The only schemas a derivable model may read: CLASSIFICATION is an
+# independently authored ground truth for both, and the snapshot is built from
+# it. A read of any other schema (seeds/prep/raw/meta) has no ground truth to
+# derive against, so it must fail loudly rather than resolve to a floor.
+_DERIVABLE_UPSTREAM_SCHEMAS = frozenset({"core", "app"})
 _CORE_SCHEMA = "core"
 _DIALECT = "duckdb"
 
@@ -125,11 +130,23 @@ def _assert_acyclic(query: exp.Query, model_name: str) -> None:
     reading reports.* would make the derived map self-referential.
     """
     for table in query.find_all(exp.Table):
+        # A CTE or derived-table reference parses with an empty db; only a
+        # schema-qualified read names a real upstream, so skip the rest.
+        if not table.db:
+            continue
         if table.db == _REPORTS_SCHEMA:
             raise ReportDerivationError(
                 f"{model_name}: reads {table.db}.{table.name}. A model derived "
                 "from source must read only core.*/app.*, or the derived class "
                 "map becomes self-referential."
+            )
+        if table.db not in _DERIVABLE_UPSTREAM_SCHEMAS:
+            raise ReportDerivationError(
+                f"{model_name}: reads {table.db}.{table.name}, which has no "
+                "CLASSIFICATION ground truth. A model derived from source must "
+                f"read only {'/'.join(sorted(_DERIVABLE_UPSTREAM_SCHEMAS))}.* — "
+                "columns from an unclassified schema cannot be derived, so the "
+                "resulting map would silently under-describe them."
             )
 
 

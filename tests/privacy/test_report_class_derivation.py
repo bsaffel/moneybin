@@ -185,11 +185,18 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
         if not reason.startswith("kind=") and "python model" not in reason
     }
     assert set(view_derivation_failures) == unresolvable
+    # Each exclusion must name WHY it could not be derived. "no CLASSIFICATION
+    # ground truth" is the schema-contract refusal (`_assert_acyclic` rejecting
+    # a read of seeds/prep/raw/meta); the other two are resolution failures. A
+    # bare "excluded" with no stated cause is the silent skip this whole
+    # mechanism exists to prevent.
     for name in unresolvable:
+        reason = view_derivation_failures[name]
         assert (
-            "not resolvable" in view_derivation_failures[name]
-            or "SELECT *" in view_derivation_failures[name]
-        )
+            "no CLASSIFICATION ground truth" in reason
+            or "not resolvable" in reason
+            or "SELECT *" in reason
+        ), f"{name}: exclusion reason does not say why: {reason!r}"
 
 
 def test_uncategorized_queue_age_days_and_priority_score_derive_correctly() -> None:
