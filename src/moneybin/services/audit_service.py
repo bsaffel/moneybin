@@ -180,7 +180,7 @@ class AuditService:
         target_id: str | None = None,
         from_ts: str | None = None,
         to_ts: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
     ) -> list[AuditEvent]:
         """Return filtered events in stable newest-first order."""
         clauses: list[str] = []
@@ -204,7 +204,10 @@ class AuditService:
             clauses.append("occurred_at <= ?")
             params.append(to_ts)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(limit)
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            params.append(limit)
         rows = self._db.conn.execute(
             f"""
             SELECT audit_id, occurred_at, actor, action,
@@ -214,8 +217,8 @@ class AuditService:
               FROM app.audit_log
               {where}
               ORDER BY occurred_at DESC, audit_id DESC
-              LIMIT ?
-            """,  # noqa: S608  # undo-columns fragment is a controlled literal
+              {limit_sql}
+            """,  # noqa: S608  # controlled fragments + parameterized filters
             params,
         ).fetchall()
         return [self._row_to_event(r) for r in rows]

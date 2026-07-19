@@ -33,6 +33,7 @@ middleware must not mask further.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from moneybin.privacy.taxonomy import DataClass
@@ -82,6 +83,61 @@ class CategorizationRulesSetPayload:
 
     results: list[CategorizationRuleStateResult]
     operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
+class CategorizationRuleSnapshot:
+    """One exact categorization-rule state from the table or audit log."""
+
+    rule_id: Annotated[str, DataClass.RECORD_ID]
+    name: Annotated[str | None, DataClass.USER_NOTE]
+    merchant_pattern: Annotated[str | None, DataClass.MERCHANT_NAME]
+    match_type: Annotated[str | None, DataClass.TXN_TYPE]
+    min_amount: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
+    max_amount: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
+    account_id: Annotated[str | None, DataClass.RECORD_ID]
+    category: Annotated[str | None, DataClass.CATEGORY]
+    subcategory: Annotated[str | None, DataClass.CATEGORY]
+    category_id: Annotated[str | None, DataClass.RECORD_ID]
+    priority: Annotated[int | None, DataClass.AGGREGATE]
+    is_active: Annotated[bool | None, DataClass.TXN_TYPE]
+    created_by: Annotated[str | None, DataClass.TXN_TYPE]
+    created_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    updated_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+@dataclass(frozen=True, slots=True)
+class CategorizationRulesCurrentView:
+    """Active or inactive exact categorization-rule states."""
+
+    kind: Annotated[Literal["active", "inactive"], DataClass.TXN_TYPE]
+    rules: list[CategorizationRuleSnapshot]
+
+
+@dataclass(frozen=True, slots=True)
+class CategorizationRuleHistoryEvent:
+    """One audit-backed transition between exact categorization-rule states."""
+
+    event_id: Annotated[str, DataClass.RECORD_ID]
+    occurred_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+    rule_id: Annotated[str, DataClass.RECORD_ID]
+    action: Annotated[str, DataClass.TXN_TYPE]
+    prior: CategorizationRuleSnapshot | None
+    current: CategorizationRuleSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
+class CategorizationRulesHistoryView:
+    """Complete audit-backed categorization-rule transitions."""
+
+    kind: Annotated[Literal["history"], DataClass.TXN_TYPE]
+    events: list[CategorizationRuleHistoryEvent]
+
+
+CategorizationRulesCoarsePayload = (
+    CategorizationRulesCurrentView | CategorizationRulesHistoryView
+)
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,9 @@ These tests verify the MCP tool wiring, envelope format, and basic end-to-end.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,11 +24,13 @@ from moneybin.mcp.tools.categories import (
 )
 from moneybin.mcp.tools.merchants import register_merchants_tools
 from moneybin.mcp.tools.transactions_categorize import (
+    register_categorization_coarse_reads,
     register_categorization_coarse_writes,
     register_transactions_categorize_tools,
     transactions_categorize_auto_accept,
     transactions_categorize_commit,
     transactions_categorize_pending,
+    transactions_categorize_rules_coarse,
     transactions_categorize_rules_create,
     transactions_categorize_rules_set_coarse,
     transactions_categorize_stats,
@@ -38,6 +42,10 @@ from moneybin.mcp.write_contracts import (
     CategorizationRuleMatch,
     CategorizationRuleTarget,
 )
+from moneybin.privacy.introspection import derive_tier
+from moneybin.privacy.payloads.categorize import CategorizationRulesCoarsePayload
+from moneybin.privacy.taxonomy import Tier
+from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.services.auto_rule_service import AutoConfirmResult
 from moneybin.services.categorization import CategorizationRuleInput
 from moneybin.services.categorization.applier import RuleCreationResult
@@ -431,6 +439,10 @@ def _rule_target(
     *,
     state: str,
     rule_id: str | None = None,
+    value: str = "COFFEE",
+    category: str = "Food",
+    min_amount: Decimal | None = None,
+    max_amount: Decimal | None = None,
 ) -> CategorizationRuleTarget:
     """Build one strict target-state request with concise test defaults."""
     if state == "present":
@@ -438,8 +450,13 @@ def _rule_target(
             kind="rule",
             rule_id=rule_id,
             state="present",
-            matcher=CategorizationRuleMatch(type="contains", value="COFFEE"),
-            category="Food",
+            matcher=CategorizationRuleMatch(
+                type="contains",
+                value=value,
+                min_amount=min_amount,
+                max_amount=max_amount,
+            ),
+            category=category,
             priority=10,
         )
     return CategorizationRuleTarget(
@@ -563,6 +580,205 @@ class TestCategorizationRulesTargetState:
 
         names = {tool.name for tool in await server._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert names == {"transactions_categorize_rules_set"}
+
+    @pytest.mark.unit
+    async def test_bounded_decimal_target_retries_by_natural_key_and_rule_id(
+        self, mcp_db: Path
+    ) -> None:
+        target = _rule_target(
+            state="present",
+            min_amount=Decimal("-19.99"),
+            max_amount=Decimal("-0.10"),
+        )
+        created = await transactions_categorize_rules_set_coarse(rules=[target])
+        rule_id = created.data.results[0].rule_id
+
+        natural_retry = await transactions_categorize_rules_set_coarse(rules=[target])
+        id_retry = await transactions_categorize_rules_set_coarse(
+            rules=[
+                _rule_target(
+                    state="present",
+                    rule_id=rule_id,
+                    min_amount=Decimal("-19.99"),
+                    max_amount=Decimal("-0.10"),
+                )
+            ]
+        )
+        active = await transactions_categorize_rules_coarse(view="active")
+
+        assert natural_retry.to_dict()["error"]["code"] == "mutation_nothing_to_do"
+        assert id_retry.to_dict()["error"]["code"] == "mutation_nothing_to_do"
+        assert active.data.rules[0].min_amount == Decimal("-19.99")
+        assert active.data.rules[0].max_amount == Decimal("-0.10")
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM app.categorization_rules "
+                "WHERE merchant_pattern = 'COFFEE'"
+            ).fetchone() == (1,)
+
+    @pytest.mark.unit
+    async def test_duplicate_new_natural_keys_are_rejected_before_writing(
+        self, mcp_db: Path
+    ) -> None:
+        target = _rule_target(state="present")
+
+        response = await transactions_categorize_rules_set_coarse(
+            rules=[target, target]
+        )
+
+        assert response.to_dict()["error"]["code"] == "mutation_invalid_input"
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM app.categorization_rules "
+                "WHERE merchant_pattern = 'COFFEE'"
+            ).fetchone() == (0,)
+
+    @pytest.mark.unit
+    async def test_unsafe_short_contains_target_is_rejected(self, mcp_db: Path) -> None:
+        response = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present", value="TO")]
+        )
+
+        assert response.to_dict()["error"]["code"] == "mutation_invalid_input"
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM app.categorization_rules "
+                "WHERE merchant_pattern = 'TO'"
+            ).fetchone() == (0,)
+
+    @pytest.mark.unit
+    async def test_write_failure_rolls_back_rule_and_audit_rows(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_insert = CategorizationRulesRepo.insert
+        calls = 0
+
+        def fail_second_insert(repo: CategorizationRulesRepo, **kwargs: Any) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected second write failure")
+            return original_insert(repo, **kwargs)
+
+        monkeypatch.setattr(CategorizationRulesRepo, "insert", fail_second_insert)
+
+        with pytest.raises(RuntimeError, match="injected second write failure"):
+            await transactions_categorize_rules_set_coarse(
+                rules=[
+                    _rule_target(state="present", value="COFFEE"),
+                    _rule_target(state="present", value="MARKET"),
+                ]
+            )
+
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM app.categorization_rules "
+                "WHERE merchant_pattern IN ('COFFEE', 'MARKET')"
+            ).fetchone() == (0,)
+            assert db.execute(
+                "SELECT COUNT(*) FROM app.audit_log "
+                "WHERE target_table = 'categorization_rules'"
+            ).fetchone() == (0,)
+
+    @pytest.mark.unit
+    async def test_confirmation_rejects_changed_live_rule_state(
+        self, mcp_db: Path
+    ) -> None:
+        created = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present")]
+        )
+        rule_id = created.data.results[0].rule_id
+        first = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="absent", rule_id=rule_id)]
+        )
+        token = first.error.details["confirmation_token"]
+        with get_database(read_only=False) as db:
+            assert (
+                CategorizationRulesRepo(db).deactivate(rule_id, actor="test")
+                is not None
+            )
+
+        response = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="absent", rule_id=rule_id)],
+            confirmation_token=token,
+        )
+
+        assert response.to_dict()["error"]["code"] == "mutation_confirmation_mismatch"
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT is_active FROM app.categorization_rules WHERE rule_id = ?",
+                [rule_id],
+            ).fetchone() == (False,)
+
+
+class TestCategorizationRulesCoarseReads:
+    """Dormant rule reads expose stable current views and real audit history."""
+
+    @pytest.mark.unit
+    async def test_active_inactive_and_history_include_deleted_states(
+        self, mcp_db: Path
+    ) -> None:
+        created_ids: list[str] = []
+        for value in ("ALPHA", "BRAVO", "CHARLIE", "DELTA"):
+            response = await transactions_categorize_rules_set_coarse(
+                rules=[_rule_target(state="present", value=value)]
+            )
+            rule_id = response.data.results[0].rule_id
+            assert rule_id is not None
+            created_ids.append(rule_id)
+        for rule_id in created_ids[2:]:
+            await transactions_categorize_rules_set_coarse(
+                rules=[_rule_target(state="inactive", rule_id=rule_id)]
+            )
+        deletion = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="absent", rule_id=created_ids[3])]
+        )
+        token = deletion.error.details["confirmation_token"]
+        await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="absent", rule_id=created_ids[3])],
+            confirmation_token=token,
+        )
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE app.categorization_rules "
+                "SET priority = 10, created_at = TIMESTAMP '2026-01-01'"
+            )
+            db.execute(
+                "UPDATE app.audit_log SET occurred_at = TIMESTAMP '2026-01-01' "
+                "WHERE target_table = 'categorization_rules'"
+            )
+
+        active = await transactions_categorize_rules_coarse(view="active")
+        inactive = await transactions_categorize_rules_coarse(view="inactive")
+        history = await transactions_categorize_rules_coarse(view="history")
+
+        assert active.data.kind == "active"
+        assert [row.rule_id for row in active.data.rules] == sorted(created_ids[:2])
+        assert inactive.data.kind == "inactive"
+        assert [row.rule_id for row in inactive.data.rules] == [created_ids[2]]
+        assert history.data.kind == "history"
+        deleted = [
+            event
+            for event in history.data.events
+            if event.rule_id == created_ids[3]
+            and event.action == "categorization_rule.delete"
+        ]
+        assert len(deleted) == 1
+        assert deleted[0].prior is not None
+        assert deleted[0].current is None
+        keys = [(event.rule_id, event.event_id) for event in history.data.events]
+        expected = sorted(keys, key=lambda item: item[1], reverse=True)
+        expected = sorted(expected, key=lambda item: item[0])
+        assert keys == expected
+
+    @pytest.mark.unit
+    async def test_coarse_read_registrar_is_dormant_and_exact(self) -> None:
+        server = FastMCP("coarse-rule-reads")
+        register_categorization_coarse_reads(server)
+
+        names = {tool.name for tool in await server._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert names == {"transactions_categorize_rules"}
+        assert derive_tier(CategorizationRulesCoarsePayload) is Tier.HIGH
 
 
 class TestAllowBroadWiring:

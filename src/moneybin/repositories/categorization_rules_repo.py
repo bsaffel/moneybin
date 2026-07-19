@@ -13,6 +13,7 @@ Category-id resolution stays in the caller (a read against
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from moneybin.repositories.base import BaseRepo
@@ -57,8 +58,8 @@ class CategorizationRulesRepo(BaseRepo):
         name: str,
         merchant_pattern: str,
         match_type: str,
-        min_amount: float | None,
-        max_amount: float | None,
+        min_amount: Decimal | float | None,
+        max_amount: Decimal | float | None,
         account_id: str | None,
         category: str,
         subcategory: str | None,
@@ -156,8 +157,8 @@ class CategorizationRulesRepo(BaseRepo):
         name: str,
         merchant_pattern: str,
         match_type: str,
-        min_amount: float | None,
-        max_amount: float | None,
+        min_amount: Decimal | float | None,
+        max_amount: Decimal | float | None,
         account_id: str | None,
         category: str,
         subcategory: str | None,

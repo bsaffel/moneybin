@@ -25,6 +25,7 @@ from moneybin.privacy.payloads.categories import (
     MerchantsPayload,
 )
 from moneybin.privacy.payloads.categorize import (
+    CategorizationRuleSnapshot,
     CategorizeRulesPayload,
     CategorizeStatsPayload,
     RuleRow,
@@ -161,7 +162,7 @@ class CategorizationQueries:
                        min_amount, max_amount, account_id,
                        category, subcategory, priority, is_active
                 FROM {CATEGORIZATION_RULES.full_name}
-                ORDER BY priority ASC, created_at ASC
+                ORDER BY priority ASC, created_at ASC, rule_id ASC
                 """
             ).fetchall()
         except duckdb.CatalogException:
@@ -185,6 +186,45 @@ class CategorizationQueries:
                 for r in rows
             ]
         )
+
+    def list_rule_snapshots(self, *, active: bool) -> list[CategorizationRuleSnapshot]:
+        """List exact current rule states with a stable final identity key."""
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT rule_id, name, merchant_pattern, match_type,
+                       min_amount, max_amount, account_id,
+                       category, subcategory, category_id, priority, is_active,
+                       created_by, created_at, updated_at
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE is_active = ?
+                ORDER BY priority ASC, created_at ASC, rule_id ASC
+                """,  # noqa: S608  # TableRef + parameterized value
+                [active],
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+
+        return [
+            CategorizationRuleSnapshot(
+                rule_id=str(row[0]),
+                name=row[1],
+                merchant_pattern=row[2],
+                match_type=row[3],
+                min_amount=row[4],
+                max_amount=row[5],
+                account_id=row[6],
+                category=row[7],
+                subcategory=row[8],
+                category_id=row[9],
+                priority=int(row[10]) if row[10] is not None else None,
+                is_active=bool(row[11]) if row[11] is not None else None,
+                created_by=row[12],
+                created_at=row[13].isoformat() if row[13] is not None else None,
+                updated_at=row[14].isoformat() if row[14] is not None else None,
+            )
+            for row in rows
+        ]
 
     def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""

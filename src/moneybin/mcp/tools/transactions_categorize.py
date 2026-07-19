@@ -30,6 +30,9 @@ from moneybin.privacy.payloads.categorize import (
     AutoAcceptPayload,
     AutoReviewPayload,
     AutoStatsPayload,
+    CategorizationRulesCoarsePayload,
+    CategorizationRulesCurrentView,
+    CategorizationRulesHistoryView,
     CategorizationRulesSetPayload,
     CategorizationRuleStateResult,
     CategorizeCommitPayload,
@@ -87,16 +90,8 @@ def _to_rule_state_target(target: CategorizationRuleTarget) -> RuleStateTarget:
         state=target.state,
         merchant_pattern=matcher.value if matcher is not None else None,
         match_type=matcher.type if matcher is not None else None,
-        min_amount=(
-            float(matcher.min_amount)
-            if matcher is not None and matcher.min_amount is not None
-            else None
-        ),
-        max_amount=(
-            float(matcher.max_amount)
-            if matcher is not None and matcher.max_amount is not None
-            else None
-        ),
+        min_amount=matcher.min_amount if matcher is not None else None,
+        max_amount=matcher.max_amount if matcher is not None else None,
         account_id=matcher.account_id if matcher is not None else None,
         category=target.category,
         subcategory=target.subcategory,
@@ -109,7 +104,17 @@ def _rule_targets_binding(
 ) -> ConfirmationBinding:
     """Bind a destructive batch to validated targets and resolved rule IDs."""
     return ConfirmationBinding(
-        arguments={"rules": [rule.model_dump(mode="json") for rule in rules]},
+        arguments={
+            "rules": [rule.model_dump(mode="json") for rule in rules],
+            "live_states": [
+                {
+                    "rule_id": item.rule_id,
+                    "action": item.action,
+                    "before_digest": item.before_digest,
+                }
+                for item in plan.items
+            ],
+        },
         resolved_ids=plan.resolved_ids,
         actor="mcp",
         profile=get_settings().profile,
@@ -220,17 +225,21 @@ async def transactions_categorize_rules_set_coarse(
 @mcp_tool(domain="categorize")
 def transactions_categorize_rules_coarse(
     view: Literal["active", "inactive", "history"] = "active",
-) -> ResponseEnvelope[CategorizeRulesPayload]:
+) -> ResponseEnvelope[CategorizationRulesCoarsePayload]:
     """Read active, inactive, or complete historical categorization-rule states."""
     with get_database(read_only=True) as db:
-        payload = CategorizationService(db).list_rules()
-    if view == "active":
-        rules = [rule for rule in payload.rules if rule.is_active]
-    elif view == "inactive":
-        rules = [rule for rule in payload.rules if not rule.is_active]
-    else:
-        rules = payload.rules
-    return build_envelope(data=CategorizeRulesPayload(rules=rules))
+        service = CategorizationService(db)
+        if view == "history":
+            payload: CategorizationRulesCoarsePayload = CategorizationRulesHistoryView(
+                kind="history",
+                events=service.list_rule_history(),
+            )
+        else:
+            payload = CategorizationRulesCurrentView(
+                kind=view,
+                rules=service.list_rule_snapshots(active=view == "active"),
+            )
+    return build_envelope(data=payload)
 
 
 def register_categorization_coarse_reads(mcp: FastMCP) -> None:
@@ -239,8 +248,8 @@ def register_categorization_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         transactions_categorize_rules_coarse,
         "transactions_categorize_rules",
-        "Read active, inactive, or complete historical categorization rules. "
-        "Use view='history' to include inactive rows; categorization statistics "
+        "Read active, inactive, or audit-backed historical categorization rules. "
+        "Use view='history' to include prior and deleted states; statistics "
         "are available from system_status(sections=['categorization']).",
         privacy_actor="transactions_categorize_rules",
     )

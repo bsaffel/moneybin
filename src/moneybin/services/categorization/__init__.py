@@ -52,6 +52,10 @@ from moneybin.privacy.payloads.categories import (
     MerchantsPayload as MerchantsPayload,
 )
 from moneybin.privacy.payloads.categorize import (
+    CategorizationRuleHistoryEvent,
+    CategorizationRuleSnapshot,
+)
+from moneybin.privacy.payloads.categorize import (
     CategorizeRulesPayload as CategorizeRulesPayload,
 )
 from moneybin.privacy.payloads.categorize import (
@@ -535,6 +539,67 @@ class CategorizationService:
     def list_rules(self) -> CategorizeRulesPayload:
         """List all categorization rules (active and inactive) ordered by priority."""
         return self._queries.list_rules()
+
+    def list_rule_snapshots(self, *, active: bool) -> list[CategorizationRuleSnapshot]:
+        """List exact current rule states in deterministic order."""
+        return self._queries.list_rule_snapshots(active=active)
+
+    def list_rule_history(self) -> list[CategorizationRuleHistoryEvent]:
+        """Project complete categorization-rule audit transitions."""
+        events = self._audit.list_events(
+            target_table="categorization_rules",
+            limit=None,
+        )
+        events.sort(key=lambda event: event.audit_id, reverse=True)
+        events.sort(key=lambda event: event.target_id or "")
+        events.sort(key=lambda event: event.occurred_at, reverse=True)
+        return [
+            CategorizationRuleHistoryEvent(
+                event_id=event.audit_id,
+                occurred_at=event.occurred_at,
+                operation_id=event.operation_id,
+                rule_id=event.target_id or "",
+                action=event.action,
+                prior=self._rule_history_snapshot(event.before_value, event.target_id),
+                current=self._rule_history_snapshot(event.after_value, event.target_id),
+            )
+            for event in events
+        ]
+
+    @staticmethod
+    def _rule_history_snapshot(
+        value: dict[str, Any] | None,
+        target_id: str | None,
+    ) -> CategorizationRuleSnapshot | None:
+        """Convert one lossless audit row image into a typed rule state."""
+        if value is None:
+            return None
+
+        def amount(name: str) -> Decimal | None:
+            raw = value.get(name)
+            return Decimal(str(raw)) if raw is not None else None
+
+        return CategorizationRuleSnapshot(
+            rule_id=str(value.get("rule_id") or target_id or ""),
+            name=value.get("name"),
+            merchant_pattern=value.get("merchant_pattern"),
+            match_type=value.get("match_type"),
+            min_amount=amount("min_amount"),
+            max_amount=amount("max_amount"),
+            account_id=value.get("account_id"),
+            category=value.get("category"),
+            subcategory=value.get("subcategory"),
+            category_id=value.get("category_id"),
+            priority=(
+                int(value["priority"]) if value.get("priority") is not None else None
+            ),
+            is_active=(
+                bool(value["is_active"]) if value.get("is_active") is not None else None
+            ),
+            created_by=value.get("created_by"),
+            created_at=value.get("created_at"),
+            updated_at=value.get("updated_at"),
+        )
 
     def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""

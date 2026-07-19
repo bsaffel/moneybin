@@ -23,10 +23,13 @@ warning in the bypass's docstring stays next to the guard it bypasses.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Literal, cast
 
 import duckdb
@@ -128,8 +131,8 @@ class RuleStateTarget:
     state: Literal["present", "inactive", "absent"]
     merchant_pattern: str | None = None
     match_type: str | None = None
-    min_amount: float | None = None
-    max_amount: float | None = None
+    min_amount: Decimal | None = None
+    max_amount: Decimal | None = None
     account_id: str | None = None
     category: str | None = None
     subcategory: str | None = None
@@ -143,6 +146,7 @@ class RuleTargetPlanItem:
     target: RuleStateTarget
     rule_id: str | None
     action: Literal["create", "set", "deactivate", "delete", "noop"]
+    before_digest: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,7 +575,8 @@ class MatchApplier:
         rows = self._db.execute(
             f"""
             SELECT rule_id, name, merchant_pattern, match_type, min_amount,
-                   max_amount, account_id, category, subcategory, priority, is_active
+                   max_amount, account_id, category, subcategory, priority, is_active,
+                   category_id, created_by, created_at, updated_at
             FROM {CATEGORIZATION_RULES.full_name}
             """  # noqa: S608  # TableRef constant
         ).fetchall()
@@ -581,8 +586,17 @@ class MatchApplier:
             for row in rows
         ]
         resolved_seen: set[str] = set()
+        natural_seen: set[tuple[object, ...]] = set()
         items: list[RuleTargetPlanItem] = []
         for target in targets:
+            if target.state == "present":
+                natural_key = self._rule_target_natural_key(target)
+                if natural_key in natural_seen:
+                    raise UserError(
+                        "A logical rule target can appear only once in one batch.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                natural_seen.add(natural_key)
             row = self._resolve_rule_target_row(target, by_id, candidates)
             rule_id = str(row[0]) if row is not None else None
             if rule_id is not None:
@@ -593,8 +607,55 @@ class MatchApplier:
                     )
                 resolved_seen.add(rule_id)
             action = self._rule_target_action(target, row)
-            items.append(RuleTargetPlanItem(target, rule_id, action))
+            if (
+                action in {"create", "set"}
+                and target.merchant_pattern is not None
+                and target.match_type is not None
+                and is_unselective_contains(
+                    target.merchant_pattern,
+                    target.match_type,
+                )
+            ):
+                RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL.inc()
+                raise UserError(
+                    "Contains rule patterns must be long enough to discriminate.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            items.append(
+                RuleTargetPlanItem(
+                    target,
+                    rule_id,
+                    action,
+                    self._rule_row_digest(row),
+                )
+            )
         return RuleTargetPlan(items=tuple(items))
+
+    @staticmethod
+    def _rule_target_natural_key(target: RuleStateTarget) -> tuple[object, ...]:
+        """Return the logical identity used by natural-key resolution."""
+        return (
+            target.merchant_pattern,
+            target.match_type,
+            target.min_amount,
+            target.max_amount,
+            target.account_id,
+            target.category,
+            target.subcategory,
+        )
+
+    @staticmethod
+    def _rule_row_digest(row: tuple[object, ...] | None) -> str | None:
+        """Bind confirmation to the complete current row without exposing it."""
+        if row is None:
+            return None
+        canonical = json.dumps(
+            row,
+            default=str,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(canonical).hexdigest()
 
     @staticmethod
     def _resolve_rule_target_row(
