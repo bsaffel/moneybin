@@ -297,6 +297,16 @@ def sync_link_status(
     )
 
 
+@mcp_tool(dynamic_classification=True)
+def sync_status_coarse(
+    session_id: str | None = None,
+) -> ResponseEnvelope[SyncStatusPayload | SyncLinkStatusPayload]:
+    """Read global connection health or one link-session status."""
+    if session_id is None:
+        return sync_status.__wrapped__()  # type: ignore[attr-defined]
+    return sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
+
+
 # Deprecated aliases — will be removed in the next minor release. The decorator
 # does not accept a `deprecated=` flag; the description string + warning log
 # carry the deprecation signal. Call sync_link.__wrapped__ (the raw undecorated
@@ -392,6 +402,21 @@ def register_sync_prompts(mcp: FastMCP) -> None:
     )
     def _sync_review() -> str:  # type: ignore[reportUnusedFunction]
         return SYNC_REVIEW_PROMPT
+
+
+def register_sync_workflow_tools(mcp: FastMCP) -> None:
+    """Register the dormant four-boundary sync workflow."""
+    for callback, name, description in (
+        (sync_link, "sync_link", "Start a hosted bank-link session."),
+        (
+            sync_status_coarse,
+            "sync_status",
+            "Read global health or one link-session status.",
+        ),
+        (sync_pull, "sync_pull", "Pull connected financial data."),
+        (sync_disconnect, "sync_disconnect", "Disconnect one institution."),
+    ):
+        register(mcp, callback, name, description)
 
 
 def register_sync_tools(mcp: FastMCP) -> None:

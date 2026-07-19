@@ -5,21 +5,26 @@ from __future__ import annotations
 import base64
 import json
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pytest import MonkeyPatch
 
+import moneybin.mcp.tools.import_tools as import_tools_module
 from moneybin.errors import UserError
 from moneybin.extractors.confidence import Confidence
 from moneybin.mcp.tools.import_tools import (
     _bridge_confirm_action,  # pyright: ignore[reportPrivateUsage]
     _validate_file_path,  # pyright: ignore[reportPrivateUsage]
     import_confirm,
+    import_confirm_coarse,
     import_files,
     import_formats,
     import_preview,
+    import_preview_coarse,
     import_status,
     import_status_coarse,
 )
@@ -30,6 +35,226 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
 )
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
+from tests.moneybin.test_mcp.schema_assertions import isolated_server
+
+
+async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> None:
+    registrar = import_tools_module.register_import_workflow_tools
+    mcp = isolated_server(registrar)
+
+    names = {tool.name for tool in await mcp._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert names == {
+        "import_files",
+        "import_preview",
+        "import_confirm",
+        "import_status",
+        "import_revert",
+        "import_inbox_sync",
+        "import_labels_set",
+    }
+    assert "import_formats" not in names
+    assert "import_inbox_pending" not in names
+
+
+def _issue_coarse_preview(
+    path: Path,
+    *,
+    channel: str,
+    data: dict[str, object],
+) -> str:
+    from moneybin.database import get_database
+    from moneybin.mcp.tools.import_tools import (
+        _file_identity,  # pyright: ignore[reportPrivateUsage]
+    )
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    sha256, size = _file_identity(path)  # pyright: ignore[reportPrivateUsage]
+    now = datetime.now(UTC)
+    with get_database(read_only=False) as db:
+        return ImportPreviewsRepo(db).issue(
+            file_path=str(path),
+            file_sha256=sha256,
+            file_size_bytes=size,
+            channel=channel,  # type: ignore[arg-type]
+            snapshot={"data": data, "actions": [], "sensitivity": "medium"},
+            issued_at=now,
+            expires_at=now + timedelta(minutes=5),
+            actor="mcp",
+        )
+
+
+async def test_import_confirm_coarse_applies_pdf_bridge_by_preview_id(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {"layout_fingerprint": {"issuer": "Example"}},
+        },
+    )
+    applied = SimpleNamespace(
+        outcome="applied",
+        import_id="imp_pdf",
+        rows_loaded=2,
+        format_name="example_pdf",
+        expected_row_count=2,
+        actual_row_count=2,
+        rows_diverged=False,
+        reject_reason=None,
+    )
+    apply = MagicMock(return_value=applied)
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        apply,
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": {"version": 1}, "rows": [{}, {}]},
+    )
+
+    assert response.data["import_id"] == "imp_pdf"
+    apply.assert_called_once()
+    assert apply.call_args.kwargs["in_outer_txn"] is True
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        assert ImportPreviewsRepo(db).get(preview_id)["import_id"] == "imp_pdf"  # type: ignore[index]
+
+
+async def test_import_confirm_coarse_keeps_pdf_preview_live_when_bridge_is_invalid(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    invalid = SimpleNamespace(
+        outcome="invalid",
+        import_id=None,
+        rows_loaded=0,
+        format_name=None,
+        expected_row_count=1,
+        actual_row_count=0,
+        rows_diverged=True,
+        reject_reason="reconciliation_failed",
+    )
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        MagicMock(return_value=invalid),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": {"version": 1}, "rows": [{}]},
+    )
+
+    assert response.data["status"] == "invalid"
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        assert ImportPreviewsRepo(db).get(preview_id)["consumed_at"] is None  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("preview_data", "code"),
+    [
+        (
+            {
+                "status": "preview",
+                "channel": "pdf",
+                "deterministic": True,
+            },
+            "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+        ),
+        (
+            {
+                "status": "confirmation_required",
+                "channel": "pdf",
+                "reason": "sign_convention",
+            },
+            "IMPORT_PREVIEW_SIGN_CONFIRMATION_CLI_REQUIRED",
+        ),
+    ],
+)
+async def test_import_confirm_coarse_preserves_non_bridge_pdf_divisions(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    preview_data: dict[str, object],
+    code: str,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(pdf, channel="pdf", data=preview_data)
+
+    response = await import_confirm_coarse(preview_id=preview_id)
+
+    assert response.error is not None
+    assert response.error.code == code
+
+
+async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    ofx = tmp_path / "statement.ofx"
+    ofx.write_text("OFXHEADER:100\n<OFX>")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    response = await import_preview_coarse(file_path=str(ofx))
+
+    assert response.error is not None
+    assert response.error.code == "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED"
+
+
+async def test_import_preview_confirm_status_coarse_workflow(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    csv = tmp_path / "statement.csv"
+    csv.write_text(
+        "Date,Description,Amount\n2026-07-01,Coffee,-4.50\n2026-07-02,Deposit,100.00\n"
+    )
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    preview = await import_preview_coarse(file_path=str(csv))
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data["preview_id"],
+        account_name="Checking",
+    )
+    status = await import_status_coarse(
+        sections=["imports"],
+        import_id=confirmed.data["import_id"],
+    )
+
+    assert confirmed.data["status"] == "complete"
+    assert status.data.sections[0].records[0]["status"] == "complete"
 
 
 async def test_import_status_coarse_defaults_to_all_sections(

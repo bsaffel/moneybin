@@ -89,6 +89,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_transaction_tags.sql",
     "app_transaction_splits.sql",
     "app_imports.sql",
+    "app_import_previews.sql",
     "app_gsheet_connections.sql",
     "app_ai_consent_grants.sql",
     "raw_gsheet_seeds.sql",

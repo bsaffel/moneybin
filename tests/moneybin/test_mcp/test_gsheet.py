@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
+import moneybin.mcp.tools.gsheet as gsheet_module
 from moneybin.connectors.gsheet.adapters.base import (
     DetectionResult,
     GSheetConnection,
@@ -112,6 +113,59 @@ async def test_register_gsheet_coarse_reads_is_dormant_and_isolated() -> None:
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
     assert names == {"gsheet"}
+
+
+@pytest.mark.unit
+async def test_register_gsheet_workflow_tools_excludes_fragmented_aliases() -> None:
+    srv = FastMCP("test")
+    gsheet_module.register_gsheet_workflow_tools(srv)
+
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert names == {"gsheet", "gsheet_connect", "gsheet_pull", "gsheet_disconnect"}
+    assert "gsheet_auth" not in names
+    assert "gsheet_status" not in names
+    assert "gsheet_reconnect" not in names
+
+
+@pytest.mark.unit
+async def test_gsheet_workflow_schemas_are_strict_and_target_state_based() -> None:
+    srv = FastMCP("test")
+    gsheet_module.register_gsheet_workflow_tools(srv)
+    tools = {t.name: t for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    connect = tools["gsheet_connect"]
+    disconnect = tools["gsheet_disconnect"]
+
+    assert set(connect.parameters["properties"]) == {
+        "url",
+        "connection_id",
+        "force_reauth",
+        "adapter",
+        "alias",
+        "account_name",
+        "account_id",
+        "column_mapping",
+        "sign",
+        "confirm_mapping",
+        "accept_seed_fallback",
+        "no_initial_pull",
+    }
+    for field in (
+        "force_reauth",
+        "confirm_mapping",
+        "accept_seed_fallback",
+        "no_initial_pull",
+    ):
+        assert connect.parameters["properties"][field]["type"] == "boolean"
+    assert disconnect.parameters["required"] == ["connection_id"]
+    assert set(disconnect.parameters["properties"]["state"]["enum"]) == {
+        "disconnected",
+        "absent",
+    }
+    assert "confirmation_token" in disconnect.parameters["properties"]
+    assert connect.output_schema is None
+    assert disconnect.output_schema is None
 
 
 # ---------------------------------------------------------------------------

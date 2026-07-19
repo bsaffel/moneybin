@@ -144,6 +144,7 @@ class TabularExtractor:
         date_format: str | None = None,
         sign_convention: str | None = None,
         balance_validated: bool | None = None,
+        emit_metrics: bool = True,
     ) -> None:
         """Finalize an import batch. Delegates to import_log module + records metric."""
         # Zero-row imports (whether all-rejected, all-trailing-skipped, or
@@ -156,7 +157,8 @@ class TabularExtractor:
             status = "complete"
         else:
             status = "partial"
-        TABULAR_IMPORT_BATCHES.labels(status=status).inc()
+        if emit_metrics:
+            TABULAR_IMPORT_BATCHES.labels(status=status).inc()
         import_log.finalize_import(
             self.db,
             import_id,

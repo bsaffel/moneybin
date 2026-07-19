@@ -163,7 +163,13 @@ def load_builtin_formats() -> dict[str, TabularFormat]:
     return formats
 
 
-def save_format_to_db(db: Database, fmt: TabularFormat, *, actor: str) -> None:
+def save_format_to_db(
+    db: Database,
+    fmt: TabularFormat,
+    *,
+    actor: str,
+    in_outer_txn: bool = False,
+) -> None:
     """Persist a TabularFormat to ``app.tabular_formats`` (audited via the repo).
 
     Delegates to ``TabularFormatsRepo.set`` — the idempotent upsert (INSERT OR
@@ -176,6 +182,7 @@ def save_format_to_db(db: Database, fmt: TabularFormat, *, actor: str) -> None:
         fmt: Format to persist.
         actor: Audit actor for the write (e.g. ``"system"`` for an auto-detected
             format saved during import, ``"cli"``/``"mcp"`` for an explicit save).
+        in_outer_txn: Join a transaction already owned by the caller.
     """
     from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415 — deferred to avoid a runtime database import in this loader module
         TabularFormatsRepo,
@@ -200,6 +207,7 @@ def save_format_to_db(db: Database, fmt: TabularFormat, *, actor: str) -> None:
         times_used=fmt.times_used,
         last_used_at=fmt.last_used_at,
         actor=actor,
+        in_outer_txn=in_outer_txn,
     )
     logger.debug(f"Saved format to DB: {fmt.name}")
 

@@ -95,14 +95,23 @@ class _Candidate:
 class AccountResolver:
     """Resolve a source account to a canonical account_id via the M1S ladder."""
 
-    def __init__(self, db: Database, *, actor: str = "system") -> None:
+    def __init__(
+        self,
+        db: Database,
+        *,
+        actor: str = "system",
+        emit_metrics: bool = True,
+    ) -> None:
         """Bind the resolver to a database + audit actor for its link writes."""
         self._db = db
         self._actor = actor
+        self._emit_metrics = emit_metrics
         self._links = AccountLinksRepo(db)
         self._decisions = AccountLinkDecisionsRepo(db)
 
-    def resolve(self, src: SourceAccount) -> ResolvedAccount:
+    def resolve(
+        self, src: SourceAccount, *, in_outer_txn: bool = False
+    ) -> ResolvedAccount:
         """Resolve one source account to a canonical account_id via the ladder.
 
         Ladder: explicit binding (step 0) -> strong confirmer / idempotency
@@ -115,6 +124,8 @@ class AccountResolver:
         composes succeed today, proving no enclosing transaction), so the
         composed writes pass in_outer_txn=True to join this one.
         """
+        if in_outer_txn:
+            return self._run_ladder(src)
         self._db.begin()
         try:
             result = self._run_ladder(src)
@@ -187,9 +198,11 @@ class AccountResolver:
                 match_reason=cand.signal,
                 in_outer_txn=True,  # joins resolve()'s per-account transaction
             )
-            ACCOUNT_LINK_CONFIDENCE.observe(cand.confidence)
+            if self._emit_metrics:
+                ACCOUNT_LINK_CONFIDENCE.observe(cand.confidence)
             pending_ids.append(decision_id)
-        refresh_account_link_pending_gauge(self._db)
+        if self._emit_metrics:
+            refresh_account_link_pending_gauge(self._db)
         return ResolvedAccount(
             account_id=account_id,
             is_new=True,

@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 from fastmcp import FastMCP
 
+import moneybin.mcp.tools.sync as sync_module
 from moneybin.mcp.tools.sync import register_sync_tools
 
 _EXPECTED_TOOLS = {
@@ -45,3 +46,29 @@ async def test_register_sync_tools_registers_expected_tools() -> None:
     assert "sync_schedule_set" not in names
     assert "sync_schedule_show" not in names
     assert "sync_schedule_remove" not in names
+
+
+@pytest.mark.unit
+async def test_register_sync_workflow_tools_excludes_live_aliases() -> None:
+    srv = FastMCP("test")
+    sync_module.register_sync_workflow_tools(srv)
+
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert names == {"sync_link", "sync_status", "sync_pull", "sync_disconnect"}
+    assert "sync_link_status" not in names
+    assert "sync_connect" not in names
+    assert "sync_connect_status" not in names
+
+
+@pytest.mark.unit
+async def test_sync_workflow_status_accepts_optional_session_id() -> None:
+    srv = FastMCP("test")
+    sync_module.register_sync_workflow_tools(srv)
+    tool = next(t for t in await srv._list_tools() if t.name == "sync_status")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert tool.parameters["properties"]["session_id"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "default": None,
+    }
+    assert tool.output_schema is None

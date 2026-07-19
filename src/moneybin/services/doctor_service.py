@@ -29,6 +29,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    IMPORT_PREVIEWS,
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
@@ -318,6 +319,11 @@ class DoctorService:
                 full=full,
             ),
             self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
+            self._run_app_audit_coverage(
+                IMPORT_PREVIEWS,
+                "preview_id",
+                full=full,
+            ),
             self._run_app_audit_coverage(PDF_FORMATS, "name", full=full),
             self._run_app_audit_coverage(
                 ACCOUNT_LINKS,

@@ -20,7 +20,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import JsonValue, StrictBool
 
+from moneybin.config import get_settings
 from moneybin.connectors.gsheet.adapters.base import GSheetConnection
 from moneybin.connectors.gsheet.service_factory import (
     build_connection_service as _build_connection_service,
@@ -34,6 +36,11 @@ from moneybin.connectors.gsheet.service_factory import (
 from moneybin.error_codes import INFRA_NOT_FOUND
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
@@ -492,6 +499,171 @@ def gsheet_disconnect(
     )
 
 
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    open_world=True,
+    timeout_seconds=180.0,
+    dynamic_classification=True,
+)
+def gsheet_connect_coarse(
+    url: str | None = None,
+    connection_id: str | None = None,
+    force_reauth: StrictBool = False,
+    adapter: str | None = None,
+    alias: str | None = None,
+    account_name: str | None = None,
+    account_id: str | None = None,
+    column_mapping: dict[str, str] | None = None,
+    sign: str | None = None,
+    confirm_mapping: StrictBool = False,
+    accept_seed_fallback: StrictBool = False,
+    no_initial_pull: StrictBool = False,
+) -> ResponseEnvelope[GsheetAuthPayload | GsheetConnectPayload]:
+    """Authenticate, connect, or reconnect through one mode-aware workflow."""
+    if url is not None and connection_id is not None:
+        raise UserError(
+            "url and connection_id select different modes and cannot be combined.",
+            code="GSHEET_CONNECT_MODE_CONFLICT",
+        )
+    if url is None and connection_id is None:
+        return gsheet_auth.__wrapped__(  # type: ignore[attr-defined]
+            force_reauth=bool(force_reauth)
+        )
+    if force_reauth:
+        oauth = _build_oauth_client()
+        oauth.authorize()
+    if url is not None:
+        return gsheet_connect.__wrapped__(  # type: ignore[attr-defined]
+            url=url,
+            adapter=adapter,
+            alias=alias,
+            account_name=account_name,
+            account_id=account_id,
+            column_mapping=column_mapping,
+            sign=sign,
+            yes=bool(confirm_mapping),
+            accept_seed_fallback=bool(accept_seed_fallback),
+            no_initial_pull=bool(no_initial_pull),
+        )
+    unsupported = {
+        "adapter": adapter,
+        "alias": alias,
+        "account_name": account_name,
+        "account_id": account_id,
+        "column_mapping": column_mapping,
+        "accept_seed_fallback": bool(accept_seed_fallback),
+        "no_initial_pull": bool(no_initial_pull),
+    }
+    supplied = sorted(key for key, value in unsupported.items() if value)
+    if supplied:
+        raise UserError(
+            f"Reconnect mode does not accept: {', '.join(supplied)}.",
+            code="GSHEET_RECONNECT_ARGUMENT_CONFLICT",
+        )
+    return gsheet_reconnect.__wrapped__(  # type: ignore[attr-defined]
+        connection_id=cast(str, connection_id),
+        yes=bool(confirm_mapping),
+        sign=sign,
+    )
+
+
+def _json_value(value: object) -> JsonValue:
+    """Convert database scalars and nested rows into canonical JSON values."""
+    import json
+
+    return cast(JsonValue, json.loads(json.dumps(value, default=str, sort_keys=True)))
+
+
+def _purge_binding(plan: Any) -> ConfirmationBinding:
+    """Bind a purge to its complete live connection and raw-row before-state."""
+    return ConfirmationBinding(
+        arguments={
+            "connection_id": plan.connection_id,
+            "state": "absent",
+            "connection_before_state": _json_value(plan.connection_before_state),
+            "raw_before_state": _json_value(plan.raw_before_state),
+        },
+        resolved_ids=(plan.connection_id,),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="gsheet_disconnect_absent",
+        blast_radius=plan.blast_radius,
+    )
+
+
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    destructive=True,
+    open_world=True,
+    dynamic_classification=True,
+)
+async def gsheet_disconnect_coarse(
+    connection_id: str,
+    state: Literal["disconnected", "absent"] = "disconnected",
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[GsheetDisconnectPayload]:
+    """Set a reversible disconnected state or exactly confirmed absence."""
+    if state == "disconnected":
+        if confirmation_token is not None:
+            raise UserError(
+                "confirmation_token is valid only for state='absent'.",
+                code="GSHEET_CONFIRMATION_NOT_ALLOWED",
+            )
+        with _build_connection_service() as service:
+            service.disconnect(connection_id, purge=False, actor="mcp")
+        return build_envelope(
+            data={
+                "connection_id": connection_id,
+                "status": "disconnected",
+                "purged": False,
+            },
+            actions=[
+                "Use gsheet_connect(connection_id=...) to reconnect this binding.",
+            ],
+        )
+
+    with _build_connection_service() as service:
+        plan = service.plan_purge(connection_id)
+    binding = _purge_binding(plan)
+    grant: ConfirmationGrant = await grant_confirmation_or_raise(
+        binding=binding if confirmation_token is None else None,
+        message=(
+            "Permanently remove this exact Google Sheets connection and all "
+            f"{plan.blast_radius['raw_rows']} raw rows?"
+        ),
+        confirmation_token=confirmation_token,
+    )
+    with _build_connection_service() as service:
+        service.purge_confirmed(
+            connection_id,
+            verify=lambda live: grant.verify(_purge_binding(live)),
+            actor="mcp",
+        )
+    before = plan.connection_before_state
+    return build_envelope(
+        data={
+            "connection_id": connection_id,
+            "status": "purged",
+            "purged": True,
+            "recovery": {
+                "reversible": False,
+                "spreadsheet_id": before["spreadsheet_id"],
+                "sheet_gid": before["sheet_gid"],
+                "adapter": before["adapter"],
+                "alias": before.get("alias"),
+                "account_id": before.get("account_id"),
+            },
+        },
+        actions=[
+            "This purge is permanent. Recreate the connection from its Google "
+            "Sheets URL to resume future pulls.",
+        ],
+    )
+
+
 def register_gsheet_coarse_reads(mcp: FastMCP) -> None:
     """Register the dormant Plan 6 replacement Google Sheets read."""
     register(
@@ -504,6 +676,25 @@ def register_gsheet_coarse_reads(mcp: FastMCP) -> None:
     )
     # Plan 6 cutover removal: gsheet_status. The live registrations stay
     # untouched until the complete standard registry activates atomically.
+
+
+def register_gsheet_workflow_tools(mcp: FastMCP) -> None:
+    """Register the dormant four-boundary Google Sheets workflow."""
+    for callback, name, description in (
+        (gsheet_coarse, "gsheet", "Read connections or connection health."),
+        (
+            gsheet_connect_coarse,
+            "gsheet_connect",
+            "Authenticate, connect, or reconnect in one mode-aware workflow.",
+        ),
+        (gsheet_pull, "gsheet_pull", "Pull one or all connections."),
+        (
+            gsheet_disconnect_coarse,
+            "gsheet_disconnect",
+            "Soft-disconnect or exactly confirm a permanent purge.",
+        ),
+    ):
+        register(mcp, callback, name, description)
 
 
 def register_gsheet_tools(mcp: FastMCP) -> None:

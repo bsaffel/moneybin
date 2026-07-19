@@ -14,17 +14,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import inspect
 import json
 import logging
 import shlex
+import time
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 
 if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
@@ -662,6 +664,73 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
         actions=[
             "Use import_files to import after reviewing the preview",
             "Use import_formats for available named formats",
+        ],
+    )
+
+
+def _file_identity(path: Path) -> tuple[str, int]:
+    """Return the immutable content identity bound into an import preview."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest(), path.stat().st_size
+
+
+@mcp_tool(read_only=False, idempotent=False, dynamic_classification=True)
+def import_preview_coarse(
+    file_path: str,
+) -> ResponseEnvelope[ImportPreviewPayload]:
+    """Persist a complete staged-import preview for one exact file snapshot."""
+    from moneybin.config import get_settings
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    path = _validate_file_path(file_path)
+    if path.suffix.lower() in {".ofx", ".qfx", ".qbo"}:
+        raise UserError(
+            "OFX/QFX/QBO files import directly with import_files; their "
+            "structured financial format has no column-mapping preview.",
+            code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+        )
+    response = import_preview.__wrapped__(file_path=str(path))  # type: ignore[attr-defined]
+    response = replace(response, data=redact_typed(response.data, None))
+    sha256, size = _file_identity(path)
+    issued_at = datetime.now(UTC)
+    expires_at = issued_at + timedelta(
+        seconds=get_settings().mcp.confirmation_ttl_seconds
+    )
+    wire = TypeAdapter(dict[str, Any]).validate_json(response.to_json())
+    data = TypeAdapter(dict[str, Any]).validate_python(
+        wire["data"],
+    )
+    snapshot: dict[str, Any] = {
+        "data": data,
+        "actions": list(response.actions),
+        "sensitivity": response.summary.sensitivity,
+    }
+    channel: Literal["tabular", "pdf", "ofx"] = (
+        "pdf" if path.suffix.lower() == ".pdf" else "tabular"
+    )
+    with get_database(read_only=False) as db:
+        preview_id = ImportPreviewsRepo(db).issue(
+            file_path=str(path),
+            file_sha256=sha256,
+            file_size_bytes=size,
+            channel=channel,
+            snapshot=snapshot,
+            issued_at=issued_at,
+            expires_at=expires_at,
+            actor="mcp",
+        )
+    return build_envelope(
+        sensitivity="medium",
+        data={
+            **data,
+            "preview_id": preview_id,
+            "expires_at": expires_at.isoformat(),
+        },
+        actions=[
+            f"Use import_confirm(preview_id='{preview_id}') before the preview expires.",
         ],
     )
 
@@ -1458,6 +1527,186 @@ def import_confirm(
     )
 
 
+@mcp_tool(read_only=False, idempotent=False, dynamic_classification=True)
+def import_confirm_coarse(
+    preview_id: str,
+    *,
+    bridge_response: dict[str, Any] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+) -> ResponseEnvelope[ImportConfirmPayload]:
+    """Atomically consume one unchanged tabular or PDF-bridge preview."""
+    from moneybin.metrics.registry import IMPORT_DURATION_SECONDS, IMPORT_RECORDS_TOTAL
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+    from moneybin.services.import_service import ImportService
+
+    started = time.monotonic()
+    bridge_result: Any | None = None
+    result: Any | None = None
+    with get_database(read_only=False) as db:
+        repo = ImportPreviewsRepo(db)
+        preview = repo.get(preview_id)
+        if preview is None:
+            raise UserError(
+                "Import preview was not found.",
+                code="IMPORT_PREVIEW_NOT_FOUND",
+            )
+        path = _validate_file_path(preview["file_path"])
+        snapshot_data = cast(
+            dict[str, Any],
+            preview["snapshot_json"]["data"],
+        )
+        channel = preview["channel"]
+        if channel == "ofx":
+            raise UserError(
+                "OFX/QFX/QBO files import directly with import_files.",
+                code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+            )
+        if channel == "pdf":
+            if snapshot_data.get("reason") == "sign_convention":
+                raise UserError(
+                    "Credit-card PDF sign confirmation must be completed in the "
+                    "CLI so the human explicitly approves the whole-statement "
+                    "sign inversion.",
+                    code="IMPORT_PREVIEW_SIGN_CONFIRMATION_CLI_REQUIRED",
+                )
+            if (
+                snapshot_data.get("status") != "confirmation_required"
+                or "bridge_payload" not in snapshot_data
+            ):
+                raise UserError(
+                    "This PDF preview does not require a bridge response; use "
+                    "import_files to run its deterministic or seed path.",
+                    code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+                )
+            if bridge_response is None:
+                raise UserError(
+                    "A PDF bridge preview requires bridge_response={recipe, rows}.",
+                    code="IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED",
+                )
+        elif bridge_response is not None:
+            raise UserError(
+                "bridge_response is valid only for a PDF bridge preview.",
+                code="IMPORT_PREVIEW_CHANNEL_CONFLICT",
+            )
+        before_identity = _file_identity(path)
+        db.begin()
+        try:
+            live_identity = _file_identity(path)
+            if live_identity != before_identity:
+                raise UserError(
+                    "The previewed file changed while confirmation was starting.",
+                    code="IMPORT_PREVIEW_CHANGED",
+                )
+            consumed = repo.consume(
+                preview_id,
+                file_sha256=live_identity[0],
+                file_size_bytes=live_identity[1],
+                now=datetime.now(UTC),
+                actor="mcp",
+                in_outer_txn=True,
+            )
+            service = ImportService(db)
+            if channel == "pdf":
+                bridge_result = service.apply_pdf_bridge_response(
+                    path,
+                    cast(dict[str, Any], bridge_response),
+                    save_format=save_format,
+                    account_id=account_id,
+                    in_outer_txn=True,
+                    emit_metrics=False,
+                )
+                if bridge_result.outcome == "invalid":
+                    db.rollback()
+                    return build_envelope(
+                        sensitivity="medium",
+                        data={
+                            "preview_id": preview_id,
+                            "status": "invalid",
+                            "reject_reason": bridge_result.reject_reason,
+                            "expected_row_count": bridge_result.expected_row_count,
+                            "actual_row_count": bridge_result.actual_row_count,
+                            "rows_diverged": bridge_result.rows_diverged,
+                        },
+                        actions=[
+                            "Revise the bridge recipe or extracted rows and retry "
+                            "this same preview before it expires.",
+                        ],
+                    )
+                import_id = bridge_result.import_id
+            else:
+                proposed_mapping = cast(
+                    dict[str, str] | None,
+                    consumed["snapshot_json"]["data"].get("mapping"),
+                )
+                result = service.import_file(
+                    path,
+                    confirm=proposed_mapping is None,
+                    overrides=proposed_mapping,
+                    save_format=save_format,
+                    account_id=account_id,
+                    account_name=account_name,
+                    account_bindings=account_bindings,
+                    account_metadata=account_metadata,
+                    actor_kind="agent",
+                    refresh=False,
+                    in_outer_txn=True,
+                    emit_metrics=False,
+                )
+                import_id = result.import_id
+            if import_id is None:
+                raise RuntimeError("confirmed import completed without an import ID")
+            repo.record_result(
+                preview_id,
+                import_id=import_id,
+                actor="mcp",
+                in_outer_txn=True,
+            )
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+
+    source_type = "pdf" if channel == "pdf" else "tabular"
+    if bridge_result is None and result is None:
+        raise RuntimeError("confirmed import produced no channel result")
+    if bridge_result is not None:
+        rows_loaded = bridge_result.rows_loaded
+        merged_mapping: dict[str, str] = {}
+    else:
+        if result is None:
+            raise RuntimeError("tabular import produced no result")
+        rows_loaded = result.transactions
+        merged_mapping = dict(result.field_mapping or {})
+    IMPORT_RECORDS_TOTAL.labels(source_type=source_type).inc(rows_loaded)
+    IMPORT_DURATION_SECONDS.labels(source_type=source_type).observe(
+        time.monotonic() - started
+    )
+    from moneybin.services.inbox_service import InboxService
+
+    InboxService.for_active_profile_no_db().archive_confirmed_file(path)
+    return build_envelope(
+        sensitivity="medium",
+        data={
+            "preview_id": preview_id,
+            "import_id": import_id,
+            "rows_loaded": rows_loaded,
+            "merged_mapping": merged_mapping,
+            "status": "applied" if bridge_result is not None else "complete",
+            "format_name": (
+                bridge_result.format_name if bridge_result is not None else None
+            ),
+        },
+        actions=[
+            f"Use import_revert(import_id='{import_id}') to undo this import.",
+            "Use refresh_run() to rebuild derived tables.",
+        ],
+    )
+
+
 def register_import_coarse_reads(mcp: FastMCP) -> None:
     """Register the dormant Plan 6 replacement import status read."""
     register(
@@ -1471,6 +1720,39 @@ def register_import_coarse_reads(mcp: FastMCP) -> None:
     )
     # Plan 6 cutover removals: import_formats and import_inbox_pending. Their
     # live registrations remain untouched until the atomic registry swap.
+
+
+def register_import_workflow_tools(mcp: FastMCP) -> None:
+    """Register the dormant seven-boundary staged-import workflow."""
+    from moneybin.mcp.tools.curation import import_labels_set
+    from moneybin.mcp.tools.import_inbox import import_inbox_sync
+
+    for callback, name, description in (
+        (import_files, "import_files", "Import one or more files."),
+        (
+            import_preview_coarse,
+            "import_preview",
+            "Persist an exact, expiring staged-import preview.",
+        ),
+        (
+            import_confirm_coarse,
+            "import_confirm",
+            "Atomically consume an unchanged preview and import its file.",
+        ),
+        (
+            import_status_coarse,
+            "import_status",
+            "Read import history, formats, and inbox state.",
+        ),
+        (import_revert, "import_revert", "Revert one completed import."),
+        (
+            import_inbox_sync,
+            "import_inbox_sync",
+            "Synchronize the import inbox.",
+        ),
+        (import_labels_set, "import_labels_set", "Set labels on one import."),
+    ):
+        register(mcp, callback, name, description)
 
 
 def register_import_tools(mcp: FastMCP) -> None:

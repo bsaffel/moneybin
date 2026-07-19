@@ -970,7 +970,11 @@ class ImportService:
         return result
 
     def _capture_new_account_metadata(
-        self, account_id: str, meta: dict[str, str]
+        self,
+        account_id: str,
+        meta: dict[str, str],
+        *,
+        in_outer_txn: bool = False,
     ) -> None:
         """Write user-supplied metadata for a freshly-minted account to settings.
 
@@ -1005,6 +1009,7 @@ class ImportService:
             include_in_net_worth=settings.include_in_net_worth,
             default_cost_basis_method=settings.default_cost_basis_method,
             actor="import",
+            in_outer_txn=in_outer_txn,
         )
 
     def _gate_account_proposals(
@@ -1085,6 +1090,8 @@ class ImportService:
         actor_kind: "ActorKind" = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
+        in_outer_txn: bool = False,
+        emit_metrics: bool = True,
     ) -> ImportResult:
         """Import a tabular file through the five-stage pipeline.
 
@@ -1113,6 +1120,8 @@ class ImportService:
             account_metadata: Map of source_account_key -> {display_name,
                 account_subtype, last_four, iso_currency_code} captured into
                 app.account_settings for accounts minted this import.
+            in_outer_txn: Join a caller-owned transaction for every write.
+            emit_metrics: Emit Prometheus observations during this call.
 
         Returns:
             ImportResult with summary.
@@ -1420,7 +1429,11 @@ class ImportService:
         # resolved (format / filename) value for the auto-save block below so a
         # saved format records its real institution rather than always "unknown".
         resolved_institution = institution
-        resolver = AccountResolver(self._db, actor="system")
+        resolver = AccountResolver(
+            self._db,
+            actor="system",
+            emit_metrics=emit_metrics,
+        )
         bindings = account_bindings or {}
 
         # account_ids stamped on raw are source-NATIVE keys (DP-1); the resolver
@@ -1637,8 +1650,11 @@ class ImportService:
         # then capture any caller-supplied metadata for accounts minted this import.
         metadata = account_metadata or {}
         for src in source_accounts:
-            resolved_account = resolver.resolve(src)
-            ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
+            resolved_account = resolver.resolve(src, in_outer_txn=in_outer_txn)
+            if emit_metrics:
+                ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
+                    result=resolved_account.outcome
+                ).inc()
             meta = metadata.get(src.source_account_key)
             if not meta:
                 continue
@@ -1649,7 +1665,11 @@ class ImportService:
             # provisional id — settings written here would be orphaned. An
             # adopted account keeps its existing settings.
             if resolved_account.outcome == "minted_new":
-                self._capture_new_account_metadata(resolved_account.account_id, meta)
+                self._capture_new_account_metadata(
+                    resolved_account.account_id,
+                    meta,
+                    in_outer_txn=in_outer_txn,
+                )
             else:
                 # Routine on the agent path (a binding adopted an existing
                 # account, or the account went to pending_review) — info, not a
@@ -1764,13 +1784,15 @@ class ImportService:
             date_format=resolved.date_format,
             sign_convention=resolved.sign_convention,
             balance_validated=transform_result.balance_validated,
+            emit_metrics=emit_metrics,
         )
 
         # Record import metrics
-        IMPORT_RECORDS_TOTAL.labels(source_type=source_type).inc(rows_imported)
-        IMPORT_DURATION_SECONDS.labels(source_type=source_type).observe(
-            time.monotonic() - _t0
-        )
+        if emit_metrics:
+            IMPORT_RECORDS_TOTAL.labels(source_type=source_type).inc(rows_imported)
+            IMPORT_DURATION_SECONDS.labels(source_type=source_type).observe(
+                time.monotonic() - _t0
+            )
 
         result.accounts = len(unique_ids)
         result.transactions = rows_imported
@@ -1824,7 +1846,12 @@ class ImportService:
                 # Auto-detected format is a system-learned side-effect of the
                 # import (source="detected"), not a user's explicit format edit —
                 # audit it as actor="system" (Invariant 10).
-                save_format_to_db(self._db, detected_fmt, actor="system")
+                save_format_to_db(
+                    self._db,
+                    detected_fmt,
+                    actor="system",
+                    in_outer_txn=in_outer_txn,
+                )
                 logger.info(f"Auto-saved format {source_origin!r} for future imports")
             except Exception:  # noqa: BLE001 — format save is best-effort; import already succeeded
                 logger.debug("Could not auto-save format", exc_info=True)
@@ -2017,6 +2044,8 @@ class ImportService:
         *,
         save_format: bool = True,
         account_id: str | None = None,
+        in_outer_txn: bool = False,
+        emit_metrics: bool = True,
     ) -> BridgeApplyResult:
         """Apply a driving agent's bridge response: validate, reconcile, load.
 
@@ -2056,6 +2085,8 @@ class ImportService:
             account_id: Pin the rows to an existing ``dim_accounts`` row when
                 the statement carries no account anchor (mirrors the tabular
                 and deterministic-PDF ``account_id`` semantics).
+            in_outer_txn: Join a caller-owned transaction for every write.
+            emit_metrics: Emit Prometheus observations during this call.
         """
         from moneybin.extractors.pdf.bridge import (
             BridgeResponseError,
@@ -2077,7 +2108,8 @@ class ImportService:
         try:
             response = parse_bridge_response(bridge_response)
         except BridgeResponseError:
-            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            if emit_metrics:
+                PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
             raise
         expected_row_count = len(response.rows)
 
@@ -2092,7 +2124,8 @@ class ImportService:
             # Mirror _import_pdf: a failed extraction/route is a failed PDF
             # import. Bump the metric (rung="bridge") before propagating so the
             # bridge path doesn't silently diverge from the deterministic one.
-            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge").inc()
+            if emit_metrics:
+                PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge").inc()
             raise
         actual_row_count = len(decision.rows)
         rows_diverged = expected_row_count != actual_row_count
@@ -2100,7 +2133,8 @@ class ImportService:
         # 3. Reconciliation gate decides (Req 9). Anything other than a clean
         #    transactions route is an invalid proposal — nothing loads.
         if decision.outcome != "transactions":
-            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            if emit_metrics:
+                PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
             logger.info(
                 f"PDF bridge apply rejected: reason={decision.reason} "
                 f"expected_rows={expected_row_count} "
@@ -2149,9 +2183,12 @@ class ImportService:
             save_format=save_format,
             account_id_override=account_id,
             rung="bridge",
+            in_outer_txn=in_outer_txn,
+            emit_metrics=emit_metrics,
         )
 
-        PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="applied").inc()
+        if emit_metrics:
+            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="applied").inc()
         if rows_diverged:
             logger.warning(
                 f"PDF bridge apply divergence: agent returned "
@@ -2613,6 +2650,8 @@ class ImportService:
         account_id_override: str | None = None,
         rung: Literal["deterministic", "bridge"] = "deterministic",
         sign_override: str | None = None,
+        in_outer_txn: bool = False,
+        emit_metrics: bool = True,
     ) -> ImportResult:
         """Write PDF transaction rows to raw.tabular_transactions.
 
@@ -2898,7 +2937,8 @@ class ImportService:
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
                 )
-            PDF_IMPORT_TOTAL.labels(outcome="failed", rung=rung).inc()
+            if emit_metrics:
+                PDF_IMPORT_TOTAL.labels(outcome="failed", rung=rung).inc()
             raise
 
         # Format save + record_use happen AFTER the data-write try/except so a
@@ -2935,6 +2975,8 @@ class ImportService:
                 format_source=pdf_format_source,
             )
         except Exception:  # noqa: BLE001 — observability stamp must not roll back data
+            if in_outer_txn:
+                raise
             logger.warning(
                 f"PDF import_log.update_format failed for import_id="
                 f"{import_id[:8]}... — format columns left NULL",
@@ -2951,6 +2993,8 @@ class ImportService:
             try:
                 self._pdf_formats.record_use(decision.matched_format_name)
             except Exception:  # noqa: BLE001 — observability bump must not roll back data
+                if in_outer_txn:
+                    raise
                 logger.warning(
                     f"PDF record_use failed for format "
                     f"{decision.matched_format_name!r} (import_id="
@@ -2989,6 +3033,7 @@ class ImportService:
                     number_format=decision.recipe.number_format,
                     source="detected",
                     actor="system",  # auto-detected: system-driven (Invariant 10)
+                    in_outer_txn=in_outer_txn,
                 )
                 # Record the actually-persisted name so callers
                 # (apply_pdf_bridge_response) report format_name only after a
@@ -3018,6 +3063,7 @@ class ImportService:
                             f"recipe reconciled (rung={rung})"
                         ),
                         actor="system",  # auto-bump: system-driven (Invariant 10)
+                        in_outer_txn=in_outer_txn,
                     )
                     # Record the actually-persisted name so callers
                     # (apply_pdf_bridge_response) report format_name only after a
@@ -3028,12 +3074,16 @@ class ImportService:
                         f"bumped to a new version (import_id={import_id[:8]}...)"
                     )
                 except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+                    if in_outer_txn:
+                        raise
                     logger.warning(
                         f"PDF bump_version failed for format {format_name!r} "
                         f"(import_id={import_id[:8]}...) — stale recipe persists",
                         exc_info=True,
                     )
             except Exception:  # noqa: BLE001 — format save is bookkeeping; data is committed
+                if in_outer_txn:
+                    raise
                 logger.warning(
                     f"PDF save_new failed for format {format_name!r} "
                     f"(import_id={import_id[:8]}...) — recipe not persisted",
@@ -3047,7 +3097,8 @@ class ImportService:
             rows_total=len(rows_list),
             rows_imported=rows_inserted,
         )
-        PDF_IMPORT_TOTAL.labels(outcome="transactions", rung=rung).inc()
+        if emit_metrics:
+            PDF_IMPORT_TOTAL.labels(outcome="transactions", rung=rung).inc()
 
         result.transactions = rows_inserted
         result.accounts = 1
@@ -3088,6 +3139,8 @@ class ImportService:
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
+        in_outer_txn: bool = False,
+        emit_metrics: bool = True,
     ) -> ImportResult:
         """Import a financial data file into DuckDB.
 
@@ -3137,6 +3190,8 @@ class ImportService:
                 confirmation for tabular imports.
             account_metadata: Map of source_account_key -> settings dict captured
                 for accounts minted this import (tabular).
+            in_outer_txn: Join a caller-owned transaction for every write.
+            emit_metrics: Emit Prometheus observations during this call.
 
         Returns:
             ImportResult with summary of what was imported.
@@ -3168,6 +3223,8 @@ class ImportService:
             actor_kind=actor_kind,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
+            in_outer_txn=in_outer_txn,
+            emit_metrics=emit_metrics,
         )
 
         # Include PDFs only when the deterministic path landed transactions —
@@ -3225,6 +3282,8 @@ class ImportService:
         actor_kind: ActorKind = "human",
         account_bindings: dict[str, str] | None = None,
         account_metadata: dict[str, dict[str, str]] | None = None,
+        in_outer_txn: bool = False,
+        emit_metrics: bool = True,
     ) -> ImportResult:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
@@ -3265,6 +3324,8 @@ class ImportService:
                 actor_kind=actor_kind,
                 account_bindings=account_bindings,
                 account_metadata=account_metadata,
+                in_outer_txn=in_outer_txn,
+                emit_metrics=emit_metrics,
             )
         if file_type == "pdf":
             return self._import_pdf(
