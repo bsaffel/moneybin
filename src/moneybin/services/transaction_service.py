@@ -372,12 +372,12 @@ class TransactionService:
         verify: Callable[[AnnotationPlan], None] | None = None,
     ) -> AnnotationBatchResult:
         """Apply complete annotation target states atomically after full preflight."""
-        plan = self.preview_annotations(requests)
-        if verify is not None:
-            verify(plan)
         with operation(operation_id):
             self._db.begin()
             try:
+                plan = self.preview_annotations(requests)
+                if verify is not None:
+                    verify(plan)
                 outcomes = tuple(
                     self._apply_prepared_annotation(item, actor=actor)
                     for item in plan.items

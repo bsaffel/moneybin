@@ -374,6 +374,52 @@ class TestStandardCoarseAccountReads:
         assert reused.error.code == "BALANCE_CURSOR_INVALID"
 
     @pytest.mark.unit
+    async def test_balance_latest_as_of_and_reconcile_are_paginated(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_balance_data()
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta
+                ) VALUES ('ACC002', '2025-06-29', 14900.00, TRUE, 'ofx', 10.00)
+                """
+            )
+
+        as_of = await accounts_balances_coarse(
+            view="latest",
+            as_of=date(2025, 6, 29),
+            limit=1,
+        )
+        assert as_of.data.kind == "latest"
+        assert as_of.next_cursor is not None
+        assert {row.balance_date for row in as_of.data.observations} == {
+            date(2025, 6, 29)
+        }
+        assert "as_of='2025-06-29'" in as_of.actions[-1]
+
+        reconcile = await accounts_balances_coarse(
+            view="reconcile",
+            threshold=Decimal("0"),
+            limit=1,
+        )
+        assert reconcile.data.kind == "reconcile"
+        assert reconcile.next_cursor is not None
+        assert reconcile.data.observations[0].reconciliation_delta is not None
+        assert "threshold=0" in reconcile.actions[-1]
+
+        reused = await accounts_balances_coarse(
+            view="reconcile",
+            threshold=Decimal("1"),
+            limit=1,
+            cursor=reconcile.next_cursor,
+        )
+        assert reused.error is not None
+        assert reused.error.code == "BALANCE_CURSOR_INVALID"
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "view",
         ["latest", "history", "assertions"],
@@ -414,6 +460,9 @@ class TestStandardCoarseAccountReads:
                 {"view": "assertions", "end": "2025-01-31"},
                 "BALANCE_DATES_NOT_ALLOWED",
             ),
+            ({"view": "history", "as_of": "2025-01-31"}, "BALANCE_AS_OF_NOT_ALLOWED"),
+            ({"view": "latest", "threshold": "1"}, "BALANCE_THRESHOLD_NOT_ALLOWED"),
+            ({"view": "reconcile", "start": "2025-01-31"}, "BALANCE_DATES_NOT_ALLOWED"),
             ({"view": "history"}, "ACCOUNT_REFERENCE_REQUIRED"),
             (
                 {"view": "latest", "cursor": "not-a-cursor"},

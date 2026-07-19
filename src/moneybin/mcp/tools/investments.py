@@ -36,7 +36,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, StrictBool
 
 from moneybin import error_codes
 from moneybin.config import get_settings
@@ -987,6 +987,7 @@ def _investment_actions(
     security: str | None,
     start: _date | None,
     end: _date | None,
+    open_only: bool | None,
     limit: int,
     next_cursor: str | None,
 ) -> list[str]:
@@ -1020,6 +1021,8 @@ def _investment_actions(
             arguments.append(f"start={start.isoformat()!r}")
         if end is not None:
             arguments.append(f"end={end.isoformat()!r}")
+        if open_only is not None:
+            arguments.append(f"open_only={open_only!r}")
         arguments.extend((f"limit={limit}", f"cursor={next_cursor!r}"))
         actions.append(f"Continue with investments({', '.join(arguments)})")
     return actions
@@ -1064,6 +1067,7 @@ def investments_coarse(
     security: str | None = None,
     start: _date | None = None,
     end: _date | None = None,
+    open_only: StrictBool | None = None,
     limit: Annotated[int, Field(strict=True, ge=1)] = 100,
     cursor: str | None = None,
 ) -> ResponseEnvelope[InvestmentsCoarsePayload]:
@@ -1072,6 +1076,11 @@ def investments_coarse(
         raise UserError(
             "start and end are only valid for investment events and gains.",
             code="INVESTMENT_DATES_NOT_ALLOWED",
+        )
+    if view != "lots" and open_only is not None:
+        raise UserError(
+            "open_only is only valid for investment lots.",
+            code="INVESTMENT_OPEN_ONLY_NOT_ALLOWED",
         )
     if view == "securities" and account is not None:
         raise UserError(
@@ -1109,6 +1118,7 @@ def investments_coarse(
             "end": end.isoformat() if end is not None else None,
             "security_id": security_id,
             "start": start.isoformat() if start is not None else None,
+            "open_only": open_only,
         }
         offset = _investment_offset(cursor, view=view, filters=filters)
 
@@ -1140,6 +1150,7 @@ def investments_coarse(
             result = service.lots(
                 account_ref=account_id,
                 security_ref=security_id,
+                open_only=True if open_only is None else bool(open_only),
             )
             all_rows = InvestmentLotsPayload.from_result(result)
             page = all_rows.rows[offset : offset + limit]
@@ -1195,6 +1206,7 @@ def investments_coarse(
             security=security,
             start=start,
             end=end,
+            open_only=open_only,
             limit=limit,
             next_cursor=next_cursor,
         ),
@@ -1207,8 +1219,8 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         investments_coarse,
         "investments",
-        "Return investment events, holdings, open tax lots, realized gains, "
-        "or securities through one typed view. Amounts use the investment "
+        "Return investment events, holdings, open or full tax-lot history, "
+        "realized gains, or securities through one typed view. Amounts use the investment "
         "ledger sign convention and the currency in summary.display_currency.",
         privacy_actor="investments",
     )

@@ -1,5 +1,5 @@
 {
-  "sha256": "40f0ea40932b7251fef00184bb0e3614b9ea3af0e050cb5b4aa9750502baeca8",
+  "sha256": "ac49e48a2612edbec7aedd49a12f91239d5c304fb7834933c359129f4249cc12",
   "tool_count": 45,
   "tools": [
     {
@@ -221,10 +221,22 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return latest account balances, one resolved account's daily history, or manual balance assertions. Amounts are positions in the currency named by summary.display_currency.",
+        "description": "Return balances by date, history, assertions, or reconciliation deltas. Resolve one account by reference; amounts are positions in summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "as_of": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "cursor": {
               "anyOf": [
                 {
@@ -276,12 +288,32 @@
               ],
               "default": null
             },
+            "threshold": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "ge": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "view": {
               "default": "latest",
               "enum": [
                 "latest",
                 "history",
-                "assertions"
+                "assertions",
+                "reconcile"
               ],
               "type": "string"
             }
@@ -295,12 +327,12 @@
         },
         "name": "accounts_balances"
       },
-      "description_bytes": 172,
-      "input_schema_bytes": 510,
+      "description_bytes": 156,
+      "input_schema_bytes": 718,
       "name": "accounts_balances",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 877
+      "total_bytes": 1069
     },
     {
       "annotation_bytes": 90,
@@ -1554,7 +1586,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return investment events, holdings, open tax lots, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention and the currency in summary.display_currency.",
+        "description": "Return investment events, holdings, open or full tax-lot history, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention and the currency in summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1596,6 +1628,17 @@
               "default": 100,
               "minimum": 1,
               "type": "integer"
+            },
+            "open_only": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             },
             "security": {
               "anyOf": [
@@ -1641,12 +1684,12 @@
         },
         "name": "investments"
       },
-      "description_bytes": 200,
-      "input_schema_bytes": 598,
+      "description_bytes": 215,
+      "input_schema_bytes": 672,
       "name": "investments",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 987
+      "total_bytes": 1076
     },
     {
       "annotation_bytes": 90,
@@ -4372,5 +4415,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 44122
+  "total_bytes": 44403
 }

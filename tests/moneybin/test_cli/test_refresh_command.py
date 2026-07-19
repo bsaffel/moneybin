@@ -190,9 +190,12 @@ def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
         result.stdout
     )  # stdout stays clean JSON (warning is on stderr)
     assert payload["data"]["matching_error"] == "matcher boom"
-    tools = [ra["tool"] for ra in payload["recovery_actions"]]
-    assert "refresh_run" in tools
-    assert "system_doctor" in tools
+    recovery = {ra["tool"]: ra["arguments"] for ra in payload["recovery_actions"]}
+    assert "refresh_run" in recovery
+    assert recovery["system_status"] == {
+        "sections": ["doctor"],
+        "detail": "full",
+    }
     # The crash is also surfaced as a stderr warning, not only in the payload.
     assert "Matching step failed" in result.output
 

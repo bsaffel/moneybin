@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.database import get_database
+from moneybin.database import Database, get_database
 from moneybin.mcp.tools.transactions import (
     register_transaction_coarse_writes,
     register_transactions_tools,
@@ -202,6 +202,46 @@ async def test_annotation_confirmation_rechecks_live_entity_resolution(
         service = TransactionService(db)
         assert service.list_tags("TX_RENAME") == ["food"]
         assert service.list_tags("TX_NEW") == ["food"]
+
+
+@pytest.mark.unit
+async def test_annotation_confirmation_rejects_state_added_before_live_preflight(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale token cannot delete state added immediately before live preflight."""
+    _seed_annotation_transactions()
+    with get_database(read_only=False) as db:
+        TransactionService(db).add_note("TX_1", "approved-old", actor="test")
+    request = [NoteSet(kind="note_set", transaction_id="TX_1", note=None)]
+    required = await transactions_annotate_coarse(requests=request)
+    token = str(required.error.details["confirmation_token"])
+    original_begin = Database.begin
+
+    def begin_after_concurrent_write(db: Database) -> None:
+        db.execute(
+            """
+            INSERT INTO app.transaction_notes
+                (note_id, transaction_id, text, author)
+            VALUES (?, ?, ?, ?)
+            """,
+            ["note_concurrent", "TX_1", "concurrent", "other-session"],
+        )
+        original_begin(db)
+
+    monkeypatch.setattr(Database, "begin", begin_after_concurrent_write)
+
+    stale = await transactions_annotate_coarse(
+        requests=request,
+        confirmation_token=token,
+    )
+
+    assert stale.error is not None
+    assert stale.error.code == "mutation_confirmation_mismatch"
+    with get_database(read_only=True) as db:
+        assert sorted(
+            note.text for note in TransactionService(db).list_notes("TX_1")
+        ) == ["approved-old", "concurrent"]
 
 
 @pytest.mark.unit

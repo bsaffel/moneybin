@@ -377,8 +377,8 @@ class UndoService:
             code=error_codes.UNDO_OPERATION_NOT_FOUND,
             recovery_actions=[
                 RecoveryAction(
-                    tool="system_audit_history",
-                    arguments={},
+                    tool="system_audit",
+                    arguments={"view": "history"},
                     rationale="List recent operations to find a valid id.",
                     confidence="certain",
                     idempotent=True,

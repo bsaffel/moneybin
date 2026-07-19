@@ -13,6 +13,9 @@ from moneybin.matching.persistence import (
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.matching_service import MatchingService
+from tests.moneybin.test_mcp.schema_assertions import (
+    assert_recovery_actions_executable,
+)
 
 
 def _seed(db: Database, match_id: str, status: MatchStatus) -> None:
@@ -64,16 +67,24 @@ def test_set_status_rejected_to_rejected_is_idempotent(db: Database) -> None:
     assert _status_of(db, "m3b") == "rejected"
 
 
-def test_set_status_unknown_id_raises_not_found_with_recovery(db: Database) -> None:
+async def test_set_status_unknown_id_raises_not_found_with_recovery(
+    db: Database,
+) -> None:
     with pytest.raises(UserError) as exc:
         MatchingService(db).set_status("missing", status="accepted")
     err = exc.value
     assert err.code == error_codes.MUTATION_NOT_FOUND
     assert err.recovery_actions
-    assert err.recovery_actions[0].tool == "transactions_matches_pending"
+    await assert_recovery_actions_executable(err.recovery_actions)
+    assert (err.recovery_actions[0].tool, err.recovery_actions[0].arguments) == (
+        "reviews",
+        {"kind": "matches", "status": "pending"},
+    )
 
 
-def test_reject_accepted_raises_constraint_with_undo_recovery(db: Database) -> None:
+async def test_reject_accepted_raises_constraint_with_history_recovery(
+    db: Database,
+) -> None:
     _seed(db, "m4", "accepted")
     with pytest.raises(UserError) as exc:
         MatchingService(db).set_status("m4", status="rejected")
@@ -81,30 +92,39 @@ def test_reject_accepted_raises_constraint_with_undo_recovery(db: Database) -> N
     assert err.code == error_codes.MUTATION_CONSTRAINT_VIOLATION
     assert err.recovery_actions
     action = err.recovery_actions[0]
-    # Recovery points at the audit-log undo (the coming M2D MCP tool), not a
-    # phantom transactions_matches_undo; the CLI interim is named in rationale.
-    assert action.tool == "system_audit_undo"
-    assert "matches undo" in action.rationale
+    await assert_recovery_actions_executable(err.recovery_actions)
+    assert (action.tool, action.arguments) == (
+        "reviews",
+        {"kind": "matches", "status": "history"},
+    )
 
 
-def test_set_rejected_match_recovery_points_at_history(db: Database) -> None:
+async def test_set_rejected_match_recovery_points_at_history(db: Database) -> None:
     # A rejected row isn't in the pending queue; recovery must point at history.
     _seed(db, "m4b", "rejected")
     with pytest.raises(UserError) as exc:
         MatchingService(db).set_status("m4b", status="accepted")
     err = exc.value
     assert err.recovery_actions
-    assert err.recovery_actions[0].tool == "transactions_matches_history"
+    await assert_recovery_actions_executable(err.recovery_actions)
+    assert (err.recovery_actions[0].tool, err.recovery_actions[0].arguments) == (
+        "reviews",
+        {"kind": "matches", "status": "history"},
+    )
 
 
-def test_set_reversed_match_recovery_points_at_history(db: Database) -> None:
+async def test_set_reversed_match_recovery_points_at_history(db: Database) -> None:
     # The other terminal non-pending status: reversed routes to history too.
     _seed(db, "m4c", "reversed")
     with pytest.raises(UserError) as exc:
         MatchingService(db).set_status("m4c", status="accepted")
     err = exc.value
     assert err.recovery_actions
-    assert err.recovery_actions[0].tool == "transactions_matches_history"
+    await assert_recovery_actions_executable(err.recovery_actions)
+    assert (err.recovery_actions[0].tool, err.recovery_actions[0].arguments) == (
+        "reviews",
+        {"kind": "matches", "status": "history"},
+    )
 
 
 def test_invalid_status_value_raises(db: Database) -> None:

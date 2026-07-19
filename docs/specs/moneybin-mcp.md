@@ -47,9 +47,9 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `reports` | `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / maximum critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / maximum critical / view-derived |
 | `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `iso_currency_code`, `last_four`, `official_name` | Account target state | Audited write / maximum critical |
-| `accounts_balances` | `cursor`, `end`, `limit`, `reference`, `start`, `view` | Balance projection | Read / dynamic / maximum high / balance-derived |
+| `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / maximum high / balance-derived |
 | `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / maximum medium |
-| `investments` | `account`, `cursor`, `end`, `limit`, `security`, `start`, `view` | Holdings and ledger projection | Read / dynamic / maximum high / view-derived |
+| `investments` | `account`, `cursor`, `end`, `limit`, `open_only`, `security`, `start`, `view` | Holdings and ledger projection | Read / dynamic / maximum high / view-derived |
 | `investments_record` | `events` | Record an investment event | Audited write / maximum low |
 | `investments_securities_set` | `coingecko_id`, `cost_basis_method`, `currency_code`, `cusip`, `exchange`, `figi`, `is_cash_equivalent`, `isin`, `name`, `security_id`, `security_type`, `ticker` | Securities-catalog target state | Audited write / maximum low |
 | `investments_lots_select` | `disposal_txn_id`, `selections` | Full lot-selection target state | Audited write / maximum high |

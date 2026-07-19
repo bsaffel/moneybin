@@ -159,6 +159,7 @@ async def test_investment_coarse_views_are_typed(
             "INVESTMENT_DATES_NOT_ALLOWED",
         ),
         ("lots", {"end": date(2024, 12, 31)}, "INVESTMENT_DATES_NOT_ALLOWED"),
+        ("events", {"open_only": False}, "INVESTMENT_OPEN_ONLY_NOT_ALLOWED"),
         ("securities", {"account": _ACCOUNT}, "INVESTMENT_ACCOUNT_NOT_ALLOWED"),
     ],
 )
@@ -258,6 +259,46 @@ async def test_investment_coarse_cursor_is_bound_to_filters(
 
     assert response.error is not None
     assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_lots_open_only_matches_the_cli_selector(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    with get_database(read_only=False) as db:
+        db.executemany(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES (?, ?, ?, '2024-01-15', 'buy', 10, ?, 1500, ?, 'fifo',
+                    'USD', ?, FALSE)
+            """,
+            [
+                ["lot_open", _ACCOUNT, sec, Decimal("10"), Decimal("1500"), True],
+                ["lot_closed", _ACCOUNT, sec, Decimal("0"), Decimal("0"), False],
+            ],
+        )
+
+    open_lots = await investments_coarse(view="lots", open_only=True)
+    all_lots = await investments_coarse(view="lots", open_only=False, limit=1)
+
+    assert [row.lot_id for row in open_lots.data.rows] == ["lot_open"]
+    assert all_lots.summary.total_count == 2
+    assert all_lots.next_cursor is not None
+    assert "open_only=False" in all_lots.actions[-1]
+
+    reused = await investments_coarse(
+        view="lots",
+        open_only=True,
+        limit=1,
+        cursor=all_lots.next_cursor,
+    )
+    assert reused.error is not None
+    assert reused.error.code == "INVESTMENT_CURSOR_INVALID"
 
 
 async def test_investment_coarse_returns_sanitized_ambiguity(

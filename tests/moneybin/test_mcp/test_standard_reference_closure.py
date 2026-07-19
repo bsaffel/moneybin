@@ -23,6 +23,7 @@ from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import ReportSpec
 
 _ROOT = Path(__file__).parents[3]
+_SRC_DIR = _ROOT / "src/moneybin"
 _TOOLS_DIR = _ROOT / "src/moneybin/mcp/tools"
 _BASELINE = _ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
 
@@ -112,6 +113,53 @@ def _emitted_tool_strings() -> dict[str, list[str]]:
         if strings:
             result[str(path.relative_to(_ROOT))] = strings
     return result
+
+
+def _recovery_action_contracts() -> list[tuple[str, int, str, set[str]]]:
+    """Find literal tool and argument-key contracts in RecoveryAction constructors."""
+    contracts: list[tuple[str, int, str, set[str]]] = []
+    for path in sorted(_SRC_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            name = (
+                target.id
+                if isinstance(target, ast.Name)
+                else target.attr
+                if isinstance(target, ast.Attribute)
+                else None
+            )
+            if name != "RecoveryAction":
+                continue
+            keywords = {item.arg: item.value for item in node.keywords if item.arg}
+            tool_node = keywords.get("tool")
+            assert isinstance(tool_node, ast.Constant) and isinstance(
+                tool_node.value, str
+            ), f"{path.relative_to(_ROOT)}:{node.lineno}: tool must be literal"
+            arguments_node = keywords.get("arguments")
+            argument_keys: set[str] = set()
+            if arguments_node is not None:
+                assert isinstance(arguments_node, ast.Dict), (
+                    f"{path.relative_to(_ROOT)}:{node.lineno}: "
+                    "arguments must be a literal dict"
+                )
+                for key in arguments_node.keys:
+                    assert isinstance(key, ast.Constant) and isinstance(
+                        key.value, str
+                    ), (
+                        f"{path.relative_to(_ROOT)}:{node.lineno}: "
+                        "argument keys must be string literals"
+                    )
+                    argument_keys.add(key.value)
+            contracts.append((
+                str(path.relative_to(_ROOT)),
+                node.lineno,
+                tool_node.value,
+                argument_keys,
+            ))
+    return contracts
 
 
 async def test_only_live_standard_callbacks_are_decorated_as_mcp_tools() -> None:
@@ -263,6 +311,28 @@ def test_emitted_tool_strings_reference_only_standard_tools() -> None:
     unresolved = {path: names for path, names in unresolved.items() if names}
 
     assert unresolved == {}
+
+
+async def test_recovery_action_contracts_reference_standard_tool_schemas() -> None:
+    from moneybin.mcp.server import init_db, mcp
+
+    init_db()
+    unresolved: list[str] = []
+    for path, line, tool_name, argument_keys in _recovery_action_contracts():
+        if tool_name not in STANDARD_TOOL_NAMES:
+            unresolved.append(f"{path}:{line}: retired tool {tool_name!r}")
+            continue
+        tool = await mcp.get_tool(tool_name)
+        assert isinstance(tool, FunctionTool)
+        schema_keys = set(tool.parameters.get("properties", {}))
+        unexpected = argument_keys - schema_keys
+        if unexpected:
+            unresolved.append(
+                f"{path}:{line}: {tool_name!r} unexpected arguments "
+                f"{sorted(unexpected)!r}"
+            )
+
+    assert unresolved == []
 
 
 def test_recovery_recipes_reference_only_standard_tools() -> None:

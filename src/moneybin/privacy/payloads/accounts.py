@@ -184,10 +184,20 @@ class AccountsBalancesAssertionsView(BaseModel):
     assertions: list[BalanceAssertionRow]
 
 
+class AccountsBalancesReconcileView(BaseModel):
+    """Balance observations whose reconciliation delta exceeds a threshold."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["reconcile"] = "reconcile"
+    observations: list[BalanceObservationRow]
+
+
 AccountsBalancesCoarsePayload = Annotated[
     AccountsBalancesLatestView
     | AccountsBalancesHistoryView
-    | AccountsBalancesAssertionsView,
+    | AccountsBalancesAssertionsView
+    | AccountsBalancesReconcileView,
     Field(discriminator="kind"),
 ]
 

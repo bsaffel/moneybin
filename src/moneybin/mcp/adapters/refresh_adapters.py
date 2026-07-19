@@ -32,8 +32,7 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
     """Build recovery actions for best-effort step crashes (matcher/categorizer).
 
     Ordered most-likely-correct first: the targeted retry(s), then a single
-    diagnostic ``system_doctor`` call. ``system_doctor`` takes no MCP
-    parameters, so ``arguments`` is empty — a recovery action must stay
+    diagnostic ``system_status`` doctor call. A recovery action must stay
     directly executable.
 
     Returns ``[]`` when the SQLMesh apply itself failed (``result.error``):
@@ -73,8 +72,8 @@ def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
     if actions:
         actions.append(
             RecoveryAction(
-                tool="system_doctor",
-                arguments={},
+                tool="system_status",
+                arguments={"sections": ["doctor"], "detail": "full"},
                 rationale=(
                     "Run pipeline integrity checks to diagnose what the "
                     "partial refresh left inconsistent."

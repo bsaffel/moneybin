@@ -6,6 +6,8 @@ import importlib
 import json
 import shutil
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,7 +23,9 @@ from moneybin.connectors.sync_auth import SyncAuthService
 from moneybin.connectors.sync_models import DeviceAuthorizationChallenge
 from moneybin.database import get_database
 from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+from moneybin.mcp.tools.accounts import accounts_balances_coarse
 from moneybin.mcp.tools.import_tools import import_files_coarse, import_revert_coarse
+from moneybin.mcp.tools.investments import investments_coarse
 from moneybin.mcp.tools.privacy import privacy_consent_set_coarse
 from moneybin.mcp.tools.refresh import refresh_run
 from moneybin.mcp.tools.reports import reports
@@ -34,6 +38,7 @@ from moneybin.mcp.write_contracts import (
     MerchantStateRequest,
     TagsSet,
 )
+from tests.moneybin.db_helpers import create_core_dim_stub_views
 
 OUTCOME_MAP_PATH = (
     Path(__file__).parents[2] / "fixtures" / "mcp_capabilities" / "outcome-map.json"
@@ -518,6 +523,44 @@ def _seed_nonzero_networth(path: Path) -> None:
         )
 
 
+def _seed_balance_parity(path: Path) -> None:
+    """Seed as-of and reconciliation rows in one isolated profile database."""
+    _select_database(path)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_balances_daily (
+                account_id, balance_date, balance, is_observed,
+                observation_source, reconciliation_delta
+            ) VALUES
+                ('ACC001', '2026-06-29', 4900.00, TRUE, 'ofx', 10.00),
+                ('ACC001', '2026-06-30', 5000.00, TRUE, 'ofx', 25.00)
+            """
+        )
+
+
+def _seed_lot_parity(path: Path) -> None:
+    """Seed open and closed lots in one isolated profile database."""
+    _select_database(path)
+    with get_database(read_only=False) as db:
+        create_core_dim_stub_views(db)
+        db.executemany(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES (?, 'ACC001', 'SEC_PARITY', '2024-01-15', 'buy', 10, ?,
+                    1500, ?, 'fifo', 'USD', ?, FALSE)
+            """,
+            [
+                ["lot_open", Decimal("10"), Decimal("1500"), True],
+                ["lot_closed", Decimal("0"), Decimal("0"), False],
+            ],
+        )
+
+
 @pytest.mark.unit
 async def test_refresh_match_identity_has_same_observable_outcome(
     mcp_db: Path,
@@ -618,6 +661,102 @@ async def test_report_execution_returns_same_rows(
     assert mcp_data["semantics"]["provenance"]
     assert mcp["summary"]["returned_count"] == mcp_data["count"]
     assert mcp["summary"]["has_more"] is mcp_data["truncated"]
+
+
+@pytest.mark.unit
+async def test_balance_as_of_and_reconciliation_have_same_rows(
+    mcp_db: Path,
+    tmp_path: Path,
+) -> None:
+    cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
+    _seed_balance_parity(cli_path)
+    _seed_balance_parity(mcp_path)
+
+    _select_database(cli_path)
+    cli_show = CliRunner().invoke(
+        app,
+        [
+            "accounts",
+            "balance",
+            "show",
+            "--account",
+            "ACC001",
+            "--as-of",
+            "2026-06-29",
+            "--output",
+            "json",
+        ],
+    )
+    cli_reconcile = CliRunner().invoke(
+        app,
+        [
+            "accounts",
+            "balance",
+            "reconcile",
+            "--account",
+            "ACC001",
+            "--threshold",
+            "20",
+            "--output",
+            "json",
+        ],
+    )
+    assert cli_show.exit_code == cli_reconcile.exit_code == 0
+
+    _select_database(mcp_path)
+    mcp_show = await accounts_balances_coarse(
+        view="latest",
+        reference="ACC001",
+        as_of=date(2026, 6, 29),
+    )
+    mcp_reconcile = await accounts_balances_coarse(
+        view="reconcile",
+        reference="ACC001",
+        threshold=Decimal("20"),
+    )
+
+    assert (
+        json.loads(cli_show.stdout)["data"]["observations"]
+        == json.loads(mcp_show.to_json())["data"]["observations"]
+    )
+    assert (
+        json.loads(cli_reconcile.stdout)["data"]["observations"]
+        == (json.loads(mcp_reconcile.to_json())["data"]["observations"])
+    )
+
+
+@pytest.mark.unit
+async def test_investment_lot_open_and_all_have_same_rows(
+    mcp_db: Path,
+    tmp_path: Path,
+) -> None:
+    cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
+    _seed_lot_parity(cli_path)
+    _seed_lot_parity(mcp_path)
+
+    _select_database(cli_path)
+    cli_open = CliRunner().invoke(
+        app,
+        ["investments", "lots", "list", "--output", "json"],
+    )
+    cli_all = CliRunner().invoke(
+        app,
+        ["investments", "lots", "list", "--all", "--output", "json"],
+    )
+    assert cli_open.exit_code == cli_all.exit_code == 0
+
+    _select_database(mcp_path)
+    mcp_open = await investments_coarse(view="lots", open_only=True)
+    mcp_all = await investments_coarse(view="lots", open_only=False)
+
+    assert (
+        json.loads(cli_open.stdout)["data"]["rows"]
+        == json.loads(mcp_open.to_json())["data"]["rows"]
+    )
+    assert (
+        json.loads(cli_all.stdout)["data"]["rows"]
+        == json.loads(mcp_all.to_json())["data"]["rows"]
+    )
 
 
 @pytest.mark.unit

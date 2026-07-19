@@ -7,6 +7,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, ValidationError
+from jsonschema import validate as validate_json_schema
 from mcp.types import Tool
 
 from moneybin.mcp.surface_inventory import SurfaceInventory
@@ -117,6 +119,36 @@ def test_every_case_has_ordered_expectations_for_both_surfaces() -> None:
         assert tuple(case.expectations) == ("baseline-105", "standard-45")
         for expectation in case.expectations.values():
             assert isinstance(expectation.calls, tuple)
+
+
+def test_every_expected_call_validates_against_its_surface_schema() -> None:
+    cases = load_cases(CASES_PATH)
+    inventories = {
+        "baseline-105": _load_inventory(BASELINE_INVENTORY_PATH),
+        "standard-45": _load_inventory(STANDARD_INVENTORY_PATH),
+    }
+
+    invalid: list[str] = []
+    for surface_id, inventory in inventories.items():
+        schemas = {
+            tool.name: Tool.model_validate(tool.definition).inputSchema
+            for tool in inventory.tools
+        }
+        for case in cases:
+            for call in case.expectation_for(surface_id).calls:
+                schema = schemas[call.name]
+                Draft202012Validator.check_schema(schema)
+                try:
+                    validate_json_schema(
+                        dict(call.arguments),
+                        schema,
+                        cls=Draft202012Validator,
+                    )
+                except ValidationError as error:
+                    invalid.append(
+                        f"{surface_id}/{case.id}/{call.name}: {error.message}"
+                    )
+    assert not invalid, "\n".join(invalid)
 
 
 def test_baseline_contract_fixture_is_unmistakably_synthetic() -> None:

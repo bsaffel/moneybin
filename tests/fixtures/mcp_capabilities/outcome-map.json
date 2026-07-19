@@ -51,8 +51,8 @@
     "capability_id": "accounts.balances.read",
     "mcp_tools": ["accounts_balances"],
     "cli_commands": ["accounts balance show", "accounts balance history", "accounts balance list", "accounts balance reconcile"],
-    "service_methods": ["moneybin.services.balance_service.BalanceService.current_balances", "moneybin.services.balance_service.BalanceService.history", "moneybin.services.balance_service.BalanceService.list_assertions"],
-    "observable_outcomes": ["identical latest observations, history rows, and manual assertions"],
+    "service_methods": ["moneybin.services.balance_service.BalanceService.current_balances", "moneybin.services.balance_service.BalanceService.history", "moneybin.services.balance_service.BalanceService.list_assertions", "moneybin.services.balance_service.BalanceService.reconcile"],
+    "observable_outcomes": ["identical latest and as-of observations, history rows, manual assertions, and threshold-filtered reconciliation deltas"],
     "exemption": null
   },
   {
@@ -68,7 +68,7 @@
     "mcp_tools": ["investments"],
     "cli_commands": ["investments list", "investments holdings", "investments gains", "investments lots list", "investments securities list"],
     "service_methods": ["moneybin.services.investment_service.InvestmentService.list_events", "moneybin.services.investment_service.InvestmentService.holdings", "moneybin.services.investment_service.InvestmentService.gains", "moneybin.services.investment_service.InvestmentService.lots", "moneybin.services.investment_service.InvestmentService.list_securities"],
-    "observable_outcomes": ["identical filtered ledger, holdings, gains, lots, and security-catalog rows"],
+    "observable_outcomes": ["identical filtered ledger, holdings, gains, open or full lot history, and security-catalog rows"],
     "exemption": null
   },
   {

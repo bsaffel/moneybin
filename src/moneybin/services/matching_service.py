@@ -41,30 +41,12 @@ _SETTABLE_STATUSES: frozenset[str] = frozenset({"accepted", "rejected"})
 def _non_pending_recovery(current_status: str) -> RecoveryAction:
     """Recovery action for a set_status call on a non-pending decision.
 
-    An accepted decision is already merged into core; the inverse is the
-    audit-log undo (``system_audit_undo``, the M2D undo consumer). Until it
-    ships, the equivalent manual route is the CLI ``moneybin transactions
-    matches undo`` — named in the rationale. ``arguments`` is empty because the
-    ``operation_id`` isn't known at this error site (the agent finds it via the
-    audit history). Any other terminal status routes back to the pending list.
+    All terminal states route to normalized match history, where the user can
+    inspect the existing decision before choosing a valid next operation.
     """
-    if current_status == "accepted":
-        return RecoveryAction(
-            tool="system_audit_undo",
-            arguments={},
-            rationale=(
-                "This match is already accepted and merged into core. Reverse it "
-                "via the audit-log undo (system_audit_undo); until that MCP tool "
-                "ships, run 'moneybin transactions matches undo <match_id>' (CLI)."
-            ),
-            confidence="suggested",
-            idempotent=False,
-        )
-    # rejected / reversed: the row is no longer pending, so the pending list
-    # would be a dead end — point at history, which has no status filter.
     return RecoveryAction(
-        tool="transactions_matches_history",
-        arguments={},
+        tool="reviews",
+        arguments={"kind": "matches", "status": "history"},
         rationale=(
             f"This decision is {current_status}, not pending; view it in the "
             "match history (the pending queue excludes it)."
@@ -190,8 +172,8 @@ class MatchingService:
                 code=error_codes.MUTATION_INVALID_INPUT,
                 recovery_actions=[
                     RecoveryAction(
-                        tool="transactions_matches_pending",
-                        arguments={},
+                        tool="reviews",
+                        arguments={"kind": "matches", "status": "pending"},
                         rationale="List pending matches to pick a valid match and status.",
                         confidence="suggested",
                         idempotent=True,
@@ -210,8 +192,8 @@ class MatchingService:
                     code=error_codes.MUTATION_NOT_FOUND,
                     recovery_actions=[
                         RecoveryAction(
-                            tool="transactions_matches_pending",
-                            arguments={},
+                            tool="reviews",
+                            arguments={"kind": "matches", "status": "pending"},
                             rationale="List current pending matches to find a valid match_id.",
                             confidence="suggested",
                             idempotent=True,

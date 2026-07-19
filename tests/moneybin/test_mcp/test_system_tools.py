@@ -16,6 +16,9 @@ from moneybin.mcp.tools.system import (
     system_status,
     system_status_coarse,
 )
+from tests.moneybin.test_mcp.schema_assertions import (
+    assert_recovery_actions_executable,
+)
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -510,10 +513,15 @@ async def test_audit_undo_reverses_operation(mcp_db: object) -> None:
 async def test_audit_undo_not_found_returns_error_envelope(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_undo
 
-    parsed = (await system_audit_undo("op_missing")).to_dict()
+    result = await system_audit_undo("op_missing")
+    parsed = result.to_dict()
     assert parsed["status"] == "error"
     assert parsed["error"]["code"] == "undo_operation_not_found"
-    assert parsed["recovery_actions"]  # history hint present
+    assert result.recovery_actions
+    await assert_recovery_actions_executable(result.recovery_actions)
+    assert [(action.tool, action.arguments) for action in result.recovery_actions] == [
+        ("system_audit", {"view": "history"})
+    ]
 
 
 @pytest.mark.unit

@@ -127,7 +127,12 @@ async def test_live_standard_read_selectors_render_exactly() -> None:
         ("system_status", "detail"): {"summary", "full"},
         ("system_audit", "view"): {"events", "history", "detail"},
         ("accounts", "view"): {"list", "detail", "summary", "resolve"},
-        ("accounts_balances", "view"): {"latest", "history", "assertions"},
+        ("accounts_balances", "view"): {
+            "latest",
+            "history",
+            "assertions",
+            "reconcile",
+        },
         ("investments", "view"): {
             "events",
             "holdings",
@@ -366,9 +371,12 @@ async def test_accounts_coarse_tools_render_schema_contract() -> None:
     assert_literal_values(
         balances.inputSchema,
         ("properties", "view"),
-        {"latest", "history", "assertions"},
+        {"latest", "history", "assertions", "reconcile"},
     )
     assert accounts.inputSchema["properties"]["include_closed"]["type"] == "boolean"
+    threshold_schema = json.dumps(balances.inputSchema["properties"]["threshold"])
+    assert '"number"' in threshold_schema
+    assert '"string"' not in threshold_schema
     for field in ("start", "end"):
         date_schema = balances.inputSchema["properties"][field]["anyOf"][0]
         assert date_schema["type"] == "string"
@@ -408,6 +416,12 @@ async def test_accounts_coarse_tools_render_schema_contract() -> None:
             "accounts_balances",
             {"view": "assertions"},
             "assertions",
+            "high",
+        ),
+        (
+            "accounts_balances",
+            {"view": "reconcile", "threshold": 0},
+            "reconcile",
             "high",
         ),
     ],
@@ -488,6 +502,12 @@ async def test_accounts_coarse_transport_variants(
                 "txn_date",
                 "user_note",
             },
+        ),
+        (
+            "accounts_balances",
+            {"view": "reconcile", "threshold": 0},
+            "high",
+            {"balance", "record_id", "txn_date", "txn_type"},
         ),
     ],
 )
@@ -695,9 +715,9 @@ async def test_accounts_coarse_raw_rejects_unused_arguments(
         ("accounts", {"include_closed": "false"}),
         ("accounts", {"limit": "50"}),
         ("accounts", {"unknown": "value"}),
-        ("accounts_balances", {"view": "reconcile"}),
         ("accounts_balances", {"limit": "50"}),
         ("accounts_balances", {"start": 20250101}),
+        ("accounts_balances", {"view": "reconcile", "threshold": "0"}),
         ("accounts_balances", {"unknown": "value"}),
     ],
 )
@@ -730,6 +750,8 @@ async def test_investment_and_transaction_coarse_tools_render_schema_contract() 
         ("properties", "view"),
         {"events", "holdings", "lots", "gains", "securities"},
     )
+    open_only_schema = investments.inputSchema["properties"]["open_only"]
+    assert open_only_schema["anyOf"][0]["type"] == "boolean"
     for field in ("start", "end"):
         investment_date = investments.inputSchema["properties"][field]["anyOf"][0]
         transaction_date = transactions.inputSchema["properties"][field]["anyOf"][0]

@@ -474,12 +474,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic Plan 6
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 44,122 bytes of serialized metadata, zero advertised output schemas,
+contains 45 tools, 44,403 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`40f0ea40932b7251fef00184bb0e3614b9ea3af0e050cb5b4aa9750502baeca8`.
+`ac49e48a2612edbec7aedd49a12f91239d5c304fb7834933c359129f4249cc12`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -46,612 bytes (-51.4%). The deterministic estimate is 11,031
+The delta is -46,331 bytes (-51.1%). The deterministic estimate is 11,101
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -498,8 +498,8 @@ narrower definitions did not express.
 | `system_status` | 663 / 2,725 (-2,062) | 277 / 793 (-516) |
 | `system_audit` | 746 / 1,958 (-1,212) | 412 / 684 (-272) |
 | `accounts` | 830 / 2,240 (-1,410) | 465 / 808 (-343) |
-| `accounts_balances` | 877 / 2,786 (-1,909) | 510 / 1,286 (-776) |
-| `investments` | 987 / 4,908 (-3,921) | 598 / 2,727 (-2,129) |
+| `accounts_balances` | 1,069 / 2,786 (-1,717) | 718 / 1,286 (-568) |
+| `investments` | 1,076 / 4,908 (-3,832) | 672 / 2,727 (-2,055) |
 | `transactions` | 1,287 / 2,383 (-1,096) | 821 / 1,666 (-845) |
 | `transactions_categorize_rules` | 564 / 318 (+246) | 144 / 62 (+82) |
 | `reviews` | 690 / 8,687 (-7,997) | 401 / 2,493 (-2,092) |

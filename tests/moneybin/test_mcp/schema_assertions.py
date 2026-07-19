@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import Any, cast
 
 from fastmcp import Client, FastMCP
+from fastmcp.tools import FunctionTool
+from jsonschema import Draft202012Validator
+from jsonschema import validate as validate_json_schema
 from mcp.types import CallToolResult, Tool
+
+from moneybin.errors import RecoveryAction
+from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 
 
 def isolated_server(registrar: Callable[[FastMCP], None]) -> FastMCP:
@@ -31,6 +37,25 @@ async def call_tool_raw(
     """Call a tool through FastMCP without pre-validating its arguments."""
     async with Client(mcp) as client:
         return await client.call_tool_mcp(name, arguments)
+
+
+async def assert_recovery_actions_executable(
+    actions: Iterable[RecoveryAction],
+) -> None:
+    """Assert recovery actions name standard tools with schema-valid arguments."""
+    from moneybin.mcp.server import init_db, mcp
+
+    init_db()
+    for action in actions:
+        assert action.tool in STANDARD_TOOL_NAMES
+        tool = await mcp.get_tool(action.tool)
+        assert isinstance(tool, FunctionTool)
+        Draft202012Validator.check_schema(tool.parameters)
+        validate_json_schema(
+            action.arguments,
+            tool.parameters,
+            cls=Draft202012Validator,
+        )
 
 
 def resolve_ref(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:

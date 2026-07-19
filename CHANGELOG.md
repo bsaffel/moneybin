@@ -72,7 +72,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   defer schemas from that identical registry without reconnect, packs, or
   profiles. Reports extend the `reports` catalog rather than consuming tool
   slots, and future tools require the published admission record. The
-  deterministic comparison reduced metadata from 90,734 to 44,122 bytes;
+  deterministic comparison reduced metadata from 90,734 to 44,403 bytes;
   promotion remains pending observed context-budget and host-deferral evidence.
 - **Executable CLI/MCP capability parity.** A checked outcome map now covers all
   45 standard MCP tools and every implemented Typer path by service ownership

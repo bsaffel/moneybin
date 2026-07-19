@@ -61,6 +61,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountsBalancesCoarsePayload,
     AccountsBalancesHistoryView,
     AccountsBalancesLatestView,
+    AccountsBalancesReconcileView,
     AccountsCoarsePayload,
     AccountsDetailView,
     AccountSettingsPayload,
@@ -1130,12 +1131,14 @@ def _history_period(start: _date | None, end: _date | None) -> str | None:
 def _balance_actions(
     actions: list[str],
     *,
-    view: Literal["latest", "history", "assertions"],
+    view: Literal["latest", "history", "assertions", "reconcile"],
     limit: int,
     next_cursor: str | None,
     reference: str | None,
     start: _date | None,
     end: _date | None,
+    as_of: _date | None,
+    threshold: Decimal | None,
 ) -> list[str]:
     """Preserve balance hints and add a public continuation hint."""
     selected = list(actions)
@@ -1147,6 +1150,10 @@ def _balance_actions(
             arguments.append(f"start={start.isoformat()!r}")
         if end is not None:
             arguments.append(f"end={end.isoformat()!r}")
+        if as_of is not None:
+            arguments.append(f"as_of={as_of.isoformat()!r}")
+        if threshold is not None:
+            arguments.append(f"threshold={threshold}")
         arguments.extend((f"limit={limit}", f"cursor='{next_cursor}'"))
         selected.append(f"Continue with accounts_balances({', '.join(arguments)})")
     return list(dict.fromkeys(selected))
@@ -1154,18 +1161,30 @@ def _balance_actions(
 
 @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
 async def accounts_balances_coarse(
-    view: Literal["latest", "history", "assertions"] = "latest",
+    view: Literal["latest", "history", "assertions", "reconcile"] = "latest",
     reference: str | None = None,
     start: _date | None = None,
     end: _date | None = None,
+    as_of: _date | None = None,
+    threshold: Annotated[FiniteDecimal, Field(ge=0)] | None = None,
     limit: Annotated[int, Field(strict=True, ge=1)] = 100,
     cursor: str | None = None,
 ) -> ResponseEnvelope[AccountsBalancesCoarsePayload]:
-    """Return latest balances, one account's history, or manual assertions."""
+    """Return balances, history, assertions, or reconciliation deltas."""
     if view != "history" and (start is not None or end is not None):
         raise UserError(
             "start and end are only valid for balance history.",
             code="BALANCE_DATES_NOT_ALLOWED",
+        )
+    if view != "latest" and as_of is not None:
+        raise UserError(
+            "as_of is only valid for latest balances.",
+            code="BALANCE_AS_OF_NOT_ALLOWED",
+        )
+    if view != "reconcile" and threshold is not None:
+        raise UserError(
+            "threshold is only valid for balance reconciliation.",
+            code="BALANCE_THRESHOLD_NOT_ALLOWED",
         )
     if view == "history" and reference is None:
         raise UserError(
@@ -1185,15 +1204,17 @@ async def accounts_balances_coarse(
     )
     filters: dict[str, object] = {
         "account_id": account_id,
+        "as_of": as_of.isoformat() if as_of is not None else None,
         "end": end.isoformat() if end is not None else None,
         "start": start.isoformat() if start is not None else None,
+        "threshold": str(threshold) if threshold is not None else None,
     }
 
     if view == "latest":
         response = await _run_account_read(
             accounts_balances,
             account_ids=[account_id] if account_id is not None else None,
-            as_of_date=None,
+            as_of_date=as_of.isoformat() if as_of is not None else None,
         )
         page, next_cursor = _page(
             response.data.observations,
@@ -1224,7 +1245,7 @@ async def accounts_balances_coarse(
         payload = AccountsBalancesHistoryView(observations=page)
         contract_type = AccountsBalancesHistoryView
         total_count = len(response.data.observations)
-    else:
+    elif view == "assertions":
         response = await _run_account_read(
             accounts_balance_assertions,
             account_id,
@@ -1240,6 +1261,23 @@ async def accounts_balances_coarse(
         payload = AccountsBalancesAssertionsView(assertions=page)
         contract_type = AccountsBalancesAssertionsView
         total_count = len(response.data.assertions)
+    else:
+        response = await _run_account_read(
+            accounts_balance_reconcile,
+            account_ids=[account_id] if account_id is not None else None,
+            threshold=threshold if threshold is not None else Decimal("0.01"),
+        )
+        page, next_cursor = _page(
+            response.data.observations,
+            tool="accounts_balances",
+            view="reconcile",
+            limit=limit,
+            cursor=cursor,
+            filters=filters,
+        )
+        payload = AccountsBalancesReconcileView(observations=page)
+        contract_type = AccountsBalancesReconcileView
+        total_count = len(response.data.observations)
 
     return _coarse_envelope(
         payload,
@@ -1257,6 +1295,8 @@ async def accounts_balances_coarse(
             reference=reference,
             start=start,
             end=end,
+            as_of=as_of,
+            threshold=threshold,
         ),
     )
 
@@ -1276,9 +1316,9 @@ def register_accounts_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         accounts_balances_coarse,
         "accounts_balances",
-        "Return latest account balances, one resolved account's daily history, "
-        "or manual balance assertions. Amounts are positions in the currency "
-        "named by summary.display_currency.",
+        "Return balances by date, history, assertions, or reconciliation deltas. "
+        "Resolve one account by reference; amounts are positions in "
+        "summary.display_currency.",
         privacy_actor="accounts_balances",
     )
 
