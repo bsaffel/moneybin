@@ -54,6 +54,7 @@ def _ofx_account(
     account_type: str | None,
     institution_org: str = "Vocab Bank",
     institution_fid: str = "fid-v",
+    routing_number: str | None = "111000025",
 ) -> None:
     db.execute(
         """
@@ -61,10 +62,10 @@ def _ofx_account(
             (account_id, routing_number, account_type, institution_org,
              institution_fid, source_file, source_type, source_origin,
              extracted_at, loaded_at)
-        VALUES (?, '111000025', ?, ?, ?, '/tmp/v.ofx', 'ofx',
+        VALUES (?, ?, ?, ?, ?, '/tmp/v.ofx', 'ofx',
                 'vocab_ofx', '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
         """,  # noqa: S608  # test fixture
-        [native_key, account_type, institution_org, institution_fid],
+        [native_key, routing_number, account_type, institution_org, institution_fid],
     )
 
 
@@ -456,3 +457,38 @@ def test_genuinely_null_plaid_type_stays_null(db: Database) -> None:
         f"expected NULL, got {account_type!r} — fct_balances would then sign an "
         "unsignable balance as a positive asset"
     )
+
+
+@pytest.mark.slow
+def test_legacy_empty_string_routing_number_normalizes_to_null(db: Database) -> None:
+    """routing_number has the same legacy-'' failure mode as account_type.
+
+    A credit-card statement's <CCACCTFROM> never carries <BANKID>, so pre-fix
+    rows hold ''. The extractor now writes NULL, but raw.ofx_accounts keys on
+    extracted_at, so a re-import ADDS a row rather than replacing the stale one
+    — and dim_accounts merges routing_number with
+    `FILTER(WHERE NOT routing_number IS NULL)`, which excludes the fresh correct
+    NULL and lets the stale '' win permanently. Verified live: both real Chase
+    cards carried routing_number='' in core.dim_accounts before this guard.
+    """
+    _ofx_account(
+        db, native_key="ofx-legacy-rn", account_type="CREDITCARD", routing_number=""
+    )
+    _link(
+        db,
+        link_id="lnk-legacy-rn",
+        account_id="canon-legacy-rn",
+        ref_value="ofx-legacy-rn",
+        source_type="ofx",
+        source_origin="vocab_ofx",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT routing_number FROM core.dim_accounts WHERE account_id = ?",
+        ["canon-legacy-rn"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None, f"expected NULL, got {row[0]!r} — the '' leak persists"

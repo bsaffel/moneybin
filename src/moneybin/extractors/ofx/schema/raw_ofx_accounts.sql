@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS raw.ofx_accounts (
     account_id VARCHAR, -- Unique account identifier from OFX <ACCTID> element; part of primary key
     routing_number VARCHAR, -- ABA bank routing number from OFX <BANKID> element; NULL when not present in file
-    account_type VARCHAR, -- Account classification from OFX <ACCTTYPE>, e.g. CHECKING, SAVINGS, CREDITLINE; CREDITCARD when the statement is a <CCSTMTRS> (that container carries no <ACCTTYPE>). Source vocabulary -- prep normalizes it via seeds.account_type_map
+    account_type VARCHAR, -- Account classification from OFX <ACCTTYPE>, e.g. CHECKING, SAVINGS, CREDITLINE; CREDITCARD or INVESTMENT when the statement is a <CCSTMTRS>/<INVSTMTRS> (neither container carries <ACCTTYPE>). Source vocabulary -- prep normalizes it via seeds.account_type_map
     institution_org VARCHAR, -- Financial institution name from OFX <ORG> element; mapped to institution_name in core
     institution_fid VARCHAR, -- Financial institution identifier from OFX <FID> element; used in OFX routing
     source_file VARCHAR, -- Path to the OFX/QFX file this record was loaded from; part of primary key

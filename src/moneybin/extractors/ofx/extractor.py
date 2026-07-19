@@ -492,9 +492,9 @@ class OFXExtractor:
                 "routing_number": _none_if_blank(account.routing_number),
                 "account_type": _ofx_account_type(account),
                 "institution_org": inst_org or source_origin,
-                "institution_fid": account.institution.fid
-                if account.institution
-                else None,
+                "institution_fid": _none_if_blank(
+                    account.institution.fid if account.institution else None
+                ),
                 "source_file": source_file,
                 "extracted_at": extraction_timestamp.isoformat(),
                 "import_id": import_id,
