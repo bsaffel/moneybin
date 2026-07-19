@@ -270,6 +270,30 @@ def _declaration_is_safe(declared: DataClass, derived: DataClass) -> bool:
     )
 
 
+def _is_unwaivable_weakening(declared: DataClass, derived: DataClass) -> bool:
+    """True when a ``class_downgrades`` reason must NOT be allowed to waive this.
+
+    ``class_downgrades`` exists because derivation systematically
+    over-classifies *computed* columns — an author asserts "this z-score
+    reveals no amount", a claim about information content that lineage cannot
+    make. That argument is unavailable at equal tier: both classes already
+    agree the value is this sensitive, and only the display transform differs.
+    Waiving there would not be correcting an over-classification, it would be
+    electing to publish the last four characters of a value everyone agrees is
+    CRITICAL.
+
+    The legitimate case needs no waiver: ``dim_accounts.last_four`` genuinely
+    IS an institution account number, so derivation returns the partial-masking
+    class too and there is no mismatch to excuse.
+
+    Below CRITICAL every transform is passthrough, so strengths are equal and
+    this never fires.
+    """
+    return declared.tier == derived.tier and mask_strength(declared) < mask_strength(
+        derived
+    )
+
+
 def _weakness(declared: DataClass, derived: DataClass) -> str:
     """Describe HOW ``declared`` falls short of ``derived``, for the failure text."""
     if declared.tier < derived.tier:
@@ -333,7 +357,14 @@ def test_declared_classes_match_derivation() -> None:
                         "class_downgrades entry"
                     )
                 continue
-            if not reason:
+            if _is_unwaivable_weakening(declared_class, derived_class):
+                problems.append(
+                    f"{key[0]}.{key[1]}.{column}: "
+                    f"{_weakness(declared_class, derived_class)}. A "
+                    "class_downgrades reason CANNOT waive an equal-tier "
+                    "transform weakening — declare the derived class instead"
+                )
+            elif not reason:
                 problems.append(
                     f"{key[0]}.{key[1]}.{column}: "
                     f"{_weakness(declared_class, derived_class)} "

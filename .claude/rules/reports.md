@@ -47,6 +47,16 @@ complete, and fails the build if the two disagree.
   genuinely weaker than its derived floor (a stale entry must be deleted, not
   left in the tree). Needs no database, so it runs in the default
   `make check test` gate, not `make test-scenarios`.
+- **A `class_downgrades` reason cannot waive an *equal-tier* weakening.** The
+  mechanism exists because derivation over-classifies *computed* columns — an
+  author asserts "this z-score reveals no amount", a claim about information
+  content. That argument is unavailable when both classes already agree on the
+  tier and differ only in transform: waiving there would not correct an
+  over-classification, it would elect to publish the last four characters of a
+  value everyone agrees is CRITICAL. Declare the derived class instead. The
+  legitimate case needs no waiver — `dim_accounts.last_four` genuinely *is* an
+  institution account number, so derivation returns the partial-masking class
+  too and there is no mismatch to excuse.
 - **At CRITICAL, over-declaring is not automatically safe — the transform
   matters.** Below CRITICAL every transform is passthrough, so a higher tier is
   strictly more masking and tier alone decides. At CRITICAL it does not: all
