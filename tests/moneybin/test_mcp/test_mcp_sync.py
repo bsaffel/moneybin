@@ -245,10 +245,12 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
 @pytest.mark.unit
 def test_sync_review_prompt_content_includes_required_elements() -> None:
     """The sync_review prompt must guide an agent through a sync health check."""
-    from moneybin.mcp.tools.sync import SYNC_REVIEW_PROMPT  # noqa: PLC0415
+    from moneybin.mcp.prompts import sync_review  # noqa: PLC0415
 
-    text = SYNC_REVIEW_PROMPT
+    text = sync_review()
     assert "sync_status" in text
+    assert "reports(report_id='core:spending'" in text
+    assert "spending_summary" not in text
     assert "stale" in text.lower()
     assert "error" in text.lower()
     # Privacy guard: prompt must direct agent NOT to surface PII

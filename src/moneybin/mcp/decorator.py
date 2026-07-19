@@ -257,6 +257,7 @@ def mcp_tool(
     open_world: bool = False,
     max_items: int | None | _UnsetType = _UNSET,
     dynamic_classification: bool = False,
+    maximum_sensitivity: Sensitivity | None = None,
     timeout_seconds: float | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool. Sensitivity is derived from the return type.
@@ -291,6 +292,10 @@ def mcp_tool(
             success path) returns unmasked CRITICAL data with no safety net.
             Prefer routing through ``moneybin.privacy.sql_query.execute_sql_query``,
             which redacts before returning. Static tools must NOT use this flag.
+        maximum_sensitivity: Required ceiling for a dynamic-classification tool.
+            This is a declared contract for documentation and admission review;
+            it does not replace the tool's per-call classification. Static tools
+            derive their maximum from their typed response and must not set it.
         timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
             Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
             natural runtime exceeds the default cap (e.g. interactive OAuth
@@ -301,6 +306,12 @@ def mcp_tool(
     2. Privacy redaction via ``redact_typed`` (PR 2: CRITICAL masks, unless dynamic_classification)
     3. ``privacy.log.jsonl`` event write per call
     """
+    if dynamic_classification and maximum_sensitivity is None:
+        raise ValueError("dynamic_classification=True requires maximum_sensitivity=")
+    if not dynamic_classification and maximum_sensitivity is not None:
+        raise ValueError(
+            "maximum_sensitivity is only valid with dynamic_classification=True"
+        )
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         try:
@@ -332,10 +343,10 @@ def mcp_tool(
         # Raises PrivacyContractError if the return type isn't ResponseEnvelope[T]
         # with classified T — unless dynamic_classification=True is set.
         if dynamic_classification:
-            # Per-call classification: can't classify statically. Use HIGH as a
-            # placeholder; the actual per-call sensitivity is set by the tool
-            # itself and preserved by the decorator (not stamped over).
-            sensitivity = Sensitivity.HIGH
+            # The exact per-call sensitivity is set by the tool itself and
+            # preserved by the decorator (not stamped over). The explicit
+            # ceiling is metadata for admission and documentation only.
+            sensitivity = typing.cast(Sensitivity, maximum_sensitivity)
             classes_for_log: list[str] = ["unclassified"]
             has_critical = False
         else:
@@ -651,6 +662,8 @@ def mcp_tool(
             return envelope
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
+        wrapper._mcp_maximum_sensitivity = sensitivity  # type: ignore[attr-defined]
+        wrapper._mcp_dynamic_classification = dynamic_classification  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]
         wrapper._mcp_read_only = read_only  # type: ignore[attr-defined]
         wrapper._mcp_destructive = destructive  # type: ignore[attr-defined]

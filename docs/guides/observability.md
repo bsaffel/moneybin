@@ -173,7 +173,7 @@ What it audits (via `DoctorService`, which calls SQLMesh named audits plus two s
 - **Staging coverage** — every staged row reaches `core.fct_transactions`.
 - **Categorization coverage** — share of transactions with a category assigned. Warns (not fails) when under 50% of non-transfer rows are categorized.
 
-Exit codes: `0` if every invariant passes or warns; `1` if any fails. `--verbose` lists the offending IDs per failing invariant. The equivalent agent surface is the `system_doctor` MCP tool — same checks, same envelope.
+Exit codes: `0` if every invariant passes or warns; `1` if any fails. `--verbose` lists the offending IDs per failing invariant. The equivalent agent call is `system_status(sections=['doctor'], detail='full')` — the same checks in the standard response envelope.
 
 ### JSON envelope shape
 
@@ -208,7 +208,7 @@ For agents and watchdog scripts driving MoneyBin directly:
 
 - **Tail logs**: `moneybin logs <stream> -f --output json | your-event-handler`. JSON keys are fixed (`timestamp`, `logger`, `level`, `message`); `message` substring matching is the current contract for event detection.
 - **Poll metrics**: `moneybin stats --output json` on a timer. Reads the latest snapshot per `(metric_name, labels)` from `app.metrics`.
-- **Poll health**: `moneybin system doctor --output json` (CLI) or the `system_doctor` MCP tool (agent surface). Match on `data.invariants[].status` or top-level `status`.
+- **Poll health**: `moneybin system doctor --output json` (CLI) or `system_status(sections=['doctor'], detail='full')` (agent surface). Match on `data.invariants[].status` or top-level `status`.
 - **Cost signals**: MoneyBin does not call hosted LLMs and does not track token cost. If your agent (Claude Code, Codex, etc.) drives MoneyBin via MCP, cost tracking is your client's responsibility.
 
 There is **no event subscription, webhook, or push notification** today. All access patterns are pull. A subscription contract is a candidate for a post-v1 release.

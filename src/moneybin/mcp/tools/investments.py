@@ -49,7 +49,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
@@ -1057,7 +1057,7 @@ def _investment_coarse_envelope(
     )
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
 def investments_coarse(
     view: Literal["events", "holdings", "lots", "gains", "securities"] = "holdings",
     account: str | None = None,

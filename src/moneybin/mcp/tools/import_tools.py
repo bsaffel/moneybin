@@ -42,7 +42,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
     ImportConfirmCoarsePayload,
@@ -767,7 +767,12 @@ def _import_dynamic_envelope[T](
     )
 
 
-@mcp_tool(read_only=False, idempotent=False, dynamic_classification=True)
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.CRITICAL,
+)
 def import_preview_coarse(
     file_path: str,
 ) -> ResponseEnvelope[ImportPreviewCoarsePayload]:
@@ -1243,7 +1248,7 @@ def _import_status_envelope(
     )
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.MEDIUM)
 def import_status_coarse(
     sections: list[Literal["imports", "formats", "inbox"]] | None = None,
     import_id: str | None = None,
@@ -1759,7 +1764,12 @@ def import_confirm(
     )
 
 
-@mcp_tool(read_only=False, idempotent=False, dynamic_classification=True)
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.MEDIUM,
+)
 def import_confirm_coarse(
     preview_id: str,
     *,

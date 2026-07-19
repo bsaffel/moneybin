@@ -23,7 +23,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import (
     CategoryStateRequest,
     TaxonomyStateRequest,
@@ -232,7 +232,7 @@ def _taxonomy_actions(
     return actions
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.MEDIUM)
 def taxonomy_coarse(
     view: Literal["categories", "merchants"] = "categories",
     include_inactive: StrictBool = False,

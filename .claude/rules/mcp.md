@@ -18,7 +18,9 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 ```
 
 - **MCP/CLI layer** — parameter validation, input/output formatting only.
-- **Privacy middleware** — sensitivity gates, consent checks, audit logging, response filtering. Tools are unaware of their own privacy enforcement.
+- **Privacy middleware** — sensitivity classification, critical-field masking,
+  and response filtering. Global consent enforcement is deferred, so tools
+  must not rely on an automatic consent gate or degraded response.
 - **Service layer** — business logic, parameterized SQL, returns typed Python objects (dataclasses or Pydantic models).
 
 **Enforcement:** `tests/moneybin/test_architecture/test_adapter_layering.py` fails CI when adapters in `src/moneybin/mcp/tools/` or `src/moneybin/cli/commands/` import write-callable symbols from `moneybin.loaders`, `moneybin.extractors`, or `moneybin.matching`. Pure constants, pure read helpers, DI targets, and type/format descriptors are allowlisted explicitly. If you hit the guardrail, the cleanest fix is a new service method; only add an allowlist entry for a genuine exception with a `# why` comment.
@@ -26,7 +28,10 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 ## Design Philosophy
 
 1. **Import-first, not ledger-first.** No general-purpose `add_transaction` tool. Transactions come from sources (files, connectors). Corrections and annotations are metadata on source-imported records, not counter-entries.
-2. **Privacy by architecture.** Every tool declares a sensitivity tier (`low`, `medium`, `high`). The middleware enforces consent and redaction automatically.
+2. **Privacy by architecture.** Every tool declares a sensitivity tier (`low`,
+   `medium`, `high`). Classification and critical-field masking are wired;
+   **global consent enforcement is deferred**. Do not claim or depend on an
+   automatic consent gate or degraded response until that gate ships.
 3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.
 4. **AI-ergonomic.** Tool names, descriptions, and parameter schemas are designed for LLM tool selection.
 5. **CLI capability symmetry.** MCP and CLI map to the same capability IDs,
@@ -41,18 +46,18 @@ Tools use underscore-joined names: `domain_action_or_view`. The MCP spec / SEP-9
 
 | Namespace | Purpose |
 |---|---|
-| `spending.*` | Expense analysis, trends, category breakdowns |
-| `cashflow.*` | Income vs outflows, income sources |
-| `accounts.*` | Account listing, balances, net worth |
-| `transactions.*` | Search, corrections, annotations, recurring |
-| `import.*` | File import, status |
-| `categorize.*` | Rules, merchant mappings, categorization |
-| `budget.*` | Targets, status, rollovers |
-| `tax.*` | W-2 data, future capital gains |
-| `privacy.*` | Consent status, grants, revocations, audit log |
-| `overview.*` | Cross-domain summaries, system info |
+| `system_*` | Orientation and audit |
+| `reports` | Registered analytical catalog and execution |
+| `accounts_*`, `investments_*` | Financial entities and holdings |
+| `transactions_*`, `reviews*` | Transaction and decision workflows |
+| `taxonomy_*` | Taxonomy projection and target state |
+| `import_*` | File ingestion and reversal |
+| `sync_*`, `gsheet_*` | External connection workflows |
+| `privacy_*` | Consent and privacy |
+| `refresh_*`, `sql_*` | Platform workflow and operator SQL |
 
-Naming: **noun = query** (`accounts_summary`), **verb = action** (`transactions_categorize_commit`). No CRUD naming.
+Naming: **noun = query** (`reports`, `accounts`, `transactions`), **verb =
+action** (`transactions_categorize_commit`, `refresh_run`). No CRUD naming.
 
 **Tool disclosure: one bounded standard registry.** Generic clients receive
 every registered standard tool at connect. Capable hosts may defer schemas from
@@ -92,12 +97,12 @@ MUST match runtime `structuredContent` exactly.
 | Tier | Data | Consent |
 |---|---|---|
 | `low` | Aggregates, counts, category labels | None |
-| `medium` | Row-level: descriptions, amounts, dates | `mcp-data-sharing` (persistent) |
-| `high` | Critical PII fields (account numbers) | `mcp-data-sharing` + always masked for cloud |
+| `medium` | Row-level: descriptions, amounts, dates | Consent ledger exists; enforcement deferred |
+| `high` | Critical PII fields (account numbers) | Critical masking wired; consent enforcement deferred |
 
-Tools without consent return **degraded responses** (aggregates instead of row-level data) using the same envelope with `summary.degraded: true`. Never fail — always return something useful.
-
-The `detail` parameter (`summary`, `standard`, `full`) lets the AI self-select verbosity. `detail=summary` always returns aggregates without triggering consent.
+The consent ledger is not yet a global runtime gate. Tools cannot assume that a
+missing consent grant automatically degrades or blocks data. A future gate may
+use degraded envelopes, but only after the corresponding enforcement ships.
 
 ## When CLI-only is justified
 
@@ -131,11 +136,12 @@ does not imply a new MCP tool. Apply this filter at design time.
 
 The `FastMCP(instructions=...)` argument in `src/moneybin/mcp/server.py` is the canonical onboarding text injected into the LLM's system prompt at session start. Treat it as a load-bearing surface, not a comment.
 
-- **Keep in sync with taxonomy.** Any rename, new top-level group, or change to orientation tools (`system_status`, `reports_health`) must update the instructions text in the same change.
-- **Required content:** one-line product description, top-level group enumeration, naming convention with examples, orientation pointers, response envelope shape, collection-cap convention (list-typed parameters are capped per-call), sensitivity tiers / degraded-response behavior.
+- **Keep in sync with taxonomy.** Any rename, new top-level group, or change to orientation tools (`system_status`, `reports`) must update the instructions text in the same change.
+- **Required content:** one-line product description, top-level group enumeration, naming convention with examples, orientation pointers, response envelope shape, collection-cap convention (list-typed parameters are capped per-call), sensitivity tiers, critical masking, and the deferred consent-enforcement status.
 - **Length budget:** ~150–300 tokens. Loaded once per session, but competes with conversation and tool descriptions for working memory.
 - **Style:** triple-quoted string via `textwrap.dedent(...)` — not concatenated string literals.
-- See [`docs/specs/moneybin-mcp.md`](../../docs/specs/moneybin-mcp.md) §1 for required-content rationale.
+- See [`docs/specs/moneybin-mcp.md`](../../docs/specs/moneybin-mcp.md) for the
+  current concrete contract.
 
 ## Connection Model
 
@@ -150,7 +156,7 @@ All tools use `get_database()` from `src/moneybin/database.py`. Each call return
 
 ## Error Messages
 
-- **Minimize data in errors** — no account numbers, balances, or PII in error messages. Privacy enforcement (consent, redaction, audit) is handled by the middleware, not tool code.
+- **Minimize data in errors** — no account numbers, balances, or PII in error messages. Classification and critical-field masking are middleware concerns; global consent enforcement remains deferred and must not be assumed by tool code.
 
 ## Entity resolution
 
@@ -187,7 +193,12 @@ audit, or recovery contracts differ.
 
 ## Surface change discipline
 
-**Stub gate.** Register an `@mcp_tool` only when its backing feature spec in `docs/specs/INDEX.md` is `in-progress` or `implemented`. No stubs on the public surface — tools whose dependency is `draft`, `ready`, or unwritten stay unregistered (the implementation file may remain in `src/moneybin/mcp/tools/` as a dormant building block; only the `register_*_tools(mcp)` call is gated). Phantom prefixes — those with no registered tools — never appear in the orientation surfaces (FastMCP `instructions` field, `moneybin://tools` resource, `mcp-architecture.md` §3 namespace table). One narrow carve-out applies to *promotion* (not registration): a namespace whose tools register but whose top-level domain is deliberately omitted from the orientation surfaces by design must be documented in `moneybin-mcp.md` §15 with the trigger that would promote it. Active carve-outs are tracked in `moneybin-mcp.md` §17 "Dependency tracker".
+**Stub gate.** Register an `@mcp_tool` only when its backing feature spec in
+`docs/specs/INDEX.md` is `in-progress` or `implemented`. No stubs or hidden
+compatibility aliases belong on the public surface. The current exact registry
+and its verification are defined by `STANDARD_TOOL_NAMES` and the scaling spec;
+the orientation text may position those same tools but must not create a second
+discovery or profile surface.
 
 **Registry budget.** Target 30–40 tools. Crossing 40 requires a carrying-weight
 review of every registered tool; 50 is a hard maximum unless ADR-016 is
@@ -195,20 +206,32 @@ superseded. Advertise zero deprecated aliases. A hidden compatibility alias
 must name its removal release. A report registers behind the single read-only
 `reports` catalog/runner and never adds an MCP tool.
 
+**Current registry.** The 45-tool standard registry is operating. Generic
+clients receive every tool; supported hosts may defer schemas from that same
+registry without reconnect, packs, or profiles. Reports never consume tool
+slots. The deterministic comparison passed, but promotion remains unready
+until context-budget and host-native-deferral evidence is observed.
+
 **Admission sequence.** Before proposing a tool, try an existing projection,
 method, batch, declarative state, report entry, or workflow umbrella. The PR
-must name:
+must answer the **seven-question admission record**:
 
-1. the capability ID and user intent;
-2. the closest existing tool and why it cannot carry the behavior;
-3. the material intent, safety, authorization, sensitivity, confirmation,
-   output, audit, or recovery boundary;
-4. tool-count and actual serialized `tools/list` byte deltas;
-5. persisted evaluation cases covering selection, arguments, workflow, safety,
-   and client-schema compatibility.
+1. Which capability ID and user intent does it serve?
+2. What is the closest existing tool?
+3. Why can it not be an existing filter, projection, method, batch input,
+   declarative state, report entry, or workflow umbrella?
+4. Which safety, authorization, sensitivity, confirmation, output, audit, or
+   recovery difference requires another identity?
+5. What serialized count and byte delta does it add?
+6. Which evaluation tasks prove the new surface is better?
+7. Does the resulting standard registry remain within budget and workflow
+   closure?
 
 A consolidation is accepted only when metadata bytes decrease and evaluation
 results are no worse. Count reduction alone is insufficient.
+
+All seven answers are required for a future tool; reports enter the catalog
+instead of consuming a tool slot.
 
 **Output-schema admission.** The initial standard registry advertises zero
 output schemas. A PR adding one must include the consuming client/integration,

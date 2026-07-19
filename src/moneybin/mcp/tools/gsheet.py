@@ -43,7 +43,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.gsheet import (
     GsheetAuthPayload,
@@ -375,7 +375,7 @@ def _gsheet_coarse_envelope(
     )
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.MEDIUM)
 def gsheet_coarse(
     view: Literal["connections", "status"] = "connections",
     connection_id: str | None = None,
@@ -487,6 +487,7 @@ def gsheet_disconnect(
     open_world=True,
     timeout_seconds=180.0,
     dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.MEDIUM,
 )
 def gsheet_connect_coarse(
     url: str | None = None,
@@ -645,6 +646,7 @@ def _purge_binding(plan: Any) -> ConfirmationBinding:
     destructive=True,
     open_world=True,
     dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.MEDIUM,
 )
 async def gsheet_disconnect_coarse(
     connection_id: str,

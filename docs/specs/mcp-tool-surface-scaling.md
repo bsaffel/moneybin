@@ -10,12 +10,12 @@
 ## Status
 
 - **Type:** Architecture
-- **Status:** in-progress — contract foundation is underway; fresh observed
-  baseline and candidate evidence remains an external Plan 6 gate
+- **Status:** in-progress — the 45-tool registry is operating, but promotion is
+  blocked on observed context-budget and host-native-deferral evidence
 - **Address:** M3K.2 — second work item under M3K (CLI / MCP UX standards)
-- **Origin:** July 2026 deep MCP surface review: 105 tools are visible at every
-  connection, exceed Windsurf's 100-tool global ceiling, and serialize to about
-  90,600 characters before host-specific wrapping.
+- **Origin:** July 2026 deep MCP surface review: the former 105-tool registry
+  exceeded Windsurf's 100-tool global ceiling and serialized to about 90,600
+  characters before host-specific wrapping.
 
 ## Goal
 
@@ -28,8 +28,8 @@ smallest possible tool count and not a marketing-friendly headline.
 
 ## Decision summary
 
-MoneyBin will replace the current 105-tool surface with one bounded standard
-registry of approximately 45 tools.
+MoneyBin replaced the 105-tool surface with one bounded 45-tool standard
+registry.
 
 - Every standard client receives the complete registered surface. There are no
   core capability packs, hidden expert tools, or reconnect-only modes.
@@ -57,8 +57,8 @@ registry of approximately 45 tools.
 This design supersedes the proposed connection-profile model that appeared in
 the first draft of this spec. The four-tool difference between a proposed
 44-tool universal surface and 48-tool complete registry did not justify a
-second user-visible concept. The generic report runner then reduced the target
-to approximately 45 tools.
+second user-visible concept. The generic report runner then reduced the exact
+standard registry to 45 tools.
 
 The 45-tool standard registry is now the operating reality. Promotion remains
 open for observed baseline/candidate evaluation evidence and the other gates at
@@ -66,9 +66,9 @@ the end of this spec.
 
 ## Why now
 
-### Current measured surface
+### Frozen pre-cutover baseline
 
-The July 2026 live registry contains:
+The July 2026 frozen registry contained:
 
 | Measure | Current value |
 |---|---:|
@@ -352,10 +352,13 @@ only operation-specific selection, safety, mutation, and recovery information.
 
 CI rejects duplicate description openings and enforces description budgets.
 
-## Proposed standard registry
+## Standard registry
 
-The design target is 45 tools. Names are proposed public contracts and remain
-subject to schema/evaluation gates before implementation.
+The 45-tool registry below is the live public contract. Generic clients receive
+all 45 tools; supported hosts may defer schemas from that same registry without
+reconnect, packs, or profiles. The registry selection has passed its
+deterministic contract comparison, but promotion remains open until the
+observed-evidence gates below close.
 
 | Domain | Standard tools | Responsibilities |
 |---|---|---|
@@ -471,20 +474,24 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic Plan 6
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 42,472 serialized metadata bytes, no advertised output
-schemas, and registry SHA-256
-`de108d3906ad0cddc6b5cd65c79064980bfd96e524df03817eea2efa1c4d9260`.
-That is 48,262 bytes (53.2%) below the frozen 90,734-byte registry. The
-deterministic estimate is 10,618 metadata tokens; a percentage of context is
+contains 45 tools, 44,122 bytes of serialized metadata, zero advertised output schemas,
+and registry SHA-256
+`40f0ea40932b7251fef00184bb0e3614b9ea3af0e050cb5b4aa9750502baeca8`.
+The frozen baseline is 90,734 bytes with SHA-256
+`ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
+The delta is -46,612 bytes (-51.4%). The deterministic estimate is 11,031
+metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
 
-The table records each consolidated read/write schema measured against the
-legacy definitions it replaces. Totals include name, description, input
-schema, annotations, and other protocol metadata. A positive input-schema
-delta is retained when it carries a selector, discriminator, conditional
-requirement, or confirmation boundary that the narrower definitions did not
-express.
+### Historical pre-cutover replacement cohort (not an active catalog)
+
+The following table and cohorts preserve the names that the standard registry
+replaced. They are historical measurement inputs, not current tool guidance.
+Totals include name, description, input schema, annotations, and other protocol
+metadata. A positive input-schema delta is retained when it carries a selector,
+discriminator, conditional requirement, or confirmation boundary that the
+narrower definitions did not express.
 
 | Standard operation | Total bytes candidate / replaced (delta) | Input-schema bytes candidate / replaced (delta) |
 |---|---:|---:|
@@ -508,7 +515,7 @@ express.
 | `taxonomy_set` | 3,337 / 3,223 (+114) | 2,942 / 1,163 (+1,779) |
 | `privacy_consent_set` | 1,217 / 2,188 (-971) | 799 / 1,021 (-222) |
 
-The exact replaced-name cohorts are:
+The exact historical replaced-name cohorts are:
 
 - `system_status` ← `system_status`, `system_doctor`,
   `transactions_categorize_stats`
@@ -610,10 +617,16 @@ atomically when it cut the standard registry to 45 tools.
 or host evidence. It proves the evaluation format and scoring path; fresh
 observed baseline and candidate evidence remain required for promotion.
 
+The persisted comparison records `contract_passed: true` and
+`promotion_ready: false`: context budget: not_observed; host-native deferral:
+not_observed. Deterministic fixtures cannot establish either fact. These are
+the remaining promotion blockers, not reasons to misstate the operating
+45-tool registry.
+
 Evaluate:
 
-1. the frozen current 105-tool surface;
-2. the proposed approximately 45-tool registry;
+1. the frozen pre-cutover 105-tool surface;
+2. the exact 45-tool standard registry;
 3. individual consolidation alternatives where schema size or accuracy is
    uncertain;
 4. host-native deferred loading where supported.
@@ -778,6 +791,9 @@ This spec remains `in-progress` and must not move to `implemented` until:
 - rendered schemas pass representative client compatibility tests;
 - the atomic documentation/rule migration is complete;
 - ADR-016 is accepted.
+
+The current comparison does not satisfy these promotion gates: context budget:
+not_observed; host-native deferral: not_observed; `promotion_ready: false`.
 
 ## Non-goals
 

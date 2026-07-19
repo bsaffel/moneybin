@@ -4,14 +4,14 @@ Goal-oriented prompts that guide AI assistants through financial workflows.
 Each defines a goal, relevant tools, guardrails, and decision points —
 not step-by-step scripts.
 
-See ``moneybin-mcp.md`` section 14.
+See ``docs/specs/moneybin-mcp.md`` for the current prompt and resource contract.
 """
 
 from __future__ import annotations
 
 import textwrap
 
-from .server import mcp
+from fastmcp import FastMCP
 
 
 def _dedent(text: str) -> str:
@@ -19,7 +19,6 @@ def _dedent(text: str) -> str:
     return textwrap.dedent(text).strip()
 
 
-@mcp.prompt()
 def monthly_review() -> str:
     """Monthly financial review — spending, budget status, and trends."""
     return _dedent("""
@@ -50,7 +49,6 @@ def monthly_review() -> str:
     """)
 
 
-@mcp.prompt()
 def categorization_organize() -> str:
     """Organize uncategorized transactions into categories."""
     return _dedent("""
@@ -85,7 +83,6 @@ def categorization_organize() -> str:
     """)
 
 
-@mcp.prompt()
 def review_auto_rules() -> str:
     """Review persisted categorization rules and apply confirmed state changes."""
     return _dedent("""
@@ -122,7 +119,6 @@ def review_auto_rules() -> str:
     """)
 
 
-@mcp.prompt()
 def onboarding() -> str:
     """First-time setup — import data and establish baseline."""
     return _dedent("""
@@ -157,7 +153,6 @@ def onboarding() -> str:
     """)
 
 
-@mcp.prompt()
 def curate_recent_transactions() -> str:
     """Walk the user through curating recently-imported transactions."""
     return _dedent("""
@@ -179,7 +174,8 @@ def curate_recent_transactions() -> str:
         2. For each row, propose a small set of slug-pattern tags
            (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
            and reusable; reuse existing tags when possible (a prior
-           system_audit with action_pattern='tag.%' helps here).
+           system_audit(view='events', limit=500) helps identify existing tag
+           activity; filter the returned events locally).
         3. Confirm the batch with the user before mutating.
         4. Apply one transactions_annotate batch containing the confirmed tag
            target states and notes.
@@ -192,7 +188,6 @@ def curate_recent_transactions() -> str:
     """)
 
 
-@mcp.prompt()
 def review_curation_history() -> str:
     """Summarize the last 7 days of curation activity from the audit log."""
     return _dedent("""
@@ -204,25 +199,69 @@ def review_curation_history() -> str:
         last week without forcing them to read raw audit rows.
 
         **Relevant tools:**
-        - system_audit — pull recent events. Call with limit=500 and
-          filters['from'] set to seven days ago (ISO timestamp).
-        - The result `data[]` already includes action, actor, target_table,
+        - system_audit — pull recent events with
+          system_audit(view='events', limit=500).
+        - The result `data.events[]` already includes action, actor, target_table,
           target_id, before/after, parent_audit_id.
 
         **Workflow:**
-        1. Call system_audit with from = (now - 7 days) and limit=500.
-        2. Group by `action_pattern` prefix: note.*, tag.*, split.*,
+        1. Call system_audit(view='events', limit=500), then filter returned
+           events to the last seven days locally.
+        2. Group returned event actions locally by prefix: note.*, tag.*, split.*,
            import.*, manual.*, category.*.
         3. Report counts per group, top 3 actors, and any noteworthy
            outliers (parent tag.rename events, large split.clear bursts).
-        4. Offer drill-down via further system_audit calls
-           (e.g., action_pattern='tag.rename') if the user asks.
+        4. Offer drill-down with system_audit(view='detail', audit_id=...) or
+           system_audit(view='detail', operation_id=...) if the user asks.
 
         **Guardrails:**
         - Read-only — do not mutate state from this prompt.
         - Do not echo raw before/after values for high-sensitivity rows;
           summarize counts instead.
     """)
+
+
+def sync_review() -> str:
+    """Review sync health and suggest the next action."""
+    return _dedent("""
+        Review my MoneyBin sync state and flag anything that needs attention.
+
+        **Relevant tools:**
+        - sync_status — list connected institutions with last-sync time, status,
+          and error guidance.
+        - reports(report_id='core:spending') — optional,
+          aggregate context for recent transaction volume.
+
+        **Workflow:**
+        1. Call sync_status first.
+        2. Use reports(report_id='core:spending') only when
+           aggregate volume context would clarify an anomaly.
+        3. Report errors, stale institutions (last sync older than seven days),
+           and material volume anomalies. Quote the relevant action hint and
+           recommend one next action, or say no action is needed.
+
+        **Guardrails:**
+        - Do not include account numbers, balances, individual transaction
+          descriptions, or merchant names.
+        - Use counts, dates, status codes, and institution names only.
+    """)
+
+
+PROMPT_FUNCTIONS = (
+    monthly_review,
+    categorization_organize,
+    review_auto_rules,
+    onboarding,
+    curate_recent_transactions,
+    review_curation_history,
+    sync_review,
+)
+
+
+def register_prompts(mcp: FastMCP) -> None:
+    """Register the complete central prompt set on one MCP server."""
+    for prompt in PROMPT_FUNCTIONS:
+        mcp.prompt()(prompt)
 
 
 # tax_prep prompt removed alongside the W-2 extraction pipeline.

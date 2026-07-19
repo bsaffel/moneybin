@@ -12,6 +12,12 @@ MoneyBin's strategic frame is that the largest competitor isn't other PFM apps �
 
 This spec defines that contributor-facing surface: three extension types, their trust postures, their registration mechanisms, their quality progression, and the guided-contribution skills shipped alongside. Together they answer: *how does someone who wants to extend MoneyBin do so, cleanly and predictably?*
 
+The operating MCP surface is one 45-tool standard registry. Generic clients
+and supported deferred-loading hosts use the same registry; reports never
+consume tool slots because they extend the `reports` catalog instead. Any
+future extension-owned tool follows the standard admission record before it
+can enter the bounded registry.
+
 This spec is not a feature spec. It defines contracts that future feature specs cite. The pre-launch surgical work it implies — provider `Protocol` definition, package framework implementation, scaffolder templates, validator CLI — is enumerated in [§Pre-launch surgical work](#pre-launch-surgical-work) and tracked separately as implementation plans.
 
 This is intentionally narrower than a general plugin SDK. The 1.0 contract is
@@ -302,11 +308,10 @@ A Report is a single decorated **Python runner** over a `reports.*` view. The ru
 > **M3K.2 catalog foundation (implemented 2026-07-18):** the framework's
 > SQL-backed and service-backed reports share one internal catalog and result
 > contract. Core and explicitly installed extension reports receive ergonomic
-> CLI commands that execute by stable catalog ID. The dormant generic
-> `reports` MCP contract consumes that same union after the Plan 6 atomic
-> cutover; until then the live 105-tool registry stays frozen. The invariant is
-> permanent: adding a report changes catalog and CLI surfaces, never MCP tool
-> count.
+> CLI commands that execute by stable catalog ID. The active generic `reports`
+> MCP contract consumes that same union in the 45-tool standard registry. The
+> invariant is permanent: adding a report changes catalog and CLI surfaces,
+> never MCP tool count.
 
 ```python
 @report(name="cashflow", view=REPORTS_CASH_FLOW)
@@ -816,7 +821,7 @@ Items required to make the contracts in this spec describable cleanly. These lan
 | Implement `us_tax` package at Platinum | Same | ~1-2 weeks |
 | Platinum-ify existing providers (OFX, Plaid, tabular) | Add scenario tests, regression fixtures, schema-drift detection, code-owner declarations | ~3-5 days per provider |
 | Platinum-ify existing reports | Migrate to `@report` runner shape; add fixture-based tests; write `docs/guides/reports/<name>.md` user guides | ~1-2 days per report |
-| Resolve audit B-tier reports items | Unregister `reports_budget` (gated on M2C); remove `reports_health` CLI stub; update `merchant_id` spec drift in `reports-recipe-library.md` | ~½ day |
+| Resolve audit B-tier reports items | Remove the obsolete CLI report stub; update `merchant_id` spec drift in `reports-recipe-library.md` | ~½ day |
 
 Total estimate: ~8-12 weeks of agent-coordinated effort with parallelization. The implementation plan that follows this spec (via `/writing-plans`) decomposes into ordered work units.
 

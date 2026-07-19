@@ -711,21 +711,17 @@ def mcp_list_prompts(
 ) -> None:
     """List all registered MCP prompts.
 
-    Imports prompt modules to trigger decorator registration, then
-    enumerates the FastMCP prompt registry.
+    Initializes the central MCP registry, then enumerates its prompts.
 
     Examples:
         moneybin mcp list-prompts
     """
     from moneybin.mcp.server import (
+        init_db,
         mcp,  # noqa: PLC0415 — defer fastmcp import to subcommand body
     )
 
-    for module in (
-        "moneybin.mcp.prompts",
-        "moneybin.mcp.resources",
-    ):
-        importlib.import_module(module)
+    init_db()
 
     prompts = asyncio.run(mcp.list_prompts(run_middleware=False))
 

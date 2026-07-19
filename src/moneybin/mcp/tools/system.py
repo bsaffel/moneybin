@@ -21,7 +21,7 @@ from moneybin.db_lock import lock_path_for
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.system import (
     AuditDetail,
@@ -773,7 +773,11 @@ def _audit_list_actions(
     return actions
 
 
-@mcp_tool(dynamic_classification=True, read_only=False)
+@mcp_tool(
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.MEDIUM,
+    read_only=False,
+)
 async def system_status_coarse(
     sections: list[Literal["overview", "doctor", "categorization"]] | None = None,
     detail: Literal["summary", "full"] = "summary",
@@ -830,7 +834,7 @@ async def system_status_coarse(
     )
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
 async def system_audit_coarse(
     view: Literal["events", "history", "detail"] = "events",
     operation_id: str | None = None,

@@ -36,7 +36,7 @@ mcp = FastMCP(
 
         Money amounts are JSON numbers in summary.display_currency. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
-        Privacy tiers are low, medium, high, and critical. Without required consent, responses degrade to safe aggregates instead of failing; critical account and routing fields remain masked.
+        Privacy tiers are low, medium, high, and critical. Critical account and routing fields remain masked. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
 
         Destructive branches require explicit payload-bound confirmation. Inspect mutations with system_audit and recover supported app.* changes with system_audit_undo(operation_id).
         """
@@ -184,6 +184,7 @@ def register_core_tools() -> None:
     if _tools_registered:
         return
 
+    from moneybin.mcp.prompts import register_prompts
     from moneybin.mcp.tools.accounts import register_accounts_tools
     from moneybin.mcp.tools.curation import register_curation_tools
     from moneybin.mcp.tools.gsheet import register_gsheet_tools
@@ -194,7 +195,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.mcp.tools.reviews import register_review_tools
     from moneybin.mcp.tools.sql import register_sql_tools
-    from moneybin.mcp.tools.sync import register_sync_prompts, register_sync_tools
+    from moneybin.mcp.tools.sync import register_sync_tools
     from moneybin.mcp.tools.system import register_system_tools
     from moneybin.mcp.tools.taxonomy import register_taxonomy_tools
     from moneybin.mcp.tools.transactions import register_transactions_tools
@@ -229,7 +230,8 @@ def register_core_tools() -> None:
     register_taxonomy_tools(mcp)
     register_import_tools(mcp)
     register_sync_tools(mcp)
-    register_sync_prompts(mcp)
+    register_prompts(mcp)
+
     register_gsheet_tools(mcp)
     register_privacy_tools(mcp)
     register_refresh_tools(mcp)

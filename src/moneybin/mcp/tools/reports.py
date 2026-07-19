@@ -8,7 +8,7 @@ from pydantic import JsonValue
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import get_max_rows, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
 from moneybin.privacy.payloads.reports import ReportsPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework.catalog import (
@@ -18,7 +18,11 @@ from moneybin.reports._framework.catalog import (
 )
 
 
-@mcp_tool(dynamic_classification=True, domain="reports")
+@mcp_tool(
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.CRITICAL,
+    domain="reports",
+)
 def reports(
     report_id: str | None = None,
     parameters: dict[str, JsonValue] | None = None,

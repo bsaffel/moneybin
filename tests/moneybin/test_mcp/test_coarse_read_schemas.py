@@ -14,6 +14,7 @@ from pydantic import StrictBool
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.mcp.tools.accounts import register_accounts_coarse_reads
 from moneybin.mcp.tools.gsheet import register_gsheet_coarse_reads
 from moneybin.mcp.tools.import_tools import register_import_coarse_reads
@@ -35,7 +36,7 @@ from .schema_assertions import (
 def register_strict_probe(mcp: FastMCP) -> None:
     """Register a standard probe through MoneyBin's normal adapter."""
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     async def strict_probe(enabled: StrictBool) -> ResponseEnvelope[Any]:
         return build_envelope(data={"enabled": enabled})
 

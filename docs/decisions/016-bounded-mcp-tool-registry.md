@@ -15,14 +15,14 @@ invisible for the session.
 That choice was correct for the surface at the time. The operating conditions
 have changed:
 
-1. The registry contains 105 visible tools and serializes to roughly 90,600
-   characters before host wrapping.
+1. The former registry contained 105 visible tools and serialized to 90,734
+   bytes before host wrapping.
 2. MoneyBin alone exceeds Windsurf Cascade's 100-tool global ceiling.
 3. Planned domains and extensions would continue growing the surface.
 4. Modern hosts increasingly support tool search or deferred schema loading
    without requiring server-side list mutation.
 5. A carrying-weight review found that MoneyBin can preserve capability parity
-   through approximately 45 intent-shaped operations.
+   through the exact 45-tool intent-shaped standard registry.
 6. A proposed 44-tool universal / 48-tool complete split hid too little to
    justify profiles, packs, reconnect behavior, and workflow-closure rules.
 7. A generic read-only report registry prevents every new report from adding a
@@ -82,6 +82,22 @@ If accepted, this supersedes only the unbounded "full registered surface
 visible at connect" portion of `mcp-architecture.md`. It does not supersede
 ADR-003, the path-prefix taxonomy, response envelope, privacy middleware,
 service-layer contract, or CLI-first operator exemptions.
+
+## Current evidence
+
+The operating contract is the 45-tool standard registry. Its deterministic
+comparison records 44,122 candidate metadata bytes, SHA-256
+`40f0ea40932b7251fef00184bb0e3614b9ea3af0e050cb5b4aa9750502baeca8`, against
+the 90,734-byte frozen baseline, SHA-256
+`ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`: a
+-46,612-byte (-51.4%) delta. It advertises zero output schemas and has
+`contract_passed: true`.
+
+This ADR remains **Proposed**. `promotion_ready: false`: context budget and
+host-native deferral are both `not_observed`. Generic clients receive all 45
+tools, and supported hosts may defer schemas from that same registry without
+reconnect, packs, or profiles. Those not-observed facts prevent acceptance,
+not operation of the selected registry.
 
 ## Consequences
 
@@ -154,7 +170,7 @@ the explicit admission record.
 Promote this ADR to **Accepted** when:
 
 - the governing spec reaches `implemented`;
-- the approximately 45-tool contract reconciles with live code;
+- the exact 45-tool contract reconciles with live code;
 - canonical structured transport and generic reports are proven;
 - the initial standard registry advertises zero output schemas, or every
   exception has an approved consumer-driven admission record;

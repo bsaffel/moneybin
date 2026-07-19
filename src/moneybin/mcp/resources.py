@@ -12,7 +12,11 @@ net-worth://summary) were duplicates of tool responses and added context-window
 overhead without information gain. Their data remains available via the
 corresponding tools.
 
-See ``moneybin-mcp.md`` section 15.
+The operating 45-tool standard registry gives generic and supported
+deferred-loading hosts the same tool identities; this resource does not create
+another discovery or profile surface.
+
+See ``docs/specs/moneybin-mcp.md`` for the current prompt and resource contract.
 """
 
 from __future__ import annotations

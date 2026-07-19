@@ -35,8 +35,10 @@ Two sub-forms determined by the cardinality of the call's input.
 - **Form:** `<entity>_set(scope, full_state)` — typically a list or map.
 - **Delete handling:** by omission. NO paired `_delete` tool.
 - **Examples:**
-  - `transactions_tags_set(transaction_id, tags=[...])` — all tags on one transaction.
-  - `transactions_splits_set(transaction_id, splits=[...])`.
+  - `investments_lots_select(disposal_txn_id, selections=[...])` — the full
+    specific-identification lot selection for one disposal.
+  - `transactions_categorize_rules_set(targets=[...])` — confirmed rule target
+    state as one auditable batch.
   - `import_labels_set(import_id, labels=[...])`.
 
 **1b. Entity upsert / partial update.**
@@ -49,8 +51,9 @@ Two sub-forms determined by the cardinality of the call's input.
   static risk and confirms only the destructive validated branch. Use a paired
   `_delete` when those contracts materially differ.
 - **Examples:**
-  - `budget_set(category, monthly_amount, start_month)` — upsert one (category, period) entry.
   - `accounts_set(account_id, ...)` — partial update of one account's settings.
+  - `investments_securities_set(security_id, ...)` — create or update one
+    securities-catalog entry.
 
 **Distinguishing 1a vs 1b at design time:**
 
@@ -64,8 +67,9 @@ Two sub-forms determined by the cardinality of the call's input.
   materially different intents or contracts. Otherwise use one typed
   target-state mutation.
 - **Examples:**
-  - `transactions_notes_add` / `_edit` / `_delete` — each note has `note_id`.
-  - `categories_create` / `categories_set` / `categories_delete`.
+  - `transactions_create(...)` — a durable manual transaction event.
+  - The current registry has no generic lifecycle trio: removal and recovery
+    retain their material contracts in `import_revert` and `gsheet_disconnect`.
 
 Shape 2 uses `_set(id, fields)` for partial update — the same verb as 1b. The operational difference: shape 2 has a strict `_create` that errors on existing entity; shape 1b's `_set` upserts directly.
 
@@ -104,9 +108,13 @@ Shape 4 is narrower than it first appears. Many "different strategies" cases are
   entries behind `reports(report_id=..., parameters=...)`; adding a report
   never adds an MCP tool.
 - **Verb conventions:**
-  - **Collection / summary / aggregate / time-series:** noun-only. `reports_networth`, `accounts_summary`, `transactions_review`, `accounts_balance_history`.
-  - **Single entity by id:** `_get` suffix. `transactions_get`, `accounts_get`.
-  - **Status snapshot of a recent operation:** `_status` suffix. `transform_status`, `transactions_categorize_status`.
+  - **Collection / summary / aggregate / time-series:** noun-oriented coarse
+    reads. `reports`, `accounts`, `accounts_balances`, `transactions`,
+    `reviews`.
+  - **Single entity by id:** use the owning coarse read with an explicit stable
+    selector rather than minting a dedicated identity.
+  - **Status snapshot of a recent operation:** use its domain read or
+    `system_status`; do not add a status-only identity reflexively.
 
 ## Decision flowchart
 
@@ -139,9 +147,9 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 
 | Verb | Meaning | Example |
 |---|---|---|
-| `_set` | Idempotent state assertion (1a collection-set OR 1b entity upsert / partial update) | `budget_set`, `tags_set`, `accounts_set` |
-| `_create` | Strict create — errors if entity exists | `categories_create`, `transactions_create` |
-| `_delete` | Remove one entity by id or natural key | `budget_delete`, `categories_delete` |
+| `_set` | Idempotent state assertion (1a collection-set OR 1b entity upsert / partial update) | `accounts_set`, `taxonomy_set`, `investments_securities_set` |
+| `_create` | Strict create — errors if entity exists | `transactions_create` |
+| `_delete` | Remove one entity by id or natural key when that boundary is admitted | No bare `_delete` identity is in the current registry |
 | `_run` | Execute a discrete batch/pipeline operation | `refresh_run`, `transactions_categorize_run` |
 | `_commit` | Finalize externally-decided proposals (terminal step of propose→review→commit workflows) | `transactions_categorize_commit` |
 | `_confirm` | Accept or override an interactively-presented proposal (terminal step of a propose→review→confirm workflow) | `import_confirm` |
@@ -149,12 +157,14 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_pull` | Fetch new data from an established external connection (already-authenticated) | `sync_pull`, `gsheet_pull` |
 | `_link` | Establish an authenticated session with a **mediated third-party provider** (Plaid-style OAuth → server-held tokens → server-mediated API access) | `sync_link` (Plaid, future SimpleFIN/MX) |
 | `_connect` | Establish a binding to **user-controlled storage** (direct OAuth or URL identification → client speaks the provider's API directly, no server mediation) | `gsheet_connect` (future `airtable_connect`, `smartsheet_connect`, `notion_connect`) |
-| `_get` | Fetch one entity by id | `transactions_get`, `accounts_get` |
-| `_status` | Status snapshot of a recent operation | `transform_status`, `transactions_categorize_status` |
-| `_history` | Time-series projection | `accounts_balance_history` |
-| `_summary` | Cross-entity aggregate snapshot | `accounts_summary` |
+| `_get` | Not admitted as a separate identity; use a coarse read with a stable reference | `accounts(...)`, `transactions(...)` |
+| `_status` | Retained when operation or lifecycle status is a material contract | `system_status`, `import_status`, `sync_status` |
+| `_history` | Not admitted as a separate identity; use a view selector, filter, audit read, or report entry | `system_audit`, `reports(...)` |
+| `_summary` | Not admitted as a separate identity; use a coarse read or registered report | `accounts_balances`, `reports(...)` |
 
-Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`) — use these when the verb carries domain meaning the generic verbs would erase.
+Plus domain-specific discrete verbs (`_revert`, `_disconnect`, `_decide`,
+`_annotate`) — use these when the verb carries domain meaning the generic verbs
+would erase.
 
 **`_confirm` vs `_commit`.** These verbs are not interchangeable.
 - `_commit` — the human (or LLM agent acting as the human) has already made a decision in an external workflow (e.g., annotated a batch offline); the tool finalizes those *externally-decided* results. Example: `transactions_categorize_commit` accepts a pre-reviewed batch.
@@ -173,13 +183,16 @@ This is the canonical shape for any new system-proposed-then-ratified flow: the 
 **Verbs to avoid:**
 
 - `_apply` — use `_run` / `_refresh` (refresh domain) or `transactions_categorize_run(methods=["rules"])` (strategy execution). Do not reintroduce.
-- `_toggle` — too narrow (binary flip). Use `_set` with a typed field: `categories_set(category_id, is_active=...)`.
+- `_toggle` — too narrow (binary flip). Use `_set` with a typed field, such as
+  `privacy_consent_set(...)` or `taxonomy_set(...)`.
 - `_update` — synonym of `_set` in this codebase; use `_set`.
 - `_list` suffix on read tools — drop it (noun-only).
 - broad `manage_*` with unrelated action polymorphism — reject by default (see Polymorphism below).
 - `_connect` for mediated financial providers — use `_link` (see verb table). Do not reintroduce.
 
-**Pluralization:** match the noun. Collection writes use plural even when operating on one element (`_rules_create`, `_rules_delete`). Singular `_rule_delete` is wrong even when deleting one rule.
+**Pluralization:** match the owned domain noun. The current registry keeps
+collection state under `transactions_categorize_rules_set`; do not create a
+singular alias merely because one target appears in a batch.
 
 ## Polymorphism
 
@@ -225,9 +238,9 @@ MoneyBin's surface mixes three audiences:
 
 | Audience | Examples | Positioning |
 |---|---|---|
-| **User-intent** | `reports_spending`, `accounts_summary`, `transactions_search` | Surfaced prominently in the `instructions` field, in user-facing tools' `actions[]` hints, and in docs |
-| **Mid-CRUD** | `transactions_tags_set`, `budget_set`, `categories_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
-| **Operator territory** | `sql_query`, `system_doctor`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
+| **User-intent** | `reports`, `accounts`, `transactions` | Surfaced prominently in the `instructions` field, in user-facing tools' `actions[]` hints, and in docs |
+| **Mid-CRUD** | `transactions_annotate`, `taxonomy_set`, `privacy_consent_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
+| **Operator territory** | `sql_query`, `sql_schema`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
 
 **Per `docs/specs/mcp-tool-surface-scaling.md`:** MoneyBin exposes one bounded
 standard registry. Generic clients receive it in full. Capable hosts may defer
@@ -258,7 +271,12 @@ backing-spec maturity.
 
 ### CLI
 
-The CLI has subgroup nesting MCP doesn't (`moneybin transactions tags set` vs flat `transactions_tags_set`). That changes one thing: **discoverability is cheaper in CLI** because subgroups give `--help` navigation without context-window cost. Audience layering is less load-bearing — operator-only commands already live in operator-territory subgroups (`moneybin db init`, `moneybin profile *`).
+The CLI has subgroup nesting MCP does not (`moneybin transactions ...` versus
+the flat `transactions_annotate` workflow tool). That changes one thing:
+**discoverability is cheaper in CLI** because subgroups give `--help` navigation
+without context-window cost. Audience layering is less load-bearing —
+operator-only commands already live in operator-territory subgroups (`moneybin
+db init`, `moneybin profile *`).
 
 Everything else transfers directly:
 
@@ -296,8 +314,9 @@ Defended exceptions are legitimate but must be **documented in the tool's MCP de
 - `_apply` for refresh-domain operations — use `_refresh` / `_run`.
 - Method-parameter polymorphism when methods have structurally different I/O.
 - `_get` / `_list` suffix on collection or summary reads — drop them (noun-only).
-- Pluralization drift (`_rule_delete` vs `_rules_create`).
-- Duplicate tools where one is strictly richer (`transactions_recurring_list` vs `reports_recurring`).
+- Singular aliases for an admitted batch or target-state contract.
+- Duplicate tools where one coarse read, selector, or registered report already
+  covers the outcome.
 - Operator-territory tools promoted in `instructions` or user-intent
   `actions[]` hints when an umbrella already covers the user outcome.
 - New entity-mutation tools when `<entity>_set` already covers the field.
@@ -326,6 +345,12 @@ When adding or modifying a tool / command / endpoint:
    delta, and provide compatibility plus persisted benefit evidence.
 
 ## Registry budget
+
+The operating contract is one 45-tool standard registry. Generic clients and
+supported deferred-loading hosts use the same registry, without reconnect,
+packs, or profiles; reports never consume tool slots. The deterministic
+comparison passed, but promotion remains unready until context-budget and
+host-native-deferral evidence is observed.
 
 - Target 30–40 standard tools across core and installed extensions.
 - Above 40 requires a carrying-weight review of every tool.

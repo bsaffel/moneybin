@@ -35,7 +35,7 @@ The schemas correspond exactly to the directories under `src/moneybin/sqlmesh/mo
 | `prep` | Views | SQLMesh | SQLMesh core | Light cleaning, type casting, source unioning; internal to the pipeline |
 | `core` | Views and tables | SQLMesh | All consumers (CLI, MCP, SQL shell, reports) | Canonical, deduplicated, multi-source; one table per real-world entity |
 | `app` | Tables | Services, managed-write MCP, migrations | Services and `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
-| `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports_*`, future HTTP | Curated presentation models, one per report surface; read-only by design |
+| `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports(report_id=...)`, future HTTP | Curated presentation models, one per report surface; read-only by design |
 | `meta` | Tables and views | SQLMesh | Reconciliation tooling, freshness probes | Cross-source provenance and pipeline metadata |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | `prep`, `core`, services | Reference data shipped in-repo (e.g., the category taxonomy) |
 
@@ -157,14 +157,14 @@ One view per CLI/MCP report. Read-only by design; the privacy middleware enforce
 
 | View | Powers |
 |---|---|
-| `reports.net_worth` | `moneybin reports networth` / `reports_networth` |
-| `reports.cash_flow` | `moneybin reports cashflow` / `reports_cashflow` |
-| `reports.spending_trend` | `moneybin reports spending` / `reports_spending` |
-| `reports.recurring_subscriptions` | `moneybin reports recurring` / `reports_recurring` |
-| `reports.uncategorized_queue` | `moneybin reports uncategorized` / `reports_uncategorized` |
-| `reports.large_transactions` | `moneybin reports large` / `reports_large_transactions` |
-| `reports.merchant_activity` | `moneybin reports merchants` / `reports_merchant_activity` |
-| `reports.balance_drift` | `moneybin reports balance-drift` / `reports_balance_drift` |
+| `reports.net_worth` | `moneybin reports networth` / `reports(report_id='core:networth')` |
+| `reports.cash_flow` | `moneybin reports cashflow` / `reports(report_id='core:cashflow')` |
+| `reports.spending_trend` | `moneybin reports spending` / `reports(report_id='core:spending')` |
+| `reports.recurring_subscriptions` | `moneybin reports recurring` / `reports(report_id='core:recurring')` |
+| `reports.uncategorized_queue` | `moneybin reports uncategorized` / `transactions_categorize_assist` (PII-scrubbed uncategorized batch) |
+| `reports.large_transactions` | `moneybin reports large` / `reports(report_id='core:large_transactions')` |
+| `reports.merchant_activity` | `moneybin reports merchants` / `reports(report_id='core:merchants')` |
+| `reports.balance_drift` | `moneybin reports balance-drift` / `reports(report_id='core:balance_drift')` |
 
 ### `meta.*` and `seeds.*`
 
@@ -321,9 +321,9 @@ All read commands accept `--output json` and emit the standard response envelope
 
 ### From MCP
 
-The `sql_query` tool runs read-only DuckDB against `core.*` and `reports.*` (DDL and writes are rejected). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions_get`, `reports_networth`, etc.) are the higher-affordance path; `sql_query` is the escape hatch.
+The `sql_query` tool runs read-only DuckDB against `core.*` and `reports.*` (DDL and writes are rejected). For discovery, the `moneybin://schema` resource enumerates the *interface set* — the consumer-facing tables and views in `core.*` and `reports.*` declared as `TableRef` constants in code — with column-level descriptions auto-derived from SQLMesh model comments. Domain-specific tools (`transactions`, `reports(report_id=...)`, and `accounts`) are the higher-affordance path; `sql_query` is the escape hatch.
 
-Sensitivity tiers are declared per tool: aggregates return at `low`; row-level data with merchant and amount returns at `medium`; account numbers and PII-adjacent fields return at `high`. Tiers drive consent flows and redaction.
+Sensitivity classification and critical-field masking are wired today. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred; tools must not rely on a consent gate yet.
 
 ## What can go wrong
 

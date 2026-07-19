@@ -67,6 +67,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Bounded MCP standard registry.** The pre-launch MCP cutover now exposes
+  one 45-tool standard registry to every generic client; supported hosts may
+  defer schemas from that identical registry without reconnect, packs, or
+  profiles. Reports extend the `reports` catalog rather than consuming tool
+  slots, and future tools require the published admission record. The
+  deterministic comparison reduced metadata from 90,734 to 44,122 bytes;
+  promotion remains pending observed context-budget and host-deferral evidence.
 - **Executable CLI/MCP capability parity.** A checked outcome map now covers all
   45 standard MCP tools and every implemented Typer path by service ownership
   and durable result, replacing the old canonical-name drift test. It includes

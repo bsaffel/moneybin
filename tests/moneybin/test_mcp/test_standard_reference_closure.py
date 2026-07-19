@@ -83,15 +83,7 @@ def _mentioned_names(text: str, names: set[str] | frozenset[str]) -> set[str]:
 
 
 def _prompt_texts() -> dict[str, str]:
-    source = Path(prompts.__file__)
-    tree = ast.parse(source.read_text(), filename=str(source))
-    names = {
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-        and any(_decorator_name(item) == "prompt" for item in node.decorator_list)
-    }
-    return {name: getattr(prompts, name)() for name in names}
+    return {prompt.__name__: prompt() for prompt in prompts.PROMPT_FUNCTIONS}
 
 
 def _emitted_tool_strings() -> dict[str, list[str]]:
@@ -156,6 +148,29 @@ def test_review_auto_rules_describes_only_persisted_rule_operations() -> None:
         "auto_accept",
     ):
         assert unsupported_claim not in text.lower()
+
+
+def test_curation_prompts_use_admitted_system_audit_arguments() -> None:
+    for text in (
+        prompts.curate_recent_transactions(),
+        prompts.review_curation_history(),
+    ):
+        assert "system_audit(view='events', limit=" in text
+        assert "filters=" not in text
+        assert "filters[" not in text
+        assert "action_pattern=" not in text
+        assert "from =" not in text
+
+    history = prompts.review_curation_history()
+    assert "data.events[]" in history
+    assert "data[]" not in history
+
+
+def test_sync_review_prompt_uses_an_executable_reports_call() -> None:
+    text = prompts.sync_review()
+
+    assert "reports(report_id='core:spending')" in text
+    assert "parameters={" not in text
 
 
 async def test_report_catalog_examples_use_executable_standard_calls() -> None:

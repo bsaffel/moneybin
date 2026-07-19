@@ -46,7 +46,7 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import FiniteDecimal
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.accounts import (
@@ -963,7 +963,7 @@ def _account_actions(
     return list(dict.fromkeys(selected))
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
 async def accounts_coarse(
     view: Literal["list", "detail", "summary", "resolve"] = "list",
     reference: str | None = None,
@@ -1152,7 +1152,7 @@ def _balance_actions(
     return list(dict.fromkeys(selected))
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
 async def accounts_balances_coarse(
     view: Literal["latest", "history", "assertions"] = "latest",
     reference: str | None = None,

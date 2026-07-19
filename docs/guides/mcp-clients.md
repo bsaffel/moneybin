@@ -66,10 +66,21 @@ Installing a non-default profile generates a distinct entry name (e.g. `MoneyBin
 The MCP transport is local-only and the MoneyBin server itself does not phone home, but the **client** you connect to is almost certainly cloud-hosted. Be deliberate about which surface is which.
 
 - **`moneybin mcp serve` (the server side).** Makes no outbound network calls of its own — no telemetry, no update checks, no license pings, no merchant-enrichment fetches. It reads and writes only the local DuckDB profile. The egress posture is "zero by default."
+
 - **The MCP client (Claude Desktop, Cursor, Codex, …).** Sends your prompt and the tool-result payloads MoneyBin returns to its own hosted LLM provider, per the client's privacy policy. When you ask "what did I spend on groceries?", the agent receives row-level transaction data from MoneyBin and forwards it upstream as ordinary tool-result context.
 - **Sensitivity tiers.** Every MoneyBin tool declares `low` / `medium` / `high` per [`mcp-server.md`](mcp-server.md). A consent gate that downgrades `medium`/`high` responses for cloud clients is planned but not yet enforced. Until it is, **treat anything you ask the agent as if you sent it directly to the model provider** — because effectively, you did.
 - **Other MoneyBin surfaces.** Plaid sync, OAuth, and any future hosted-server features do make outbound calls when you use them. Those flow through `moneybin-sync`, not the MCP server — see [`docs/reference/server-api-contract.md`](../reference/server-api-contract.md) for that contract.
 - **Local-LLM clients.** No first-class MCP-compatible local-LLM agent is shipping today (Ollama doesn't expose MCP; LM Studio's support is experimental). When one becomes stable, MoneyBin will connect to it the same way it connects to Claude Desktop — the server side doesn't care which LLM is on the other end of the stdio pipe.
+
+## Bounded tool surface
+
+MoneyBin exposes one **45-tool standard registry**. Generic clients receive all
+45 tools. A supported host may defer schemas from that same registry to reduce
+prompt cost, without reconnect, packs, or profiles; tool names, approvals,
+allowlists, annotations, and audit identity do not change. Reports are catalog
+entries behind `reports`, not additional tool slots. The initial registry
+advertises zero output schemas; a future schema or tool must pass the admission
+record in [`mcp-tool-surface-scaling.md`](../specs/mcp-tool-surface-scaling.md).
 
 ## Per-client setup
 
@@ -150,11 +161,12 @@ moneybin mcp install --client windsurf -y
 - **Server lifecycle:** One server process per Windsurf instance.
 - **Confirmation UI:** Tool-call approval is shown in the Cascade chat panel. Like Cursor, Windsurf reads `readOnlyHint` but doesn't currently distinguish `destructiveHint` in its UI.
 
-> **⚠️ MoneyBin exceeds Windsurf's tool limit.** Cascade holds a maximum of **100 tools at any one time**, across *all* your MCP servers combined. MoneyBin registers **105** and hides none of them, so a MoneyBin install alone is already over the ceiling — and any other MCP server you run competes for the same budget.
->
-> Windsurf gives you no warning when you cross the line; tools past the limit simply aren't available to Cascade, and it will act as though MoneyBin can't do things it can. Open **Settings → MCP Servers** and toggle off the tools you don't need until you're under 100. Turning off namespaces you aren't using (for example `investments_*` or `tax_*` if you don't track those) is the quickest way down.
->
-> Every other supported client is unaffected — this ceiling is specific to Cascade.
+> **MoneyBin’s 45-tool registry fits Windsurf’s limit.** Cascade holds a maximum
+> of **100 tools at any one time**, across *all* connected MCP servers. MoneyBin
+> uses 45 of those slots, so other servers still share the remaining budget.
+> Windsurf gives no warning when the combined total crosses the limit; disable
+> unused servers in **Settings → MCP Servers** if your overall configuration
+> exceeds 100.
 
 ### VS Code (Copilot Chat, agent mode)
 
@@ -260,7 +272,7 @@ Both return the standard MoneyBin envelope. `system_status` looks roughly like:
     "categorization": {"uncategorized": 17},
     "transforms": {"pending": false, "last_apply_at": "2026-05-17T09:13:01"}
   },
-  "actions": ["Use transactions_review for per-queue review counts", "Use reports_spending for a monthly spending trend snapshot"]
+  "actions": ["Use reviews for per-queue review counts", "Use reports(report_id=\"core:spending\") for a monthly spending trend snapshot"]
 }
 ```
 
