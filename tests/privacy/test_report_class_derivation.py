@@ -166,7 +166,7 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
         "core.bridge_category_source_map",  # reads seeds.category_source_map
         "core.bridge_transfers",  # reads prep.int_transactions__matched/merged
         "core.dim_categories",  # reads seeds.categories
-        "core.dim_holdings",  # reads prep.stg_plaid__investment_holdings*
+        "core.dim_holdings",  # reads prep.stg_plaid__investment_holdings* and core.fct_security_prices
         "core.dim_securities",  # unaliased single-table SELECT (no qualify())
         "core.fct_balances",  # bare SELECT * inside a UNION ALL branch
         "core.fct_transaction_lines",  # UNNEST(t.splits) struct-field access

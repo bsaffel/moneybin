@@ -183,7 +183,7 @@ def test_price_in_another_currency_does_not_value_the_position(db: Database) -> 
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES ('sec_vti', CURRENT_DATE, 'GBP', 'plaid', 'item_1', 95.00, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """
+        """,  # noqa: S608  # test fixture, not executing user SQL
     )
     _seed_price(db, price_date=date.today() - timedelta(days=400), close="1.00")
 
