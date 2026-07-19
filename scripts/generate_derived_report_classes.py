@@ -49,7 +49,17 @@ def _runner_backed_keys() -> set[tuple[str, str]]:
 
 
 def _render(generated: dict[tuple[str, str], dict[str, DataClass]]) -> str:
-    """Render the generated module source as text."""
+    """Render the generated module source as text.
+
+    NOTE: `test_generated_classes_are_current` compares the imported
+    `DERIVED_REPORT_CLASSES` dict value against a freshly derived one — not
+    this function's rendered text against the checked-in file's bytes. A
+    change here that alters only formatting (docstring wording, key
+    ordering, whitespace) with no change to the underlying dict will NOT
+    make that test fail, so the checked-in file can silently desync from
+    what `_render` would now produce. Re-run `make generate-report-classes`
+    after editing this function, even when the dict-shape is unchanged.
+    """
     name_by_key = _tableref_name_by_key()
     missing = sorted(key for key in generated if key not in name_by_key)
     if missing:
@@ -63,7 +73,7 @@ def _render(generated: dict[tuple[str, str], dict[str, DataClass]]) -> str:
         '"""Generated: privacy classes for reports.* views with no @report runner.',
         "",
         "DO NOT EDIT BY HAND. Regenerate with:",
-        "    uv run python scripts/generate_derived_report_classes.py",
+        "    make generate-report-classes",
         "",
         "Replaces the former hand-written reports/definitions/_bridged_classes.py.",
         "Every entry here comes straight from derive_report_classes()",

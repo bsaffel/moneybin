@@ -599,7 +599,9 @@ Specific audits per model:
 - `reports.cash_flow` — `unique_combination_of_columns(year_month, account_id, category)`. (NULL category is permitted; DuckDB's grouping handles it.)
 - `reports.spending_trend` — `unique_combination_of_columns(year_month, category)`.
 - `reports.recurring_subscriptions` — `not_null(merchant_normalized, cadence, confidence)`. Confidence range is asserted in scenario tests, not as an audit (DuckDB SQLMesh audits don't natively support range checks; would be a custom audit).
-- `reports.uncategorized_queue` — `not_null(transaction_id, priority_score)`.
+- `reports.uncategorized_queue` — planned `not_null(transaction_id, priority_score)`;
+  never implemented. The shipped `core.uncategorized_queue.sql` (see the
+  migration note above) declares no `audits(...)` block at all.
 - `reports.merchant_activity` — `unique_combination_of_columns(merchant_normalized)`, `not_null(total_spend, txn_count)`.
 - `reports.large_transactions` — `not_null(transaction_id, amount)`.
 - `reports.balance_drift` — `unique_combination_of_columns(account_id, assertion_date)`, `not_null(asserted_balance)`.

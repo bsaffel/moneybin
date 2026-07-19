@@ -1,7 +1,7 @@
 """Generated: privacy classes for reports.* views with no @report runner.
 
 DO NOT EDIT BY HAND. Regenerate with:
-    uv run python scripts/generate_derived_report_classes.py
+    make generate-report-classes
 
 Replaces the former hand-written reports/definitions/_bridged_classes.py.
 Every entry here comes straight from derive_report_classes()

@@ -421,7 +421,8 @@ def test_reports_net_worth_balance_columns_classify_high(
     place. This test closes that gap for `net_worth`'s BALANCE columns (now
     declared via the generated `_derived_classes.py` module, Task 4's
     replacement for the bridge) at unit speed, rather than relying solely on
-    the scenario-level `test_declared_classes_match_derivation`.
+    `test_declared_classes_match_derivation`
+    (`tests/privacy/test_report_class_derivation.py`).
     """
     populated_db.execute("""
         CREATE OR REPLACE VIEW reports.net_worth AS
@@ -452,7 +453,7 @@ def test_reports_net_worth_balance_columns_classify_high(
 def test_generated_classes_are_current() -> None:
     """The checked-in generated module matches what derivation produces now.
 
-    Regenerate with: uv run python scripts/generate_derived_report_classes.py
+    Regenerate with: make generate-report-classes
     """
     from moneybin.privacy.report_class_derivation import derive_report_classes
     from moneybin.reports._framework.registry import spec_of
@@ -465,7 +466,7 @@ def test_generated_classes_are_current() -> None:
     runner_keys = {(spec_of(r).view.schema, spec_of(r).view.name) for r in ALL_REPORTS}
     expected = {key: cols for key, cols in derived.items() if key not in runner_keys}
     assert DERIVED_REPORT_CLASSES == expected, (
-        "Regenerate with: uv run python scripts/generate_derived_report_classes.py"
+        "Regenerate with: make generate-report-classes"
     )
 
 

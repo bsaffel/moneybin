@@ -139,6 +139,23 @@ Mechanism, with the constraints the spike established:
 columns cannot be resolved, the check fails; it does not quietly emit
 `AGGREGATE`.
 
+**Shipped as:** the upstream snapshot is built from `CLASSIFICATION`
+(`_upstream_snapshot()` in `report_class_derivation.py`), not by walking
+on-disk model sources as prescribed above. This is sound, not a shortcut:
+`CLASSIFICATION` completeness against the live DuckDB catalog is already
+CI-enforced, so for every `core`/`app` column it already *is* the catalog —
+and it is necessary, not merely convenient, because `app.balance_assertions`
+(read by `balance_drift`) is a migration-created table with no SQLMesh model
+at all, so there is no on-disk model source to walk for it. Python models get
+no separate `ast`-based path either: `_load_model()` raises
+`ReportDerivationError` on any non-`SqlModel`, the same "out of scope for a
+connectionless, source-parsing deriver" treatment `derive_core_view_classes`
+gives every Python model under `core/*.py`. The requirement this section
+exists to satisfy — one classifier, derived not hand-asserted, CI-verified,
+with no silent fallback — is unchanged; only the prescribed mechanism for
+building the upstream snapshot and handling non-SQL models was revised during
+implementation.
+
 ### R3 — Provenance sets a floor an author may lower with a reason
 
 Derivation is right for pass-through columns and systematically
@@ -170,9 +187,9 @@ current — mechanically produced, so it cannot drift the way the bridge could.
 ### R5 — `reports.*` contains only user-facing reports
 
 Per D3, membership in `reports.*` *is* the definition of "is a report."
-`reports.uncategorized_queue` is service-internal — its only runtime reader is
-`services/categorization/queries.py`, backing `transactions_categorize_pending`.
-It moves to `core`.
+`uncategorized_queue` is service-internal — its only runtime reader is
+`services/categorization/queries.py`, backing `transactions_categorize_pending`
+— so it moved out of `reports.*` into `core.uncategorized_queue`.
 
 `core` rather than `prep`, because `prep` is not in `_ALLOWED_QUERY_SCHEMAS`;
 moving there would silently remove a view users can query today. `core` keeps
@@ -185,7 +202,7 @@ premise, not the thing #330 actually needed fixed. What #330's coverage gap
 genuinely broke was never having a declaration to compare against AT ALL,
 which R2/R3's derivation-and-verification now forecloses structurally.
 
-Known touch points (the move is mechanical but wide):
+Touch points the move updated (mechanical but wide):
 
 - `src/moneybin/tables.py` — the `TableRef` constant's schema, and therefore its
   `full_name`. `tests/moneybin/test_tables.py` pins `EXPECTED_INTERFACE` by
@@ -193,8 +210,9 @@ Known touch points (the move is mechanical but wide):
 - `services/categorization/queries.py` — the read, plus a `UserError` payload
   that embeds `full_name`, so observable error content changes.
 - ~20 hardcoded `reports.uncategorized_queue` strings across test fixture DDL,
-  scenario data, and docs — including a stale `docs/guides/data-pipeline.md`
-  reference to a CLI command and MCP tool that no longer exist.
+  scenario data, and docs were updated to `core.uncategorized_queue` —
+  including a stale `docs/guides/data-pipeline.md` reference to a CLI command
+  and MCP tool that no longer existed, which is now corrected.
 - `services/schema_catalog.py` — a hardcoded example query.
 
 ### R6 — A report-authoring rule

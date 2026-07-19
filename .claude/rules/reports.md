@@ -37,12 +37,16 @@ complete, and fails the build if the two disagree.
   calls `resolve_output_classes(model.query, snapshot, strict=True)` —
   **the same classifier** that masks ad-hoc `sql_query` SQL at runtime. Do not
   write a second classification path for reports.
-- `tests/scenarios/test_reports_classification.py::test_declared_classes_match_derivation`
+- `tests/privacy/test_report_class_derivation.py::test_declared_classes_match_derivation`
   compares declared vs. derived **by tier**, not class identity — over-declaring
   (e.g. declaring a passthrough column `ACCOUNT_IDENTIFIER` when derivation
   would say `RECORD_ID`) always passes, because over-declaring never leaks.
   Only a genuine downgrade (`declared.tier < derived.tier`) needs a
-  `class_downgrades` reason; an unreasoned downgrade fails CI.
+  `class_downgrades` reason; an unreasoned downgrade fails CI — and so does a
+  `class_downgrades` reason for a column that is no longer genuinely below its
+  derived floor (a stale entry must be deleted, not left in the tree). Needs
+  no database, so it runs in the default `make check test` gate, not
+  `make test-scenarios`.
 - `tests/scenarios/test_reports_classification.py::test_reports_declared_classes_cover_real_views`
   enumerates every **deployed** `reports.*` view from the live DuckDB catalog
   (not the declared registry) and fails if any real column is undeclared —

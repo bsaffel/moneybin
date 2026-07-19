@@ -40,6 +40,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`transactions_categorize_pending`) — so it no longer appears under
   `reports.*` in `sql_query` / `moneybin sql query` results. Query it as
   `core.uncategorized_queue` instead.
+- **`transactions_categorize_pending`'s `age_days` field is now declared
+  `TXN_DATE` (MEDIUM) instead of `AGGREGATE` (LOW).** A declaration
+  correction, not a behavior change: both classes redact via the same
+  pass-through, and the response already carries HIGH-tier `amount`, so
+  masked output and the response's overall tier are unaffected.
 - **`sql_query` / `moneybin sql query` responses can now report `unresolved`
   in `classes_returned`.** This is the fail-closed class for a column
   reaching the caller without lineage having positively established what it
