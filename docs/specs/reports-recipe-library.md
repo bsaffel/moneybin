@@ -50,7 +50,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 | Decision | Rationale | Where it lands |
 |---|---|---|
 | Eight models in v1, not fifteen | Hits the 6–10 range from the brief; every model independently demoable; future iterations add narrower models (income_sources, recurring-detail) | §Models |
-| `recurring_subscriptions` ships with `confidence` column (0.0–1.0) | A survey of PFM subscription detection (Actual Budget, Copilot, Monarch, Rocket Money, Firefly III) found none exposes a confidence score; tools are binary suggested/accepted. Surfacing the score lets users and AI consumers apply their own thresholds rather than accepting a hidden classifier. | §Models §`reports.recurring_subscriptions` |
+| `recurring_subscriptions` ships with `confidence` column (0.0–1.0) | A candidate generator has inherent uncertainty. Surfacing its score lets users and AI consumers apply their own thresholds rather than accepting a hidden classifier. | §Models §`reports.recurring_subscriptions` |
 | Wide-grain principle: prefer powerful views consumers can aggregate over narrow single-purpose ones | Drove `top_merchants → merchant_activity` (top-N is just `ORDER BY total_spend DESC LIMIT N` against the wider view) and `year_over_year_spending → spending_trend` (one model supports YoY, MoM, and 3-month-trailing comparisons). Future report specs apply the same lens. | §Models |
 | `reports.net_worth` (with underscore), not `reports.networth` | Reintroduces space/underscore for readability. Overrides the gate spec's name; landed via [Migrations](#migrations) below. | §Migrations |
 | Sequenced before `moneybin-doctor.md` | Doctor's `balance_drift` traffic-light comes from `reports.balance_drift`. Recipe-library lands first; doctor reads the view. | §Sequencing |
@@ -645,7 +645,11 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 
 ## Out of Scope
 
-- **Subscription acceptance/rejection state.** The suggest-then-confirm pattern in Actual/Copilot/Monarch needs a user-state table (e.g., `app.recurring_subscriptions` with accepted/rejected/snooze states). That is a future spec — likely an extension of `transaction-curation.md` or its own `subscription-curation.md`. `reports.recurring_subscriptions` is a candidate generator only.
+- **Subscription acceptance/rejection state.** A user-confirmed subscription
+  workflow needs a user-state table (e.g., `app.recurring_subscriptions` with
+  accepted/rejected/snooze states). That is a future spec — likely an extension
+  of `transaction-curation.md` or its own `subscription-curation.md`.
+  `reports.recurring_subscriptions` is a candidate generator only.
 - **Income recurring detection.** Mirror of `recurring_subscriptions` for inflows (paychecks, recurring deposits). Worth adding once subscription-curation lands and the patterns are validated; deferred to keep v1 focused.
 - **Multi-currency rollups.** Owned by future `multi-currency.md` (M1K). All `reports.*` v1 models assume profile currency. See `architecture-shared-primitives.md` §Open Architectural Questions (b).
 - **Forecast/projection models.** "What will my net worth be in 6 months?" is a separate concern (forecasting); recipe library is descriptive analytics only.

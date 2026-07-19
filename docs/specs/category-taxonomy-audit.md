@@ -232,14 +232,12 @@ group):
   the coverage-report allowlist).
 - **Class reconciliation:** zero reclasses — the M1V seed had already assigned
   every `class` correctly; the audit documents the rationale (above).
-- **Comprehensiveness crosswalk:** validated the set against MX (119 categories),
-  Mint, Monarch, and Maybe. Every competitor category has a coherent home and we
-  are more granular on income/utilities/insurance. The one structural gap the
-  field converges on — a **Family & Kids** group — was folded in: `FAM` group
-  with `FAM-CHC` (Childcare, relocated from the `SVC-CHC` triage add above),
-  `FAM-ACT` (Kids Activities), `FAM-SUP` (Child Support) — 3 net-new categories
-  beyond the 6 above. Investment-activity and tax-type granularity remain
-  deferred to M1J and M2M respectively (covered at primary level today).
+- **Coverage audit:** the resulting taxonomy covers the identified transaction
+  domains without redundant categories. It adds a **Family & Kids** group:
+  `FAM` with `FAM-CHC` (Childcare, relocated from the `SVC-CHC` triage add
+  above), `FAM-ACT` (Kids Activities), and `FAM-SUP` (Child Support)—3 net-new
+  categories beyond the 6 above. Investment-activity and tax-type granularity
+  remain deferred to M1J and M2M respectively (covered at primary level today).
 - **Validation hardening shipped:** valid-class invariant, enumerated coverage
   report (unmapped-codes == roll-up allowlist), and orphan allowlist.
 - **PFC revision:** `plaid_pfc_v2` confirmed current; fixture unchanged.

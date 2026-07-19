@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="470" height="112" viewBox="0 0 470 112" role="img" aria-labelledby="title">
+  <title id="title">MoneyBin</title>
+  <defs>
+    <mask id="slot">
+      <rect width="92" height="92" fill="#fff" />
+      <rect x="23" y="45" width="46" height="9" rx="4.5" fill="#000" />
+    </mask>
+  </defs>
+  <g transform="translate(8 10)">
+    <rect width="92" height="92" rx="21" fill="#1C1A16" mask="url(#slot)" />
+    <circle cx="46" cy="25" r="12.5" fill="#C79B3B" />
+    <text x="116" y="62" fill="#1C1A16" font-family="Newsreader, Georgia, serif" font-size="60" font-weight="600" letter-spacing="-0.75">Money<tspan fill="#8A6A1C">Bin</tspan></text>
+  </g>
+</svg>
