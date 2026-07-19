@@ -157,37 +157,46 @@ the default catalog hides is the failure this clause exists to prevent.
 ### R2 — Save-time classification is invisible
 
 **Classification must never be something the user does, and never something
-that blocks a save.** Saving requires valid read-only SQL over permitted schemas
-and a name. Nothing else. The class map is derived and stored; the user never
-sees it unless they ask.
+that blocks a save.** Saving requires a name and a row-returning read-only
+SELECT over permitted schemas. Nothing else. The class map is derived and
+stored; the user never sees it unless they ask.
 
 Save pipeline:
 
 1. `validate_read_only_query` — existing gate, unchanged.
-2. Parse, then `get_current_schema_snapshot(db)`. This is the **live** snapshot,
+2. `is_data_query` — reject anything that is not a row-returning SELECT.
+   `validate_read_only_query` also admits `DESCRIBE`, `SHOW`, `PRAGMA`, and
+   `EXPLAIN` (`privacy/sql_query.py`), but step 5 below raises
+   `SqlSchemaError("Query has no SELECT projection")` on all four. Without this
+   gate, "valid read-only SQL always saves" is false for statements the sole
+   documented gate accepts — they would fail midway through the pipeline. The
+   primitive already exists (`privacy/sql_lineage.py`) and `sql_query` already
+   uses it to skip classification for metadata reads; a report is a durable
+   classified artifact, so it rejects rather than skips.
+3. Parse, then `get_current_schema_snapshot(db)`. This is the **live** snapshot,
    not the connectionless CLASSIFICATION one, because it includes `reports.*` —
    which `sql_query` permits reading and the build-time snapshot deliberately
    excludes to stay non-self-referential.
-3. `expand_star`, then `tables_outside_schemas` against `{core, app, reports}`.
+4. `expand_star`, then `tables_outside_schemas` against `{core, app, reports}`.
    Report creation is restricted to fully-classified schemas. `raw`/`prep` are
    not reachable through `sql_query` today; when M2O.2 opens them behind a
    content-net floor, whether a *durable* artifact may be built over floored
    columns is decided there, not assumed here.
-4. `resolve_output_classes(..., strict=False)`. **Not strict.** An unresolvable
+5. `resolve_output_classes(..., strict=False)`. **Not strict.** An unresolvable
    projection must not fail the save.
-5. `DESCRIBE <query_sql>` **with every declared parameter bound to NULL**, to
+6. `DESCRIBE <query_sql>` **with every declared parameter bound to NULL**, to
    read real DuckDB result column names, then bridge through
    `_classes_by_result_column` and persist the reconciled map **keyed by DuckDB
    column names**.
 
-Step 5 is load-bearing, not an optimization. `resolve_output_classes` returns
+Step 6 is load-bearing, not an optimization. `resolve_output_classes` returns
 names from sqlglot projections; `classify_columns` looks them up by DuckDB
 result name. Persisting the unbridged map would mask `COUNT(*)` — sqlglot `*`,
 DuckDB `count_star()` — to `'*****'` on every run of every report containing
 one. That is the over-redaction bug class M2P.1 shipped and had to fix in
 review; `DESCRIBE` closes it structurally rather than by vigilance.
 
-Two verified properties of step 5, both required for it to work:
+Two verified properties of step 6, both required for it to work:
 
 - DuckDB raises `InvalidInputException` on `DESCRIBE` of a query with unbound
   parameters, for both `$name` and `?` styles. Binding NULL is sufficient and
@@ -203,7 +212,7 @@ Two verified properties of step 5, both required for it to work:
 
 The pipeline is not the *save* path; it is the path any mutation of `query_sql`
 or `params` takes. `reports_set` is a partial update (R5), so a call that
-touches either field must re-run steps 1–5 and persist the new SQL, class map,
+touches either field must re-run steps 1–6 and persist the new SQL, class map,
 and fingerprint in a **single** repo write. Skipping it re-creates the exact bug
 this spec exists to prevent: re-aliasing an `AGGREGATE` projection `x` to
 `routing_number AS x` would serve a routing number under the stale LOW class,
@@ -268,8 +277,20 @@ SQLMesh-built, so a column added or retyped there runs no migration either.
 `SchemaSnapshot.version` reads `MAX(version) FROM app.schema_migrations` and is
 consequently blind to every input above — it must not be used as the drift key.
 
-Instead, `class_fingerprint` is a hash over the sorted
-`(schema, table, column, DataClass)` tuples for **the tables this query reads**.
+Instead, `class_fingerprint` is a hash over two things: the sorted
+`(schema, table, column, DataClass)` tuples for **the tables this query reads**,
+and a **`DERIVATION_VERSION`** constant bumped whenever `resolve_output_classes`
+changes how it classifies.
+
+The version term is not ceremony. The tuples describe derivation's *inputs*; a
+change to the classifier itself moves no tuple, so a fix that raises a computed
+column from LOW to HIGH would leave every saved report on the `Match` branch,
+serving the old class indefinitely — the same stale-authority failure, arriving
+through the algorithm instead of the data. Bumping the constant invalidates
+every stored fingerprint at once and forces re-resolution on the next run of
+each report. The bump is a source change, so CI is where it is enforced: the
+classifier's tests own the reminder, the same way M2P.1's derivation check does.
+
 On each run the fingerprint is recomputed and compared:
 
 - **Match** → `classify_columns` against the stored map, byte-identical to how a
@@ -284,15 +305,22 @@ the read path has no writable connection — both generated adapters call
 `run_report` inside `get_database(read_only=True)`
 (`_framework/mcp_register.py`, `_framework/cli_register.py`), and R1 routes every
 `app.user_reports` mutation through the audited repo, which would emit an audit
-row per *read*. So a run never persists a refreshed fingerprint. The refreshed
-value lands on the report's next write through `UserReportsRepo` — a `set`, a
-`reclassify`, or an archive.
+row per *read*. So a run never persists a refreshed fingerprint.
 
-The cost is honest and bounded: between the upstream class change and that next
-write, every run of the affected report re-resolves — one live schema snapshot
-plus one sqlglot parse, the same work the save did, on a single-user embedded
-database. Buying that back with a write-during-read would put an unaudited
-mutation on the read path, which Invariant 10 does not permit.
+**Only a write that re-runs the derivation pipeline may store a fingerprint**,
+and it stores the map and the fingerprint together. A metadata-only write — a
+`description` edit, an archive — must leave `class_fingerprint` untouched, even
+though it is a write and the current value is trivially available. Storing a
+current fingerprint beside a stale map is worse than storing a stale one: it
+puts the next run on the `Match` branch and serves the weaker class with no
+re-resolution to catch it. A stale fingerprint only ever costs a re-resolution;
+a fresh fingerprint over a stale map is the leak itself.
+
+The cost is honest and unbounded in time: until the report's SQL or parameters
+next change, every run re-resolves — one live schema snapshot plus one sqlglot
+parse, the same work the save did, on a single-user embedded database. Buying
+that back with a write-during-read would put an unaudited mutation on the read
+path, which Invariant 10 does not permit.
 
 A newly *added* upstream column needs no coverage here: `classify_columns`
 already fails closed on any result column absent from the stored map.
@@ -327,8 +355,17 @@ list`, matching 18 existing `list` subcommands. `_reclassify` is a domain verb
 because it carries D5's mandatory `reason`, which a generic field-set erases.
 
 The catalog excludes archived reports by default; `include_archived` (CLI
-`--archived`) widens it. Each entry carries a `tier` field. A saved name that
-collides with a built-in is rejected at save rather than shadowing it.
+`--archived`) widens it. Each entry carries a `tier` field.
+
+**Names are unique across the whole registry, not just against built-ins.**
+`reports_run` resolves one handle across three tiers, so two reports sharing a
+name make the dispatcher and the catalog ambiguous. The check runs in both
+directions: `reports_create` rejects a name already held by a built-in *or* an
+installed extension, and installing an extension whose report name collides with
+an existing user report fails with both names rather than silently shadowing
+one. Defining a precedence order instead would mean a user's saved report can
+change meaning when an unrelated package is installed — a rule nobody can see
+from the catalog.
 
 **Parameters cross the wire as a mapping, not `**kwargs`.** Both registrars
 synthesize an explicit signature from `spec.params`, and FastMCP and Typer
