@@ -15,7 +15,7 @@ SELECT
     THEN m.account_subtype
     ELSE LOWER(NULLIF(TRIM(a.account_type), ''))
   END AS account_subtype,
-  a.institution_name,
+  NULLIF(TRIM(a.institution_name), '') AS institution_name,
   a.currency,
   NULL::TEXT AS routing_number,
   NULL::TEXT AS institution_fid,

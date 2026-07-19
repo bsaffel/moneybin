@@ -7,7 +7,13 @@ MODEL (
    source, so the vocabulary is decided in one place. An unmapped alias resolves
    to NULL here exactly as it does for the other two sources.
 
-   Resist "fixing" that NULL. core.fct_balances drops Plaid balances whose
+   Every free-text column here is wrapped in NULLIF(TRIM(...), '') for the same
+   reason: dim_accounts merges these with FILTER(WHERE NOT ... IS NULL) and
+   concatenates them into display_name, and '' passes a NULL check while
+   rendering as a malformed label. Plaid's SyncAccount declares them `str | None`
+   and nothing upstream promises blank arrives as NULL rather than ''.
+
+   Resist "fixing" the account_type NULL. core.fct_balances drops Plaid balances whose
    account_type is unresolvable, and that is deliberate (see the comment on its
    plaid_balances CTE, guarded by test_plaid_null_account_type_dropped): without
    a type the balance cannot be signed, and any non-NULL default falls to the
@@ -24,12 +30,12 @@ SELECT
   a.account_id AS source_account_key,
   NULL::TEXT AS routing_number,
   m.account_type,
-  a.institution_name,
+  NULLIF(TRIM(a.institution_name), '') AS institution_name,
   NULL::TEXT AS institution_fid,
-  a.official_name,
+  NULLIF(TRIM(a.official_name), '') AS official_name,
   a.mask,
   COALESCE(
-    a.account_subtype,
+    NULLIF(TRIM(a.account_subtype), ''),
     CASE
       WHEN NOT m.alias IS NULL
       THEN m.account_subtype

@@ -31,7 +31,7 @@ SELECT
     THEN m.account_subtype
     ELSE LOWER(NULLIF(TRIM(a.account_type), ''))
   END AS account_subtype,
-  a.institution_org,
+  NULLIF(TRIM(a.institution_org), '') AS institution_org,
   a.institution_fid,
   a.source_file,
   a.source_type,

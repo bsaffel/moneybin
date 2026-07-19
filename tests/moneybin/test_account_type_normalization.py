@@ -492,3 +492,51 @@ def test_legacy_empty_string_routing_number_normalizes_to_null(db: Database) -> 
     ).fetchone()
     assert row is not None
     assert row[0] is None, f"expected NULL, got {row[0]!r} — the '' leak persists"
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_plaid_text_fields_normalize_to_null(db: Database, blank: str) -> None:
+    """Blank Plaid text columns must reach core as NULL, not ''.
+
+    `COALESCE` only replaces NULL, so a '' subtype short-circuits the registry
+    fallback; a '' institution_name passes the merge's NOT-NULL filter and lands
+    in display_name's concat, yielding a malformed leading-space label. Same
+    empty-string-vs-NULL class this PR fixes for OFX, on the Plaid side.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.plaid_accounts
+            (account_id, account_type, account_subtype, institution_name, mask,
+             official_name, source_file, source_type, source_origin,
+             extracted_at, loaded_at)
+        VALUES ('plaid-blank', 'credit', ?, ?, '4242', ?,
+                'plaid://blank', 'plaid', 'blank_inst',
+                '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [blank, blank, blank],
+    )
+    _link(
+        db,
+        link_id="lnk-plaid-bl",
+        account_id="canon-plaid-bl",
+        ref_value="plaid-blank",
+        source_type="plaid",
+        source_origin="blank_inst",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT account_subtype, institution_name, official_name, display_name "
+        "FROM core.dim_accounts WHERE account_id = ?",
+        ["canon-plaid-bl"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None, f"blank subtype survived as {row[0]!r}"
+    assert row[1] is None, f"blank institution_name survived as {row[1]!r}"
+    assert row[2] is None, f"blank official_name survived as {row[2]!r}"
+    assert "  " not in row[3] and not row[3].startswith(" "), (
+        f"display_name is malformed: {row[3]!r}"
+    )
