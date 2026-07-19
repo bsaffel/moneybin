@@ -502,3 +502,9 @@ def register_taxonomy_coarse_writes(mcp: FastMCP) -> None:
         "risk and confirms only batches containing a resolved hard delete.",
         privacy_actor="taxonomy_set",
     )
+
+
+def register_taxonomy_tools(mcp: FastMCP) -> None:
+    """Register the standard taxonomy read and target-state boundaries."""
+    register_taxonomy_coarse_reads(mcp)
+    register_taxonomy_coarse_writes(mcp)

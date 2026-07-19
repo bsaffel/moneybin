@@ -985,49 +985,13 @@ def register_system_coarse_reads(mcp: FastMCP) -> None:
 
 
 def register_system_tools(mcp: FastMCP) -> None:
-    """Register all system namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        system_status,
-        "system_status",
-        "Return data inventory (accounts, transactions, freshness), pending review queue counts, "
-        "and a transforms-pending signal indicating whether derived tables need a refresh. "
-        "Call this first to orient before suggesting analytical queries.",
-    )
-    register(
-        mcp,
-        system_doctor,
-        "system_doctor",
-        "Run pipeline integrity checks across all SQLMesh named audits. "
-        "Returns pass/fail/warn per invariant plus transaction count. "
-        "Failing and warning invariants include a `recovery_actions` list of "
-        "pre-built, directly-executable tool calls (tool, arguments, rationale, "
-        "confidence, idempotent) the agent can dispatch to remediate the issue "
-        "without further reasoning. "
-        "May write SQLMesh state tables on first call. Call before relying on analytical results to confirm the pipeline is self-consistent.",
-    )
+    """Register the standard system orientation and recovery boundaries."""
+    register_system_coarse_reads(mcp)
     register(
         mcp,
         system_audit_undo,
         "system_audit_undo",
-        "Reverse every app.* mutation in one operation as a unit, keyed on operation_id. "
-        "Synthesizes each row's inverse from its audit before/after image; writes new audit rows under a fresh operation_id, so the undo is itself undoable (returned as undo_operation_id). "
-        "Block-don't-cascade: if a later operation modified the same rows it refuses with undo_cascade_blocked and lists the blockers (newest first) in recovery_actions — undo those first. "
-        "Other refusals: undo_operation_not_found, undo_already_undone, recovery_no_path (op touched a table outside the undoable app.* surface). "
-        "Writes app.audit_log + the reversed app.* rows; revert by calling system_audit_undo on the returned undo_operation_id.",
-    )
-    register(
-        mcp,
-        system_audit_history,
-        "system_audit_history",
-        "List recent audited operations, newest first — the pull surface for reversing a change when no error preceded the regret. "
-        "Each entry carries can_undo and, when blocked, undo_blocked_by (operation ids to undo first). Operator territory. "
-        "domain filters to an action family (e.g. 'tag'); include_undone adds the undo operations themselves (hidden by default).",
-    )
-    register(
-        mcp,
-        system_audit_get,
-        "system_audit_get",
-        "Full before/after for every row of one operation — inspect exactly what system_audit_undo would change before running it. "
-        "before_value/after_value can carry financial amounts (high sensitivity). Raises undo_operation_not_found for a bad operation_id.",
+        "Undo one complete audited operation by operation_id. The inverse "
+        "mutation is itself audited and undoable; dependency conflicts return "
+        "the blocking operation IDs.",
     )

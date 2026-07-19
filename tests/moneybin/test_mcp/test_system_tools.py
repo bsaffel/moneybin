@@ -662,7 +662,7 @@ async def test_register_undo_tools() -> None:
     srv = FastMCP("test")
     register_system_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert {"system_audit_undo", "system_audit_history", "system_audit_get"} <= names
+    assert names == {"system_status", "system_audit", "system_audit_undo"}
 
 
 @pytest.mark.unit

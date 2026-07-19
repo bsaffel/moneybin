@@ -122,11 +122,6 @@ class ReportSpec:
         object.__setattr__(self, "classes", MappingProxyType(dict(self.classes)))
 
     @property
-    def mcp_tool_name(self) -> str:
-        """Transitional legacy FastMCP name, e.g. ``reports_large_transactions``."""
-        return f"reports_{self.name}"
-
-    @property
     def cli_name(self) -> str:
         """Typer command name, e.g. ``large-transactions``."""
         return self.name.replace("_", "-")

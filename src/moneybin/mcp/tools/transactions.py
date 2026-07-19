@@ -450,8 +450,8 @@ def register_transaction_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         transactions_coarse,
         "transactions",
-        "Query operational transactions by resolved account or merchant, date, "
-        "category, amount, and text with exact cursor pagination. Amounts use "
+        "Query operational transactions with exact cursor pagination. Filter "
+        "by resolved account or merchant, date, category, amount, or text. Amounts use "
         "the accounting convention: negative = expense, positive = income; "
         "transfers exempt. Currency is named by summary.display_currency.",
         privacy_actor="transactions",
@@ -806,73 +806,6 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
 
 
 def register_transactions_tools(mcp: FastMCP) -> None:
-    """Register all transactions namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        transactions_get,
-        "transactions_get",
-        "Fetch transactions with optional filtering by account, date range, category, "
-        "amount, and description pattern. Returns full transaction records including "
-        "curation fields (notes, tags, splits). "
-        "Amounts use the accounting convention: negative = expense, positive = income; "
-        "transfers exempt. Amounts are in the currency named by `summary.display_currency`. "
-        "`accounts` accepts display names or exact account IDs — call the `accounts` "
-        "tool to discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
-    )
-    register(
-        mcp,
-        review,
-        "review",
-        "Return pending counts across all four review queues "
-        "(matches, categorize, account-links, merchant-links). "
-        "Call this to answer 'what needs my attention?' in one sweep. "
-        "Drill into `transactions_matches_pending` for match proposals, "
-        "`transactions_categorize_pending` for uncategorized transactions, "
-        "`accounts_links_pending` for account-link decisions, "
-        "and `merchants_links_pending` for merchant-link decisions.",
-    )
-    register(
-        mcp,
-        transactions_review,
-        "transactions_review",
-        "DEPRECATED: use `review` — removed after one minor release. "
-        "Return pending counts for matches, categorize, account-links, and "
-        "merchant-links queues. "
-        "Call this to orient before fetching specific queue contents.",
-    )
-    register(
-        mcp,
-        transactions_matches_set,
-        "transactions_matches_set",
-        "Accept or reject one pending transaction match by match_id. "
-        "Mutation of app.match_decisions; only pending decisions are settable. "
-        "Rejecting an already-accepted match errors — reverse via the CLI "
-        "`moneybin transactions matches undo`. Discover ids with "
-        "transactions_matches_pending.",
-    )
-    register(
-        mcp,
-        transactions_matches_pending,
-        "transactions_matches_pending",
-        "List pending transaction matches (dedup/transfer pairs) awaiting "
-        "accept/reject. Returns pair ids and confidence — no amounts/descriptions; "
-        "the confidence score is the decision signal. `summary.has_more` flags more "
-        "beyond `limit`. Pair with transactions_matches_set to decide.",
-    )
-    register(
-        mcp,
-        transactions_matches_run,
-        "transactions_matches_run",
-        "Run the matcher (dedup + transfer detection) over existing transactions, "
-        "proposing pending matches for review. Operator-level granular alternative "
-        "to refresh_run; does not auto-accept. Review results with "
-        "transactions_matches_pending.",
-    )
-    register(
-        mcp,
-        transactions_matches_history,
-        "transactions_matches_history",
-        "Recent transaction match decisions (accepted/rejected/reversed), newest "
-        "first. Filter by match_type (dedup/transfer) and limit. Read-only. Use "
-        "transactions_matches_pending for the active queue.",
-    )
+    """Register the standard operational transaction boundaries."""
+    register_transaction_coarse_reads(mcp)
+    register_transaction_coarse_writes(mcp)

@@ -71,7 +71,8 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         # quiet has nothing to silence here: the text renderer emits only the
         # results table (no status chatter) and JSON output ignores it.
         kwargs.pop("quiet", None)
-        with handle_cli_errors(cli_actor=spec.mcp_tool_name):
+        cli_actor = f"reports_{spec.name}"
+        with handle_cli_errors(cli_actor=cli_actor):
             # Runner enum/validation errors raise bare ValueError; let it
             # propagate to handle_cli_errors, which classifies ValueError →
             # INFRA_INVALID_INPUT and emits the JSON error envelope under
@@ -97,7 +98,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 result.to_envelope(),
                 output,
                 render_fn=_render_text,
-                cli_actor=spec.mcp_tool_name,
+                cli_actor=cli_actor,
                 # Bare-list payload + lineage-derived classes: pass them
                 # explicitly so the privacy.log audit event records the real
                 # data classes instead of an empty set (same as `sql query`).

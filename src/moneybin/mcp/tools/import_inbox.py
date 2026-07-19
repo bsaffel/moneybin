@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastmcp import FastMCP
-
 from moneybin.database import get_database
-from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingPayload,
@@ -157,24 +154,4 @@ def read_import_inbox_pending() -> ImportInboxPendingPayload:
     return ImportInboxPendingPayload(
         would_process=list_result.would_process,
         ignored=list_result.ignored,
-    )
-
-
-def register_inbox_tools(mcp: FastMCP) -> None:
-    """Register the two inbox tools with the MCP server."""
-    register(
-        mcp,
-        import_inbox_sync,
-        "import_inbox_sync",
-        "Drain the active profile's import inbox; move successes to "
-        "processed/ and failures to failed/ with structured error sidecars. "
-        "Runs the post-load refresh pipeline once at end-of-batch when any file succeeded; "
-        "pass refresh=false to defer the rebuild and call refresh_run later. "
-        "Writes to raw.* source tables and moves files within the inbox directory; revert by manually moving processed files back into inbox/<account-slug>/ and accepting that already-imported source rows are deduplicated on the next sync.",
-    )
-    register(
-        mcp,
-        import_inbox_pending,
-        "import_inbox_pending",
-        "Preview pending items in the active profile's import inbox without moving anything.",
     )

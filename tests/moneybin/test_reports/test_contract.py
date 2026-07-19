@@ -121,7 +121,7 @@ def test_build_spec_derives_surface_names() -> None:
     spec = _build_spec(
         name="large_transactions",
     )
-    assert spec.mcp_tool_name == "reports_large_transactions"
+    assert not hasattr(spec, "mcp_tool_name")
     assert spec.cli_name == "large-transactions"
 
 

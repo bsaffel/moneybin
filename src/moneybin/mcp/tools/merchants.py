@@ -16,13 +16,10 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from fastmcp import FastMCP
-
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
-from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
     ConfirmationGrant,
@@ -482,76 +479,4 @@ def merchants_links_run() -> ResponseEnvelope[MerchantLinksRunPayload]:
     return build_envelope(
         data=MerchantLinksRunPayload(bound=result.bound, conflicts=result.conflicts),
         actions=["Use merchants_links_pending to review the queued conflicts"],
-    )
-
-
-def register_merchants_tools(mcp: FastMCP) -> None:
-    """Register all merchants namespace tools with the FastMCP server."""
-    register(mcp, merchants, "merchants", "List all merchant name mappings.")
-    register(
-        mcp,
-        merchants_create,
-        "merchants_create",
-        "Create multiple merchant name mappings for description "
-        "normalization and auto-categorization. "
-        "Writes app.user_merchants; no built-in delete tool — revert by editing or repointing the row directly via SQL.",
-    )
-    register(
-        mcp,
-        merchants_links_pending,
-        "merchants_links_pending",
-        "List pending merchant-link decisions grouped by provider entity id "
-        "(e.g. Plaid merchant_entity_id). Returns the review queue of provider "
-        "entity ids with candidate canonical merchant proposals. Each candidate "
-        "carries decision_id, merchant_id, canonical name, and confidence score. "
-        "Sensitivity: low for ids (ref_value, candidate_merchant_id = RECORD_ID); "
-        "medium for names (provider_merchant_name, candidate_canonical_name = MERCHANT_NAME). "
-        "Use merchants_links_set to bind or reject each decision. "
-        "Run merchants_links_run first to backfill proposals for pre-existing data.",
-    )
-    register(
-        mcp,
-        merchants_links_run,
-        "merchants_links_run",
-        "Harvest merchant-link proposals from existing categorization facts. "
-        "Binds unambiguous provider entity id → merchant pairings and routes "
-        "conflicts to the pending review queue. Writes app.merchant_links + "
-        "app.merchant_link_decisions; skips pairs already proposed or decided. "
-        "Returns data.bound (entity ids silently bound to one merchant) and "
-        "data.conflicts (one-id-many-merchant cases queued for review) — bound "
-        "bindings are NOT pending. "
-        "Mutation surface: writes app.merchant_links + app.merchant_link_decisions; "
-        "revert via app.audit_log (no undo tool yet). "
-        "Review queued conflicts with merchants_links_pending.",
-    )
-    register(
-        mcp,
-        merchants_links_set,
-        "merchants_links_set",
-        "Accept (bind) or reject one pending merchant-link decision. "
-        "action='accept' + target_merchant_id=<the decision's own "
-        "candidate_merchant_id> BINDS the provider entity id to that canonical "
-        "merchant: it prompts the user to confirm (MCP elicitation naming both "
-        "sides and the confidence) and binds only on their explicit agreement — "
-        "the binding attributes every transaction carrying that entity id to the "
-        "merchant, so the agent cannot accept one on its own. On a client without "
-        "elicitation, accept fails with mutation_confirmation_required and returns "
-        "a short-lived opaque confirmation_token; repeat the exact retry with that "
-        "token. target_merchant_id must equal the decision's own "
-        "candidate (mismatched, empty, or missing target_merchant_id raises "
-        "mutation_invalid_input — it is NEVER read as a reject). action='reject' "
-        "(no target_merchant_id) rejects ALL pending candidates for this provider "
-        "entity id; the id stays unbound, the declined pairings are not "
-        "re-proposed, and the resolver mints a new merchant for the id on its next "
-        "categorization pass. Writes app.merchant_link_decisions + "
-        "app.merchant_links; reverse with system_audit_undo(operation_id). "
-        "Discover pending decisions with merchants_links_pending.",
-    )
-    register(
-        mcp,
-        merchants_links_history,
-        "merchants_links_history",
-        "Recent merchant-link decisions (all statuses), newest first. "
-        "Read-only. Filter by limit. Use merchants_links_pending for the "
-        "active review queue.",
     )

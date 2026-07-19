@@ -867,3 +867,9 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         "batch and complete live before-state; reject-only batches do not prompt.",
         privacy_actor="identity_links_decide",
     )
+
+
+def register_review_tools(mcp: FastMCP) -> None:
+    """Register the standard normalized review boundaries."""
+    register_review_coarse_reads(mcp)
+    register_review_coarse_writes(mcp)

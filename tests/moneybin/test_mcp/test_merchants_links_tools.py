@@ -13,7 +13,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastmcp import FastMCP
 from fastmcp.server.elicitation import (
     AcceptedElicitation,
     CancelledElicitation,
@@ -26,7 +25,6 @@ from moneybin.mcp.tools.merchants import (
     merchants_links_pending,
     merchants_links_run,
     merchants_links_set,
-    register_merchants_tools,
 )
 from moneybin.mcp.tools.reviews import identity_links_decide_coarse
 from moneybin.mcp.write_contracts import MerchantLinkDecisionRequest
@@ -995,39 +993,6 @@ class TestMerchantsLinksRun:
         result = (await merchants_links_run()).to_dict()
         actions_text = " ".join(result["actions"])
         assert "merchants_links_pending" in actions_text
-
-
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
-
-
-class TestMerchantsLinksRegistration:
-    """Verify merchants_links_* tools are registered with the FastMCP server."""
-
-    async def test_tools_registered(self) -> None:
-        """register_merchants_tools includes all four merchants_links_* tools."""
-        srv = FastMCP("test")
-        register_merchants_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert "merchants_links_pending" in names
-        assert "merchants_links_set" in names
-        assert "merchants_links_history" in names
-        assert "merchants_links_run" in names
-
-    async def test_set_description_explains_opaque_token_retry(self) -> None:
-        """Unsupported clients can discover the exact confirmation retry flow."""
-        srv = FastMCP("test")
-        register_merchants_tools(srv)
-        tool = next(
-            t
-            for t in await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-            if t.name == "merchants_links_set"
-        )
-        description = (tool.description or "").lower()
-        assert "opaque" in description
-        assert "confirmation_token" in description
-        assert "exact retry" in description
 
 
 # ---------------------------------------------------------------------------

@@ -224,12 +224,12 @@ async def test_sync_link_mcp_tool_registered() -> None:
 
 
 @pytest.mark.unit
-async def test_sync_link_status_mcp_tool_registered() -> None:
-    """The new sync_link_status tool is registered with MCP."""
+async def test_sync_status_mcp_tool_registered() -> None:
+    """The consolidated sync_status tool handles link-session polling."""
     srv = FastMCP("test")
     register_sync_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "sync_link_status" in names
+    assert names == {"sync_link", "sync_status", "sync_pull", "sync_disconnect"}
 
 
 @pytest.mark.unit

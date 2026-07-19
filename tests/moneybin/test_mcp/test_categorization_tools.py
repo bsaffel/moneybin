@@ -20,9 +20,8 @@ from moneybin.mcp.tools.categories import (
     categories,
     categories_delete,
     categories_set,
-    register_categories_tools,
 )
-from moneybin.mcp.tools.merchants import register_merchants_tools
+from moneybin.mcp.tools.taxonomy import register_taxonomy_tools
 from moneybin.mcp.tools.transactions_categorize import (
     register_categorization_coarse_reads,
     register_categorization_coarse_writes,
@@ -56,8 +55,7 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 
 async def _registered_names() -> set[str]:
     srv = FastMCP("test")
-    register_categories_tools(srv)
-    register_merchants_tools(srv)
+    register_taxonomy_tools(srv)
     register_transactions_categorize_tools(srv)
     register_transactions_categorize_assist_tools(srv)
     return {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -69,21 +67,15 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     async def test_all_categorize_tools_register(self) -> None:
         names = await _registered_names()
-        assert "categories" in names
-        assert "transactions_categorize_rules" in names
-        assert "merchants" in names
-        assert "transactions_categorize_stats" in names
-        assert "transactions_categorize_pending" in names
-        assert "transactions_categorize_commit" in names
-        assert "transactions_categorize_rules_create" in names
-        assert "transactions_categorize_rules_delete" in names
-        assert "merchants_create" in names
-        assert "categories_create" in names
-        assert "categories_set" in names
-        assert "categories_delete" in names
-        assert "transactions_categorize_assist" in names
-        assert "transactions_categorize_run" in names
-        assert "transactions_categorize_improve_ai" in names
+        assert names == {
+            "taxonomy",
+            "taxonomy_set",
+            "transactions_categorize_rules",
+            "transactions_categorize_rules_set",
+            "transactions_categorize_commit",
+            "transactions_categorize_assist",
+            "transactions_categorize_run",
+        }
 
     @pytest.mark.unit
     async def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
@@ -100,17 +92,6 @@ class TestCategorizeToolRegistration:
         assert "data" in cat_result
         # data is now a typed CategoriesPayload dict with a "categories" list field
         assert isinstance(cat_result["data"]["categories"], list)
-
-    @pytest.mark.unit
-    async def test_register_includes_auto_rule_tools(self) -> None:
-        names = await _registered_names()
-        # transactions_categorize_auto_stats was removed — its functionality
-        # is now available via transactions_categorize_stats(include_auto=True).
-        assert {
-            "transactions_categorize_auto_review",
-            "transactions_categorize_auto_accept",
-        } <= names
-        assert "transactions_categorize_auto_stats" not in names
 
 
 class TestCategorySetWritePath:

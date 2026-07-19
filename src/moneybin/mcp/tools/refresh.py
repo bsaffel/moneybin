@@ -66,26 +66,10 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         mcp,
         refresh_run,
         "refresh_run",
-        "Run the post-load refresh pipeline: cross-source matching, "
-        "SQLMesh apply, deterministic categorization, and account/merchant "
-        "identity proposal backfill. The single "
-        "always-visible entry point for refreshing derived tables (core.* "
-        "and reports.*) from raw inputs. Idempotent — safe to retry. "
-        "Accepts optional steps (list of 'gsheet', 'match', 'transform', "
-        "'categorize', 'identity') to scope which sub-operations execute; defaults to "
-        "the full cascade. "
-        "Steps execute in canonical order (gsheet → match → transform → "
-        "categorize → identity) regardless of input order. "
-        "Best-effort match/categorize crashes surface as matching_error/"
-        "categorization_error plus recovery_actions (a targeted refresh_run retry and "
-        "system_doctor). Identity failures surface as identity_errors only; successful "
-        "domains point to reviews(kind='account_links'|'merchant_links'). "
-        "Only SQLMesh apply errors set the top-level error. "
-        "Mutation surface: rebuilds core.* and reports.* views via SQLMesh "
-        "and writes app.transaction_categories plus reviewable app account/merchant "
-        "identity proposal state. "
-        "No revert path; re-run after fixing inputs. "
-        "Symmetric with transactions_categorize_run(methods=...). "
-        "For SQLMesh-step granularity beyond apply, use the CLI: "
-        "`moneybin transform plan|validate|audit|status` (CLI-only operator tools).",
+        "Run the post-load refresh pipeline. By default it performs Google "
+        "Sheets pull, matching, SQLMesh apply, deterministic categorization, "
+        "and identity proposal backfill in canonical order. Pass steps to "
+        "select from gsheet, match, transform, categorize, and identity. "
+        "Rebuilds core.* and reports.* and may write app categorization or "
+        "identity-review state. No revert path; fix inputs and rerun.",
     )

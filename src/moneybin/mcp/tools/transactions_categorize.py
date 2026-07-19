@@ -639,110 +639,22 @@ def transactions_categorize_improve_ai() -> ResponseEnvelope[ImproveAiPayload]:
 
 
 def register_transactions_categorize_tools(mcp: FastMCP) -> None:
-    """Register all transactions categorize namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        transactions_categorize_rules,
-        "transactions_categorize_rules",
-        "List all active categorization rules.",
-    )
-    register(
-        mcp,
-        transactions_categorize_stats,
-        "transactions_categorize_stats",
-        "Get categorization coverage statistics: total, categorized, uncategorized, "
-        "percent, and breakdown by source. In by_source, 'rule' counts rows "
-        "categorized by a persisted rule and 'merchant_map' counts rows the "
-        "merchant-map engine categorized (both are stored as categorized_by='rule'; "
-        "the split is reporting-only, so 'rule' reconciles with the list from "
-        "transactions_categorize_rules). Pass include_auto=True to also include "
-        "auto-rule health metrics (active rules, pending proposals, transactions "
-        "categorized by auto-rules); the response data becomes "
-        "{overall: {...}, auto: {...}} instead of the flat shape.",
-    )
-    register(
-        mcp,
-        transactions_categorize_pending,
-        "transactions_categorize_pending",
-        "Find transactions that have not been categorized yet. "
-        "Excludes archived accounts and transfers whose pair has already been "
-        "matched. A transfer whose pair is NOT yet matched still appears here, "
-        "flagged pending_transfer_match=true — categorizing such a row "
-        "double-counts it against the eventual transfer pair, so resolve "
-        "matching first. "
-        "sort='impact' ranks by ABS(amount)*age_days (largest-value/oldest first); "
-        "sort='date' (default) orders by most recent first. "
-        "Filter by min_amount (absolute value) and account (account_id or display_name). "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
+    """Register the standard categorization read and write boundaries."""
+    register_categorization_coarse_reads(mcp)
     register(
         mcp,
         transactions_categorize_commit,
         "transactions_categorize_commit",
-        "Commit externally-decided categorizations for a batch of transactions. "
-        "Auto-creates merchant mappings for future auto-categorization. "
-        "Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category.",
-    )
-    register(
-        mcp,
-        transactions_categorize_rules_create,
-        "transactions_categorize_rules_create",
-        "Create multiple categorization rules for automatic "
-        "transaction categorization. Idempotent: rules are deduped against "
-        "active rules by matcher+output (merchant_pattern, match_type, "
-        "min/max_amount, account_id, category, subcategory); name and "
-        "priority are metadata. Retries return the existing rule_id. "
-        "A NEW 'contains' rule whose pattern is too short to discriminate "
-        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL) is refused and "
-        "reported in error_details unless allow_broad=true — use "
-        "match_type='exact' for a short pattern, or set allow_broad=true to "
-        "accept the risk. An already-active rule is returned as-is, ungated. "
-        "Writes app.categorization_rules; revert with transactions_categorize_rules_delete (soft-delete sets active=False).",
-    )
-    register(
-        mcp,
-        transactions_categorize_rules_delete,
-        "transactions_categorize_rules_delete",
-        "Soft-delete a categorization rule (set inactive). "
-        "Updates app.categorization_rules.active=False; the rule row is preserved and can be reactivated by re-creating with the same fields (no built-in reactivate tool).",
-    )
-    register(
-        mcp,
-        transactions_categorize_auto_review,
-        "transactions_categorize_auto_review",
-        "List pending auto-rule proposals with sample transactions and trigger counts, "
-        "including estimated_match_count and is_broad — a proposal flagged is_broad "
-        "requires allow_broad=True on transactions_categorize_auto_accept to be accepted.",
-    )
-    register(
-        mcp,
-        transactions_categorize_auto_accept,
-        "transactions_categorize_auto_accept",
-        "Batch accept/reject auto-rule proposals. Accepted "
-        "proposals become active rules and immediately categorize "
-        "matching transactions. Two kinds of proposal are skipped, not promoted, "
-        "unless allow_broad=True: one flagged is_broad (estimated_match_count far "
-        "exceeds its evidence — a broad rule recategorizes many transactions at "
-        "once), and one whose 'contains' pattern is too short to discriminate "
-        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL). "
-        "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
+        "Commit a caller-reviewed categorization batch to "
+        "app.transaction_categories and app.user_merchants. Re-categorize a "
+        "transaction to replace a prior decision.",
     )
     register(
         mcp,
         transactions_categorize_run,
         "transactions_categorize_run",
-        "Run the categorization engine cascade (rules and/or merchants) over uncategorized transactions. "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
-        "Writes app.transaction_categories via the named engine(s); revert by calling transactions_categorize_commit with a different category, or by soft-deleting the source rule via transactions_categorize_rules_delete(reapply=True).",
+        "Run the selected deterministic categorization engines over "
+        "uncategorized transactions. Amounts use the accounting convention: "
+        "negative = expense, positive = income; transfers exempt.",
     )
-    register(
-        mcp,
-        transactions_categorize_improve_ai,
-        "transactions_categorize_improve_ai",
-        "Re-categorize AI-guessed transactions to confident provider-native "
-        "(Plaid PFC) categories. Only rewrites rows currently "
-        "categorized_by='ai'; never overrides user, rule, or merchant "
-        "categorizations. Writes app.transaction_categories; revert by "
-        "re-categorizing the transaction (a user edit wins at priority 1).",
-    )
+    register_categorization_coarse_writes(mcp)

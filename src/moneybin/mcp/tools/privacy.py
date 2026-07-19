@@ -524,40 +524,6 @@ def register_privacy_coarse_writes(mcp: FastMCP) -> None:
 
 
 def register_privacy_tools(mcp: FastMCP) -> None:
-    """Register privacy namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        privacy_consent_grant,
-        "privacy_consent_grant",
-        "Record consent to share a data category (mcp-data-sharing, "
-        "smart-import-parsing, ml-categorization, matching-overview) with your "
-        "AI backend. CRITICAL fields (account/routing numbers) always stay "
-        "masked. Writes app.ai_consent_grants (one active grant per "
-        "category+backend; idempotent); revert with privacy_consent_revoke. "
-        "Named _grant (not _set) because recording consent is an authorization "
-        "event, not a generic state assertion.",
-    )
-    register(
-        mcp,
-        privacy_consent_revoke,
-        "privacy_consent_revoke",
-        "Revoke consent for a data category; effective immediately. Writes "
-        "app.ai_consent_grants (sets revoked_at; row retained for audit); "
-        "revert by calling privacy_consent_grant again. Named _revoke (not "
-        "_delete) to preserve the consent-withdrawal semantics a generic "
-        "delete would erase — the row is retained, not removed.",
-    )
-    register(
-        mcp,
-        privacy_status,
-        "privacy_status",
-        "Show active AI consent grants, the configured backend, and consent "
-        "policy (standard/strict). Read-only.",
-    )
-    register(
-        mcp,
-        privacy_log,
-        "privacy_log",
-        "Return recent privacy log events (consent grants/revokes and tool "
-        "calls). Read-only metadata; no financial data.",
-    )
+    """Register the standard privacy read and consent boundaries."""
+    register_privacy_coarse_reads(mcp)
+    register_privacy_coarse_writes(mcp)

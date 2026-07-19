@@ -1,14 +1,12 @@
-"""Discover ``@report`` runners and register them on explicit surfaces.
+"""Discover ``@report`` runners and register them on the CLI and catalog.
 
 In-tree reports are collected from an explicit list (the ``definitions``
 package's exports); ``discover_reports`` scans a module's members for the same
 ``_report_spec`` marker. Extensions join the process-local catalog and their
-own Typer app through ``register_extension_reports`` without touching MCP.
-The combined core MCP+CLI registrars remain transitional until Plan 6.
+own Typer app through ``register_extension_reports`` without touching MCP. The
+MCP surface has one generic catalog/runner independent of report count.
 
-Cold-start: the per-surface registrars are imported lazily inside each function
-so importing this module from the CLI path never pulls ``fastmcp`` (via
-``mcp_register``); ``cli_register`` in turn defers ``execute``/``sqlglot``.
+Cold-start: ``cli_register`` defers ``execute``/``sqlglot``.
 """
 
 from __future__ import annotations
@@ -70,34 +68,6 @@ def spec_of(runner: Runner) -> ReportSpec:
         name = getattr(runner, "__name__", repr(runner))
         raise ValueError(f"{name} is not a @report runner (missing _report_spec).")
     return spec
-
-
-def register_report(runner: Runner, mcp: FastMCP, app: typer.Typer) -> ReportSpec:
-    """Register one ``@report`` runner on both the MCP and CLI surfaces."""
-    from moneybin.reports._framework.cli_register import register_report_cli
-    from moneybin.reports._framework.mcp_register import register_report_mcp
-
-    spec = spec_of(runner)
-    register_report_mcp(spec, mcp)
-    register_report_cli(spec, app)
-    return spec
-
-
-def register_reports(
-    runners: Iterable[Runner], mcp: FastMCP, app: typer.Typer
-) -> list[ReportSpec]:
-    """Register every runner in ``runners`` on both surfaces; return their specs."""
-    return [register_report(runner, mcp, app) for runner in runners]
-
-
-def register_reports_mcp(runners: Iterable[Runner], mcp: FastMCP) -> list[ReportSpec]:
-    """Register ``runners`` on the MCP surface only (the server wires MCP alone)."""
-    from moneybin.reports._framework.mcp_register import register_report_mcp
-
-    specs = [spec_of(r) for r in runners]
-    for spec in specs:
-        register_report_mcp(spec, mcp)
-    return specs
 
 
 def register_reports_cli(

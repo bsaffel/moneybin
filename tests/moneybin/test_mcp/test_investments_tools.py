@@ -221,16 +221,9 @@ class TestRegistration:
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert names == {
             "investments",
-            "investments_holdings",
-            "investments_lots",
-            "investments_gains",
-            "investments_securities",
             "investments_record",
             "investments_securities_set",
             "investments_lots_select",
-            "investments_securities_links_pending",
-            "investments_securities_links_set",
-            "investments_securities_links_history",
         }
 
     @pytest.mark.unit

@@ -30,12 +30,7 @@ async def test_register_privacy_tools_registers_expected() -> None:
     srv = FastMCP("test")
     register_privacy_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert {
-        "privacy_consent_grant",
-        "privacy_consent_revoke",
-        "privacy_status",
-        "privacy_log",
-    } <= names
+    assert names == {"privacy", "privacy_consent_set"}
 
 
 async def test_grant_consent_tool(

@@ -77,3 +77,32 @@ class TestCloseDb:
         with patch("moneybin.observability.flush_metrics") as mock_flush:
             server.close_db()
         mock_flush.assert_called_once()
+
+
+def test_server_instructions_orient_to_standard_surface() -> None:
+    """Session onboarding names final workflows and shared trust semantics."""
+    assert server.mcp.instructions is not None
+    instructions = server.mcp.instructions.lower()
+
+    for required in (
+        "system_status",
+        "negative = expense",
+        "positive = income",
+        "summary.display_currency",
+        "degrade",
+        "confirmation",
+        "system_audit",
+        "system_audit_undo",
+        "reports",
+        "report_id",
+        "sql_query",
+        "read-only",
+    ):
+        assert required in instructions
+    for deprecated in (
+        "reports_networth",
+        "accounts_summary",
+        "transactions_get",
+        "pack",
+    ):
+        assert deprecated not in instructions

@@ -18,11 +18,11 @@ async def test_refresh_run_is_registered() -> None:
     register_refresh_tools(mcp)
     tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     names = {tool.name for tool in tools}
-    assert "refresh_run" in names
+    assert names == {"refresh_run"}
     description = next(tool.description for tool in tools if tool.name == "refresh_run")
     assert description is not None
-    assert "Identity failures surface as identity_errors only" in description
-    assert "identity_errors plus recovery_actions" not in description
+    assert "canonical order" in description
+    assert "No revert path" in description
 
 
 @pytest.mark.unit

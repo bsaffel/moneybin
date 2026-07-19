@@ -21,15 +21,58 @@ if TYPE_CHECKING:
 # of the budget is smaller still for anyone running a second server alongside us.
 WINDSURF_ACTIVE_TOOL_CAP = 100
 
-# Tools a client receives at connect. MoneyBin retired client-driven progressive
-# disclosure (`mcp-architecture.md` §3), so every registered tool is visible and
-# "registered" and "visible" are the same number.
-VISIBLE_TOOL_COUNT = 105
-
-# The standard registry is deliberately still pre-cutover at 105 tools. Plan 6 turns
-# on the count and description gates together when it replaces this registry at 45.
+STANDARD_TOOL_NAMES = frozenset({
+    "system_status",
+    "system_audit",
+    "system_audit_undo",
+    "reports",
+    "accounts",
+    "accounts_set",
+    "accounts_balances",
+    "accounts_balance_assert",
+    "investments",
+    "investments_record",
+    "investments_securities_set",
+    "investments_lots_select",
+    "transactions",
+    "transactions_create",
+    "transactions_annotate",
+    "transactions_categorize_assist",
+    "transactions_categorize_commit",
+    "transactions_categorize_run",
+    "transactions_categorize_rules",
+    "transactions_categorize_rules_set",
+    "reviews",
+    "reviews_decide",
+    "identity_links_decide",
+    "taxonomy",
+    "taxonomy_set",
+    "import_files",
+    "import_preview",
+    "import_confirm",
+    "import_status",
+    "import_revert",
+    "import_inbox_sync",
+    "import_labels_set",
+    "sync_link",
+    "sync_status",
+    "sync_pull",
+    "sync_disconnect",
+    "gsheet",
+    "gsheet_connect",
+    "gsheet_pull",
+    "gsheet_disconnect",
+    "privacy",
+    "privacy_consent_set",
+    "refresh_run",
+    "sql_query",
+    "sql_schema",
+})
+STANDARD_TOOL_COUNT = 45
+VISIBLE_TOOL_COUNT = STANDARD_TOOL_COUNT
 HARD_TOOL_LIMIT = 50
 CARRYING_WEIGHT_REVIEW_AT = 40
+ADMITTED_OUTPUT_SCHEMA_NAMES: frozenset[str] = frozenset()
 
 DESCRIPTION_OPENING_LENGTH = 60
 FIRST_SENTENCE_CHARACTER_LIMIT = 120

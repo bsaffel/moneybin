@@ -98,9 +98,9 @@ async def test_extension_report_joins_catalog_and_cli_without_mcp_growth() -> No
     after_tools = await listed_tools()
     after = {tool.name for tool in after_tools}
     assert after == before
-    assert len(after) == 105
+    assert len(after) == 45
     assert all(tool.output_schema is None for tool in after_tools)
-    assert "reports" not in after
+    assert "reports" in after
     assert "reports_forecast" not in after
     assert get_report_catalog().resolve("retirement:forecast") is spec_of(
         RETIREMENT_RUNNER

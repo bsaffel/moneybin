@@ -292,13 +292,11 @@ async def test_matches_run_threads_mcp_actor(
 
 
 @pytest.mark.unit
-async def test_register_includes_review_status() -> None:
-    """register_transactions_tools registers transactions_review."""
+async def test_standard_registrar_has_no_review_aliases() -> None:
     srv = FastMCP("test")
     register_transactions_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "transactions_review" in names
-    assert "transactions_recurring_list" not in names
+    assert names == {"transactions", "transactions_annotate"}
 
 
 @pytest.mark.unit

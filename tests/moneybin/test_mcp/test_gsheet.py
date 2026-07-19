@@ -87,23 +87,20 @@ def _make_load_result() -> LoadResult:
 
 
 _EXPECTED_GSHEET_TOOLS = {
-    "gsheet_auth",
     "gsheet",
     "gsheet_connect",
     "gsheet_pull",
-    "gsheet_status",
-    "gsheet_reconnect",
     "gsheet_disconnect",
 }
 
 
 @pytest.mark.unit
 async def test_register_gsheet_tools_registers_expected_tools() -> None:
-    """All seven gsheet_* MCP tools (including gsheet_auth) register."""
+    """The standard Google Sheets workflow registers without aliases."""
     srv = FastMCP("test")
     register_gsheet_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert _EXPECTED_GSHEET_TOOLS <= names
+    assert names == _EXPECTED_GSHEET_TOOLS
 
 
 @pytest.mark.unit

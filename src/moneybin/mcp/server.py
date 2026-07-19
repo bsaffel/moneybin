@@ -28,20 +28,17 @@ mcp = FastMCP(
         """\
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
-        Top-level domains:
-        - accounts, transactions (query/correct/annotate/match/categorize), investments (ledger, holdings, lots, realized gains, securities catalog), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
-        - categories, merchants (taxonomy reference data)
-        - system (status, audit), import, sync (Plaid-mediated), gsheet (Google Sheets live sync), refresh (rebuild derived tables), sql (read-only escape hatch)
+        Standard tools cover system, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
 
-        Tool names: domain_<sub>_verb, verb at end — transactions_categorize_commit, reports_networth, accounts_balance_assert.
+        Call system_status first to inspect available data, freshness, review queues, and whether derived core.* tables need refresh_run. Call reports() without a report_id to discover registered analytics, then pass a stable report_id and parameters to run one. sql_query is the privacy-safe read-only SQL escape hatch; use sql_schema for its curated schema.
 
-        Start with system_status — shows what data exists, freshness, pending review queues, and whether core.* tables need a refresh (system_status.data.transforms.pending → call refresh_run).
+        Every tool returns {summary, data, actions}. Prefer batch tools; list parameters are capped per call, and summary.has_more plus actions explain continuation.
 
-        Every tool returns {summary, data, actions}. Pagination via summary.has_more; actions[] suggests next steps and explains how to widen capped defaults. Prefer batch tools; list parameters are capped per-call.
+        Money amounts are JSON numbers in summary.display_currency. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
-        Money amounts are JSON numbers in `summary.display_currency`; negative = expense, positive = income (transfers exempt). Month-bucket fields (year_month, period) are 'YYYY-MM' strings.
+        Privacy tiers are low, medium, high, and critical. Without required consent, responses degrade to safe aggregates instead of failing; critical account and routing fields remain masked.
 
-        Sensitivity tiers low/medium/high. Without consent, tools degrade to aggregates — they never fail.
+        Destructive branches require explicit payload-bound confirmation. Inspect mutations with system_audit and recover supported app.* changes with system_audit_undo(operation_id).
         """
     ),
     # mask_error_details wraps unclassified exceptions in a generic ToolError.
@@ -189,19 +186,18 @@ def register_core_tools() -> None:
         return
 
     from moneybin.mcp.tools.accounts import register_accounts_tools
-    from moneybin.mcp.tools.categories import register_categories_tools
     from moneybin.mcp.tools.curation import register_curation_tools
     from moneybin.mcp.tools.gsheet import register_gsheet_tools
-    from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.investments import register_investments_tools
-    from moneybin.mcp.tools.merchants import register_merchants_tools
     from moneybin.mcp.tools.privacy import register_privacy_tools
     from moneybin.mcp.tools.refresh import register_refresh_tools
     from moneybin.mcp.tools.reports import register_reports_tools
+    from moneybin.mcp.tools.reviews import register_review_tools
     from moneybin.mcp.tools.sql import register_sql_tools
     from moneybin.mcp.tools.sync import register_sync_prompts, register_sync_tools
     from moneybin.mcp.tools.system import register_system_tools
+    from moneybin.mcp.tools.taxonomy import register_taxonomy_tools
     from moneybin.mcp.tools.transactions import register_transactions_tools
     from moneybin.mcp.tools.transactions_categorize import (
         register_transactions_categorize_tools,
@@ -230,10 +226,9 @@ def register_core_tools() -> None:
     register_transactions_categorize_tools(mcp)
     register_transactions_categorize_assist_tools(mcp)
     register_curation_tools(mcp)
-    register_categories_tools(mcp)
-    register_merchants_tools(mcp)
+    register_review_tools(mcp)
+    register_taxonomy_tools(mcp)
     register_import_tools(mcp)
-    register_inbox_tools(mcp)
     register_sync_tools(mcp)
     register_sync_prompts(mcp)
     register_gsheet_tools(mcp)

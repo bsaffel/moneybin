@@ -104,17 +104,7 @@ class TestCurationToolRegistration:
         srv = FastMCP("test")
         register_curation_tools(srv)
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert {
-            "transactions_create",
-            "transactions_notes_add",
-            "transactions_notes_edit",
-            "transactions_notes_delete",
-            "transactions_tags_set",
-            "transactions_tags_rename",
-            "transactions_splits_set",
-            "import_labels_set",
-            "system_audit",
-        } <= names
+        assert names == {"transactions_create"}
 
 
 # ---------- transactions_create ----------

@@ -493,38 +493,5 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
 
 
 def register_sync_tools(mcp: FastMCP) -> None:
-    """Register all sync namespace tools with the FastMCP server."""
-    for fn, desc in [
-        (
-            sync_link,
-            "Link a bank account via Plaid — returns a URL the user opens in their browser. link_url is a sensitive one-time credential.",
-        ),
-        (sync_link_status, "Poll a sync_link session for completion."),
-        (sync_disconnect, "Remove a bank connection."),
-        (
-            sync_pull,
-            "Pull transactions, accounts, balances, and investment data. Amounts "
-            "use MoneyBin convention (negative = expense). A pull can partially "
-            "fail while still returning: security_resolution_error means this "
-            "pull's investment transactions were not attributed to securities "
-            "(cost basis incomplete until retried) and transforms_error means "
-            "core.* is stale — surface both to the user rather than reporting a "
-            "clean sync. Mutation surface: writes raw.plaid_*, and resolves "
-            "security identity on every pull — binding a security to the catalog "
-            "(app.security_links), minting a provisional one it has never seen "
-            "(app.securities), or filing an ambiguous match for human review "
-            "(app.security_link_decisions). Review what it filed with "
-            "investments_securities_links_pending; reverse a binding with "
-            "system_audit_undo(operation_id).",
-        ),
-        (sync_status, "Connected institutions, last-sync times, and errors."),
-        (
-            sync_connect,
-            "Deprecated alias for sync_link. Will be removed in the next minor release.",
-        ),
-        (
-            sync_connect_status,
-            "Deprecated alias for sync_link_status. Will be removed in the next minor release.",
-        ),
-    ]:
-        register(mcp, fn, fn.__name__, desc)
+    """Register the standard mediated-sync workflow."""
+    register_sync_workflow_tools(mcp)

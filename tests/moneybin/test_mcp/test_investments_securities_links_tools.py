@@ -13,7 +13,6 @@ from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastmcp import FastMCP
 from fastmcp.server.elicitation import (
     AcceptedElicitation,
     CancelledElicitation,
@@ -25,7 +24,6 @@ from moneybin.mcp.tools.investments import (
     investments_securities_links_history,
     investments_securities_links_pending,
     investments_securities_links_set,
-    register_investments_tools,
 )
 from moneybin.mcp.tools.reviews import identity_links_decide_coarse
 from moneybin.mcp.write_contracts import SecurityLinkDecisionRequest
@@ -996,65 +994,6 @@ class TestInvestmentsSecuritiesLinksHistory:
         result = (await investments_securities_links_history()).to_dict()
         actions_text = " ".join(result["actions"])
         assert "investments_securities_links_pending" in actions_text
-
-
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
-
-
-class TestInvestmentsSecuritiesLinksRegistration:
-    """Verify investments_securities_links_* tools are registered with the FastMCP server."""
-
-    async def test_tools_registered(self) -> None:
-        """register_investments_tools includes all three security-links tools."""
-        srv = FastMCP("test")
-        register_investments_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert "investments_securities_links_pending" in names
-        assert "investments_securities_links_set" in names
-        assert "investments_securities_links_history" in names
-
-    async def test_set_description_names_the_undo_tool(self) -> None:
-        """The description must name system_audit_undo as the recovery path (D6).
-
-        Claiming "no undo tool yet" tells the agent an accidental merge is
-        irreversible when a single system_audit_undo(operation_id) call
-        reverses the whole cascade atomically.
-        """
-        srv = FastMCP("test")
-        register_investments_tools(srv)
-        tool = next(
-            t
-            for t in await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-            if t.name == "investments_securities_links_set"
-        )
-        description = tool.description or ""
-        assert "system_audit_undo" in description
-        assert "no undo tool yet" not in description
-        # The elicitation gate is part of the contract the agent must know.
-        assert "confirm" in description.lower()
-        assert "raw.manual_investment_transactions" in description
-
-    async def test_set_description_explains_opaque_token_retry(self) -> None:
-        """Unsupported clients can discover the exact confirmation retry flow."""
-        srv = FastMCP("test")
-        register_investments_tools(srv)
-        tool = next(
-            t
-            for t in await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-            if t.name == "investments_securities_links_set"
-        )
-        description = (tool.description or "").lower()
-        assert "opaque" in description
-        assert "confirmation_token" in description
-        assert "exact retry" in description
-
-    async def test_set_docstring_names_the_undo_tool(self) -> None:
-        """The docstring (the second prose surface) carries the same recovery path."""
-        doc = investments_securities_links_set.__doc__ or ""
-        assert "system_audit_undo" in doc
-        assert "no undo tool yet" not in doc
 
 
 # ---------------------------------------------------------------------------

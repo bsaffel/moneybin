@@ -1,12 +1,11 @@
-"""Tests for report discovery and dual-surface registration."""
+"""Tests for report discovery and explicit surface registration."""
 
 from __future__ import annotations
 
 from types import ModuleType
 
 import pytest
-import typer
-from fastmcp import Client, FastMCP
+from fastmcp import FastMCP
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
@@ -14,8 +13,7 @@ from moneybin.reports._framework.contract import ReportQuery, report
 from moneybin.reports._framework.registry import (
     discover_reports,
     register_generic_reports_tool,
-    register_report,
-    register_reports,
+    spec_of,
 )
 from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
@@ -66,19 +64,6 @@ def _not_a_report(db: Database) -> ReportQuery:
     return ReportQuery("SELECT 1", [])
 
 
-async def test_register_reports_wires_both_surfaces() -> None:
-    mcp = FastMCP("reg-test")
-    app = typer.Typer()
-    specs = register_reports([_alpha, _beta], mcp, app)
-
-    assert {s.name for s in specs} == {"alpha", "beta"}
-    cli_names = {c.name for c in app.registered_commands}
-    assert cli_names == {"alpha", "beta"}
-    async with Client(mcp) as client:
-        tool_names = {t.name for t in await client.list_tools()}
-    assert {"reports_alpha", "reports_beta"} <= tool_names
-
-
 async def test_generic_registrar_registers_one_tool_in_isolation() -> None:
     mcp = FastMCP("reports-contract")
     register_generic_reports_tool(mcp)
@@ -89,11 +74,9 @@ async def test_generic_registrar_registers_one_tool_in_isolation() -> None:
     assert tools[0].output_schema is None
 
 
-def test_register_report_rejects_plain_function() -> None:
-    mcp = FastMCP("reg-test")
-    app = typer.Typer()
+def test_spec_of_rejects_plain_function() -> None:
     with pytest.raises(ValueError, match="not a @report runner"):
-        register_report(_not_a_report, mcp, app)
+        spec_of(_not_a_report)
 
 
 def test_discover_reports_finds_decorated_runners() -> None:

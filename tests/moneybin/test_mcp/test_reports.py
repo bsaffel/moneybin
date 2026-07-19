@@ -427,15 +427,16 @@ async def test_generic_reports_fastmcp_result_transport_and_dynamic_audit() -> N
 
 
 @pytest.mark.integration
-async def test_live_registry_remains_frozen_until_atomic_cutover(
+async def test_live_registry_uses_generic_reports_tool(
     mcp_db: object,
 ) -> None:
     from moneybin.mcp.server import init_db, mcp
+    from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 
     init_db()
     async with Client(mcp) as client:
         names = {tool.name for tool in await client.list_tools()}
 
-    assert len(names) == 105
-    assert "reports" not in names
-    assert "reports_spending" in names
+    assert names == set(STANDARD_TOOL_NAMES)
+    assert "reports" in names
+    assert "reports_spending" not in names

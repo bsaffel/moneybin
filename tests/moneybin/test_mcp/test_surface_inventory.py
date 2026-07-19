@@ -5,6 +5,7 @@ from pathlib import Path
 
 from mcp.types import Tool, ToolAnnotations
 
+from moneybin.mcp.surface import STANDARD_TOOL_COUNT
 from moneybin.mcp.surface_inventory import SurfaceInventory
 
 
@@ -81,4 +82,4 @@ async def test_live_inventory_snapshot_is_deterministic() -> None:
     second = (await inventory_server()).to_dict()
 
     assert first == second
-    assert first["tool_count"] == 105
+    assert first["tool_count"] == STANDARD_TOOL_COUNT

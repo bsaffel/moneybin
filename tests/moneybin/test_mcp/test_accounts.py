@@ -442,19 +442,18 @@ class TestDormantCoarseAccountReads:
         assert names == {"accounts", "accounts_balances"}
 
     @pytest.mark.unit
-    async def test_live_registrar_remains_unchanged(self) -> None:
+    async def test_standard_registrar_uses_coarse_boundaries(self) -> None:
         srv = FastMCP("test")
         register_accounts_tools(srv)
 
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
-        assert "accounts" in names
-        assert "accounts_get" in names
-        assert "accounts_summary" in names
-        assert "accounts_resolve" in names
-        assert "accounts_balances" in names
-        assert "accounts_balance_history" in names
-        assert "accounts_balance_assertions" in names
+        assert names == {
+            "accounts",
+            "accounts_set",
+            "accounts_balances",
+            "accounts_balance_assert",
+        }
 
 
 class TestDormantCoarseBalanceAssertionWrite:
@@ -761,17 +760,6 @@ class TestDormantCoarseBalanceAssertionWrite:
         assert tool.annotations.readOnlyHint is False
         assert tool.annotations.destructiveHint is True
         assert tool.annotations.idempotentHint is True
-
-
-class TestAccountsResolveRegistration:
-    """Verify accounts_resolve is registered with the FastMCP server."""
-
-    @pytest.mark.unit
-    async def test_accounts_resolve_registered(self) -> None:
-        srv = FastMCP("test")
-        register_accounts_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        assert "accounts_resolve" in names
 
 
 class TestNarrowToolsRemoved:

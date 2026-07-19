@@ -1247,130 +1247,26 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
 
 
 def register_investments_tools(mcp: FastMCP) -> None:
-    """Register all investments namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        investments,
-        "investments",
-        "List investment ledger events (buys, sells, dividends, corporate "
-        "actions, ...). Amounts use the per-type sign convention documented "
-        "in investments_record; amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_holdings,
-        "investments_holdings",
-        "Current positions: quantity, cost basis, average cost per "
-        "(account, security). Market value/unrealized gain require price "
-        "feeds (not yet shipped) — always carries a warning that only cost "
-        "basis is available. Amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_lots,
-        "investments_lots",
-        "Tax lots with remaining quantity and basis. Open lots only by "
-        "default (open_only=False for full history). A row with "
-        "basis_incomplete=true opened with no supplied basis (e.g. a "
-        "transfer_in with unknown cost basis); data.warnings names the count "
-        "when any row is incomplete. Amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_gains,
-        "investments_gains",
-        "Realized gain/loss (the 1099-B surface). A row with "
-        "basis_incomplete=true means the disposal was oversold or the "
-        "acquisition lot is missing; data.warnings names the count when any "
-        "row is incomplete. Amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_securities,
-        "investments_securities",
-        "List the manually-maintained securities catalog. Reference data "
-        "only — no amounts, no per-user holdings.",
-    )
+    """Register the standard investment read and write boundaries."""
+    register_investment_coarse_reads(mcp)
     register(
         mcp,
         investments_record,
         "investments_record",
-        "Record one or more investment ledger events in one call. Sign "
-        "convention: quantity positive for acquisitions / negative for "
-        "disposals / absent for cash-only events; amount negative for cash "
-        "out, positive for cash in. A reinvest event writes an acquisition + "
-        "income row pair sharing one event_group_id. All events are validated "
-        "and resolved before any write. A validation failure OR a bad/ambiguous "
-        "ACCOUNT ref is a HARD failure that aborts the whole call with nothing "
-        "written (standard error envelope); a bad/ambiguous SECURITY ref is a "
-        "SOFT per-item failure reported in data.error_details while the rest of "
-        "the batch is written. Writes raw.manual_investment_transactions; no "
-        "revert tool.",
+        "Record investment ledger events as one validated batch. Quantity and "
+        "cash signs follow the investment event convention; no revert tool.",
     )
     register(
         mcp,
         investments_securities_set,
         "investments_securities_set",
-        "Create-or-update one securities-catalog entry. security_id=None "
-        "creates (name + security_type required); an existing security_id "
-        "partially updates (unset fields unchanged; security_type immutable "
-        "post-creation). cost_basis_method='average' is valid only for "
-        "mutual_fund/etf. Writes app.securities; no delete tool in v1.",
+        "Create or update securities in app.securities by stable ID or ticker. "
+        "Call again with prior values to revert.",
     )
     register(
         mcp,
         investments_lots_select,
         "investments_lots_select",
-        "Set the full specific-identification lot selection for one "
-        "disposal (a sell) — the listed (lot_id, quantity) pairs REPLACE any "
-        "prior selection; selections=[] clears all overrides and reverts to "
-        "FIFO. Writes app.lot_selections; no revert tool (call again to "
-        "undo).",
-    )
-    register(
-        mcp,
-        investments_securities_links_pending,
-        "investments_securities_links_pending",
-        "List pending security merge decisions grouped by provider ref "
-        "(plaid_security_id or institution_security_id). Returns the review "
-        "queue with BOTH sides of each proposed merge: provider_ticker/"
-        "provider_name alongside each candidate's candidate_ticker/"
-        "candidate_name, plus match_reason (identifier_tie, "
-        "exchange_contradiction, fuzzy_name, ...) — the field that conveys "
-        "how risky accepting is. Use investments_securities_links_set to "
-        "merge or reject each decision.",
-    )
-    register(
-        mcp,
-        investments_securities_links_set,
-        "investments_securities_links_set",
-        "Accept (merge) or reject one pending security merge decision. "
-        "action='accept' + into=<the decision's own candidate_security_id> "
-        "MERGES: it prompts the user to confirm (MCP elicitation naming both "
-        "securities and the match reason) and merges only on their explicit "
-        "agreement — a merge fuses two instruments' tax lots, so the agent "
-        "cannot accept one on its own. On a client without elicitation, "
-        "accept fails with mutation_confirmation_required and returns a "
-        "short-lived opaque confirmation_token; repeat the exact retry with "
-        "that token. into must equal the decision's own candidate (mismatched, "
-        "empty, or missing into raises mutation_invalid_input — it is NEVER "
-        "read as a reject). action='reject' (no into) keeps the provider's "
-        "security as its own instrument; only this decision is rejected, "
-        "sibling candidates stay pending. Writes app.security_link_decisions "
-        "+ app.security_links + app.lot_selections + "
-        "raw.manual_investment_transactions + app.securities; reverse the whole "
-        "cascade with system_audit_undo(operation_id). Discover "
-        "pending decisions with investments_securities_links_pending.",
-    )
-    register(
-        mcp,
-        investments_securities_links_history,
-        "investments_securities_links_history",
-        "Recent security-link decisions (all statuses), newest first. "
-        "Read-only. Filter by limit. Use investments_securities_links_pending "
-        "for the active review queue.",
+        "Select specific acquisition lots for one disposal. Writes "
+        "app.lot_selections; replace the selection to revert.",
     )
