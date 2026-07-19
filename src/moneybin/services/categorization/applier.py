@@ -24,13 +24,14 @@ warning in the bypass's docstring stays next to the guard it bypasses.
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal, cast
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import (
@@ -55,6 +56,12 @@ from moneybin.services.categorization._shared import (
     InternalMatchType,
     is_unselective_contains,
     resolve_category_id,
+)
+from moneybin.services.entity_reference import (
+    AmbiguousEntity,
+    EntityCandidate,
+    MissingEntity,
+    resolve_entity_reference,
 )
 from moneybin.tables import (
     BUDGETS,
@@ -111,6 +118,62 @@ class RuleCreationResult:
             return
         self.error_details = parse_errors + self.error_details
         self.skipped += len(parse_errors)
+
+
+@dataclass(frozen=True, slots=True)
+class RuleStateTarget:
+    """A service-owned complete categorization-rule target state."""
+
+    rule_id: str | None
+    state: Literal["present", "inactive", "absent"]
+    merchant_pattern: str | None = None
+    match_type: str | None = None
+    min_amount: float | None = None
+    max_amount: float | None = None
+    account_id: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+    priority: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuleTargetPlanItem:
+    """One validated and resolved state change, ready for one transaction."""
+
+    target: RuleStateTarget
+    rule_id: str | None
+    action: Literal["create", "set", "deactivate", "delete", "noop"]
+
+
+@dataclass(frozen=True, slots=True)
+class RuleTargetPlan:
+    """Complete no-write preflight for an atomic rule target batch."""
+
+    items: tuple[RuleTargetPlanItem, ...]
+
+    @property
+    def changed(self) -> tuple[RuleTargetPlanItem, ...]:
+        """Return only items which mutate persisted state."""
+        return tuple(item for item in self.items if item.action != "noop")
+
+    @property
+    def destructive(self) -> bool:
+        """Return whether a present rule will be hard-deleted."""
+        return any(item.action == "delete" for item in self.items)
+
+    @property
+    def resolved_ids(self) -> tuple[str, ...]:
+        """Return stable rule IDs participating in the planned mutation."""
+        return tuple(item.rule_id for item in self.changed if item.rule_id is not None)
+
+
+@dataclass(frozen=True, slots=True)
+class RuleTargetResult:
+    """One applied target-state result in request order."""
+
+    rule_id: str | None
+    state: Literal["present", "inactive", "absent"]
+    changed: bool
 
 
 class MatchApplier:
@@ -499,6 +562,224 @@ class MatchApplier:
         tail (categorization stripping + ``categorize_pending``).
         """
         return self._rules.deactivate(rule_id, actor=actor) is not None
+
+    def plan_rule_targets(
+        self,
+        targets: Sequence[RuleStateTarget],
+    ) -> RuleTargetPlan:
+        """Validate and resolve every target before a rule batch can write."""
+        rows = self._db.execute(
+            f"""
+            SELECT rule_id, name, merchant_pattern, match_type, min_amount,
+                   max_amount, account_id, category, subcategory, priority, is_active
+            FROM {CATEGORIZATION_RULES.full_name}
+            """  # noqa: S608  # TableRef constant
+        ).fetchall()
+        by_id = {str(row[0]): row for row in rows}
+        candidates = [
+            EntityCandidate(entity_id=str(row[0]), display_name=str(row[1]))
+            for row in rows
+        ]
+        resolved_seen: set[str] = set()
+        items: list[RuleTargetPlanItem] = []
+        for target in targets:
+            row = self._resolve_rule_target_row(target, by_id, candidates)
+            rule_id = str(row[0]) if row is not None else None
+            if rule_id is not None:
+                if rule_id in resolved_seen:
+                    raise UserError(
+                        "A rule can appear only once in one target-state batch.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                resolved_seen.add(rule_id)
+            action = self._rule_target_action(target, row)
+            items.append(RuleTargetPlanItem(target, rule_id, action))
+        return RuleTargetPlan(items=tuple(items))
+
+    @staticmethod
+    def _resolve_rule_target_row(
+        target: RuleStateTarget,
+        by_id: dict[str, tuple[object, ...]],
+        candidates: list[EntityCandidate],
+    ) -> tuple[object, ...] | None:
+        """Resolve an explicit reference or a present target's natural key."""
+        if target.rule_id is not None:
+            resolved = resolve_entity_reference(target.rule_id, candidates)
+            if isinstance(resolved, AmbiguousEntity):
+                raise UserError(
+                    "Categorization rule reference is ambiguous.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    details={"candidate_ids": list(resolved.candidate_ids)},
+                )
+            if isinstance(resolved, MissingEntity):
+                if target.state == "absent":
+                    return None
+                raise UserError(
+                    "Categorization rule was not found.",
+                    code=error_codes.MUTATION_NOT_FOUND,
+                    details={"reference": target.rule_id},
+                )
+            return by_id[resolved.entity_id]
+        if target.state != "present":  # guarded by the MCP contract
+            raise UserError(
+                f"state='{target.state}' requires rule_id.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        matches = [
+            row
+            for row in by_id.values()
+            if row[2] == target.merchant_pattern
+            and row[3] == target.match_type
+            and row[4] == target.min_amount
+            and row[5] == target.max_amount
+            and row[6] == target.account_id
+            and row[7] == target.category
+            and row[8] == target.subcategory
+        ]
+        if len(matches) > 1:
+            raise UserError(
+                "Categorization rule target matches more than one existing rule.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+                details={"candidate_ids": sorted(str(row[0]) for row in matches)},
+            )
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _rule_target_action(
+        target: RuleStateTarget,
+        row: tuple[object, ...] | None,
+    ) -> Literal["create", "set", "deactivate", "delete", "noop"]:
+        """Classify target-state changes after resolution, before mutation."""
+        if target.state == "present":
+            if row is None:
+                return "create"
+            current = (
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+                row[6],
+                row[7],
+                row[8],
+                row[9],
+                bool(row[10]),
+            )
+            desired = (
+                target.merchant_pattern,
+                target.match_type,
+                target.min_amount,
+                target.max_amount,
+                target.account_id,
+                target.category,
+                target.subcategory,
+                target.priority,
+                True,
+            )
+            return "noop" if current == desired else "set"
+        if row is None:
+            return "noop"
+        if target.state == "inactive":
+            return "noop" if not bool(row[10]) else "deactivate"
+        return "delete"
+
+    def apply_rule_targets(
+        self,
+        plan: RuleTargetPlan,
+        *,
+        actor: str,
+        verify: Callable[[RuleTargetPlan], None] | None = None,
+    ) -> list[RuleTargetResult]:
+        """Re-plan, verify live state, and apply every changed target atomically."""
+        self._db.begin()
+        try:
+            live_plan = self.plan_rule_targets([item.target for item in plan.items])
+            if verify is not None:
+                verify(live_plan)
+            if not live_plan.changed:
+                raise UserError(
+                    "Every categorization rule already has its requested state.",
+                    code=error_codes.MUTATION_NOTHING_TO_DO,
+                )
+            results: list[RuleTargetResult] = []
+            for item in live_plan.items:
+                rule_id = item.rule_id
+                if item.action == "create":
+                    rule_id = self._create_rule_target(item.target, actor=actor)
+                elif item.action == "set":
+                    self._set_rule_target(item.target, rule_id, actor=actor)
+                elif item.action == "deactivate":
+                    self._rules.deactivate(
+                        self._require_rule_id(rule_id), actor=actor, in_outer_txn=True
+                    )
+                elif item.action == "delete":
+                    self._rules.delete(
+                        self._require_rule_id(rule_id), actor=actor, in_outer_txn=True
+                    )
+                results.append(
+                    RuleTargetResult(
+                        rule_id=rule_id,
+                        state=item.target.state,
+                        changed=item.action != "noop",
+                    )
+                )
+            self._db.commit()
+            return results
+        except BaseException:
+            self._db.rollback()
+            raise
+
+    @staticmethod
+    def _require_rule_id(rule_id: str | None) -> str:
+        """Narrow a preflighted rule ID for the repository write boundary."""
+        if rule_id is None:  # pragma: no cover - preflight establishes it
+            raise RuntimeError("A resolved rule target has no rule ID")
+        return rule_id
+
+    def _create_rule_target(self, target: RuleStateTarget, *, actor: str) -> str:
+        """Insert one fully validated rule target through its audited repository."""
+        category = cast(str, target.category)
+        event = self._rules.insert(
+            name=self._rule_target_name(target),
+            merchant_pattern=cast(str, target.merchant_pattern),
+            match_type=cast(str, target.match_type),
+            min_amount=target.min_amount,
+            max_amount=target.max_amount,
+            account_id=target.account_id,
+            category=category,
+            subcategory=target.subcategory,
+            category_id=resolve_category_id(self._db, category, target.subcategory),
+            priority=cast(int, target.priority),
+            created_by="mcp",
+            actor=actor,
+            in_outer_txn=True,
+        )
+        return cast(str, event.target_id)
+
+    def _set_rule_target(
+        self, target: RuleStateTarget, rule_id: str | None, *, actor: str
+    ) -> None:
+        """Set one existing rule's complete active target through its repository."""
+        category = cast(str, target.category)
+        self._rules.set_target(
+            self._require_rule_id(rule_id),
+            name=self._rule_target_name(target),
+            merchant_pattern=cast(str, target.merchant_pattern),
+            match_type=cast(str, target.match_type),
+            min_amount=target.min_amount,
+            max_amount=target.max_amount,
+            account_id=target.account_id,
+            category=category,
+            subcategory=target.subcategory,
+            category_id=resolve_category_id(self._db, category, target.subcategory),
+            priority=cast(int, target.priority),
+            actor=actor,
+            in_outer_txn=True,
+        )
+
+    @staticmethod
+    def _rule_target_name(target: RuleStateTarget) -> str:
+        """Derive the one human-readable name from the complete target fields."""
+        return f"{target.match_type}: {target.merchant_pattern} → {target.category}"
 
     def delete_rule_categorizations(
         self, rule_id: str, *, actor: str = "system"

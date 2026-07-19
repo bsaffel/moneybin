@@ -67,6 +67,23 @@ class CategorizeRulesPayload:
     rules: list[RuleRow]
 
 
+@dataclass(frozen=True, slots=True)
+class CategorizationRuleStateResult:
+    """One result from the dormant declarative rule-state mutation."""
+
+    rule_id: Annotated[str | None, DataClass.RECORD_ID]
+    state: Annotated[Literal["present", "inactive", "absent"], DataClass.TXN_TYPE]
+    changed: Annotated[bool, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class CategorizationRulesSetPayload:
+    """Result of atomically declaring one or more rule target states."""
+
+    results: list[CategorizationRuleStateResult]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
 # ---------------------------------------------------------------------------
 # transactions_categorize_stats
 # ---------------------------------------------------------------------------

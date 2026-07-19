@@ -148,3 +148,79 @@ class CategorizationRulesRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
                 context=context,
             )
+
+    def set_target(
+        self,
+        rule_id: str,
+        *,
+        name: str,
+        merchant_pattern: str,
+        match_type: str,
+        min_amount: float | None,
+        max_amount: float | None,
+        account_id: str | None,
+        category: str,
+        subcategory: str | None,
+        category_id: str | None,
+        priority: int,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Replace one rule's complete active target and audit the before-image."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(self._fetch_row(rule_id), "rule_id", rule_id)
+            self._db.execute(
+                f"""
+                UPDATE {CATEGORIZATION_RULES.full_name}
+                SET name = ?, merchant_pattern = ?, match_type = ?,
+                    min_amount = ?, max_amount = ?, account_id = ?,
+                    category = ?, subcategory = ?, category_id = ?, priority = ?,
+                    is_active = true, updated_at = CURRENT_TIMESTAMP
+                WHERE rule_id = ?
+                """,  # noqa: S608  # TableRef + parameterized values
+                [
+                    name,
+                    merchant_pattern,
+                    match_type,
+                    min_amount,
+                    max_amount,
+                    account_id,
+                    category,
+                    subcategory,
+                    category_id,
+                    priority,
+                    rule_id,
+                ],
+            )
+            after = self._fetch_row(rule_id)
+            return self._emit_audit(
+                action="categorization_rule.set",
+                target=(*self._audit_target, rule_id),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+            )
+
+    def delete(
+        self,
+        rule_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Hard-delete one rule while retaining its full audited recovery image."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(rule_id)
+            if before is None:
+                return None
+            self._db.execute(
+                f"DELETE FROM {CATEGORIZATION_RULES.full_name} WHERE rule_id = ?",  # noqa: S608  # TableRef + parameterized value
+                [rule_id],
+            )
+            return self._emit_audit(
+                action="categorization_rule.delete",
+                target=(*self._audit_target, rule_id),
+                before=self._serialize_for_audit(before),
+                after=None,
+                actor=actor,
+            )

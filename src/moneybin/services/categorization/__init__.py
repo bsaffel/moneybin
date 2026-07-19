@@ -14,7 +14,7 @@ without a circular dependency.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -110,6 +110,9 @@ from moneybin.services.categorization._shared import (
 from moneybin.services.categorization.applier import (
     MatchApplier,
     RuleCreationResult,
+    RuleStateTarget,
+    RuleTargetPlan,
+    RuleTargetResult,
     WriteOutcome,
 )
 from moneybin.services.categorization.assist import (
@@ -351,6 +354,20 @@ class CategorizationService:
             self._applier.delete_rule_categorizations(rule_id, actor=actor)
             self.categorize_pending()
         return deactivated
+
+    def plan_rule_targets(self, targets: Sequence[RuleStateTarget]) -> RuleTargetPlan:
+        """Preflight a complete categorization-rule target-state batch."""
+        return self._applier.plan_rule_targets(targets)
+
+    def apply_rule_targets(
+        self,
+        plan: RuleTargetPlan,
+        *,
+        actor: str,
+        verify: Callable[[RuleTargetPlan], None] | None = None,
+    ) -> list[RuleTargetResult]:
+        """Apply a preflighted rule batch atomically through audited repositories."""
+        return self._applier.apply_rule_targets(plan, actor=actor, verify=verify)
 
     # -- Category management --
 

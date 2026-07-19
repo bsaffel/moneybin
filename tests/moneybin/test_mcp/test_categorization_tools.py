@@ -22,15 +22,21 @@ from moneybin.mcp.tools.categories import (
 )
 from moneybin.mcp.tools.merchants import register_merchants_tools
 from moneybin.mcp.tools.transactions_categorize import (
+    register_categorization_coarse_writes,
     register_transactions_categorize_tools,
     transactions_categorize_auto_accept,
     transactions_categorize_commit,
     transactions_categorize_pending,
     transactions_categorize_rules_create,
+    transactions_categorize_rules_set_coarse,
     transactions_categorize_stats,
 )
 from moneybin.mcp.tools.transactions_categorize_assist import (
     register_transactions_categorize_assist_tools,
+)
+from moneybin.mcp.write_contracts import (
+    CategorizationRuleMatch,
+    CategorizationRuleTarget,
 )
 from moneybin.services.auto_rule_service import AutoConfirmResult
 from moneybin.services.categorization import CategorizationRuleInput
@@ -419,6 +425,144 @@ class TestCategorizePendingSortParam:
         ).to_dict()
         dates = [r["transaction_date"] for r in result["data"]["transactions"]]
         assert dates == sorted(dates, reverse=True)
+
+
+def _rule_target(
+    *,
+    state: str,
+    rule_id: str | None = None,
+) -> CategorizationRuleTarget:
+    """Build one strict target-state request with concise test defaults."""
+    if state == "present":
+        return CategorizationRuleTarget(
+            kind="rule",
+            rule_id=rule_id,
+            state="present",
+            matcher=CategorizationRuleMatch(type="contains", value="COFFEE"),
+            category="Food",
+            priority=10,
+        )
+    return CategorizationRuleTarget(
+        kind="rule",
+        rule_id=rule_id or "rule_target_1",
+        state=state,  # type: ignore[arg-type]  # parametrized literal states
+    )
+
+
+class TestCategorizationRulesTargetState:
+    """The dormant coarse write makes each rule's desired state explicit."""
+
+    @pytest.mark.unit
+    async def test_present_creates_then_updates_a_rule(self, mcp_db: Path) -> None:
+        created = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present")]
+        )
+        rule_id = created.data.results[0].rule_id
+
+        updated = await transactions_categorize_rules_set_coarse(
+            rules=[
+                CategorizationRuleTarget(
+                    kind="rule",
+                    rule_id=rule_id,
+                    state="present",
+                    matcher=CategorizationRuleMatch(type="exact", value="COFFEE SHOP"),
+                    category="Dining",
+                    priority=20,
+                )
+            ]
+        )
+
+        assert created.data.results[0].state == "present"
+        assert updated.data.results[0].state == "present"
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                "SELECT merchant_pattern, match_type, category, priority, is_active "
+                "FROM app.categorization_rules WHERE rule_id = ?",
+                [rule_id],
+            ).fetchone()
+        assert row == ("COFFEE SHOP", "exact", "Dining", 20, True)
+
+    @pytest.mark.unit
+    async def test_inactive_is_an_idempotent_target_state(self, mcp_db: Path) -> None:
+        created = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present")]
+        )
+        rule_id = created.data.results[0].rule_id
+
+        response = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="inactive", rule_id=rule_id)]
+        )
+
+        assert response.data.results[0].state == "inactive"
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT is_active FROM app.categorization_rules WHERE rule_id = ?",
+                [rule_id],
+            ).fetchone() == (False,)
+
+        repeated = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="inactive", rule_id=rule_id)]
+        )
+        assert repeated.to_dict()["error"]["code"] == "mutation_nothing_to_do"
+
+    @pytest.mark.unit
+    async def test_absent_requires_confirmation_for_a_present_rule(
+        self, mcp_db: Path
+    ) -> None:
+        created = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present")]
+        )
+        rule_id = created.data.results[0].rule_id
+
+        first = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="absent", rule_id=rule_id)]
+        )
+        token = first.error.details["confirmation_token"]
+        removed = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="absent", rule_id=rule_id)],
+            confirmation_token=token,
+        )
+
+        assert removed.data.results[0].state == "absent"
+        with get_database(read_only=True) as db:
+            assert (
+                db.execute(
+                    "SELECT 1 FROM app.categorization_rules WHERE rule_id = ?",
+                    [rule_id],
+                ).fetchone()
+                is None
+            )
+
+    @pytest.mark.unit
+    async def test_batch_validates_and_resolves_before_writing(
+        self, mcp_db: Path
+    ) -> None:
+        valid = _rule_target(state="present")
+        invalid = _rule_target(state="inactive", rule_id="missing_rule")
+
+        response = await transactions_categorize_rules_set_coarse(
+            rules=[valid, invalid]
+        )
+
+        assert response.to_dict()["status"] == "error"
+        with get_database(read_only=True) as db:
+            assert (
+                db.execute(
+                    "SELECT 1 FROM app.categorization_rules WHERE merchant_pattern = ?",
+                    ["COFFEE"],
+                ).fetchone()
+                is None
+            )
+
+    @pytest.mark.unit
+    async def test_coarse_registrar_keeps_the_live_rule_tools_unchanged(
+        self, mcp_db: Path
+    ) -> None:
+        server = FastMCP("coarse-rules")
+        register_categorization_coarse_writes(server)
+
+        names = {tool.name for tool in await server._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert names == {"transactions_categorize_rules_set"}
 
 
 class TestAllowBroadWiring:

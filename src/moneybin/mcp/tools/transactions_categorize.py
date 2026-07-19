@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
@@ -9,18 +10,28 @@ from typing import Literal
 
 from fastmcp import FastMCP
 
+from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.adapters.categorize_adapters import (
     auto_accept_envelope,
     auto_review_envelope,
 )
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.write_contracts import CategorizationRuleTarget
 from moneybin.privacy.payloads.categorize import (
     AutoAcceptPayload,
     AutoReviewPayload,
     AutoStatsPayload,
+    CategorizationRulesSetPayload,
+    CategorizationRuleStateResult,
     CategorizeCommitPayload,
     CategorizeRulesPayload,
     CategorizeRunPayload,
@@ -41,6 +52,11 @@ from moneybin.services.categorization import (
     validate_items,
     validate_rule_items,
 )
+from moneybin.services.categorization.applier import (
+    RuleStateTarget,
+    RuleTargetPlan,
+)
+from moneybin.services.mutation_context import current_operation_id
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +76,189 @@ def transactions_categorize_rules() -> ResponseEnvelope[CategorizeRulesPayload]:
             "Use transactions_categorize_rules_create to add new rules",
             "Use transactions_categorize_rules_delete to soft-delete a rule",
         ],
+    )
+
+
+def _to_rule_state_target(target: CategorizationRuleTarget) -> RuleStateTarget:
+    """Translate the strict MCP target contract into the service-owned type."""
+    matcher = target.matcher
+    return RuleStateTarget(
+        rule_id=target.rule_id,
+        state=target.state,
+        merchant_pattern=matcher.value if matcher is not None else None,
+        match_type=matcher.type if matcher is not None else None,
+        min_amount=(
+            float(matcher.min_amount)
+            if matcher is not None and matcher.min_amount is not None
+            else None
+        ),
+        max_amount=(
+            float(matcher.max_amount)
+            if matcher is not None and matcher.max_amount is not None
+            else None
+        ),
+        account_id=matcher.account_id if matcher is not None else None,
+        category=target.category,
+        subcategory=target.subcategory,
+        priority=target.priority,
+    )
+
+
+def _rule_targets_binding(
+    rules: list[CategorizationRuleTarget], plan: RuleTargetPlan
+) -> ConfirmationBinding:
+    """Bind a destructive batch to validated targets and resolved rule IDs."""
+    return ConfirmationBinding(
+        arguments={"rules": [rule.model_dump(mode="json") for rule in rules]},
+        resolved_ids=plan.resolved_ids,
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="transactions_categorize_rules_set",
+        blast_radius={
+            "rules": len(rules),
+            "changed_rules": len(plan.changed),
+            "deleted_rules": sum(item.action == "delete" for item in plan.items),
+        },
+    )
+
+
+def _preview_rule_targets(rules: list[CategorizationRuleTarget]) -> RuleTargetPlan:
+    """Validate target-state resolution without opening a mutation transaction."""
+    with get_database(read_only=True) as db:
+        return CategorizationService(db).plan_rule_targets([
+            _to_rule_state_target(rule) for rule in rules
+        ])
+
+
+def _apply_rule_targets(
+    rules: list[CategorizationRuleTarget],
+    plan: RuleTargetPlan,
+    *,
+    grant: ConfirmationGrant | None,
+    expected_binding: ConfirmationBinding,
+) -> list[CategorizationRuleStateResult]:
+    """Re-preflight and write every changed rule within one audited transaction."""
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+
+        def verify(live_plan: RuleTargetPlan) -> None:
+            binding = _rule_targets_binding(rules, live_plan)
+            if grant is not None:
+                grant.verify(binding)
+            elif binding.canonical_bytes() != expected_binding.canonical_bytes():
+                raise UserError(
+                    "Categorization rule state changed after preflight.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        result = service.apply_rule_targets(plan, actor="mcp", verify=verify)
+    return [
+        CategorizationRuleStateResult(
+            rule_id=item.rule_id,
+            state=item.state,
+            changed=item.changed,
+        )
+        for item in result
+    ]
+
+
+@mcp_tool(domain="categorize", read_only=False, destructive=True, idempotent=True)
+async def transactions_categorize_rules_set_coarse(
+    rules: list[CategorizationRuleTarget],
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[CategorizationRulesSetPayload]:
+    """Atomically declare complete categorization-rule target states."""
+    if not rules:
+        raise UserError(
+            "rules must contain at least one target.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    plan = await asyncio.to_thread(_preview_rule_targets, rules)
+    expected_binding = _rule_targets_binding(rules, plan)
+    if confirmation_token is not None and not plan.destructive:
+        raise UserError(
+            "confirmation_token is only valid when removing a present rule.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    grant: ConfirmationGrant | None = None
+    if plan.destructive or confirmation_token is not None:
+        grant = await grant_confirmation_or_raise(
+            binding=expected_binding if confirmation_token is None else None,
+            message=(
+                "Remove the selected categorization rule(s)? Their full prior "
+                "state is retained in the audit log and can be restored with "
+                "system_audit_undo(operation_id)."
+            ),
+            confirmation_token=confirmation_token,
+        )
+    results = await asyncio.to_thread(
+        _apply_rule_targets,
+        rules,
+        plan,
+        grant=grant,
+        expected_binding=expected_binding,
+    )
+    operation_id = current_operation_id()
+    return build_envelope(
+        data=CategorizationRulesSetPayload(
+            results=results,
+            operation_id=operation_id,
+        ),
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": operation_id},
+                rationale="Restore the audited rule-state mutation.",
+                confidence="certain",
+                idempotent=False,
+            )
+        ],
+    )
+
+
+@mcp_tool(domain="categorize")
+def transactions_categorize_rules_coarse(
+    view: Literal["active", "inactive", "history"] = "active",
+) -> ResponseEnvelope[CategorizeRulesPayload]:
+    """Read active, inactive, or complete historical categorization-rule states."""
+    with get_database(read_only=True) as db:
+        payload = CategorizationService(db).list_rules()
+    if view == "active":
+        rules = [rule for rule in payload.rules if rule.is_active]
+    elif view == "inactive":
+        rules = [rule for rule in payload.rules if not rule.is_active]
+    else:
+        rules = payload.rules
+    return build_envelope(data=CategorizeRulesPayload(rules=rules))
+
+
+def register_categorization_coarse_reads(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 categorization-rule read projection."""
+    register(
+        mcp,
+        transactions_categorize_rules_coarse,
+        "transactions_categorize_rules",
+        "Read active, inactive, or complete historical categorization rules. "
+        "Use view='history' to include inactive rows; categorization statistics "
+        "are available from system_status(sections=['categorization']).",
+        privacy_actor="transactions_categorize_rules",
+    )
+
+
+def register_categorization_coarse_writes(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 declarative categorization-rule write."""
+    register(
+        mcp,
+        transactions_categorize_rules_set_coarse,
+        "transactions_categorize_rules_set",
+        "Atomically declare categorization rules present, inactive, or absent. "
+        "Present requires matcher, category, and priority; inactive and absent "
+        "require rule_id and forbid replacement fields. The tool advertises its "
+        "maximum destructive risk, but asks for exact payload-bound confirmation "
+        "only before a present rule is hard-deleted. Rule removal is recoverable "
+        "with system_audit_undo(operation_id).",
+        privacy_actor="transactions_categorize_rules_set",
     )
 
 

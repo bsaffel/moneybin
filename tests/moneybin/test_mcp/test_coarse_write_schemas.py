@@ -15,6 +15,9 @@ from pydantic import TypeAdapter, ValidationError
 
 from moneybin.mcp.tools.accounts import BalanceAmount, register_accounts_coarse_writes
 from moneybin.mcp.tools.transactions import register_transaction_coarse_writes
+from moneybin.mcp.tools.transactions_categorize import (
+    register_categorization_coarse_writes,
+)
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     AnnotationRequest,
@@ -505,6 +508,51 @@ async def test_transaction_annotation_coarse_schema_and_annotations() -> None:
         "tag_rename": {"kind", "old_name", "new_name"},
     }
     Draft202012Validator.check_schema(tool.inputSchema)
+
+
+async def test_categorization_rules_set_coarse_schema_and_annotations() -> None:
+    mcp = isolated_server(register_categorization_coarse_writes)
+
+    tool = await listed_tool(mcp, "transactions_categorize_rules_set")
+
+    assert tool.outputSchema is None
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is True
+    assert tool.annotations.idempotentHint is True
+    assert "confirmation_token" in tool.inputSchema["properties"]
+    Draft202012Validator.check_schema(tool.inputSchema)
+
+    present = {
+        "rules": [
+            {
+                "kind": "rule",
+                "state": "present",
+                "matcher": {"type": "contains", "value": "Cafe"},
+                "category": "Food",
+                "priority": 10,
+            }
+        ]
+    }
+    inactive = {"rules": [{"kind": "rule", "state": "inactive", "rule_id": "rule_1"}]}
+    absent = {
+        "rules": [{"kind": "rule", "state": "absent", "rule_id": "rule_1"}],
+        "confirmation_token": "token",
+    }
+    invalid = {
+        "rules": [
+            {
+                "kind": "rule",
+                "state": "inactive",
+                "rule_id": "rule_1",
+                "category": "Food",
+            }
+        ]
+    }
+    for payload in (present, inactive, absent):
+        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+    with pytest.raises(JSONSchemaValidationError):
+        validate_json_schema(invalid, tool.inputSchema, cls=Draft202012Validator)
 
 
 def test_balance_assertion_amount_matches_decimal_18_2_extrema() -> None:
