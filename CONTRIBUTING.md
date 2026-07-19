@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-06-10 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Contributing to MoneyBin
 
 Thanks for helping out. This file gets you to a landed change without a reading
@@ -12,7 +12,7 @@ review turnaround on the order of days, not hours.
 
 ## Quick start
 
-Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
+Requires Python 3.12+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/bsaffel/moneybin.git

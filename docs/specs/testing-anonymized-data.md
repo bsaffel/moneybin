@@ -13,7 +13,9 @@ MoneyBin is a personal financial data warehouse. Real user data is the most valu
 
 This spec fills that gap. It is a **peer child spec** of `testing-overview.md` alongside the synthetic generator: different problem (data masking pipeline vs. financial life simulator), same output layer (`synthetic` schema, raw table writes).
 
-**Roadmap placement.** This is an **M1 (Ingestion Core)** deliverable. The anonymized real-data parity check is part of the **Ingestion-Complete gate** (see [`roadmap.md`](../roadmap.md) and `private/testing.md`): it is the enabler that turns pipeline-correctness-against-real-data from a manual, maintainer-only session into a reproducible, agent-runnable regression — the highest-leverage unlock for a single-developer/tester workflow.
+**Roadmap placement.** This is a data-integrity deliverable. The anonymized
+real-data parity check turns pipeline correctness against real-world shapes from
+a manual maintainer session into a reproducible, agent-runnable regression.
 
 ### Primary use cases
 

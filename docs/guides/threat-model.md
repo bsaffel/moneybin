@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Threat Model
 
 What MoneyBin protects against, and what it does not. This page is the honest list — written so a privacy-conscious user can decide whether MoneyBin meets their threat model, not so MoneyBin looks good. If you're trusting MoneyBin with real financial data, read this in full before you decide.
@@ -78,7 +78,7 @@ A malicious client can:
 - Ignore `destructiveHint` annotations and approve writes silently.
 - Inject additional context into the LLM's prompt that you didn't write.
 
-MoneyBin has no way to detect or stop a misbehaving client. The trust boundary is "the OS user who launched the client process." See [MCP clients: network boundary](mcp-clients.md#network-boundary) for the surface map.
+MoneyBin has no way to detect or stop a misbehaving client. The trust boundary is "the OS user who launched the client process." See [MCP clients: where data goes](mcp-clients.md#where-data-goes) for the surface map.
 
 ### A malicious or compromised hosted LLM provider
 

@@ -81,11 +81,13 @@ flowchart LR
 - No dependency on surveillance-based business models.
 - Feature tradeoffs at each tier: server-side analytics, merchant normalization, and population-wide insights are only available in Managed tier.
 
-### Comparison to similar services
+### Boundary of the guarantee
 
-- **Better than** most financial SaaS (Mint, YNAB) which store plaintext indefinitely.
-- **Similar to** 1Password's model, but financial data is harder (high-volume, third-party ingestion, heavy aggregation).
-- **Not as good as** true zero-knowledge services (Signal) for the Encrypted Sync tier, because Plaid returns plaintext.
+The Local Only tier protects data at rest on the user's machine. The Encrypted
+Sync tier reduces stored plaintext on the service, but it cannot be
+zero-knowledge because provider data must be processed before it reaches the
+client. The product must state that boundary plainly rather than implying a
+stronger guarantee.
 
 ## Addendum: AI Data Flows (2026-04-17)
 

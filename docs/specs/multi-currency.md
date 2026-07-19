@@ -95,18 +95,11 @@ The rejected alternative — storing `home_amount`/`home_currency` at row grain 
 forces conversion to exist before any row lands, freezes the home currency, and
 makes rate corrections a data-rewrite. Not chosen.
 
-**Shipped prior art (both rejected alternatives, both regretted in practice).**
-Two competing products have shipped the very designs this decision rejects, and
-their mechanics confirm the cost:
-
-- One persists converted amounts at row grain — its own release notes describe
-  amounts "stored at the historical date rate per transaction," with reports
-  summing the stored figures. A corrected historical rate then means rewriting
-  stored data, exactly the data-rewrite this spec avoids by converting on read.
-- Another maintains derived valuation snapshots in mutable tables that require
-  session-gated rebuilds and reaping of orphaned rows on every recompute — the
-  standing maintenance burden that deriving in SQLMesh (Invariant 8,
-  derive-don't-snapshot) removes entirely.
+**Rejected alternatives.** Persisting converted amounts at row grain makes a
+corrected historical rate a data rewrite. Maintaining derived valuation
+snapshots in mutable tables adds rebuild and orphan-cleanup obligations on every
+recompute. Converting at presentation time and deriving through SQLMesh avoid
+both failure modes while preserving original-currency facts.
 
 ## Phasing
 
@@ -246,8 +239,7 @@ Numbered, testable. Tagged by phase.
     prefix convention already used on `raw.exchange_rates` — reserving them now
     (schema reservation, not yet built) keeps a later importer from coining an
     ad-hoc, differently-ordered name and compounding the currency-column naming
-    drift §Key Decisions already flags. (A shipped competitor carries this shape as
-    `amount_received` / `currency_to`.)
+    drift §Key Decisions already flags.
 18. **Currency-lot accounting.** Realized FX gain/loss on disposing a foreign-currency
     holding is computed via the **investments cost-basis engine** (FIFO / average per
     the elected method in `investments-data-model.md`), treating currency holdings as

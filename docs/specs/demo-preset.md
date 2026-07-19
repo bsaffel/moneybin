@@ -17,9 +17,9 @@ install to a populated, categorized, doctor-clean profile and one obvious
 first answer, in well under five minutes, without needing any real financial
 data. It is the bridge between "installed" and "I see what this does."
 
-Competitors (Treeline, TuskLedger, Finlynq, Syllogic) all let an evaluator see
-the product without linking real accounts. `moneybin demo` closes that gap
-using machinery MoneyBin already has: the persona-based
+An evaluator should be able to see a useful result without linking real
+accounts. `moneybin demo` provides that safe evaluation path using machinery
+MoneyBin already has: the persona-based
 [synthetic data generator](testing-synthetic-data.md).
 
 ## Background
