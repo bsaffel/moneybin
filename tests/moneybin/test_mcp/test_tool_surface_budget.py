@@ -11,6 +11,8 @@ in a diff, not something a user discovers when their tools silently stop working
 
 import asyncio
 import inspect
+import json
+from pathlib import Path
 
 import pytest
 from fastmcp.tools import FunctionTool
@@ -26,6 +28,10 @@ from moneybin.mcp.surface import (
     description_budget_violations,
 )
 from moneybin.mcp.surface_inventory import SurfaceInventory
+
+FIXTURES_PATH = Path(__file__).parents[2] / "fixtures/mcp_surface"
+BASELINE_PATH = FIXTURES_PATH / "baseline-2026-07-17.json"
+STANDARD_PATH = FIXTURES_PATH / "standard-45.json"
 
 _STANDARD_CALLBACK_NAMES = {
     "system_status": "system_status_coarse",
@@ -96,6 +102,12 @@ def _inventory_server_sync() -> SurfaceInventory:
     return asyncio.run(inventory_server())
 
 
+def _load_inventory(path: Path) -> SurfaceInventory:
+    payload = json.loads(path.read_text())
+    tools = [Tool.model_validate(row["definition"]) for row in payload["tools"]]
+    return SurfaceInventory.from_tools(tools)
+
+
 def _inventory(*tools: Tool) -> SurfaceInventory:
     return SurfaceInventory.from_tools(list(tools))
 
@@ -162,6 +174,34 @@ def test_surface_contract_enforces_description_budget_when_enabled() -> None:
             enforce_hard_limit=False,
             enforce_description_budget=True,
         )
+
+
+@pytest.mark.integration
+def test_standard_surface_is_smaller_than_baseline() -> None:
+    baseline = _load_inventory(BASELINE_PATH)
+    standard = _inventory_server_sync()
+
+    assert baseline.total_bytes == 90_734
+    assert standard.tool_count == 45
+    assert standard.total_bytes < baseline.total_bytes
+    assert {
+        row.name for row in standard.tools if row.output_schema_bytes > 0
+    } == ADMITTED_OUTPUT_SCHEMA_NAMES
+
+
+@pytest.mark.integration
+def test_no_advertised_aliases() -> None:
+    actual = {row.name for row in _inventory_server_sync().tools}
+
+    assert actual == STANDARD_TOOL_NAMES
+
+
+@pytest.mark.integration
+def test_standard_snapshot_matches_live_surface() -> None:
+    expected = json.loads(STANDARD_PATH.read_text())
+    actual = _inventory_server_sync()
+
+    assert expected == actual.to_dict()
 
 
 @pytest.mark.integration

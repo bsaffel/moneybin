@@ -73,6 +73,18 @@ def _forbidden_fields(then_schema: dict[str, Any]) -> set[str]:
     }
 
 
+def _rendered_variants(
+    schema: dict[str, Any],
+    *,
+    collection: str,
+) -> dict[str, set[str]]:
+    variants = schema["properties"][collection]["items"]["oneOf"]
+    return {
+        branch["properties"]["kind"]["const"]: set(branch["required"])
+        for branch in variants
+    }
+
+
 @pytest.mark.parametrize(
     ("contract", "valid_payload", "required_field"),
     [
@@ -645,6 +657,54 @@ async def test_privacy_consent_set_coarse_schema_and_annotations() -> None:
         },
     ):
         validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+
+
+@pytest.mark.integration
+async def test_live_standard_write_discriminators_render_exactly() -> None:
+    from moneybin.mcp.server import init_db, mcp
+
+    init_db()
+    annotations = await listed_tool(mcp, "transactions_annotate")
+    reviews = await listed_tool(mcp, "reviews_decide")
+    identities = await listed_tool(mcp, "identity_links_decide")
+    taxonomy = await listed_tool(mcp, "taxonomy_set")
+    rules = await listed_tool(mcp, "transactions_categorize_rules_set")
+
+    assert _rendered_variants(
+        annotations.inputSchema,
+        collection="requests",
+    ) == {
+        "note_set": {"kind", "transaction_id", "note"},
+        "tags_set": {"kind", "transaction_id", "tags"},
+        "splits_set": {"kind", "transaction_id", "splits"},
+        "tag_rename": {"kind", "old_name", "new_name"},
+    }
+    assert _rendered_variants(reviews.inputSchema, collection="decisions") == {
+        "categorization": {"kind", "decision_id", "decision"},
+        "match": {"kind", "decision_id", "decision"},
+    }
+    assert _rendered_variants(identities.inputSchema, collection="decisions") == {
+        "account_link": {"kind", "decision_id", "decision"},
+        "merchant_link": {"kind", "decision_id", "decision"},
+        "security_link": {"kind", "decision_id", "decision"},
+    }
+    assert _rendered_variants(taxonomy.inputSchema, collection="items") == {
+        "category": {"kind", "state"},
+        "merchant": {"kind", "state"},
+    }
+
+    rule = rules.inputSchema["properties"]["rules"]["items"]
+    assert rule["properties"]["kind"]["const"] == "rule"
+    assert set(rule["properties"]["state"]["enum"]) == {
+        "present",
+        "inactive",
+        "absent",
+    }
+    assert set(rule["required"]) == {"kind", "state"}
+
+    for tool in (annotations, reviews, identities, taxonomy, rules):
+        assert tool.outputSchema is None
+        Draft202012Validator.check_schema(tool.inputSchema)
 
 
 def test_balance_assertion_amount_matches_decimal_18_2_extrema() -> None:

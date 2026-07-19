@@ -1,0 +1,4179 @@
+{
+  "sha256": "69c4bd6f83069142ced5353b4f98bfd0c723957aa6063c6d8376feb224085b42",
+  "tool_count": 45,
+  "tools": [
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List accounts, inspect one deterministic reference, summarize the portfolio, or return ranked resolution candidates. Amounts are in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_closed": {
+              "default": false,
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "query": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "reference": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "view": {
+              "default": "list",
+              "enum": [
+                "list",
+                "detail",
+                "summary",
+                "resolve"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts"
+      },
+      "description_bytes": 179,
+      "input_schema_bytes": 465,
+      "name": "accounts",
+      "other_bytes": 50,
+      "output_schema_bytes": 0,
+      "total_bytes": 783
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Declare a manual balance assertion present or absent for one resolved account and date. Present requires amount and upserts app.balance_assertions; absent forbids amount, requires exact payload-bound confirmation, and hard-deletes the assertion. Repeat an unchanged target state returns mutation_nothing_to_do. Reverse a mutation with system_audit_undo(operation_id). Amounts are positions in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "else": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "confirmation_token"
+                      ]
+                    }
+                  ]
+                },
+                "properties": {
+                  "amount": {
+                    "not": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "required": [
+                  "amount"
+                ]
+              },
+              "if": {
+                "properties": {
+                  "state": {
+                    "const": "absent"
+                  }
+                },
+                "required": [
+                  "state"
+                ]
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "amount"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "properties": {
+            "account": {
+              "type": "string"
+            },
+            "amount": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "decimal_places": 2,
+                  "ge": "-9999999999999999.99",
+                  "le": "9999999999999999.99",
+                  "max_digits": 18
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "as_of": {
+              "format": "date",
+              "type": "string"
+            },
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "state": {
+              "default": "present",
+              "enum": [
+                "present",
+                "absent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "account",
+            "as_of"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balance_assert"
+      },
+      "description_bytes": 440,
+      "input_schema_bytes": 775,
+      "name": "accounts_balance_assert",
+      "other_bytes": 65,
+      "output_schema_bytes": 0,
+      "total_bytes": 1369
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return latest account balances, one resolved account's daily history, or manual balance assertions. Amounts are positions in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "reference": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "start": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "view": {
+              "default": "latest",
+              "enum": [
+                "latest",
+                "history",
+                "assertions"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balances"
+      },
+      "description_bytes": 172,
+      "input_schema_bytes": 510,
+      "name": "accounts_balances",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 830
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Set account metadata and behavioral settings by stable account ID. Writes app.account_settings; call again with prior values to revert.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "type": "string"
+            },
+            "account_subtype": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "clear_fields": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "credit_limit": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "default_cost_basis_method": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "display_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "holder_category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_in_net_worth": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "is_archived": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "iso_currency_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "last_four": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "official_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "account_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_set"
+      },
+      "description_bytes": 135,
+      "input_schema_bytes": 1010,
+      "name": "accounts_set",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 1289
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Read connections or connection health.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "view": {
+              "default": "connections",
+              "enum": [
+                "connections",
+                "status"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet"
+      },
+      "description_bytes": 38,
+      "input_schema_bytes": 219,
+      "name": "gsheet",
+      "other_bytes": 48,
+      "output_schema_bytes": 0,
+      "total_bytes": 394
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Authenticate, connect, or reconnect in one mode-aware workflow.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "accept_seed_fallback": {
+              "default": false,
+              "type": "boolean"
+            },
+            "account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "account_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "adapter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "alias": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "column_mapping": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "confirm_mapping": {
+              "default": false,
+              "type": "boolean"
+            },
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "force_reauth": {
+              "default": false,
+              "type": "boolean"
+            },
+            "no_initial_pull": {
+              "default": false,
+              "type": "boolean"
+            },
+            "sign": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "url": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_connect"
+      },
+      "description_bytes": 63,
+      "input_schema_bytes": 896,
+      "name": "gsheet_connect",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 1105
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Soft-disconnect or exactly confirm a permanent purge.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "connection_id": {
+              "type": "string"
+            },
+            "state": {
+              "default": "disconnected",
+              "enum": [
+                "disconnected",
+                "absent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "connection_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_disconnect"
+      },
+      "description_bytes": 53,
+      "input_schema_bytes": 290,
+      "name": "gsheet_disconnect",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 491
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Pull one or all connections.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_pull"
+      },
+      "description_bytes": 28,
+      "input_schema_bytes": 138,
+      "name": "gsheet_pull",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 309
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Atomically accept or reject account, merchant, and security identity link decisions. Any accepted merge confirms the exact normalized full batch and complete live before-state; reject-only batches do not prompt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "decisions": {
+              "items": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "accept"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "target_id": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "target_id"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reject"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "target_id"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Accept or reject one account-link proposal.",
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "account_link",
+                        "type": "string"
+                      },
+                      "target_id": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "decision_id",
+                      "decision",
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "accept"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "target_id": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "target_id"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reject"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "target_id"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Accept or reject one merchant-link proposal.",
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "merchant_link",
+                        "type": "string"
+                      },
+                      "target_id": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "decision_id",
+                      "decision",
+                      "kind"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "accept"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "target_id": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "target_id"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reject"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "target_id"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Accept or reject one security-link proposal.",
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "security_link",
+                        "type": "string"
+                      },
+                      "target_id": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "decision_id",
+                      "decision",
+                      "kind"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "decisions"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "identity_links_decide"
+      },
+      "description_bytes": 211,
+      "input_schema_bytes": 2348,
+      "name": "identity_links_decide",
+      "other_bytes": 63,
+      "output_schema_bytes": 0,
+      "total_bytes": 2711
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Atomically consume an unchanged preview and import its file.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_bindings": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "account_metadata": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "account_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "bridge_response": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "preview_id": {
+              "type": "string"
+            },
+            "save_format": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "preview_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_confirm"
+      },
+      "description_bytes": 60,
+      "input_schema_bytes": 706,
+      "name": "import_confirm",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 913
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Import one or more files.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "force": {
+              "default": false,
+              "type": "boolean"
+            },
+            "paths": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "refresh": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_files"
+      },
+      "description_bytes": 25,
+      "input_schema_bytes": 220,
+      "name": "import_files",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 390
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Synchronize the import inbox.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "refresh": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_inbox_sync"
+      },
+      "description_bytes": 29,
+      "input_schema_bytes": 105,
+      "name": "import_inbox_sync",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 284
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Set labels on one import.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "import_id": {
+              "type": "string"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "import_id",
+            "labels"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_labels_set"
+      },
+      "description_bytes": 25,
+      "input_schema_bytes": 177,
+      "name": "import_labels_set",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 351
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Persist an exact, expiring staged-import preview.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "file_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_preview"
+      },
+      "description_bytes": 49,
+      "input_schema_bytes": 116,
+      "name": "import_preview",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 312
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Revert one completed import.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "import_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "import_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_revert"
+      },
+      "description_bytes": 28,
+      "input_schema_bytes": 116,
+      "name": "import_revert",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 289
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Read import history, formats, and inbox state.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "import_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "sections": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "imports",
+                      "formats",
+                      "inbox"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_status"
+      },
+      "description_bytes": 46,
+      "input_schema_bytes": 405,
+      "name": "import_status",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 595
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return investment events, holdings, open tax lots, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention and the currency in summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "security": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "start": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "view": {
+              "default": "holdings",
+              "enum": [
+                "events",
+                "holdings",
+                "lots",
+                "gains",
+                "securities"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments"
+      },
+      "description_bytes": 200,
+      "input_schema_bytes": 598,
+      "name": "investments",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 940
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Select specific acquisition lots for one disposal. Writes app.lot_selections; replace the selection to revert.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "disposal_txn_id": {
+              "description": "investment_transaction_id of the disposal (must be\na \"sell\"; other event types raise mutation_invalid_input).",
+              "type": "string"
+            },
+            "selections": {
+              "description": "List of `{\"lot_id\": ..., \"quantity\": \"...\"}` dicts\n(quantity as a decimal string). The selected quantities must sum\nto no more than the disposal's magnitude.",
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "disposal_txn_id",
+            "selections"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_lots_select"
+      },
+      "description_bytes": 110,
+      "input_schema_bytes": 536,
+      "name": "investments_lots_select",
+      "other_bytes": 65,
+      "output_schema_bytes": 0,
+      "total_bytes": 801
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Record investment ledger events as one validated batch. Quantity and cash signs follow the investment event convention; no revert tool.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "events": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "events"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_record"
+      },
+      "description_bytes": 135,
+      "input_schema_bytes": 163,
+      "name": "investments_record",
+      "other_bytes": 60,
+      "output_schema_bytes": 0,
+      "total_bytes": 448
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Create or update securities in app.securities by stable ID or ticker. Call again with prior values to revert.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "coingecko_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cost_basis_method": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "currency_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cusip": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "exchange": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "figi": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "is_cash_equivalent": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "isin": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "security_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "security_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "ticker": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_securities_set"
+      },
+      "description_bytes": 109,
+      "input_schema_bytes": 945,
+      "name": "investments_securities_set",
+      "other_bytes": 68,
+      "output_schema_bytes": 0,
+      "total_bytes": 1212
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Read active AI consent status or exact, cursor-paginated privacy log events. Privacy status does not accept pagination arguments.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "view": {
+              "default": "status",
+              "enum": [
+                "status",
+                "log"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "privacy"
+            ]
+          }
+        },
+        "name": "privacy"
+      },
+      "description_bytes": 129,
+      "input_schema_bytes": 267,
+      "name": "privacy",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 543
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Atomically grant or revoke consent for one or more feature categories. Grant is runtime non-destructive and idempotent; revoke confirms the exact normalized category set, backend, actor, profile, and live grants.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "categories": {
+              "items": {
+                "enum": [
+                  "mcp-data-sharing",
+                  "smart-import-parsing",
+                  "ml-categorization",
+                  "matching-overview"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "default": "persistent",
+              "enum": [
+                "persistent",
+                "one-time"
+              ],
+              "type": "string"
+            },
+            "state": {
+              "enum": [
+                "granted",
+                "revoked"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "categories",
+            "state"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "privacy"
+            ]
+          }
+        },
+        "name": "privacy_consent_set"
+      },
+      "description_bytes": 212,
+      "input_schema_bytes": 531,
+      "name": "privacy_consent_set",
+      "other_bytes": 70,
+      "output_schema_bytes": 0,
+      "total_bytes": 902
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, and identity proposal backfill in canonical order. Pass steps to select from gsheet, match, transform, categorize, and identity. Rebuilds core.* and reports.* and may write app categorization or identity-review state. No revert path; fix inputs and rerun.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "steps": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "gsheet",
+                      "match",
+                      "transform",
+                      "categorize",
+                      "identity"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Subset of ``[\"gsheet\", \"match\", \"transform\", \"categorize\",\n\"identity\"]``\nto run. Defaults to None (full cascade). Steps execute in\ncanonical order (gsheet \u2192 match \u2192 transform \u2192 categorize \u2192 identity)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views). Pass ``[\"transform\"]`` to run only\nSQLMesh apply."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "refresh_run"
+      },
+      "description_bytes": 389,
+      "input_schema_bytes": 612,
+      "name": "refresh_run",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 1144
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "parameters": {
+              "anyOf": [
+                {
+                  "additionalProperties": {},
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "report_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "reports"
+            ]
+          }
+        },
+        "name": "reports"
+      },
+      "description_bytes": 249,
+      "input_schema_bytes": 304,
+      "name": "reports",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 700
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return exact review counts or one normalized pending/history queue with deterministic cursor pagination.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "kind": {
+              "default": "summary",
+              "enum": [
+                "summary",
+                "categorization",
+                "matches",
+                "account_links",
+                "merchant_links",
+                "security_links"
+              ],
+              "type": "string"
+            },
+            "limit": {
+              "default": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "status": {
+              "default": "pending",
+              "enum": [
+                "pending",
+                "history"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reviews"
+      },
+      "description_bytes": 104,
+      "input_schema_bytes": 401,
+      "name": "reviews",
+      "other_bytes": 49,
+      "output_schema_bytes": 0,
+      "total_bytes": 643
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Atomically accept or reject categorization and transaction-match review decisions. Every target is resolved before any write; results retain input order and share one auditable operation_id.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "decisions": {
+              "items": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "accept"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "category": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "category"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reject"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "canonical_merchant_name"
+                                ]
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Accept or reject one categorization proposal.",
+                    "properties": {
+                      "canonical_merchant_name": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "category": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "categorization",
+                        "type": "string"
+                      },
+                      "subcategory": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "decision_id",
+                      "decision"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "Accept or reject one transaction-match proposal.",
+                    "properties": {
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "match",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "decision_id",
+                      "decision"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "decisions"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reviews_decide"
+      },
+      "description_bytes": 190,
+      "input_schema_bytes": 1419,
+      "name": "reviews_decide",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 1755
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>), exactly like the typed tools \u2014 raw SQL is not a privacy bypass. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "query": {
+              "description": "The SQL query to execute.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sql_query"
+      },
+      "description_bytes": 510,
+      "input_schema_bytes": 150,
+      "name": "sql_query",
+      "other_bytes": 51,
+      "output_schema_bytes": 0,
+      "total_bytes": 800
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return the curated database schema. Default call returns a compact catalog (table names + purposes + column counts). Pass table='<schema.name>' for one table's columns/examples, or table='*' for the full ~50KB document. Mirrors the moneybin://schema resource for hosts that don't expose MCP resources.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "table": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "``None`` (default) returns the compact catalog; a full table\nname like ``'core.fct_transactions'`` returns details for that\ntable; ``'*'`` returns the full schema document."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sql_schema"
+      },
+      "description_bytes": 301,
+      "input_schema_bytes": 321,
+      "name": "sql_schema",
+      "other_bytes": 52,
+      "output_schema_bytes": 0,
+      "total_bytes": 763
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Disconnect one institution.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "institution": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "institution"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_disconnect"
+      },
+      "description_bytes": 27,
+      "input_schema_bytes": 120,
+      "name": "sync_disconnect",
+      "other_bytes": 57,
+      "output_schema_bytes": 0,
+      "total_bytes": 293
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Start a hosted bank-link session.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "institution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_link"
+      },
+      "description_bytes": 33,
+      "input_schema_bytes": 136,
+      "name": "sync_link",
+      "other_bytes": 51,
+      "output_schema_bytes": 0,
+      "total_bytes": 310
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Pull connected financial data.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "institution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_pull"
+      },
+      "description_bytes": 30,
+      "input_schema_bytes": 136,
+      "name": "sync_pull",
+      "other_bytes": 51,
+      "output_schema_bytes": 0,
+      "total_bytes": 307
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Read global health or one link-session status.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_status"
+      },
+      "description_bytes": 46,
+      "input_schema_bytes": 135,
+      "name": "sync_status",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 323
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List recent audit events or operation history, or inspect one operation or parent audit event in detail. Detail requires exactly one identifier.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "audit_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 50,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "operation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "view": {
+              "default": "events",
+              "enum": [
+                "events",
+                "history",
+                "detail"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_audit"
+      },
+      "description_bytes": 144,
+      "input_schema_bytes": 412,
+      "name": "system_audit",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 699
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Undo one complete audited operation by operation_id. The inverse mutation is itself audited and undoable; dependency conflicts return the blocking operation IDs.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_audit_undo"
+      },
+      "description_bytes": 161,
+      "input_schema_bytes": 122,
+      "name": "system_audit_undo",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 432
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Return selected operator status sections: overview inventory, integrity doctor checks, and categorization coverage. detail='full' deepens the doctor scan and includes auto-categorization health.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "detail": {
+              "default": "summary",
+              "enum": [
+                "summary",
+                "full"
+              ],
+              "type": "string"
+            },
+            "sections": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "overview",
+                      "doctor",
+                      "categorization"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_status"
+      },
+      "description_bytes": 194,
+      "input_schema_bytes": 277,
+      "name": "system_status",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 616
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Read categories or merchant mappings with deterministic filtering and exact cursor pagination.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_inactive": {
+              "default": false,
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "query": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "view": {
+              "default": "categories",
+              "enum": [
+                "categories",
+                "merchants"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "taxonomy"
+      },
+      "description_bytes": 94,
+      "input_schema_bytes": 389,
+      "name": "taxonomy",
+      "other_bytes": 50,
+      "output_schema_bytes": 0,
+      "total_bytes": 622
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Atomically declare categories present, inactive, or absent and merchant mappings present or absent. The tool advertises maximum destructive risk and confirms only batches containing a resolved hard delete.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "items": {
+              "items": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "present"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "category": {
+                              "not": {
+                                "type": "null"
+                              }
+                            },
+                            "force": {
+                              "const": false
+                            }
+                          },
+                          "required": [
+                            "category"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "inactive"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "description"
+                                ]
+                              }
+                            ]
+                          },
+                          "properties": {
+                            "category_id": {
+                              "not": {
+                                "type": "null"
+                              }
+                            },
+                            "force": {
+                              "const": false
+                            }
+                          },
+                          "required": [
+                            "category_id"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "absent"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "description"
+                                ]
+                              }
+                            ]
+                          },
+                          "properties": {
+                            "category_id": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "category_id"
+                          ]
+                        }
+                      }
+                    ],
+                    "description": "Declare one category's target state.",
+                    "properties": {
+                      "category": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "category_id": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "description": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "force": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "kind": {
+                        "const": "category",
+                        "type": "string"
+                      },
+                      "state": {
+                        "enum": [
+                          "present",
+                          "inactive",
+                          "absent"
+                        ],
+                        "type": "string"
+                      },
+                      "subcategory": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "state"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "present"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "canonical_name": {
+                              "not": {
+                                "type": "null"
+                              }
+                            },
+                            "raw_pattern": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "raw_pattern",
+                            "canonical_name"
+                          ]
+                        }
+                      },
+                      {
+                        "if": {
+                          "properties": {
+                            "state": {
+                              "const": "absent"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ]
+                        },
+                        "then": {
+                          "not": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "raw_pattern"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "canonical_name"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "match_type"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "category"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "subcategory"
+                                ]
+                              }
+                            ]
+                          },
+                          "properties": {
+                            "merchant_id": {
+                              "not": {
+                                "type": "null"
+                              }
+                            }
+                          },
+                          "required": [
+                            "merchant_id"
+                          ]
+                        }
+                      }
+                    ],
+                    "description": "Declare one merchant mapping's target state.",
+                    "properties": {
+                      "canonical_name": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "category": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "kind": {
+                        "const": "merchant",
+                        "type": "string"
+                      },
+                      "match_type": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "exact",
+                              "contains",
+                              "regex"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "merchant_id": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "raw_pattern": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      },
+                      "state": {
+                        "enum": [
+                          "present",
+                          "absent"
+                        ],
+                        "type": "string"
+                      },
+                      "subcategory": {
+                        "anyOf": [
+                          {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": null
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "state"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "taxonomy_set"
+      },
+      "description_bytes": 205,
+      "input_schema_bytes": 2942,
+      "name": "taxonomy_set",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 3290
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Query operational transactions with exact cursor pagination. Filter by resolved account or merchant, date, category, amount, or text. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Currency is named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "end": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_amount": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "merchant": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "min_amount": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "start": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "text": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions"
+      },
+      "description_bytes": 276,
+      "input_schema_bytes": 821,
+      "name": "transactions",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 1240
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Atomically declare complete note, tag, and split states or rename one tag globally. Every request is preflighted before any write; failure leaves the whole batch unchanged. Results retain request order and share one operation_id for audit inspection or system_audit_undo recovery.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "requests": {
+              "items": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "description": "Set or clear the note on one transaction.",
+                    "properties": {
+                      "kind": {
+                        "const": "note_set",
+                        "type": "string"
+                      },
+                      "note": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "transaction_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "transaction_id",
+                      "note"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "Replace the complete tag collection on one transaction.",
+                    "properties": {
+                      "kind": {
+                        "const": "tags_set",
+                        "type": "string"
+                      },
+                      "tags": {
+                        "items": {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "transaction_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "transaction_id",
+                      "tags"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "Replace the complete split collection on one transaction.",
+                    "properties": {
+                      "kind": {
+                        "const": "splits_set",
+                        "type": "string"
+                      },
+                      "splits": {
+                        "items": {
+                          "additionalProperties": false,
+                          "allOf": [
+                            {
+                              "if": {
+                                "properties": {
+                                  "subcategory": {
+                                    "not": {
+                                      "type": "null"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "subcategory"
+                                ]
+                              },
+                              "then": {
+                                "properties": {
+                                  "category": {
+                                    "not": {
+                                      "type": "null"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "category"
+                                ]
+                              }
+                            }
+                          ],
+                          "description": "One complete transaction split target.",
+                          "properties": {
+                            "amount": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "number"
+                                }
+                              ],
+                              "decimal_places": 2,
+                              "ge": "-9999999999999999.99",
+                              "le": "9999999999999999.99",
+                              "max_digits": 18
+                            },
+                            "category": {
+                              "anyOf": [
+                                {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null
+                            },
+                            "note": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null
+                            },
+                            "subcategory": {
+                              "anyOf": [
+                                {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": null
+                            }
+                          },
+                          "required": [
+                            "amount"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "transaction_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "transaction_id",
+                      "splits"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "Rename one tag everywhere.",
+                    "properties": {
+                      "kind": {
+                        "const": "tag_rename",
+                        "type": "string"
+                      },
+                      "new_name": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "old_name": {
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "old_name",
+                      "new_name"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "requests"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_annotate"
+      },
+      "description_bytes": 280,
+      "input_schema_bytes": 2162,
+      "name": "transactions_annotate",
+      "other_bytes": 63,
+      "output_schema_bytes": 0,
+      "total_bytes": 2594
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Fetch uncategorized transactions as PII-scrubbed records for LLM-assisted categorization. Merchant text (description/memo) IS sent in full \u2014 it's the categorization signal; only embedded PII (e.g. account numbers in the memo) is masked. No amounts, dates, or account IDs sent.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_filter": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Restrict to specific account IDs."
+            },
+            "date_range": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Dict with \"start\" and \"end\" keys (ISO date strings)."
+            },
+            "limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Max records to return. Defaults to assist_default_batch_size (100)."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_assist"
+      },
+      "description_bytes": 278,
+      "input_schema_bytes": 556,
+      "name": "transactions_categorize_assist",
+      "other_bytes": 84,
+      "output_schema_bytes": 0,
+      "total_bytes": 1007
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Commit a caller-reviewed categorization batch to app.transaction_categories and app.user_merchants. Re-categorize a transaction to replace a prior decision.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "description": "List of dicts with transaction_id, category, optional\nsubcategory, and optional canonical_merchant_name.",
+              "items": {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_commit"
+      },
+      "description_bytes": 156,
+      "input_schema_bytes": 324,
+      "name": "transactions_categorize_commit",
+      "other_bytes": 84,
+      "output_schema_bytes": 0,
+      "total_bytes": 654
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Read active, inactive, or audit-backed historical categorization rules. Use view='history' to include prior and deleted states; statistics are available from system_status(sections=['categorization']).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "view": {
+              "default": "active",
+              "enum": [
+                "active",
+                "inactive",
+                "history"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_rules"
+      },
+      "description_bytes": 201,
+      "input_schema_bytes": 144,
+      "name": "transactions_categorize_rules",
+      "other_bytes": 83,
+      "output_schema_bytes": 0,
+      "total_bytes": 517
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "rules": {
+              "items": {
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "state": {
+                          "const": "present"
+                        }
+                      },
+                      "required": [
+                        "state"
+                      ]
+                    },
+                    "then": {
+                      "properties": {
+                        "category": {
+                          "not": {
+                            "type": "null"
+                          }
+                        },
+                        "matcher": {
+                          "not": {
+                            "type": "null"
+                          }
+                        },
+                        "priority": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "required": [
+                        "matcher",
+                        "category",
+                        "priority"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "state": {
+                          "const": "inactive"
+                        }
+                      },
+                      "required": [
+                        "state"
+                      ]
+                    },
+                    "then": {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "matcher"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "category"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "subcategory"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "priority"
+                            ]
+                          }
+                        ]
+                      },
+                      "properties": {
+                        "rule_id": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "required": [
+                        "rule_id"
+                      ]
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "state": {
+                          "const": "absent"
+                        }
+                      },
+                      "required": [
+                        "state"
+                      ]
+                    },
+                    "then": {
+                      "not": {
+                        "anyOf": [
+                          {
+                            "required": [
+                              "matcher"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "category"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "subcategory"
+                            ]
+                          },
+                          {
+                            "required": [
+                              "priority"
+                            ]
+                          }
+                        ]
+                      },
+                      "properties": {
+                        "rule_id": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "required": [
+                        "rule_id"
+                      ]
+                    }
+                  }
+                ],
+                "description": "Declare one categorization rule's target state.\n\nThe Task 4 adapter derives a deterministic name from the target fields;\ncallers cannot provide a separate service-layer rule name.",
+                "properties": {
+                  "category": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "kind": {
+                    "const": "rule",
+                    "type": "string"
+                  },
+                  "matcher": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Strict matching target for one categorization rule.",
+                        "properties": {
+                          "account_id": {
+                            "anyOf": [
+                              {
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "max_amount": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "min_amount": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "type": {
+                            "enum": [
+                              "exact",
+                              "contains",
+                              "regex"
+                            ],
+                            "type": "string"
+                          },
+                          "value": {
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "value"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "priority": {
+                    "anyOf": [
+                      {
+                        "maximum": 10000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "rule_id": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  },
+                  "state": {
+                    "enum": [
+                      "present",
+                      "inactive",
+                      "absent"
+                    ],
+                    "type": "string"
+                  },
+                  "subcategory": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null
+                  }
+                },
+                "required": [
+                  "kind",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "rules"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_rules_set"
+      },
+      "description_bytes": 392,
+      "input_schema_bytes": 2350,
+      "name": "transactions_categorize_rules_set",
+      "other_bytes": 87,
+      "output_schema_bytes": 0,
+      "total_bytes": 2918
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Run the selected deterministic categorization engines over uncategorized transactions. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "methods": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "rules",
+                      "merchants"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Engines to run in the listed order. Defaults to\n[\"rules\", \"merchants\"]."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_run"
+      },
+      "description_bytes": 182,
+      "input_schema_bytes": 279,
+      "name": "transactions_categorize_run",
+      "other_bytes": 81,
+      "output_schema_bytes": 0,
+      "total_bytes": 632
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Create manual transactions as a validated batch. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Reverse with system_audit_undo(operation_id).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "transactions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "transactions"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_create"
+      },
+      "description_bytes": 190,
+      "input_schema_bytes": 175,
+      "name": "transactions_create",
+      "other_bytes": 61,
+      "output_schema_bytes": 0,
+      "total_bytes": 517
+    }
+  ],
+  "total_bytes": 42204
+}

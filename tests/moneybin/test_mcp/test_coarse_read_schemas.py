@@ -117,6 +117,63 @@ async def test_listed_tool_reads_rendered_input_schema() -> None:
     assert tool.inputSchema["properties"]["enabled"]["type"] == "boolean"
 
 
+@pytest.mark.integration
+async def test_live_standard_read_selectors_render_exactly() -> None:
+    from moneybin.mcp.server import init_db, mcp
+
+    init_db()
+    expected_literals = {
+        ("system_status", "detail"): {"summary", "full"},
+        ("system_audit", "view"): {"events", "history", "detail"},
+        ("accounts", "view"): {"list", "detail", "summary", "resolve"},
+        ("accounts_balances", "view"): {"latest", "history", "assertions"},
+        ("investments", "view"): {
+            "events",
+            "holdings",
+            "lots",
+            "gains",
+            "securities",
+        },
+        ("transactions_categorize_rules", "view"): {
+            "active",
+            "inactive",
+            "history",
+        },
+        ("reviews", "kind"): {
+            "summary",
+            "categorization",
+            "matches",
+            "account_links",
+            "merchant_links",
+            "security_links",
+        },
+        ("reviews", "status"): {"pending", "history"},
+        ("taxonomy", "view"): {"categories", "merchants"},
+        ("gsheet", "view"): {"connections", "status"},
+        ("privacy", "view"): {"status", "log"},
+    }
+    for (name, field), expected in expected_literals.items():
+        tool = await listed_tool(mcp, name)
+        assert_literal_values(
+            tool.inputSchema,
+            ("properties", field),
+            expected,
+        )
+
+    status = await listed_tool(mcp, "system_status")
+    assert_literal_values(
+        status.inputSchema["properties"]["sections"]["anyOf"][0],
+        ("items",),
+        {"overview", "doctor", "categorization"},
+    )
+    import_status = await listed_tool(mcp, "import_status")
+    assert_literal_values(
+        import_status.inputSchema["properties"]["sections"]["anyOf"][0],
+        ("items",),
+        {"imports", "formats", "inbox"},
+    )
+
+
 @pytest.mark.parametrize("bad", ["false", "0", "[]", "{}"])
 async def test_strict_probe_does_not_coerce(bad: str) -> None:
     mcp = isolated_server(register_strict_probe)

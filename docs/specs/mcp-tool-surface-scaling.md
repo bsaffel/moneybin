@@ -60,8 +60,9 @@ the first draft of this spec. The four-tool difference between a proposed
 second user-visible concept. The generic report runner then reduced the target
 to approximately 45 tools.
 
-Until this spec is implemented, the current full 105-tool registry remains the
-operating reality. Proposed text must not be described as shipped behavior.
+The 45-tool standard registry is now the operating reality. Promotion remains
+open for observed baseline/candidate evaluation evidence and the other gates at
+the end of this spec.
 
 ## Why now
 
@@ -466,6 +467,57 @@ A consolidation is accepted only when:
 
 If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
+### Standard-registry carrying-weight evidence
+
+The deterministic Plan 6
+[`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
+contains 45 tools, 42,204 serialized metadata bytes, no advertised output
+schemas, and registry SHA-256
+`69c4bd6f83069142ced5353b4f98bfd0c723957aa6063c6d8376feb224085b42`.
+That is 48,530 bytes (53.5%) below the frozen 90,734-byte registry. The
+deterministic estimate is 10,551 metadata tokens; a percentage of context is
+recorded only with observed host/model evidence because this contract does not
+invent a context-window size.
+
+The table records each consolidated read/write schema measured against the
+legacy definitions it replaces. Totals include name, description, input
+schema, annotations, and other protocol metadata. A positive input-schema
+delta is retained when it carries a selector, discriminator, conditional
+requirement, or confirmation boundary that the narrower definitions did not
+express.
+
+| Standard operation | Total bytes candidate / replaced (delta) | Input-schema bytes candidate / replaced (delta) |
+|---|---:|---:|
+| `system_status` | 616 / 2,584 (-1,968) | 277 / 793 (-516) |
+| `system_audit` | 699 / 1,811 (-1,112) | 412 / 684 (-272) |
+| `accounts` | 783 / 2,049 (-1,266) | 465 / 808 (-343) |
+| `accounts_balances` | 830 / 2,598 (-1,768) | 510 / 1,286 (-776) |
+| `investments` | 940 / 4,667 (-3,727) | 598 / 2,727 (-2,129) |
+| `transactions` | 1,240 / 2,333 (-1,093) | 821 / 1,666 (-845) |
+| `transactions_categorize_rules` | 517 / 271 (+246) | 144 / 62 (+82) |
+| `reviews` | 643 / 8,158 (-7,515) | 401 / 2,493 (-2,092) |
+| `taxonomy` | 622 / 526 (+96) | 389 / 177 (+212) |
+| `import_status` | 595 / 1,095 (-500) | 405 / 429 (-24) |
+| `gsheet` | 394 / 919 (-525) | 219 / 200 (+19) |
+| `privacy` | 543 / 913 (-370) | 267 / 393 (-126) |
+| `accounts_balance_assert` | 1,369 / 1,576 (-207) | 775 / 674 (+101) |
+| `transactions_annotate` | 2,594 / 3,353 (-759) | 2,162 / 962 (+1,200) |
+| `transactions_categorize_rules_set` | 2,918 / 2,573 (+345) | 2,350 / 1,260 (+1,090) |
+| `reviews_decide` | 1,755 / 2,466 (-711) | 1,419 / 1,220 (+199) |
+| `identity_links_decide` | 2,711 / 5,603 (-2,892) | 2,348 / 2,003 (+345) |
+| `taxonomy_set` | 3,290 / 3,026 (+264) | 2,942 / 1,163 (+1,779) |
+| `privacy_consent_set` | 902 / 2,091 (-1,189) | 531 / 1,021 (-490) |
+
+Four operations are individually larger in total metadata:
+`transactions_categorize_rules` (+246), `taxonomy` (+96),
+`transactions_categorize_rules_set` (+345), and `taxonomy_set` (+264).
+They retain approved projection/history or target-state semantics that the
+replaced definitions lacked. Splitting them would spend additional public
+identities and repeat descriptions/annotations without evidence of better
+selection or safety. The approved 45-tool design therefore keeps them whole;
+future evaluation may justify a split, but byte pressure alone may not remove
+their selectors, discriminators, conditional fields, or safety contracts.
+
 ### Tool admission record
 
 A PR proposing a tool must answer:
@@ -511,10 +563,8 @@ consolidation. The rejected full-schema experiment is recorded separately as
 861,301 bytes and is not used to make the candidate comparison easier.
 
 The 50-tool maximum and 40-tool carrying-weight review threshold are durable
-policy. During the intentional 105-tool pre-cutover state, the contract runs
-with both hard-limit and description-budget enforcement disabled while still
-measuring the live inventory and legacy description debt. Plan 6 enables both
-gates atomically when it cuts the standard registry to 45 tools.
+policy. Plan 6 enabled both hard-limit and description-budget enforcement
+atomically when it cut the standard registry to 45 tools.
 
 `baseline-105.json` is a deterministic `contract_fixture`, not observed model
 or host evidence. It proves the evaluation format and scoring path; fresh
