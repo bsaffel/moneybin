@@ -786,6 +786,117 @@ def test_scalar_subquery_count_does_not_downgrade(populated_db: Database) -> Non
 
 
 # ---------------------------------------------------------------------------
+# The counting aggregate must not outrank the opaque-node veto
+#
+# The counting-aggregate collapse governs a projection only when EVERY column
+# reference sits inside a count. Its guard tests exactly that —
+# ``not any(not _within_counting_agg(c, inner) for c in inner.find_all(Column))``
+# — and an opaque node (``COLUMNS(...)``, an unexpanded ``Star``) carries NO
+# ``exp.Column`` child at all. ``find_all`` yields nothing, ``any`` over nothing
+# is False, ``not False`` is True: the guard passes VACUOUSLY and the projection
+# collapsed to AGGREGATE (LOW) — the same "absence of evidence read as proof"
+# shape as the other leaks on this branch.
+#
+# The fix orders the opaque veto FIRST. The one node it still lets through is a
+# ``Star`` inside the count — the ``COUNT(*)`` / ``COUNT(t.*)`` idiom, which
+# names no columns and is genuinely bounded by the count. That exception is
+# load-bearing (``net_worth.account_count``), so the preservation tests below
+# are as much a part of this guard as the leak tests.
+# ---------------------------------------------------------------------------
+
+_OPAQUE_COUNTING_AGG_QUERIES = {
+    # COLUMNS() as the count's own argument. Unlike `*`, COLUMNS DISTRIBUTES:
+    # COUNT(COLUMNS('a|b')) becomes the sibling projections COUNT(a), COUNT(b),
+    # so one projection yields N runtime columns lineage never named.
+    "count-of-columns": "SELECT COUNT(COLUMNS('routing.*')) AS x FROM core.dim_accounts",
+    "count-of-columns-all": "SELECT COUNT(COLUMNS('.*')) AS x FROM core.dim_accounts",
+    # A counting aggregate co-projected with COLUMNS() in ONE projection. The
+    # count does not bound the COLUMNS half, which surfaces its value verbatim.
+    "count-concat-columns": (
+        "SELECT COUNT(*) || first(COLUMNS('routing.*')) AS x FROM core.dim_accounts"
+    ),
+    "columns-concat-count": (
+        "SELECT MIN(COLUMNS('routing.*')) || COUNT(*) AS x FROM core.dim_accounts"
+    ),
+    "count-concat-columns-grouped": (
+        "SELECT COUNT(*) || COLUMNS('routing.*') AS x FROM core.dim_accounts "
+        "GROUP BY routing_number"
+    ),
+    # A Star that survived expansion, OUTSIDE the count — i.e. a `qualify()`
+    # failure, not the COUNT(*) idiom. The count bounds only its own argument.
+    "count-concat-unexpanded-star": (
+        "SELECT COUNT(*) || * AS x FROM core.dim_accounts"
+    ),
+    # A resolvable column alongside the opaque node: answering from `account_id`
+    # (RECORD_ID, LOW) would publish a confident class over the columns
+    # COLUMNS(...) expands to.
+    "count-of-column-concat-columns": (
+        "SELECT COUNT(account_id) || first(COLUMNS('routing.*')) AS x "
+        "FROM core.dim_accounts"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    list(_OPAQUE_COUNTING_AGG_QUERIES.values()),
+    ids=list(_OPAQUE_COUNTING_AGG_QUERIES),
+)
+def test_counting_aggregate_never_collapses_an_opaque_projection(
+    sql: str, populated_db: Database
+) -> None:
+    """No projection holding an unbounded opaque node classifies AGGREGATE.
+
+    Asserted as "not AGGREGATE / not LOW" rather than as one exact class: the
+    point is that lineage declines to certify a projection it could not
+    decompose, and the conservative floor — not this rule — chooses what the
+    decline becomes.
+    """
+    out = _classes(sql, populated_db)
+    assert out, "expected at least one output class"
+    assert DataClass.AGGREGATE not in out.values()
+    assert derive_query_tier(out) is not Tier.LOW
+
+
+_PRESERVED_COUNTING_AGG_QUERIES = {
+    # The load-bearing case: COUNT(*)'s Star is not a failed expansion, and the
+    # count really does destroy whatever it covered. net_worth.account_count
+    # derives AGGREGATE through this path instead of inheriting account_id.
+    "count-star": "SELECT COUNT(*) AS n FROM core.dim_accounts",
+    "count-distinct-critical": (
+        "SELECT COUNT(DISTINCT routing_number) AS n FROM core.dim_accounts"
+    ),
+    "count-of-column": "SELECT COUNT(account_id) AS n FROM core.dim_accounts",
+    # COUNT(*) over a source whose star qualify() cannot expand. The star here is
+    # still the count's own argument, so it stays bounded — the veto must not
+    # widen to "any Star anywhere".
+    "count-star-over-unexpandable-source": (
+        "SELECT COUNT(*) AS n FROM (SUMMARIZE core.dim_accounts)"
+    ),
+    "count-star-table-qualified": "SELECT COUNT(a.*) AS n FROM core.dim_accounts a",
+}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    list(_PRESERVED_COUNTING_AGG_QUERIES.values()),
+    ids=list(_PRESERVED_COUNTING_AGG_QUERIES),
+)
+def test_ordinary_counting_aggregate_still_collapses_to_aggregate(
+    sql: str, populated_db: Database
+) -> None:
+    """A genuine counting aggregate keeps returning AGGREGATE (LOW).
+
+    The opaque veto is a narrowing of the collapse rule, not a repeal of it. If
+    a fix to the vacuous-guard leak makes any of these fail closed, it has
+    over-corrected.
+    """
+    out = _classes(sql, populated_db)
+    assert set(out.values()) == {DataClass.AGGREGATE}
+    assert derive_query_tier(out) is Tier.LOW
+
+
+# ---------------------------------------------------------------------------
 # Task 1: Reports declared-class lookup
 # ---------------------------------------------------------------------------
 

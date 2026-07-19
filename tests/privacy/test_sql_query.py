@@ -645,6 +645,112 @@ def test_masking_bypass_never_returns_routing_number_in_the_clear(
     assert result.tier is Tier.CRITICAL
 
 
+# ---------------------------------------------------------------------------
+# The counting-aggregate collapse bypassed the opaque-node protection
+#
+# Same family as the block above, reached by a different door. The collapse's
+# guard ("every exp.Column is inside a count") passes VACUOUSLY on an opaque
+# projection — one carries no exp.Column child at all — so an opaque node
+# combined with a counting aggregate escaped to AGGREGATE (LOW) while the SAME
+# opaque node alone correctly declined to UNRESOLVED. Each query below returned
+# the real routing number in the clear, several of them concatenated to a count
+# (``'1021000021'``), which is why the assertion is on the returned VALUE.
+#
+# The classification-level cases, including the shapes DuckDB's binder rejects
+# before execution, live in
+# ``test_sql_lineage.py::test_counting_aggregate_never_collapses_an_opaque_projection``.
+# ---------------------------------------------------------------------------
+
+_COUNTING_AGG_BYPASS_QUERIES = {
+    "count-concat-columns": (
+        "SELECT COUNT(*) || first(COLUMNS('routing.*')) AS x FROM core.dim_accounts"
+    ),
+    "columns-concat-count": (
+        "SELECT MIN(COLUMNS('routing.*')) || COUNT(*) AS x FROM core.dim_accounts"
+    ),
+    "count-concat-columns-grouped": (
+        "SELECT COUNT(*) || COLUMNS('routing.*') AS x FROM core.dim_accounts "
+        "GROUP BY routing_number"
+    ),
+    "count-concat-columns-in-cte": (
+        "WITH w AS (SELECT COUNT(*) || first(COLUMNS('routing.*')) AS x "
+        "FROM core.dim_accounts) SELECT x FROM w"
+    ),
+    "count-concat-columns-scalar-subquery": (
+        "SELECT COUNT(*) || "
+        "(SELECT first(COLUMNS('routing.*')) FROM core.dim_accounts) AS x "
+        "FROM core.dim_accounts"
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    list(_COUNTING_AGG_BYPASS_QUERIES.values()),
+    ids=list(_COUNTING_AGG_BYPASS_QUERIES),
+)
+def test_counting_aggregate_does_not_unmask_an_opaque_projection(
+    sql: str, populated_db: Database
+) -> None:
+    """A count beside an opaque node must not publish the value the node covers.
+
+    The alias (``AS x``) matters: without it DuckDB names the output column
+    after the expanded source column, the name-mismatch fallback in
+    ``sql_query`` notices lineage never produced that name, and it fails closed
+    anyway. Aliasing makes the names line up, so nothing downstream catches a
+    wrong LOW — the projection's own class is the only thing standing between
+    the user and ``021000021``.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert _ROUTING_NUMBER not in str(result.records)
+    assert result.tier is Tier.CRITICAL
+
+
+def test_count_of_opaque_projection_is_not_a_confident_aggregate(
+    populated_db: Database,
+) -> None:
+    """``COUNT(COLUMNS(...))`` returns a count, but must not be certified LOW.
+
+    No value leaks in this instance — the sibling projections DuckDB expands
+    this into happen to all be counts. It is still not something lineage may
+    answer AGGREGATE with confidence: ``COLUMNS(...)`` distributes into N output
+    columns whose names lineage never produced, so a confident LOW here is a
+    class asserted over columns we never saw. Pinned separately from the
+    value-leak cases so a future narrowing of the veto to "only when a value
+    provably escapes" fails here rather than passing quietly.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(COLUMNS('routing.*')) AS x FROM core.dim_accounts",
+        max_rows=100,
+    )
+    assert result.output_classes["x"] is not DataClass.AGGREGATE
+    assert result.tier is not Tier.LOW
+
+
+def test_count_star_over_unexpandable_source_stays_aggregate(
+    populated_db: Database,
+) -> None:
+    """``COUNT(*)`` over a ``SUMMARIZE`` source is still LOW — the veto's boundary.
+
+    ``COUNT(*)``'s Star is not a failed ``qualify()`` expansion; it names no
+    columns and the count genuinely bounds it. If the opaque veto widens to
+    "any Star anywhere", this ordinary row count fails closed and the
+    ``net_worth.account_count`` derivation goes with it.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(*) AS n FROM (SUMMARIZE core.dim_accounts)",
+        max_rows=100,
+    )
+    assert result.output_classes["n"] is DataClass.AGGREGATE
+    assert result.tier is Tier.LOW
+
+
 def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> None:
     """``COUNT(*)`` still classifies as AGGREGATE (LOW), not CRITICAL.
 

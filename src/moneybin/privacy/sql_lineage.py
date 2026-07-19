@@ -890,9 +890,9 @@ def _scope_of_column(
 #     surviving Star means expansion FAILED — the loudest possible signal that
 #     we do not know what this projection returns.
 #
-# ``COUNT(*)`` also holds a Star but never reaches here: the counting-aggregate
-# branch above returns AGGREGATE first, which is correct — a count destroys the
-# values whatever the star covered.
+# ``COUNT(*)`` also holds a Star, but that one is not an expansion failure — see
+# ``_has_uncounted_opaque``, which is what lets the counting-aggregate rule keep
+# answering AGGREGATE for it.
 _OPAQUE_PROJECTION_NODES: tuple[type[exp.Expr], ...] = (exp.Star, exp.Columns)
 
 
@@ -900,6 +900,35 @@ def _is_opaque(inner: exp.Expr) -> bool:
     """True if ``inner`` stands for columns we cannot enumerate."""
     return isinstance(inner, _OPAQUE_PROJECTION_NODES) or any(
         True for _ in inner.find_all(*_OPAQUE_PROJECTION_NODES)
+    )
+
+
+def _has_uncounted_opaque(inner: exp.Expr) -> bool:
+    """True if ``inner`` holds an opaque node a counting aggregate cannot bound.
+
+    Exactly one opaque node is bounded: an ``exp.Star`` sitting INSIDE a counting
+    aggregate — the ``COUNT(*)`` / ``COUNT(t.*)`` row-count idiom. That star is
+    not a failed ``qualify()`` expansion (``qualify`` never tries to expand it);
+    it names no columns and expands to nothing, so the count really does destroy
+    whatever it covered. Preserving it is load-bearing: it is why
+    ``net_worth.account_count`` derives AGGREGATE instead of inheriting
+    ``account_id``.
+
+    Every other opaque node blocks the collapse:
+
+      * ``exp.Columns`` anywhere — including as the count's own argument.
+        ``COLUMNS(...)`` DISTRIBUTES rather than nests: ``COUNT(COLUMNS('a|b'))``
+        becomes the two sibling projections ``COUNT(a), COUNT(b)``. One
+        projection therefore yields N runtime output columns whose names lineage
+        never produced, so a single confident class for it certifies columns we
+        never saw.
+      * ``exp.Star`` OUTSIDE a counting aggregate — a star ``qualify()`` FAILED
+        to expand (a ``PIVOT`` / ``UNPIVOT`` / ``SUMMARIZE`` source). The count
+        does not bound it, because it is not the count's argument.
+    """
+    return any(
+        not (isinstance(node, exp.Star) and _within_counting_agg(node, inner))
+        for node in inner.find_all(*_OPAQUE_PROJECTION_NODES)
     )
 
 
@@ -924,6 +953,32 @@ def _resolve_projection(
     snapshot = ctx.snapshot
     sql_for_log = ctx.sql_for_log
     inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
+
+    # THE ORDERING INVARIANT: the opaque-node veto runs FIRST — before the
+    # counting-aggregate collapse and before the per-column path. A projection
+    # holding an opaque node that no counting aggregate bounds is one we cannot
+    # decompose, so it can never be answered with a confident class by ANY rule
+    # below; it declines here and the outermost caller supplies the conservative
+    # floor.
+    #
+    # Both downstream rules answer wrongly without this, for the same reason —
+    # an opaque node carries no ``exp.Column`` child, and each rule reads that
+    # absence of evidence as proof:
+    #
+    #   * The counting-aggregate guard ("every exp.Column is inside a count")
+    #     passes VACUOUSLY: `find_all` yields nothing, `any(...)` over nothing is
+    #     False, `not False` is True. `COUNT(COLUMNS('routing.*'))` and
+    #     `COUNT(*) || first(COLUMNS('routing.*'))` collapsed to AGGREGATE (LOW)
+    #     and returned the real routing number in the clear.
+    #   * The per-column loop answers from whatever it CAN see:
+    #     `COUNT(account_id) || COLUMNS('routing.*')` would take `account_id`'s
+    #     RECORD_ID (LOW) and publish it over the columns COLUMNS(...) expands
+    #     to.
+    #
+    # `_has_uncounted_opaque` carries the one exception — the `COUNT(*)` idiom,
+    # whose Star a count genuinely does bound.
+    if _has_uncounted_opaque(inner):
+        return None
 
     # A counting aggregate at the projection's TOP level collapses values to a
     # count — but it only governs the projection when EVERY column reference is
