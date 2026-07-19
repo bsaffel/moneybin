@@ -171,13 +171,13 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (core, dim_accounts) | source_file | RECORD_ID | path of the source file; internal provenance, not an external identifier. |
 | (core, dim_categories) | description | CATEGORY | category metadata (definition text); travels with the category, not with user transactions. |
 | (core, dim_categories) | class | TXN_TYPE | accounting class (`income`/`expense`/`transfer`/`debt`); low-cardinality categorical bucket, same rationale as other TXN_TYPE state flags. Same on `app.user_categories`. |
+| (core, fct_security_prices) | close | AGGREGATE | a market close is public reference data — same security, same date, same price for every user — not a personal fact like `fct_investment_transactions.price` (what the user actually paid). No existing numeric LOW-tier class fits a bare public price value; AGGREGATE is the closest fit, same as other non-sensitive computed numerics (`confidence_score`, `priority`). |
+| (core, fct_security_prices) | price_date | TIMESTAMP_OBSERVABILITY | which calendar date a public close applies to, not a personal event date like `trade_date`/`balance_date` (TXN_DATE, MEDIUM) — it reveals nothing about the user's behavior on its own, so it gets the same LOW-tier treatment as other "when was this recorded" columns. |
 | (core, fct_transactions) | check_number | DESCRIPTION | a check number identifies a payment instrument, not an account; parked at MEDIUM until PR 2 introduces `PAYMENT_INSTRUMENT` (CRITICAL). Knowingly underclassified — check numbers are not account numbers. |
 | (core, fct_transactions) | location_* (address, city, region, postal_code, country, latitude, longitude) | MERCHANT_NAME | merchant geographic detail; classified under MERCHANT_NAME because they describe the merchant the user transacted with, and inherit the same MEDIUM sensitivity. |
 | (core, fct_transactions) | memo | DESCRIPTION | additional source-provided notes on the transaction; rule 6 (free-text on transaction tables). |
 | (core, fct_transactions) | splits | TXN_AMOUNT | LIST of split STRUCTs; contains per-split `amount` (HIGH-tier). Classify by the highest-sensitivity component. |
 | (core, fct_transactions) | notes, tags | USER_NOTE | nested LIST aggregations of `app.transaction_notes` / `transaction_tags`; carry user-authored content. |
-| (core, fct_security_prices) | close | AGGREGATE | a market close is public reference data — same security, same date, same price for every user — not a personal fact like `fct_investment_transactions.price` (what the user actually paid). No existing numeric LOW-tier class fits a bare public price value; AGGREGATE is the closest fit, same as other non-sensitive computed numerics (`confidence_score`, `priority`). |
-| (core, fct_security_prices) | price_date | TIMESTAMP_OBSERVABILITY | which calendar date a public close applies to, not a personal event date like `trade_date`/`balance_date` (TXN_DATE, MEDIUM) — it reveals nothing about the user's behavior on its own, so it gets the same LOW-tier treatment as other "when was this recorded" columns. |
 
 ### Follow-ups for PR 2
 

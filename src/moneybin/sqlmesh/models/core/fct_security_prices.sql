@@ -6,19 +6,24 @@
    prep.stg_security_prices and raw.security_prices; they are excluded from valuation
    rather than silently valued.
 
-   Source rank breaks same-date ties and is a TOTAL order, not a grouping: two sources
-   sharing a tier would leave several winners and let a rebuild pick a different price
-   each time. source_origin and provider_security_key close most remaining ties (two
-   Plaid connections differ only by origin). One case survives those three keys:
-   prep.stg_security_prices normalizes quote_currency with UPPER(), so a provider
-   observation stored as 'usd' and a duplicate stored as 'USD' reach this model with
-   identical security_id, source, source_origin, and provider_security_key — the
-   only raw column that differed is gone by the time it gets here. close is the final
-   tiebreak for that case: it is the one remaining column guaranteed to hold the
-   colliding rows' own content, so ordering by it is deterministic and stable across
-   rebuilds. If close also ties, the candidate rows are identical in every column this
-   model exposes, so either pick is indistinguishable to a reader. A new adapter takes
-   the next free rank. See docs/specs/investments-price-feeds.md. */
+   The ORDER BY is a deterministic pick over every column this model exposes — not an
+   unqualified total order over the raw input. source_rank picks a preferred provider;
+   source (the string, not just the rank) separates two sources that share the ELSE 99
+   bucket, since a bucket is a grouping and would otherwise leave two unranked sources
+   tied; source_origin and provider_security_key separate two connections or two
+   provider keys for the same security; extracted_at DESC — freshest observation wins —
+   separates two rows still tied on all four. close is kept only as a final,
+   effectively unreachable backstop.
+
+   One duplicate shape survives all of the above: prep.stg_security_prices normalizes
+   quote_currency with UPPER(), so a provider observation stored as 'usd' and a
+   duplicate stored as 'USD' carry distinct raw primary keys (quote_currency is part of
+   raw.security_prices' PK) and both reach this model with identical security_id,
+   source, source_origin, and provider_security_key. extracted_at resolves that case by
+   freshness, but the raw casing that distinguished the two rows is discarded by
+   staging and is not recoverable at this layer — the ordering is deterministic, not
+   exhaustive over information staging already threw away. A new adapter takes the
+   next free rank. See docs/specs/investments-price-feeds.md. */
 MODEL (
   name core.fct_security_prices,
   kind FULL,
@@ -58,12 +63,12 @@ SELECT
   price_date, /* The date this close applies to (grain) */
   quote_currency, /* ISO 4217 the close is expressed in (grain); this model converts nothing — M1K.2 owns FX */
   close, /* The winning close for one unit, in quote_currency */
-  source, /* Which source supplied the winning close: override, plaid, stooq, coingecko, or trade_implied */
+  source, /* Which source supplied the winning close: plaid today; override, stooq, coingecko, and trade_implied are planned — see docs/specs/investments-price-feeds.md */
   price_basis, /* Always 'raw' here; adjusted observations are excluded upstream and stay visible in prep.stg_security_prices */
   extracted_at AS updated_at /* When the winning observation was served by its provider */
 FROM ranked
 QUALIFY
   ROW_NUMBER() OVER (
     PARTITION BY security_id, price_date, quote_currency
-    ORDER BY source_rank, source_origin, provider_security_key, close
+    ORDER BY source_rank, source, source_origin, provider_security_key, extracted_at DESC, close
   ) = 1

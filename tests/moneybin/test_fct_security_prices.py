@@ -22,6 +22,7 @@ def _insert_price(
     origin: str = "item_1",
     price_date: str = "2026-07-15",
     quote_currency: str = "USD",
+    extracted_at: str | None = None,
 ) -> None:
     db.execute(
         """
@@ -29,9 +30,9 @@ def _insert_price(
             (provider_security_key, price_date, quote_currency, source,
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?::DATE, ?, ?, ?, ?, ?,
-                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [key, price_date, quote_currency, source, origin, close, basis],
+        [key, price_date, quote_currency, source, origin, close, basis, extracted_at],
     )
 
 
@@ -83,9 +84,28 @@ def test_winner_is_stable_across_rebuilds(db: Database) -> None:
 
     Without that key a rebuild can return a different close from identical inputs,
     which fails the deterministic-resolution requirement.
+
+    item_b is both the fresher observation (later extracted_at) and the lower
+    close, so if source_origin's ORDER BY key were dropped, the tiebreak would
+    fall through to extracted_at DESC and then close — and item_b would win
+    instead. Only source_origin picking item_a first (alphabetically) makes
+    item_a the winner despite losing on both of the keys after it. That is what
+    proves this test actually exercises source_origin, not one of its neighbors.
     """
-    _insert_price(db, key="sec_vti", close="214.55", origin="item_a")
-    _insert_price(db, key="sec_vti", close="214.60", origin="item_b")
+    _insert_price(
+        db,
+        key="sec_vti",
+        close="214.60",
+        origin="item_a",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="sec_vti",
+        close="214.55",
+        origin="item_b",
+        extracted_at="2026-07-15 10:00:00",
+    )
     _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
 
     seen: list[Decimal] = []
@@ -96,8 +116,9 @@ def test_winner_is_stable_across_rebuilds(db: Database) -> None:
         assert row is not None
         seen.append(row[0])
 
-    assert seen[0] == seen[1] == Decimal("214.5500000000"), (
-        "item_a sorts first on source_origin"
+    assert seen[0] == seen[1] == Decimal("214.6000000000"), (
+        "item_a sorts first on source_origin, despite item_b being both fresher "
+        "and cheaper"
     )
 
 
@@ -149,12 +170,31 @@ def test_quote_currency_case_variants_resolve_deterministically(db: Database) ->
     prep.stg_security_prices normalizes it with UPPER(). Two raw rows differing
     only in that casing ('usd' vs 'USD') carry distinct PKs and both survive to
     staging, then collapse into one QUALIFY partition here — with identical
-    source, source_origin, and provider_security_key, so those three ORDER BY
-    keys alone leave them fully tied. This is the hazard flagged when reviewing
-    Task 3: verify the tie-break resolves it instead of leaving it order-dependent.
+    source, source_origin, and provider_security_key, so those keys alone leave
+    them fully tied. extracted_at DESC (freshest wins) is what breaks it.
+
+    The fresher row (USD @ 210.00, inserted second) also has the lower close, so
+    the fixture is deliberately ordered fresher-and-cheaper vs. older-and-pricier:
+    a model that dropped `DESC` (or dropped extracted_at from the ORDER BY
+    entirely, falling through to close ascending) would still pick the row with
+    the lower close — 210.00 either way — and the test would not catch it. Making
+    the first-inserted (older) row the *more expensive* one means a broken
+    freshness tiebreak surfaces as the wrong winner, not a coincidentally-right one.
     """
-    _insert_price(db, key="sec_vti", close="210.00", quote_currency="usd")
-    _insert_price(db, key="sec_vti", close="215.00", quote_currency="USD")
+    _insert_price(
+        db,
+        key="sec_vti",
+        close="215.00",
+        quote_currency="usd",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="sec_vti",
+        close="210.00",
+        quote_currency="USD",
+        extracted_at="2026-07-15 10:00:00",
+    )
     _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
 
     seen: list[tuple[str, Decimal]] = []
