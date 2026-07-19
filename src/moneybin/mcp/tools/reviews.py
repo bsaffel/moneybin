@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -10,13 +11,24 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, JsonValue
 
+from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import Database, get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.write_contracts import (
+    IdentityDecisionRequest,
+    ReviewDecisionRequest,
+)
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.accounts import LinkHistoryRow, LinkPendingGroup
 from moneybin.privacy.payloads.categorize import PendingTxnRow
@@ -35,6 +47,8 @@ from moneybin.privacy.payloads.reviews import (
     CategorizationHistoryDetails,
     CategorizationPendingDetails,
     CategorizationReviewRow,
+    IdentityDecisionOutcome,
+    IdentityLinksDecidePayload,
     MatchHistoryDetails,
     MatchPendingDetails,
     MatchReviewRow,
@@ -42,10 +56,12 @@ from moneybin.privacy.payloads.reviews import (
     MerchantLinkPendingDetails,
     MerchantLinkReviewRow,
     ReviewCount,
+    ReviewDecisionOutcome,
     ReviewQueueKind,
     ReviewsAccountLinksView,
     ReviewsCategorizationView,
     ReviewsCoarsePayload,
+    ReviewsDecidePayload,
     ReviewsMatchesView,
     ReviewsMerchantLinksView,
     ReviewsSecurityLinksView,
@@ -62,6 +78,11 @@ from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.mutation_context import current_operation_id
+from moneybin.services.review_decisions_service import (
+    IdentityDecisionPlan,
+    ReviewDecisionsService,
+)
 from moneybin.services.security_links_service import SecurityLinksService
 
 _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
@@ -648,4 +669,178 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
         "Return exact review counts or one normalized pending/history queue "
         "with deterministic cursor pagination.",
         privacy_actor="reviews",
+    )
+
+
+@mcp_tool(read_only=False, idempotent=True)
+def reviews_decide_coarse(
+    decisions: list[ReviewDecisionRequest],
+) -> ResponseEnvelope[ReviewsDecidePayload]:
+    """Atomically accept or reject categorization and match review decisions."""
+    operation_id = current_operation_id()
+    with get_database(read_only=False) as db:
+        results = ReviewDecisionsService(db, actor="mcp").apply_ordinary(decisions)
+    return build_envelope(
+        data=ReviewsDecidePayload(
+            results=[
+                ReviewDecisionOutcome(
+                    kind=item.request.kind,
+                    decision_id=item.request.decision_id,
+                    decision=item.request.decision,
+                    status=item.status,
+                    changed=item.changed,
+                    operation_id=operation_id,
+                )
+                for item in results
+            ],
+            applied_count=sum(item.changed for item in results),
+            operation_id=operation_id,
+        ),
+        actions=[
+            "Use reviews(status='pending') to continue review",
+            "Use system_audit_undo(operation_id=...) to reverse this batch",
+        ],
+    )
+
+
+def _identity_binding(
+    decisions: list[IdentityDecisionRequest],
+    plan: IdentityDecisionPlan,
+) -> ConfirmationBinding:
+    """Bind one approval to the exact ordered batch and complete live state."""
+    arguments: dict[str, JsonValue] = {
+        "decisions": [
+            cast(JsonValue, decision.model_dump(mode="json")) for decision in decisions
+        ],
+        "before_state": [item.before_state for item in plan.items],
+    }
+    resolved_ids: list[str] = []
+    for item in plan.items:
+        for value in (item.request.decision_id, item.source_id, item.target_id):
+            if value not in resolved_ids:
+                resolved_ids.append(value)
+    blast_radius = {
+        key: sum(item.blast_radius[key] for item in plan.items)
+        for key in ("accounts", "merchants", "securities", "transactions", "lots")
+    }
+    return ConfirmationBinding(
+        arguments=arguments,
+        resolved_ids=tuple(resolved_ids),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="identity_links_decide",
+        blast_radius=blast_radius,
+    )
+
+
+def _preview_identity_decisions(
+    decisions: list[IdentityDecisionRequest],
+) -> IdentityDecisionPlan:
+    """Resolve one identity batch on a read-only connection."""
+    with get_database(read_only=True) as db:
+        return ReviewDecisionsService(db, actor="mcp").plan_identity(decisions)
+
+
+def _apply_identity_decisions(
+    decisions: list[IdentityDecisionRequest],
+    *,
+    grant: ConfirmationGrant | None,
+    expected_binding: ConfirmationBinding,
+) -> IdentityDecisionPlan:
+    """Apply a revalidated identity batch through the shared decision service."""
+    with get_database(read_only=False) as db:
+        service = ReviewDecisionsService(db, actor="mcp")
+
+        def verify(plan: IdentityDecisionPlan) -> None:
+            binding = _identity_binding(decisions, plan)
+            if grant is not None:
+                grant.verify(binding)
+            elif binding.canonical_bytes() != expected_binding.canonical_bytes():
+                raise UserError(
+                    "Identity-link state changed after preflight.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        return service.apply_identity(decisions, verify=verify)
+
+
+@mcp_tool(read_only=False, destructive=True, idempotent=True, timeout_seconds=180.0)
+async def identity_links_decide_coarse(
+    decisions: list[IdentityDecisionRequest],
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[IdentityLinksDecidePayload]:
+    """Atomically accept or reject account, merchant, and security identity links."""
+    plan = await asyncio.to_thread(_preview_identity_decisions, decisions)
+    binding = _identity_binding(decisions, plan)
+    if confirmation_token is not None and not plan.destructive:
+        raise UserError(
+            "confirmation_token is only valid for a batch with a pending accept.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if plan.changed_count == 0:
+        raise UserError(
+            "Every identity decision is already satisfied.",
+            code=error_codes.MUTATION_NOTHING_TO_DO,
+        )
+    grant: ConfirmationGrant | None = None
+    if plan.destructive:
+        grant = await grant_confirmation_or_raise(
+            binding=binding if confirmation_token is None else None,
+            message=(
+                "Confirm this complete identity-decision batch. Accepted links "
+                "can merge account histories, merchant attribution, or security "
+                "lots; every decision in the ordered batch will commit together."
+            ),
+            confirmation_token=confirmation_token,
+        )
+    live = await asyncio.to_thread(
+        _apply_identity_decisions,
+        decisions,
+        grant=grant,
+        expected_binding=binding,
+    )
+    operation_id = current_operation_id()
+    return build_envelope(
+        data=IdentityLinksDecidePayload(
+            results=[
+                IdentityDecisionOutcome(
+                    kind=item.request.kind,
+                    decision_id=item.request.decision_id,
+                    decision=item.request.decision,
+                    status=item.status,
+                    changed=item.changed,
+                    operation_id=operation_id,
+                )
+                for item in live.items
+            ],
+            applied_count=live.changed_count,
+            operation_id=operation_id,
+        ),
+        actions=[
+            "Use reviews(status='pending') to continue identity review",
+            "Use system_audit_undo(operation_id=...) to reverse this batch",
+        ],
+    )
+
+
+def register_review_coarse_writes(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 ordinary and identity decision batches."""
+    register(
+        mcp,
+        reviews_decide_coarse,
+        "reviews_decide",
+        "Atomically accept or reject categorization and transaction-match review "
+        "decisions. Every target is resolved before any write; results retain "
+        "input order and share one auditable operation_id.",
+        privacy_actor="reviews_decide",
+    )
+    register(
+        mcp,
+        identity_links_decide_coarse,
+        "identity_links_decide",
+        "Atomically accept or reject account, merchant, and security identity "
+        "link decisions. Any accepted merge confirms the exact normalized full "
+        "batch and complete live before-state; reject-only batches do not prompt.",
+        privacy_actor="identity_links_decide",
     )

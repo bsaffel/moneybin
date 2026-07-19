@@ -27,6 +27,12 @@ from moneybin.mcp.tools.accounts import (
     accounts_links_set,
     register_accounts_tools,
 )
+from moneybin.mcp.tools.reviews import identity_links_decide_coarse
+from moneybin.mcp.write_contracts import (
+    AccountLinkDecisionRequest,
+    MerchantLinkDecisionRequest,
+)
+from moneybin.services.merchant_links_service import MerchantLinksService
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -146,6 +152,155 @@ def _insert_decision(
                 _NOW,
             ],
         )
+
+
+async def test_identity_batch_accepts_account_link_with_one_token() -> None:
+    setup = _merge_setup(decision_id="coarse-account-accept")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["candidate"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert response.data.applied_count == 1
+    assert response.data.results[0].kind == "account_link"
+    assert response.data.results[0].status == "accepted"
+    assert _decision_status(setup["decision_id"]) == "accepted"
+
+
+async def test_identity_batch_rejects_account_link_without_confirmation() -> None:
+    setup = _merge_setup(decision_id="coarse-account-reject")
+
+    response = await identity_links_decide_coarse(
+        decisions=[
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id=setup["decision_id"],
+                decision="reject",
+            )
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.results[0].status == "rejected"
+    assert _decision_status(setup["decision_id"]) == "rejected"
+
+
+async def test_identity_batch_binding_captures_complete_account_before_state() -> None:
+    setup = _merge_setup(decision_id="coarse-account-before-state")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["candidate"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    token = str(required.error.details["confirmation_token"])
+    with get_database(read_only=False) as db:
+        db.execute(
+            "UPDATE app.account_link_decisions SET confidence_score = 0.61 "
+            "WHERE decision_id = ?",
+            [setup["decision_id"]],
+        )
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert response.error is not None
+    assert response.error.code == "mutation_confirmation_mismatch"
+    assert _decision_status(setup["decision_id"]) == "pending"
+
+
+def _seed_coarse_merchant_reject(decision_id: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO app.user_merchants "
+            "(merchant_id, match_type, canonical_name, created_by) "
+            "VALUES ('coarse-merch', 'oneOf', 'Coarse Merchant', 'user')"
+        )
+        db.execute(
+            """
+            INSERT INTO app.merchant_link_decisions (
+                decision_id, ref_kind, ref_value, source_type,
+                provider_merchant_name, candidate_merchant_id,
+                confidence_score, match_signals, status, decided_by, decided_at
+            ) VALUES (
+                ?, 'merchant_entity_id', 'coarse-entity', 'plaid',
+                'Coarse Merchant', 'coarse-merch', 0.5, '{}',
+                'pending', 'auto', CURRENT_TIMESTAMP
+            )
+            """,  # noqa: S608  # test fixture data
+            [decision_id],
+        )
+
+
+async def test_identity_mixed_reject_batch_is_atomic_and_one_operation() -> None:
+    account = _merge_setup(decision_id="coarse-account-atomic")
+    merchant_decision_id = "coarse-merchant-atomic"
+    _seed_coarse_merchant_reject(merchant_decision_id)
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant_decision_id,
+            decision="reject",
+        ),
+    ]
+
+    with patch.object(
+        MerchantLinksService,
+        "set",
+        side_effect=RuntimeError("injected write failure"),
+    ):
+        with pytest.raises(RuntimeError, match="injected write failure"):
+            await identity_links_decide_coarse(decisions=decisions)
+
+    assert _decision_status(account["decision_id"]) == "pending"
+    with get_database(read_only=True) as db:
+        merchant_status = db.execute(
+            "SELECT status FROM app.merchant_link_decisions WHERE decision_id = ?",
+            [merchant_decision_id],
+        ).fetchone()
+    assert merchant_status == ("pending",)
+
+    response = await identity_links_decide_coarse(decisions=decisions)
+    assert response.error is None
+    assert [result.kind for result in response.data.results] == [
+        "account_link",
+        "merchant_link",
+    ]
+    assert len({result.operation_id for result in response.data.results}) == 1
+    with get_database(read_only=True) as db:
+        operation_ids = {
+            str(row[0])
+            for row in db.execute(
+                "SELECT DISTINCT operation_id FROM app.audit_log "
+                "WHERE target_id IN (?, ?)",
+                [account["decision_id"], merchant_decision_id],
+            ).fetchall()
+        }
+    assert operation_ids == {response.data.operation_id}
 
 
 # ---------------------------------------------------------------------------

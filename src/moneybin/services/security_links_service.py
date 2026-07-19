@@ -96,6 +96,7 @@ class SecurityLinkAcceptImpact:
 
     provisional_security_id: str
     candidate_security_id: str
+    lot_selection_disposal_ids: tuple[str, ...]
     blast_radius: dict[str, int]
 
 
@@ -251,6 +252,7 @@ class SecurityLinksService:
         return SecurityLinkAcceptImpact(
             provisional_security_id=provisional,
             candidate_security_id=survivor,
+            lot_selection_disposal_ids=tuple(sorted(plan)),
             blast_radius={
                 "securities": 2,
                 "security_links": int(link_count_row[0]) if link_count_row else 0,
@@ -277,7 +279,13 @@ class SecurityLinksService:
     # Mutations
     # ------------------------------------------------------------------
 
-    def reject_merge(self, decision_id: str, *, decided_by: str = "user") -> None:
+    def reject_merge(
+        self,
+        decision_id: str,
+        *,
+        decided_by: str = "user",
+        in_outer_txn: bool = False,
+    ) -> None:
         """Reject one merge proposal; the provisional security is kept.
 
         The reviewer is asserting the provider security genuinely is a distinct
@@ -293,7 +301,8 @@ class SecurityLinksService:
 
         Raises ``UserError`` when the decision is unknown or not pending.
         """
-        self._db.begin()
+        if not in_outer_txn:
+            self._db.begin()
         try:
             self._require_pending(decision_id)
             self._decisions.update_status(
@@ -303,14 +312,28 @@ class SecurityLinksService:
                 actor=self._actor,
                 in_outer_txn=True,
             )
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
+        if in_outer_txn:
+            return
         SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome="rejected").inc()
         logger.info(f"security merge rejected: decision={decision_id}")
 
         # Rejecting changed the pending count — refresh the gauge.
+        from moneybin.services.security_resolver import (  # noqa: PLC0415
+            refresh_security_link_pending_gauge,
+        )
+
+        refresh_security_link_pending_gauge(self._db)
+
+    def record_committed_outer_outcomes(self, outcomes: tuple[str, ...]) -> None:
+        """Record metrics after an enclosing transaction commits."""
+        for outcome in outcomes:
+            SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
         from moneybin.services.security_resolver import (  # noqa: PLC0415
             refresh_security_link_pending_gauge,
         )
@@ -324,6 +347,7 @@ class SecurityLinksService:
         into: str,
         decided_by: str = "user",
         verify_accept: Callable[[SecurityLinkAcceptImpact], None] | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Merge the provisional security into the decision's candidate, atomically.
 
@@ -378,7 +402,8 @@ class SecurityLinksService:
         - A lot selection cannot be remapped, or ``core`` is not materialized and
           selections exist (MUTATION_CONSTRAINT_VIOLATION).
         """
-        self._db.begin()
+        if not in_outer_txn:
+            self._db.begin()
         try:
             decision = self._require_pending(decision_id)
             if into != decision["candidate_security_id"]:
@@ -467,10 +492,14 @@ class SecurityLinksService:
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,
             )
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
+        if in_outer_txn:
+            return
 
         SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome="accepted").inc()
         logger.info(

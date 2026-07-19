@@ -307,6 +307,7 @@ class MatchApplier:
         created_by: str = "ai",
         exemplars: list[str] | None = None,
         actor: str = "system",
+        in_outer_txn: bool = False,
     ) -> str:
         """Insert a merchant mapping and return its ``merchant_id``.
 
@@ -332,6 +333,7 @@ class MatchApplier:
             actor: Audit actor recorded on the ``user_merchant.insert`` event
                 (e.g. ``"cli"``, ``"mcp"``); batch-path callers use the
                 ``"system"`` default.
+            in_outer_txn: Join the caller's active transaction when true.
         """
         # Resolve the FK alongside the text snapshot (read; stays in the
         # service per Req 2). The repo owns the INSERT + audit.
@@ -346,6 +348,7 @@ class MatchApplier:
             created_by=created_by,
             exemplars=exemplars,
             actor=actor,
+            in_outer_txn=in_outer_txn,
         )
         merchant_id = event.target_id
         if merchant_id is None:  # pragma: no cover — insert always sets the id
@@ -392,7 +395,14 @@ class MatchApplier:
             return None
         return row[0] if row else None
 
-    def append_exemplar(self, merchant_id: str, match_text: str) -> int:
+    def append_exemplar(
+        self,
+        merchant_id: str,
+        match_text: str,
+        *,
+        actor: str = "system",
+        in_outer_txn: bool = False,
+    ) -> int:
         """Append ``match_text`` to a merchant's exemplar set; return new size.
 
         Routes the UPDATE through :class:`UserMerchantsRepo` so it emits a
@@ -404,7 +414,10 @@ class MatchApplier:
         set is approaching the soft-cap signal (200).
         """
         event = self._user_merchants.append_exemplar(
-            merchant_id, match_text, actor="system"
+            merchant_id,
+            match_text,
+            actor=actor,
+            in_outer_txn=in_outer_txn,
         )
         exemplars = cast("list[str]", (event.after_value or {}).get("exemplars") or [])
         new_size = len(exemplars)

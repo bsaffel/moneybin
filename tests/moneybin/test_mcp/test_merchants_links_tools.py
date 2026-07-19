@@ -28,6 +28,8 @@ from moneybin.mcp.tools.merchants import (
     merchants_links_set,
     register_merchants_tools,
 )
+from moneybin.mcp.tools.reviews import identity_links_decide_coarse
+from moneybin.mcp.write_contracts import MerchantLinkDecisionRequest
 from moneybin.services.merchant_resolver import HarvestResult
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -147,6 +149,50 @@ def _seed_merchant(merchant_id: str) -> None:
             "VALUES (?, 'oneOf', ?, 'user')",
             [merchant_id, f"Name {merchant_id}"],
         )
+
+
+async def test_identity_batch_accepts_merchant_link_with_one_token() -> None:
+    setup = _bind_setup(decision_id="coarse-merchant-accept")
+    decisions = [
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["merchant_id"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert response.data.applied_count == 1
+    assert response.data.results[0].kind == "merchant_link"
+    assert response.data.results[0].status == "accepted"
+    assert _decision_status(setup["decision_id"]) == "accepted"
+
+
+async def test_identity_batch_rejects_merchant_link_without_confirmation() -> None:
+    setup = _bind_setup(decision_id="coarse-merchant-reject")
+
+    response = await identity_links_decide_coarse(
+        decisions=[
+            MerchantLinkDecisionRequest(
+                kind="merchant_link",
+                decision_id=setup["decision_id"],
+                decision="reject",
+            )
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.results[0].status == "rejected"
+    assert _decision_status(setup["decision_id"]) == "rejected"
 
 
 # ---------------------------------------------------------------------------

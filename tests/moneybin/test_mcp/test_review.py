@@ -12,14 +12,22 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp.tools.reviews import (
     register_review_coarse_reads,
+    register_review_coarse_writes,
     reviews_coarse,
+    reviews_decide_coarse,
 )
 from moneybin.mcp.tools.transactions import (
     register_transactions_tools,
     review,
     transactions_review,
 )
+from moneybin.mcp.write_contracts import (
+    CategorizationDecisionRequest,
+    MatchDecisionRequest,
+)
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.categorization import CategorizationService
 
 from .schema_assertions import (
     assert_literal_values,
@@ -435,3 +443,186 @@ async def test_review_raw_transport_rejects_invalid_arguments(
     response = await call_tool_raw(mcp, "reviews", arguments)
 
     assert response.isError is True
+
+
+def _seed_ordinary_decisions() -> tuple[str, str, str]:
+    transaction_id = "TX_REVIEW_DECIDE"
+    match_id = "MATCH_REVIEW_DECIDE"
+    category = "Task 5 Review"
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-18', -12.00, 12.00, 'expense',
+                'Task 5 review decision', 'DEBIT', false, 'USD', 'ofx',
+                '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
+                '2026-07', '2026-Q3'
+            )
+            """,  # noqa: S608  # test fixture data
+            [transaction_id],
+        )
+        CategorizationService(db).create_category(category, actor="test")
+        MatchDecisionsRepo(db).insert(
+            match_id=match_id,
+            source_transaction_id_a="ordinary-a",
+            source_type_a="csv",
+            source_origin_a="fixture-a",
+            source_transaction_id_b="ordinary-b",
+            source_type_b="ofx",
+            source_origin_b="fixture-b",
+            account_id="ACC001",
+            confidence_score=0.9,
+            match_signals={"reason": "fixture"},
+            match_status="pending",
+            decided_by="auto",
+            actor="test",
+        )
+    return transaction_id, match_id, category
+
+
+async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
+    transaction_id, match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=transaction_id,
+                decision="accept",
+                category=category,
+            ),
+            MatchDecisionRequest(
+                kind="match",
+                decision_id=match_id,
+                decision="reject",
+            ),
+        ]
+    )
+
+    assert [item.kind for item in response.data.results] == [
+        "categorization",
+        "match",
+    ]
+    assert response.data.applied_count == 2
+    assert response.data.operation_id
+    assert all(
+        item.operation_id == response.data.operation_id
+        for item in response.data.results
+    )
+
+
+async def test_ordinary_batch_preflights_before_first_write() -> None:
+    transaction_id, _match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=transaction_id,
+                decision="accept",
+                category=category,
+            ),
+            MatchDecisionRequest(
+                kind="match",
+                decision_id="missing-match",
+                decision="reject",
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.details is not None
+    assert response.error.details["errors"] == [
+        {
+            "index": 1,
+            "kind": "match",
+            "decision_id": "missing-match",
+            "code": "mutation_not_found",
+            "reason": "No match decision exists for this id.",
+        }
+    ]
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+            [transaction_id],
+        ).fetchone()
+    assert row is None
+
+
+async def test_ordinary_categorization_accept_preserves_commit_merchant_semantics() -> (
+    None
+):
+    transaction_id, _match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=transaction_id,
+                decision="accept",
+                category=category,
+                canonical_merchant_name="Task Five Merchant",
+            )
+        ]
+    )
+
+    assert response.error is None
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            "SELECT canonical_name, category, exemplars "
+            "FROM app.user_merchants WHERE canonical_name = ?",
+            ["Task Five Merchant"],
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "Task Five Merchant"
+    assert row[1] == category
+    assert list(row[2]) == ["Task 5 review decision"]
+
+
+async def test_ordinary_all_already_satisfied_is_nothing_to_do() -> None:
+    transaction_id, match_id, category = _seed_ordinary_decisions()
+    decisions = [
+        CategorizationDecisionRequest(
+            kind="categorization",
+            decision_id=transaction_id,
+            decision="accept",
+            category=category,
+        ),
+        MatchDecisionRequest(
+            kind="match",
+            decision_id=match_id,
+            decision="reject",
+        ),
+    ]
+
+    first = await reviews_decide_coarse(decisions=decisions)
+    assert first.error is None
+    second = await reviews_decide_coarse(decisions=decisions)
+
+    assert second.error is not None
+    assert second.error.code == "mutation_nothing_to_do"
+
+
+async def test_review_dormant_write_registrar_is_closed_and_max_risk() -> None:
+    mcp = isolated_server(register_review_coarse_writes)
+
+    tools = {
+        tool.name: tool
+        for tool in await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    }
+    assert set(tools) == {"reviews_decide", "identity_links_decide"}
+    reviews_tool = await listed_tool(mcp, "reviews_decide")
+    identity_tool = await listed_tool(mcp, "identity_links_decide")
+    assert reviews_tool.outputSchema is None
+    assert identity_tool.outputSchema is None
+    assert reviews_tool.annotations is not None
+    assert reviews_tool.annotations.destructiveHint is False
+    assert identity_tool.annotations is not None
+    assert identity_tool.annotations.destructiveHint is True

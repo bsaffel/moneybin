@@ -298,6 +298,16 @@ class MerchantLinksService:
         )
         return result
 
+    def record_committed_outer_outcomes(self, outcomes: tuple[str, ...]) -> None:
+        """Record metrics after an enclosing transaction commits."""
+        for outcome in outcomes:
+            MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
+        from moneybin.services.merchant_resolver import (  # noqa: PLC0415
+            refresh_merchant_link_pending_gauge,
+        )
+
+        refresh_merchant_link_pending_gauge(self._db)
+
     def set(  # noqa: A003  # mirrors the existing set_status verb shape; "set" is the surface verb
         self,
         decision_id: str,
@@ -305,6 +315,7 @@ class MerchantLinksService:
         target_merchant_id: str | None,
         decided_by: str = "user",
         verify_accept: Callable[[MerchantLinkAcceptImpact], None] | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Accept or reject a pending merchant-link decision atomically.
 
@@ -350,7 +361,9 @@ class MerchantLinksService:
         - The provider entity id is already bound to a different merchant
           (MUTATION_CONSTRAINT_VIOLATION).
         """
-        self._db.begin()
+        outcome = "accepted" if target_merchant_id is not None else "rejected"
+        if not in_outer_txn:
+            self._db.begin()
         try:
             decision = self._fetch_decision(decision_id)
             if decision is None:
@@ -416,7 +429,6 @@ class MerchantLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
-                MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="accepted").inc()
                 self._reject_pending_siblings(
                     ref_value,
                     source_type=decision["source_type"],
@@ -439,7 +451,6 @@ class MerchantLinksService:
                     actor=self._actor,
                     in_outer_txn=True,
                 )
-                MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome="rejected").inc()
                 self._reject_pending_siblings(
                     ref_value,
                     source_type=decision["source_type"],
@@ -447,12 +458,17 @@ class MerchantLinksService:
                     decided_by=decided_by,
                 )
 
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
+        if in_outer_txn:
+            return
 
         # Accept/reject changed the pending count — refresh the gauge.
+        MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
         from moneybin.services.merchant_resolver import (  # noqa: PLC0415
             refresh_merchant_link_pending_gauge,
         )

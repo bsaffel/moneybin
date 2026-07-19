@@ -27,6 +27,8 @@ from moneybin.mcp.tools.investments import (
     investments_securities_links_set,
     register_investments_tools,
 )
+from moneybin.mcp.tools.reviews import identity_links_decide_coarse
+from moneybin.mcp.write_contracts import SecurityLinkDecisionRequest
 from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
@@ -152,6 +154,112 @@ def _merge_setup() -> dict[str, str]:
         "provisional": provisional,
         "decision_id": decision_id,
     }
+
+
+async def test_identity_batch_accepts_security_link_with_one_token() -> None:
+    setup = _merge_setup()
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert response.data.applied_count == 1
+    assert response.data.results[0].kind == "security_link"
+    assert response.data.results[0].status == "accepted"
+    assert _decision_status(setup["decision_id"]) == "accepted"
+
+
+async def test_identity_batch_rejects_security_link_without_confirmation() -> None:
+    setup = _merge_setup()
+
+    response = await identity_links_decide_coarse(
+        decisions=[
+            SecurityLinkDecisionRequest(
+                kind="security_link",
+                decision_id=setup["decision_id"],
+                decision="reject",
+            )
+        ]
+    )
+
+    assert response.error is None
+    assert response.data.results[0].status == "rejected"
+    assert _decision_status(setup["decision_id"]) == "rejected"
+
+
+async def test_identity_batch_binding_captures_security_catalog_before_state() -> None:
+    setup = _merge_setup()
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details["blast_radius"].keys() == {
+        "accounts",
+        "merchants",
+        "securities",
+        "transactions",
+        "lots",
+    }
+    token = str(required.error.details["confirmation_token"])
+    with get_database(read_only=False) as db:
+        db.execute(
+            "UPDATE app.securities SET name = 'Changed after confirmation' "
+            "WHERE security_id = ?",
+            [setup["survivor"]],
+        )
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert response.error is not None
+    assert response.error.code == "mutation_confirmation_mismatch"
+    assert _decision_status(setup["decision_id"]) == "pending"
+
+
+async def test_identity_batch_binding_ignores_unrelated_security() -> None:
+    setup = _merge_setup()
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    token = str(required.error.details["confirmation_token"])
+    _mint(name="Unrelated security", created_by="user", ticker="OTHER")
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert response.error is None
+    assert response.data.applied_count == 1
+    assert _decision_status(setup["decision_id"]) == "accepted"
 
 
 # ---------------------------------------------------------------------------

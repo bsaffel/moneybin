@@ -328,6 +328,14 @@ class AccountLinksService:
         logger.info(f"accounts_links_run: wrote {new_count} new pending decisions")
         return new_count
 
+    def record_committed_outer_decisions(self) -> None:
+        """Refresh metrics after an enclosing transaction commits."""
+        from moneybin.services.account_resolver import (  # noqa: PLC0415
+            refresh_account_link_pending_gauge,
+        )
+
+        refresh_account_link_pending_gauge(self._db)
+
     def set(  # noqa: A003  # mirrors the existing set_status verb shape; "set" is the surface verb
         self,
         decision_id: str,
@@ -335,6 +343,7 @@ class AccountLinksService:
         target_account_id: str | None,
         decided_by: str = "user",
         verify_accept: Callable[[AccountLinkAcceptImpact], None] | None = None,
+        in_outer_txn: bool = False,
     ) -> None:
         """Accept (merge) or standalone-reject a pending link decision atomically.
 
@@ -361,7 +370,8 @@ class AccountLinksService:
         - ``target_account_id`` does not match the decision's ``candidate_account_id``
           (MUTATION_INVALID_INPUT).
         """
-        self._db.begin()
+        if not in_outer_txn:
+            self._db.begin()
         try:
             decision = self._fetch_decision(decision_id)
             if decision is None:
@@ -478,10 +488,14 @@ class AccountLinksService:
                         in_outer_txn=True,
                     )
 
-            self._db.commit()
+            if not in_outer_txn:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
+            if not in_outer_txn:
+                self._db.rollback()
             raise
+        if in_outer_txn:
+            return
         # Accept/reject changed the pending count — refresh the gauge (only
         # reached on a successful commit; the except above re-raises).
         from moneybin.services.account_resolver import (  # noqa: PLC0415

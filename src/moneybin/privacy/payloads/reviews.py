@@ -31,6 +31,8 @@ ReviewQueueKind = Literal[
     "security_links",
 ]
 ReviewStatus = Literal["pending", "history"]
+ReviewDecisionKind = Literal["categorization", "match"]
+IdentityDecisionKind = Literal["account_link", "merchant_link", "security_link"]
 
 
 class ReviewCount(BaseModel):
@@ -309,3 +311,49 @@ ReviewsCoarsePayload = (
     | ReviewsMerchantLinksView
     | ReviewsSecurityLinksView
 )
+
+
+class ReviewDecisionOutcome(BaseModel):
+    """Outcome for one ordinary review decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[ReviewDecisionKind, DataClass.TXN_TYPE]
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    decision: Annotated[Literal["accept", "reject"], DataClass.TXN_TYPE]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    changed: Annotated[bool, DataClass.AGGREGATE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
+class ReviewsDecidePayload(BaseModel):
+    """Ordered outcomes for one atomic ordinary-decision batch."""
+
+    model_config = ConfigDict(frozen=True)
+
+    results: list[ReviewDecisionOutcome]
+    applied_count: Annotated[int, DataClass.AGGREGATE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
+class IdentityDecisionOutcome(BaseModel):
+    """Outcome for one identity-link decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[IdentityDecisionKind, DataClass.TXN_TYPE]
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    decision: Annotated[Literal["accept", "reject"], DataClass.TXN_TYPE]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    changed: Annotated[bool, DataClass.AGGREGATE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
+class IdentityLinksDecidePayload(BaseModel):
+    """Ordered outcomes for one atomic identity-decision batch."""
+
+    model_config = ConfigDict(frozen=True)
+
+    results: list[IdentityDecisionOutcome]
+    applied_count: Annotated[int, DataClass.AGGREGATE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]

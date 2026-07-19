@@ -226,6 +226,63 @@ class CategorizationService:
             actor=actor,
         )
 
+    def apply_review_categorization_in_active_txn(
+        self,
+        transaction_id: str,
+        *,
+        category: str,
+        subcategory: str | None,
+        canonical_merchant_name: str | None,
+        match_text: str | None,
+        existing_merchant_id: str | None,
+        category_changed: bool,
+        merchant_changed: bool,
+        actor: str,
+    ) -> None:
+        """Apply one preflighted review categorization inside the caller's transaction."""
+        if category_changed:
+            self.set_category_in_active_txn(
+                transaction_id,
+                category=category,
+                subcategory=subcategory,
+                actor=actor,
+            )
+        if not merchant_changed or canonical_merchant_name is None or not match_text:
+            return
+        if existing_merchant_id is not None:
+            self._applier.append_exemplar(
+                existing_merchant_id,
+                match_text,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            return
+        self._applier.create_merchant_core(
+            None,
+            canonical_merchant_name,
+            match_type="oneOf",
+            category=category,
+            subcategory=subcategory,
+            created_by="ai",
+            exemplars=[match_text],
+            actor=actor,
+            in_outer_txn=True,
+        )
+
+    def find_review_merchant(
+        self,
+        canonical_name: str,
+        *,
+        category: str,
+        subcategory: str | None,
+    ) -> str | None:
+        """Resolve an existing exemplar merchant for review-decision preflight."""
+        return self._applier.find_merchant_by_canonical_name(
+            canonical_name,
+            category=category,
+            subcategory=subcategory,
+        )
+
     def clear_category(self, transaction_id: str, *, actor: str) -> None:
         """Delete a transaction's category row and emit ``category.clear`` audit."""
         self._applier.clear_category(transaction_id, actor=actor)
