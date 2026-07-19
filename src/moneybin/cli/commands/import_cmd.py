@@ -1599,6 +1599,7 @@ def _preview_pdf(source: Path) -> None:
 
     from moneybin.database import (  # noqa: PLC0415
         DatabaseKeyError,
+        DatabaseNotInitializedError,
         get_database,
     )
     from moneybin.services.import_confirmation import (  # noqa: PLC0415
@@ -1610,6 +1611,13 @@ def _preview_pdf(source: Path) -> None:
     try:
         with get_database(read_only=False) as db:
             preview = ImportService(db).pdf_preview(source)
+    except DatabaseNotInitializedError as e:
+        # The tabular branch degrades to built-in formats when there's no
+        # database; a PDF cannot — the recipe rung reads app.pdf_formats. Say so
+        # rather than dumping a traceback on a fresh install.
+        logger.error(f"❌ No database yet, so {source.name} can't be inspected: {e}")
+        logger.info("💡 Run 'moneybin db init' first.")
+        raise typer.Exit(1) from e
     except DatabaseKeyError as e:
         logger.error(f"❌ Database is locked: {e}")
         logger.info("💡 Run 'moneybin db unlock' and retry.")

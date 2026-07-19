@@ -193,3 +193,29 @@ def test_preview_reports_an_unreadable_pdf_cleanly(
     # Both halves matter: what failed, and the one-click OS fix for it.
     assert "cannot read" in caplog.text.lower()
     assert "privacy" in caplog.text.lower()
+
+
+def test_preview_reports_a_missing_database_cleanly(
+    statement: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No database yet is a message, not a traceback.
+
+    The tabular branch degrades to built-in formats when the database is
+    missing, so `import preview x.csv` works on a fresh install. A PDF can't
+    degrade — the recipe rung reads app.pdf_formats — but it must still say so
+    instead of crashing, or the same command is robust for CSV and broken for
+    PDF.
+    """
+    from moneybin.database import DatabaseNotInitializedError
+
+    mocker.patch(
+        "moneybin.database.get_database",
+        side_effect=DatabaseNotInitializedError("no database at ~/.moneybin"),
+    )
+
+    with caplog.at_level("INFO"):
+        result = runner.invoke(app, ["preview", str(statement)])
+
+    assert "Traceback" not in result.output
+    assert result.exit_code == 1
+    assert "db init" in caplog.text

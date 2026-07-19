@@ -38,6 +38,7 @@ from moneybin.extractors.pdf.routing import route_forced_recipe, route_pdf_impor
 from moneybin.metrics.registry import (
     PDF_RECIPE_HIT_TOTAL,
     PDF_REPLAY_GUARD_FAILURE_TOTAL,
+    PDF_SELF_HEAL_TOTAL,
 )
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 
@@ -1323,3 +1324,36 @@ def test_first_contact_reconciliation_failure_is_not_a_heal(db: Database) -> Non
     assert decision.outcome == "seed"
     assert decision.reason == "reconciliation_failed"
     assert decision.rederived is False
+
+
+def test_a_repaired_replay_is_distinguishable_from_a_seeded_one_in_metrics(
+    db: Database,
+) -> None:
+    """The guard counter fires before the repair, so it counts triggers, not outcomes.
+
+    Without a separate self-heal counter a fleet where every replay failure heals
+    looks identical to one where every failure seeds — which is the only number
+    that says whether this rung works.
+    """
+    _save_chase_format(db, recipe=_stale_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+
+    route_pdf_import(_subdollar_doc(), db)
+
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+
+
+def test_a_refused_sign_change_is_counted_separately_from_a_repair(
+    db: Database,
+) -> None:
+    """A refusal is the guard doing its job — it must not read as a repair."""
+    _save_chase_format(
+        db, recipe=_stale_recipe_dict("negative_is_income", sign_ratified=True)
+    )
+    label = PDF_SELF_HEAL_TOTAL.labels(outcome="refused_sign_change")
+    before = label._value.get()  # type: ignore[reportPrivateUsage]
+
+    route_pdf_import(_subdollar_doc(), db)
+
+    assert label._value.get() == before + 1  # type: ignore[reportPrivateUsage]

@@ -71,6 +71,7 @@ from moneybin.metrics.registry import (
     PDF_EXTRACTION_CONFIDENCE,
     PDF_RECIPE_HIT_TOTAL,
     PDF_REPLAY_GUARD_FAILURE_TOTAL,
+    PDF_SELF_HEAL_TOTAL,
 )
 from moneybin.repositories.pdf_formats_repo import PdfFormat, PdfFormatsRepo
 
@@ -462,12 +463,18 @@ def _attempt_self_heal(
     assumed. Anything short of that returns None and the caller keeps the
     original seed decision.
     """
+    # Reuses the failed decision's markers: a pure function of doc, which has not
+    # changed, and scanning the whole document a second time buys nothing.
+    card_markers = failed.card_markers
+    saved_recipe = failed.recipe
+
     if saved_format.source != "detected":
         logger.info(
             f"Saved format {saved_format.name!r} failed reconciliation but its "
             f"source is {saved_format.source!r}, not 'detected' — declining to "
             f"overwrite a human-authored recipe; routing to seed"
         )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="refused_not_detected").inc()
         return None
 
     fresh = derive_recipe(doc, _EMPTY_METADATA)
@@ -477,24 +484,25 @@ def _attempt_self_heal(
             f"document could not be re-derived ({derivation_failure_reason(doc)})"
             f" — routing to seed"
         )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="underivable").inc()
         return None
 
-    if failed.recipe is not None and fresh.sign_convention != (
-        failed.recipe.sign_convention
-    ):
-        logger.warning(
-            f"Re-derived recipe for format {saved_format.name!r} changes the sign "
-            f"convention ({failed.recipe.sign_convention} → "
-            f"{fresh.sign_convention}) — refusing to invert the ledger without "
-            f"review; routing to seed"
-        )
-        return None
+    if saved_recipe is not None:
+        if fresh.sign_convention != saved_recipe.sign_convention:
+            logger.warning(
+                f"Re-derived recipe for format {saved_format.name!r} changes the "
+                f"sign convention ({saved_recipe.sign_convention} → "
+                f"{fresh.sign_convention}) — refusing to invert the ledger without "
+                f"review; routing to seed"
+            )
+            PDF_SELF_HEAL_TOTAL.labels(outcome="refused_sign_change").inc()
+            return None
 
-    # Carry the human's ratification forward. The sign convention is identical
-    # (guarded above), so the decision the user already made still holds; letting
-    # it reset to False would re-prompt for an inversion they have signed off on.
-    if failed.recipe is not None:
-        fresh.sign_ratified = failed.recipe.sign_ratified
+        # Carry the human's ratification forward. The sign convention is identical
+        # (guarded just above), so the decision the user already made still holds;
+        # letting it reset to False would re-prompt for an inversion they signed off
+        # on.
+        fresh.sign_ratified = saved_recipe.sign_ratified
 
     # recipe_source="auto_derive": the recipe is freshly derived, so it carries no
     # metadata_anchors of its own and must fall back to DEFAULT_ANCHORS — and the
@@ -507,7 +515,7 @@ def _attempt_self_heal(
         fp,
         recipe_source="auto_derive",
         matched_format_name=saved_format.name,
-        card_markers=credit_card_markers(doc),
+        card_markers=card_markers,
     )
     if retry.outcome != "transactions":
         logger.info(
@@ -515,12 +523,14 @@ def _attempt_self_heal(
             f"re-derived recipe did not reconcile either (reason={retry.reason})"
             f" — routing to seed"
         )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="still_unreconciled").inc()
         return None
 
     logger.info(
         f"Saved format {saved_format.name!r} failed reconciliation but a "
         f"re-derived recipe reconciles — repairing the saved recipe in place"
     )
+    PDF_SELF_HEAL_TOTAL.labels(outcome="repaired").inc()
     return replace(retry, rederived=True)
 
 
