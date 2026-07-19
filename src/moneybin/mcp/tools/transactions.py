@@ -13,6 +13,7 @@ Tools:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -22,11 +23,18 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import BeforeValidator, Field
+from pydantic import BeforeValidator, Field, JsonValue
 
+from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.write_contracts import AnnotationRequest
 from moneybin.privacy.payloads.transactions import (
@@ -54,6 +62,8 @@ from moneybin.services.entity_reference import (
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.transaction_service import (
+    AnnotationBatchResult,
+    AnnotationPlan,
     OperationalTransactionResult,
     TransactionGetResult,
     TransactionService,
@@ -450,21 +460,106 @@ def register_transaction_coarse_reads(mcp: FastMCP) -> None:
     # anomalous transaction analysis remains in the reports catalog.
 
 
-@mcp_tool(read_only=False)
-def transactions_annotate_coarse(
+def _preview_annotations(requests: list[AnnotationRequest]) -> AnnotationPlan:
+    """Resolve an annotation batch on a read-only connection."""
+    with get_database(read_only=True) as db:
+        return TransactionService(db).preview_annotations(requests)
+
+
+def _annotation_binding(
     requests: list[AnnotationRequest],
-) -> ResponseEnvelope[TransactionAnnotationBatchPayload]:
-    """Atomically declare complete note, tag, split, and tag-rename states."""
-    operation_id = current_operation_id()
+    plan: AnnotationPlan,
+) -> ConfirmationBinding:
+    """Bind approval to the exact payload, entities, and live before-state."""
+    request_payloads = [
+        cast(JsonValue, request.model_dump(mode="json")) for request in requests
+    ]
+    destructive_items = sum(item.changed and item.destructive for item in plan.items)
+    return ConfirmationBinding(
+        arguments={"requests": request_payloads},
+        resolved_ids=plan.resolved_ids,
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="transactions_annotate",
+        blast_radius={
+            "requests": len(requests),
+            "changed_requests": plan.changed_count,
+            "destructive_requests": destructive_items,
+            "resolved_targets": sum(len(item.target_ids) for item in plan.items),
+        },
+    )
+
+
+def _apply_annotations(
+    requests: list[AnnotationRequest],
+    *,
+    operation_id: str,
+    grant: ConfirmationGrant | None,
+    expected_binding: ConfirmationBinding | None,
+) -> AnnotationBatchResult:
+    """Re-preflight, verify the live binding, and write in one DB transaction."""
     with get_database(read_only=False) as db:
-        result = TransactionService(db).apply_annotations(
+        service = TransactionService(db)
+
+        def verify(plan: AnnotationPlan) -> None:
+            binding = _annotation_binding(requests, plan)
+            if grant is not None:
+                grant.verify(binding)
+                return
+            if expected_binding is None or (
+                binding.canonical_bytes() != expected_binding.canonical_bytes()
+            ):
+                raise UserError(
+                    "Annotation state changed after preflight.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        return service.apply_annotations(
             requests,
             actor="mcp",
             operation_id=operation_id,
+            verify=verify,
         )
+
+
+@mcp_tool(read_only=False, destructive=True, idempotent=True)
+async def transactions_annotate_coarse(
+    requests: list[AnnotationRequest],
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[TransactionAnnotationBatchPayload]:
+    """Atomically declare complete note, tag, split, and tag-rename states."""
+    operation_id = current_operation_id()
+    grant: ConfirmationGrant | None = None
+    expected_binding: ConfirmationBinding | None = None
+    if confirmation_token is not None:
+        grant = await grant_confirmation_or_raise(
+            binding=None,
+            message="",
+            confirmation_token=confirmation_token,
+        )
+    else:
+        plan = await asyncio.to_thread(_preview_annotations, requests)
+        expected_binding = _annotation_binding(requests, plan)
+        if plan.destructive:
+            grant = await grant_confirmation_or_raise(
+                binding=expected_binding,
+                message=(
+                    "Confirm this destructive transaction annotation batch. "
+                    f"It changes {plan.changed_count} request target(s)."
+                ),
+                confirmation_token=None,
+            )
+    result = await asyncio.to_thread(
+        _apply_annotations,
+        requests,
+        operation_id=operation_id,
+        grant=grant,
+        expected_binding=expected_binding,
+    )
     return build_envelope(
         data=TransactionAnnotationBatchPayload(
-            applied_count=len(result.outcomes),
+            applied_count=sum(outcome.changed for outcome in result.outcomes),
             operation_id=result.operation_id,
             outcomes=[
                 TransactionAnnotationOutcome(

@@ -64,20 +64,27 @@ def _seed_annotation_transactions() -> None:
 async def test_annotation_batch_applies_all_variants(mcp_db: object) -> None:
     _seed_annotation_transactions()
 
+    requests = [
+        NoteSet(kind="note_set", transaction_id="TX_1", note="trip"),
+        TagsSet(kind="tags_set", transaction_id="TX_1", tags=["travel"]),
+        SplitsSet(
+            kind="splits_set",
+            transaction_id="TX_2",
+            splits=[
+                SplitTarget(amount=Decimal("-20"), category=None),
+                SplitTarget(amount=Decimal("-10"), category=None),
+            ],
+        ),
+        TagRename(kind="tag_rename", old_name="food", new_name="dining"),
+    ]
+    required = await transactions_annotate_coarse(requests=requests)
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+    token = required.error.details["confirmation_token"]
+
     response = await transactions_annotate_coarse(
-        requests=[
-            NoteSet(kind="note_set", transaction_id="TX_1", note="trip"),
-            TagsSet(kind="tags_set", transaction_id="TX_1", tags=["travel"]),
-            SplitsSet(
-                kind="splits_set",
-                transaction_id="TX_2",
-                splits=[
-                    SplitTarget(amount=Decimal("-20"), category=None),
-                    SplitTarget(amount=Decimal("-10"), category=None),
-                ],
-            ),
-            TagRename(kind="tag_rename", old_name="food", new_name="dining"),
-        ]
+        requests=requests,
+        confirmation_token=str(token),
     )
 
     assert response.data.applied_count == 4
@@ -102,6 +109,99 @@ async def test_annotation_batch_applies_all_variants(mcp_db: object) -> None:
             Decimal("-20"),
             Decimal("-10"),
         ]
+        assert service.list_tags("TX_RENAME") == ["dining"]
+        events = service._audit.events_for_operation(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # audit verification
+            response.data.operation_id
+        )
+        rename_parent = next(event for event in events if event.action == "tag.rename")
+        rename_children = [
+            event for event in events if event.action == "tag.rename_row"
+        ]
+        assert rename_children
+        assert all(
+            event.parent_audit_id == rename_parent.audit_id for event in rename_children
+        )
+
+
+@pytest.mark.unit
+async def test_annotation_batch_non_destructive_change_needs_no_confirmation(
+    mcp_db: object,
+) -> None:
+    _seed_annotation_transactions()
+
+    response = await transactions_annotate_coarse(
+        requests=[TagsSet(kind="tags_set", transaction_id="TX_1", tags=["travel"])]
+    )
+
+    assert response.error is None
+    assert response.data.applied_count == 1
+
+
+@pytest.mark.unit
+async def test_annotation_batch_retry_is_nothing_to_do(mcp_db: object) -> None:
+    _seed_annotation_transactions()
+    request = [TagRename(kind="tag_rename", old_name="food", new_name="dining")]
+    required = await transactions_annotate_coarse(requests=request)
+    token = required.error.details["confirmation_token"]
+    applied = await transactions_annotate_coarse(
+        requests=request,
+        confirmation_token=str(token),
+    )
+    assert applied.error is None
+
+    retry = await transactions_annotate_coarse(requests=request)
+
+    assert retry.error is not None
+    assert retry.error.code == "mutation_nothing_to_do"
+
+
+@pytest.mark.unit
+async def test_annotation_confirmation_binds_payload_and_resolved_targets(
+    mcp_db: object,
+) -> None:
+    _seed_annotation_transactions()
+    request = [TagRename(kind="tag_rename", old_name="food", new_name="dining")]
+    required = await transactions_annotate_coarse(requests=request)
+    token = str(required.error.details["confirmation_token"])
+
+    mismatched_payload = await transactions_annotate_coarse(
+        requests=[TagRename(kind="tag_rename", old_name="food", new_name="travel")],
+        confirmation_token=token,
+    )
+
+    assert mismatched_payload.error is not None
+    assert mismatched_payload.error.code == "mutation_confirmation_mismatch"
+    with get_database(read_only=True) as db:
+        assert TransactionService(db).list_tags("TX_RENAME") == ["food"]
+
+
+@pytest.mark.unit
+async def test_annotation_confirmation_rechecks_live_entity_resolution(
+    mcp_db: object,
+) -> None:
+    _seed_annotation_transactions()
+    request = [TagRename(kind="tag_rename", old_name="food", new_name="dining")]
+    required = await transactions_annotate_coarse(requests=request)
+    token = str(required.error.details["confirmation_token"])
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.transaction_tags (transaction_id, tag, applied_by)
+            VALUES ('TX_NEW', 'food', 'test')
+            """
+        )
+
+    mismatched_targets = await transactions_annotate_coarse(
+        requests=request,
+        confirmation_token=token,
+    )
+
+    assert mismatched_targets.error is not None
+    assert mismatched_targets.error.code == "mutation_confirmation_mismatch"
+    with get_database(read_only=True) as db:
+        service = TransactionService(db)
+        assert service.list_tags("TX_RENAME") == ["food"]
+        assert service.list_tags("TX_NEW") == ["food"]
 
 
 @pytest.mark.unit

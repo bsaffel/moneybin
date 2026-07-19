@@ -96,6 +96,15 @@ NonZeroFiniteDecimal = Annotated[
     FiniteDecimal,
     AfterValidator(_reject_zero),
 ]
+SplitAmount = Annotated[
+    NonZeroFiniteDecimal,
+    Field(
+        ge=Decimal("-9999999999999999.99"),
+        le=Decimal("9999999999999999.99"),
+        max_digits=18,
+        decimal_places=2,
+    ),
+]
 MatchType = CategorizationMatchType
 FeatureCategory = ConsentFeatureCategory
 
@@ -107,10 +116,39 @@ class _StrictRequest(BaseModel):
 class SplitTarget(_StrictRequest):
     """One complete transaction split target."""
 
-    amount: NonZeroFiniteDecimal
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {
+                            "subcategory": {"not": {"type": "null"}},
+                        },
+                        "required": ["subcategory"],
+                    },
+                    "then": {
+                        "properties": {
+                            "category": {"not": {"type": "null"}},
+                        },
+                        "required": ["category"],
+                    },
+                }
+            ]
+        },
+    )
+
+    amount: SplitAmount
     category: NonBlankString | None = None
     subcategory: NonBlankString | None = None
     note: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_category_hierarchy(self) -> Self:
+        if self.subcategory is not None and self.category is None:
+            raise ValueError("Split subcategory requires category")
+        return self
 
 
 class NoteSet(_StrictRequest):

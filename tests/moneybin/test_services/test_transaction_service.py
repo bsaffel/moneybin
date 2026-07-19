@@ -9,7 +9,13 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.mcp.write_contracts import NoteSet, SplitsSet, TagsSet
+from moneybin.mcp.write_contracts import (
+    NoteSet,
+    SplitsSet,
+    SplitTarget,
+    TagRename,
+    TagsSet,
+)
 from moneybin.services._validators import InvalidSlugError
 from moneybin.services.audit_service import AuditService
 from moneybin.services.transaction_service import (
@@ -131,6 +137,111 @@ class TestAnnotationBatches:
 
         assert result.outcomes[0].changed is True
         assert service.list_splits("T1") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_empty_and_all_noop_batches(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        with pytest.raises(UserError) as empty:
+            service.apply_annotations(
+                [], actor="mcp", operation_id="op_annotation_empty"
+            )
+        assert empty.value.code == "mutation_nothing_to_do"
+
+        with pytest.raises(UserError) as noop:
+            service.apply_annotations(
+                [TagsSet(kind="tags_set", transaction_id="T1", tags=[])],
+                actor="mcp",
+                operation_id="op_annotation_noop",
+            )
+        assert noop.value.code == "mutation_nothing_to_do"
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_composed_tag_targets(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagsSet(kind="tags_set", transaction_id="T1", tags=["travel"]),
+                    TagRename(kind="tag_rename", old_name="food", new_name="dining"),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_overlap",
+            )
+        assert service.list_tags("T1") == ["food"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_rolls_back_base_exception(
+        self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        def interrupt(**_kwargs: object) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            service._tags_repo,  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            "add",
+            interrupt,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            service.apply_annotations(
+                [
+                    NoteSet(kind="note_set", transaction_id="T1", note="trip"),
+                    TagsSet(kind="tags_set", transaction_id="T2", tags=["travel"]),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_interrupt",
+            )
+        assert service.list_notes("T1") == []
+        assert (
+            AuditService(transaction_db).events_for_operation("op_annotation_interrupt")
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_apply_annotations_repairs_canonical_split_category_id(
+        self, transaction_db: Database
+    ) -> None:
+        from tests.moneybin.db_helpers import seed_categories_view
+
+        seed_categories_view(transaction_db)
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_splits (
+                split_id, transaction_id, amount, category, subcategory,
+                category_id, note, ord, created_by
+            ) VALUES ('split_old', 'T1', -50, 'Food & Drink', NULL,
+                      NULL, NULL, 0, 'test')
+            """
+        )
+
+        result = TransactionService(transaction_db).apply_annotations(
+            [
+                SplitsSet(
+                    kind="splits_set",
+                    transaction_id="T1",
+                    splits=[
+                        SplitTarget(amount=Decimal("-50"), category="Food & Drink")
+                    ],
+                )
+            ],
+            actor="mcp",
+            operation_id="op_annotation_category_repair",
+        )
+
+        assert result.outcomes[0].changed is True
+        row = transaction_db.conn.execute(
+            "SELECT category_id FROM app.transaction_splits WHERE transaction_id = ?",
+            ["T1"],
+        ).fetchone()
+        assert row == ("FND",)
 
 
 class TestNotes:
@@ -450,6 +561,21 @@ class TestTags:
         for txn_id in txns_with_shared_tag:
             assert "bar" in txn_service.list_tags(txn_id)
             assert "foo" not in txn_service.list_tags(txn_id)
+
+    @pytest.mark.unit
+    def test_granular_rename_preserves_no_row_parent_marker(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+    ) -> None:
+        result = txn_service.rename_tag("missing", "new", actor="cli")
+
+        assert result.row_count == 0
+        assert result.parent_audit_id
+        chain = audit_service.chain_for(result.parent_audit_id)
+        assert len(chain) == 1
+        assert chain[0].action == "tag.rename"
+        assert chain[0].after_value == {"new_tag": "new", "row_count": 0}
 
     @pytest.mark.unit
     def test_list_distinct_tags_counts_applications(

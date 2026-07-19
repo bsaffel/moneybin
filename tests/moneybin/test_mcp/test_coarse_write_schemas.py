@@ -350,6 +350,32 @@ def test_split_target_preserves_native_decimal() -> None:
     assert split.amount == Decimal("-12.50")
 
 
+@pytest.mark.parametrize(
+    "amount",
+    [
+        Decimal("0.001"),
+        Decimal("-0.001"),
+        Decimal("10000000000000000.00"),
+        Decimal("-10000000000000000.00"),
+    ],
+)
+def test_split_amount_enforces_decimal_18_2(amount: Decimal) -> None:
+    with pytest.raises(ValidationError):
+        SplitTarget(amount=amount)
+
+
+def test_split_subcategory_requires_category_in_model_and_schema() -> None:
+    payload = {"amount": -10, "subcategory": "Dining"}
+    with pytest.raises(ValidationError, match="category"):
+        SplitTarget.model_validate(payload)
+    with pytest.raises(JSONSchemaValidationError):
+        validate_json_schema(
+            payload,
+            SplitTarget.model_json_schema(),
+            cls=Draft202012Validator,
+        )
+
+
 def test_decimal_schema_advertises_json_numbers_not_strings() -> None:
     amount_schema = SplitTarget.model_json_schema()["properties"]["amount"]
     advertised_types = {
@@ -465,8 +491,9 @@ async def test_transaction_annotation_coarse_schema_and_annotations() -> None:
     assert tool.outputSchema is None
     assert tool.annotations is not None
     assert tool.annotations.readOnlyHint is False
-    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.destructiveHint is True
     assert tool.annotations.idempotentHint is True
+    assert "confirmation_token" in tool.inputSchema["properties"]
     variants = {
         branch["properties"]["kind"]["const"]: set(branch["required"])
         for branch in tool.inputSchema["properties"]["requests"]["items"]["oneOf"]
