@@ -192,7 +192,7 @@ The matrix is intentionally exhaustive — including capabilities MoneyBin defer
 
 **Discipline:** when an MCP specification change, client constraint, or product
 requirement surfaces a capability not in this table, add it before deciding what
-to do—the table itself is the audit trail. PRs that add a row marked
+to do — the table itself is the audit trail. PRs that add a row marked
 `⏳ deliberate defer` must include the rationale; PRs that flip a row from `⏳`
 to `📐` or `✅` must update the relevant subsection of this spec.
 

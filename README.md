@@ -34,8 +34,8 @@ Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/as
 Local only. No telemetry. No vendor account. Account and routing numbers in
 typed fields leave the machine only as masked placeholders (`****1234`) — no
 consent tier unlocks the real value, and what free text can carry is
-[documented](docs/guides/what-the-ai-sees.md), not hand-waved. AGPL-3.0, so it
-stays that way.
+[documented](docs/guides/what-the-ai-sees.md), not hand-waved. Every one of
+those claims is verifiable in source — AGPL-3.0.
 
 ## Ask your money anything
 
@@ -95,8 +95,10 @@ Transportation | 113 | -3609.95
 ```
 
 The demo is deterministic synthetic data pushed through the real pipeline —
-import, transform, dedup, categorization, integrity checks. `--seed` varies
-it; `--persona family` and `--persona freelancer` change its shape. It builds
+import, transform, dedup, categorization, integrity checks. Its window is the
+three most recent complete years, so the dates and totals in your run roll
+forward from those shown. `--seed` varies it; `--persona family` and
+`--persona freelancer` change its shape. It builds
 its own profile and never touches a real one, though it does make `demo` the
 active profile and prints the command to switch back. Spending totals are
 negative: the accounting sign convention holds across every surface.

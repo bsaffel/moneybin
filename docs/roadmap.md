@@ -38,6 +38,7 @@ publish. Availability, not promotion.
 | **M0** | Encryption, multi-profile storage, database coordination, CLI/MCP foundations, privacy controls, integrity checks | ✅ shipped |
 | **M1A–M1F** | Tabular and financial-file imports, inbox workflow, matching, categorization, curation, Google Sheets | ✅ shipped |
 | **M1G** | Plaid cash, credit-card, and investment sync | ✅ shipped; non-author validation open — [sync-plaid.md](specs/sync-plaid.md) |
+| **M1I** | Native PDF import: deterministic recipe ladder, saved per-format replay, agent-bridge escalation | ✅ shipped — [smart-import-pdf.md](specs/smart-import-pdf.md) |
 | **M1J** | Investment ledger, tax lots, cost basis, realized gains, Plaid investment ingestion | 🚧 ledger shipped; closes on a real-broker 1099-B tie-out; market prices and net-worth integration remain — [investments-data-model.md](specs/investments-data-model.md) |
 | **M1H, M1Q** | Import confirmation and contributor extension contracts | 🚧 — [smart-import-confirmation.md](specs/smart-import-confirmation.md), [extension-contracts.md](specs/extension-contracts.md) |
 | **M1K** | Multi-currency (capture shipped; conversion staged on top) | 🚧 — [multi-currency.md](specs/multi-currency.md) |
