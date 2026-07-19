@@ -1379,3 +1379,83 @@ def test_no_save_format_lands_the_rows_but_does_not_persist_the_repair(
     assert result.transactions == 2  # the rows still land
     _, _, version = _saved_pdf_format(db)
     assert version == 2  # save_new + the corruption; the repair was NOT written
+
+
+@pytest.mark.integration
+def test_a_repair_that_un_inverts_the_ledger_is_gated(
+    db: Database, tmp_path: Path
+) -> None:
+    """A re-derived polarity change must reach a human in the DANGEROUS direction.
+
+    The gate's own short-circuit only proposes for `negative_is_income`, so an
+    income -> expense repair would otherwise apply silently, un-inverting a
+    convention a human ratified, with no prompt and no trace but a log line.
+    `rederived_from_sign` is what makes the gate look.
+
+    Uses the fixtures' matched pair: the card and checking statements share a
+    layout fingerprint and differ only in the card disclosures, so the saved
+    card recipe replays onto the checking twin and re-derivation reads the
+    twin as negative_is_expense.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+    recipe, _, _ = _saved_pdf_format(db)
+    name_row = db.execute("SELECT name FROM app.pdf_formats").fetchone()
+    assert name_row is not None
+    # Ratified so the polarity guard defers and the replay actually reaches
+    # reconciliation; the broken Amount pattern is what makes it fail there.
+    broken = {
+        **recipe,
+        "sign_ratified": True,
+        "fields": [
+            {**f, "pattern": r"-\$?[\d,]+\.\d{2}"} if f["name"] == "Amount" else f
+            for f in recipe["fields"]
+        ],
+    }
+    PdfFormatsRepo(db).bump_version(
+        name_row[0], broken, reason="test: simulate a stale saved recipe", actor="test"
+    )
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
+
+    assert exc.value.outcome.reason == "sign_convention"
+    # Nothing from the checking statement landed while the flip is unratified.
+    assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]
+
+
+@pytest.mark.integration
+def test_confirming_a_sign_flipping_repair_lets_it_land(
+    db: Database, tmp_path: Path
+) -> None:
+    """The gate must be answerable — otherwise the statement is unimportable.
+
+    This is the whole point of surfacing rather than refusing: before, no flag
+    could authorize the repair because routing seeded and the gate ignores
+    non-transaction decisions.
+    """
+    svc = ImportService(db)
+    svc.import_file(
+        write_card_statement_pdf(tmp_path, month="01"), refresh=False, confirm=True
+    )
+    recipe, _, _ = _saved_pdf_format(db)
+    name_row = db.execute("SELECT name FROM app.pdf_formats").fetchone()
+    assert name_row is not None
+    broken = {
+        **recipe,
+        "fields": [
+            {**f, "pattern": r"-\$?[\d,]+\.\d{2}"} if f["name"] == "Amount" else f
+            for f in recipe["fields"]
+        ],
+    }
+    PdfFormatsRepo(db).bump_version(
+        name_row[0], broken, reason="test: simulate a stale saved recipe", actor="test"
+    )
+
+    result = svc.import_file(
+        write_card_statement_pdf(tmp_path, month="02"), refresh=False, confirm=True
+    )
+
+    assert result.transactions == 2

@@ -1595,8 +1595,6 @@ def _preview_pdf(source: Path) -> None:
     ``read_only=False`` matches the MCP path: a bridge escalation writes the
     Req 14 egress audit row before raising.
     """
-    import shlex  # noqa: PLC0415
-
     from moneybin.database import (  # noqa: PLC0415
         DatabaseKeyError,
         DatabaseNotInitializedError,
@@ -1640,19 +1638,15 @@ def _preview_pdf(source: Path) -> None:
         outcome = e.outcome
         proposed = outcome.proposed
         if isinstance(proposed, SignConventionProposal):
-            logger.info(f"Sign convention pending confirmation: {source.name}")
-            logger.info(f"  Proposed:  {proposed.sign_convention}")
-            logger.info(f"  Evidence:  {', '.join(proposed.evidence) or '—'}")
-            for row in proposed.sample_rows[:3]:
-                logger.info(
-                    f"    {row.get('description', '')}: "
-                    f"printed {row.get('as_printed', '')} → "
-                    f"recorded {row.get('as_recorded', '')}"
-                )
-            logger.info(
-                f"💡 Approve with 'moneybin import files {shlex.quote(str(source))} "
-                f"--confirm', or override with '--sign negative_is_expense'."
-            )
+            # Reuses the shared renderer rather than logging the proposal:
+            # sample rows carry merchant descriptions and bare amounts, and
+            # SanitizedLogFormatter masks neither (_DOLLAR_PATTERN requires a
+            # literal "$"; nothing matches descriptions). Logging them would
+            # persist transaction detail to the session log, which
+            # `.claude/rules/security.md` forbids. typer.echo is the correct
+            # channel for user-facing proposal output, and the shared renderer
+            # also emits the real recovery commands.
+            _render_sign_convention_prompt(proposed, str(source), channel="pdf")
         else:
             logger.info(
                 f"Deterministic extraction escalated to the assisted reader: "

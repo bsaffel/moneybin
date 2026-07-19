@@ -2341,6 +2341,40 @@ class ImportService:
                 ),
             )
 
+        if decision.rederived_from_sign is not None:
+            # A self-heal that changed polarity. Checked BEFORE the short-circuit
+            # below for two reasons, both load-bearing: that check exempts
+            # replays (this IS one — matched_format_name is set), and it only
+            # proposes for negative_is_income, so an income → expense repair
+            # would pass through it silently and un-invert a convention a human
+            # ratified. The confirm here is per-change, not per-format: the
+            # earlier ratification was about the OLD convention.
+            if confirm:
+                PDF_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+                return decision
+            PDF_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
+            raise ImportConfirmationRequiredError(
+                ConfirmationRequired(
+                    channel="pdf",
+                    confidence=_CARD_SIGN_CONFIDENCE,
+                    proposed=SignConventionProposal(
+                        sign_convention=recipe.sign_convention,
+                        evidence=decision.card_markers,
+                        sample_rows=_sign_sample_rows(decision.rows),
+                    ),
+                    reason="sign_convention",
+                    error_message=(
+                        f"The saved layout for this statement stopped reading it "
+                        f"correctly and was re-derived. The re-derived version "
+                        f"records amounts as {recipe.sign_convention!r}, not "
+                        f"{decision.rederived_from_sign!r} — every amount's sign "
+                        f"flips relative to how this format imported before. A "
+                        f"person must confirm or override the change before "
+                        f"anything is imported."
+                    ),
+                )
+            )
+
         is_auto_derived = decision.matched_format_name is None
         if recipe.sign_convention != "negative_is_income" or not is_auto_derived:
             return decision

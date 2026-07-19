@@ -1279,9 +1279,14 @@ def test_self_heal_refuses_to_change_the_sign_convention(db: Database) -> None:
 
     decision = route_pdf_import(doc, db)
 
-    assert decision.outcome == "seed"
-    assert decision.reason == "replay_reconciliation_failed"
-    assert decision.rederived is False
+    # The flip is never applied on the routing layer's own authority. It was
+    # previously refused outright, which left the statement permanently
+    # unimportable; it is now handed up flagged, and ImportService's sign gate
+    # holds it until a human ratifies (see the service suite). Either way the
+    # invariant this test exists for is the same: not silently.
+    assert decision.rederived_from_sign == "negative_is_income"
+    assert decision.recipe is not None
+    assert decision.recipe.sign_ratified is False
 
 
 def test_self_heal_keeps_the_original_seed_decision_when_re_derivation_also_fails(
@@ -1344,16 +1349,60 @@ def test_a_repaired_replay_is_distinguishable_from_a_seeded_one_in_metrics(
     assert after == before + 1
 
 
-def test_a_refused_sign_change_is_counted_separately_from_a_repair(
+def test_a_sign_changing_repair_is_counted_separately_from_a_clean_one(
     db: Database,
 ) -> None:
-    """A refusal is the guard doing its job — it must not read as a repair."""
+    """A repair awaiting ratification must not read as a completed repair.
+
+    Both land rows in the same shape; only the label says one is still waiting
+    on a human. Collapsing them would hide every pending polarity flip.
+    """
     _save_chase_format(
         db, recipe=_stale_recipe_dict("negative_is_income", sign_ratified=True)
     )
-    label = PDF_SELF_HEAL_TOTAL.labels(outcome="refused_sign_change")
+    label = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired_pending_sign")
     before = label._value.get()  # type: ignore[reportPrivateUsage]
 
     route_pdf_import(_subdollar_doc(), db)
 
     assert label._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
+
+def test_a_sign_changing_repair_is_surfaced_rather_than_refused(
+    db: Database,
+) -> None:
+    """A repair that flips polarity is a question for a human, not a dead end.
+
+    Refusing outright left the statement permanently unimportable: the routing
+    decision seeds, and ImportService._gate_pdf_sign_convention ignores
+    non-transaction decisions, so no `--sign` or `--confirm` could ever
+    authorize the repair. The decision now carries the fresh recipe plus the
+    convention it replaced, so the service can put the flip in front of a
+    person.
+    """
+    _save_chase_format(
+        db, recipe=_stale_recipe_dict("negative_is_income", sign_ratified=True)
+    )
+
+    decision = route_pdf_import(_subdollar_doc(), db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is True
+    assert decision.rederived_from_sign == "negative_is_income"
+    assert decision.recipe is not None
+    assert decision.recipe.sign_convention == "negative_is_expense"
+    # The human's prior ratification does NOT carry across a polarity change —
+    # they ratified the old convention, not this one.
+    assert decision.recipe.sign_ratified is False
+
+
+def test_a_repair_that_keeps_the_convention_carries_no_sign_change(
+    db: Database,
+) -> None:
+    """Negative control: only a genuine flip may reach the sign gate."""
+    _save_chase_format(db, recipe=_stale_recipe_dict())
+
+    decision = route_pdf_import(_subdollar_doc(), db)
+
+    assert decision.rederived is True
+    assert decision.rederived_from_sign is None

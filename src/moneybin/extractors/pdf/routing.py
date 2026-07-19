@@ -141,6 +141,12 @@ class RouteDecision:
     # this decision is then the FRESH one, not what app.pdf_formats holds, so
     # the service must persist it via bump_version rather than record_use alone.
     rederived: bool = False
+    # The sign convention the repaired recipe REPLACED, when re-derivation
+    # changed it; None when the repair kept the convention (the common case).
+    # Non-None is the signal that this decision must not load until a human
+    # ratifies the flip — see _gate_pdf_sign_convention, which cannot infer it:
+    # decision.recipe already carries the NEW convention by the time it looks.
+    rederived_from_sign: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -453,10 +459,16 @@ def _attempt_self_heal(
     - **Only machine-derived formats** (``source == "detected"``). A bridge- or
       manually-authored recipe encodes human intent; replacing it with an
       auto-derived guess would silently discard that work.
-    - **Never a sign-convention change.** ``bump_version`` mirrors the recipe's
-      ``sign_convention`` into the column every reader trusts, so an unguarded
-      heal could invert every amount on the statement with no human in the loop.
-      Repairing a *pattern* is safe; flipping *polarity* is not.
+    - **Never a silent sign-convention change.** ``bump_version`` mirrors the
+      recipe's ``sign_convention`` into the column every reader trusts, so an
+      unguarded heal could invert every amount with no human in the loop.
+      Repairing a *pattern* is safe; flipping *polarity* needs ratification, so
+      a flip is handed up via ``rederived_from_sign`` and held by
+      ``ImportService._gate_pdf_sign_convention`` rather than applied here.
+      Refusing outright (the first shape of this guard) was worse than it looked:
+      routing seeded, the gate ignores seed decisions, and so no ``--sign`` or
+      ``--confirm`` could ever authorize the repair — the statement became
+      permanently unimportable.
 
     The fresh recipe earns its place by clearing the same ±1c reconciliation gate
     a first-contact recipe must clear — it is proven against this document, not
@@ -487,21 +499,18 @@ def _attempt_self_heal(
         PDF_SELF_HEAL_TOTAL.labels(outcome="underivable").inc()
         return None
 
-    if saved_recipe is not None:
-        if fresh.sign_convention != saved_recipe.sign_convention:
-            logger.warning(
-                f"Re-derived recipe for format {saved_format.name!r} changes the "
-                f"sign convention ({saved_recipe.sign_convention} → "
-                f"{fresh.sign_convention}) — refusing to invert the ledger without "
-                f"review; routing to seed"
-            )
-            PDF_SELF_HEAL_TOTAL.labels(outcome="refused_sign_change").inc()
-            return None
-
-        # Carry the human's ratification forward. The sign convention is identical
-        # (guarded just above), so the decision the user already made still holds;
-        # letting it reset to False would re-prompt for an inversion they signed off
-        # on.
+    sign_changed = (
+        saved_recipe is not None
+        and fresh.sign_convention != saved_recipe.sign_convention
+    )
+    if saved_recipe is not None and not sign_changed:
+        # Carry the human's ratification forward. The sign convention is identical,
+        # so the decision the user already made still holds; letting it reset to
+        # False would re-prompt for an inversion they signed off on.
+        #
+        # Deliberately NOT carried when the convention changed: they ratified the
+        # OLD convention, and treating that as approval of a new one would launder
+        # a silent inversion through a decision made about something else.
         fresh.sign_ratified = saved_recipe.sign_ratified
 
     # recipe_source="auto_derive": the recipe is freshly derived, so it carries no
@@ -525,6 +534,26 @@ def _attempt_self_heal(
         )
         PDF_SELF_HEAL_TOTAL.labels(outcome="still_unreconciled").inc()
         return None
+
+    if sign_changed:
+        # Reaches the service as a normal transactions decision so the sign gate
+        # can see it at all (the gate ignores seed decisions), but flagged so the
+        # gate refuses to load it until a human ratifies the flip. Returning it
+        # unflagged would apply the new polarity silently — the gate's own
+        # short-circuit only proposes for negative_is_income, so an
+        # income → expense repair would sail straight through.
+        assert saved_recipe is not None  # noqa: S101  # sign_changed implies it
+        logger.warning(
+            f"Saved format {saved_format.name!r} was repaired by re-derivation, "
+            f"but the sign convention changed ({saved_recipe.sign_convention} → "
+            f"{fresh.sign_convention}) — holding for human ratification"
+        )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="repaired_pending_sign").inc()
+        return replace(
+            retry,
+            rederived=True,
+            rederived_from_sign=saved_recipe.sign_convention,
+        )
 
     logger.info(
         f"Saved format {saved_format.name!r} failed reconciliation but a "

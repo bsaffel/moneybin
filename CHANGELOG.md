@@ -53,8 +53,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   MoneyBin re-reads the statement from scratch and, if the fresh read balances to
   the cent, imports it and updates the saved layout. Two things it will not do on
   its own: replace a layout you or the assisted reader authored, or change a
-  statement's income/expense direction — both still stop and ask. The repair is
-  recorded in the audit log and can be undone.
+  statement's income/expense direction. A layout you authored is left alone
+  entirely; a direction change is shown to you with the evidence and the
+  printed-vs-recorded samples, and nothing is imported until you approve or
+  override it — in either direction, including when the re-read wants to *undo*
+  an inversion you approved earlier. The repair is recorded in the audit log and
+  can be undone.
 - **Replacing a statement while its approval prompt is open no longer applies
   your answer to the new file.** Re-saving a corrected export over the same path
   mid-prompt could previously reverse every amount in a document you never

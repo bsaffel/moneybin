@@ -127,6 +127,12 @@ def test_preview_surfaces_a_pending_sign_confirmation(
 
     pdf_preview signals this by RAISING, so an unhandled path would crash the
     command on exactly the statements that most need inspecting.
+
+    The proposal goes to stdout and must NOT reach the log: sample rows carry
+    merchant descriptions and bare amounts, and SanitizedLogFormatter masks
+    neither (`_DOLLAR_PATTERN` requires a literal "$"; no pattern matches
+    descriptions). Logging them would persist transaction detail to the session
+    log, which `.claude/rules/security.md` forbids.
     """
     outcome = ConfirmationRequired(
         channel="pdf",
@@ -153,7 +159,12 @@ def test_preview_surfaces_a_pending_sign_confirmation(
         result = runner.invoke(app, ["preview", str(statement)])
 
     assert result.exception is None, result.exception
-    assert "negative_is_income" in caplog.text
+    # Shown to the user...
+    assert "COFFEE SHOP" in result.output
+    assert "12.50" in result.output
+    # ...but never persisted to the log.
+    assert "COFFEE SHOP" not in caplog.text
+    assert "12.50" not in caplog.text
 
 
 def test_preview_still_handles_a_csv(tmp_path: Path) -> None:

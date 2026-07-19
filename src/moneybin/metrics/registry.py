@@ -120,7 +120,7 @@ PDF_REPLAY_GUARD_FAILURE_TOTAL = Counter(
 PDF_SELF_HEAL_TOTAL = Counter(
     "moneybin_pdf_self_heal_total",
     "Outcome of re-deriving a saved PDF recipe that stopped reconciling.",
-    ["outcome"],  # repaired | refused_not_detected | refused_sign_change
+    ["outcome"],  # repaired | repaired_pending_sign | refused_not_detected
     # | underivable | still_unreconciled
 )
 
