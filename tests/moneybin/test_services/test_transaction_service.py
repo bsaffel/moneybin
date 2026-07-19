@@ -177,6 +177,24 @@ class TestAnnotationBatches:
         assert service.list_tags("T1") == ["food"]
 
     @pytest.mark.unit
+    def test_apply_annotations_allows_noop_rename_before_independent_tag_set(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                TagRename(kind="tag_rename", old_name="food", new_name="dining"),
+                TagsSet(kind="tags_set", transaction_id="T1", tags=["dining"]),
+            ],
+            actor="mcp",
+            operation_id="op_annotation_noop_rename",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [False, True]
+        assert service.list_tags("T1") == ["dining"]
+
+    @pytest.mark.unit
     def test_apply_annotations_rolls_back_base_exception(
         self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -809,6 +827,52 @@ class TestSplits:
             )
         listed = txn_service.list_splits(sample_transaction_id)
         assert [(s.amount, s.category) for s in listed] == [(Decimal("-10.00"), "Keep")]
+
+    @pytest.mark.unit
+    def test_set_splits_preserves_legacy_adapter_inputs(
+        self,
+        txn_service: TransactionService,
+        sample_transaction_id: str,
+    ) -> None:
+        result = txn_service.set_splits(
+            sample_transaction_id,
+            [
+                {
+                    "amount": Decimal("0.001"),
+                    "subcategory": "orphan-child",
+                    "legacy_extra": "ignored",
+                }
+            ],
+            actor="mcp",
+        )
+
+        assert len(result) == 1
+        assert result[0].amount == Decimal("0.00")
+        assert result[0].category is None
+        assert result[0].subcategory == "orphan-child"
+
+    @pytest.mark.unit
+    def test_set_splits_reinserts_identical_state_with_new_ids_and_audits(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        target = [{"amount": Decimal("-50.00"), "category": "Legacy"}]
+        first = txn_service.set_splits(sample_transaction_id, target, actor="mcp")
+        add_count = len(audit_service.list_events(action_pattern="split.add"))
+        remove_count = len(audit_service.list_events(action_pattern="split.remove"))
+
+        second = txn_service.set_splits(sample_transaction_id, target, actor="mcp")
+
+        assert second[0].split_id != first[0].split_id
+        assert (
+            len(audit_service.list_events(action_pattern="split.add")) == add_count + 1
+        )
+        assert (
+            len(audit_service.list_events(action_pattern="split.remove"))
+            == remove_count + 1
+        )
 
     @pytest.mark.unit
     def test_splits_balance_returns_signed_residual(

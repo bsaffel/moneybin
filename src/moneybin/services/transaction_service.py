@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 from moneybin import error_codes
 from moneybin.database import Database
@@ -26,7 +26,6 @@ from moneybin.mcp.write_contracts import (
     AnnotationRequest,
     NoteSet,
     SplitsSet,
-    SplitTarget,
     TagRename,
     TagsSet,
 )
@@ -218,6 +217,32 @@ class _PreparedSplit:
     subcategory: str | None
     category_id: str | None
     note: str | None
+
+
+class _SplitTargetLike(Protocol):
+    """Common shape accepted by the shared split preparation engine."""
+
+    @property
+    def amount(self) -> Decimal: ...
+
+    @property
+    def category(self) -> str | None: ...
+
+    @property
+    def subcategory(self) -> str | None: ...
+
+    @property
+    def note(self) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _GranularSplitTarget:
+    """Legacy granular adapter input after its original validation."""
+
+    amount: Decimal
+    category: Any
+    subcategory: Any
+    note: Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,7 +481,7 @@ class TransactionService:
             if isinstance(request, TagRename):
                 key = (request.kind, f"{request.old_name}:{request.new_name}")
                 mutation = item.mutation
-                if isinstance(mutation, _PreparedTagRename):
+                if isinstance(mutation, _PreparedTagRename) and mutation.changed:
                     renames.append(mutation)
             else:
                 key = (request.kind, request.transaction_id)
@@ -1467,7 +1492,7 @@ class TransactionService:
         mutating state so a malformed input never leaves the row set in a
         half-applied state. The clear + adds run in one DuckDB transaction.
         """
-        targets: list[SplitTarget] = []
+        targets: list[_GranularSplitTarget] = []
         for idx, s in enumerate(splits):
             if "amount" not in s:
                 raise ValueError(f"splits[{idx}] missing required 'amount'")
@@ -1477,18 +1502,19 @@ class TransactionService:
                     f"splits[{idx}].amount must be Decimal, got {type(amount).__name__}"
                 )
             targets.append(
-                SplitTarget.model_validate({
-                    "amount": amount,
-                    "category": s.get("category"),
-                    "subcategory": s.get("subcategory"),
-                    "note": s.get("note"),
-                })
+                _GranularSplitTarget(
+                    amount=amount,
+                    category=s.get("category"),
+                    subcategory=s.get("subcategory"),
+                    note=s.get("note"),
+                )
             )
         prepared = self._prepare_splits_set(
             transaction_id,
             targets,
             expected_total=None,
             require_categories=False,
+            force_replace=True,
         )
         self._db.begin()
         try:
@@ -1507,10 +1533,11 @@ class TransactionService:
     def _prepare_splits_set(
         self,
         transaction_id: str,
-        splits: Sequence[SplitTarget],
+        splits: Sequence[_SplitTargetLike],
         *,
         expected_total: Decimal | None,
         require_categories: bool,
+        force_replace: bool = False,
     ) -> _PreparedSplitsSet:
         """Validate and resolve one declarative split sequence."""
         desired: list[_PreparedSplit] = []
@@ -1571,8 +1598,8 @@ class TransactionService:
             transaction_id=transaction_id,
             current=current,
             desired=target,
-            changed=current != target,
-            destructive=bool(current and current != target),
+            changed=force_replace or current != target,
+            destructive=bool(current and (force_replace or current != target)),
         )
 
     def _apply_splits_set(
