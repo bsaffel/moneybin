@@ -5,9 +5,8 @@ Builds the real SQLMesh report views (a trivial fixture view would not exercise
 the pointer-view + declared-class path) and asserts sql_query masks any
 CRITICAL-declared column exactly as the typed report tools do. Iterates
 ``reports_class_map()`` rather than just the ``@report`` runners so it also
-covers deployed reports.* views classified only via the transitional bridge
-(``reports/definitions/_bridged_classes.py``) — e.g.
-``uncategorized_queue.account_id``.
+covers any deployed reports.* view classified only via the generated module
+(``reports/definitions/_derived_classes.py``), not just runner-backed ones.
 """
 
 from __future__ import annotations

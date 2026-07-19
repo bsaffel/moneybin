@@ -110,3 +110,32 @@ def test_payload_fields_match_registry(payload_cls: type) -> None:
             "Annotated to match the registry, or update the registry if the "
             "field semantics genuinely changed."
         )
+
+
+@pytest.mark.unit
+def test_pending_txn_age_days_is_a_date_on_both_sides() -> None:
+    """``age_days`` is TXN_DATE in the payload AND in the registry — absolutely.
+
+    ``test_payload_fields_match_registry`` only proves the two AGREE, so a
+    change that moves both back to AGGREGATE together passes it unchanged. This
+    pins the value itself on both sides.
+
+    Nothing else would notice the regression: ``age_days`` shares
+    ``PendingTxnRow`` with ``amount`` (TXN_AMOUNT, HIGH), which dominates the
+    derived envelope tier, so ``CatPendingPayload`` stays Tier.HIGH whatever
+    this field says — while the field itself would have quietly stopped being
+    masked at the tiers between.
+
+    Why TXN_DATE and not AGGREGATE: ``age_days`` is computed against
+    CURRENT_DATE, which is public, so it is bijective with the transaction date
+    (``txn_date = CURRENT_DATE - age_days``). It is a date wearing a count's
+    clothing, not an aggregate.
+    """
+    from moneybin.privacy.payloads.categorize import PendingTxnRow
+
+    hints = get_type_hints(PendingTxnRow, include_extras=True)
+    assert _find_annotated_meta(hints["age_days"]) is DataClass.TXN_DATE
+    assert (
+        CLASSIFICATION[("core", "uncategorized_queue")]["age_days"]
+        is DataClass.TXN_DATE
+    )

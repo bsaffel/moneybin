@@ -24,8 +24,19 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "drift": DataClass.TXN_AMOUNT,
         "drift_abs": DataClass.TXN_AMOUNT,
         "drift_pct": DataClass.AGGREGATE,
-        "days_since_assertion": DataClass.AGGREGATE,
+        # CURRENT_DATE is public, so a day-count is bijective with
+        # assertion_date (assertion_date = CURRENT_DATE - days_since_assertion) —
+        # this is a date, not an aggregate; a LOW-tier session must not see it
+        # unmasked when assertion_date itself would be masked.
+        "days_since_assertion": DataClass.TXN_DATE,
         "status": DataClass.TXN_TYPE,
+    },
+    class_downgrades={
+        "drift_pct": "ratio of two already-declared BALANCE columns "
+        "(drift / asserted_balance); a percentage reveals no absolute "
+        "balance figure",
+        "status": "coarse 4-way bucket on |drift| (<$1 / <$10 / >=$10 / "
+        "no-data), never the drift or balance values themselves",
     },
 )
 def balance_drift(

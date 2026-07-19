@@ -116,7 +116,10 @@ class PendingTxnRow:
     memo: Annotated[str | None, DataClass.DESCRIPTION]
     # RECORD_ID (spec D6): opaque canonical surrogate, not PII; passes through.
     account_id: Annotated[str | None, DataClass.RECORD_ID]
-    age_days: Annotated[int | None, DataClass.AGGREGATE]
+    # CURRENT_DATE is public, so age_days is bijective with transaction_date
+    # (transaction_date = CURRENT_DATE - age_days) — a date, not an aggregate.
+    # Matches CLASSIFICATION[("core", "uncategorized_queue")]["age_days"].
+    age_days: Annotated[int | None, DataClass.TXN_DATE]
     # True when an unresolved (pending, unreversed) app.match_decisions row
     # references this transaction (F19) — categorizing it would double-count
     # against the eventual transfer pair once matching resolves it.
