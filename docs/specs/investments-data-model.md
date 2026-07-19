@@ -50,8 +50,8 @@ Related specs:
    absorbs unanticipated instruments without one.
 3. **Identity resolution chain.** Free-text or partial security references resolve to
    a `security_id` via CUSIP/ISIN → ticker+exchange → name fuzzy, mirroring the
-   institution-resolution chain in `smart-import-financial.md`. Three rules adopted
-   from Portfolio Performance's battle-tested `SecurityCache` (127 broker importers):
+   institution-resolution chain in `smart-import-financial.md`. Three rules keep
+   the chain deterministic against real broker-export identifier quirks:
    ticker resolution tries the full reference as a stored ticker first — so a
    dotted ticker like `BRK.B` resolves by its own ticker — and only then falls back
    to stripping an exchange suffix (`UMAX.AX` → `UMAX`, disambiguated by the
@@ -79,10 +79,9 @@ Related specs:
    `other`. `deposit`/`withdrawal` are *external* cash funding events (NULL
    `security_id`; move net contribution), kept distinct from
    `transfer_in`/`transfer_out`, which are *internal*, basis-preserving position
-   moves — collapsing the two breaks net-contribution/time-weighted-return math
-   (a bug class two shipped competitors hit independently). The `type` is the
-   engine-dispatch contract; two companion columns keep it from being overloaded
-   (the Rotki lesson — one enum must not serve mechanics, reporting, and display):
+   moves—collapsing the two breaks net-contribution and time-weighted-return
+   math. The `type` is the engine-dispatch contract; two companion columns keep
+   one enum from serving mechanics, reporting, and display:
    - **`subtype`** (nullable) — closed per-type refinement vocabulary carrying tax
      character and provenance detail: `qualified`/`non_qualified` on `dividend`;
      `short_term`/`long_term` on `capital_gain_distribution`; `tax_withheld` on
@@ -388,13 +387,11 @@ and consuming them on disposals.
 > `cost_basis_method` `CHECK` (on `app.securities` and `app.account_settings`) allows
 > only `fifo`, `hifo`, `specific`, `average` on purpose — electing a method the engine
 > does not implement would silently miscompute basis, so the constraint is a guard,
-> not an oversight (a shipped competitor declares LIFO/WAC and hard-errors on both;
-> declared-but-unimplemented is the worst state). **LIFO stays out absent real
-> demand**: three surveyed cost-basis engines ship HIFO and zero PFM ships LIFO for
-> brokerage. Mechanically, ordering methods are consumption-order variants of the
-> same engine (the shipped FIFO/LIFO/HIFO trio in Rotki differ only by sort key), so
-> adding LIFO later is a sort key + a lightweight `CHECK`-widening migration — the
-> same deliberate trade-off as `security_type`. Build order within this child:
+> not an oversight. Declaring a method the engine cannot execute is worse than
+> omitting it. **LIFO stays out absent real demand.** Mechanically, ordering
+> methods are consumption-order variants of the same engine, so adding LIFO later
+> is a sort key plus a lightweight `CHECK`-widening migration—the same deliberate
+> trade-off as `security_type`. Build order within this child:
 > FIFO → HIFO (same machinery, different sort key) → specific-ID → average.
 
 ### Short-term / long-term split (shared across all methods)
@@ -448,14 +445,13 @@ The ST/LT split still walks lots oldest-first (only the basis is averaged). Vali
 to `mutual_fund` / `etf` security types. This is the one genuinely distinct
 computation; it adds a single derived path, not a parallel system.
 
-**Implementation note (learned from shipped engines):** compute the pool as two
-running scalars — remaining pooled cost and remaining pooled units, rescaled
-multiplicatively on every disposal — the approach Rotki ships and tests
-(CRA/HMRC pooled-average formula). Do NOT implement average cost as runtime
-lot-merging inside the consumption machinery: that is the design Beancount
-attempted and left disabled behind dead code for ~15 years ("fairly tricky to
-implement"). The lots are still traversed oldest-first for holding-period
-attribution; only the basis number comes from the pool.
+**Implementation note:** compute the pool as two running scalars—remaining
+pooled cost and remaining pooled units—rescaled multiplicatively on every
+disposal. Do not implement average cost as runtime lot-merging inside the
+consumption machinery: it couples pooled-basis arithmetic to lot identity and
+makes partial disposals harder to reason about. The lots are still traversed
+oldest-first for holding-period attribution; only the basis number comes from
+the pool.
 
 **`core.fct_realized_gains` grain under average cost.** There is no lot-specific
 basis when pooling, but the table keeps its uniform (disposal × consumed lot) grain:
@@ -474,10 +470,9 @@ adjustments. Those are out of scope (wash sales belong to the `us_tax` package).
 ### Corporate actions
 
 Single-security actions are **typed ledger events applied at lot derivation** —
-never rewrites of historical rows (the pattern that left Portfolio Performance
-unable to model anything beyond splits for a decade) and never user-computed
-zero-and-refill pairs (the Beancount recipe whose own docs concede it destroys
-holding-period continuity):
+never rewrites of historical rows (rewrites destroy replayability and cap the
+action vocabulary at whatever the rewrite encodes) and never user-computed
+zero-and-refill pairs (which destroy holding-period continuity):
 
 - `split` carries the split **multiplier** `M` (new shares per old share — `2`
   for 2:1, `1.5` for 3:2, `0.5` for a 1:2 reverse split) in its `quantity`
@@ -500,9 +495,8 @@ holding-period continuity):
   without proceeds (no realized gain).
 
 **Two-security actions** (merger, spin-off, crypto-to-crypto trade) are expressed
-as **decomposed leg pairs sharing an `event_group_id`** — the shape Rotki ships
-(paired SPEND/RECEIVE with a group identifier) and Portfolio Performance's 2026
-corporate-action redesign converges on (linked N-ary entry, ratio-derived basis):
+as **decomposed leg pairs sharing an `event_group_id`** — paired out/in legs
+carrying a group identifier, with basis derived from the exchange ratio:
 
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
@@ -546,12 +540,11 @@ data is incomplete, on either side of a lot's life:
   oversold disposal would.
 
 CLI/MCP surfaces flag both conditions (`investments lots`/`investments gains`
-warnings + response-envelope `warnings`). This adopts the pattern Rotki ships
-(structured missing-acquisition records surfaced to review) over the
-log-and-continue degradation Portfolio Performance uses. Watch their documented
-false-positive class: the same economic security arriving under two
-identifiers — which the surrogate-key resolution
-chain exists to prevent.
+warnings + response-envelope `warnings`). Structured missing-acquisition
+records surfaced for review beat log-and-continue degradation: silent
+degradation hides basis errors until tax time. The known false-positive
+class — the same economic security arriving under two identifiers — is
+exactly what the surrogate-key resolution chain exists to prevent.
 
 ## Plaid Investments Readiness
 
@@ -975,8 +968,8 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
     semantics across manual/Plaid/OFX; the entry surfaces write the pair
     atomically. Income reports sum income types only.
 11. **Two-security corporate actions are event-grouped leg pairs**, not new
-    enum values — the shape shipped by Rotki and converged on by Portfolio
-    Performance's redesign after their split-as-rewrite dead end.
+    enum values — grouping keeps the action enum closed and the basis math
+    replayable from the ledger.
 12. **Per-provider raw tables** (`raw.manual_investment_transactions` now;
     provider tables in importer children) — coherent with the cash-transaction
     pipeline; a shared generic raw table was a documented-pattern miss in the

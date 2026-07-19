@@ -17,10 +17,11 @@ promotion.
 
 MoneyBin's MCP server should reach users through the **vendor-blessed install
 path of every AI client worth supporting** — as close to one-click as each
-client allows — and should support every client that any major competitor
-supports, more ergonomically. This spec fixes the support matrix (which
-clients, at which tier, via which mechanism), corrects stale install guidance,
-and sequences the build plan onto the milestone grid.
+client allows. A client is supported when its transport, installation, tool
+surface, and security constraints can be tested and documented concretely. This
+spec fixes the support matrix (which clients, at which tier, via which
+mechanism), corrects stale install guidance, and sequences the build plan onto
+the milestone grid.
 
 Findings are grounded in a July 2026 review of vendor primary docs
 (code.claude.com, support.claude.com, claude.com/docs/connectors,
@@ -77,7 +78,7 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | LibreChat | stdio, sse, streamable-http | `librechat.yaml` / in-app panel | T2 | |
 | Warp | stdio, SSE URL | UI add; auto-detects `.warp/.mcp.json` + reads Claude Code/Codex config | T2 | Often works with zero MoneyBin effort via config pickup |
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
-| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | **Demoted from T1 2026-07-11**: works via stdio, but momentum faded post-Cognition-acquisition (~$82M ARR vs Cursor ~$2B) and the **100-active-tool cap vs our 105** is a per-release headroom tax not worth paying. Document only; revisit if it re-enters the momentum tier |
+| Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | Works via stdio, but its 100-active-tool cap creates a per-release headroom tax against MoneyBin's 105-tool surface (the pinned, test-enforced `VISIBLE_TOOL_COUNT`). Document only; revisit if the cap changes or a supported install path removes the tax |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
 | ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** (pending #315) | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension. **Until #315 merges, `chatgpt-desktop` is manual-config only** (still in `_NO_INSTALL_CLIENTS` on `main`) |
 | ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
@@ -89,7 +90,7 @@ backbone that aggregators consume — publish to it, but don't build on it.
 | GitHub Copilot cloud coding agent | no OAuth remote MCP | — | **✗** | Revisit: OAuth support lands |
 | SSE / WebSocket transports | deprecated / no-OAuth niche | — | **✗** | We ship `--transport sse` today: deprecate the flag at M3D, remove per the CLI deprecation policy |
 
-## Tiering rationale (momentum review, 2026-07-11)
+## Tiering rationale (support review, 2026-07-11)
 
 Nearly every serious client speaks **local stdio MCP**, so the marginal cost of
 *coverage* is near zero — one MoneyBin server + a documented config snippet
@@ -98,25 +99,19 @@ automation we smoke-test every release (T1) plus quirks like tool caps. So the
 tier line is drawn on *momentum × tax*, not on whether a client technically
 works.
 
-- **T1 = the frontier-lab agent surfaces + reach leaders.** Each major lab now
-  ships a first-party agent surface: **Codex** (OpenAI), **Claude Code**
-  (Anthropic), **Antigravity** (Google) — all T1, for coherence. Plus **Cursor**
-  (~$2B ARR, revenue leader), **VS Code / Copilot** (largest install base),
-  **Claude Desktop** (our consumer home), and **Gemini CLI** (T1 through its
-  sunset into Antigravity CLI).
-- **Windsurf → T2.** A top-3 name in 2024/early-2025, but Google poached its
-  founders and Cognition acquired the remainder (Dec 2025); it now trails badly
-  on adoption (~$82M vs Cursor's ~$2B ARR). Combined with the 100-tool-cap tax
-  against our 105-tool surface, it doesn't earn a release-gated T1 commitment.
-  Still documented (stdio works); revisit on a momentum change.
-- **Antigravity → T1.** Google-backed, MCP over stdio/SSE/HTTP, its CLI inherits
-  Gemini CLI's large base. Adoption is early and its surfaces are still moving,
-  so T1 targets the stable desktop + CLI and re-verifies config each release.
+- **T1 = stable first-party paths we can release-gate.** Codex, Claude Code,
+  Antigravity, Cursor, VS Code/Copilot, Claude Desktop, and Gemini CLI have a
+  concrete installation path and a client surface we will smoke-test each
+  release. Gemini CLI remains T1 through its transition to Antigravity CLI.
+- **Windsurf → T2.** Its 100-tool cap leaves too little headroom for MoneyBin's
+  current surface to make release-gated support durable. Stdio configuration is
+  still documented; revisit when the cap or installation path changes.
+- **Antigravity → T1.** It supports the transports MoneyBin needs and provides
+  a first-party desktop and CLI path. Its configuration is still evolving, so
+  each release verifies the supported path before publishing it.
 
-Sources: AI-coding market-share reviews (Cursor ~$2B ARR / Claude Code most-loved
-/ Copilot largest base), Cognition–Windsurf acquisition coverage, and the
-Antigravity 2.0 four-surface launch (Google I/O 2026) confirming stdio MCP. Full
-session research: `private/research/2026-07-10-ai-client-compatibility.md`.
+Sources: vendor documentation for each client, verified during the support
+review. Recheck client capabilities before implementing a later milestone.
 
 ## Blessed-path corrections (Phase 0 — immediate)
 
@@ -220,11 +215,8 @@ portable `[A-Za-z0-9_-]` tool names; the response envelope; `mcp install`
 config-writing, which remains a fully current pattern (Anthropic's
 `claude mcp add` and FastMCP's `fastmcp install` do the same).
 
-The discrete execution breakdown of this ladder for the Tier-1 clients (the
-W1–W11 build inventory: what ships, in what order, with dependencies) lives in
-`private/strategy/distribution-roadmap.md` §1.0 — kept out of this tracked spec
-because it churns monthly and gets a full `writing-plans` decomposition only when
-M3B executes.
+The public contract is the distribution ladder above. Its release sequencing and
+implementation breakdown are intentionally not part of this document.
 
 ## M3D — remote MCP + auth (design inputs sharpened)
 
@@ -295,17 +287,15 @@ opt-in with visible consent. The unauthenticated transports stay behind
 live profile) is ever documented as a recommended path — dev-only, ephemeral,
 demo data.
 
-## Competitive bar
+## Distribution target
 
-Wealthfolio sets the best-in-class install story (MCP embedded in the app the
-user already runs — zero external server). Copilot Money ships the hosted
-read-only pattern (waitlisted). The AI-native cluster (Finlynq, Syllogic,
-Alderfi, Tuskledger) treats first-party MCP as core design but installs via
-Docker+config. Nobody in the category has: one-click `.mcpb`, a plugin
-marketplace presence, registry listings, *and* an authenticated hosted tier.
-Rungs 1–4 alone put MoneyBin ahead of every incumbent's install ergonomics;
-M3D+M3O match the only two hosted plays while keeping the local-first
-posture they lack.
+Local installation should require no manual server process management after the
+initial package install. The supported paths should cover one-click client
+bundles where available, plugin and registry discovery, deterministic
+configuration for generic clients, and an authenticated remote path only after
+the required consent and security controls exist. Each rung must be testable on
+a clean machine and documented without implying support for an unverified
+client or transport.
 
 ## Out of scope
 
