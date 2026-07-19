@@ -229,7 +229,7 @@ fails to register — the tier is never hand-set):
 
 What the tier does today: it tags the per-call event in the privacy log (`tool`, `sensitivity`, data classes, row count) for *every* invocation, read or write. Mutations additionally write an `app.audit_log` row visible through `system_audit` — but reads do not, so `system_audit` shows only writes, not every call. (The two records are distinct; see [What the AI Provider Sees](what-the-ai-sees.md) for the split.) The per-call events go to `privacy.log.jsonl` under the active profile directory — a dedicated file with daily rotation, not the `mcp serve` stderr log and not affected by the standard logging settings. MoneyBin does not prune it. Independently of the tier, CRITICAL fields (account/routing numbers) are always masked before a result leaves the process.
 
-What the tier does **not** do today: there is no consent-prompt gate that requires explicit user approval before a `high`-tier call, and the tier does not degrade the response. The privacy framework that introduces the gate is planned; `summary.degraded` is wired through the envelope but not yet exercised. When the gate lands, calls without consent will return aggregate-only `data` with `summary.degraded: true` — they will never fail outright. Full data-flow detail: [What the AI Provider Sees](what-the-ai-sees.md).
+What the tier does **not** do today: there is no consent-prompt gate that requires explicit user approval before a `high`-tier call, and the tier does not degrade the response. The privacy framework that introduces the gate is planned; `summary.degraded` is already wired through the envelope, waiting on it. When the gate lands, calls without consent will return aggregate-only `data` with `summary.degraded: true` — they will never fail outright. Full data-flow detail: [What the AI Provider Sees](what-the-ai-sees.md).
 
 Tier names will not change. The enforcement layer above them may.
 
@@ -339,7 +339,7 @@ CLI footnote: `moneybin db query` (the CLI raw-SQL command) wraps `sql_query` an
 
 Stdio today. The client launches `moneybin mcp serve` as a subprocess and talks over stdin/stdout — there is no listening port, no network surface, no auth handshake. The OS user owning the client process is the trust boundary.
 
-A Streamable HTTP transport is planned for the hosted tier but is not implemented yet. When it lands, the same tool surface will be reachable over HTTP with an explicit auth path.
+A Streamable HTTP transport is planned for the hosted tier. When it lands, the same tool surface becomes reachable over HTTP with an explicit auth path.
 
 ## Testing without a real dataset
 

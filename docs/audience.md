@@ -30,7 +30,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - **Beancount / hledger** — no direct ledger importer; export postings to CSV and import that. Round-tripping back to Beancount syntax isn't supported.
 - **Bank OFX/QFX/QBO** — full first-class import alongside tabular.
 
-**Data exit:** A plaintext-export command (CSV out of every core table) is planned but not shipped. Today the database itself is portable — one encrypted DuckDB file per profile, queryable with any DuckDB client.
+**Data exit:** A plaintext-export command (CSV out of every core table) is planned. Today the database itself is portable — one encrypted DuckDB file per profile, queryable with any DuckDB client.
 
 **What's still rough:** The install path is still `git clone` + `uv` + `make setup`. No visual UI yet — see the tracker persona below.
 

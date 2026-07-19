@@ -50,8 +50,8 @@ Related specs:
    absorbs unanticipated instruments without one.
 3. **Identity resolution chain.** Free-text or partial security references resolve to
    a `security_id` via CUSIP/ISIN → ticker+exchange → name fuzzy, mirroring the
-   institution-resolution chain in `smart-import-financial.md`. Three rules adopted
-   from Portfolio Performance's battle-tested `SecurityCache` (127 broker importers):
+   institution-resolution chain in `smart-import-financial.md`. Three rules keep
+   the chain deterministic against real broker-export identifier quirks:
    ticker resolution tries the full reference as a stored ticker first — so a
    dotted ticker like `BRK.B` resolves by its own ticker — and only then falls back
    to stripping an exchange suffix (`UMAX.AX` → `UMAX`, disambiguated by the
@@ -470,10 +470,9 @@ adjustments. Those are out of scope (wash sales belong to the `us_tax` package).
 ### Corporate actions
 
 Single-security actions are **typed ledger events applied at lot derivation** —
-never rewrites of historical rows (the pattern that left Portfolio Performance
-unable to model anything beyond splits for a decade) and never user-computed
-zero-and-refill pairs (the Beancount recipe whose own docs concede it destroys
-holding-period continuity):
+never rewrites of historical rows (rewrites destroy replayability and cap the
+action vocabulary at whatever the rewrite encodes) and never user-computed
+zero-and-refill pairs (which destroy holding-period continuity):
 
 - `split` carries the split **multiplier** `M` (new shares per old share — `2`
   for 2:1, `1.5` for 3:2, `0.5` for a 1:2 reverse split) in its `quantity`
@@ -496,9 +495,8 @@ holding-period continuity):
   without proceeds (no realized gain).
 
 **Two-security actions** (merger, spin-off, crypto-to-crypto trade) are expressed
-as **decomposed leg pairs sharing an `event_group_id`** — the shape Rotki ships
-(paired SPEND/RECEIVE with a group identifier) and Portfolio Performance's 2026
-corporate-action redesign converges on (linked N-ary entry, ratio-derived basis):
+as **decomposed leg pairs sharing an `event_group_id`** — paired out/in legs
+carrying a group identifier, with basis derived from the exchange ratio:
 
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
@@ -542,12 +540,11 @@ data is incomplete, on either side of a lot's life:
   oversold disposal would.
 
 CLI/MCP surfaces flag both conditions (`investments lots`/`investments gains`
-warnings + response-envelope `warnings`). This adopts the pattern Rotki ships
-(structured missing-acquisition records surfaced to review) over the
-log-and-continue degradation Portfolio Performance uses. Watch their documented
-false-positive class: the same economic security arriving under two
-identifiers — which the surrogate-key resolution
-chain exists to prevent.
+warnings + response-envelope `warnings`). Structured missing-acquisition
+records surfaced for review beat log-and-continue degradation: silent
+degradation hides basis errors until tax time. The known false-positive
+class — the same economic security arriving under two identifiers — is
+exactly what the surrogate-key resolution chain exists to prevent.
 
 ## Plaid Investments Readiness
 
@@ -971,8 +968,8 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
     semantics across manual/Plaid/OFX; the entry surfaces write the pair
     atomically. Income reports sum income types only.
 11. **Two-security corporate actions are event-grouped leg pairs**, not new
-    enum values — the shape shipped by Rotki and converged on by Portfolio
-    Performance's redesign after their split-as-rewrite dead end.
+    enum values — grouping keeps the action enum closed and the basis math
+    replayable from the ledger.
 12. **Per-provider raw tables** (`raw.manual_investment_transactions` now;
     provider tables in importer children) — coherent with the cash-transaction
     pipeline; a shared generic raw table was a documented-pattern miss in the

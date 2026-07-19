@@ -11,7 +11,7 @@ Five contracts hold across every surface, every release.
 
 - **Encrypted at rest by default.** AES-256-GCM on the DuckDB file, Argon2id KDF for passphrase mode, OS keychain integration for auto-key mode. No "demo mode" plaintext path. See [`docs/guides/database-security.md`](guides/database-security.md).
 - **Every number is traceable.** Numbers in `core.*` and `reports.*` are produced by named SQLMesh models from `raw.*` source rows. `meta.fct_transaction_provenance` records the cross-source lineage; `meta.model_freshness` records model-level recency. No service snapshots derived state into a side table.
-- **CLI and MCP are peer surfaces.** Every managed capability is reachable from both, through the same service layer, the same response shape (`ResponseEnvelope`), and the same redaction rules. The CLI is a first-class agent surface, not a human-only fallback. Direct SQL is deliberately different — an operator surface with a raw-row contract. See [`docs/specs/moneybin-capabilities.md`](specs/moneybin-capabilities.md) for the per-capability map.
+- **CLI and MCP are peer surfaces.** Both drive the same service layer with the same response shape (`ResponseEnvelope`) and the same redaction rules; parity is the contract, and the per-capability map in [`docs/specs/moneybin-capabilities.md`](specs/moneybin-capabilities.md) tracks the few operations that lag on one side. The CLI is a first-class agent surface, not a human-only fallback. Direct SQL is deliberately different — an operator surface with a raw-row contract.
 - **PII never appears in logs.** Services log record counts, IDs, and status codes — never amounts, descriptions, or account numbers. `SanitizedLogFormatter` is an always-on safety net on every handler, not a license to be careless.
 - **Schema migrations are idempotent and reversible-by-snapshot.** Versioned migrations track in `app.schema_migrations`, self-heal stuck rows when the migration body changes, and respect the `no_auto_upgrade` gate. `moneybin db backup` / `moneybin db restore` provide the recovery path for `app.*` state that isn't derivable from `raw.*`.
 
@@ -116,7 +116,7 @@ Single-writer per profile. The encrypted DuckDB file is the unit of sync — Git
 
 ### Data portability
 
-The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. A first-class `moneybin export` (CSV / Beancount / SQL dump) is planned but not yet shipped; today the read-only SQL surface plus a DuckDB `COPY ... TO` is the working path. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
+The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. A first-class `moneybin export` (CSV / Beancount / SQL dump) is planned; today the working path is the read-only SQL surface plus a DuckDB `COPY ... TO`. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
 
 ## Primitives you'll touch
 

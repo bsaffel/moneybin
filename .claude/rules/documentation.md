@@ -26,7 +26,7 @@ issue, roadmap item, or an honest statement that the work is planned. Treat any
 information already committed publicly as public history: moving it to
 `private/` prevents future exposure but does not erase it from Git history.
 
-## External Product References
+## External product references
 
 Public comparison, audience, compatibility, migration, and integration guides
 may name an external product when that helps a user make a practical choice.

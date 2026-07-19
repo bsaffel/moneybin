@@ -36,6 +36,11 @@ would need a persisted per-transaction registry that survives every rebuild,
 adding hot mutable state to the highest-volume entity and weakening
 derive-from-raw where it matters most.
 
+The instability is a source-protocol fact, not a hypothetical: Plaid mints a
+new `transaction_id` when a pending transaction posts, forwarding the old one
+via `pending_transaction_id` — so even a provider-assigned id does not survive
+the pending→posted boundary.
+
 The durable alternative is forwarding. When a source record changes identity
 as it moves from pending to posted, the old reference must resolve to the new
 one. External-reference durability is therefore achieved by **resolution, not

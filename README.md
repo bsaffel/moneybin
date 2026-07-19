@@ -31,9 +31,11 @@ same tables.
 ![Downloaded Files, Linked Accounts, and Connected Sheets flow into an
 Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
 
-Local only. No telemetry. No vendor account. Account and routing numbers leave
-the machine only as masked placeholders (`****1234`) — no consent tier unlocks
-the real value. AGPL-3.0, so it stays that way.
+Local only. No telemetry. No vendor account. Account and routing numbers in
+typed fields leave the machine only as masked placeholders (`****1234`) — no
+consent tier unlocks the real value, and what free text can carry is
+[documented](docs/guides/what-the-ai-sees.md), not hand-waved. AGPL-3.0, so it
+stays that way.
 
 ## Ask your money anything
 
@@ -41,8 +43,9 @@ the real value. AGPL-3.0, so it stays that way.
 uv run moneybin mcp install --client claude-code   # or claude-desktop, cursor, gemini-cli, codex, ...
 ```
 
-One command wires the MCP server into the AI client you already use. Then ask,
-in your own words:
+One command — run from the project checkout the [next
+section](#sixty-seconds-on-synthetic-data) sets up — wires the MCP server into
+the AI client you already use. Then ask, in your own words:
 
 - *"What changed in my dining spending over the last three months, and which
   merchants explain it?"*
@@ -53,9 +56,11 @@ That last one is the point: the assistant queries the same tables the CLI
 reads, so an answer is a query you can rerun — not a paragraph you have to
 trust.
 
-The boundary, plainly: the MCP server runs locally and sends nothing anywhere.
-The AI client you connect is what talks to a model provider — a question to a
-cloud-hosted assistant shares whatever data the answer required. LLM-assisted
+The boundary, plainly: the MCP server runs locally and sends no telemetry and
+no model calls of its own — the `sync` and Sheets tools reach only the
+endpoints you configure. The AI client you connect is what talks to a model
+provider: a question to a cloud-hosted assistant shares whatever data the
+answer required. LLM-assisted
 categorization is opt-in and strips amounts, dates, and account identifiers
 before the prompt leaves. Details: [threat model](docs/guides/threat-model.md).
 
@@ -111,6 +116,7 @@ Create a real profile and point it at an export:
 
 ```bash
 uv run moneybin profile create personal
+uv run moneybin profile switch personal                 # demo left itself active
 uv run moneybin import files ~/Downloads/checking.qfx   # OFX / QFX / QBO
 uv run moneybin import files ~/Downloads/history.csv    # CSV / Excel / Parquet
 uv run moneybin reports spending

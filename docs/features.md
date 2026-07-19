@@ -131,7 +131,7 @@ MoneyBin is built on the assumption that you'll want to track your money your wa
 
 These are visible gaps a migrant or agent author will notice. See [Roadmap](roadmap.md) for the full milestone view.
 
-- **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit. Planned, not shipped.
+- **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit.
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
 - **Investment price feeds and net-worth integration** — Market-valued holdings and unrealized gain/loss (needs a price feed) and folding investment positions into net worth. The ledger, tax lots, four-method cost basis, and realized gain/loss (1099-B surface) already shipped — see [Investments](#investments) above. Planned (core, not a package).
 - **Multi-currency** — Original currency is now captured correctly from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. A home-currency setting, display conversion, a guard against silently blending currencies in reports, and FX gain/loss are still planned.

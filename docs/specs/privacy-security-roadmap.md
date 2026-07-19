@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-12 -->
+<!-- Last reviewed: 2026-07-19 -->
 # Privacy & Security Posture
 
 MoneyBin is local-first today. This page states the current trust boundary; it

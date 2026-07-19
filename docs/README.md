@@ -42,7 +42,7 @@ Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- La
 For builders: start with the MCP server guide. The client-setup links are for end users.
 
 - **[MCP server](guides/mcp-server.md)** — The builder doc. Tool catalog, response envelope, sensitivity tiers, latency and cost guidance for planning tool budgets.
-- **[MCP prompts](reference/prompts/)** — The six conversation starters the server registers: monthly review, categorization triage, rule review, onboarding, curation.
+- **[MCP prompts](reference/prompts/)** — The seven conversation starters the server registers: monthly review, categorization triage, rule review, onboarding, two curation flows, and sync review.
 - **[Setting up Claude Desktop](guides/setting-up-claude-desktop.md)** — The end-user happy path: install, one `mcp install` command, restart, ask a first question.
 - **[MCP clients](guides/mcp-clients.md)** — Per-client setup for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex, and the ChatGPT desktop app (plus why ChatGPT on the web can't connect yet).
 - **Extending the server** — See [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) for the recipe (service, decorator, CLI peer, tests).

@@ -42,12 +42,18 @@ publish. Availability, not promotion.
 | **M1H, M1Q** | Import confirmation and contributor extension contracts | 🚧 — [smart-import-confirmation.md](specs/smart-import-confirmation.md), [extension-contracts.md](specs/extension-contracts.md) |
 | **M1K** | Multi-currency (capture shipped; conversion staged on top) | 🚧 — [multi-currency.md](specs/multi-currency.md) |
 | **M1L–M1P** | Recovery completion, pipeline reconciliation, export bundle, anonymized fixtures | 🚧/📐/🗓️ per increment — see the [spec index](specs/INDEX.md) |
+| **M1S–M1W** | Cross-source account, merchant, and category identity resolution; category taxonomy audit | ✅ shipped |
+| **M1R, M1X** | Format-compatibility fixtures; account subtype detail and Plaid liabilities | 🗓️ planned |
 | **M2A–M2B** | Curated reports plus net-worth and balance tracking | ✅ shipped |
 | **M2C–M2P** | Budgets, recurring review, goals, projections, packages, richer report lineage | 📐/🗓️ per increment — see the [spec index](specs/INDEX.md) |
 | **M3A** | Safe evaluator path: `moneybin demo` and first-run | 🚧 demo shipped; first-run work remains |
-| **M3B** | Packaging and tester distribution | 🚧 release automation in place; no published package yet |
+| **M3B** | Packaging and tester distribution (PyPI first; brew and `.mcpb` follow) | 🚧 release automation in place; no published package yet |
 | **M3C** | Local web UI for review, data quality, accounts, reports | 📐 — [ui-architecture.md](specs/ui-architecture.md) |
-| **M3D, M3H, M3J** | Remote MCP, opt-in hosted tier, self-host operations | 🗓️ planned |
+| **M3D, M3H, M3J** | Remote MCP with auth (unlocks ChatGPT web and claude.ai connectors), opt-in hosted tier, self-host operations | 🗓️ planned |
+| **M3E–M3G, M3I** | Migration guides, doc polish and landing, agent context resource, extension contributor UX | 🚧/🗓️ per increment |
+| **M3K–M3M** | CLI/MCP UX standards, shared UI architecture, MCP App surface | 📐/🗓️ per increment |
+| **M3N** | MCP first-run setup (elicitation-driven profile creation) | ✅ shipped |
+| **M3O** | First-party directory listings (Claude Connectors Directory, ChatGPT Apps) | 📐 — [ai-client-compatibility.md](specs/ai-client-compatibility.md) |
 
 Status marks: ✅ shipped · 🚧 in progress · 📐 designed (a public spec exists) ·
 🗓️ planned (direction set, implementation not started).
