@@ -28,6 +28,25 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         "amount_zscore_category": DataClass.AGGREGATE,
         "is_top_100": DataClass.AGGREGATE,
     },
+    # Both z-scores ARE a direct function of amount — unlike
+    # recurring_subscriptions.amount_bucket, which only scopes a window
+    # partition — so "it is computed from amount" cannot be the argument. What
+    # makes them safe is the standardization: the model computes
+    # (ABS(amount) - median_abs) / (1.4826 * MAD) against the group's own robust
+    # location and scale, and projects NEITHER statistic as a column.
+    class_downgrades={
+        "amount_zscore_account": "modified z-score standardized against the "
+        "per-account median and MAD, neither of which this view projects. The "
+        "column is an affine image of ABS(amount) with both constants unknown "
+        "to the caller: it fixes the transaction's position within its "
+        "account's spread, denominated in units of that spread, and inverting "
+        "it to an amount requires first recovering the account's location and "
+        "scale",
+        "amount_zscore_category": "same construction against the per-category "
+        "median and MAD (NULL below 5 transactions in the category); safe for "
+        "the same reason — the standardizing statistics are not columns of "
+        "this view, so the ratio does not carry the amount that produced it",
+    },
 )
 def large_transactions(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

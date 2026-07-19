@@ -123,6 +123,7 @@ Owned by SQLMesh. Mix of views and tables. **One canonical table per real-world 
 | `core.fct_transaction_lines` | One row per transaction line | Splits expanded for line-level analysis |
 | `core.fct_balances` | One row per balance snapshot | Snapshot balances from `raw.*_balances` reconciled across sources |
 | `core.fct_balances_daily` | One row per (account, date) | End-of-day balance, gap-filled (Python model, not SQL) |
+| `core.uncategorized_queue` | One row per uncategorized transaction | Curator-impact queue (`ABS(amount) × age_days`); service-internal — reached via `moneybin transactions categorize pending` / MCP `transactions_categorize_pending`, not a `reports.*` view |
 
 **Identity:** `transaction_id` is a deterministic SHA-256 hash. For unmatched rows, it's a hash of `(source_type, source_transaction_id, account_id)`. For matched groups, it's a hash of the sorted set of those tuples — so reimporting the same two sources produces the same `transaction_id` every time. See `.claude/rules/identifiers.md` for the full strategy.
 
@@ -161,7 +162,6 @@ One view per CLI/MCP report. Read-only by design; the privacy middleware enforce
 | `reports.cash_flow` | `moneybin reports cashflow` / `reports_cashflow` |
 | `reports.spending_trend` | `moneybin reports spending` / `reports_spending` |
 | `reports.recurring_subscriptions` | `moneybin reports recurring` / `reports_recurring` |
-| `reports.uncategorized_queue` | `moneybin reports uncategorized` / `reports_uncategorized` |
 | `reports.large_transactions` | `moneybin reports large` / `reports_large_transactions` |
 | `reports.merchant_activity` | `moneybin reports merchants` / `reports_merchant_activity` |
 | `reports.balance_drift` | `moneybin reports balance-drift` / `reports_balance_drift` |

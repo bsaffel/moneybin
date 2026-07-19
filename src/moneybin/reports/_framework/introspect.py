@@ -63,14 +63,17 @@ def build_spec(
     view: TableRef,
     classes: Mapping[str, DataClass],
     domain: str | None = None,
+    class_downgrades: Mapping[str, str] | None = None,
 ) -> ReportSpec:
     """Introspect ``fn`` into a :class:`ReportSpec`.
 
     Raises:
         ValueError: if the runner has no docstring, its first parameter is not
             ``db``, any non-``db`` parameter is not keyword-only or collides with
-            a reserved CLI option (``output``/``quiet``), or ``classes`` is empty
-            (every report must declare its column privacy contract).
+            a reserved CLI option (``output``/``quiet``), ``classes`` is empty
+            (every report must declare its column privacy contract), or
+            ``class_downgrades`` names a column absent from ``classes`` or
+            carries an empty reason (a stale or unexplained downgrade).
     """
     if view.schema != "reports":
         raise ValueError(
@@ -82,6 +85,20 @@ def build_spec(
             f"Report {name!r} must declare a non-empty `classes` map "
             "(the output-column privacy contract)."
         )
+    downgrades = dict(class_downgrades or {})
+    for column, reason in downgrades.items():
+        if column not in classes:
+            raise ValueError(
+                f"Report {name!r} class_downgrades names {column!r}, which is "
+                "not in `classes` (a downgrade for a column that doesn't exist "
+                "is stale — remove it)."
+            )
+        if not reason.strip():
+            raise ValueError(
+                f"Report {name!r} class_downgrades[{column!r}] needs a non-empty "
+                "reason explaining why the declared class is genuinely safe "
+                "below its derived floor."
+            )
 
     doc = inspect.getdoc(fn)
     if not doc:
@@ -133,6 +150,7 @@ def build_spec(
         params=tuple(param_specs),
         examples=examples,
         domain=domain,
+        class_downgrades=downgrades,
     )
 
 

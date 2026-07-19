@@ -341,10 +341,18 @@ def test_unmapped_plaid_type_still_yields_a_type(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    account_type, _ = _dim_type(db, "canon-plaid-nv")
+    account_type, account_subtype = _dim_type(db, "canon-plaid-nv")
     assert account_type is not None, (
         "an unmapped Plaid type resolved to NULL, which drops its balances "
         "from fct_balances and therefore from net worth"
+    )
+    assert account_type == "other", (
+        f"expected the canonical 'other', got {account_type!r} — the fallback "
+        "must stay inside the declared closed vocabulary, not leak raw text"
+    )
+    assert account_subtype == "crypto_wallet", (
+        "the unmapped source spelling must survive in account_subtype so "
+        "bucketing it as 'other' loses no information"
     )
 
 

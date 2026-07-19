@@ -74,22 +74,32 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 
 ### `_id`-suffixed columns
 
+> **Correction (2026-07-18).** Every `account_id` row below was originally
+> audited `ACCOUNT_IDENTIFIER` (masked). Canonical account identity
+> ([`account-identity-resolution.md`](account-identity-resolution.md)
+> Decisions 1 and 6) later reclassified `account_id` to `RECORD_ID`: it is a
+> deliberately opaque, minted `uuid4[:12]` surrogate, never the upstream
+> institution's account number, so passing it through unmasked is correct.
+> The PII that used to live in `account_id` now lives in
+> `app.account_links.ref_value` (masked per `ref_kind`). Rows below are
+> corrected to match the live registry in `src/moneybin/privacy/taxonomy.py`.
+
 | (schema, table) | column | class | justification |
 |---|---|---|---|
-| (app, account_settings) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID; PK that ties user settings to a real institution account. |
+| (app, account_settings) | account_id | RECORD_ID | opaque minted surrogate (not the account number); PK that ties user settings to a canonical `dim_accounts.account_id`. |
 | (app, audit_log) | audit_id | RECORD_ID | internal full UUID4 hex per `.claude/rules/identifiers.md`; not externally meaningful. |
 | (app, audit_log) | parent_audit_id | RECORD_ID | self-FK to `audit_id`; same class as the target. |
 | (app, audit_log) | target_id | RECORD_ID | references arbitrary internal IDs (transaction, rule, merchant); all are RECORD_ID-class in their home tables. |
-| (app, balance_assertions) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID; same value as `dim_accounts.account_id`. |
+| (app, balance_assertions) | account_id | RECORD_ID | opaque minted surrogate; same value as `dim_accounts.account_id`. |
 | (app, budgets) | budget_id | RECORD_ID | 12-char truncated UUID4 per identifiers.md; app-created entity with no natural key. |
 | (app, budgets) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write); same class as the referenced column when held by a mutation table. |
-| (app, categorization_rules) | account_id | ACCOUNT_IDENTIFIER | optional account-bound external ID restricting the rule. |
+| (app, categorization_rules) | account_id | RECORD_ID | opaque minted surrogate restricting the rule to one canonical account. |
 | (app, categorization_rules) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
 | (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
 | (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
-| (app, match_decisions) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID. |
-| (app, match_decisions) | account_id_b | ACCOUNT_IDENTIFIER | second account in a transfer pair; same class as account_id. |
+| (app, match_decisions) | account_id | RECORD_ID | opaque minted surrogate. |
+| (app, match_decisions) | account_id_b | RECORD_ID | second account in a transfer pair; same class as account_id. |
 | (app, match_decisions) | match_id | RECORD_ID | internal UUID PK for the decision row. |
 | (app, match_decisions) | source_transaction_id_a | RECORD_ID | transaction-level external ID (FITID, Plaid transaction_id, content hash); transaction-bound, not account-bound — rule 1 third bullet. |
 | (app, match_decisions) | source_transaction_id_b | RECORD_ID | same as `_a`. |
@@ -115,16 +125,16 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (core, bridge_transfers) | credit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |
 | (core, bridge_transfers) | debit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |
 | (core, bridge_transfers) | transfer_id | RECORD_ID | UUID; also FK to `app.match_decisions.match_id`. |
-| (core, dim_accounts) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID issued by the upstream institution; ties to a real account. |
+| (core, dim_accounts) | account_id | RECORD_ID | opaque minted `uuid4[:12]` surrogate, not the upstream institution's account number. |
 | (core, dim_categories) | category_id | CATEGORY | UNIONs seed (semantic slug) and `user_categories` (UUID4) rows; classified as CATEGORY because the view's role is categorical reference regardless of the underlying generator and the dominant population is slug-keyed seeds. |
 | (core, dim_merchants) | merchant_id | RECORD_ID | UUID hex per identifiers.md; thin view over `app.user_merchants`. |
-| (core, fct_balances) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID. |
-| (core, fct_balances_daily) | account_id | ACCOUNT_IDENTIFIER | FK to `dim_accounts.account_id`. |
-| (core, fct_transaction_lines) | account_id | ACCOUNT_IDENTIFIER | FK to `dim_accounts.account_id`. |
+| (core, fct_balances) | account_id | RECORD_ID | opaque minted surrogate; same class as `dim_accounts.account_id`. |
+| (core, fct_balances_daily) | account_id | RECORD_ID | FK to `dim_accounts.account_id`; same class as the referenced column. |
+| (core, fct_transaction_lines) | account_id | RECORD_ID | FK to `dim_accounts.account_id`; same class as the referenced column. |
 | (core, fct_transaction_lines) | line_id | RECORD_ID | `'whole'` sentinel or `split_id` (truncated UUID4); never account-bound. |
 | (core, fct_transaction_lines) | transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`. |
 | (core, fct_transaction_lines) | transfer_pair_id | RECORD_ID | FK to `bridge_transfers.transfer_id`. |
-| (core, fct_transactions) | account_id | ACCOUNT_IDENTIFIER | same value as `dim_accounts.account_id`; "one concept, one column name" — same class everywhere. |
+| (core, fct_transactions) | account_id | RECORD_ID | opaque minted surrogate; same value as `dim_accounts.account_id` — "one concept, one column name" — same class everywhere. |
 | (core, fct_transactions) | pending_transaction_id | RECORD_ID | source-provided ID of the pending transaction this row resolved; transaction-bound, not account-bound. |
 | (core, fct_transactions) | transaction_id | RECORD_ID | content-hash gold key per identifiers.md. |
 | (core, fct_transactions) | transfer_pair_id | RECORD_ID | FK to `bridge_transfers.transfer_id`. |
@@ -349,13 +359,30 @@ The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns 
 | `MIN`, `MAX`, `FIRST`, `LAST`, `ANY_VALUE` over `col` | Source column's class — surfaces an individual value |
 | Multi-column expression (`CONCAT`, `+`, `\|\|`) | `max(tier)` over all referenced columns; highest-tier class |
 | Literal-only (`'hi'`, `1`) | `AGGREGATE` (LOW) |
+| `COLUMNS('regex')`, `COLUMNS(c -> …)` | Conservative fallback — sqlglot models the argument, never the columns DuckDB expands it to |
+| `*` that survived `qualify()` (a `PIVOT` / `UNPIVOT` / `SUMMARIZE` source) | Conservative fallback — the output columns are computed at execution time and are not in the catalog |
+| Whole-row pseudo-column (`SELECT dim_accounts FROM core.dim_accounts`), `UNNEST` of one | Conservative fallback — the projection names no column but returns all of them |
 | Unresolvable | Conservative fallback (see below) |
+
+A projection is classified LOW **only when we positively established what it
+is.** "Contains no column reference" is not that proof: it is equally true of a
+literal and of an expression we could not decompose, and the last three rows
+above are the second kind.
 
 5. **Query tier** — `derive_query_tier(output_classes)` takes the max `Tier` across all output columns.
 
 ### Conservative fallback
 
-When `resolve_output_classes` cannot resolve a projection (unresolvable alias, correlated subquery residual, or column absent from the snapshot), it falls back to the **max tier** over all input columns reachable via `collect_input_columns`. If no input column resolves, the fallback is `AGGREGATE` (LOW). This means the resolver over-redacts rather than leaks — an unresolvable query touching CRITICAL input columns is treated as CRITICAL output.
+When `resolve_output_classes` cannot resolve a projection (unresolvable alias, correlated subquery residual, opaque construct, or column absent from the snapshot), it takes the higher of two floors:
+
+1. **Max tier over input columns** — every column reachable via `collect_input_columns`, across every scope in the query. Precise where the query names its columns.
+2. **Max tier over tables in scope** — every column of every classified table the query reads, whether or not the query names it. This covers the projections that name no column at all (the whole-row pseudo-column, `COLUMNS(…)`, `PIVOT`/`UNPIVOT`/`SUMMARIZE`), where floor 1 legitimately finds nothing and would otherwise say `AGGREGATE` (LOW).
+
+Floor 2 applies only when it *raises* the tier — floor 1 names a class the query actually referenced, so it wins any tie. When floor 2 does win at CRITICAL it reports `UNRESOLVED` rather than a specific CRITICAL class: it established a tier bound, not a column identity, and the CRITICAL transforms are not interchangeable (`ACCOUNT_IDENTIFIER` masks *partially*, which on an unidentified value would publish its last four characters).
+
+If the query reads no classified table at all — a projection over a `VALUES` list, whose values are the caller's own literals rather than database data — the fallback is `AGGREGATE` (LOW). This means the resolver over-redacts rather than leaks.
+
+A second fail-closed path sits below lineage entirely, in `sql_query`: result columns are matched to classes **by name**, and a DuckDB result column absent from the lineage output means lineage never resolved it, so it takes `UNRESOLVED` too. It must not fall back to the max class *present* — the classes that happened to resolve cannot bound the classes that did not, and `COLUMNS`/`PIVOT`/`UNPIVOT`/`SUMMARIZE` each emit many runtime columns from a single projection.
 
 A `WARNING` log line records every fallback so operators can identify queries the resolver doesn't fully handle.
 

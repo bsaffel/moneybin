@@ -1,9 +1,9 @@
 # Reports Foundation — One Contract, Coherent Surface
 
 > Child spec of [`reports-overview.md`](reports-overview.md) (milestone **M2P.1**).
-> Status: draft
+> Status: implemented
 > Type: Feature
-> Last updated: 2026-07-18 — initial spec.
+> Last updated: 2026-07-18 — implemented; R1–R6 shipped on `feat/reports-foundation`.
 > Companions: [ADR-013](../decisions/013-report-classification-declared.md)
 > (declared classification), [`privacy-data-classification.md`](privacy-data-classification.md),
 > [`queryable-internal-schemas.md`](queryable-internal-schemas.md),
@@ -23,28 +23,41 @@ Implements decisions **D3**, **D4**, and **D5** from the umbrella.
 ## Background: what actually went wrong in #330
 
 PR #330 widened `sql_query` to the whole `reports` schema. The declared-class
-map covered 6 of 8 deployed views, and `reports.uncategorized_queue.account_id`
-came back unmasked.
+map covered 6 of 8 deployed views — `net_worth` and `uncategorized_queue` were
+uncovered.
 
-The missing declaration was the symptom. The mechanism is that **two fallbacks
-disagree about what an undeclared column means**:
+The missing declaration was the symptom, but not on the column the original
+telling of this story named. `uncategorized_queue.account_id` returning
+unmasked was not itself wrong: `account_id` is a deliberately opaque minted
+surrogate classified `RECORD_ID` (LOW) everywhere in `CLASSIFICATION` (see
+[`account-identity-resolution.md`](account-identity-resolution.md) Decisions 1
+and 6), so passing it through unmasked is correct, not a leak. What the
+coverage gap actually let through was **tier**, on different columns: every
+column in the two uncovered views fell through to `AGGREGATE` (LOW), including
+`net_worth`/`total_assets`/`total_liabilities` (`BALANCE`, HIGH) on
+`net_worth` and `amount`/`priority_score` (`TXN_AMOUNT`, HIGH) on
+`uncategorized_queue` — five HIGH-tier financial columns served at LOW.
+
+The mechanism is that **two fallbacks disagreed about what an undeclared
+column means**:
 
 | Path | Undeclared column resolves to | Where |
 |---|---|---|
 | Report tool (`reports_*`) | `ACCOUNT_IDENTIFIER` → masked | `reports/_framework/classify.py` (`_FAIL_CLOSED`) |
-| `sql_query` | `AGGREGATE` (LOW) → **clear** | `privacy/sql_lineage.py` (`_fallback_class`) |
+| `sql_query` (pre-fix) | `AGGREGATE` (LOW) → **clear** | `privacy/sql_lineage.py`'s single fallback (R1 below splits it in two) |
 
-The report framework already reasons about this correctly and calls its
-fallback "defense in depth." `sql_query` does not. Until that asymmetry is
-fixed, every future coverage gap is a silent leak rather than a visible
+The report framework already reasoned about this correctly and called its
+fallback "defense in depth." `sql_query` did not. Until that asymmetry was
+fixed, every future coverage gap was a silent leak rather than a visible
 annoyance — and wiring `discover_reports()` for package reports (M2M) is
-exactly the event that re-arms it.
+exactly the event that would have re-armed it.
 
 ## Requirements
 
 ### R1 — Fail closed on coverage gaps, not on unresolved expressions
 
-`_fallback_class` must distinguish two cases that it currently conflates:
+`sql_lineage.py`'s undeclared-column fallback must distinguish two cases that
+it previously conflated:
 
 1. **An expression we could not resolve** — an alias we couldn't trace, a
    computed projection. Keep today's behaviour: take the max tier of the
@@ -52,12 +65,21 @@ exactly the event that re-arms it.
    must stay permissive, or the BI surface over-masks constantly.
 2. **A column that resolved to a real table in a schema owed complete
    declarations, which has no declaration.** This is a *coverage gap*: our
-   registry is wrong, not the query. Fail closed — classify as
-   `ACCOUNT_IDENTIFIER` (the `Tier.CRITICAL` class `redact_records` masks) and
-   log a warning naming the `(schema, table, column)`.
+   registry is wrong, not the query. Fail closed and log a warning naming the
+   `(schema, table, column)`.
 
 The distinction is the requirement. A blanket fail-closed would break case 1
 and is explicitly **not** what this asks for.
+
+**Shipped as:** case 1 stays `_scope_input_max`/`_conservative_floor`
+(unchanged); case 2 is the new `_coverage_gap_class`, both in
+`src/moneybin/privacy/sql_lineage.py`. Case 2 fails closed to
+`DataClass.UNRESOLVED` (`FAIL_CLOSED_CLASS`), not `ACCOUNT_IDENTIFIER` as
+first proposed here — `UNRESOLVED` masks the value WHOLE rather than
+partially, which is the right answer for a column lineage never positively
+classified (a partial `"****" + value[-4:]` mask would surface characters of a
+value we cannot name). See the `DataClass.UNRESOLVED` docstring in
+`taxonomy.py`.
 
 **Why this comes first:** it converts every subsequent derivation miss from a
 silent leak into visible over-masking. Everything after R1 is an ergonomics
@@ -117,6 +139,23 @@ Mechanism, with the constraints the spike established:
 columns cannot be resolved, the check fails; it does not quietly emit
 `AGGREGATE`.
 
+**Shipped as:** the upstream snapshot is built from `CLASSIFICATION`
+(`_upstream_snapshot()` in `report_class_derivation.py`), not by walking
+on-disk model sources as prescribed above. This is sound, not a shortcut:
+`CLASSIFICATION` completeness against the live DuckDB catalog is already
+CI-enforced, so for every `core`/`app` column it already *is* the catalog —
+and it is necessary, not merely convenient, because `app.balance_assertions`
+(read by `balance_drift`) is a migration-created table with no SQLMesh model
+at all, so there is no on-disk model source to walk for it. Python models get
+no separate `ast`-based path either: `_load_model()` raises
+`ReportDerivationError` on any non-`SqlModel`, the same "out of scope for a
+connectionless, source-parsing deriver" treatment `derive_core_view_classes`
+gives every Python model under `core/*.py`. The requirement this section
+exists to satisfy — one classifier, derived not hand-asserted, CI-verified,
+with no silent fallback — is unchanged; only the prescribed mechanism for
+building the upstream snapshot and handling non-SQL models was revised during
+implementation.
+
 ### R3 — Provenance sets a floor an author may lower with a reason
 
 Derivation is right for pass-through columns and systematically
@@ -124,6 +163,20 @@ Derivation is right for pass-through columns and systematically
 mode, so an author may downgrade a column below its derived floor **with an
 explicit inline reason**. CI fails unless every declared column is either
 derivation-matched **or** carries an explicit downgrade.
+
+The floor is ordered on **`(tier, mask strength)`**, not tier alone. Tier alone
+is insufficient at CRITICAL: all four CRITICAL classes share `Tier.CRITICAL`
+but `ROUTING_NUMBER`/`UNRESOLVED` mask wholly while
+`ACCOUNT_IDENTIFIER`/`INSTITUTION_ACCOUNT_NUMBER` mask partially
+(`"****" + value[-4:]`), and runtime masking keys off the **declared** class —
+so declaring `ACCOUNT_IDENTIFIER` where derivation says `ROUTING_NUMBER` sits
+at the same tier yet publishes the real routing number's last four digits.
+Below CRITICAL every transform is passthrough, so strength is constant there
+and the ordering reduces to the tier comparison; over-declaring across tiers
+stays safe and stays silent. Strength is measured from `redaction.py`'s
+`_TRANSFORMS` (`redaction.mask_strength`) rather than from a second
+hand-maintained list, so adding a `DataClass` cannot weaken the guard without
+failing a test.
 
 Scope note: the existing classifier already handles the cases that would
 otherwise need downgrades most often. `COUNT(*)`/`COUNT(DISTINCT x)` resolve to
@@ -148,17 +201,22 @@ current — mechanically produced, so it cannot drift the way the bridge could.
 ### R5 — `reports.*` contains only user-facing reports
 
 Per D3, membership in `reports.*` *is* the definition of "is a report."
-`reports.uncategorized_queue` is service-internal — its only runtime reader is
-`services/categorization/queries.py`, backing `transactions_categorize_pending`.
-It moves to `core`.
+`uncategorized_queue` is service-internal — its only runtime reader is
+`services/categorization/queries.py`, backing `transactions_categorize_pending`
+— so it moved out of `reports.*` into `core.uncategorized_queue`.
 
 `core` rather than `prep`, because `prep` is not in `_ALLOWED_QUERY_SCHEMAS`;
 moving there would silently remove a view users can query today. `core` keeps
-it queryable and shifts its coverage to the `CLASSIFICATION` registry, where
-`account_id` must be declared `ACCOUNT_IDENTIFIER` — verified by a test, since
-this is the exact column that leaked.
+it queryable and shifts its coverage to the `CLASSIFICATION` registry.
+`account_id` is declared `RECORD_ID` there, matching all 15 other `account_id`
+columns in `CLASSIFICATION` (spec D6): it is a deliberately opaque minted
+surrogate, not PII, so it is correct for it to pass through unmasked — the
+bridge's `ACCOUNT_IDENTIFIER` declaration for this column was a mistaken
+premise, not the thing #330 actually needed fixed. What #330's coverage gap
+genuinely broke was never having a declaration to compare against AT ALL,
+which R2/R3's derivation-and-verification now forecloses structurally.
 
-Known touch points (the move is mechanical but wide):
+Touch points the move updated (mechanical but wide):
 
 - `src/moneybin/tables.py` — the `TableRef` constant's schema, and therefore its
   `full_name`. `tests/moneybin/test_tables.py` pins `EXPECTED_INTERFACE` by
@@ -166,8 +224,9 @@ Known touch points (the move is mechanical but wide):
 - `services/categorization/queries.py` — the read, plus a `UserError` payload
   that embeds `full_name`, so observable error content changes.
 - ~20 hardcoded `reports.uncategorized_queue` strings across test fixture DDL,
-  scenario data, and docs — including a stale `docs/guides/data-pipeline.md`
-  reference to a CLI command and MCP tool that no longer exist.
+  scenario data, and docs were updated to `core.uncategorized_queue` —
+  including a stale `docs/guides/data-pipeline.md` reference to a CLI command
+  and MCP tool that no longer existed, which is now corrected.
 - `services/schema_catalog.py` — a hardcoded example query.
 
 ### R6 — A report-authoring rule
@@ -210,19 +269,25 @@ in M2P.3.
   DuckDB catalog rather than the declared registry — preserve that property; it
   is what makes the guard capable of catching an *undeclared* view.
 - **R3:** a deliberately downgraded column passes CI; an undeclared mismatch
-  fails.
-- **R5:** `core.uncategorized_queue.account_id` masks through `sql_query`; the
-  categorization surface still works end-to-end.
+  fails. Both directions of the equal-CRITICAL case are required: a declared
+  `ACCOUNT_IDENTIFIER` against a derived `ROUTING_NUMBER` must fail (equal
+  tier, weaker transform), while the reverse must pass — a tier-only comparison
+  passes both and is the specific blindness this covers. A below-CRITICAL
+  over-declaration must still pass, or the guard has tightened into noise.
+- **R5:** `core.uncategorized_queue.account_id` passes through unmasked via
+  `sql_query`, same as every other `account_id` column (`RECORD_ID`, spec D6)
+  — it does NOT mask; the categorization surface still works end-to-end.
 - Scenarios are not in the default gate — this changes data shape and schema
   membership, so `make test-scenarios` is required alongside `make check test`.
 
-## Open questions
+## Open questions (resolved)
 
-- **Where does the generated artifact for runner-less views live?** A generated
-  module under `reports/definitions/` mirrors the bridge it replaces, but if
-  M2P.3 resolves `net_worth` toward a runner, the file empties out and should be
-  deleted rather than kept as a permanent seam. Decide during implementation;
-  prefer whichever leaves less behind.
-- **Does the derived floor belong in the runner or beside it?** Inline in
-  `classes=` keeps one place to look; a separate generated baseline makes the
-  CI diff clearer. Lean inline — one place to look wins for authors.
+- **Where does the generated artifact for runner-less views live?** Shipped as
+  `src/moneybin/reports/definitions/_derived_classes.py`, mirroring the bridge
+  it replaces, regenerated via `make generate-report-classes`. If M2P.3
+  resolves `net_worth` toward a runner, the file empties out and should be
+  deleted rather than kept as a permanent seam.
+- **Does the derived floor belong in the runner or beside it?** Shipped
+  inline: `class_downgrades={...}` is a keyword on the same `@report`
+  decorator as `classes={...}` (`reports/_framework/contract.py`) — one place
+  to look, per the original lean.

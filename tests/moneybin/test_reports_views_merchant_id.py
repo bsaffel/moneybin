@@ -1,8 +1,11 @@
-"""Shape tests for reports.* models: merchant_id propagation.
+"""Shape tests for reports.*/core.uncategorized_queue models: merchant_id propagation.
 
-Four reports views project ``merchant_id`` alongside ``merchant_normalized``
-and aggregate on the FK; NULL merchant_id rows collapse into a single
-``'(uncategorized)'`` bucket.
+Four models project ``merchant_id`` alongside ``merchant_normalized`` and
+aggregate on the FK; NULL merchant_id rows collapse into a single
+``'(uncategorized)'`` bucket. Three (``merchant_activity``,
+``recurring_subscriptions``, ``large_transactions``) live in ``reports.*``;
+``uncategorized_queue`` moved to ``core.*`` (reports-foundation.md R5) but
+keeps the same shape contract.
 
 These tests read the model SQL files and assert structural properties
 (column present, GROUP/PARTITION key uses merchant_id). They do NOT run
@@ -18,6 +21,10 @@ from moneybin.database import SQLMESH_ROOT
 pytestmark = pytest.mark.unit
 
 _MODELS_DIR = SQLMESH_ROOT / "models" / "reports"
+# uncategorized_queue moved to core.* (reports-foundation.md R5) — it is
+# service-internal, not a user-facing report, but this shape test still
+# applies to it regardless of schema.
+_CORE_MODELS_DIR = SQLMESH_ROOT / "models" / "core"
 
 
 def _read(name: str) -> str:
@@ -77,8 +84,8 @@ class TestLargeTransactionsMerchantId:
 
 
 class TestUncategorizedQueueMerchantId:
-    """``uncategorized_queue`` projects merchant_id per row."""
+    """``core.uncategorized_queue`` projects merchant_id per row."""
 
     def test_projects_merchant_id(self) -> None:
-        content = _read("uncategorized_queue.sql")
+        content = (_CORE_MODELS_DIR / "uncategorized_queue.sql").read_text()
         assert "merchant_id," in content

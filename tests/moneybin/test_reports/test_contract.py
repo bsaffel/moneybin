@@ -262,3 +262,63 @@ def test_build_spec_rejects_quiet_reserved_param() -> None:
 
     with pytest.raises(ValueError, match="quiet"):
         build_spec(runner, name="r", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES)
+
+
+def test_build_spec_class_downgrades_defaults_to_empty() -> None:
+    spec = build_spec(
+        _sample, name="sample", view=REPORTS_MERCHANT_ACTIVITY, classes=_CLASSES
+    )
+    assert spec.class_downgrades == {}
+
+
+def test_build_spec_records_class_downgrades() -> None:
+    spec = build_spec(
+        _sample,
+        name="sample",
+        view=REPORTS_MERCHANT_ACTIVITY,
+        classes=_CLASSES,
+        class_downgrades={"value": "aggregate over amount; no single value leaks"},
+    )
+    assert spec.class_downgrades == {
+        "value": "aggregate over amount; no single value leaks"
+    }
+
+
+def test_build_spec_rejects_downgrade_for_unknown_column() -> None:
+    # A downgrade naming a column absent from `classes` is a stale declaration
+    # (e.g. the column was renamed or dropped) — must raise, not be ignored.
+    with pytest.raises(ValueError, match="class_downgrades"):
+        build_spec(
+            _sample,
+            name="sample",
+            view=REPORTS_MERCHANT_ACTIVITY,
+            classes=_CLASSES,
+            class_downgrades={"nonexistent": "reason"},
+        )
+
+
+def test_build_spec_rejects_empty_downgrade_reason() -> None:
+    with pytest.raises(ValueError, match="class_downgrades"):
+        build_spec(
+            _sample,
+            name="sample",
+            view=REPORTS_MERCHANT_ACTIVITY,
+            classes=_CLASSES,
+            class_downgrades={"value": "   "},
+        )
+
+
+def test_report_decorator_threads_class_downgrades() -> None:
+    @report(
+        name="sample",
+        view=REPORTS_MERCHANT_ACTIVITY,
+        classes=_CLASSES,
+        class_downgrades={"value": "aggregate over amount; no single value leaks"},
+    )
+    def runner(db: Database, *, top: int = 10) -> ReportQuery:
+        """One-line summary."""
+        return ReportQuery("SELECT 1", [])
+
+    assert runner._report_spec.class_downgrades == {  # type: ignore[attr-defined]
+        "value": "aggregate over amount; no single value leaks"
+    }

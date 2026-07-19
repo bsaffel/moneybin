@@ -33,6 +33,11 @@ FCT_TRANSACTION_LINES = TableRef("core", "fct_transaction_lines", audience="inte
 BRIDGE_TRANSFERS = TableRef("core", "bridge_transfers", audience="interface")
 FCT_BALANCES = TableRef("core", "fct_balances", audience="interface")
 FCT_BALANCES_DAILY = TableRef("core", "fct_balances_daily", audience="interface")
+# Service-internal curator-impact queue (moved out of reports.* — reports-foundation.md
+# R5: membership in reports.* means "user-facing report," and this view's only
+# runtime reader is services/categorization/queries.py, backing
+# transactions_categorize_pending).
+CORE_UNCATEGORIZED_QUEUE = TableRef("core", "uncategorized_queue", audience="interface")
 
 # -- Raw tables (used until core models are built for these entities) --
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
@@ -144,9 +149,6 @@ REPORTS_CASH_FLOW = TableRef("reports", "cash_flow", audience="interface")
 REPORTS_SPENDING_TREND = TableRef("reports", "spending_trend", audience="interface")
 REPORTS_RECURRING_SUBSCRIPTIONS = TableRef(
     "reports", "recurring_subscriptions", audience="interface"
-)
-REPORTS_UNCATEGORIZED_QUEUE = TableRef(
-    "reports", "uncategorized_queue", audience="interface"
 )
 REPORTS_MERCHANT_ACTIVITY = TableRef(
     "reports", "merchant_activity", audience="interface"

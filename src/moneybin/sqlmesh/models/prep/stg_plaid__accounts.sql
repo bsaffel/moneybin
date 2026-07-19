@@ -5,12 +5,15 @@ MODEL (
 
 /* account_type normalizes through seeds.account_type_map like every other
    source, so the vocabulary is decided in one place — but unlike the other two
-   sources an unmapped alias falls back to Plaid's raw value rather than NULL.
+   sources an unmapped alias resolves to the canonical 'other' rather than NULL.
    core.fct_balances filters Plaid balances on `NOT account_type IS NULL` and
-   signs liabilities from this column, so resolving an unknown type to NULL
-   would drop that account's balances out of net worth silently. Plaid's own
-   vocabulary IS the canonical one, which makes its raw value a safe fallback;
-   that is not true of OFX or free-text tabular.
+   signs liabilities from this column, so a NULL here would silently drop that
+   account's balances out of net worth. 'other' keeps the column inside its
+   declared closed vocabulary while keeping the balance visible; the unmapped
+   source spelling is still preserved in account_subtype, so nothing is lost.
+   OFX and free-text tabular keep NULL-on-unmapped: their spellings are not
+   drawn from a provider-controlled enum, so an unknown one is genuinely
+   unknown rather than a gap in the registry.
 
    account_subtype is the other exception: Plaid's own subtype is finer than the
    registry's (401k, money market, mortgage), so it wins and the registry only
@@ -19,7 +22,7 @@ SELECT
   COALESCE(links.account_id, a.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   a.account_id AS source_account_key,
   NULL::TEXT AS routing_number,
-  COALESCE(m.account_type, LOWER(NULLIF(TRIM(a.account_type), ''))) AS account_type,
+  COALESCE(m.account_type, 'other') AS account_type,
   a.institution_name,
   NULL::TEXT AS institution_fid,
   a.official_name,

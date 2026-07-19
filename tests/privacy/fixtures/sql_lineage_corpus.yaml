@@ -294,26 +294,27 @@
   expected_query_tier: high
 
 # ---------------------------------------------------------------------------
-# CTEs — falls back to max input tier when outer column can't be resolved
+# CTEs — each outer column resolves to the projection inside the CTE, so a
+# sibling column in the same CTE does NOT contaminate its tier
 # ---------------------------------------------------------------------------
 
-- description: CTE with SUM(amount) falls back to max input tier HIGH (txn_amount) for both outputs
+- description: CTE resolves each output to its own source; SUM(amount) stays HIGH, category stays LOW
   sql: WITH spend AS (SELECT category, SUM(amount) AS s FROM core.fct_transactions GROUP BY 1) SELECT * FROM spend
-  expected_output_classes: {category: txn_amount, s: txn_amount}
+  expected_output_classes: {category: category, s: txn_amount}
   expected_query_tier: high
 
-- description: CTE pass-through of account_id falls back to max input tier HIGH (account_id=record_id, amount=txn_amount)
+- description: CTE pass-through of account_id keeps record_id; the sibling amount in the CTE does not contaminate it
   sql: WITH t AS (SELECT account_id, amount FROM core.fct_transactions) SELECT account_id FROM t
-  expected_output_classes: {account_id: txn_amount}
-  expected_query_tier: high
+  expected_output_classes: {account_id: record_id}
+  expected_query_tier: low
 
 # ---------------------------------------------------------------------------
 # Subqueries — falls back to max input tier when outer col can't be resolved
 # ---------------------------------------------------------------------------
 
-- description: subquery with COUNT(*) falls back; input is only category (LOW) so aggregate (LOW) wins
+- description: derived-table columns resolve individually; category keeps its own class, COUNT(*) stays aggregate
   sql: SELECT * FROM (SELECT category, COUNT(*) AS n FROM core.fct_transactions GROUP BY 1) sub WHERE n > 5
-  expected_output_classes: {category: aggregate, n: aggregate}
+  expected_output_classes: {category: category, n: aggregate}
   expected_query_tier: low
 
 - description: subquery pure aggregate falls back to aggregate (LOW inputs only)

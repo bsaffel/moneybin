@@ -167,7 +167,7 @@ SELECT
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
     w.institution_name,
-    w.account_type,
+    COALESCE(s.account_subtype, w.account_subtype, w.account_type),
     'Account ' || w.account_id
   ) AS display_name, /* Resolved display label: user override → derived (institution+subtype-or-type[+last4]; the subtype is preferred because 'checking' reads to a human where the canonical 'depository' does not) → institution+last4 → institution or type alone → 'Account <id>' terminal so it is never NULL. The institution+last4 branch is what keeps two typeless accounts at one institution distinguishable; without it both collapse to the bare institution name. */
   COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */

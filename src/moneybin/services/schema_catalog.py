@@ -347,6 +347,17 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "core.uncategorized_queue": [
+        Example(
+            question="Highest-impact uncategorized transactions",
+            sql="""
+                SELECT account_name, txn_date, amount, description, age_days, priority_score
+                FROM core.uncategorized_queue
+                ORDER BY priority_score DESC
+                LIMIT 25
+            """,
+        ),
+    ],
     "reports.net_worth": [
         Example(
             question="Net worth today",
@@ -410,17 +421,6 @@ EXAMPLES: dict[str, list[Example]] = {
                 FROM reports.recurring_subscriptions
                 WHERE status = 'active' AND confidence >= 0.7
                 ORDER BY annualized_cost DESC
-            """,
-        ),
-    ],
-    "reports.uncategorized_queue": [
-        Example(
-            question="Highest-impact uncategorized transactions",
-            sql="""
-                SELECT account_name, txn_date, amount, description, age_days, priority_score
-                FROM reports.uncategorized_queue
-                ORDER BY priority_score DESC
-                LIMIT 25
             """,
         ),
     ],

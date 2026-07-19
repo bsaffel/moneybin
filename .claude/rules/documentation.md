@@ -72,6 +72,31 @@ two failure modes to avoid are equally bad — marketing cadence (superlatives,
   it. If no, don't hedge it — the hedge costs the reader information and buys
   nothing.
 
+### Recognizing drift — the two AI cadences
+
+Doc-pass drift lands in one of two cadences, and both read as machine-written
+(origin: the PR #323 voice pass and its survey of 27 admired OSS READMEs):
+
+- **Marketing cadence** — superlatives, "not just X but Y", rule-of-three
+  lists, emoji-templated headings, competitor-framed heroes, adjectives asked
+  to carry claims. Polished marketing rhythm now *is* the generated-text
+  smell: the most human-sounding lines in admired OSS docs are a concession,
+  a number, or a blunt fact — none of which a template produces.
+- **Compliance cadence** — hedge-stacking (two qualifiers in one paragraph
+  means there is no claim), the negation-restatement tic, mechanism
+  descriptions that hide the claim ("their corresponding data operations
+  use..."), nominalizations ("client configurations", "completion work
+  remains"), and the reader vanishing from their own sentence ("a compatible
+  assistant" where "you" belongs). Softening a true, checkable sentence
+  deletes information and buys nothing.
+
+The register to hold is austere-and-numerate (the curl/hledger end of the
+spectrum), never jokey or narrative: say the number, show the mechanism,
+state the limitation plainly with its next action. Austerity *is* the
+personality — public docs get no humor budget, because money, errors, and
+security are the whole surface. Confidence lives in the prose; caveats live
+in precise, named boundaries.
+
 ## Diagrams
 
 - **Mermaid over ASCII**: When generating `.md` files that include diagrams, use Mermaid code blocks (` ```mermaid `) instead of ASCII art.
