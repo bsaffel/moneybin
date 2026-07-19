@@ -165,9 +165,9 @@ def suggest_holder_category(value: str) -> str | None:
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
 
-# Sentinel used in summary() count_by_subtype to represent accounts with
+# Bucket label for a NULL account_type or account_subtype in summary() to represent accounts with
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
-_UNSET_SUBTYPE_LABEL = "<unset>"
+_UNSET_LABEL = "<unset>"
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,7 +528,7 @@ class AccountService:
                 WHERE NOT archived
                 GROUP BY 1
                 """,
-                [_UNSET_SUBTYPE_LABEL],
+                [_UNSET_LABEL],
             ).fetchall()
         )
         by_subtype: dict[str, int] = dict(
@@ -539,7 +539,7 @@ class AccountService:
                 WHERE NOT archived
                 GROUP BY 1
                 """,
-                [_UNSET_SUBTYPE_LABEL],
+                [_UNSET_LABEL],
             ).fetchall()
         )
         recent_row = self._db.execute(

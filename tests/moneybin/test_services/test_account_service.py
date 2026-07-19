@@ -1135,3 +1135,19 @@ class TestNullAccountType:
         assert acct.account_type is None, (
             f"NULL rendered as {acct.account_type!r} instead of None"
         )
+
+    @pytest.mark.unit
+    def test_summary_buckets_null_account_type(
+        self, untyped_account_db: Database
+    ) -> None:
+        """count_by_type must label NULL, not carry a None key.
+
+        AccountSummaryStats.count_by_type is declared dict[str, int]; a raw None
+        key violates that contract and renders as a bare "null" in JSON output.
+        count_by_subtype has always used the <unset> label — count_by_type now
+        does too.
+        """
+        service = AccountService(untyped_account_db)
+        counts = service.summary().count_by_type
+        assert None not in counts, f"count_by_type carries a None key: {counts!r}"
+        assert counts.get("<unset>") == 1, counts

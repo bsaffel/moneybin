@@ -213,7 +213,7 @@ The agent decides whether to retry the write with the suggestion, prompt the use
 ```json
 {
   "total_accounts": 8,
-  "count_by_type": { "checking": 2, "savings": 1, "credit_card": 3, "loan": 2 },
+  "count_by_type": { "depository": 3, "credit": 3, "loan": 2 },
   "count_by_subtype": { "checking": 2, "money market": 1, "credit card": 3, "auto": 1, "mortgage": 1 },
   "count_archived": 1,
   "count_excluded_from_net_worth": 2,

@@ -15,9 +15,16 @@ The registry starts small and grows via PR contributions. Unknown FIDs fall
 through to step 3.
 
 The slug this returns becomes the import's ``source_origin``, which is an input
-to the ``transaction_id`` content hash — so **adding** a registry row is safe,
-but **editing an existing slug** re-keys every transaction imported under it and
-needs a migration. Note also that step 1 wins over step 2, so a bank publishing
+to the ``transaction_id`` content hash, so changing what this function returns
+re-keys transactions. **Editing an existing slug** re-keys every transaction
+imported under it and needs a migration. **Adding a row** is safe only when no
+prior import of that FID resolved a *different* slug through a later step — a
+file that previously fell through to the filename heuristic (step 3) or a
+``--institution`` override (step 4) will start resolving via step 2 the moment
+its FID appears here, silently changing ``source_origin`` for that institution's
+next import. Check existing ``source_origin`` values for the FID before adding.
+
+Note also that step 1 wins over step 2, so a bank publishing
 any ``<ORG>`` never reaches the registry: Chase files resolve to ``b1``, not
 ``chase``. That is deliberate and load-bearing, not an oversight — changing it
 would churn ledger identity. The registry's *display* half (used by

@@ -4,16 +4,17 @@ MODEL (
 );
 
 /* account_type normalizes through seeds.account_type_map like every other
-   source, so the vocabulary is decided in one place — but unlike the other two
-   sources an unmapped alias resolves to the canonical 'other' rather than NULL.
-   core.fct_balances filters Plaid balances on `NOT account_type IS NULL` and
-   signs liabilities from this column, so a NULL here would silently drop that
-   account's balances out of net worth. 'other' keeps the column inside its
-   declared closed vocabulary while keeping the balance visible; the unmapped
-   source spelling is still preserved in account_subtype, so nothing is lost.
-   OFX and free-text tabular keep NULL-on-unmapped: their spellings are not
-   drawn from a provider-controlled enum, so an unknown one is genuinely
-   unknown rather than a gap in the registry.
+   source, so the vocabulary is decided in one place. An unmapped alias resolves
+   to NULL here exactly as it does for the other two sources.
+
+   Resist "fixing" that NULL. core.fct_balances drops Plaid balances whose
+   account_type is unresolvable, and that is deliberate (see the comment on its
+   plaid_balances CTE, guarded by test_plaid_null_account_type_dropped): without
+   a type the balance cannot be signed, and any non-NULL default falls to the
+   positive ELSE branch — booking a possible liability as an asset and
+   overstating net worth by twice the balance. Dropping understates instead,
+   which is the safe direction. The unmapped source spelling still survives in
+   account_subtype, and the real remedy is adding the alias to the registry.
 
    account_subtype is the other exception: Plaid's own subtype is finer than the
    registry's (401k, money market, mortgage), so it wins and the registry only
@@ -22,7 +23,7 @@ SELECT
   COALESCE(links.account_id, a.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   a.account_id AS source_account_key,
   NULL::TEXT AS routing_number,
-  COALESCE(m.account_type, 'other') AS account_type,
+  m.account_type,
   a.institution_name,
   NULL::TEXT AS institution_fid,
   a.official_name,

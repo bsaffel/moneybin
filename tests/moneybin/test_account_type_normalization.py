@@ -309,14 +309,16 @@ def test_legacy_empty_string_account_type_normalizes_to_null(db: Database) -> No
 
 
 @pytest.mark.slow
-def test_unmapped_plaid_type_still_yields_a_type(db: Database) -> None:
-    """An unrecognized Plaid type must not become NULL.
+def test_unmapped_plaid_type_resolves_to_null_not_a_default(db: Database) -> None:
+    """An unrecognized Plaid type must resolve to NULL, like every other source.
 
-    core.fct_balances filters Plaid balances on `NOT a.account_type IS NULL`
-    and signs liabilities from that same column. Resolving an unmapped alias to
-    NULL would drop every balance for that account out of fct_balances — and so
-    out of net worth — silently. Plaid's own vocabulary is the canonical one, so
-    its raw value is a safe fallback; that is not true of the other sources.
+    A non-NULL default looks safer than NULL here and is not. core.fct_balances
+    drops Plaid balances it cannot sign; any placeholder value falls through to
+    the positive ELSE branch, booking a possible liability as an asset and
+    overstating net worth by twice the balance. Dropping understates instead.
+    That tradeoff is deliberate and already guarded by
+    test_plaid_null_account_type_dropped — this test pins the staging half so a
+    future "helpful" fallback cannot reintroduce it from above.
     """
     db.execute(
         """
@@ -342,17 +344,13 @@ def test_unmapped_plaid_type_still_yields_a_type(db: Database) -> None:
         ctx.plan(auto_apply=True, no_prompts=True)
 
     account_type, account_subtype = _dim_type(db, "canon-plaid-nv")
-    assert account_type is not None, (
-        "an unmapped Plaid type resolved to NULL, which drops its balances "
-        "from fct_balances and therefore from net worth"
-    )
-    assert account_type == "other", (
-        f"expected the canonical 'other', got {account_type!r} — the fallback "
-        "must stay inside the declared closed vocabulary, not leak raw text"
+    assert account_type is None, (
+        f"expected NULL, got {account_type!r} — a non-NULL default lets "
+        "fct_balances sign an unsignable balance as an asset"
     )
     assert account_subtype == "crypto_wallet", (
-        "the unmapped source spelling must survive in account_subtype so "
-        "bucketing it as 'other' loses no information"
+        "the unmapped source spelling must survive in account_subtype so the "
+        "information needed to extend the registry is not lost"
     )
 
 
@@ -417,4 +415,44 @@ def test_display_name_honors_a_user_subtype_override(db: Database) -> None:
     assert row[0] == "money market"
     assert "money market" in row[1], (
         f"display_name {row[1]!r} ignores the user's subtype override"
+    )
+
+
+@pytest.mark.slow
+def test_genuinely_null_plaid_type_stays_null(db: Database) -> None:
+    """A NULL Plaid account_type is distinct from an unmapped one — both stay NULL.
+
+    `SyncAccount.account_type` is `str | None`, so NULL is reachable rather than
+    hypothetical. Defaulting it to any placeholder would let the balance pass
+    fct_balances' `NOT account_type IS NULL` guard and book un-negated as an
+    asset. Pairs with test_unmapped_plaid_type_resolves_to_null_not_a_default:
+    the two inputs differ, the required outcome does not.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.plaid_accounts
+            (account_id, account_type, account_subtype, institution_name, mask,
+             official_name, source_file, source_type, source_origin,
+             extracted_at, loaded_at)
+        VALUES ('plaid-untyped', NULL, NULL, 'Untyped Bank', '7777',
+                'Untyped', 'plaid://untyped', 'plaid', 'untyped_inst',
+                '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
+        """  # noqa: S608  # test fixture
+    )
+    _link(
+        db,
+        link_id="lnk-plaid-un",
+        account_id="canon-plaid-un",
+        ref_value="plaid-untyped",
+        source_type="plaid",
+        source_origin="untyped_inst",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    account_type, _ = _dim_type(db, "canon-plaid-un")
+    assert account_type is None, (
+        f"expected NULL, got {account_type!r} — fct_balances would then sign an "
+        "unsignable balance as a positive asset"
     )
