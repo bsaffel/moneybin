@@ -719,6 +719,21 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "currency_code": DataClass.CURRENCY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("core", "fct_security_prices"): {
+        "security_id": DataClass.RECORD_ID,
+        # A market close is public reference data (what a security's price WAS
+        # on a date) — not a personal fact about the user, unlike
+        # fct_investment_transactions.price which is what the user actually
+        # paid. Neither this row nor its date names an account or a quantity
+        # held, so both get the same LOW-tier public-reference treatment as
+        # dim_securities.ticker/name rather than TXN_AMOUNT/TXN_DATE.
+        "price_date": DataClass.TIMESTAMP_OBSERVABILITY,
+        "quote_currency": DataClass.CURRENCY,
+        "close": DataClass.AGGREGATE,
+        "source": DataClass.TXN_TYPE,
+        "price_basis": DataClass.TXN_TYPE,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("core", "fct_transaction_lines"): {
         "account_id": DataClass.RECORD_ID,
         "description": DataClass.DESCRIPTION,

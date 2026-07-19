@@ -331,6 +331,20 @@ WHERE FALSE;
 # (LEFT JOINed from the newest holdings snapshot in production) — same types as
 # the ledger-derived columns they mirror.
 
+# core.fct_security_prices — SQLMesh SQL FULL-kind table in production.
+# Column shape mirrors fct_security_prices.sql's final SELECT.
+CORE_FCT_SECURITY_PRICES_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_security_prices (
+    security_id VARCHAR,
+    price_date DATE,
+    quote_currency VARCHAR,
+    close DECIMAL(28, 10),
+    source VARCHAR,
+    price_basis VARCHAR,
+    updated_at TIMESTAMP
+);
+"""
+
 # core.uncategorized_queue — SQLMesh-managed view in production (curator-impact
 # queue, moved from reports.* per reports-foundation.md R5). Column shape
 # mirrors uncategorized_queue.sql's final SELECT.
@@ -367,6 +381,7 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_FCT_INVESTMENT_LOTS_DDL)
     db.execute(CORE_FCT_REALIZED_GAINS_DDL)
     db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
+    db.execute(CORE_FCT_SECURITY_PRICES_DDL)
     db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)
 
 

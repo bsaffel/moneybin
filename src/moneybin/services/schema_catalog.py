@@ -571,6 +571,29 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "core.fct_security_prices": [
+        Example(
+            question="Price history for one security, most recent first "
+            "(substitute YOUR_SECURITY_ID)",
+            sql="""
+                SELECT price_date, close, quote_currency, source
+                FROM core.fct_security_prices
+                WHERE security_id = 'YOUR_SECURITY_ID'
+                ORDER BY price_date DESC
+            """,
+        ),
+        Example(
+            question="Latest known close for every security",
+            sql="""
+                SELECT security_id, quote_currency, close, price_date
+                FROM core.fct_security_prices
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY security_id, quote_currency
+                    ORDER BY price_date DESC
+                ) = 1
+            """,
+        ),
+    ],
 }
 
 _BEYOND_NOTE = (

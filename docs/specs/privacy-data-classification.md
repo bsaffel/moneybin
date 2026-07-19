@@ -176,6 +176,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (core, fct_transactions) | memo | DESCRIPTION | additional source-provided notes on the transaction; rule 6 (free-text on transaction tables). |
 | (core, fct_transactions) | splits | TXN_AMOUNT | LIST of split STRUCTs; contains per-split `amount` (HIGH-tier). Classify by the highest-sensitivity component. |
 | (core, fct_transactions) | notes, tags | USER_NOTE | nested LIST aggregations of `app.transaction_notes` / `transaction_tags`; carry user-authored content. |
+| (core, fct_security_prices) | close | AGGREGATE | a market close is public reference data — same security, same date, same price for every user — not a personal fact like `fct_investment_transactions.price` (what the user actually paid). No existing numeric LOW-tier class fits a bare public price value; AGGREGATE is the closest fit, same as other non-sensitive computed numerics (`confidence_score`, `priority`). |
+| (core, fct_security_prices) | price_date | TIMESTAMP_OBSERVABILITY | which calendar date a public close applies to, not a personal event date like `trade_date`/`balance_date` (TXN_DATE, MEDIUM) — it reveals nothing about the user's behavior on its own, so it gets the same LOW-tier treatment as other "when was this recorded" columns. |
 
 ### Follow-ups for PR 2
 
