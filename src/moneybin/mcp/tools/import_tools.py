@@ -1105,6 +1105,14 @@ def _sign_confirmation_message(payload: dict[str, Any], *, source: str) -> str:
     the bridge and deterministic-PDF paths both carry channel="pdf", and telling
     a human their deterministic statement is a "bridge recipe" describes a step
     that never ran.
+
+    This is the last thing a human sees before a ledger-wide sign change is
+    applied, so it branches on `sign_prior_convention` for the same reason the
+    CLI and `actions[]` renderers do — and this is the costliest place to get it
+    wrong. A first-contact inference always proposes `negative_is_income`, where
+    "is this a credit card?" is the accurate and answerable question. A
+    self-healed recipe (Req 9a) can re-derive to the *opposite* polarity, and
+    the card wording would then describe the reverse of what approving does.
     """
     evidence = ", ".join(str(item) for item in payload["sign_evidence"])
     sample_rows = payload["sign_sample_rows"][:3]
@@ -1113,14 +1121,26 @@ def _sign_confirmation_message(payload: dict[str, Any], *, source: str) -> str:
         if sample_rows
         else "\n"
     )
-    return (
-        f"This {source} identifies the file as a credit card and will reverse "
-        "every amount: charges become negative expenses and payments become "
-        "positive income.\n\n"
-        f"Evidence from the file: {evidence}.\n"
-        f"{samples}"
-        "Approve this sign inversion?"
-    )
+    prior = payload.get("sign_prior_convention")
+    proposed = payload.get("sign_convention")
+    if prior:
+        lead = (
+            f"The saved layout for this {source} stopped reading it correctly "
+            f"and was re-derived. It recorded amounts as {prior!r} before "
+            f"({sign_convention_effect(str(prior))}); the re-derived version "
+            f"records them as {proposed!r} "
+            f"({sign_convention_effect(str(proposed))}). Every amount's sign "
+            f"flips relative to earlier imports of this format.\n\n"
+        )
+        question = f"Approve this change from {prior!r} to {proposed!r}?"
+    else:
+        lead = (
+            f"This {source} identifies the file as a credit card and will "
+            "reverse every amount: charges become negative expenses and "
+            "payments become positive income.\n\n"
+        )
+        question = "Approve this sign inversion?"
+    return f"{lead}Evidence from the file: {evidence}.\n{samples}{question}"
 
 
 def _import_confirm_tabular(
@@ -1388,9 +1408,13 @@ async def import_confirm(
         file_path: Absolute path to the file to import. Must be within the
             user's home directory.
         accept: Accept the proposed mapping as-is (no overrides). Tabular only.
-        confirm_pdf_sign: Enter the sign-inversion resolution for a deterministic
-            PDF that ``import_files``/``import_preview`` flagged as a credit-card
-            statement. Deterministic PDFs only, and mutually exclusive with
+        confirm_pdf_sign: Enter the sign-convention resolution for a
+            deterministic PDF that ``import_files``/``import_preview`` flagged
+            with ``reason="sign_convention"`` — either a first-contact
+            credit-card inference or a re-derived layout whose income/expense
+            direction changed (the two point opposite ways; the proposal's
+            ``sign_convention``/``sign_prior_convention`` say which).
+            Deterministic PDFs only, and mutually exclusive with
             ``bridge_response``/``accept``/``mapping``. Like the bridge channel
             it takes no tabular account signal — ``account_name``,
             ``account_bindings``, and ``account_metadata`` are refused; pin the
@@ -1530,12 +1554,16 @@ async def import_confirm(
             "If import_files/import_preview returned a bridge_payload (native-text "
             "extraction), call import_confirm(file_path=..., bridge_response="
             "{'recipe': ..., 'rows': [...]}). If it returned a sign-convention "
-            "confirmation (a credit-card statement — confirming inverts every "
-            "amount's sign), call import_confirm(file_path=..., confirm_pdf_sign=True) "
-            "and MoneyBin will ask the human to approve the inversion. To skip the "
-            f"prompt from a terminal: `moneybin import files {quoted} --confirm` if "
-            f"it IS a credit card, or `moneybin import files {quoted} --sign "
-            "negative_is_expense` if it is not.",
+            "confirmation (the statement's income/expense direction is in "
+            "question), call import_confirm(file_path=..., confirm_pdf_sign=True) "
+            "and MoneyBin will ask the human to approve the change. To decide "
+            "from a terminal instead — described by what each command does, "
+            "since a first-contact card inference and a re-derived layout "
+            f"propose opposite directions: `moneybin import files {quoted} "
+            "--confirm` accepts whichever convention was proposed, or `moneybin "
+            f"import files {quoted} --sign negative_is_expense` records amounts "
+            "exactly as printed. The proposal's sign_convention / "
+            "sign_prior_convention name the direction actually on offer.",
             code="confirm_channel_conflict",
         )
 

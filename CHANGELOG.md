@@ -55,8 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   *opposite* flip, and there the card wording described `--confirm` as doing the
   reverse of what it does, and offered no command at all for keeping the
   direction you already had. Both choices are now named by what they do, in
-  whichever direction the repair actually goes, across the terminal, an AI
-  assistant, and the inbox's pending-file notes.
+  whichever direction the repair actually goes — in the terminal, in the
+  approval an AI assistant puts in front of you, in its suggested next steps,
+  and in the inbox's pending-file notes.
 - **A saved statement layout that stops reading correctly now repairs itself
   instead of failing forever.** MoneyBin remembers how to read each statement
   layout the first time it sees one. That saved recipe was a frozen copy, so

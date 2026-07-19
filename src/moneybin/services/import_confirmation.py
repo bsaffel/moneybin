@@ -167,9 +167,17 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     new channel field (e.g. ``bridge_payload``) should land in one place. The
     tabular fields (``proposed_mapping``, ``unmapped_columns``) are populated
     from a ``ProposedMapping`` proposal; ``bridge_payload`` from a
-    ``BridgePayload`` proposal; ``sign_convention``/``sign_evidence``/
-    ``sign_sample_rows`` from a ``SignConventionProposal``; the unused fields
-    are empty/None for the channel.
+    ``BridgePayload`` proposal; ``sign_convention``/``sign_prior_convention``/
+    ``sign_evidence``/``sign_sample_rows`` from a ``SignConventionProposal``;
+    the unused fields are empty/None for the channel.
+
+    Every surface that renders a sign decision — the CLI prompt and recovery
+    commands, the MCP ``actions[]`` and elicitation prompt, and the inbox
+    pending sidecar — must branch on ``sign_prior_convention``. It is what
+    distinguishes a first-contact card inference (always toward
+    ``negative_is_income``) from a self-healed recipe that re-derived to the
+    opposite polarity; describing the latter with the former's wording tells
+    the reader the reverse of what confirming does.
     """
     proposed = outcome.proposed
     proposed_mapping: dict[str, str] = {}
