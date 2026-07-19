@@ -817,6 +817,28 @@ def test_count_star_over_unexpandable_source_stays_aggregate(
     assert result.tier is Tier.LOW
 
 
+def test_wrapped_scalar_count_stays_aggregate(populated_db: Database) -> None:
+    """A scalar ``COUNT(*)`` subquery inside a larger expression is still LOW.
+
+    ``(SELECT COUNT(*) FROM t) + 1`` reaches neither collapse: the
+    counting-aggregate branch declines because the count sits in a subquery and
+    so does not govern the projection, leaving a projection with no
+    ``exp.Column`` at all. The count's Star is nonetheless genuinely bounded —
+    identical to the bare ``COUNT(*)`` this suite already pins — so the
+    arithmetic over it is an aggregate, not a CRITICAL unknown. Declining here
+    returned ``'*****'`` for a plain number, because the conservative floor
+    then saw ``dim_accounts``' CRITICAL columns.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT (SELECT COUNT(*) FROM core.dim_accounts) + 1 AS n",
+        max_rows=100,
+    )
+    assert result.records[0]["n"] == 2
+    assert result.tier is Tier.LOW
+
+
 def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> None:
     """``COUNT(*)`` still classifies as AGGREGATE (LOW), not CRITICAL.
 

@@ -896,13 +896,6 @@ def _scope_of_column(
 _OPAQUE_PROJECTION_NODES: tuple[type[exp.Expr], ...] = (exp.Star, exp.Columns)
 
 
-def _is_opaque(inner: exp.Expr) -> bool:
-    """True if ``inner`` stands for columns we cannot enumerate."""
-    return isinstance(inner, _OPAQUE_PROJECTION_NODES) or any(
-        True for _ in inner.find_all(*_OPAQUE_PROJECTION_NODES)
-    )
-
-
 def _has_uncounted_opaque(inner: exp.Expr) -> bool:
     """True if ``inner`` holds an opaque node a counting aggregate cannot bound.
 
@@ -1001,11 +994,17 @@ def _resolve_projection(
         # THE INVARIANT: a projection is classified LOW only when we positively
         # established what it is. "No exp.Column node" is NOT that proof — it
         # conflates a genuine literal with an expression we could not
-        # decompose, and the two must not share an answer. An opaque construct
-        # declines here so the caller's conservative floor applies.
-        if _is_opaque(inner):
-            return None
-        # Genuine literal / constant expression with no column refs.
+        # decompose, and the two must not share an answer.
+        #
+        # The opacity gate is `_has_uncounted_opaque` above, and it is the ONLY
+        # one: reaching this line already proves every opaque node here is a
+        # Star a counting aggregate bounds. Re-testing "is there a Star
+        # anywhere" would decline exactly the case that gate deliberately
+        # allowed — it is how `(SELECT COUNT(*) FROM t) + 1`, which the
+        # counting-aggregate branch above declines to govern because the count
+        # sits in a subquery, fell through to here and masked a plain number.
+        # Two predicates answering "is this opaque" by different rules is the
+        # bug; keep the precise one and let it stand alone.
         return DataClass.AGGREGATE
 
     # Built only when the projection actually nests a SELECT (a scalar or IN
