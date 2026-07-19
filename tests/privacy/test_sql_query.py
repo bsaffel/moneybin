@@ -141,6 +141,64 @@ def test_aggregate_is_low(populated_db: Database) -> None:
     assert "aggregate" in result.classes_returned
 
 
+def test_bare_count_star_returns_the_count(populated_db: Database) -> None:
+    """An UNALIASED ``COUNT(*)`` must return the number, not a masked value.
+
+    DuckDB names the result column ``count_star()`` while lineage keys it
+    ``*`` — a naming-only divergence, not missing lineage. Failing closed on it
+    masks the single most common analytical query in existence: the user asks
+    how many transactions they have and gets ``'*****'`` back, labelled
+    CRITICAL. ``test_aggregate_is_low`` does not cover this because it aliases
+    (``COUNT(*) AS n``), which makes the names agree.
+    """
+    _seed_txn(populated_db)
+    result = execute_sql_query(
+        populated_db, "SELECT COUNT(*) FROM core.fct_transactions", max_rows=100
+    )
+    (value,) = result.records[0].values()
+    assert value == 1
+    assert result.tier is Tier.LOW
+
+
+def test_unaliased_mixed_projection_keeps_each_column_own_class(
+    populated_db: Database,
+) -> None:
+    """Reconciling names positionally must not hand a class to the wrong column.
+
+    ``routing_number`` matches by name; ``COUNT(*)`` does not. Both must land on
+    their own class — the CRITICAL one masked, the aggregate returned.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT routing_number, COUNT(*) FROM core.dim_accounts GROUP BY 1",
+        max_rows=100,
+    )
+    routing, count = result.records[0].values()
+    assert str(routing).startswith("*")
+    assert count == 1
+
+
+def test_duplicate_result_column_names_fail_closed(populated_db: Database) -> None:
+    """Two result columns sharing a name destroy per-column identity.
+
+    ``SELECT 0 AS routing_number, COLUMNS('routing_number')`` yields two columns
+    both named ``routing_number``. Lineage sees only the literal (AGGREGATE), a
+    name lookup hands that safe class to BOTH, and ``dict(zip(...))`` keeps the
+    LAST value — so the real routing number was returned in the clear under a
+    LOW tier. A name that does not identify exactly one column cannot key the
+    class map.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT 0 AS routing_number, COLUMNS('routing_number') FROM core.dim_accounts",
+        max_rows=100,
+    )
+    assert "021000021" not in str(result.records)
+    assert result.tier is Tier.CRITICAL
+
+
 def test_metadata_query_not_classified(populated_db: Database) -> None:
     """DESCRIBE is metadata: LOW, no row data classes, returns schema rows."""
     result = execute_sql_query(
@@ -232,12 +290,17 @@ def test_union_reused_alias_masks_critical(populated_db: Database) -> None:
     assert all(v == "*****" for v in values)
 
 
-def test_unaliased_aggregate_fails_closed_to_max_tier(populated_db: Database) -> None:
-    """An unaliased expression DuckDB names differently than sqlglot fails closed.
+def test_unaliased_aggregate_over_critical_column_is_masked(
+    populated_db: Database,
+) -> None:
+    """An unaliased expression DuckDB names differently is still masked.
 
-    `MIN(routing_number)` → DuckDB column 'min(routing_number)' vs sqlglot ''. The
-    name miss fails closed to the query's max tier (CRITICAL), so the value is
-    masked — never returned in the clear.
+    ``MIN(routing_number)`` → DuckDB column ``min(routing_number)`` vs lineage
+    ``?_0``. The projection count is preserved, so this reconciles positionally
+    onto lineage's own answer (ROUTING_NUMBER) rather than failing closed —
+    a different mechanism reaching the same required outcome. What this test
+    pins is the outcome: the aggregate of a CRITICAL column is never returned
+    in the clear, whichever branch of ``_classes_by_result_column`` claims it.
     """
     _seed_account(populated_db)
     result = execute_sql_query(
@@ -531,15 +594,18 @@ def test_fail_closed_warning_fires_only_for_genuine_misses(
     caplog.clear()
     _seed_account(populated_db)
     with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
-        # Unaliased MIN(routing_number): sqlglot names the projection ''
-        # while DuckDB names the result column 'min(routing_number)' — a
-        # genuine name-mismatch miss, not a query bug.
+        # A genuine miss is MISSING LINEAGE, not a naming divergence: one
+        # COLUMNS() projection fans out into two runtime columns lineage never
+        # saw, so the counts disagree and both fail closed. An unaliased
+        # MIN(routing_number) is NOT an instance of this — lineage resolved it
+        # and only the label differs, so it reconciles positionally and warns
+        # zero times (see _classes_by_result_column).
         execute_sql_query(
             populated_db,
-            "SELECT MIN(routing_number) FROM core.dim_accounts",
+            "SELECT COLUMNS('routing_number|last_four') FROM core.dim_accounts",
             max_rows=100,
         )
-    assert caplog.text.count("failing closed") == 1
+    assert caplog.text.count("failing closed") == 2
 
 
 @pytest.mark.parametrize("depth", [17, 30, 60])

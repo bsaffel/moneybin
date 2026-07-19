@@ -204,17 +204,31 @@ def _classes_by_result_column(
     a positional join is not. Named projections and expanded ``*`` columns match
     directly.
 
-    A miss means exactly one thing: **lineage did not resolve this column.**
-    Either sqlglot named the projection differently (``MIN(account_id)`` →
-    DuckDB ``min(account_id)`` vs sqlglot ``''``/``?_i``), or — the dangerous
-    case — the query produced runtime columns lineage never saw at all.
-    ``COLUMNS('.*')``, ``PIVOT``, ``UNPIVOT``, ``SUMMARIZE`` and ``UNNEST`` over
-    a row struct each emit 12–19 such columns from a single projection.
+    A miss means one of two very different things, and they must not be
+    conflated:
 
-    So a miss fails closed to ``FAIL_CLOSED_CLASS`` (CRITICAL, masked whole).
+    1. **Naming-only divergence.** sqlglot keyed an unaliased projection
+       differently than DuckDB named it (``COUNT(*)`` → DuckDB
+       ``count_star()`` vs lineage ``*``; ``MIN(account_id)`` → DuckDB
+       ``min(account_id)`` vs lineage ``?_0``). Lineage RESOLVED this column;
+       only the label differs.
+    2. **Missing lineage** — the dangerous case: the query produced runtime
+       columns lineage never saw at all. ``COLUMNS('.*')``, ``PIVOT``,
+       ``UNPIVOT``, ``SUMMARIZE`` and ``UNNEST`` over a row struct each emit
+       12–19 such columns from a single projection.
 
-    It must NOT fall back to the max class present in ``output_classes``. That
-    is what this code used to do, under a comment asserting "an unmasked
+    Cardinality separates them. Case 1 preserves the projection count, so when
+    it matches, position reconciles the two namings exactly (``output_classes``
+    is insertion-ordered by projection). Case 2 is precisely the case where one
+    projection fans out into many runtime columns, so the counts disagree and
+    every unmatched column fails closed to ``FAIL_CLOSED_CLASS``.
+
+    Failing closed on case 1 is not "merely conservative" — it masks
+    ``SELECT COUNT(*)``, returning ``'*****'`` and a CRITICAL tier for the most
+    common analytical query there is.
+
+    A miss must NOT fall back to the max class present in ``output_classes``.
+    That is what this code used to do, under a comment asserting "an unmasked
     CRITICAL value can therefore never slip through" — and the assertion was
     false in the only case that mattered. When lineage classified the single
     opaque projection AGGREGATE, "the most sensitive class present" WAS
@@ -222,6 +236,33 @@ def _classes_by_result_column(
     ``routing_number`` was returned in the clear. A fallback computed from the
     classes that happened to resolve cannot bound the classes that did not.
     """
+    # A name shared by two result columns identifies neither. Lineage would
+    # hand both the one class it resolved — and since the caller builds records
+    # with dict(zip(columns, row)), the LAST value wins, so a safe literal's
+    # class can front for a sensitive column that overwrites it
+    # (SELECT 0 AS routing_number, COLUMNS('routing_number')). Nothing
+    # downstream can recover the association, so the whole row fails closed.
+    if len(set(columns)) != len(columns):
+        return {col: _fail_closed(col, query) for col in columns}
+
+    if all(col in output_classes for col in columns):
+        return {col: output_classes[col] for col in columns}
+
+    if len(columns) == len(output_classes):
+        positional = dict(zip(columns, output_classes.values(), strict=True))
+        # Position is only trustworthy if the two orderings actually agree, and
+        # every column whose name DID match is a free check on that: if any of
+        # them lands on a different class positionally, the orders are skewed
+        # and every positional answer here is suspect — including the ones for
+        # columns with no name to check against. Fall through to fail closed
+        # rather than shift a LOW class onto a CRITICAL column.
+        if all(
+            positional[col] is output_classes[col]
+            for col in columns
+            if col in output_classes
+        ):
+            return positional
+
     return {
         col: (
             output_classes[col] if col in output_classes else _fail_closed(col, query)
