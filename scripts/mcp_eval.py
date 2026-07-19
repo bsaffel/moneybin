@@ -22,6 +22,11 @@ _FIXTURE_TOKEN_METHOD = "deterministic_estimate:ceil(canonical_registry_utf8_byt
 _DEFAULT_INVENTORY = (
     Path(__file__).parents[1] / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
 )
+_DEFAULT_BASELINE_INVENTORY = _DEFAULT_INVENTORY
+_DEFAULT_CANDIDATE_INVENTORY = (
+    Path(__file__).parents[1] / "tests/fixtures/mcp_surface/standard-45.json"
+)
+_CONTEXT_BUDGET_LIMIT = 0.02
 
 JSONValue = None | bool | int | float | str | list["JSONValue"] | dict[str, "JSONValue"]
 
@@ -88,7 +93,7 @@ class EvalCapture:
     metadata_bytes: int
     metadata_tokens: int
     metadata_token_method: str
-    context_window_tokens: int
+    context_window_tokens: int | None
     responses: tuple[EvalResponse, ...]
 
 
@@ -173,6 +178,67 @@ class EvalResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class EvalComparison:
+    """Candidate deltas and acceptance gates relative to a baseline."""
+
+    selection_delta: float
+    argument_delta: float
+    workflow_delta: float
+    safety_delta: float
+    unnecessary_calls_delta: int
+    recovery_delta: float
+    metadata_bytes_delta: int
+
+    @property
+    def failed_gates(self) -> tuple[str, ...]:
+        """Return every regressed acceptance dimension."""
+        failures: list[str] = []
+        if self.selection_delta < 0:
+            failures.append("selection")
+        if self.argument_delta < 0:
+            failures.append("arguments")
+        if self.workflow_delta < 0:
+            failures.append("workflow")
+        if self.safety_delta < 0:
+            failures.append("safety")
+        if self.unnecessary_calls_delta > 0:
+            failures.append("unnecessary_calls")
+        if self.recovery_delta < 0:
+            failures.append("recovery")
+        if self.metadata_bytes_delta >= 0:
+            failures.append("metadata_bytes")
+        return tuple(failures)
+
+    @property
+    def passed(self) -> bool:
+        """Return whether the candidate satisfies every comparison gate."""
+        return not self.failed_gates
+
+    def to_dict(self) -> dict[str, object]:
+        """Return the JSON-ready comparison."""
+        return {
+            **asdict(self),
+            "passed": self.passed,
+            "failed_gates": list(self.failed_gates),
+        }
+
+
+def compare(baseline: EvalResult, candidate: EvalResult) -> EvalComparison:
+    """Compare candidate quality and metadata with a baseline."""
+    return EvalComparison(
+        selection_delta=candidate.selection - baseline.selection,
+        argument_delta=candidate.arguments - baseline.arguments,
+        workflow_delta=candidate.workflow - baseline.workflow,
+        safety_delta=candidate.safety - baseline.safety,
+        unnecessary_calls_delta=(
+            candidate.unnecessary_calls - baseline.unnecessary_calls
+        ),
+        recovery_delta=candidate.recovery - baseline.recovery,
+        metadata_bytes_delta=candidate.metadata_bytes - baseline.metadata_bytes,
+    )
+
+
 def load_cases(path: Path) -> tuple[EvalCase, ...]:
     """Load a strict JSON evaluation corpus."""
     payload = _array(_read_json(path), "case corpus")
@@ -232,7 +298,7 @@ def load_capture(path: Path) -> EvalCapture:
         metadata_token_method=_nonempty_string(
             payload, "metadata_token_method", "capture"
         ),
-        context_window_tokens=_positive_int(
+        context_window_tokens=_nullable_positive_int(
             payload, "context_window_tokens", "capture"
         ),
         responses=tuple(
@@ -402,10 +468,20 @@ def _validate_evidence_labels(capture: EvalCapture) -> None:
             raise ValueError(
                 "contract_fixture metadata_tokens must equal ceil(metadata_bytes/4)"
             )
-    elif not capture.metadata_token_method.startswith("host_reported"):
-        raise ValueError(
-            "observed metadata_token_method must identify host_reported accounting"
-        )
+        if capture.context_window_tokens is not None:
+            raise ValueError(
+                "contract_fixture context_window_tokens must be null; "
+                "only observed evidence may claim a context window"
+            )
+    else:
+        if not capture.metadata_token_method.startswith("host_reported"):
+            raise ValueError(
+                "observed metadata_token_method must identify host_reported accounting"
+            )
+        if capture.context_window_tokens is None:
+            raise ValueError(
+                "observed evidence requires documented context_window_tokens"
+            )
 
 
 def _read_json(path: Path) -> object:
@@ -488,6 +564,19 @@ def _positive_int(
     return value
 
 
+def _nullable_positive_int(
+    payload: Mapping[str, object],
+    field: str,
+    context: str,
+) -> int | None:
+    value = _required(payload, field, context)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{context}.{field} must be null or a positive integer")
+    return value
+
+
 def _boolean(
     payload: Mapping[str, object],
     field: str,
@@ -546,6 +635,21 @@ def _parser() -> argparse.ArgumentParser:
     score_parser.add_argument("--capture", required=True, type=Path)
     score_parser.add_argument("--inventory", type=Path, default=_DEFAULT_INVENTORY)
     score_parser.add_argument("--require-observed", action="store_true")
+    compare_parser = subparsers.add_parser("compare")
+    compare_parser.add_argument("--cases", required=True, type=Path)
+    compare_parser.add_argument("--baseline", required=True, type=Path)
+    compare_parser.add_argument(
+        "--baseline-inventory",
+        type=Path,
+        default=_DEFAULT_BASELINE_INVENTORY,
+    )
+    compare_parser.add_argument("--candidate", required=True, type=Path)
+    compare_parser.add_argument(
+        "--candidate-inventory",
+        type=Path,
+        default=_DEFAULT_CANDIDATE_INVENTORY,
+    )
+    compare_parser.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -553,16 +657,91 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the evaluator CLI."""
     args = _parser().parse_args(argv)
     try:
-        cases = load_cases(args.cases)
-        capture = load_capture(args.capture)
-        if args.require_observed and capture.evidence_kind != "observed":
-            raise ValueError("contract_fixture is not observed evidence")
-        result = score(cases, capture, _load_inventory(args.inventory))
+        if args.command == "score":
+            cases = load_cases(args.cases)
+            capture = load_capture(args.capture)
+            if args.require_observed and capture.evidence_kind != "observed":
+                raise ValueError("contract_fixture is not observed evidence")
+            result = score(cases, capture, _load_inventory(args.inventory))
+            sys.stdout.write(
+                json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n"
+            )
+            return 0
+        return _compare_command(args)
     except ValueError as error:
         sys.stderr.write(f"{error}\n")
         return 1
-    sys.stdout.write(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n")
-    return 0
+
+
+def _compare_command(args: argparse.Namespace) -> int:
+    cases = load_cases(args.cases)
+    baseline_capture = load_capture(args.baseline)
+    candidate_capture = load_capture(args.candidate)
+    if (baseline_capture.host, baseline_capture.model) != (
+        candidate_capture.host,
+        candidate_capture.model,
+    ):
+        raise ValueError("baseline and candidate must use the same host and model")
+    if baseline_capture.evidence_kind != candidate_capture.evidence_kind:
+        raise ValueError("baseline and candidate must use the same evidence_kind")
+    baseline = score(
+        cases,
+        baseline_capture,
+        _load_inventory(args.baseline_inventory),
+    )
+    candidate = score(
+        cases,
+        candidate_capture,
+        _load_inventory(args.candidate_inventory),
+    )
+    comparison = compare(baseline, candidate)
+    context_budget = _context_budget(candidate_capture)
+    host_native_deferral = {"status": "not_observed"}
+    command_succeeded = comparison.passed and context_budget["status"] != "failed"
+    promotion_ready = (
+        comparison.passed
+        and context_budget["status"] == "passed"
+        and host_native_deferral["status"] == "passed"
+    )
+    payload = {
+        "baseline": baseline.to_dict(),
+        "candidate": candidate.to_dict(),
+        "comparison": comparison.to_dict(),
+        "contract_passed": comparison.passed,
+        "evidence": {
+            "evidence_kind": candidate_capture.evidence_kind,
+            "host": candidate_capture.host,
+            "model": candidate_capture.model,
+            "baseline_run_date": baseline_capture.run_date.isoformat(),
+            "candidate_run_date": candidate_capture.run_date.isoformat(),
+            "baseline_registry_sha256": baseline_capture.registry_sha256,
+            "candidate_registry_sha256": candidate_capture.registry_sha256,
+            "same_host_model": True,
+            "context_budget": context_budget,
+            "host_native_deferral": host_native_deferral,
+        },
+        "promotion_ready": promotion_ready,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+    )
+    return 0 if command_succeeded else 1
+
+
+def _context_budget(capture: EvalCapture) -> dict[str, object]:
+    if capture.context_window_tokens is None:
+        return {
+            "limit": _CONTEXT_BUDGET_LIMIT,
+            "ratio": None,
+            "status": "not_observed",
+        }
+    ratio = capture.metadata_tokens / capture.context_window_tokens
+    return {
+        "limit": _CONTEXT_BUDGET_LIMIT,
+        "ratio": ratio,
+        "status": "passed" if ratio < _CONTEXT_BUDGET_LIMIT else "failed",
+    }
 
 
 if __name__ == "__main__":

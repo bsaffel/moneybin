@@ -13,6 +13,7 @@ from moneybin.mcp.surface_inventory import SurfaceInventory
 from scripts.mcp_eval import (
     EvalResponse,
     ToolCall,
+    compare,
     load_capture,
     load_cases,
     main,
@@ -21,8 +22,11 @@ from scripts.mcp_eval import (
 
 FIXTURES = Path(__file__).parents[2] / "fixtures"
 CASES_PATH = FIXTURES / "mcp_eval/cases.json"
-CAPTURE_PATH = FIXTURES / "mcp_eval/captures/baseline-105.json"
-INVENTORY_PATH = FIXTURES / "mcp_surface/baseline-2026-07-17.json"
+BASELINE_CAPTURE_PATH = FIXTURES / "mcp_eval/captures/baseline-105.json"
+STANDARD_CAPTURE_PATH = FIXTURES / "mcp_eval/captures/standard-45.json"
+COMPARISON_PATH = FIXTURES / "mcp_eval/results/comparison-2026-07-17.json"
+BASELINE_INVENTORY_PATH = FIXTURES / "mcp_surface/baseline-2026-07-17.json"
+STANDARD_INVENTORY_PATH = FIXTURES / "mcp_surface/standard-45.json"
 REQUIRED_WORKFLOWS = {
     "first-contact-orientation-financial-pulse",
     "account-transaction-lookup",
@@ -38,8 +42,10 @@ REQUIRED_WORKFLOWS = {
 }
 
 
-def _load_inventory() -> SurfaceInventory:
-    payload = json.loads(INVENTORY_PATH.read_text())
+def _load_inventory(
+    path: Path = BASELINE_INVENTORY_PATH,
+) -> SurfaceInventory:
+    payload = json.loads(path.read_text())
     tools = [Tool.model_validate(row["definition"]) for row in payload["tools"]]
     return SurfaceInventory.from_tools(tools)
 
@@ -83,7 +89,7 @@ def _valid_capture_payload(inventory: SurfaceInventory) -> dict[str, object]:
         "metadata_token_method": (
             "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)"
         ),
-        "context_window_tokens": 1,
+        "context_window_tokens": None,
         "responses": [
             {
                 "case_id": "status",
@@ -115,7 +121,7 @@ def test_every_case_has_ordered_expectations_for_both_surfaces() -> None:
 
 def test_baseline_contract_fixture_is_unmistakably_synthetic() -> None:
     inventory = _load_inventory()
-    capture = load_capture(CAPTURE_PATH)
+    capture = load_capture(BASELINE_CAPTURE_PATH)
 
     assert capture.surface_id == "baseline-105"
     assert capture.evidence_kind == "contract_fixture"
@@ -131,7 +137,7 @@ def test_baseline_contract_fixture_is_unmistakably_synthetic() -> None:
 
 def test_deterministic_baseline_fixture_exercises_perfect_scoring_path() -> None:
     cases = load_cases(CASES_PATH)
-    result = score(cases, load_capture(CAPTURE_PATH), _load_inventory())
+    result = score(cases, load_capture(BASELINE_CAPTURE_PATH), _load_inventory())
 
     assert result.selection == 1.0
     assert result.arguments == 1.0
@@ -147,7 +153,7 @@ def test_deterministic_baseline_fixture_exercises_perfect_scoring_path() -> None
 
 def test_capture_must_match_registry() -> None:
     cases = load_cases(CASES_PATH)
-    capture = load_capture(CAPTURE_PATH)
+    capture = load_capture(BASELINE_CAPTURE_PATH)
     inventory = _load_inventory()
 
     with pytest.raises(ValueError, match="registry_sha256"):
@@ -158,7 +164,7 @@ def test_capture_must_match_registry() -> None:
 
 def test_capture_case_ids_must_exactly_match_corpus() -> None:
     cases = load_cases(CASES_PATH)
-    capture = load_capture(CAPTURE_PATH)
+    capture = load_capture(BASELINE_CAPTURE_PATH)
     inventory = _load_inventory()
 
     with pytest.raises(ValueError, match="case IDs"):
@@ -173,7 +179,7 @@ def test_capture_case_ids_must_exactly_match_corpus() -> None:
 
 def test_scoring_compares_ordered_calls_and_normalized_arguments() -> None:
     cases = load_cases(CASES_PATH)
-    capture = load_capture(CAPTURE_PATH)
+    capture = load_capture(BASELINE_CAPTURE_PATH)
     inventory = _load_inventory()
     first = capture.responses[0]
     expected_first = cases[0].expectation_for("baseline-105")
@@ -231,7 +237,7 @@ def test_unnecessary_calls_counts_only_tool_name_multiset_surplus(
     expected_unnecessary: int,
 ) -> None:
     cases = load_cases(CASES_PATH)
-    capture = load_capture(CAPTURE_PATH)
+    capture = load_capture(BASELINE_CAPTURE_PATH)
     inventory = _load_inventory()
     first = capture.responses[0]
     changed = replace(
@@ -253,7 +259,7 @@ def test_unnecessary_calls_counts_only_tool_name_multiset_surplus(
 
 def test_scoring_compares_completion_safety_and_recovery() -> None:
     cases = load_cases(CASES_PATH)
-    capture = load_capture(CAPTURE_PATH)
+    capture = load_capture(BASELINE_CAPTURE_PATH)
     inventory = _load_inventory()
     first = capture.responses[0]
     changed = replace(
@@ -316,7 +322,7 @@ def test_load_capture_rejects_missing_identity_fields(
 
 @pytest.mark.parametrize(
     "field",
-    ["metadata_bytes", "metadata_tokens", "context_window_tokens"],
+    ["metadata_bytes", "metadata_tokens"],
 )
 def test_load_capture_rejects_non_positive_measurements(
     tmp_path: Path,
@@ -326,6 +332,29 @@ def test_load_capture_rejects_non_positive_measurements(
     payload[field] = 0
 
     with pytest.raises(ValueError, match=field):
+        load_capture(_write_json(tmp_path / "capture.json", payload))
+
+
+def test_contract_fixture_rejects_invented_context_window(tmp_path: Path) -> None:
+    payload = _valid_capture_payload(_load_inventory())
+    payload["context_window_tokens"] = 128_000
+
+    with pytest.raises(ValueError, match="only observed evidence"):
+        load_capture(_write_json(tmp_path / "capture.json", payload))
+
+
+def test_observed_evidence_requires_documented_context_window(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_capture_payload(_load_inventory())
+    payload.update({
+        "host": "example-host",
+        "model": "example-model",
+        "evidence_kind": "observed",
+        "metadata_token_method": "host_reported",
+    })
+
+    with pytest.raises(ValueError, match="requires documented"):
         load_capture(_write_json(tmp_path / "capture.json", payload))
 
 
@@ -385,7 +414,7 @@ def test_load_cases_rejects_non_finite_json_constants(
 
 def test_scoring_rejects_non_finite_values_during_canonical_serialization() -> None:
     cases = load_cases(CASES_PATH)
-    capture = load_capture(CAPTURE_PATH)
+    capture = load_capture(BASELINE_CAPTURE_PATH)
     first = capture.responses[0]
     non_finite_call = replace(first.calls[0], arguments={"value": float("nan")})
     changed = replace(
@@ -410,6 +439,7 @@ def test_load_capture_accepts_provider_neutral_observed_evidence(
         "evidence_kind": "observed",
         "metadata_tokens": 123,
         "metadata_token_method": "host_reported",
+        "context_window_tokens": 128_000,
     })
 
     capture = load_capture(_write_json(tmp_path / "observed.json", payload))
@@ -426,9 +456,9 @@ def test_require_observed_rejects_contract_fixture(
         "--cases",
         str(CASES_PATH),
         "--capture",
-        str(CAPTURE_PATH),
+        str(BASELINE_CAPTURE_PATH),
         "--inventory",
-        str(INVENTORY_PATH),
+        str(BASELINE_INVENTORY_PATH),
         "--require-observed",
     ])
 
@@ -445,15 +475,268 @@ def test_score_cli_outputs_every_case_id(capsys: pytest.CaptureFixture[str]) -> 
         "--cases",
         str(CASES_PATH),
         "--capture",
-        str(CAPTURE_PATH),
+        str(BASELINE_CAPTURE_PATH),
         "--inventory",
-        str(INVENTORY_PATH),
+        str(BASELINE_INVENTORY_PATH),
     ])
 
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert [row["case_id"] for row in payload["outcomes"]] == [
         case.id for case in cases
+    ]
+
+
+def test_contract_fixtures_do_not_invent_context_windows() -> None:
+    baseline = load_capture(BASELINE_CAPTURE_PATH)
+    candidate = load_capture(STANDARD_CAPTURE_PATH)
+
+    assert baseline.context_window_tokens is None
+    assert candidate.context_window_tokens is None
+
+
+def test_standard_contract_fixture_matches_snapshot_and_same_run_identity() -> None:
+    baseline = load_capture(BASELINE_CAPTURE_PATH)
+    candidate = load_capture(STANDARD_CAPTURE_PATH)
+    inventory = _load_inventory(STANDARD_INVENTORY_PATH)
+
+    assert candidate.surface_id == "standard-45"
+    assert candidate.evidence_kind == "contract_fixture"
+    assert (candidate.host, candidate.model) == (baseline.host, baseline.model)
+    assert candidate.registry_sha256 == inventory.sha256
+    assert candidate.metadata_bytes == inventory.total_bytes
+    assert candidate.metadata_tokens == (inventory.total_bytes + 3) // 4
+
+
+def test_candidate_cannot_regress_eval_or_metadata_dimensions() -> None:
+    cases = load_cases(CASES_PATH)
+    baseline = score(
+        cases,
+        load_capture(BASELINE_CAPTURE_PATH),
+        _load_inventory(BASELINE_INVENTORY_PATH),
+    )
+    candidate = score(
+        cases,
+        load_capture(STANDARD_CAPTURE_PATH),
+        _load_inventory(STANDARD_INVENTORY_PATH),
+    )
+
+    comparison = compare(baseline, candidate)
+
+    assert comparison.selection_delta >= 0
+    assert comparison.argument_delta >= 0
+    assert comparison.workflow_delta >= 0
+    assert comparison.safety_delta >= 0
+    assert comparison.unnecessary_calls_delta <= 0
+    assert comparison.recovery_delta >= 0
+    assert comparison.metadata_bytes_delta < 0
+    assert comparison.passed is True
+
+
+def test_compare_reports_every_regression_as_a_failed_gate() -> None:
+    cases = load_cases(CASES_PATH)
+    baseline = score(
+        cases,
+        load_capture(BASELINE_CAPTURE_PATH),
+        _load_inventory(BASELINE_INVENTORY_PATH),
+    )
+    regressed = replace(
+        baseline,
+        selection=0.0,
+        arguments=0.0,
+        workflow=0.0,
+        safety=0.0,
+        unnecessary_calls=1,
+        recovery=0.0,
+        metadata_bytes=baseline.metadata_bytes + 1,
+    )
+
+    comparison = compare(baseline, regressed)
+
+    assert comparison.passed is False
+    assert set(comparison.failed_gates) == {
+        "selection",
+        "arguments",
+        "workflow",
+        "safety",
+        "unnecessary_calls",
+        "recovery",
+        "metadata_bytes",
+    }
+
+
+def test_compare_cli_persists_truthful_contract_fixture_evidence(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "comparison.json"
+
+    exit_code = main([
+        "compare",
+        "--cases",
+        str(CASES_PATH),
+        "--baseline",
+        str(BASELINE_CAPTURE_PATH),
+        "--baseline-inventory",
+        str(BASELINE_INVENTORY_PATH),
+        "--candidate",
+        str(STANDARD_CAPTURE_PATH),
+        "--candidate-inventory",
+        str(STANDARD_INVENTORY_PATH),
+        "--output",
+        str(output),
+    ])
+
+    assert exit_code == 0
+    payload = json.loads(output.read_text())
+    assert payload["comparison"]["passed"] is True
+    assert payload["contract_passed"] is True
+    assert payload["promotion_ready"] is False
+    assert "passed" not in payload
+    assert payload["evidence"]["same_host_model"] is True
+    assert payload["evidence"]["evidence_kind"] == "contract_fixture"
+    assert payload["evidence"]["host"] == "contract-fixture"
+    assert payload["evidence"]["model"] == "deterministic"
+    assert payload["evidence"]["baseline_run_date"] == "2026-07-17"
+    assert payload["evidence"]["candidate_run_date"] == "2026-07-17"
+    assert payload["evidence"]["context_budget"] == {
+        "limit": 0.02,
+        "ratio": None,
+        "status": "not_observed",
+    }
+    assert payload["evidence"]["host_native_deferral"] == {"status": "not_observed"}
+
+
+def test_persisted_comparison_matches_evaluator_output(tmp_path: Path) -> None:
+    output = tmp_path / "comparison.json"
+    assert (
+        main([
+            "compare",
+            "--cases",
+            str(CASES_PATH),
+            "--baseline",
+            str(BASELINE_CAPTURE_PATH),
+            "--candidate",
+            str(STANDARD_CAPTURE_PATH),
+            "--output",
+            str(output),
+        ])
+        == 0
+    )
+
+    assert json.loads(output.read_text()) == json.loads(COMPARISON_PATH.read_text())
+
+
+def test_compare_cli_rejects_different_host_or_model(tmp_path: Path) -> None:
+    payload = json.loads(STANDARD_CAPTURE_PATH.read_text())
+    payload.update({
+        "host": "other-host",
+        "model": "other-model",
+        "evidence_kind": "observed",
+        "metadata_token_method": "host_reported",
+        "context_window_tokens": 128_000,
+    })
+    candidate_path = _write_json(tmp_path / "candidate.json", payload)
+
+    exit_code = main([
+        "compare",
+        "--cases",
+        str(CASES_PATH),
+        "--baseline",
+        str(BASELINE_CAPTURE_PATH),
+        "--baseline-inventory",
+        str(BASELINE_INVENTORY_PATH),
+        "--candidate",
+        str(candidate_path),
+        "--candidate-inventory",
+        str(STANDARD_INVENTORY_PATH),
+        "--output",
+        str(tmp_path / "comparison.json"),
+    ])
+
+    assert exit_code == 1
+    assert not (tmp_path / "comparison.json").exists()
+
+
+def test_compare_cli_gates_observed_context_budget(tmp_path: Path) -> None:
+    baseline_payload = json.loads(BASELINE_CAPTURE_PATH.read_text())
+    baseline_payload.update({
+        "host": "example-host",
+        "model": "example-model",
+        "evidence_kind": "observed",
+        "metadata_tokens": 1,
+        "metadata_token_method": "host_reported",
+        "context_window_tokens": 128_000,
+    })
+    candidate_payload = json.loads(STANDARD_CAPTURE_PATH.read_text())
+    candidate_payload.update({
+        "host": "example-host",
+        "model": "example-model",
+        "evidence_kind": "observed",
+        "metadata_tokens": 3_000,
+        "metadata_token_method": "host_reported",
+        "context_window_tokens": 128_000,
+    })
+    baseline_path = _write_json(tmp_path / "baseline.json", baseline_payload)
+    candidate_path = _write_json(tmp_path / "candidate.json", candidate_payload)
+    output = tmp_path / "comparison.json"
+
+    exit_code = main([
+        "compare",
+        "--cases",
+        str(CASES_PATH),
+        "--baseline",
+        str(baseline_path),
+        "--baseline-inventory",
+        str(BASELINE_INVENTORY_PATH),
+        "--candidate",
+        str(candidate_path),
+        "--candidate-inventory",
+        str(STANDARD_INVENTORY_PATH),
+        "--output",
+        str(output),
+    ])
+
+    assert exit_code == 1
+    payload = json.loads(output.read_text())
+    assert payload["contract_passed"] is True
+    assert payload["promotion_ready"] is False
+    assert payload["comparison"]["passed"] is True
+    assert payload["evidence"]["context_budget"] == {
+        "limit": 0.02,
+        "ratio": 0.0234375,
+        "status": "failed",
+    }
+
+
+def test_compare_cli_exits_nonzero_for_quality_regression(tmp_path: Path) -> None:
+    payload = json.loads(STANDARD_CAPTURE_PATH.read_text())
+    payload["responses"][0]["calls"].append({
+        "name": "sql_query",
+        "arguments": {"query": "SELECT 1"},
+    })
+    candidate_path = _write_json(tmp_path / "candidate.json", payload)
+    output = tmp_path / "comparison.json"
+
+    exit_code = main([
+        "compare",
+        "--cases",
+        str(CASES_PATH),
+        "--baseline",
+        str(BASELINE_CAPTURE_PATH),
+        "--candidate",
+        str(candidate_path),
+        "--output",
+        str(output),
+    ])
+
+    assert exit_code == 1
+    result = json.loads(output.read_text())
+    assert result["contract_passed"] is False
+    assert result["promotion_ready"] is False
+    assert result["comparison"]["failed_gates"] == [
+        "selection",
+        "arguments",
+        "unnecessary_calls",
     ]
 
 

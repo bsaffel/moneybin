@@ -8,7 +8,7 @@
   "metadata_bytes": 90734,
   "metadata_tokens": 22684,
   "metadata_token_method": "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)",
-  "context_window_tokens": 1,
+  "context_window_tokens": null,
   "responses": [
     {
       "case_id": "first-contact-financial-pulse",
