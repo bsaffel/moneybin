@@ -95,7 +95,7 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 |---|---|---|---|
 | **A. Investment data model** | The securities dimension + the investment-transaction ledger (raw → prep → core), plus manual entry | No | [`investments-data-model.md`](investments-data-model.md) *(foundation child — A+B)* |
 | **B. Cost-basis & gain/loss engine** | Derived lots; FIFO + HIFO + specific-ID + average-cost; realized gain/loss; short-term/long-term split | No | [`investments-data-model.md`](investments-data-model.md) *(ships with A)* |
-| **C. Price feeds & valuation** | Yahoo + CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss | Yes (it *is* the feed) | `investments-price-feeds.md` *(planned)* |
+| **C. Price feeds & valuation** | Broker-carried, stooq, and CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss | Yes (it *is* the feed) | [`investments-price-feeds.md`](investments-price-feeds.md) |
 | **D. Net-worth integration** | Holdings valuation into `reports.net_worth` / `fct_balances` | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
 ### Already-carved children
@@ -225,8 +225,8 @@ cost-basis methods.
    — securities dimension, ledger, lots, and the three-method cost-basis engine with
    manual entry. Reaches the full-tax-year 1099-B bar. Fixes every schema contract
    the gated children wait on.
-2. **Pillar C** (`investments-price-feeds.md`) — append-only price history, daily
-   valuation, unrealized gain/loss.
+2. **Pillar C** ([`investments-price-feeds.md`](investments-price-feeds.md)) —
+   append-only price history, daily valuation, unrealized gain/loss.
 3. **Pillar D** (`investments-net-worth.md`) — holdings valuation into
    `reports.net_worth`.
 4. **Already-carved children** (Plaid sync, OFX import, portfolio reports, matching)
@@ -279,8 +279,15 @@ Cross-cutting decisions deferred to child specs or to resolve during implementat
 - **Realized gain/loss surface grain — resolved.** The foundation child uses a
   separate `core.fct_realized_gains` fact (one row per disposal × consumed lot — the
   1099-B grain), rather than overloading columns onto `core.fct_investment_lots`.
-- **Adjusted vs raw price storage (Pillar C).** Store raw closes and adjust on read,
-  or store both raw and split/dividend-adjusted series. Pillar C decision.
+- **Adjusted vs raw price storage (Pillar C) — resolved.** Store raw closes only,
+  and record the adjustment basis each source declared. Ledger quantity already
+  reflects splits as of each date, so a raw price is its correct multiplicand; an
+  adjusted price applied to a historical quantity applies the split twice. An
+  adjusted series is also stated relative to the corporate actions known when it
+  was fetched, so it stops being correct after the next one — which makes it
+  unusable as a durable historical fact. Adjusted rows are stored and excluded
+  from valuation with the reason recorded. See
+  [`investments-price-feeds.md`](investments-price-feeds.md).
 - **Cross-source security resolution thresholds.** The fuzzy step (name match when no
   CUSIP/ticker) needs scoring + a review posture, mirroring matching. Deferred to the
   first importer child.
