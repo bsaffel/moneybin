@@ -11,9 +11,9 @@ Five properties, together. Plenty of tools have one or two; the **combination** 
 
 - **Local-first, and yours.** Everything lives in one encrypted DuckDB file on your machine. No vendor account is required to use the core product, and you can copy that file and walk away at any time.
 - **Encrypted by default.** AES-256-GCM at rest, with no setup step — not "bring your own full-disk encryption."
-- **MCP-ready.** A first-party [MCP](https://modelcontextprotocol.io) server lets a compatible assistant query the same local data model as the CLI and SQL interface.
+- **AI-native.** A first-party [MCP](https://modelcontextprotocol.io) server, so the AI assistant you already use can answer real questions about your money — against the same local data the CLI and SQL see. Bring your own model; swap it whenever a better one ships.
 - **Queryable like a data warehouse.** Real SQL over [DuckDB](https://duckdb.org), with every number traceable back through a versioned [SQLMesh](https://sqlmesh.com) model to your source file. Ask the AI for an answer, then ask it to show you the SQL.
-- **Open source.** [AGPL-3.0](licensing.md), with a local source install today.
+- **Open source.** [AGPL-3.0](licensing.md). The license guarantees the code outlives its maintainer — anyone can fork, self-host, or continue development under the same terms.
 
 If that intersection is what you've been looking for, the rest of the docs will feel like home — start with [What Works Today](features.md) or [Who MoneyBin Is For](audience.md).
 

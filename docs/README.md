@@ -9,7 +9,7 @@ Three recommended paths. Pick the row that matches you.
 
 | You are... | Read in this order |
 |---|---|
-| **First-time visitor, deciding whether MoneyBin fits** | [`audience.md`](audience.md) → [`features.md`](features.md) → [top-level README demo](../README.md#try-it-safely) |
+| **First-time visitor, deciding whether MoneyBin fits** | [`audience.md`](audience.md) → [`features.md`](features.md) → [top-level README demo](../README.md#sixty-seconds-on-synthetic-data) |
 | **Power user setting up and running it daily** | [`guides/data-import.md`](guides/data-import.md) → [`guides/cli-reference.md`](guides/cli-reference.md) → [`guides/categorization.md`](guides/categorization.md) |
 | **Building agents on top of MoneyBin** | [`guides/mcp-server.md`](guides/mcp-server.md) (tool contract and sensitivity tiers) → [`guides/mcp-clients.md`](guides/mcp-clients.md) (per-client install) |
 
@@ -26,7 +26,7 @@ Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- La
 
 ### Install and first run
 
-- **[Top-level README demo](../README.md#try-it-safely)** — Clone, `make setup`, and evaluate with synthetic data.
+- **[Top-level README demo](../README.md#sixty-seconds-on-synthetic-data)** — Clone, `make setup`, and evaluate with synthetic data.
 - **[Data import](guides/data-import.md)** — All supported file formats (OFX/QFX/QBO, CSV, TSV, Excel, Parquet, Feather) and the inbox workflow. Covers migration from Tiller, Monarch, Copilot exports.
 - **[Profiles](guides/profiles.md)** — Isolation boundaries, profile lifecycle, per-profile config.
 
@@ -39,10 +39,10 @@ Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- La
 
 ### AI and agent workflows
 
-For builders. The first two links are the developer surface; the last two are for end-user client setup.
+For builders: start with the MCP server guide. The client-setup links are for end users.
 
 - **[MCP server](guides/mcp-server.md)** — The builder doc. Tool catalog, response envelope, sensitivity tiers, latency and cost guidance for planning tool budgets.
-- **[MCP prompts](reference/prompts/)** — The prompt starters registered by the local server.
+- **[MCP prompts](reference/prompts/)** — The six conversation starters the server registers: monthly review, categorization triage, rule review, onboarding, curation.
 - **[Setting up Claude Desktop](guides/setting-up-claude-desktop.md)** — The end-user happy path: install, one `mcp install` command, restart, ask a first question.
 - **[MCP clients](guides/mcp-clients.md)** — Per-client setup for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex, and the ChatGPT desktop app (plus why ChatGPT on the web can't connect yet).
 - **Extending the server** — See [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) for the recipe (service, decorator, CLI peer, tests).

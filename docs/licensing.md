@@ -105,43 +105,51 @@ them, what's published does not reproducibly match what's running.
 
 ## Derivative-work boundary
 
-The most common builder question is: *if I build something on top of
-MoneyBin, does my code have to be AGPL?* That depends on the facts and the
-applicable law. This project cannot give legal advice, and the AGPL text does
-not resolve every boundary question about plugins, linking, or IPC. If that
-distinction matters to your business, get advice from qualified counsel.
+The most common builder question: *if I build something on top of
+MoneyBin, does my code have to be AGPL?* The cases below reflect the
+mainstream FSF position; some lawyers read them less strictly, and case law
+on dynamic linking is thin. If your business depends on the distinction, get
+specific legal advice — this page is orientation, not counsel.
 
-The practical facts to evaluate are:
+- **`import moneybin` (linking).** Importing MoneyBin modules into your
+  own Python process creates a combined work. Your service becomes
+  AGPL. This is the FSF's stated position on dynamic linking with
+  (A)GPL software.
+- **CLI / MCP consumption.** Shelling out to the CLI or talking to the
+  MCP server over stdio makes your code a *user* of MoneyBin, not
+  a derivative. Your service does **not** become AGPL.
+- **Custom MCP tools, CLI commands, SQLMesh models.** These extend
+  MoneyBin's surface; they are derivative works and inherit AGPL.
+- **Configuration: env vars, runtime settings, agent prompts.** Not
+  derivative. Configuration is data the program consumes, not code
+  combined with it.
+- **Forked `pyproject.toml` with different deps, no source changes.**
+  Not a derivative if you ship only the diff.
 
-- **In-process use.** Importing MoneyBin modules into another application can
-  create a combined-work question.
-- **Extensions and modifications.** Custom MCP tools, CLI commands, or
-  SQLMesh models distributed as part of MoneyBin may be modifications or
-  derivative works.
-- **Separate processes.** Calling the CLI or communicating with the MCP server
-  from a separate process is architecturally distinct from in-process use, but
-  the legal outcome depends on the complete arrangement.
-- **Configuration and output.** Runtime configuration and output are usually
-  different from program code, but their treatment can also depend on the
-  facts.
+Note the network clause's actual trigger: AGPL §13 obliges an operator of a
+**modified** version used over a network to offer its corresponding source
+([license text](https://www.gnu.org/licenses/agpl-3.0.en.html#section13)).
+Running unmodified MoneyBin behind your service creates no new obligation —
+the source is already public.
 
-AGPL section 13 specifically requires an operator of a **modified** version
-used over a network to offer the corresponding source to its users. Read the
-[license text](https://www.gnu.org/licenses/agpl-3.0.en.html#section13) and
-seek counsel before relying on a licensing boundary.
+Safe pattern for a closed-source product on top of MoneyBin: keep
+MoneyBin in its own process, talk to it over CLI or MCP, treat it as a
+service your code consumes. Your code stays under whatever license you
+choose; MoneyBin (and any modifications) stay under AGPL.
 
 ## Commercial SaaS on top of MoneyBin
 
 Two pieces, two licenses:
 
-- **The MoneyBin instance your service runs.** If you modify it and make it
-  available to network users, AGPL §13 requires an offer of the corresponding
-  source. The license text defines the details.
-- **Your frontend, auth layer, and agent prompts.** Whether these can remain
-  proprietary depends on whether they are separate works under applicable law.
-  A separate process communicating through the public CLI/MCP surface is a
-  materially different architecture from importing MoneyBin modules in-process;
-  seek counsel for a definitive answer.
+- **The MoneyBin instance your service runs.** Unmodified: no new
+  obligation — the source is already public. Modified: AGPL §13 requires
+  offering the modified source to your network users; a public fork linked
+  from your service's UI satisfies it.
+- **Your frontend, auth layer, and agent prompts.** These stay proprietary
+  **if** they are separate works — a separate process communicating with
+  MoneyBin over its public CLI/MCP surface. Import MoneyBin modules into
+  the same process as proprietary code and they become a combined work;
+  your code inherits AGPL.
 
 There is **no dual-license or commercial license offering today**. If
 you need a commercial license to build closed-source derivative work

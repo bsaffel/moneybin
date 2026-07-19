@@ -40,6 +40,38 @@ X, so MoneyBin should do Y” private. When a provider or dependency contract is
 relevant, cite its primary documentation and state the required behavior
 directly.
 
+## Voice — ledger-grade prose
+
+Public docs (README, `docs/`) speak in the product's voice, defined in
+`design-system/readme.md` → Content fundamentals: exact, calm, auditable. The
+two failure modes to avoid are equally bad — marketing cadence (superlatives,
+"not just X but Y", emoji-templated structure) and compliance cadence
+(hedge-stacking, mechanism descriptions that hide the claim). Testable rules:
+
+- **Numbers first.** Every claim that can carry a checkable number does
+  ("eight clients", "within $0.01") — never a bare adjective ("powerful",
+  "seamless"). If the number would go stale fast, use a bounded one
+  ("more than 100 tools").
+- **No global hedges.** Never "pre-v1, expect roughness" disclaimers. A
+  limitation is a scoped fact plus the next action ("Windows is untested";
+  "consent gating is designed but not yet enforced"). One qualifier per
+  paragraph, maximum.
+- **Ban the negation-restatement tic.** "X is planned; it is not available
+  today" — "planned" already says that. Grep before shipping:
+  `is planned\..* not|planned; .*not|is not available today`.
+- **Trust as negation.** State what the product does NOT do, flatly ("No
+  telemetry. No vendor account."). Promises of absence are checkable.
+- **Concede real categories by name** (audience.md is the pattern). Candor
+  with specifics is the strongest trust signal; no template generates it.
+- **Transcripts over prose.** A real command with real output persuades more
+  than a paragraph. Never fabricate or edit output; trimming whole lines is
+  fine.
+- **Imperative mood** over chatty second person. Sentence-case headings. No
+  exclamation points, no superlatives; emoji only as status marks in tables.
+- **Would this sentence be false if a user checked it today?** If yes, cut
+  it. If no, don't hedge it — the hedge costs the reader information and buys
+  nothing.
+
 ## Diagrams
 
 - **Mermaid over ASCII**: When generating `.md` files that include diagrams, use Mermaid code blocks (` ```mermaid `) instead of ASCII art.

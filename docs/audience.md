@@ -41,9 +41,10 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 **Job to be done:** Ask "what did I spend on AWS last quarter?" inside the same chat window where they write code. Get back a real answer with SQL behind it, not a hosted vendor's summary — and when the built-in answer isn't enough, have the agent *build* the missing piece.
 
 **Why MoneyBin fits today:**
-- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (eight supported client configurations).
+- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (eight clients supported).
 - Every MCP tool has a CLI twin with `--output json` parity; the CLI is a first-class agent surface, not an afterthought.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
+- Built to be *extended* by the agent, not only queried. The schema and the import pipeline are stable surfaces an agent can build against today; a declarative report contract and the broader extension contract are in flight.
 
 **What's still rough:** Today's MCP transport requires the AI client and MoneyBin to run on the same machine. Remote-client support (so ChatGPT web or a hosted assistant can reach a MoneyBin running elsewhere) is planned.
 
@@ -57,7 +58,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - The data plane is one encrypted DuckDB file per profile, AES-encrypted at rest. Back it up like any other file, walk away with it whenever you want.
 - No hosted dependency for the core product. Bank-direct sync (when you opt in) goes through a server you can also self-host; OFX/QFX/CSV import is fully local.
 
-**What's still rough:** No always-on daemon yet — MoneyBin runs when you invoke it. macOS is the primary target; Linux is supported from source, and Windows has not yet been tested.
+**What's still rough:** No always-on daemon yet — MoneyBin runs when you invoke it. macOS is the primary target; Linux is supported from source; Windows isn't on the roadmap.
 
 ### The privacy-conscious power user
 
@@ -82,7 +83,7 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **Job to be done:** A polished visual surface for spending and net worth, with optional AI on the side — not a chatbot pretending to be an interface.
 
-**Why MoneyBin may fit later:** A browser-based web UI is planned. It is not available today, and there is no native mobile app planned for v1.
+**Why MoneyBin will fit:** A browser-based web UI is planned — dashboards, account management, balance reconciliation. It will run in a phone browser; there is no native mobile app planned for v1.
 
 **Do you have to use AI?** No. AI is an optional layer over a deterministic SQL pipeline. Every number on the screen will exist whether or not you ever open a chat box; the AI is for asking questions about those numbers.
 

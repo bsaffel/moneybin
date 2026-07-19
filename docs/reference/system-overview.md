@@ -117,7 +117,7 @@ Once `db init` completes, the keychain (or your passphrase) holds the key; subse
 
 ## Surfaces
 
-The three current surfaces (CLI, MCP, SQL) read from the same `core.*` / `reports.*` interface set and the same `app.*` overlay. Writes from MCP are restricted to `app.*` (user state) and `raw.*` (imports and manual entry) by the privacy middleware, and the MCP `sql_query` tool enforces read-only via SQL parsing. The CLI's `moneybin db shell` and `moneybin db query` attach the database **writable** — the convention forbids writes to `core.*` and `reports.*`, but the middleware does not run on those paths, so ad-hoc SQL is on you.
+The three peer surfaces (CLI, MCP, SQL) read from the same `core.*` / `reports.*` interface set and the same `app.*` overlay. Writes from MCP are restricted to `app.*` (user state) and `raw.*` (imports and manual entry) by the privacy middleware, and the MCP `sql_query` tool enforces read-only via SQL parsing. The CLI's `moneybin db shell` and `moneybin db query` attach the database **writable** — the convention forbids writes to `core.*` and `reports.*`, but the middleware does not run on those paths, so ad-hoc SQL is on you.
 
 ### CLI
 
@@ -125,7 +125,7 @@ Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `r
 
 ### MCP server
 
-More than 100 tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today. Supported in eight client configurations — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
+More than 100 tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today. Supported in eight clients — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 
