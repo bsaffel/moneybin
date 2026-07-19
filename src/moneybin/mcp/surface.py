@@ -117,6 +117,16 @@ def description_budget_violations(
     }
     violations: list[DescriptionBudgetViolation] = []
     for tool_name, description in descriptions.items():
+        if not description.strip():
+            violations.append(
+                DescriptionBudgetViolation(
+                    tool_name=tool_name,
+                    budget="missing_description",
+                    actual=0,
+                    limit=1,
+                )
+            )
+            continue
         first_sentence = _first_sentence(description)
         if len(first_sentence) > FIRST_SENTENCE_CHARACTER_LIMIT:
             violations.append(
@@ -176,6 +186,6 @@ def _first_sentence(description: str) -> str:
 def _opening_groups(descriptions: dict[str, str]) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = {}
     for name, description in descriptions.items():
-        if description:
+        if description.strip():
             groups.setdefault(description[:DESCRIPTION_OPENING_LENGTH], []).append(name)
     return groups

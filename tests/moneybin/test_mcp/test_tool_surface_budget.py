@@ -33,6 +33,118 @@ FIXTURES_PATH = Path(__file__).parents[2] / "fixtures/mcp_surface"
 BASELINE_PATH = FIXTURES_PATH / "baseline-2026-07-17.json"
 STANDARD_PATH = FIXTURES_PATH / "standard-45.json"
 
+_REPLACED_TOOL_NAME_COHORTS = {
+    "system_status": frozenset({
+        "system_status",
+        "system_doctor",
+        "transactions_categorize_stats",
+    }),
+    "system_audit": frozenset({
+        "system_audit",
+        "system_audit_history",
+        "system_audit_get",
+    }),
+    "accounts": frozenset({
+        "accounts",
+        "accounts_get",
+        "accounts_summary",
+        "accounts_resolve",
+    }),
+    "accounts_balances": frozenset({
+        "accounts_balances",
+        "accounts_balance_history",
+        "accounts_balance_assertions",
+        "accounts_balance_reconcile",
+    }),
+    "investments": frozenset({
+        "investments",
+        "investments_holdings",
+        "investments_lots",
+        "investments_gains",
+        "investments_securities",
+    }),
+    "transactions": frozenset({"transactions_get"}),
+    "transactions_categorize_rules": frozenset({"transactions_categorize_rules"}),
+    "reviews": frozenset({
+        "review",
+        "transactions_categorize_pending",
+        "transactions_categorize_auto_review",
+        "transactions_matches_pending",
+        "transactions_matches_history",
+        "accounts_links_pending",
+        "accounts_links_history",
+        "merchants_links_pending",
+        "merchants_links_history",
+        "investments_securities_links_pending",
+        "investments_securities_links_history",
+    }),
+    "taxonomy": frozenset({"categories", "merchants"}),
+    "import_status": frozenset({
+        "import_status",
+        "import_formats",
+        "import_inbox_pending",
+    }),
+    "gsheet": frozenset({"gsheet", "gsheet_status"}),
+    "privacy": frozenset({"privacy_status", "privacy_log"}),
+    "accounts_balance_assert": frozenset({
+        "accounts_balance_assert",
+        "accounts_balance_assertion_delete",
+    }),
+    "transactions_annotate": frozenset({
+        "transactions_notes_add",
+        "transactions_notes_edit",
+        "transactions_notes_delete",
+        "transactions_tags_set",
+        "transactions_tags_rename",
+        "transactions_splits_set",
+    }),
+    "transactions_categorize_rules_set": frozenset({
+        "transactions_categorize_rules_create",
+        "transactions_categorize_rules_delete",
+    }),
+    "reviews_decide": frozenset({
+        "transactions_matches_set",
+        "transactions_categorize_auto_accept",
+    }),
+    "identity_links_decide": frozenset({
+        "accounts_links_set",
+        "merchants_links_set",
+        "investments_securities_links_set",
+    }),
+    "taxonomy_set": frozenset({
+        "categories_create",
+        "categories_set",
+        "categories_delete",
+        "merchants_create",
+    }),
+    "privacy_consent_set": frozenset({
+        "privacy_consent_grant",
+        "privacy_consent_revoke",
+    }),
+}
+
+_CANONICAL_CARRYING_WEIGHT_BYTES = {
+    "system_status": (663, 2_725),
+    "system_audit": (746, 1_958),
+    "accounts": (830, 2_240),
+    "accounts_balances": (877, 2_786),
+    "investments": (987, 4_908),
+    "transactions": (1_287, 2_383),
+    "transactions_categorize_rules": (564, 318),
+    "reviews": (690, 8_687),
+    "taxonomy": (669, 620),
+    "import_status": (642, 1_236),
+    "gsheet": (441, 1_016),
+    "privacy": (590, 1_007),
+    "accounts_balance_assert": (1_416, 1_679),
+    "transactions_annotate": (2_641, 3_653),
+    "transactions_categorize_rules_set": (2_965, 2_670),
+    "reviews_decide": (1_802, 2_566),
+    "identity_links_decide": (2_758, 5_762),
+    "taxonomy_set": (3_337, 3_223),
+    "privacy_consent_set": (1_217, 2_188),
+}
+
 _STANDARD_CALLBACK_NAMES = {
     "system_status": "system_status_coarse",
     "system_audit": "system_audit_coarse",
@@ -112,7 +224,10 @@ def _inventory(*tools: Tool) -> SurfaceInventory:
     return SurfaceInventory.from_tools(list(tools))
 
 
-def _tool(name: str, description: str = "Describe a distinct operation.") -> Tool:
+def _tool(
+    name: str,
+    description: str | None = "Describe a distinct operation.",
+) -> Tool:
     return Tool(
         name=name,
         description=description,
@@ -164,6 +279,25 @@ def test_description_budget_violations_measure_each_kind_of_debt() -> None:
     assert ("long_description", "description") in observed
 
 
+@pytest.mark.parametrize("description", [None, "", "   "])
+def test_description_budget_rejects_missing_or_empty_prose(
+    description: str | None,
+) -> None:
+    inventory = _inventory(_tool("missing_description", description))
+
+    violations = description_budget_violations(inventory)
+
+    assert [
+        (
+            violation.tool_name,
+            violation.budget,
+            violation.actual,
+            violation.limit,
+        )
+        for violation in violations
+    ] == [("missing_description", "missing_description", 0, 1)]
+
+
 def test_surface_contract_enforces_description_budget_when_enabled() -> None:
     inventory = _inventory(_tool("long_description", f"Short. {'x' * 900}"))
 
@@ -202,6 +336,25 @@ def test_standard_snapshot_matches_live_surface() -> None:
     actual = _inventory_server_sync()
 
     assert expected == actual.to_dict()
+
+
+def test_carrying_weight_cohorts_use_canonical_definition_bytes() -> None:
+    baseline = _load_inventory(BASELINE_PATH)
+    standard = _load_inventory(STANDARD_PATH)
+    baseline_rows = {row.name: row for row in baseline.tools}
+    standard_rows = {row.name: row for row in standard.tools}
+
+    assert set(_REPLACED_TOOL_NAME_COHORTS) == set(_CANONICAL_CARRYING_WEIGHT_BYTES)
+    replaced_names = [
+        name for cohort in _REPLACED_TOOL_NAME_COHORTS.values() for name in cohort
+    ]
+    assert len(replaced_names) == len(set(replaced_names))
+    for operation, cohort in _REPLACED_TOOL_NAME_COHORTS.items():
+        candidate_bytes, replaced_bytes = _CANONICAL_CARRYING_WEIGHT_BYTES[operation]
+        assert standard_rows[operation].total_bytes == candidate_bytes
+        assert sum(baseline_rows[name].total_bytes for name in cohort) == (
+            replaced_bytes
+        )
 
 
 @pytest.mark.integration

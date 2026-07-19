@@ -81,13 +81,7 @@ def _inventory_row(payload: dict[str, JsonValue]) -> ToolInventory:
         output_schema_bytes=output_schema_bytes,
         annotation_bytes=annotation_bytes,
         other_bytes=other_bytes,
-        total_bytes=(
-            description_bytes
-            + input_schema_bytes
-            + output_schema_bytes
-            + annotation_bytes
-            + other_bytes
-        ),
+        total_bytes=_serialized_bytes(payload),
     )
 
 

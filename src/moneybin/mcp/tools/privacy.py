@@ -514,6 +514,30 @@ def register_privacy_coarse_writes(mcp: FastMCP) -> None:
         "Grant is runtime non-destructive and idempotent; revoke confirms the "
         "exact normalized category set, backend, actor, profile, and live grants.",
         privacy_actor="privacy_consent_set",
+        input_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"state": {"const": "revoked"}},
+                        "required": ["state"],
+                    },
+                    "then": {
+                        "not": {"anyOf": [{"required": ["mode"]}]},
+                    },
+                },
+                {
+                    "if": {
+                        "properties": {"state": {"const": "granted"}},
+                        "required": ["state"],
+                    },
+                    "then": {
+                        "not": {
+                            "anyOf": [{"required": ["confirmation_token"]}],
+                        },
+                    },
+                },
+            ]
+        },
     )
 
 

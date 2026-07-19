@@ -471,11 +471,11 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic Plan 6
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 42,204 serialized metadata bytes, no advertised output
+contains 45 tools, 42,472 serialized metadata bytes, no advertised output
 schemas, and registry SHA-256
-`69c4bd6f83069142ced5353b4f98bfd0c723957aa6063c6d8376feb224085b42`.
-That is 48,530 bytes (53.5%) below the frozen 90,734-byte registry. The
-deterministic estimate is 10,551 metadata tokens; a percentage of context is
+`de108d3906ad0cddc6b5cd65c79064980bfd96e524df03817eea2efa1c4d9260`.
+That is 48,262 bytes (53.2%) below the frozen 90,734-byte registry. The
+deterministic estimate is 10,618 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
 
@@ -488,29 +488,69 @@ express.
 
 | Standard operation | Total bytes candidate / replaced (delta) | Input-schema bytes candidate / replaced (delta) |
 |---|---:|---:|
-| `system_status` | 616 / 2,584 (-1,968) | 277 / 793 (-516) |
-| `system_audit` | 699 / 1,811 (-1,112) | 412 / 684 (-272) |
-| `accounts` | 783 / 2,049 (-1,266) | 465 / 808 (-343) |
-| `accounts_balances` | 830 / 2,598 (-1,768) | 510 / 1,286 (-776) |
-| `investments` | 940 / 4,667 (-3,727) | 598 / 2,727 (-2,129) |
-| `transactions` | 1,240 / 2,333 (-1,093) | 821 / 1,666 (-845) |
-| `transactions_categorize_rules` | 517 / 271 (+246) | 144 / 62 (+82) |
-| `reviews` | 643 / 8,158 (-7,515) | 401 / 2,493 (-2,092) |
-| `taxonomy` | 622 / 526 (+96) | 389 / 177 (+212) |
-| `import_status` | 595 / 1,095 (-500) | 405 / 429 (-24) |
-| `gsheet` | 394 / 919 (-525) | 219 / 200 (+19) |
-| `privacy` | 543 / 913 (-370) | 267 / 393 (-126) |
-| `accounts_balance_assert` | 1,369 / 1,576 (-207) | 775 / 674 (+101) |
-| `transactions_annotate` | 2,594 / 3,353 (-759) | 2,162 / 962 (+1,200) |
-| `transactions_categorize_rules_set` | 2,918 / 2,573 (+345) | 2,350 / 1,260 (+1,090) |
-| `reviews_decide` | 1,755 / 2,466 (-711) | 1,419 / 1,220 (+199) |
-| `identity_links_decide` | 2,711 / 5,603 (-2,892) | 2,348 / 2,003 (+345) |
-| `taxonomy_set` | 3,290 / 3,026 (+264) | 2,942 / 1,163 (+1,779) |
-| `privacy_consent_set` | 902 / 2,091 (-1,189) | 531 / 1,021 (-490) |
+| `system_status` | 663 / 2,725 (-2,062) | 277 / 793 (-516) |
+| `system_audit` | 746 / 1,958 (-1,212) | 412 / 684 (-272) |
+| `accounts` | 830 / 2,240 (-1,410) | 465 / 808 (-343) |
+| `accounts_balances` | 877 / 2,786 (-1,909) | 510 / 1,286 (-776) |
+| `investments` | 987 / 4,908 (-3,921) | 598 / 2,727 (-2,129) |
+| `transactions` | 1,287 / 2,383 (-1,096) | 821 / 1,666 (-845) |
+| `transactions_categorize_rules` | 564 / 318 (+246) | 144 / 62 (+82) |
+| `reviews` | 690 / 8,687 (-7,997) | 401 / 2,493 (-2,092) |
+| `taxonomy` | 669 / 620 (+49) | 389 / 177 (+212) |
+| `import_status` | 642 / 1,236 (-594) | 405 / 429 (-24) |
+| `gsheet` | 441 / 1,016 (-575) | 219 / 200 (+19) |
+| `privacy` | 590 / 1,007 (-417) | 267 / 393 (-126) |
+| `accounts_balance_assert` | 1,416 / 1,679 (-263) | 775 / 674 (+101) |
+| `transactions_annotate` | 2,641 / 3,653 (-1,012) | 2,162 / 962 (+1,200) |
+| `transactions_categorize_rules_set` | 2,965 / 2,670 (+295) | 2,350 / 1,260 (+1,090) |
+| `reviews_decide` | 1,802 / 2,566 (-764) | 1,419 / 1,220 (+199) |
+| `identity_links_decide` | 2,758 / 5,762 (-3,004) | 2,348 / 2,003 (+345) |
+| `taxonomy_set` | 3,337 / 3,223 (+114) | 2,942 / 1,163 (+1,779) |
+| `privacy_consent_set` | 1,217 / 2,188 (-971) | 799 / 1,021 (-222) |
+
+The exact replaced-name cohorts are:
+
+- `system_status` ← `system_status`, `system_doctor`,
+  `transactions_categorize_stats`
+- `system_audit` ← `system_audit`, `system_audit_history`, `system_audit_get`
+- `accounts` ← `accounts`, `accounts_get`, `accounts_summary`,
+  `accounts_resolve`
+- `accounts_balances` ← `accounts_balances`, `accounts_balance_history`,
+  `accounts_balance_assertions`, `accounts_balance_reconcile`
+- `investments` ← `investments`, `investments_holdings`, `investments_lots`,
+  `investments_gains`, `investments_securities`
+- `transactions` ← `transactions_get`
+- `transactions_categorize_rules` ← `transactions_categorize_rules`
+- `reviews` ← `review`, `transactions_categorize_pending`,
+  `transactions_categorize_auto_review`, `transactions_matches_pending`,
+  `transactions_matches_history`, `accounts_links_pending`,
+  `accounts_links_history`, `merchants_links_pending`,
+  `merchants_links_history`, `investments_securities_links_pending`,
+  `investments_securities_links_history`
+- `taxonomy` ← `categories`, `merchants`
+- `import_status` ← `import_status`, `import_formats`, `import_inbox_pending`
+- `gsheet` ← `gsheet`, `gsheet_status`
+- `privacy` ← `privacy_status`, `privacy_log`
+- `accounts_balance_assert` ← `accounts_balance_assert`,
+  `accounts_balance_assertion_delete`
+- `transactions_annotate` ← `transactions_notes_add`,
+  `transactions_notes_edit`, `transactions_notes_delete`,
+  `transactions_tags_set`, `transactions_tags_rename`,
+  `transactions_splits_set`
+- `transactions_categorize_rules_set` ←
+  `transactions_categorize_rules_create`,
+  `transactions_categorize_rules_delete`
+- `reviews_decide` ← `transactions_matches_set`,
+  `transactions_categorize_auto_accept`
+- `identity_links_decide` ← `accounts_links_set`, `merchants_links_set`,
+  `investments_securities_links_set`
+- `taxonomy_set` ← `categories_create`, `categories_set`, `categories_delete`,
+  `merchants_create`
+- `privacy_consent_set` ← `privacy_consent_grant`, `privacy_consent_revoke`
 
 Four operations are individually larger in total metadata:
-`transactions_categorize_rules` (+246), `taxonomy` (+96),
-`transactions_categorize_rules_set` (+345), and `taxonomy_set` (+264).
+`transactions_categorize_rules` (+246), `taxonomy` (+49),
+`transactions_categorize_rules_set` (+295), and `taxonomy_set` (+114).
 They retain approved projection/history or target-state semantics that the
 replaced definitions lacked. Splitting them would spend additional public
 identities and repeat descriptions/annotations without evidence of better

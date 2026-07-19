@@ -47,7 +47,7 @@
       "name": "accounts",
       "other_bytes": 50,
       "output_schema_bytes": 0,
-      "total_bytes": 609
+      "total_bytes": 656
     },
     {
       "annotation_bytes": 90,
@@ -106,7 +106,7 @@
       "name": "accounts_balance_assert",
       "other_bytes": 65,
       "output_schema_bytes": 0,
-      "total_bytes": 1032
+      "total_bytes": 1085
     },
     {
       "annotation_bytes": 89,
@@ -148,7 +148,7 @@
       "name": "accounts_balance_assertion_delete",
       "other_bytes": 75,
       "output_schema_bytes": 0,
-      "total_bytes": 544
+      "total_bytes": 594
     },
     {
       "annotation_bytes": 89,
@@ -190,7 +190,7 @@
       "name": "accounts_balance_assertions",
       "other_bytes": 69,
       "output_schema_bytes": 0,
-      "total_bytes": 447
+      "total_bytes": 494
     },
     {
       "annotation_bytes": 89,
@@ -251,7 +251,7 @@
       "name": "accounts_balance_history",
       "other_bytes": 66,
       "output_schema_bytes": 0,
-      "total_bytes": 719
+      "total_bytes": 766
     },
     {
       "annotation_bytes": 89,
@@ -301,7 +301,7 @@
       "name": "accounts_balance_reconcile",
       "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 789
+      "total_bytes": 836
     },
     {
       "annotation_bytes": 89,
@@ -358,7 +358,7 @@
       "name": "accounts_balances",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 643
+      "total_bytes": 690
     },
     {
       "annotation_bytes": 89,
@@ -395,7 +395,7 @@
       "name": "accounts_get",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 491
+      "total_bytes": 538
     },
     {
       "annotation_bytes": 89,
@@ -432,7 +432,7 @@
       "name": "accounts_links_history",
       "other_bytes": 71,
       "output_schema_bytes": 0,
-      "total_bytes": 447
+      "total_bytes": 494
     },
     {
       "annotation_bytes": 89,
@@ -463,7 +463,7 @@
       "name": "accounts_links_pending",
       "other_bytes": 71,
       "output_schema_bytes": 0,
-      "total_bytes": 781
+      "total_bytes": 828
     },
     {
       "annotation_bytes": 90,
@@ -494,7 +494,7 @@
       "name": "accounts_links_run",
       "other_bytes": 67,
       "output_schema_bytes": 0,
-      "total_bytes": 693
+      "total_bytes": 740
     },
     {
       "annotation_bytes": 90,
@@ -554,7 +554,7 @@
       "name": "accounts_links_set",
       "other_bytes": 67,
       "output_schema_bytes": 0,
-      "total_bytes": 1816
+      "total_bytes": 1869
     },
     {
       "annotation_bytes": 89,
@@ -596,7 +596,7 @@
       "name": "accounts_resolve",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 649
+      "total_bytes": 696
     },
     {
       "annotation_bytes": 90,
@@ -756,7 +756,7 @@
       "name": "accounts_set",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 1888
+      "total_bytes": 1935
     },
     {
       "annotation_bytes": 89,
@@ -785,7 +785,7 @@
       "name": "accounts_summary",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 300
+      "total_bytes": 350
     },
     {
       "annotation_bytes": 89,
@@ -819,7 +819,7 @@
       "name": "categories",
       "other_bytes": 52,
       "output_schema_bytes": 0,
-      "total_bytes": 292
+      "total_bytes": 339
     },
     {
       "annotation_bytes": 91,
@@ -877,7 +877,7 @@
       "name": "categories_create",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 570
+      "total_bytes": 617
     },
     {
       "annotation_bytes": 89,
@@ -919,7 +919,7 @@
       "name": "categories_delete",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 1005
+      "total_bytes": 1058
     },
     {
       "annotation_bytes": 90,
@@ -961,7 +961,7 @@
       "name": "categories_set",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 838
+      "total_bytes": 885
     },
     {
       "annotation_bytes": 89,
@@ -990,7 +990,7 @@
       "name": "gsheet",
       "other_bytes": 48,
       "output_schema_bytes": 0,
-      "total_bytes": 508
+      "total_bytes": 558
     },
     {
       "annotation_bytes": 90,
@@ -1024,7 +1024,7 @@
       "name": "gsheet_auth",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 525
+      "total_bytes": 575
     },
     {
       "annotation_bytes": 90,
@@ -1141,7 +1141,7 @@
       "name": "gsheet_connect",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 1414
+      "total_bytes": 1464
     },
     {
       "annotation_bytes": 89,
@@ -1181,7 +1181,7 @@
       "name": "gsheet_disconnect",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 513
+      "total_bytes": 560
     },
     {
       "annotation_bytes": 90,
@@ -1222,7 +1222,7 @@
       "name": "gsheet_pull",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 755
+      "total_bytes": 805
     },
     {
       "annotation_bytes": 90,
@@ -1273,7 +1273,7 @@
       "name": "gsheet_reconnect",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 539
+      "total_bytes": 589
     },
     {
       "annotation_bytes": 89,
@@ -1314,7 +1314,7 @@
       "name": "gsheet_status",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 411
+      "total_bytes": 458
     },
     {
       "annotation_bytes": 91,
@@ -1446,7 +1446,7 @@
       "name": "import_confirm",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 3344
+      "total_bytes": 3394
     },
     {
       "annotation_bytes": 91,
@@ -1496,7 +1496,7 @@
       "name": "import_files",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 1238
+      "total_bytes": 1285
     },
     {
       "annotation_bytes": 89,
@@ -1525,7 +1525,7 @@
       "name": "import_formats",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 275
+      "total_bytes": 322
     },
     {
       "annotation_bytes": 89,
@@ -1554,7 +1554,7 @@
       "name": "import_inbox_pending",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 296
+      "total_bytes": 343
     },
     {
       "annotation_bytes": 91,
@@ -1589,7 +1589,7 @@
       "name": "import_inbox_sync",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 1042
+      "total_bytes": 1089
     },
     {
       "annotation_bytes": 90,
@@ -1632,7 +1632,7 @@
       "name": "import_labels_set",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 541
+      "total_bytes": 588
     },
     {
       "annotation_bytes": 91,
@@ -1669,7 +1669,7 @@
       "name": "import_preview",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 887
+      "total_bytes": 943
     },
     {
       "annotation_bytes": 90,
@@ -1706,7 +1706,7 @@
       "name": "import_revert",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 650
+      "total_bytes": 700
     },
     {
       "annotation_bytes": 89,
@@ -1753,7 +1753,7 @@
       "name": "import_status",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 524
+      "total_bytes": 571
     },
     {
       "annotation_bytes": 89,
@@ -1843,7 +1843,7 @@
       "name": "investments",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1357
+      "total_bytes": 1404
     },
     {
       "annotation_bytes": 89,
@@ -1933,7 +1933,7 @@
       "name": "investments_gains",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 1208
+      "total_bytes": 1255
     },
     {
       "annotation_bytes": 89,
@@ -1975,7 +1975,7 @@
       "name": "investments_holdings",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 628
+      "total_bytes": 678
     },
     {
       "annotation_bytes": 89,
@@ -2034,7 +2034,7 @@
       "name": "investments_lots",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 979
+      "total_bytes": 1026
     },
     {
       "annotation_bytes": 90,
@@ -2080,7 +2080,7 @@
       "name": "investments_lots_select",
       "other_bytes": 65,
       "output_schema_bytes": 0,
-      "total_bytes": 956
+      "total_bytes": 1006
     },
     {
       "annotation_bytes": 90,
@@ -2120,7 +2120,7 @@
       "name": "investments_record",
       "other_bytes": 60,
       "output_schema_bytes": 0,
-      "total_bytes": 1001
+      "total_bytes": 1048
     },
     {
       "annotation_bytes": 89,
@@ -2162,7 +2162,7 @@
       "name": "investments_securities",
       "other_bytes": 64,
       "output_schema_bytes": 0,
-      "total_bytes": 495
+      "total_bytes": 545
     },
     {
       "annotation_bytes": 89,
@@ -2199,7 +2199,7 @@
       "name": "investments_securities_links_history",
       "other_bytes": 85,
       "output_schema_bytes": 0,
-      "total_bytes": 476
+      "total_bytes": 523
     },
     {
       "annotation_bytes": 89,
@@ -2230,7 +2230,7 @@
       "name": "investments_securities_links_pending",
       "other_bytes": 85,
       "output_schema_bytes": 0,
-      "total_bytes": 698
+      "total_bytes": 748
     },
     {
       "annotation_bytes": 90,
@@ -2290,7 +2290,7 @@
       "name": "investments_securities_links_set",
       "other_bytes": 81,
       "output_schema_bytes": 0,
-      "total_bytes": 1812
+      "total_bytes": 1865
     },
     {
       "annotation_bytes": 90,
@@ -2452,7 +2452,7 @@
       "name": "investments_securities_set",
       "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 1422
+      "total_bytes": 1469
     },
     {
       "annotation_bytes": 89,
@@ -2481,7 +2481,7 @@
       "name": "merchants",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 234
+      "total_bytes": 281
     },
     {
       "annotation_bytes": 91,
@@ -2531,7 +2531,7 @@
       "name": "merchants_create",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 613
+      "total_bytes": 663
     },
     {
       "annotation_bytes": 89,
@@ -2568,7 +2568,7 @@
       "name": "merchants_links_history",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 450
+      "total_bytes": 497
     },
     {
       "annotation_bytes": 89,
@@ -2599,7 +2599,7 @@
       "name": "merchants_links_pending",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 792
+      "total_bytes": 839
     },
     {
       "annotation_bytes": 90,
@@ -2630,7 +2630,7 @@
       "name": "merchants_links_run",
       "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 833
+      "total_bytes": 886
     },
     {
       "annotation_bytes": 90,
@@ -2690,7 +2690,7 @@
       "name": "merchants_links_set",
       "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 1975
+      "total_bytes": 2028
     },
     {
       "annotation_bytes": 90,
@@ -2750,7 +2750,7 @@
       "name": "privacy_consent_grant",
       "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 1306
+      "total_bytes": 1353
     },
     {
       "annotation_bytes": 90,
@@ -2801,7 +2801,7 @@
       "name": "privacy_consent_revoke",
       "other_bytes": 73,
       "output_schema_bytes": 0,
-      "total_bytes": 785
+      "total_bytes": 835
     },
     {
       "annotation_bytes": 89,
@@ -2850,7 +2850,7 @@
       "name": "privacy_log",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 594
+      "total_bytes": 641
     },
     {
       "annotation_bytes": 89,
@@ -2881,7 +2881,7 @@
       "name": "privacy_status",
       "other_bytes": 65,
       "output_schema_bytes": 0,
-      "total_bytes": 319
+      "total_bytes": 366
     },
     {
       "annotation_bytes": 90,
@@ -2932,7 +2932,7 @@
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1816
+      "total_bytes": 1875
     },
     {
       "annotation_bytes": 89,
@@ -2991,7 +2991,7 @@
       "name": "reports_balance_drift",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 856
+      "total_bytes": 905
     },
     {
       "annotation_bytes": 89,
@@ -3050,7 +3050,7 @@
       "name": "reports_cashflow",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 914
+      "total_bytes": 963
     },
     {
       "annotation_bytes": 89,
@@ -3090,7 +3090,7 @@
       "name": "reports_large_transactions",
       "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 720
+      "total_bytes": 769
     },
     {
       "annotation_bytes": 89,
@@ -3130,7 +3130,7 @@
       "name": "reports_merchants",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 653
+      "total_bytes": 702
     },
     {
       "annotation_bytes": 89,
@@ -3187,7 +3187,7 @@
       "name": "reports_networth",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 763
+      "total_bytes": 810
     },
     {
       "annotation_bytes": 89,
@@ -3234,7 +3234,7 @@
       "name": "reports_networth_history",
       "other_bytes": 66,
       "output_schema_bytes": 0,
-      "total_bytes": 673
+      "total_bytes": 720
     },
     {
       "annotation_bytes": 89,
@@ -3286,7 +3286,7 @@
       "name": "reports_recurring",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 768
+      "total_bytes": 817
     },
     {
       "annotation_bytes": 89,
@@ -3357,7 +3357,7 @@
       "name": "reports_spending",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 1150
+      "total_bytes": 1199
     },
     {
       "annotation_bytes": 89,
@@ -3386,7 +3386,7 @@
       "name": "review",
       "other_bytes": 48,
       "output_schema_bytes": 0,
-      "total_bytes": 606
+      "total_bytes": 653
     },
     {
       "annotation_bytes": 89,
@@ -3423,7 +3423,7 @@
       "name": "sql_query",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 800
+      "total_bytes": 850
     },
     {
       "annotation_bytes": 89,
@@ -3465,7 +3465,7 @@
       "name": "sql_schema",
       "other_bytes": 52,
       "output_schema_bytes": 0,
-      "total_bytes": 763
+      "total_bytes": 810
     },
     {
       "annotation_bytes": 90,
@@ -3506,7 +3506,7 @@
       "name": "sync_connect",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 354
+      "total_bytes": 401
     },
     {
       "annotation_bytes": 89,
@@ -3542,7 +3542,7 @@
       "name": "sync_connect_status",
       "other_bytes": 61,
       "output_schema_bytes": 0,
-      "total_bytes": 349
+      "total_bytes": 396
     },
     {
       "annotation_bytes": 89,
@@ -3578,7 +3578,7 @@
       "name": "sync_disconnect",
       "other_bytes": 57,
       "output_schema_bytes": 0,
-      "total_bytes": 291
+      "total_bytes": 338
     },
     {
       "annotation_bytes": 90,
@@ -3619,7 +3619,7 @@
       "name": "sync_link",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 402
+      "total_bytes": 452
     },
     {
       "annotation_bytes": 89,
@@ -3655,7 +3655,7 @@
       "name": "sync_link_status",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 305
+      "total_bytes": 352
     },
     {
       "annotation_bytes": 90,
@@ -3704,7 +3704,7 @@
       "name": "sync_pull",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 1176
+      "total_bytes": 1229
     },
     {
       "annotation_bytes": 89,
@@ -3733,7 +3733,7 @@
       "name": "sync_status",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 256
+      "total_bytes": 303
     },
     {
       "annotation_bytes": 89,
@@ -3779,7 +3779,7 @@
       "name": "system_audit",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 420
+      "total_bytes": 467
     },
     {
       "annotation_bytes": 89,
@@ -3815,7 +3815,7 @@
       "name": "system_audit_get",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 521
+      "total_bytes": 571
     },
     {
       "annotation_bytes": 89,
@@ -3886,7 +3886,7 @@
       "name": "system_audit_history",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 870
+      "total_bytes": 920
     },
     {
       "annotation_bytes": 90,
@@ -3922,7 +3922,7 @@
       "name": "system_audit_undo",
       "other_bytes": 59,
       "output_schema_bytes": 0,
-      "total_bytes": 968
+      "total_bytes": 1018
     },
     {
       "annotation_bytes": 90,
@@ -3957,7 +3957,7 @@
       "name": "system_doctor",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 904
+      "total_bytes": 951
     },
     {
       "annotation_bytes": 89,
@@ -3986,7 +3986,7 @@
       "name": "system_status",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 439
+      "total_bytes": 486
     },
     {
       "annotation_bytes": 89,
@@ -4060,7 +4060,7 @@
       "name": "transactions_categorize_assist",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 1007
+      "total_bytes": 1057
     },
     {
       "annotation_bytes": 90,
@@ -4127,7 +4127,7 @@
       "name": "transactions_categorize_auto_accept",
       "other_bytes": 89,
       "output_schema_bytes": 0,
-      "total_bytes": 1661
+      "total_bytes": 1711
     },
     {
       "annotation_bytes": 89,
@@ -4171,7 +4171,7 @@
       "name": "transactions_categorize_auto_review",
       "other_bytes": 89,
       "output_schema_bytes": 0,
-      "total_bytes": 773
+      "total_bytes": 823
     },
     {
       "annotation_bytes": 90,
@@ -4223,7 +4223,7 @@
       "name": "transactions_categorize_commit",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 740
+      "total_bytes": 787
     },
     {
       "annotation_bytes": 90,
@@ -4254,7 +4254,7 @@
       "name": "transactions_categorize_improve_ai",
       "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 548
+      "total_bytes": 595
     },
     {
       "annotation_bytes": 89,
@@ -4325,7 +4325,7 @@
       "name": "transactions_categorize_pending",
       "other_bytes": 85,
       "output_schema_bytes": 0,
-      "total_bytes": 1685
+      "total_bytes": 1735
     },
     {
       "annotation_bytes": 89,
@@ -4356,7 +4356,7 @@
       "name": "transactions_categorize_rules",
       "other_bytes": 83,
       "output_schema_bytes": 0,
-      "total_bytes": 271
+      "total_bytes": 318
     },
     {
       "annotation_bytes": 90,
@@ -4424,7 +4424,7 @@
       "name": "transactions_categorize_rules_create",
       "other_bytes": 90,
       "output_schema_bytes": 0,
-      "total_bytes": 1760
+      "total_bytes": 1810
     },
     {
       "annotation_bytes": 90,
@@ -4468,7 +4468,7 @@
       "name": "transactions_categorize_rules_delete",
       "other_bytes": 90,
       "output_schema_bytes": 0,
-      "total_bytes": 813
+      "total_bytes": 860
     },
     {
       "annotation_bytes": 90,
@@ -4519,7 +4519,7 @@
       "name": "transactions_categorize_run",
       "other_bytes": 81,
       "output_schema_bytes": 0,
-      "total_bytes": 868
+      "total_bytes": 915
     },
     {
       "annotation_bytes": 89,
@@ -4556,7 +4556,7 @@
       "name": "transactions_categorize_stats",
       "other_bytes": 83,
       "output_schema_bytes": 0,
-      "total_bytes": 1241
+      "total_bytes": 1288
     },
     {
       "annotation_bytes": 91,
@@ -4596,7 +4596,7 @@
       "name": "transactions_create",
       "other_bytes": 61,
       "output_schema_bytes": 0,
-      "total_bytes": 635
+      "total_bytes": 682
     },
     {
       "annotation_bytes": 89,
@@ -4738,7 +4738,7 @@
       "name": "transactions_get",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 2333
+      "total_bytes": 2383
     },
     {
       "annotation_bytes": 89,
@@ -4791,7 +4791,7 @@
       "name": "transactions_matches_history",
       "other_bytes": 79,
       "output_schema_bytes": 0,
-      "total_bytes": 683
+      "total_bytes": 730
     },
     {
       "annotation_bytes": 89,
@@ -4844,7 +4844,7 @@
       "name": "transactions_matches_pending",
       "other_bytes": 79,
       "output_schema_bytes": 0,
-      "total_bytes": 767
+      "total_bytes": 817
     },
     {
       "annotation_bytes": 91,
@@ -4875,7 +4875,7 @@
       "name": "transactions_matches_run",
       "other_bytes": 75,
       "output_schema_bytes": 0,
-      "total_bytes": 462
+      "total_bytes": 509
     },
     {
       "annotation_bytes": 90,
@@ -4923,7 +4923,7 @@
       "name": "transactions_matches_set",
       "other_bytes": 75,
       "output_schema_bytes": 0,
-      "total_bytes": 805
+      "total_bytes": 855
     },
     {
       "annotation_bytes": 91,
@@ -4963,7 +4963,7 @@
       "name": "transactions_notes_add",
       "other_bytes": 64,
       "output_schema_bytes": 0,
-      "total_bytes": 567
+      "total_bytes": 617
     },
     {
       "annotation_bytes": 90,
@@ -4999,7 +4999,7 @@
       "name": "transactions_notes_delete",
       "other_bytes": 67,
       "output_schema_bytes": 0,
-      "total_bytes": 534
+      "total_bytes": 587
     },
     {
       "annotation_bytes": 90,
@@ -5039,7 +5039,7 @@
       "name": "transactions_notes_edit",
       "other_bytes": 65,
       "output_schema_bytes": 0,
-      "total_bytes": 523
+      "total_bytes": 573
     },
     {
       "annotation_bytes": 89,
@@ -5068,7 +5068,7 @@
       "name": "transactions_review",
       "other_bytes": 61,
       "output_schema_bytes": 0,
-      "total_bytes": 423
+      "total_bytes": 473
     },
     {
       "annotation_bytes": 90,
@@ -5112,7 +5112,7 @@
       "name": "transactions_splits_set",
       "other_bytes": 65,
       "output_schema_bytes": 0,
-      "total_bytes": 601
+      "total_bytes": 648
     },
     {
       "annotation_bytes": 90,
@@ -5152,7 +5152,7 @@
       "name": "transactions_tags_rename",
       "other_bytes": 66,
       "output_schema_bytes": 0,
-      "total_bytes": 582
+      "total_bytes": 635
     },
     {
       "annotation_bytes": 90,
@@ -5195,7 +5195,7 @@
       "name": "transactions_tags_set",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 546
+      "total_bytes": 593
     }
   ],
   "total_bytes": 90734

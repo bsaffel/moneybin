@@ -23,8 +23,33 @@ def test_inventory_accounts_for_serialized_components() -> None:
     assert row.input_schema_bytes > 0
     assert row.output_schema_bytes == 0
     assert row.annotation_bytes > 0
-    assert inventory.total_bytes > row.total_bytes
+    assert row.total_bytes == len(
+        json.dumps(
+            row.definition,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    )
+    assert inventory.total_bytes == row.total_bytes + 2
     assert len(inventory.sha256) == 64
+
+
+def test_inventory_total_is_framed_canonical_tool_definitions() -> None:
+    for tools in (
+        [],
+        [Tool(name="a", inputSchema={"type": "object"})],
+        [
+            Tool(name="a", inputSchema={"type": "object"}),
+            Tool(name="b", inputSchema={"type": "object"}),
+        ],
+    ):
+        inventory = SurfaceInventory.from_tools(tools)
+
+        assert inventory.total_bytes == (
+            sum(row.total_bytes for row in inventory.tools)
+            + max(inventory.tool_count - 1, 0)
+            + 2
+        )
 
 
 def test_inventory_is_independent_of_tool_order() -> None:
@@ -56,13 +81,14 @@ def test_inventory_accounts_for_advertised_output_schema() -> None:
     row = inventory.tools[0]
 
     assert row.output_schema_bytes > 0
-    assert row.total_bytes == (
+    component_value_bytes = (
         row.description_bytes
         + row.input_schema_bytes
         + row.output_schema_bytes
         + row.annotation_bytes
         + row.other_bytes
     )
+    assert row.total_bytes > component_value_bytes
 
 
 def test_committed_baseline_is_self_consistent() -> None:

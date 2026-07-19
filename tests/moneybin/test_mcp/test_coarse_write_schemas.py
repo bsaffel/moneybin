@@ -65,12 +65,34 @@ def _conditional_then(
     raise AssertionError(f"No conditional schema for {field}={value}")
 
 
+def _conditional_else(
+    schema: dict[str, Any],
+    field: str,
+    value: str,
+) -> dict[str, Any]:
+    for condition in schema["allOf"]:
+        if_schema = condition["if"]
+        if if_schema["properties"].get(field, {}).get("const") == value:
+            assert field in if_schema["required"]
+            return condition["else"]
+    raise AssertionError(f"No conditional schema for {field}={value}")
+
+
 def _forbidden_fields(then_schema: dict[str, Any]) -> set[str]:
     return {
         required
         for branch in then_schema["not"]["anyOf"]
         for required in branch["required"]
     }
+
+
+def _assert_required_non_null(
+    schema: dict[str, Any],
+    fields: set[str],
+) -> None:
+    assert set(schema["required"]) == fields
+    for field in fields:
+        assert schema["properties"][field] == {"not": {"type": "null"}}
 
 
 def _rendered_variants(
@@ -83,6 +105,19 @@ def _rendered_variants(
         branch["properties"]["kind"]["const"]: set(branch["required"])
         for branch in variants
     }
+
+
+def _rendered_variant(
+    schema: dict[str, Any],
+    *,
+    collection: str,
+    kind: str,
+) -> dict[str, Any]:
+    return next(
+        branch
+        for branch in schema["properties"][collection]["items"]["oneOf"]
+        if branch["properties"]["kind"]["const"] == kind
+    )
 
 
 @pytest.mark.parametrize(
@@ -705,6 +740,128 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
     for tool in (annotations, reviews, identities, taxonomy, rules):
         assert tool.outputSchema is None
         Draft202012Validator.check_schema(tool.inputSchema)
+
+
+@pytest.mark.integration
+async def test_live_standard_write_conditions_render_exactly() -> None:
+    from moneybin.mcp.server import init_db, mcp
+
+    init_db()
+    reviews = await listed_tool(mcp, "reviews_decide")
+    categorization = _rendered_variant(
+        reviews.inputSchema,
+        collection="decisions",
+        kind="categorization",
+    )
+    categorization_accept = _conditional_then(
+        categorization,
+        "decision",
+        "accept",
+    )
+    categorization_reject = _conditional_then(
+        categorization,
+        "decision",
+        "reject",
+    )
+    _assert_required_non_null(categorization_accept, {"category"})
+    assert _forbidden_fields(categorization_reject) == {
+        "category",
+        "subcategory",
+        "canonical_merchant_name",
+    }
+
+    identities = await listed_tool(mcp, "identity_links_decide")
+    for kind in ("account_link", "merchant_link", "security_link"):
+        identity = _rendered_variant(
+            identities.inputSchema,
+            collection="decisions",
+            kind=kind,
+        )
+        _assert_required_non_null(
+            _conditional_then(identity, "decision", "accept"),
+            {"target_id"},
+        )
+        assert _forbidden_fields(_conditional_then(identity, "decision", "reject")) == {
+            "target_id"
+        }
+
+    taxonomy = await listed_tool(mcp, "taxonomy_set")
+    category = _rendered_variant(
+        taxonomy.inputSchema,
+        collection="items",
+        kind="category",
+    )
+    category_present = _conditional_then(category, "state", "present")
+    category_inactive = _conditional_then(category, "state", "inactive")
+    category_absent = _conditional_then(category, "state", "absent")
+    _assert_required_non_null(category_present, {"category"})
+    assert category_present["properties"]["force"] == {"const": False}
+    _assert_required_non_null(category_inactive, {"category_id"})
+    assert category_inactive["properties"]["force"] == {"const": False}
+    assert _forbidden_fields(category_inactive) == {
+        "category",
+        "subcategory",
+        "description",
+    }
+    _assert_required_non_null(category_absent, {"category_id"})
+    assert "force" not in category_absent["properties"]
+    assert _forbidden_fields(category_absent) == {
+        "category",
+        "subcategory",
+        "description",
+    }
+
+    merchant = _rendered_variant(
+        taxonomy.inputSchema,
+        collection="items",
+        kind="merchant",
+    )
+    _assert_required_non_null(
+        _conditional_then(merchant, "state", "present"),
+        {"raw_pattern", "canonical_name"},
+    )
+    _assert_required_non_null(
+        _conditional_then(merchant, "state", "absent"),
+        {"merchant_id"},
+    )
+    assert _forbidden_fields(_conditional_then(merchant, "state", "absent")) == {
+        "raw_pattern",
+        "canonical_name",
+        "match_type",
+        "category",
+        "subcategory",
+    }
+
+    rules = await listed_tool(mcp, "transactions_categorize_rules_set")
+    rule = rules.inputSchema["properties"]["rules"]["items"]
+    rule_present = _conditional_then(rule, "state", "present")
+    rule_inactive = _conditional_then(rule, "state", "inactive")
+    rule_absent = _conditional_then(rule, "state", "absent")
+    _assert_required_non_null(
+        rule_present,
+        {"matcher", "category", "priority"},
+    )
+    _assert_required_non_null(rule_inactive, {"rule_id"})
+    _assert_required_non_null(rule_absent, {"rule_id"})
+    replacement_fields = {"matcher", "category", "subcategory", "priority"}
+    assert _forbidden_fields(rule_inactive) == replacement_fields
+    assert _forbidden_fields(rule_absent) == replacement_fields
+
+    consent = await listed_tool(mcp, "privacy_consent_set")
+    assert _forbidden_fields(
+        _conditional_then(consent.inputSchema, "state", "revoked")
+    ) == {"mode"}
+    assert _forbidden_fields(
+        _conditional_then(consent.inputSchema, "state", "granted")
+    ) == {"confirmation_token"}
+
+    balance = await listed_tool(mcp, "accounts_balance_assert")
+    absent = _conditional_then(balance.inputSchema, "state", "absent")
+    present = _conditional_else(balance.inputSchema, "state", "absent")
+    assert _forbidden_fields(absent) == {"amount"}
+    assert set(present["required"]) == {"amount"}
+    assert present["properties"]["amount"] == {"not": {"type": "null"}}
+    assert _forbidden_fields(present) == {"confirmation_token"}
 
 
 def test_balance_assertion_amount_matches_decimal_18_2_extrema() -> None:
