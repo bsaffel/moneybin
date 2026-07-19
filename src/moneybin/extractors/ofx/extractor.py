@@ -65,6 +65,43 @@ _FITID_SIGNATURE_FIELDS = (
 _FITID_COLLISION_MARKER = "#"
 
 
+def _none_if_blank(value: str | None) -> str | None:
+    """Normalize ofxparse's empty-string defaults to NULL.
+
+    ``ofxparse.Account.__init__`` seeds ``account_type``, ``routing_number`` and
+    ``branch_id`` with ``''`` and only overwrites them when the corresponding tag
+    is present. A credit-card statement uses ``<CCACCTFROM>``, which carries no
+    ``<ACCTTYPE>`` and no ``<BANKID>`` per the OFX spec, so both keep ``''``.
+    That is a value, not an absence: it survives the
+    ``FILTER(WHERE NOT account_type IS NULL)`` golden-record merge in
+    core.dim_accounts and can out-rank a real value from a stronger source on
+    recency. Absent fields must reach raw as NULL so the merge can skip them.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _ofx_account_type(account: Any) -> str | None:
+    """Account type from ``<ACCTTYPE>``, falling back to the statement container.
+
+    A credit-card statement is a ``<CCSTMTRS>`` wrapping a ``<CCACCTFROM>``, and
+    per the OFX spec that container carries no ``<ACCTTYPE>`` — the fact that it
+    is a card is expressed by the container itself. ofxparse surfaces that as
+    ``account.type`` (``AccountType.CreditCard``) while leaving ``account_type``
+    empty, so reading only the latter discards a distinction the file does state.
+    Emitted in the file's own uppercase vocabulary; seeds.account_type_map is
+    what maps it to the canonical ``credit``.
+    """
+    declared = _none_if_blank(account.account_type)
+    if declared is not None:
+        return declared
+    if getattr(account, "type", None) == ofxparse.AccountType.CreditCard:
+        return "CREDITCARD"
+    return None
+
+
 def _fitid_content_signature(row: dict[str, Any]) -> str:
     """Unambiguous signature of the fields that make a transaction distinct.
 
@@ -442,12 +479,8 @@ class OFXExtractor:
             inst_org = account.institution.organization if account.institution else None
             account_info = {
                 "account_id": account.account_id,
-                "routing_number": account.routing_number
-                if hasattr(account, "routing_number")
-                else None,
-                "account_type": account.account_type
-                if hasattr(account, "account_type")
-                else None,
+                "routing_number": _none_if_blank(account.routing_number),
+                "account_type": _ofx_account_type(account),
                 "institution_org": inst_org or source_origin,
                 "institution_fid": account.institution.fid
                 if account.institution

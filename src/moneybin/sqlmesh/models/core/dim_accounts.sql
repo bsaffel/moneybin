@@ -22,7 +22,7 @@ WITH ofx_accounts AS (
     extracted_at,
     loaded_at,
     NULL::TEXT AS official_name,
-    NULL::TEXT AS account_subtype,
+    account_subtype,
     CASE
       WHEN LENGTH(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g')) >= 4
       THEN RIGHT(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g'), 4)
@@ -41,7 +41,7 @@ WITH ofx_accounts AS (
     extracted_at,
     loaded_at,
     NULL::TEXT AS official_name,
-    NULL::TEXT AS account_subtype,
+    account_subtype,
     CASE
       WHEN LENGTH(
         REGEXP_REPLACE(COALESCE(account_number, account_number_masked), '[^0-9]', '', 'g')
@@ -108,8 +108,12 @@ WITH ofx_accounts AS (
          within the composite ordering key.
        - Descriptive fields (institution_name, account_type, official_name,
          account_subtype): first non-null by recency — ARG_MAX over extracted_at.
-         official_name/account_subtype come only from Plaid staging today; the
-         merge keeps them source-agnostic for future providers.
+         account_type arrives already normalized to one canonical vocabulary by
+         the three stg_*__accounts views (seeds.account_type_map), so this merge
+         compares like with like; before that normalization a later 'depository'
+         could out-rank an earlier 'CHECKING' for the same account and silently
+         rename it. official_name comes only from Plaid staging today; the merge
+         keeps it source-agnostic for future providers.
        - Display provenance (source_type, source_file): the winning (strength then
          recency) row's value; the full contributing set is recoverable from
          app.account_links.
@@ -142,7 +146,7 @@ WITH ofx_accounts AS (
 SELECT
   w.account_id, /* Canonical account identifier; opaque and stable across imports; foreign key in fct_transactions */
   w.routing_number, /* ABA bank routing number; merged first-non-null by source strength then recency; NULL when no source provided it */
-  w.account_type, /* Account classification from source, e.g. CHECKING, SAVINGS, CREDITLINE */
+  w.account_type, /* Canonical account classification, normalized across all sources via seeds.account_type_map: depository, credit, loan, investment, other. NULL when the source spelling is unrecognized — the finer source distinction is preserved in account_subtype */
   w.institution_name, /* Human-readable name of the financial institution */
   w.institution_fid, /* OFX financial institution identifier; NULL for tabular/plaid sources */
   w.source_type, /* Origin of the winning record after the cross-source merge: ofx, csv, tsv, excel, plaid, etc. */
@@ -152,12 +156,13 @@ SELECT
   GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
-    w.institution_name || ' ' || w.account_type || ' …' || COALESCE(s.last_four, w.last_four_derived),
-    w.institution_name || ' ' || w.account_type,
+    w.institution_name || ' ' || COALESCE(w.account_type, w.account_subtype) || ' …' || COALESCE(s.last_four, w.last_four_derived),
+    w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
+    w.institution_name || ' ' || COALESCE(w.account_type, w.account_subtype),
     w.institution_name,
     w.account_type,
     'Account ' || w.account_id
-  ) AS display_name, /* Resolved display label: user override → derived (institution+type[+last4]) → institution or type alone → 'Account <id>' terminal so it is never NULL */
+  ) AS display_name, /* Resolved display label: user override → derived (institution+type-or-subtype[+last4]) → institution+last4 → institution or type alone → 'Account <id>' terminal so it is never NULL. The institution+last4 branch is what keeps two typeless accounts at one institution distinguishable; without it both collapse to the bare institution name. */
   COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */

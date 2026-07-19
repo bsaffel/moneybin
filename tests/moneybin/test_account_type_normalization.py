@@ -1,0 +1,208 @@
+"""Integration tests: account_type normalizes to one canonical vocabulary.
+
+Every source used to write its own spelling into the same column — OFX wrote
+``CHECKING``/``CREDITLINE``, Plaid wrote ``depository``/``credit``, the PDF
+importer wrote ``credit``, and a CSV column mapping wrote whatever the file said.
+Nothing normalized anywhere, so ``core.dim_accounts.account_type`` carried four
+vocabularies at once. That broke ``accounts --type credit`` (exact-match, so it
+silently omitted OFX cards), split the by-type histogram into synonym buckets,
+and let ``display_name`` flip spelling on every re-sync because the merge picks
+by recency across sources.
+
+The canonical set is the Plaid-style one — it is what the only value-branching
+consumer (``core.fct_balances``) already keys on, and what ``account_subtype`` is
+already documented in. The finer source distinction is preserved in
+``account_subtype`` rather than discarded, so normalizing loses no information.
+
+Seeding mirrors test_dim_accounts_merge.py: INSERT into raw.* + app.account_links,
+materialize via sqlmesh, assert the projected dim columns.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from moneybin.database import Database, sqlmesh_context
+
+pytestmark = pytest.mark.integration
+
+
+def _link(
+    db: Database,
+    *,
+    link_id: str,
+    account_id: str,
+    ref_value: str,
+    source_type: str,
+    source_origin: str,
+) -> None:
+    db.execute(
+        """
+        INSERT INTO app.account_links
+            (link_id, account_id, ref_kind, ref_value, source_type,
+             source_origin, status, decided_by, decided_at)
+        VALUES (?, ?, 'source_native', ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [link_id, account_id, ref_value, source_type, source_origin],
+    )
+
+
+def _ofx_account(db: Database, *, native_key: str, account_type: str | None) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.ofx_accounts
+            (account_id, routing_number, account_type, institution_org,
+             institution_fid, source_file, source_type, source_origin,
+             extracted_at, loaded_at)
+        VALUES (?, '111000025', ?, 'Vocab Bank', 'fid-v', '/tmp/v.ofx', 'ofx',
+                'vocab_ofx', '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [native_key, account_type],
+    )
+
+
+def _tabular_account(
+    db: Database, *, native_key: str, account_type: str | None
+) -> None:
+    db.execute(
+        """
+        INSERT INTO raw.tabular_accounts
+            (account_id, account_name, account_type, institution_name,
+             source_file, source_type, source_origin, import_id,
+             extracted_at, loaded_at)
+        VALUES (?, 'Vocab Acct', ?, 'Vocab Bank', '/tmp/v.csv', 'csv',
+                'vocab_tab', 'imp-v-001', '2024-01-01'::TIMESTAMP,
+                '2024-01-01'::TIMESTAMP)
+        """,  # noqa: S608  # test fixture
+        [native_key, account_type],
+    )
+
+
+def _dim_type(db: Database, account_id: str) -> tuple[str | None, str | None]:
+    row = db.execute(
+        "SELECT account_type, account_subtype FROM core.dim_accounts WHERE account_id = ?",
+        [account_id],
+    ).fetchone()
+    assert row is not None, f"no core.dim_accounts row for {account_id!r}"
+    return row[0], row[1]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("raw_value", "expected_type", "expected_subtype"),
+    [
+        ("CHECKING", "depository", "checking"),
+        ("SAVINGS", "depository", "savings"),
+        ("MONEYMRKT", "depository", "money market"),
+        ("CD", "depository", "cd"),
+        # The OFX spelling for a line of credit, and the one the synthetic
+        # writer emits — neither of which `accounts --type credit` matched.
+        ("CREDITLINE", "credit", "line of credit"),
+        ("CREDITCARD", "credit", "credit card"),
+    ],
+)
+def test_ofx_account_type_normalizes_to_canonical_vocabulary(
+    db: Database, raw_value: str, expected_type: str, expected_subtype: str
+) -> None:
+    """OFX <ACCTTYPE> spellings collapse to the canonical set, keeping detail in subtype."""
+    native = f"ofx-{raw_value.lower()}"
+    canonical = f"canon-{raw_value.lower()}"[:15]
+    _ofx_account(db, native_key=native, account_type=raw_value)
+    _link(
+        db,
+        link_id=f"lnk-{raw_value.lower()}"[:12],
+        account_id=canonical,
+        ref_value=native,
+        source_type="ofx",
+        source_origin="vocab_ofx",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _dim_type(db, canonical) == (expected_type, expected_subtype)
+
+
+@pytest.mark.slow
+def test_tabular_free_text_account_type_normalizes(db: Database) -> None:
+    """A CSV column mapping writes free text; it must land in the canonical set too."""
+    _tabular_account(db, native_key="tab-cc", account_type="credit_card")
+    _link(
+        db,
+        link_id="lnk-tab-cc",
+        account_id="canon-tab-cc",
+        ref_value="tab-cc",
+        source_type="csv",
+        source_origin="vocab_tab",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _dim_type(db, "canon-tab-cc") == ("credit", "credit card")
+
+
+@pytest.mark.slow
+def test_unmapped_account_type_is_null_not_guessed(db: Database) -> None:
+    """An unrecognized spelling yields NULL type, preserving the original in subtype.
+
+    NULL is the honest answer and it is also the useful one: the dim's merge
+    skips NULLs, so a stronger source can still supply the type. Defaulting to
+    'other' would out-rank that real value on recency.
+    """
+    _tabular_account(db, native_key="tab-weird", account_type="Christmas Club")
+    _link(
+        db,
+        link_id="lnk-tab-wd",
+        account_id="canon-tab-wd",
+        ref_value="tab-weird",
+        source_type="csv",
+        source_origin="vocab_tab",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _dim_type(db, "canon-tab-wd") == (None, "christmas club")
+
+
+@pytest.mark.slow
+def test_typeless_accounts_stay_distinguishable_by_last_four(db: Database) -> None:
+    """Two typeless accounts at one institution must not share a display_name.
+
+    The COALESCE chain assumed account_type was always present: with it NULL,
+    both the type+last4 branch and the type-only branch go NULL and the chain
+    falls through to the bare institution name, so every card at one bank
+    renders identically. last_four is what distinguishes them.
+    """
+    for native, canonical, link in (
+        ("2001111111114387", "canon-typeless-a", "lnk-tl-a"),
+        ("2001111111113431", "canon-typeless-b", "lnk-tl-b"),
+    ):
+        _ofx_account(db, native_key=native, account_type=None)
+        _link(
+            db,
+            link_id=link,
+            account_id=canonical,
+            ref_value=native,
+            source_type="ofx",
+            source_origin="vocab_ofx",
+        )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    rows = db.execute(
+        "SELECT account_id, display_name FROM core.dim_accounts "
+        "WHERE account_id IN ('canon-typeless-a', 'canon-typeless-b') "
+        "ORDER BY account_id"
+    ).fetchall()
+    names = [r[1] for r in rows]
+
+    assert len(set(names)) == 2, (
+        f"typeless accounts collided on display_name: {names!r}"
+    )
+    assert "4387" in names[0], names[0]
+    assert "3431" in names[1], names[1]
+    # And no double space where the absent type used to be interpolated.
+    assert all("  " not in n for n in names), names

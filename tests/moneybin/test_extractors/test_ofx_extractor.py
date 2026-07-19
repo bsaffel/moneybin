@@ -203,6 +203,55 @@ def test_extract_accounts_data(
     assert first_row["account_type"] == "CHECKING"
 
 
+class TestCreditCardAccountExtraction:
+    """Extraction of a credit-card statement, which carries no <ACCTTYPE>.
+
+    ofxparse leaves ``account_type``/``routing_number`` at their ``''``
+    constructor default rather than None. An empty string is not NULL, so it
+    survives the ``FILTER(WHERE NOT account_type IS NULL)`` golden-record merge
+    in core.dim_accounts and out-ranks a real value from a stronger source.
+    """
+
+    @pytest.fixture
+    def credit_card_ofx_file(self) -> Path:
+        return FIXTURES_DIR / "ofx" / "credit_card_sample.ofx"
+
+    def test_absent_ofx_fields_are_null_not_empty_string(
+        self, credit_card_ofx_file: Path, extractor_config: OFXProviderConfig
+    ) -> None:
+        """Fields absent from the file must reach raw as NULL, never ''."""
+        extractor = OFXExtractor(extractor_config)
+        results = extractor.extract_from_file(
+            credit_card_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+        )
+
+        row = results["accounts"].row(0, named=True)
+        # <CCACCTFROM> has no <BANKID>, so routing_number is genuinely absent.
+        assert row["routing_number"] is None, (
+            f"expected NULL for an absent field, got {row['routing_number']!r}"
+        )
+        assert row["account_type"] != "", (
+            "empty string defeats the IS NOT NULL merge filter in dim_accounts"
+        )
+
+    def test_credit_card_statement_is_typed_from_its_container(
+        self, credit_card_ofx_file: Path, extractor_config: OFXProviderConfig
+    ) -> None:
+        """A <CCSTMTRS> statement is a credit card even with no <ACCTTYPE>.
+
+        ofxparse exposes the distinction as ``account.type``; discarding it left
+        these accounts untyped, which made two cards on one institution render
+        the same display_name and hid them from ``accounts --type credit``.
+        """
+        extractor = OFXExtractor(extractor_config)
+        results = extractor.extract_from_file(
+            credit_card_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
+        )
+
+        row = results["accounts"].row(0, named=True)
+        assert row["account_type"] == "CREDITCARD"
+
+
 @pytest.mark.unit
 def test_extract_transactions_data(
     sample_ofx_file: Path, extractor_config: OFXProviderConfig

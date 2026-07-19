@@ -3042,8 +3042,13 @@ class ImportService:
             # gate) or agent-authored via the bridge recipe (this method is shared
             # with apply_pdf_bridge_response → route_forced_recipe, which does NOT
             # run the sign gate). Either way 'credit' follows from the recipe's own
-            # convention — a fact about the account, not a guess — and matches the
-            # vocabulary core.fct_balances keys its liability negation on.
+            # convention — a fact about the account, not a guess. prep normalizes it
+            # through seeds.account_type_map like every other source's spelling.
+            # It does NOT drive liability signing, despite the shared word: PDF
+            # balances reach core.fct_balances through the tabular_balances CTE,
+            # which applies no type-based negation at all (the IN ('credit','loan')
+            # negation is scoped to plaid_balances). This value feeds display_name
+            # and the `accounts --type` filter.
             # on_conflict="ignore" below means a type Plaid/OFX already set is never
             # clobbered. decision.recipe is narrowed non-None by the raise at the
             # top of this method (mirrors sign_conv above).
