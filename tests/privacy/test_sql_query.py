@@ -522,6 +522,83 @@ def test_deep_cte_chain_masks_routing_number(
     assert str(result.records[0]["v"]).startswith("*")
 
 
+# ---------------------------------------------------------------------------
+# Masking-bypass leaks (round 7). Two families, one shape: lineage produced a
+# CONFIDENT LOW answer for a projection it had not actually decomposed, and the
+# name-mismatch fallback in ``sql_query`` then spread that LOW over runtime
+# columns lineage never saw.
+#
+#   * ``COLUMNS(...)`` / ``PIVOT`` / ``UNPIVOT`` / ``SUMMARIZE`` — the projection
+#     is an opaque ``exp.Columns`` node or a ``Star`` ``qualify()`` cannot expand,
+#     so ``_resolve_projection`` saw "no exp.Column" and returned AGGREGATE.
+#   * The row-struct pseudo-column (``SELECT dim_accounts FROM core.dim_accounts``)
+#     — lineage declined correctly, but ``_conservative_floor`` only looked at
+#     resolvable input COLUMNS, found none, and floored at AGGREGATE.
+#
+# Every one of these returned the real routing number in the clear at Tier.LOW.
+# Asserted end-to-end on the RETURNED VALUE, because that is what leaked.
+# ---------------------------------------------------------------------------
+
+_MASKING_BYPASS_QUERIES = {
+    "columns-regex": "SELECT COLUMNS('routing.*') FROM core.dim_accounts",
+    "columns-all": "SELECT COLUMNS('.*') FROM core.dim_accounts",
+    "columns-lambda": "SELECT COLUMNS(c -> c LIKE 'routing%') FROM core.dim_accounts",
+    "columns-in-cte": (
+        "WITH w AS (SELECT COLUMNS('.*') FROM core.dim_accounts) SELECT * FROM w"
+    ),
+    "columns-co-projected-with-low": (
+        "SELECT account_type, COLUMNS('routing.*') FROM core.dim_accounts"
+    ),
+    "unpivot-star": (
+        "SELECT * FROM "
+        "(UNPIVOT core.dim_accounts ON routing_number INTO NAME k VALUE v)"
+    ),
+    "unpivot-named": (
+        "SELECT v FROM "
+        "(UNPIVOT core.dim_accounts ON routing_number INTO NAME k VALUE v)"
+    ),
+    "pivot-star": (
+        "SELECT * FROM "
+        "(PIVOT core.dim_accounts ON account_type USING MAX(routing_number))"
+    ),
+    "pivot-named": (
+        "SELECT checking FROM "
+        "(PIVOT core.dim_accounts ON account_type USING MAX(routing_number))"
+    ),
+    "summarize": "SELECT * FROM (SUMMARIZE core.dim_accounts)",
+    "row-struct": "SELECT dim_accounts FROM core.dim_accounts",
+    "row-struct-via-alias": "SELECT a FROM core.dim_accounts a",
+    "row-struct-field": "SELECT (dim_accounts).routing_number FROM core.dim_accounts",
+    "row-struct-in-subquery": (
+        "SELECT * FROM (SELECT dim_accounts FROM core.dim_accounts) z"
+    ),
+    "unnest-row-struct": "SELECT UNNEST(dim_accounts) FROM core.dim_accounts",
+    "unnest-row-struct-via-alias": "SELECT UNNEST(a) FROM core.dim_accounts a",
+}
+
+
+@pytest.mark.parametrize(
+    "sql",
+    list(_MASKING_BYPASS_QUERIES.values()),
+    ids=list(_MASKING_BYPASS_QUERIES),
+)
+def test_masking_bypass_never_returns_routing_number_in_the_clear(
+    sql: str, populated_db: Database
+) -> None:
+    """No DuckDB projection form returns a CRITICAL value unmasked.
+
+    The assertion is deliberately on the returned records rather than on
+    ``output_classes``: several of these shapes emit runtime column names
+    lineage never produced, so a class-level assertion would pass while the
+    user still received ``021000021``.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert _ROUTING_NUMBER not in str(result.records)
+    assert result.tier is Tier.CRITICAL
+
+
 def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> None:
     """``COUNT(*)`` still classifies as AGGREGATE (LOW), not CRITICAL.
 

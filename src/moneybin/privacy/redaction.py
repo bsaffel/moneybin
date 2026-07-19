@@ -80,6 +80,22 @@ def _mask_routing_number(value: str | None, _consent: ConsentSet | None) -> str 
     return "*****"
 
 
+def _mask_unresolved(value: Any, _consent: ConsentSet | None) -> Any:
+    """UNRESOLVED → constant ``"*****"`` (or ``None`` for nullable).
+
+    Deliberately typed ``Any``, not ``str | None``: this is the only transform
+    reached by a column whose TYPE lineage never established either. The dynamic
+    SQL surface routes DuckDB values of any shape here — a ``BIGINT`` from
+    ``SUMMARIZE``, a whole-row ``STRUCT`` from ``SELECT dim_accounts FROM
+    core.dim_accounts`` — and a mask that indexed or measured the value (as
+    ``_mask_account_identifier`` does) would raise ``TypeError`` on those and
+    fail the query OPEN through the caller's error path.
+    """
+    if value is None:
+        return None
+    return "*****"
+
+
 def _passthrough(value: Any, _consent: ConsentSet | None) -> Any:
     return value
 
@@ -88,6 +104,7 @@ _TRANSFORMS: dict[DataClass, Any] = {
     DataClass.ACCOUNT_IDENTIFIER: _mask_account_identifier,
     DataClass.INSTITUTION_ACCOUNT_NUMBER: _mask_account_identifier,
     DataClass.ROUTING_NUMBER: _mask_routing_number,
+    DataClass.UNRESOLVED: _mask_unresolved,
     # HIGH-tier — pass through in PR 2 (PR 3 adds bucketing).
     DataClass.BALANCE: _passthrough,
     DataClass.TXN_AMOUNT: _passthrough,

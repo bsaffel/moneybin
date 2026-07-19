@@ -63,6 +63,17 @@ class DataClass(StrEnum):
     AGGREGATE = "aggregate"
     RECORD_ID = "record_id"
     TIMESTAMP_OBSERVABILITY = "timestamp_observability"
+    # Not a classification — the absence of one. Assigned by the fail-closed
+    # paths in ``sql_lineage`` / ``sql_query`` when a column reaches the user
+    # WITHOUT lineage having positively established what it holds (an
+    # undeclared deployed column, or a runtime column no projection resolved
+    # to). It is CRITICAL and masked WHOLE: a partial mask such as
+    # ACCOUNT_IDENTIFIER's ``"****" + value[-4:]`` would surface the last four
+    # characters of a value we cannot name, and the whole point of this class
+    # is that we do not know what those characters are. Never write it into
+    # ``CLASSIFICATION`` or a ``@report(classes=…)`` map — declaring a column
+    # "unresolved" defeats the completeness tests that exist to catch gaps.
+    UNRESOLVED = "unresolved"
 
     @property
     def tier(self) -> Tier:
@@ -88,6 +99,7 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
     DataClass.AGGREGATE: Tier.LOW,
     DataClass.RECORD_ID: Tier.LOW,
     DataClass.TIMESTAMP_OBSERVABILITY: Tier.LOW,
+    DataClass.UNRESOLVED: Tier.CRITICAL,
 }
 
 # Keyed by (schema, table) -> {column: DataClass}. Every column in

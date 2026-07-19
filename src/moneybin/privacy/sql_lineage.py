@@ -374,12 +374,15 @@ def _class_of_key(key: tuple[str, str, str]) -> DataClass | None:
     return None
 
 
-# A deployed catalog column with no declaration is a registry gap, not a query
-# problem: every key reaching here came from _column_key, which returns only
-# keys present in snapshot.columns. DataClass has no CRITICAL member (CRITICAL
-# is a Tier); ACCOUNT_IDENTIFIER is the Tier.CRITICAL class redact_records
-# masks. Mirrors _FAIL_CLOSED in reports/_framework/classify.py.
-_COVERAGE_GAP_CLASS = DataClass.ACCOUNT_IDENTIFIER
+# THE fail-closed class for this module, and for sql_query's runtime
+# name-mismatch fallback. One class, one meaning: "a value reached the user
+# without lineage establishing what it holds." Two paths reach it — a deployed
+# catalog column with no declaration (a registry gap, not a query problem), and
+# a runtime column no projection resolved to — and both want the same outcome,
+# so they share the constant rather than growing a second fail-closed pattern
+# beside it. UNRESOLVED masks WHOLE; see its taxonomy comment for why the
+# partial ACCOUNT_IDENTIFIER mask is the wrong tool here.
+FAIL_CLOSED_CLASS = DataClass.UNRESOLVED
 
 
 def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClass:
@@ -392,7 +395,7 @@ def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClas
         f"sql_lineage: undeclared deployed column {schema}.{table}.{column}; "
         f"failing closed (sql sha256={sql_hash})"
     )
-    return _COVERAGE_GAP_CLASS
+    return FAIL_CLOSED_CLASS
 
 
 def _scope_input_max(
@@ -426,30 +429,121 @@ def _scope_input_max(
     return best
 
 
+def _tables_in_scope(tree: exp.Expr, snapshot: SchemaSnapshot) -> set[tuple[str, str]]:
+    """Every classified ``(schema, table)`` ``tree`` reads from, however it reads it.
+
+    Resolution mirrors ``tables_outside_schemas``: schema-qualified tables are
+    taken directly, bare names are resolved against the snapshot (and a name
+    matching in two schemas contributes both — over-inclusion only raises a
+    floor, never lowers one).
+
+    CTE names are deliberately NOT filtered out here. A CTE named after a
+    catalog table contributes that table's columns to the floor, which
+    over-redacts a query that never touched the real table. That is the safe
+    direction, and it is the same trade ``collect_input_columns`` already makes
+    by not passing ``shadowed`` — see its docstring.
+    """
+    known_by_name: dict[str, set[str]] = {}
+    for schema, table, _col in snapshot.columns:
+        known_by_name.setdefault(table, set()).add(schema)
+    found: set[tuple[str, str]] = set()
+    for tbl in tree.find_all(exp.Table):
+        if tbl.db:
+            found.add((tbl.db, tbl.name))
+        else:
+            found |= {(s, tbl.name) for s in known_by_name.get(tbl.name, set())}
+    return found
+
+
+def _table_scope_max(
+    tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
+) -> DataClass:
+    """Max-tier class over EVERY column of every classified table ``tree`` reads.
+
+    The column-reference floor (``_scope_input_max``) can only see columns the
+    query NAMES. A projection that names none — ``SELECT dim_accounts FROM
+    core.dim_accounts`` (DuckDB's whole-row pseudo-column), ``SELECT
+    UNNEST(dim_accounts) …``, or a ``*`` over a ``SUMMARIZE`` — still returns
+    every column of the table, so a floor built from named columns alone floors
+    at AGGREGATE (LOW) and hands back ``routing_number`` in the clear.
+
+    Reading a table is therefore treated as putting ALL of its columns in reach,
+    which is exactly what those constructs do. This over-redacts an unresolvable
+    projection over a table whose sensitive columns it never touched; that cost
+    is accepted, because the alternative is trusting a decomposition we already
+    know we could not perform.
+    """
+    columns_by_table: dict[tuple[str, str], set[str]] = {}
+    for schema, table, col in snapshot.columns:
+        columns_by_table.setdefault((schema, table), set()).add(col)
+    best: DataClass = DataClass.AGGREGATE
+    # Sorted, not set-ordered: a first-past-the-post max over a set reports a
+    # different class run to run whenever a table carries two classes at its top
+    # tier. `classes_returned` is user- and audit-visible and must be
+    # reproducible.
+    for schema, table in sorted(_tables_in_scope(tree, snapshot)):
+        for col in sorted(columns_by_table.get((schema, table), set())):
+            key = (schema, table, col)
+            # One warning per undeclared table, not per undeclared column: the
+            # gap is a property of the registry entry, and the first hit already
+            # pins the floor at its ceiling.
+            dc = _class_of_key(key)
+            if dc is None:
+                return _coverage_gap_class(key, sql_for_log)
+            if dc.tier > best.tier:
+                best = dc
+    # A table-level bound names a TIER, never a column. At CRITICAL that
+    # distinction is load-bearing, so the bound is reported as UNRESOLVED rather
+    # than as whichever CRITICAL column sorted first:
+    #
+    #   * The CRITICAL transforms are not interchangeable. ACCOUNT_IDENTIFIER
+    #     masks PARTIALLY (``"****" + value[-4:]``), which for a value we could
+    #     not identify would publish its last four characters — and on the
+    #     whole-row STRUCT that ``SELECT dim_accounts FROM core.dim_accounts``
+    #     returns, it raises rather than masking at all.
+    #   * Reporting `institution_account_number` for a whole-row struct claims a
+    #     precision this path does not have.
+    #
+    # Below CRITICAL every transform is passthrough today, so the class is pure
+    # reporting and the identified max is the more informative answer. Reporting
+    # UNRESOLVED there would also inflate a HIGH bound to CRITICAL, which is the
+    # over-classification this floor must not introduce.
+    return FAIL_CLOSED_CLASS if best.tier is Tier.CRITICAL else best
+
+
 def _conservative_floor(
     tree: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
     """The tier an unresolved projection takes: max over EVERY scope in ``tree``.
 
-    **Invariant this function exists to hold:** an unresolved column can never
-    yield a tier lower than the conservative fallback computed over a scope that
-    actually contains catalog columns. Computing the floor over the unresolved
-    projection's *own* SELECT breaks it — a CTE body (``SELECT v FROM c15``) or
-    a UNION branch reading only a CTE references no catalog column at all, so
-    its floor is AGGREGATE (LOW), and that LOW then propagates outward as a real
-    answer. That was the leak: a deep CTE chain over ``routing_number`` returned
-    it unmasked once nesting exhausted ``_MAX_SCOPE_DEPTH``.
+    **THE INVARIANT, stated once:** a projection is classified LOW only when we
+    positively established what it is. Anything unresolved, opaque, or
+    unexpanded takes a floor computed from the classified TABLES in scope — not
+    from whichever columns happened to resolve, and never from a local scope
+    that contains no catalog column at all.
 
-    Walking every SELECT in the tree — each with its own local alias map, so
-    per-branch alias correctness survives — guarantees the floor sees every
-    catalog column the query can touch, including CTE bodies (which hang off the
-    set operation, not off any one branch) and correlated subqueries.
+    Two independent floors are combined, because each covers a blind spot of the
+    other:
 
-    "None resolvable" → AGGREGATE (LOW) remains correct only because the caller
-    restricts the query to the classified schemas (core/app via CLASSIFICATION,
-    reports via declared @report class maps) — see the module docstring. Within
-    those schemas, any query touching a CRITICAL column raises this floor to
-    CRITICAL.
+    * **Per-scope column max** (``_scope_input_max`` over every SELECT in the
+      tree). Precise where the query names its columns. Walking every SELECT —
+      each with its own local alias map, so per-branch alias correctness
+      survives — is what keeps a CTE body (``SELECT v FROM c15``) or a
+      CTE-only UNION branch from flooring at AGGREGATE and propagating that LOW
+      outward as a real answer. That was the depth-exhaustion leak: a deep CTE
+      chain over ``routing_number`` returned it unmasked.
+    * **Table-scope max** (``_table_scope_max``). Covers the projections that
+      name NO column at all — the whole-row pseudo-column and the
+      ``PIVOT``/``UNPIVOT``/``SUMMARIZE``/``COLUMNS(…)`` family — where the
+      column floor legitimately finds nothing and therefore says AGGREGATE.
+      That was the second leak, through the same door.
+
+    "None resolvable" → AGGREGATE (LOW) now means something much narrower than
+    it used to: the query reads no classified table at all (e.g. a projection
+    over a ``VALUES`` list, whose values are the caller's own literals rather
+    than database data). It remains correct only because the caller restricts
+    the query to the classified schemas (core/app via CLASSIFICATION, reports
+    via declared @report class maps) — see the module docstring.
     """
     # Never log the raw SQL — it can carry literal PII (e.g. a description or
     # account-number filter). A short hash gives forensic correlation without
@@ -465,11 +559,31 @@ def _conservative_floor(
         dc = _scope_input_max(select, snapshot, sql_for_log)
         if dc.tier > best.tier:
             best = dc
-    return best
+    # Applied second, and only when it RAISES the tier. The column floor names a
+    # class the query actually referenced, so it is the better answer whenever
+    # the two tie; the table floor is a backstop for the projections that name
+    # no column at all, not a replacement.
+    table_dc = _table_scope_max(tree, snapshot, sql_for_log)
+    return table_dc if table_dc.tier > best.tier else best
 
 
 def _within_subquery(node: exp.Expr, stop: exp.Expr) -> bool:
-    """True if ``node`` sits inside a scalar subquery nested within ``stop``."""
+    """True if ``node`` sits inside a scalar subquery nested within ``stop``.
+
+    ``node is stop`` is False by definition — nothing lies strictly between a
+    node and itself. The guard is load-bearing, not defensive: the walk starts
+    at ``node.parent``, so without it a projection that IS the aggregate
+    (``COUNT(*)`` as the whole projection) walks straight PAST ``stop`` and
+    keeps climbing. Inside a derived table it then reaches the enclosing
+    ``exp.Subquery`` and answers True, suppressing the counting-aggregate rule
+    for ``SELECT n FROM (SELECT COUNT(*) AS n FROM …) sub``. That misfire used
+    to be invisible because the projection fell through to the permissive
+    "no exp.Column → AGGREGATE" branch and landed on the right answer for the
+    wrong reason; once that branch learned to decline on an unexpanded ``Star``
+    (``COUNT(*)`` holds one), the misfire became a visible over-classification.
+    """
+    if node is stop:
+        return False
     parent = node.parent
     while parent is not None and parent is not stop:
         if isinstance(parent, exp.Subquery):
@@ -707,6 +821,35 @@ def _scope_of_column(
     return scope
 
 
+# Node types that stand in for "some set of columns we cannot enumerate".
+# Neither carries an ``exp.Column`` child, so both used to reach the
+# literal-expression branch of ``_resolve_projection`` and be answered
+# AGGREGATE (LOW) with full confidence:
+#
+#   * ``exp.Columns`` — DuckDB's ``COLUMNS('regex')`` / ``COLUMNS(c -> …)``.
+#     Parses as an opaque call over a string literal or lambda; sqlglot models
+#     the ARGUMENT, never the columns it selects. ``COLUMNS('.*') FROM
+#     core.dim_accounts`` expands to all 19 columns at runtime.
+#   * ``exp.Star`` — a ``*`` that survived ``qualify()``. ``qualify`` expands
+#     ``*`` against the schema snapshot, but it cannot expand one over a
+#     ``PIVOT`` / ``UNPIVOT`` / ``SUMMARIZE`` source, whose output columns are
+#     computed by DuckDB at execution time and are absent from the catalog. A
+#     surviving Star means expansion FAILED — the loudest possible signal that
+#     we do not know what this projection returns.
+#
+# ``COUNT(*)`` also holds a Star but never reaches here: the counting-aggregate
+# branch above returns AGGREGATE first, which is correct — a count destroys the
+# values whatever the star covered.
+_OPAQUE_PROJECTION_NODES: tuple[type[exp.Expr], ...] = (exp.Star, exp.Columns)
+
+
+def _is_opaque(inner: exp.Expr) -> bool:
+    """True if ``inner`` stands for columns we cannot enumerate."""
+    return isinstance(inner, _OPAQUE_PROJECTION_NODES) or any(
+        True for _ in inner.find_all(*_OPAQUE_PROJECTION_NODES)
+    )
+
+
 def _resolve_projection(
     proj: exp.Expr,
     scope: Scope | None,
@@ -747,7 +890,14 @@ def _resolve_projection(
 
     cols = list(inner.find_all(exp.Column))
     if not cols:
-        # Literal / constant expression with no column refs.
+        # THE INVARIANT: a projection is classified LOW only when we positively
+        # established what it is. "No exp.Column node" is NOT that proof — it
+        # conflates a genuine literal with an expression we could not
+        # decompose, and the two must not share an answer. An opaque construct
+        # declines here so the caller's conservative floor applies.
+        if _is_opaque(inner):
+            return None
+        # Genuine literal / constant expression with no column refs.
         return DataClass.AGGREGATE
 
     # Built only when the projection actually nests a SELECT (a scalar or IN

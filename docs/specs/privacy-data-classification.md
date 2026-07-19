@@ -349,13 +349,30 @@ The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns 
 | `MIN`, `MAX`, `FIRST`, `LAST`, `ANY_VALUE` over `col` | Source column's class — surfaces an individual value |
 | Multi-column expression (`CONCAT`, `+`, `\|\|`) | `max(tier)` over all referenced columns; highest-tier class |
 | Literal-only (`'hi'`, `1`) | `AGGREGATE` (LOW) |
+| `COLUMNS('regex')`, `COLUMNS(c -> …)` | Conservative fallback — sqlglot models the argument, never the columns DuckDB expands it to |
+| `*` that survived `qualify()` (a `PIVOT` / `UNPIVOT` / `SUMMARIZE` source) | Conservative fallback — the output columns are computed at execution time and are not in the catalog |
+| Whole-row pseudo-column (`SELECT dim_accounts FROM core.dim_accounts`), `UNNEST` of one | Conservative fallback — the projection names no column but returns all of them |
 | Unresolvable | Conservative fallback (see below) |
+
+A projection is classified LOW **only when we positively established what it
+is.** "Contains no column reference" is not that proof: it is equally true of a
+literal and of an expression we could not decompose, and the last three rows
+above are the second kind.
 
 5. **Query tier** — `derive_query_tier(output_classes)` takes the max `Tier` across all output columns.
 
 ### Conservative fallback
 
-When `resolve_output_classes` cannot resolve a projection (unresolvable alias, correlated subquery residual, or column absent from the snapshot), it falls back to the **max tier** over all input columns reachable via `collect_input_columns`. If no input column resolves, the fallback is `AGGREGATE` (LOW). This means the resolver over-redacts rather than leaks — an unresolvable query touching CRITICAL input columns is treated as CRITICAL output.
+When `resolve_output_classes` cannot resolve a projection (unresolvable alias, correlated subquery residual, opaque construct, or column absent from the snapshot), it takes the higher of two floors:
+
+1. **Max tier over input columns** — every column reachable via `collect_input_columns`, across every scope in the query. Precise where the query names its columns.
+2. **Max tier over tables in scope** — every column of every classified table the query reads, whether or not the query names it. This covers the projections that name no column at all (the whole-row pseudo-column, `COLUMNS(…)`, `PIVOT`/`UNPIVOT`/`SUMMARIZE`), where floor 1 legitimately finds nothing and would otherwise say `AGGREGATE` (LOW).
+
+Floor 2 applies only when it *raises* the tier — floor 1 names a class the query actually referenced, so it wins any tie. When floor 2 does win at CRITICAL it reports `UNRESOLVED` rather than a specific CRITICAL class: it established a tier bound, not a column identity, and the CRITICAL transforms are not interchangeable (`ACCOUNT_IDENTIFIER` masks *partially*, which on an unidentified value would publish its last four characters).
+
+If the query reads no classified table at all — a projection over a `VALUES` list, whose values are the caller's own literals rather than database data — the fallback is `AGGREGATE` (LOW). This means the resolver over-redacts rather than leaks.
+
+A second fail-closed path sits below lineage entirely, in `sql_query`: result columns are matched to classes **by name**, and a DuckDB result column absent from the lineage output means lineage never resolved it, so it takes `UNRESOLVED` too. It must not fall back to the max class *present* — the classes that happened to resolve cannot bound the classes that did not, and `COLUMNS`/`PIVOT`/`UNPIVOT`/`SUMMARIZE` each emit many runtime columns from a single projection.
 
 A `WARNING` log line records every fallback so operators can identify queries the resolver doesn't fully handle.
 
