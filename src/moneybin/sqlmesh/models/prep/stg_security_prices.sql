@@ -7,7 +7,11 @@ MODEL (
    accepted bindings SecurityResolver writes. An INNER JOIN is deliberate: an
    unresolved observation stays in raw and reappears here once its security binds,
    rather than being dropped or carried forward as an orphan FK.
-   investment_unresolved_securities already reports that backlog.
+
+   The backlog is only partly reported: investment_unreported_holdings catches an
+   unresolved security that is currently held, and investment_unresolved_securities
+   catches one carrying modeled transactions. A price-only observation for a security
+   that is neither held nor transacted has no doctor coverage — it simply waits in raw.
 
    ref_kind is mapped per source rather than hardcoded, so C.2's stooq_ticker and
    coingecko_slug extend the CASE instead of forking a second resolution path. */
