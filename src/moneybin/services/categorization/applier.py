@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import unicodedata
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ from moneybin.metrics.registry import (
     RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL,
 )
 from moneybin.privacy.payloads.categorize import RulesCreatePayload
+from moneybin.repositories.base import quote_ident
 from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
 from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
@@ -80,9 +82,17 @@ from moneybin.tables import (
     TRANSACTION_SPLITS,
     USER_CATEGORIES,
     USER_MERCHANTS,
+    TableRef,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalized_taxonomy_text(value: str | None) -> str | None:
+    """Return the stable natural-key form used by taxonomy resolution."""
+    if value is None:
+        return None
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
 @dataclass(slots=True, frozen=True)
@@ -213,6 +223,61 @@ TaxonomyStateTarget = CategoryStateTarget | MerchantStateTarget
 
 
 @dataclass(frozen=True, slots=True)
+class CategoryReferenceSnapshot:
+    """One stable, complete dependent-row before-image."""
+
+    target_id: str
+    before_state: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryReferenceGroup:
+    """One protected referential store in canonical cascade order."""
+
+    store: str
+    rows: tuple[CategoryReferenceSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryDeletePlan:
+    """Complete category and seven-store snapshot before hard deletion."""
+
+    category_id: str
+    before_state: dict[str, object]
+    references: tuple[CategoryReferenceGroup, ...]
+    excluded_references: frozenset[tuple[str, str]]
+
+    @property
+    def cascade_count(self) -> int:
+        """Return dependent rows the cascade itself will hard-delete."""
+        return sum(
+            (group.store, row.target_id) not in self.excluded_references
+            for group in self.references
+            for row in group.rows
+        )
+
+    def usage(self, *, effective: bool = False) -> dict[str, int]:
+        """Return stable user-facing reference counts."""
+        labels = {
+            "app.transaction_categories": "transactions",
+            "app.budgets": "budgets",
+            "app.user_merchants": "merchants",
+            "app.transaction_splits": "splits",
+            "app.categorization_rules": "rules",
+            "app.proposed_rules": "proposed_rules",
+            "app.category_source_map": "source_mappings",
+        }
+        return {
+            labels[group.store]: sum(
+                not effective
+                or (group.store, row.target_id) not in self.excluded_references
+                for row in group.rows
+            )
+            for group in self.references
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TaxonomyTargetPlanItem:
     """One resolved taxonomy target before mutation."""
 
@@ -222,6 +287,7 @@ class TaxonomyTargetPlanItem:
     before_state: dict[str, object] | None
     usage: dict[str, int]
     effective_usage: dict[str, int]
+    category_delete: CategoryDeletePlan | None = None
 
     @property
     def kind(self) -> Literal["category", "merchant"]:
@@ -246,6 +312,20 @@ class TaxonomyTargetPlan:
     def destructive(self) -> bool:
         """Return whether the batch includes a hard delete."""
         return any(item.action == "delete" for item in self.items)
+
+    @property
+    def explicit_hard_deletes(self) -> int:
+        """Return hard deletes directly requested by taxonomy targets."""
+        return sum(item.action == "delete" for item in self.items)
+
+    @property
+    def cascade_hard_deletes(self) -> int:
+        """Return dependent rows removed by category cascades."""
+        return sum(
+            item.category_delete.cascade_count
+            for item in self.items
+            if item.action == "delete" and item.category_delete is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,8 +375,8 @@ class MatchApplier:
         """Run the wrapped block inside a DB transaction; rollback on failure.
 
         Rolls back on BaseException (incl. KeyboardInterrupt/SystemExit) so an
-        interrupt mid-write — e.g. between delete_category's cascade DELETEs and
-        the final repo delete — can't leave the transaction open. Same pattern as
+        interrupt mid-write — e.g. between repository-owned category cascade
+        mutations — can't leave the transaction open. Same pattern as
         BaseRepo._transaction; re-raised immediately, never swallowed.
         """
         self._db.begin()
@@ -1038,6 +1118,184 @@ class MatchApplier:
             raise RuntimeError("UserCategoriesRepo.insert returned no category_id")
         return event.target_id
 
+    def _complete_rows(
+        self,
+        table: TableRef,
+        *,
+        category_id: str,
+        pk_columns: tuple[str, ...],
+    ) -> tuple[CategoryReferenceSnapshot, ...]:
+        """Read complete category references in deterministic primary-key order."""
+        order_by = ", ".join(quote_ident(column) for column in pk_columns)
+        cursor = self._db.execute(
+            f"""
+            SELECT *
+            FROM {table.full_name}
+            WHERE category_id = ?
+            ORDER BY {order_by}
+            """,  # noqa: S608  # TableRef + quoted code-owned identifiers
+            [category_id],
+        )
+        columns = tuple(str(description[0]) for description in cursor.description)
+        snapshots: list[CategoryReferenceSnapshot] = []
+        for values in cursor.fetchall():
+            row = dict(zip(columns, values, strict=True))
+            key_values = tuple(row[column] for column in pk_columns)
+            target_id = (
+                str(key_values[0])
+                if len(key_values) == 1
+                else json.dumps(
+                    key_values,
+                    default=str,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            snapshots.append(
+                CategoryReferenceSnapshot(
+                    target_id=target_id,
+                    before_state=row,
+                )
+            )
+        return tuple(snapshots)
+
+    def plan_category_delete(
+        self,
+        category_id: str,
+        *,
+        force: bool,
+        excluded_references: frozenset[tuple[str, str]] = frozenset(),
+    ) -> CategoryDeletePlan:
+        """Snapshot and validate one category hard delete without writing."""
+        category_cursor = self._db.execute(
+            f"""
+            SELECT *
+            FROM {USER_CATEGORIES.full_name}
+            WHERE category_id = ?
+            """,  # noqa: S608  # TableRef constant
+            [category_id],
+        )
+        columns = tuple(
+            str(description[0]) for description in category_cursor.description
+        )
+        category_row = category_cursor.fetchone()
+        if category_row is None:
+            default = self._db.execute(
+                f"""
+                SELECT 1
+                FROM {CATEGORIES.full_name}
+                WHERE category_id = ? AND is_default = TRUE
+                """,  # noqa: S608  # TableRef constant
+                [category_id],
+            ).fetchone()
+            if default:
+                raise UserError(
+                    f"Default category {category_id} cannot be deleted "
+                    "(use categories_set with is_active=False to disable)",
+                    code="CATEGORY_IS_DEFAULT",
+                )
+            raise UserError(
+                f"Category {category_id} not found",
+                code="CATEGORY_NOT_FOUND",
+            )
+
+        references = tuple(
+            CategoryReferenceGroup(
+                store=table.full_name,
+                rows=self._complete_rows(
+                    table,
+                    category_id=category_id,
+                    pk_columns=pk_columns,
+                ),
+            )
+            for table, pk_columns in (
+                (TRANSACTION_CATEGORIES, ("transaction_id",)),
+                (BUDGETS, ("budget_id",)),
+                (USER_MERCHANTS, ("merchant_id",)),
+                (TRANSACTION_SPLITS, ("split_id",)),
+                (CATEGORIZATION_RULES, ("rule_id",)),
+                (PROPOSED_RULES, ("proposed_rule_id",)),
+                (
+                    CATEGORY_SOURCE_MAP,
+                    ("source_type", "source_category_code"),
+                ),
+            )
+        )
+        plan = CategoryDeletePlan(
+            category_id=category_id,
+            before_state=dict(zip(columns, category_row, strict=True)),
+            references=references,
+            excluded_references=excluded_references,
+        )
+        effective_usage = plan.usage(effective=True)
+        if any(effective_usage.values()) and not force:
+            present = [
+                label.replace("_", " ")
+                for label, count in effective_usage.items()
+                if count
+            ]
+            raise UserError(
+                f"Category {category_id} is referenced by "
+                + ", ".join(present)
+                + "; pass force=True to cascade-delete.",
+                code="CATEGORY_HAS_REFERENCES",
+                details={
+                    "usage": plan.usage(),
+                    "effective_usage": effective_usage,
+                },
+            )
+        return plan
+
+    def _apply_category_delete_plan(
+        self,
+        plan: CategoryDeletePlan,
+        *,
+        force: bool,
+        actor: str,
+    ) -> None:
+        """Apply the shared seven-repository cascade inside an active transaction."""
+        if force:
+            self._tx_categories.delete_by_category(
+                plan.category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._budgets.delete_by_category(
+                plan.category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._user_merchants.delete_by_category(
+                plan.category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._tx_splits.delete_by_category(
+                plan.category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._rules.delete_by_category(
+                plan.category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._proposed_rules.delete_by_category(
+                plan.category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._category_source_map.delete_by_category(
+                plan.category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+        self._user_categories.delete(
+            plan.category_id,
+            actor=actor,
+            in_outer_txn=True,
+        )
+
     def plan_taxonomy_targets(
         self, targets: Sequence[TaxonomyStateTarget]
     ) -> TaxonomyTargetPlan:
@@ -1058,17 +1316,20 @@ class MatchApplier:
             """  # noqa: S608  # TableRef constant
         ).fetchall()
         category_by_id = {str(row[0]): row for row in category_rows}
-        category_by_name = {
-            (
-                str(row[1]).casefold(),
-                str(row[2]).casefold() if row[2] is not None else None,
-            ): row
-            for row in category_rows
-        }
+        category_candidates_by_name: dict[
+            tuple[str | None, str | None],
+            list[tuple[object, ...]],
+        ] = {}
+        for row in category_rows:
+            key = (
+                _normalized_taxonomy_text(str(row[1])),
+                _normalized_taxonomy_text(str(row[2]) if row[2] is not None else None),
+            )
+            category_candidates_by_name.setdefault(key, []).append(row)
         planned_categories = {
             (
-                target.category.casefold(),
-                target.subcategory.casefold() if target.subcategory else None,
+                _normalized_taxonomy_text(target.category),
+                _normalized_taxonomy_text(target.subcategory),
             )
             for target in targets
             if isinstance(target, CategoryStateTarget)
@@ -1077,9 +1338,9 @@ class MatchApplier:
         }
         removed_category_keys = {
             (
-                str(category_by_id[target.category_id][1]).casefold(),
-                (
-                    str(category_by_id[target.category_id][2]).casefold()
+                _normalized_taxonomy_text(str(category_by_id[target.category_id][1])),
+                _normalized_taxonomy_text(
+                    str(category_by_id[target.category_id][2])
                     if category_by_id[target.category_id][2] is not None
                     else None
                 ),
@@ -1090,9 +1351,19 @@ class MatchApplier:
             and target.category_id in category_by_id
         }
         merchant_by_id = {str(row[0]): row for row in merchant_rows}
-        merchant_by_target = {
-            (row[1], row[2], row[3], row[4], row[5]): row for row in merchant_rows
-        }
+        merchant_candidates_by_target: dict[
+            tuple[str | None, object, str | None, str | None, str | None],
+            list[tuple[object, ...]],
+        ] = {}
+        for row in merchant_rows:
+            key = (
+                _normalized_taxonomy_text(str(row[1]) if row[1] is not None else None),
+                row[2],
+                _normalized_taxonomy_text(str(row[3])),
+                _normalized_taxonomy_text(str(row[4]) if row[4] is not None else None),
+                _normalized_taxonomy_text(str(row[5]) if row[5] is not None else None),
+            )
+            merchant_candidates_by_target.setdefault(key, []).append(row)
         planned_merchant_delete_ids = {
             target.merchant_id
             for target in targets
@@ -1107,14 +1378,27 @@ class MatchApplier:
                 natural: tuple[str, str | None] | None = None
                 if target.category is not None:
                     natural = (
-                        target.category.casefold(),
-                        target.subcategory.casefold() if target.subcategory else None,
+                        cast(str, _normalized_taxonomy_text(target.category)),
+                        _normalized_taxonomy_text(target.subcategory),
                     )
-                row = (
-                    category_by_id.get(target.category_id)
-                    if target.category_id is not None
-                    else category_by_name.get(cast(tuple[str, str | None], natural))
-                )
+                if target.category_id is not None:
+                    row = category_by_id.get(target.category_id)
+                else:
+                    category_matches = category_candidates_by_name.get(
+                        cast(tuple[str | None, str | None], natural),
+                        [],
+                    )
+                    if len(category_matches) > 1:
+                        raise UserError(
+                            "Category target matches more than one existing category.",
+                            code=error_codes.MUTATION_AMBIGUOUS,
+                            details={
+                                "candidate_ids": sorted(
+                                    str(candidate[0]) for candidate in category_matches
+                                )
+                            },
+                        )
+                    row = category_matches[0] if category_matches else None
                 if (
                     target.category_id is not None
                     and row is None
@@ -1169,46 +1453,41 @@ class MatchApplier:
                     action = "delete"
                 usage: dict[str, int] = {}
                 effective_usage: dict[str, int] = {}
+                category_delete: CategoryDeletePlan | None = None
                 if action == "delete" and row is not None:
-                    if bool(row[4]):
-                        raise UserError(
-                            "Default categories cannot be hard-deleted.",
-                            code="CATEGORY_IS_DEFAULT",
-                        )
-                    usage = self._category_usage(str(row[0]))
-                    effective_usage = dict(usage)
-                    effective_usage["merchants"] -= sum(
-                        1
+                    excluded = frozenset(
+                        ("app.user_merchants", merchant_id)
                         for merchant_id in planned_merchant_delete_ids
                         if merchant_by_id[merchant_id][6] == row[0]
                     )
-                    if any(effective_usage.values()) and not target.force:
-                        raise UserError(
-                            "Category is referenced; pass force=True to "
-                            "cascade-delete dependent rows.",
-                            code="CATEGORY_HAS_REFERENCES",
-                            details={
-                                "usage": usage,
-                                "effective_usage": effective_usage,
-                            },
-                        )
-                before: dict[str, object] | None = (
-                    dict(
-                        zip(
-                            (
-                                "category_id",
-                                "category",
-                                "subcategory",
-                                "description",
-                                "is_default",
-                                "is_active",
-                            ),
-                            row,
-                            strict=True,
-                        )
+                    category_delete = self.plan_category_delete(
+                        str(row[0]),
+                        force=target.force,
+                        excluded_references=excluded,
                     )
-                    if row is not None
-                    else None
+                    usage = category_delete.usage()
+                    effective_usage = category_delete.usage(effective=True)
+                before: dict[str, object] | None = (
+                    category_delete.before_state
+                    if category_delete is not None
+                    else (
+                        dict(
+                            zip(
+                                (
+                                    "category_id",
+                                    "category",
+                                    "subcategory",
+                                    "description",
+                                    "is_default",
+                                    "is_active",
+                                ),
+                                row,
+                                strict=True,
+                            )
+                        )
+                        if row is not None
+                        else None
+                    )
                 )
                 items.append(
                     TaxonomyTargetPlanItem(
@@ -1218,6 +1497,7 @@ class MatchApplier:
                         before_state=before,
                         usage=usage,
                         effective_usage=effective_usage,
+                        category_delete=category_delete,
                     )
                 )
                 continue
@@ -1225,8 +1505,8 @@ class MatchApplier:
             match_type = target.match_type or "contains"
             if target.category is not None:
                 category_key = (
-                    target.category.casefold(),
-                    target.subcategory.casefold() if target.subcategory else None,
+                    _normalized_taxonomy_text(target.category),
+                    _normalized_taxonomy_text(target.subcategory),
                 )
                 if category_key in removed_category_keys:
                     raise UserError(
@@ -1234,26 +1514,47 @@ class MatchApplier:
                         "same taxonomy batch.",
                         code=error_codes.MUTATION_INVALID_INPUT,
                     )
-                if (
-                    category_key not in category_by_name
-                    and category_key not in planned_categories
-                ):
+                category_matches = category_candidates_by_name.get(category_key, [])
+                if len(category_matches) > 1:
+                    raise UserError(
+                        "Merchant category matches more than one existing category.",
+                        code=error_codes.MUTATION_AMBIGUOUS,
+                        details={
+                            "candidate_ids": sorted(
+                                str(candidate[0]) for candidate in category_matches
+                            )
+                        },
+                    )
+                if not category_matches and category_key not in planned_categories:
                     raise UserError(
                         "Merchant mapping references a category that was not found.",
                         code=error_codes.MUTATION_NOT_FOUND,
                     )
             natural_merchant = (
-                target.raw_pattern,
+                _normalized_taxonomy_text(target.raw_pattern),
                 match_type,
-                target.canonical_name,
-                target.category,
-                target.subcategory,
+                _normalized_taxonomy_text(target.canonical_name),
+                _normalized_taxonomy_text(target.category),
+                _normalized_taxonomy_text(target.subcategory),
             )
-            row = (
-                merchant_by_id.get(target.merchant_id)
-                if target.merchant_id is not None
-                else merchant_by_target.get(natural_merchant)
-            )
+            if target.merchant_id is not None:
+                row = merchant_by_id.get(target.merchant_id)
+            else:
+                merchant_matches = merchant_candidates_by_target.get(
+                    natural_merchant,
+                    [],
+                )
+                if len(merchant_matches) > 1:
+                    raise UserError(
+                        "Merchant target matches more than one existing mapping.",
+                        code=error_codes.MUTATION_AMBIGUOUS,
+                        details={
+                            "candidate_ids": sorted(
+                                str(candidate[0]) for candidate in merchant_matches
+                            )
+                        },
+                    )
+                row = merchant_matches[0] if merchant_matches else None
             if (
                 target.merchant_id is not None
                 and row is None
@@ -1334,41 +1635,6 @@ class MatchApplier:
             )
         return TaxonomyTargetPlan(items=tuple(items))
 
-    def _category_usage(self, category_id: str) -> dict[str, int]:
-        """Return complete protected-table usage for one category."""
-        row = self._db.execute(
-            f"""
-            SELECT
-                (SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name}
-                  WHERE category_id = ?),
-                (SELECT COUNT(*) FROM {BUDGETS.full_name}
-                  WHERE category_id = ?),
-                (SELECT COUNT(*) FROM {USER_MERCHANTS.full_name}
-                  WHERE category_id = ?),
-                (SELECT COUNT(*) FROM {TRANSACTION_SPLITS.full_name}
-                  WHERE category_id = ?),
-                (SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name}
-                  WHERE category_id = ?),
-                (SELECT COUNT(*) FROM {PROPOSED_RULES.full_name}
-                  WHERE category_id = ?),
-                (SELECT COUNT(*) FROM {CATEGORY_SOURCE_MAP.full_name}
-                  WHERE category_id = ?)
-            """,  # noqa: S608  # TableRef constants + parameterized values
-            [category_id] * 7,
-        ).fetchone()
-        labels = (
-            "transactions",
-            "budgets",
-            "merchants",
-            "splits",
-            "rules",
-            "proposed_rules",
-            "source_mappings",
-        )
-        return {
-            label: int(count) for label, count in zip(labels, row or (), strict=True)
-        }
-
     def apply_taxonomy_targets(
         self,
         targets: Sequence[TaxonomyStateTarget],
@@ -1435,47 +1701,12 @@ class MatchApplier:
                     target, CategoryStateTarget
                 ):
                     continue
-                category_id = cast(str, item.target_id)
-                if target.force:
-                    self._tx_categories.delete_by_category(
-                        category_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    self._budgets.delete_by_category(
-                        category_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    self._user_merchants.delete_by_category(
-                        category_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    self._tx_splits.delete_by_category(
-                        category_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    self._rules.delete_by_category(
-                        category_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    self._proposed_rules.delete_by_category(
-                        category_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                    self._category_source_map.delete_by_category(
-                        category_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                self._user_categories.delete(
-                    category_id,
+                if item.category_delete is None:  # pragma: no cover — planned delete
+                    raise RuntimeError("Category delete is missing its preflight plan")
+                self._apply_category_delete_plan(
+                    item.category_delete,
+                    force=target.force,
                     actor=actor,
-                    in_outer_txn=True,
                 )
             self._db.commit()
             return [
@@ -1562,91 +1793,9 @@ class MatchApplier:
                 category is referenced by at least one of the seven tracked
                 tables.
         """
-        existing = self._db.execute(
-            f"SELECT 1 FROM {USER_CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-            f"WHERE category_id = ?",
-            [category_id],
-        ).fetchone()
-        if not existing:
-            default = self._db.execute(
-                f"SELECT 1 FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
-                f"WHERE category_id = ? AND is_default = TRUE",
-                [category_id],
-            ).fetchone()
-            if default:
-                raise UserError(
-                    f"Default category {category_id} cannot be deleted "
-                    f"(use categories_set with is_active=False to disable)",
-                    code="CATEGORY_IS_DEFAULT",
-                )
-            raise UserError(
-                f"Category {category_id} not found",
-                code="CATEGORY_NOT_FOUND",
-            )
-
-        if not force:
-            refs_row = self._db.execute(
-                f"SELECT "
-                f"  EXISTS(SELECT 1 FROM {TRANSACTION_CATEGORIES.full_name} WHERE category_id = ?), "  # noqa: S608  # TableRef constants
-                f"  EXISTS(SELECT 1 FROM {BUDGETS.full_name} WHERE category_id = ?), "
-                f"  EXISTS(SELECT 1 FROM {USER_MERCHANTS.full_name} WHERE category_id = ?), "
-                f"  EXISTS(SELECT 1 FROM {TRANSACTION_SPLITS.full_name} WHERE category_id = ?), "
-                f"  EXISTS(SELECT 1 FROM {CATEGORIZATION_RULES.full_name} WHERE category_id = ?), "
-                f"  EXISTS(SELECT 1 FROM {PROPOSED_RULES.full_name} WHERE category_id = ?), "
-                f"  EXISTS(SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name} WHERE category_id = ?)",
-                [category_id] * 7,
-            ).fetchone()
-            labels = (
-                "transactions",
-                "budgets",
-                "merchants",
-                "splits",
-                "rules",
-                "proposed rules",
-                "source mappings",
-            )
-            present = [
-                label
-                for label, flag in zip(labels, refs_row or (), strict=True)
-                if flag
-            ]
-            if present:
-                raise UserError(
-                    f"Category {category_id} is referenced by "
-                    + ", ".join(present)
-                    + "; pass force=True to cascade-delete.",
-                    code="CATEGORY_HAS_REFERENCES",
-                )
-
         with self._transaction():
-            if force:
-                # NOTE(Invariant 10): these 7 cascade DELETEs target other
-                # protected app.* tables and are still raw. As of Batch B,
-                # transaction_categories / user_merchants / categorization_rules
-                # / proposed_rules have repos, but budgets and transaction_splits
-                # do not (Batch C / AI-PR12). Threading the whole cascade through
-                # repos in one pass — when all seven have a delete-by-category_id
-                # path — keeps it a single coherent change rather than a
-                # half-threaded mix; the lint rule (AI-PR13) lands after that, so
-                # nothing forces it earlier.
-                for table_const in (
-                    TRANSACTION_CATEGORIES,
-                    BUDGETS,
-                    USER_MERCHANTS,
-                    TRANSACTION_SPLITS,
-                    CATEGORIZATION_RULES,
-                    PROPOSED_RULES,
-                    CATEGORY_SOURCE_MAP,
-                ):
-                    self._db.execute(
-                        f"DELETE FROM {table_const.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
-                        [category_id],
-                    )
-            # TODO(Invariant 10 AI-PR12): once budgets + transaction_splits have
-            # repos, capture this AuditEvent and thread its audit_id as
-            # parent_audit_id into all seven cascade deletes above (routed
-            # through their repos).
-            self._user_categories.delete(category_id, actor=actor, in_outer_txn=True)
+            plan = self.plan_category_delete(category_id, force=force)
+            self._apply_category_delete_plan(plan, force=force, actor=actor)
 
     # -- Guarded categorization write --
 

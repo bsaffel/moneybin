@@ -267,6 +267,13 @@ async def test_taxonomy_force_delete_cascades_and_undoes_one_operation() -> None
         ]
     )
     assert first.error is not None
+    assert first.error.details["blast_radius"] == {
+        "targets": 1,
+        "changed_targets": 1,
+        "explicit_hard_deletes": 1,
+        "cascade_hard_deletes": 7,
+        "hard_deletes": 8,
+    }
     removed = await taxonomy_set_coarse(
         items=[
             CategoryStateRequest(
@@ -326,6 +333,181 @@ async def test_taxonomy_force_delete_cascades_and_undoes_one_operation() -> None
     assert restored_counts == (1, 1, 1, 1, 1, 1, 1)
 
 
+async def test_taxonomy_force_delete_rejects_same_count_different_row_token() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Snapshot",
+            )
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    assert category_id is not None
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES ('task6-snapshot-a', 'Task 6 Snapshot', ?, 'user')",
+            [category_id],
+        )
+    request = CategoryStateRequest(
+        kind="category",
+        state="absent",
+        category_id=category_id,
+        force=True,
+    )
+    first = await taxonomy_set_coarse(items=[request])
+    assert first.error is not None
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            "DELETE FROM app.transaction_categories "
+            "WHERE transaction_id = 'task6-snapshot-a'"
+        )
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES ('task6-snapshot-b', 'Task 6 Snapshot', ?, 'user')",
+            [category_id],
+        )
+    stale = await taxonomy_set_coarse(
+        items=[request],
+        confirmation_token=first.error.details["confirmation_token"],
+    )
+
+    assert stale.error is not None
+    assert stale.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    with get_database(read_only=True) as db:
+        assert db.execute(
+            "SELECT transaction_id FROM app.transaction_categories "
+            "WHERE category_id = ?",
+            [category_id],
+        ).fetchall() == [("task6-snapshot-b",)]
+
+
+async def test_taxonomy_force_delete_rejects_changed_dependent_before_image() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Before Image",
+            )
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    assert category_id is not None
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO app.budgets "
+            "(budget_id, category, category_id, monthly_amount, start_month) "
+            "VALUES ('task6-before-image', 'Task 6 Before Image', ?, 100, '2026-07')",
+            [category_id],
+        )
+    request = CategoryStateRequest(
+        kind="category",
+        state="absent",
+        category_id=category_id,
+        force=True,
+    )
+    first = await taxonomy_set_coarse(items=[request])
+    assert first.error is not None
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            "UPDATE app.budgets SET monthly_amount = 200 "
+            "WHERE budget_id = 'task6-before-image'"
+        )
+    stale = await taxonomy_set_coarse(
+        items=[request],
+        confirmation_token=first.error.details["confirmation_token"],
+    )
+
+    assert stale.error is not None
+    assert stale.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+
+async def test_taxonomy_rejects_duplicate_normalized_category_candidates() -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+        candidate_ids = {
+            service.create_category("Task 6 Ambiguous"),
+            service.create_category("task 6 ambiguous"),
+        }
+
+    response = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Must Not Persist",
+            ),
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="TASK 6 AMBIGUOUS",
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_AMBIGUOUS
+    assert response.error.details["candidate_ids"] == sorted(candidate_ids)
+    assert not any(
+        row.category == "Task 6 Must Not Persist"
+        for row in (await taxonomy_coarse(view="categories")).data.rows
+    )
+
+
+async def test_taxonomy_rejects_duplicate_normalized_merchant_candidates() -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+        candidate_ids = {
+            service.create_merchant(
+                raw_pattern="TASK 6 DUPLICATE",
+                canonical_name="Task 6 Duplicate",
+                match_type="contains",
+                created_by="ai",
+            )
+            for _ in range(2)
+        }
+
+    response = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Merchant Must Not Persist",
+            ),
+            MerchantStateRequest(
+                kind="merchant",
+                state="present",
+                raw_pattern="task 6 duplicate",
+                canonical_name="task 6 duplicate",
+                match_type="contains",
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_AMBIGUOUS
+    assert response.error.details["candidate_ids"] == sorted(candidate_ids)
+    assert not any(
+        row.category == "Task 6 Merchant Must Not Persist"
+        for row in (await taxonomy_coarse(view="categories")).data.rows
+    )
+
+
 async def test_taxonomy_preflight_composes_merchant_and_category_removal() -> None:
     created = await taxonomy_set_coarse(
         items=[
@@ -363,6 +545,13 @@ async def test_taxonomy_preflight_composes_merchant_and_category_removal() -> No
     first = await taxonomy_set_coarse(items=requests)
     assert first.error is not None
     assert first.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert first.error.details["blast_radius"] == {
+        "targets": 2,
+        "changed_targets": 2,
+        "explicit_hard_deletes": 2,
+        "cascade_hard_deletes": 0,
+        "hard_deletes": 2,
+    }
     removed = await taxonomy_set_coarse(
         items=requests,
         confirmation_token=first.error.details["confirmation_token"],

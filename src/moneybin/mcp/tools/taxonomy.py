@@ -339,6 +339,23 @@ def _taxonomy_binding(
                     "row": item.before_state,
                     "usage": item.usage,
                     "effective_usage": item.effective_usage,
+                    "cascade_before": (
+                        [
+                            {
+                                "store": group.store,
+                                "rows": [
+                                    {
+                                        "target_id": row.target_id,
+                                        "before_state": row.before_state,
+                                    }
+                                    for row in group.rows
+                                ],
+                            }
+                            for group in item.category_delete.references
+                        ]
+                        if item.category_delete is not None
+                        else []
+                    ),
                 }
                 for item in plan.items
             ],
@@ -370,7 +387,9 @@ def _taxonomy_binding(
         blast_radius={
             "targets": len(items),
             "changed_targets": len(plan.changed),
-            "hard_deletes": sum(item.action == "delete" for item in plan.items),
+            "explicit_hard_deletes": plan.explicit_hard_deletes,
+            "cascade_hard_deletes": plan.cascade_hard_deletes,
+            "hard_deletes": (plan.explicit_hard_deletes + plan.cascade_hard_deletes),
         },
     )
 

@@ -215,6 +215,57 @@ class TestCategoriesDeleteTool:
             ).fetchall()
         assert txn_rows == []
 
+    @pytest.mark.unit
+    async def test_force_cascade_is_fully_audited_and_undoable(
+        self, mcp_db: Path
+    ) -> None:
+        with get_database(read_only=False) as db:
+            db.execute(
+                "INSERT INTO app.user_categories "
+                "(category_id, category, subcategory, is_active) "
+                "VALUES ('USERCAT3', 'Undo Linked', NULL, true)"
+            )
+            db.execute(
+                "INSERT INTO app.transaction_categories "
+                "(transaction_id, category, category_id, categorized_by) "
+                "VALUES ('txn-undo-forced', 'Undo Linked', 'USERCAT3', 'user')"
+            )
+
+        envelope = (
+            await categories_delete(category_id="USERCAT3", force=True)
+        ).to_dict()
+        assert envelope["data"] == {
+            "category_id": "USERCAT3",
+            "action": "deleted",
+            "force": True,
+        }
+        with get_database(read_only=True) as db:
+            audit_rows = db.execute(
+                "SELECT operation_id, action FROM app.audit_log "
+                "WHERE target_id IN ('USERCAT3', 'txn-undo-forced') "
+                "ORDER BY occurred_at, audit_id"
+            ).fetchall()
+        operation_ids = {row[0] for row in audit_rows}
+        assert len(operation_ids) == 1
+        assert {row[1] for row in audit_rows} == {
+            "category.clear",
+            "user_category.delete",
+        }
+
+        from moneybin.mcp.tools.system import system_audit_undo
+
+        undo = await system_audit_undo(operation_ids.pop())
+        assert undo.error is None
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT category_id FROM app.user_categories "
+                "WHERE category_id = 'USERCAT3'"
+            ).fetchall() == [("USERCAT3",)]
+            assert db.execute(
+                "SELECT transaction_id FROM app.transaction_categories "
+                "WHERE transaction_id = 'txn-undo-forced'"
+            ).fetchall() == [("txn-undo-forced",)]
+
 
 class TestTransactionsCategorizeRun:
     """transactions_categorize_run tool wiring and response envelope."""
