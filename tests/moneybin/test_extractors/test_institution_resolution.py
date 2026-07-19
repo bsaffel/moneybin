@@ -111,3 +111,50 @@ def test_resolve_institution_tabular_filename_then_unknown(tmp_path: Path) -> No
         file_path=Path("export.csv"), format_institution=None, cli_override=None
     )
     assert miss is None  # unknown allowed — no InstitutionResolutionError
+
+
+class TestSharedInstitutionRegistry:
+    """The FID mapping has one home, shared with the seeds.institutions model.
+
+    core.dim_accounts joins the same CSV to resolve a human-readable
+    institution_name. A second copy in Python would drift the first time
+    someone added a bank to one and not the other.
+    """
+
+    def test_every_registry_fid_resolves(self) -> None:
+        """Each FID in the shared CSV resolves via the FID branch of the chain."""
+        from moneybin.extractors.institution_resolution import (
+            _fid_to_slug,  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+        )
+
+        registry = _fid_to_slug()
+        assert registry, "institution registry loaded empty"
+
+        for fid, slug in registry.items():
+            result = resolve_institution(
+                _ofx_with(org=None, fid=fid),
+                file_path=Path("/tmp/anonymous.qfx"),  # noqa: S108
+                cli_override=None,
+                interactive=False,
+            )
+            assert result == slug, f"FID {fid!r} resolved to {result!r}, not {slug!r}"
+
+    def test_registry_carries_a_display_name_for_every_slug(self) -> None:
+        """seeds.institutions is also the display-name source; no row may lack one."""
+        import csv  # noqa: PLC0415
+        import io  # noqa: PLC0415
+        from importlib import resources  # noqa: PLC0415
+
+        raw = (
+            resources
+            .files("moneybin")
+            .joinpath("sqlmesh/models/seeds/institutions.csv")
+            .read_text()
+        )
+        rows = list(csv.DictReader(io.StringIO(raw)))
+        assert rows, "institution registry CSV is empty"
+        for row in rows:
+            assert row["display_name"].strip(), (
+                f"FID {row['fid']!r} has no display_name; core.dim_accounts would "
+                "fall back to the raw <ORG> code"
+            )

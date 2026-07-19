@@ -47,17 +47,24 @@ def _link(
     )
 
 
-def _ofx_account(db: Database, *, native_key: str, account_type: str | None) -> None:
+def _ofx_account(
+    db: Database,
+    *,
+    native_key: str,
+    account_type: str | None,
+    institution_org: str = "Vocab Bank",
+    institution_fid: str = "fid-v",
+) -> None:
     db.execute(
         """
         INSERT INTO raw.ofx_accounts
             (account_id, routing_number, account_type, institution_org,
              institution_fid, source_file, source_type, source_origin,
              extracted_at, loaded_at)
-        VALUES (?, '111000025', ?, 'Vocab Bank', 'fid-v', '/tmp/v.ofx', 'ofx',
+        VALUES (?, '111000025', ?, ?, ?, '/tmp/v.ofx', 'ofx',
                 'vocab_ofx', '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
         """,  # noqa: S608  # test fixture
-        [native_key, account_type],
+        [native_key, account_type, institution_org, institution_fid],
     )
 
 
@@ -206,3 +213,71 @@ def test_typeless_accounts_stay_distinguishable_by_last_four(db: Database) -> No
     assert "3431" in names[1], names[1]
     # And no double space where the absent type used to be interpolated.
     assert all("  " not in n for n in names), names
+
+
+@pytest.mark.slow
+def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
+    db: Database,
+) -> None:
+    """<ORG> is a routing code, not a name — resolve the display name by FID.
+
+    Chase publishes <ORG>B1</ORG> (FID 10898) and Wells Fargo <ORG>WF</ORG>
+    (3000). Aliasing <ORG> straight through showed users "B1" in a column
+    documented as the human-readable institution name.
+    """
+    _ofx_account(
+        db,
+        native_key="ofx-b1-4387",
+        account_type="CREDITCARD",
+        institution_org="B1",
+        institution_fid="10898",
+    )
+    _link(
+        db,
+        link_id="lnk-b1-1",
+        account_id="canon-b1-4387",
+        ref_value="ofx-b1-4387",
+        source_type="ofx",
+        source_origin="vocab_ofx",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT institution_name, display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["canon-b1-4387"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "Chase", f"expected the FID to resolve a name, got {row[0]!r}"
+    assert row[1] == "Chase credit …4387", row[1]
+
+
+@pytest.mark.slow
+def test_unknown_fid_falls_back_to_the_raw_org(db: Database) -> None:
+    """An institution absent from the registry keeps its <ORG> — never blank."""
+    _ofx_account(
+        db,
+        native_key="ofx-unknown-1",
+        account_type="CHECKING",
+        institution_org="SOME CREDIT UNION",
+        institution_fid="99999",
+    )
+    _link(
+        db,
+        link_id="lnk-unk-1",
+        account_id="canon-unknown-1",
+        ref_value="ofx-unknown-1",
+        source_type="ofx",
+        source_origin="vocab_ofx",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT institution_name FROM core.dim_accounts WHERE account_id = ?",
+        ["canon-unknown-1"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "SOME CREDIT UNION"

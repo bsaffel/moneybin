@@ -10,24 +10,31 @@ MODEL (
 );
 
 WITH ofx_accounts AS (
+  /* OFX <ORG> is a routing code, not a name — Chase publishes "B1", Wells Fargo
+     "WF" — so resolve a display name from the exact <FID> via seeds.institutions
+     and fall back to the raw <ORG> when the FID is unregistered. This is a
+     display concern only: the import-time institution slug (source_origin) is
+     deliberately untouched, because it feeds the transaction_id content hash. */
   SELECT
-    account_id,
-    source_account_key,
-    routing_number,
-    account_type,
-    institution_org AS institution_name,
-    institution_fid,
+    a.account_id,
+    a.source_account_key,
+    a.routing_number,
+    a.account_type,
+    COALESCE(i.display_name, a.institution_org) AS institution_name,
+    a.institution_fid,
     'ofx' AS source_type,
-    source_file,
-    extracted_at,
-    loaded_at,
+    a.source_file,
+    a.extracted_at,
+    a.loaded_at,
     NULL::TEXT AS official_name,
-    account_subtype,
+    a.account_subtype,
     CASE
-      WHEN LENGTH(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g')) >= 4
-      THEN RIGHT(REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g'), 4)
+      WHEN LENGTH(REGEXP_REPLACE(a.source_account_key, '[^0-9]', '', 'g')) >= 4
+      THEN RIGHT(REGEXP_REPLACE(a.source_account_key, '[^0-9]', '', 'g'), 4)
     END AS last_four_raw
-  FROM prep.stg_ofx__accounts
+  FROM prep.stg_ofx__accounts AS a
+  LEFT JOIN seeds.institutions AS i
+    ON i.fid = a.institution_fid
 ), tabular_accounts AS (
   SELECT
     account_id,
