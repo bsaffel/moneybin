@@ -12,18 +12,20 @@
    bucket, since a bucket is a grouping and would otherwise leave two unranked sources
    tied; source_origin and provider_security_key separate two connections or two
    provider keys for the same security; extracted_at DESC — freshest observation wins —
-   separates two rows still tied on all four. close is kept only as a final,
-   effectively unreachable backstop.
+   separates two rows still tied on all four. close is the final tiebreak, reached
+   when two rows are also tied on an identical extracted_at — see below.
 
    One duplicate shape survives all of the above: prep.stg_security_prices normalizes
    quote_currency with UPPER(), so a provider observation stored as 'usd' and a
    duplicate stored as 'USD' carry distinct raw primary keys (quote_currency is part of
    raw.security_prices' PK) and both reach this model with identical security_id,
-   source, source_origin, and provider_security_key. extracted_at resolves that case by
-   freshness, but the raw casing that distinguished the two rows is discarded by
-   staging and is not recoverable at this layer — the ordering is deterministic, not
-   exhaustive over information staging already threw away. A new adapter takes the
-   next free rank. See docs/specs/investments-price-feeds.md. */
+   source, source_origin, and provider_security_key. extracted_at usually resolves that
+   case by freshness; when both casing variants arrive in the same sync and therefore
+   share one extracted_at, close breaks the tie instead. Either way, the raw casing
+   that distinguished the two rows is discarded by staging and is not recoverable at
+   this layer — the ordering is deterministic, not exhaustive over information staging
+   already threw away. A new adapter takes the next free rank. See
+   docs/specs/investments-price-feeds.md. */
 MODEL (
   name core.fct_security_prices,
   kind FULL,
