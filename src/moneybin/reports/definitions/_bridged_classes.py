@@ -41,8 +41,13 @@ BRIDGED_REPORT_CLASSES: dict[tuple[str, str], dict[str, DataClass]] = {
         "description": DataClass.DESCRIPTION,
         "merchant_id": DataClass.RECORD_ID,
         "merchant_normalized": DataClass.MERCHANT_NAME,
-        "age_days": DataClass.AGGREGATE,
-        "priority_score": DataClass.AGGREGATE,
+        # CURRENT_DATE is public, so age_days is bijective with txn_date
+        # (txn_date = CURRENT_DATE - age_days) — a date, not an aggregate.
+        "age_days": DataClass.TXN_DATE,
+        # ABS(amount) * age_days: exact once age_days is visible (>= MEDIUM
+        # tier), so priority_score recovers ABS(amount) by division at any
+        # tier that unmasks age_days but not amount. Must stay HIGH.
+        "priority_score": DataClass.TXN_AMOUNT,
         "source_type": DataClass.TXN_TYPE,
         "source_id": DataClass.RECORD_ID,
     },

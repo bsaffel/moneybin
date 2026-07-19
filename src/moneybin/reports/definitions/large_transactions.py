@@ -28,6 +28,12 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         "amount_zscore_category": DataClass.AGGREGATE,
         "is_top_100": DataClass.AGGREGATE,
     },
+    class_downgrades={
+        "amount_zscore_account": "z-score over amount; a standardized deviation "
+        "reveals no amount",
+        "amount_zscore_category": "z-score over amount; a standardized deviation "
+        "reveals no amount",
+    },
 )
 def large_transactions(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

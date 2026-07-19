@@ -87,3 +87,62 @@ def test_reports_declared_classes_cover_real_views() -> None:
     assert scenario is not None
     result = run_scenario(scenario, extra_assertions=_classification_assertions)
     assert result.passed, result.failure_summary()
+
+
+def _all_class_downgrades() -> dict[tuple[str, str], dict[str, str]]:
+    """(schema, table) -> {column: reason}, from every ``@report`` runner.
+
+    Bridged runner-less views (``reports/definitions/_bridged_classes.py``)
+    carry no ``class_downgrades`` — a bridge entry is a direct declaration,
+    not a decorator-attached spec, so there is nothing to downgrade *from*
+    here; correct the bridge dict itself if its declared class is wrong.
+    """
+    from moneybin.reports._framework.registry import spec_of
+    from moneybin.reports.definitions import ALL_REPORTS
+
+    out: dict[tuple[str, str], dict[str, str]] = {}
+    for runner in ALL_REPORTS:
+        spec = spec_of(runner)
+        out[(spec.view.schema, spec.view.name)] = dict(spec.class_downgrades)
+    return out
+
+
+@pytest.mark.scenarios
+def test_declared_classes_match_derivation() -> None:
+    """Every declared class is derivation-matched or explicitly downgraded.
+
+    ``derive_report_classes`` (build-time, no DB — see ADR-013 follow-up in
+    ``report_class_derivation.py``) recomputes each column's class from the
+    SQLMesh model source; this compares it against the declared contract.
+    Compares by **tier**, not class identity: redaction is tier-driven, so
+    ``declared.tier >= derived.tier`` is always safe (over-declaring never
+    leaks). Only a genuine downgrade (``declared.tier < derived.tier``)
+    requires an explicit, reasoned ``class_downgrades`` entry.
+    """
+    from moneybin.privacy.report_class_derivation import derive_report_classes
+    from moneybin.privacy.sql_lineage import reports_class_map
+
+    derived = derive_report_classes()
+    declared = reports_class_map()
+    downgrades = _all_class_downgrades()
+
+    problems: list[str] = []
+    for key, derived_cols in derived.items():
+        for column, derived_class in derived_cols.items():
+            declared_class = declared.get(key, {}).get(column)
+            if declared_class is None:
+                problems.append(f"{key[0]}.{key[1]}.{column}: undeclared")
+                continue
+            if declared_class.tier >= derived_class.tier:
+                continue
+            reason = downgrades.get(key, {}).get(column)
+            if not reason:
+                problems.append(
+                    f"{key[0]}.{key[1]}.{column}: declared {declared_class.name} "
+                    f"(tier {declared_class.tier.name}) below derived "
+                    f"{derived_class.name} (tier {derived_class.tier.name}) "
+                    "with no class_downgrades reason"
+                )
+    assert not problems, "Class declarations disagree with derivation:\n" + "\n".join(
+        problems
+    )
