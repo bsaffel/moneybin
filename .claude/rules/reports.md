@@ -45,8 +45,13 @@ complete, and fails the build if the two disagree.
   derivation needs a `class_downgrades` reason; an unreasoned one fails CI —
   and so does a `class_downgrades` reason for a column that is no longer
   genuinely weaker than its derived floor (a stale entry must be deleted, not
-  left in the tree). Needs no database, so it runs in the default
-  `make check test` gate, not `make test-scenarios`.
+  left in the tree). Staleness is checked in **both directions**: the
+  comparison walks derivation's output, so a separate pass
+  (`_orphaned_downgrades`) walks the declared downgrades and fails any entry
+  naming a column the model no longer selects — otherwise a renamed or dropped
+  column's reason would survive unvisited forever, and pre-authorize whatever
+  a future column of the same name declared. Needs no database, so it runs in
+  the default `make check test` gate, not `make test-scenarios`.
 - **A `class_downgrades` reason cannot waive an *equal-tier* weakening.** The
   mechanism exists because derivation over-classifies *computed* columns — an
   author asserts "this z-score reveals no amount", a claim about information

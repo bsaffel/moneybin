@@ -248,6 +248,40 @@ def _all_class_downgrades() -> dict[tuple[str, str], dict[str, str]]:
     return out
 
 
+def _orphaned_downgrades(
+    derived: dict[tuple[str, str], dict[str, DataClass]],
+    downgrades: dict[tuple[str, str], dict[str, str]],
+) -> list[str]:
+    """Downgrade entries naming a column the model no longer outputs.
+
+    The declared-vs-derived comparison walks ``derived``, so it can only judge
+    downgrades for columns that still exist. Rename or drop a column from the
+    SQLMesh model's SELECT list and its ``class_downgrades`` entry stops being
+    visited by anything — it survives indefinitely, and if a *later* column is
+    ever added back under the same name, that abandoned reason silently
+    pre-authorizes whatever class it declares without a fresh review. This
+    walks the other direction so an entry must name a live column to survive.
+
+    Only keys derivation actually resolved are checked: a model in
+    ``derive_report_classes``' excluded set contributes no columns, and
+    treating its downgrades as orphaned would report an exclusion as staleness.
+    """
+    problems: list[str] = []
+    for key, cols in downgrades.items():
+        derived_cols = derived.get(key)
+        if derived_cols is None:
+            continue
+        for column in cols:
+            if column not in derived_cols:
+                problems.append(
+                    f"{key[0]}.{key[1]}.{column}: class_downgrades entry names "
+                    "a column that derivation does not produce — the model's "
+                    "SELECT list no longer has it (renamed or removed). "
+                    "Delete this class_downgrades entry"
+                )
+    return problems
+
+
 def _declaration_is_safe(declared: DataClass, derived: DataClass) -> bool:
     """True when ``declared`` hides a value at least as well as ``derived``.
 
@@ -377,9 +411,49 @@ def test_declared_classes_match_derivation() -> None:
                     f"{_weakness(declared_class, derived_class)} "
                     "with no class_downgrades reason"
                 )
+    problems.extend(_orphaned_downgrades(derived, downgrades))
     assert not problems, "Class declarations disagree with derivation:\n" + "\n".join(
         problems
     )
+
+
+def test_orphaned_class_downgrade_is_flagged() -> None:
+    """A downgrade entry for a column the model dropped must not survive.
+
+    The main comparison walks ``derived``, so nothing it does can visit a
+    downgrade whose column vanished from the SELECT list. This pins the
+    opposite direction independently of whether the real report set currently
+    happens to contain such an entry.
+    """
+    key: tuple[str, str] = ("reports", "spending_trend")
+    derived: dict[tuple[str, str], dict[str, DataClass]] = {
+        key: {"live_column": DataClass.TXN_AMOUNT}
+    }
+    live: dict[tuple[str, str], dict[str, str]] = {key: {"live_column": "reason"}}
+    dropped: dict[tuple[str, str], dict[str, str]] = {key: {"dropped_column": "reason"}}
+
+    assert _orphaned_downgrades(derived, live) == []
+
+    problems = _orphaned_downgrades(derived, dropped)
+    assert len(problems) == 1
+    assert "dropped_column" in problems[0]
+    assert "renamed or removed" in problems[0]
+
+
+def test_orphaned_downgrade_check_ignores_underived_models() -> None:
+    """An excluded model's downgrades are unjudgeable, not orphaned.
+
+    ``derive_report_classes`` omits models it cannot resolve connectionlessly.
+    Reporting their downgrades as stale would turn an exclusion into a false
+    staleness failure, so the check skips keys derivation never produced.
+    """
+    derived: dict[tuple[str, str], dict[str, DataClass]] = {
+        ("reports", "derivable"): {"col": DataClass.TXN_AMOUNT}
+    }
+    downgrades: dict[tuple[str, str], dict[str, str]] = {
+        ("reports", "excluded_model"): {"col": "reason"}
+    }
+    assert _orphaned_downgrades(derived, downgrades) == []
 
 
 def test_core_declared_classes_match_derivation() -> None:
