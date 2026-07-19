@@ -1,7 +1,7 @@
 /* Current positions: the sum of open lots per (account, security). The "now"
-   snapshot with no date dimension, rebuilt on every run. Cost basis only —
-   unrealized gain/loss needs a current price, which Pillar C (price feeds)
-   supplies. Uses cost_basis_remaining (not cost_basis_total) because under
+   snapshot with no date dimension, rebuilt on every run. Carries cost basis and,
+   since Pillar C, market value and unrealized gain against the most recent close at
+   or before today. Uses cost_basis_remaining (not cost_basis_total) because under
    average cost the pooled remaining basis is the meaningful figure and can
    exceed a lot's own total.
 
@@ -93,6 +93,24 @@ WITH positions AS (
   GROUP BY
     h.account_id,
     h.security_id
+), latest_price AS (
+  /* As-of, not equal: the most recent close on or before today. Equality would leave a
+     hole on every weekend, holiday, and provider outage; unbounded lookahead would value
+     today with a price observed later. Partitioned by currency as well as security so a
+     dual-quoted security keeps its two series separate — the join below then requires
+     the position's own currency rather than valuing it at a close denominated
+     differently from its cost basis. */
+  SELECT
+    security_id,
+    quote_currency,
+    close,
+    price_date,
+    source
+  FROM core.fct_security_prices
+  WHERE
+    price_date <= CURRENT_DATE
+  QUALIFY
+    ROW_NUMBER() OVER (PARTITION BY security_id, quote_currency ORDER BY price_date DESC) = 1
 )
 SELECT
   p.account_id, /* FK to core.dim_accounts (grain) */
@@ -101,11 +119,31 @@ SELECT
   p.cost_basis, /* Total open basis (Σ cost_basis_remaining); cast back to (18,2) — SUM widens to (38,2) */
   p.average_cost, /* cost_basis / quantity; cast wraps the WHOLE division so the result is DECIMAL(28,10), not DOUBLE (DuckDB decimal / promotes to DOUBLE); (28,10) for crypto fractional-unit precision; NULL when quantity is 0 */
   p.currency_code, /* Denominating currency (one per position) */
+  (
+    p.quantity * lp.close
+  )::DECIMAL(18, 2) AS market_value, /* quantity × the resolved close. NULL — never zero — when no usable price applies: a zero is indistinguishable from a worthless position and silently understates every aggregate that sums it */
+  (
+    (
+      p.quantity * lp.close
+    )::DECIMAL(18, 2) - p.cost_basis
+  )::DECIMAL(18, 2) AS unrealized_gain, /* market_value less cost basis; NULL whenever market_value is NULL. Realized gain is ledger-derived and lives in core.fct_realized_gains */
+  lp.price_date, /* The date of the close used, which may be earlier than today; NULL when unpriced */
+  lp.source AS price_source, /* Which source supplied the close (see core.fct_security_prices); NULL when unpriced */
+  CAST(CURRENT_DATE - lp.price_date AS INT) AS days_since_observed, /* Calendar days between the price used and today (uncategorized_queue.age_days precedent — DATE_DIFF's 3-dialect arg order is a known sqlglot/DuckDB transpile trap). 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault */
+  CASE
+    WHEN lp.close IS NULL
+    THEN 'unpriced'
+    WHEN lp.price_date = CURRENT_DATE
+    THEN 'valued'
+    ELSE 'carried_forward'
+  END AS valuation_status, /* valued | carried_forward | unpriced | withheld. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure */
   pr.provider_reported_quantity, /* NON-AUTHORITATIVE: the broker's claimed open units in its newest snapshot. Reconciliation reference only — `quantity` above is MoneyBin's figure. NULL = the broker's newest snapshot does not report this position */
   pr.provider_reported_cost_basis, /* NON-AUTHORITATIVE: the broker's claimed cost basis. Never overwrites or feeds `cost_basis` above; system doctor warns when the two diverge */
-  pr.provider_reported_value, /* NON-AUTHORITATIVE: the broker's claimed market value (MoneyBin computes no market value until price feeds land) */
+  pr.provider_reported_value, /* NON-AUTHORITATIVE: the broker's claimed market value. Never blended into `market_value` above, which MoneyBin computes as quantity × its own resolved close; system doctor reconciles the two */
   pr.provider_reported_as_of, /* Oldest extracted_at among the snapshots summed into the three columns above (MIN, not MAX) — a canonical position spanning multiple broker connections is only as fresh as its stalest contributor; NULL when the broker no longer reports this position */
   p.updated_at /* Latest of all per-row input timestamps contributing to this row's current values (MAX over the position's open lots). Provider-reported columns do not advance it — they are a reference, not an input. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
 FROM positions AS p
 LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id
+LEFT JOIN latest_price AS lp
+  ON lp.security_id = p.security_id AND lp.quote_currency = p.currency_code

@@ -316,6 +316,12 @@ SELECT CAST(NULL AS VARCHAR) AS account_id,
        CAST(NULL AS DECIMAL(18, 2)) AS cost_basis,
        CAST(NULL AS DECIMAL(28, 10)) AS average_cost,
        CAST(NULL AS VARCHAR) AS currency_code,
+       CAST(NULL AS DECIMAL(18, 2)) AS market_value,
+       CAST(NULL AS DECIMAL(18, 2)) AS unrealized_gain,
+       CAST(NULL AS DATE) AS price_date,
+       CAST(NULL AS VARCHAR) AS price_source,
+       CAST(NULL AS INTEGER) AS days_since_observed,
+       CAST(NULL AS VARCHAR) AS valuation_status,
        CAST(NULL AS DECIMAL(28, 10)) AS provider_reported_quantity,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_cost_basis,
        CAST(NULL AS DECIMAL(18, 2)) AS provider_reported_value,
@@ -327,6 +333,9 @@ WHERE FALSE;
 # explicit casts (DECIMAL(28,10)/(18,2)/(28,10)) — average_cost is DECIMAL,
 # NOT DOUBLE (DuckDB's decimal `/` promotes to DOUBLE unless the whole
 # division is cast back). database.md: no FLOAT for financial quantities.
+# market_value/unrealized_gain/price_date/price_source/days_since_observed/
+# valuation_status (Pillar C) mirror dim_holdings.sql's latest_price join —
+# NULL (never zero) when no usable price applies.
 # The provider_reported_* columns are the broker's non-authoritative claim
 # (LEFT JOINed from the newest holdings snapshot in production) — same types as
 # the ledger-derived columns they mirror.
