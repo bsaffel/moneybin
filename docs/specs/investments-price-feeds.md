@@ -259,6 +259,15 @@ sequential-replay shape `fct_investment_lots.py` already uses and the reason bot
 are Python models rather than SQL: the state at each date depends on the state
 before it.
 
+**One quote currency per position, chosen explicitly.** `fct_security_prices`
+permits several `quote_currency` rows for one security and date, while this model
+is position-grain and omits currency. Joining on security and date alone would
+either fan the grain out or value a holding at a close denominated differently
+from its own cost basis. For the no-FX phase the join requires
+`quote_currency = dim_holdings.currency_code`; a position whose currency has no
+price row is `unpriced`, not silently valued in another currency. M1K.2 replaces
+this constraint with conversion.
+
 **The spine is global and runs through today.** It starts at the earliest
 transaction across all positions and ends at `today`, matching
 `fct_balances_daily.py`, whose spine must end at the newest observation across
@@ -436,7 +445,18 @@ withheld = quantity <> provider_reported_quantity          -- the divergence
                                                             -- check's quantity leg
            or exists a staging row for this security with
               review_reason = 'split_underivable'
+           or the position is flagged by
+              investment_phantom_holdings                   -- broker no longer
+                                                            -- reports it
 ```
+
+The third clause is not redundant with the first. When a fresh snapshot omits a
+position the ledger still carries, `provider_reported_quantity` is NULL, so
+`quantity <> provider_reported_quantity` evaluates to UNKNOWN rather than true
+and the position slips through — publishing a market value for shares the broker
+says are gone, and overstating net worth by exactly that amount.
+`investment_phantom_holdings` already identifies this case, including shares left
+open by an unmodeled option assignment.
 
 Pillar C reuses those two signals and adds no second
 alarm for a condition an existing check already covers.
@@ -499,8 +519,15 @@ New error types register with `classify_user_error`.
 ```
 moneybin investments prices sync [--securities TICKER ...] [--since DATE]
 moneybin investments prices set SECURITY DATE PRICE [--currency CUR] [--note TEXT]
+moneybin investments prices delete SECURITY DATE [--currency CUR]
 moneybin investments prices list SECURITY [--since DATE] [--source SRC]
 ```
+
+`delete` removes a manual mark and returns that date to provider-derived
+valuation. Without it an override is unreachable once written: source precedence
+makes it beat every provider row for its date, and `set` can only replace the
+value while keeping `source = 'override'` provenance. `surface-design.md` also
+requires a paired `_delete` for this mutation shape.
 
 `moneybin sync pull` refreshes prices for held securities as part of its existing
 run. `investments holdings` and `investments gains` gain `market_value`,
@@ -514,6 +541,8 @@ data. Market values are the same class of data as the holdings they value.
 - `investments_prices_sync` — refresh; returns counts written, failed, and
   skipped, with per-security reasons.
 - `investments_prices_set` — record a mark.
+- `investments_prices_delete` — remove a mark, returning the date to
+  provider-derived valuation.
 
 `investments_holdings` and `investments_gains` return `market_value`,
 `price_date`, `days_since_observed`, and `valuation_status` per position, plus a
@@ -624,6 +653,11 @@ and the CLI and MCP surface.
   Plaid's own security key to `raw.security_prices` during ingestion, before the
   upsert overwrites it and before the resolver has minted a canonical id
 - `src/moneybin/metrics/registry.py` — the five price metrics
+- `src/moneybin/schema.py` — add both new DDL files to
+  `_NON_PROVIDER_SCHEMA_FILES`. `_all_schema_files()` enumerates that explicit
+  list plus a `raw_*.sql` glob inside provider directories, so a file added
+  under `src/moneybin/sql/schema/` is not discovered on its own and the first
+  write would hit a missing table
 - `src/moneybin/services/doctor_service.py` — `investment_price_discontinuity`
 - `src/moneybin/config.py` — staleness defaults, backfill bound
 - `src/moneybin/tables.py` — new table constants
@@ -719,6 +753,19 @@ and the CLI and MCP surface.
 ---
 
 ## Open questions
+
+- **How a non-Plaid provider key resolves to a canonical security.** Staging
+  resolves `provider_security_key` through `app.security_links`, whose `ref_kind`
+  CHECK admits only `plaid_security_id` and `institution_security_id`. A stooq
+  ticker or a CoinGecko slug has no representable binding, so a C.2 observation
+  would sit in `raw` and never reach staging. Three candidate shapes: extend the
+  CHECK with per-source `ref_kind` values (the table's `source_type` comment
+  already anticipates providers beyond Plaid); resolve at fetch time, since the
+  adapter is handed a `SecurityRef` that already carries the canonical id; or
+  bind through the `ticker` and `coingecko_id` columns `app.securities` already
+  has. The third is cheapest and the first is most consistent — the shapes differ
+  enough that picking blind is how the last three review rounds went. Settled by:
+  the C.2 adapter implementation, which is the first code that has to do it.
 
 - **stooq coverage and terms.** Its equity and ETF breadth against a real
   portfolio, and its terms for programmatic access, need checking before C.2 is
