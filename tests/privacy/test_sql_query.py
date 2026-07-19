@@ -494,6 +494,45 @@ def test_undeclared_deployed_column_fails_closed(populated_db: Database) -> None
     assert str(result.records[0]["account_id"]).startswith("****")
 
 
+def test_fail_closed_warning_fires_only_for_genuine_misses(
+    populated_db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The fail-closed WARNING logs once per genuine lineage miss, never more.
+
+    ``_classes_by_result_column`` used to build its map with
+    ``output_classes.get(col, _fail_closed(col, query))`` — Python evaluates a
+    call's arguments before the call, so ``_fail_closed`` ran on every column
+    of every query regardless of whether ``col`` was actually missing from
+    ``output_classes``. That defeated the log's purpose (distinguishing a
+    genuine fail-closed event from noise) without changing which class a
+    column resolved to, since ``.get`` still returned the correct value either
+    way. A normal, fully-resolved query must emit zero warnings; a query with
+    one genuinely-unresolvable projection must emit exactly one.
+    """
+    _seed_txn(populated_db)
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        result = execute_sql_query(
+            populated_db,
+            "SELECT amount FROM core.fct_transactions",
+            max_rows=100,
+        )
+    assert result.output_classes["amount"] is DataClass.TXN_AMOUNT
+    assert caplog.text.count("failing closed") == 0
+
+    caplog.clear()
+    _seed_account(populated_db)
+    with caplog.at_level(logging.WARNING, logger="moneybin.privacy.sql_query"):
+        # Unaliased MIN(routing_number): sqlglot names the projection ''
+        # while DuckDB names the result column 'min(routing_number)' — a
+        # genuine name-mismatch miss, not a query bug.
+        execute_sql_query(
+            populated_db,
+            "SELECT MIN(routing_number) FROM core.dim_accounts",
+            max_rows=100,
+        )
+    assert caplog.text.count("failing closed") == 1
+
+
 @pytest.mark.parametrize("depth", [17, 30, 60])
 def test_deep_cte_chain_masks_routing_number(
     depth: int, populated_db: Database

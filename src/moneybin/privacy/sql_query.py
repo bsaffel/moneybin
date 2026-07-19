@@ -222,16 +222,27 @@ def _classes_by_result_column(
     ``routing_number`` was returned in the clear. A fallback computed from the
     classes that happened to resolve cannot bound the classes that did not.
     """
-    return {col: output_classes.get(col, _fail_closed(col, query)) for col in columns}
+    return {
+        col: (
+            output_classes[col] if col in output_classes else _fail_closed(col, query)
+        )
+        for col in columns
+    }
 
 
 def _fail_closed(column: str, query: str) -> DataClass:
     sql_hash = hashlib.sha256(query.encode()).hexdigest()[:12]
-    # The column NAME is an identifier chosen by DuckDB, not row data; the query
-    # itself can carry literal PII, so only its hash is logged (No PII in logs).
+    column_hash = hashlib.sha256(column.encode()).hexdigest()[:12]
+    # For an ordinary named/expanded projection the column NAME is an
+    # identifier DuckDB derives from the query text. But the opaque-projection
+    # family this fail-closed path exists to catch — PIVOT, UNPIVOT,
+    # COLUMNS(lambda) — is exactly the case where DuckDB derives the column
+    # NAME from ROW DATA (e.g. one output column per distinct merchant name),
+    # so this path cannot assume the name is safe to log. Only its hash is
+    # logged, same treatment as the query text (No PII in logs).
     logger.warning(
-        f"sql_query: result column {column!r} absent from lineage output; "
-        f"failing closed (sql sha256={sql_hash})"
+        f"sql_query: result column (sha256={column_hash}) absent from lineage "
+        f"output; failing closed (sql sha256={sql_hash})"
     )
     return FAIL_CLOSED_CLASS
 

@@ -88,7 +88,13 @@ def _render(generated: dict[tuple[str, str], dict[str, DataClass]]) -> str:
         "from __future__ import annotations",
         "",
         "from moneybin.privacy.taxonomy import DataClass",
-        f"from moneybin.tables import {', '.join(const_names)}",
+    ]
+    # Omit the import line entirely when there is nothing to import — an empty
+    # `generated` (every runner-less view gained a runner) must still render
+    # valid Python, not `from moneybin.tables import ` with nothing after it.
+    if const_names:
+        lines.append(f"from moneybin.tables import {', '.join(const_names)}")
+    lines += [
         "",
         "# (schema, view) -> {column: DataClass}. Excludes every view already",
         "# covered by an @report runner's own classes= map — see",

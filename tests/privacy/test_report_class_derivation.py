@@ -169,9 +169,24 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
         "core.fct_transaction_lines",  # UNNEST(t.splits) struct-field access
         "core.fct_transactions",  # reads prep.int_transactions__merged
     }
-    assert unresolvable <= set(excluded)
+    # kind=FULL and python-model exclusions are pinned by
+    # test_core_excludes_materialized_tables_by_kind and
+    # test_core_excludes_python_models_by_filename respectively; filter them out
+    # so this is an exact-set comparison for its own category (a kind=VIEW model
+    # that fails derivation) — a subset check here would let a newly-excluded
+    # core view escape review silently, which is exactly what this test exists
+    # to catch.
+    view_derivation_failures = {
+        name: reason
+        for name, reason in excluded.items()
+        if not reason.startswith("kind=") and "python model" not in reason
+    }
+    assert set(view_derivation_failures) == unresolvable
     for name in unresolvable:
-        assert "not resolvable" in excluded[name] or "SELECT *" in excluded[name]
+        assert (
+            "not resolvable" in view_derivation_failures[name]
+            or "SELECT *" in view_derivation_failures[name]
+        )
 
 
 def test_uncategorized_queue_age_days_and_priority_score_derive_correctly() -> None:
