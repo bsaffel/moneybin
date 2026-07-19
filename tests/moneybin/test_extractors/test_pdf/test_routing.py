@@ -38,6 +38,7 @@ from moneybin.extractors.pdf.routing import route_forced_recipe, route_pdf_impor
 from moneybin.metrics.registry import (
     PDF_RECIPE_HIT_TOTAL,
     PDF_REPLAY_GUARD_FAILURE_TOTAL,
+    PDF_SELF_HEAL_TOTAL,
 )
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 
@@ -151,7 +152,11 @@ def _recipe(sign_convention: str = "negative_is_expense") -> Recipe:
     })
 
 
-def _save_chase_format(db: Database, recipe: dict[str, Any] | None = None) -> None:
+def _save_chase_format(
+    db: Database,
+    recipe: dict[str, Any] | None = None,
+    source: str = "detected",
+) -> None:
     """Insert a Chase format row into app.pdf_formats so fingerprint lookup hits."""
     repo = PdfFormatsRepo(db)
     # Fingerprint must match what compute_fingerprint(_standard_doc()) produces.
@@ -170,6 +175,7 @@ def _save_chase_format(db: Database, recipe: dict[str, Any] | None = None) -> No
         document_kind="checking_statement",
         front_end="text",
         routing="transactions",
+        source=source,
         actor="test",
     )
 
@@ -1146,3 +1152,305 @@ def test_unruled_us_debit_credit_statement_still_escalates(db: Database) -> None
     decision = route_pdf_import(doc, db)
 
     assert decision.reason == "transaction_table_underivable"
+
+
+# ---------------------------------------------------------------------------
+# Self-healing replay: a saved recipe that stops reconciling is re-derived
+# ---------------------------------------------------------------------------
+
+#: Amount pattern shipped before the sub-dollar fix. It requires at least one
+#: digit before the decimal point, so a statement printing a sub-dollar fee as
+#: a bare ".39" (no leading zero) silently drops that row. Pinned as a literal
+#: rather than imported: the point is that a recipe PERSISTED under the old
+#: logic keeps this pattern forever, so the test must not track the current
+#: derivation code.
+_STALE_AMOUNT_PATTERN = r"-?\$?[\d,]+\.\d{2}"
+
+
+def _stale_recipe_dict(
+    sign_convention: str = "negative_is_expense",
+    *,
+    sign_ratified: bool = False,
+) -> dict[str, Any]:
+    """The saved-recipe shape, pinned to the pre-fix Amount pattern."""
+    recipe = _valid_recipe_dict()
+    recipe["sign_convention"] = sign_convention
+    recipe["sign_ratified"] = sign_ratified
+    for field in recipe["fields"]:
+        if field["name"] == "Amount":
+            field["pattern"] = _STALE_AMOUNT_PATTERN
+    return recipe
+
+
+def _subdollar_doc(opening: str = "1000.00", closing: str = "1100.39") -> PdfDocument:
+    """Statement whose rows include a sub-dollar fee printed as a bare ".39".
+
+    Mirrors the real Chase card statement that motivated this path: the fee row
+    prints with no leading zero, so the pre-fix Amount pattern drops it and the
+    extracted rows land 39c short of the balance delta.
+    Rows: -50.00 + 150.00 + 0.39 = 100.39 = closing - opening.
+    """
+    rows = [
+        ["01/15/2024", "Coffee Shop", "-50.00"],
+        ["01/20/2024", "Paycheck", "150.00"],
+        ["01/22/2024", "Foreign Transaction Fee", ".39"],
+    ]
+    text_lines = [
+        "Chase Bank Statement",
+        "Account Number: 1234",
+        "Statement Period: 01/01/2024",
+        "To: 01/31/2024",
+        f"Beginning Balance: ${opening}",
+        f"Ending Balance: ${closing}",
+        _ROW_REGION_START,
+        "01/15/2024  Coffee Shop  -50.00",
+        "01/20/2024  Paycheck  150.00",
+        "01/22/2024  Foreign Transaction Fee  .39",
+        _ROW_REGION_END,
+    ]
+    return _make_doc(text_lines=text_lines, tables=[_standard_table(rows)])
+
+
+def test_replay_failure_re_derives_and_recovers_the_dropped_row(
+    db: Database,
+) -> None:
+    """A saved recipe frozen under old derivation logic is repaired in place.
+
+    The saved recipe's Amount pattern cannot match ".39", so the replay comes up
+    39c short and reconciliation fails. Before self-healing this seeded the whole
+    statement — a fix to the derivation code could never reach the recipe already
+    in app.pdf_formats.
+    """
+    _save_chase_format(db, recipe=_stale_recipe_dict())
+    doc = _subdollar_doc()
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.reason == "passed"
+    assert decision.rederived is True
+    # The format identity survives the repair: this is the SAME saved format,
+    # re-derived — not a first-contact save under a new name.
+    assert decision.matched_format_name == "chase_checking_pdf"
+    assert len(decision.rows) == 3
+
+
+def test_self_heal_falls_back_to_seed_when_the_document_is_underivable(
+    db: Database,
+) -> None:
+    """The fail-safe half of "recover automatically, or fail safe".
+
+    Replay reads the text; derivation reads the tables — so the two halves are
+    failed independently. The text carries a well-formed row region whose
+    amounts don't add up to the balance delta (replay reconciles to 100.00
+    against a stated 200.00), while the table's amount column is unparseable
+    (`transaction_table_underivable`). The fingerprint still matches, so the
+    saved recipe is replayed and self-heal is entered — and must then hand back
+    None so the caller keeps its seed decision, rather than raising or returning
+    a half-built repair.
+    """
+    _save_chase_format(db)
+    doc = _make_doc(
+        text_lines=_standard_text_lines(opening="1000.00", closing="1200.00"),
+        tables=[
+            PdfTable(
+                page=1,
+                header=_HEADERS,
+                # One parseable negative keeps `recipe_polarity_fits` satisfied
+                # so the replay is actually attempted — an all-unparseable
+                # column would be refused by the polarity guard instead, and the
+                # test would pass without ever reaching self-heal.
+                rows=[
+                    ["01/15/2024", "Coffee Shop", "-50.00"],
+                    ["01/20/2024", "Paycheck", "n/a"],
+                ],
+            )
+        ],
+    )
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="underivable")._value.get()  # type: ignore[reportPrivateUsage]
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.rederived is False
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="underivable")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+
+
+@pytest.mark.parametrize("source", ["manual", "bridge"])
+def test_self_heal_refuses_a_human_authored_recipe(db: Database, source: str) -> None:
+    """Guard A: only machine-derived recipes are repaired automatically.
+
+    A manual- or bridge-authored recipe encodes human intent. Silently replacing
+    it with an auto-derived guess destroys that work, so it escalates as before.
+
+    Both values are exercised because "bridge" is the one that nearly wasn't
+    reachable: the service persisted every first-contact recipe as "detected"
+    regardless of rung, so this guard's stated primary case — protecting an
+    agent-authored, human-vetted recipe — silently could not fire.
+    """
+    _save_chase_format(db, recipe=_stale_recipe_dict(), source=source)
+    doc = _subdollar_doc()
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "replay_reconciliation_failed"
+    assert decision.rederived is False
+
+
+def test_self_heal_refuses_to_change_the_sign_convention(db: Database) -> None:
+    """Guard B: a repair may fix a pattern, never flip ledger polarity.
+
+    bump_version mirrors the new recipe's sign_convention into the column every
+    reader trusts, so an unguarded heal could invert every amount on the
+    statement without a human ever seeing it.
+
+    This fixture isolates the sign guard and nothing else. The saved recipe is a
+    human-ratified negative_is_income; auto-derive reads this document as
+    negative_is_expense (proved by
+    test_replay_failure_re_derives_and_recovers_the_dropped_row, which heals the
+    same document). So the re-derived recipe WOULD reconcile — the only thing
+    standing between it and a silent ledger-wide inversion is the sign guard.
+    Remove the guard and this test fails, which is the point.
+
+    sign_ratified is what lets the replay reach reconciliation at all: it
+    outranks recipe_polarity_fits, which would otherwise refuse a card-convention
+    recipe on a document carrying no card disclosures and never get here. It also
+    makes this the highest-stakes form of the case — an unguarded heal would
+    silently overturn a decision a human explicitly made.
+    """
+    _save_chase_format(
+        db, recipe=_stale_recipe_dict("negative_is_income", sign_ratified=True)
+    )
+    doc = _subdollar_doc()
+
+    decision = route_pdf_import(doc, db)
+
+    # The flip is never applied on the routing layer's own authority. It was
+    # previously refused outright, which left the statement permanently
+    # unimportable; it is now handed up flagged, and ImportService's sign gate
+    # holds it until a human ratifies (see the service suite). Either way the
+    # invariant this test exists for is the same: not silently.
+    assert decision.rederived_from_sign == "negative_is_income"
+    assert decision.recipe is not None
+    assert decision.recipe.sign_ratified is False
+
+
+def test_self_heal_keeps_the_original_seed_decision_when_re_derivation_also_fails(
+    db: Database,
+) -> None:
+    """A re-derived recipe that still doesn't reconcile changes nothing.
+
+    The balances here tie out to no row sum, so neither the saved recipe nor a
+    fresh derivation can reconcile. The statement must seed with the original
+    replay reason and guard flag intact.
+    """
+    _save_chase_format(db, recipe=_stale_recipe_dict())
+    doc = _standard_doc(opening="1000.00", closing="9999.00")
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "replay_reconciliation_failed"
+    assert decision.replay_guard_failed is True
+    assert decision.rederived is False
+
+
+def test_successful_replay_is_never_marked_re_derived(db: Database) -> None:
+    """Negative control: a replay that reconciles must not touch the heal path."""
+    _save_chase_format(db)
+    doc = _standard_doc()
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is False
+
+
+def test_first_contact_reconciliation_failure_is_not_a_heal(db: Database) -> None:
+    """Negative control: auto-derive is already fresh — there is nothing to repair."""
+    doc = _standard_doc(opening="1000.00", closing="9999.00")
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.reason == "reconciliation_failed"
+    assert decision.rederived is False
+
+
+def test_a_repaired_replay_is_distinguishable_from_a_seeded_one_in_metrics(
+    db: Database,
+) -> None:
+    """The guard counter fires before the repair, so it counts triggers, not outcomes.
+
+    Without a separate self-heal counter a fleet where every replay failure heals
+    looks identical to one where every failure seeds — which is the only number
+    that says whether this rung works.
+    """
+    _save_chase_format(db, recipe=_stale_recipe_dict())
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+
+    route_pdf_import(_subdollar_doc(), db)
+
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+
+
+def test_a_sign_changing_repair_is_counted_separately_from_a_clean_one(
+    db: Database,
+) -> None:
+    """A repair awaiting ratification must not read as a completed repair.
+
+    Both land rows in the same shape; only the label says one is still waiting
+    on a human. Collapsing them would hide every pending polarity flip.
+    """
+    _save_chase_format(
+        db, recipe=_stale_recipe_dict("negative_is_income", sign_ratified=True)
+    )
+    label = PDF_SELF_HEAL_TOTAL.labels(outcome="repaired_pending_sign")
+    before = label._value.get()  # type: ignore[reportPrivateUsage]
+
+    route_pdf_import(_subdollar_doc(), db)
+
+    assert label._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
+
+def test_a_sign_changing_repair_is_surfaced_rather_than_refused(
+    db: Database,
+) -> None:
+    """A repair that flips polarity is a question for a human, not a dead end.
+
+    Refusing outright left the statement permanently unimportable: the routing
+    decision seeds, and ImportService._gate_pdf_sign_convention ignores
+    non-transaction decisions, so no `--sign` or `--confirm` could ever
+    authorize the repair. The decision now carries the fresh recipe plus the
+    convention it replaced, so the service can put the flip in front of a
+    person.
+    """
+    _save_chase_format(
+        db, recipe=_stale_recipe_dict("negative_is_income", sign_ratified=True)
+    )
+
+    decision = route_pdf_import(_subdollar_doc(), db)
+
+    assert decision.outcome == "transactions"
+    assert decision.rederived is True
+    assert decision.rederived_from_sign == "negative_is_income"
+    assert decision.recipe is not None
+    assert decision.recipe.sign_convention == "negative_is_expense"
+    # The human's prior ratification does NOT carry across a polarity change —
+    # they ratified the old convention, not this one.
+    assert decision.recipe.sign_ratified is False
+
+
+def test_a_repair_that_keeps_the_convention_carries_no_sign_change(
+    db: Database,
+) -> None:
+    """Negative control: only a genuine flip may reach the sign gate."""
+    _save_chase_format(db, recipe=_stale_recipe_dict())
+
+    decision = route_pdf_import(_subdollar_doc(), db)
+
+    assert decision.rederived is True
+    assert decision.rederived_from_sign is None

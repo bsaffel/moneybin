@@ -157,9 +157,9 @@ test-scenarios: venv ## Development: Run all whole-pipeline scenarios via pytest
 	@echo "$(BLUE)🧪 Running all scenarios...$(RESET)"
 	@uv run pytest tests/scenarios/ -m scenarios -v --durations=25
 
-update-test-durations: venv ## Development: Regenerate .test_durations to rebalance CI shards (unit, e2e, scenarios); commit the result
+update-test-durations: venv ## Development: Regenerate .test_durations to rebalance CI shards (unit, integration, e2e, scenarios); commit the result
 	@echo "$(BLUE)⏱️  Storing test durations for pytest-split shard balancing...$(RESET)"
-	@uv run pytest tests/ -m "unit or e2e or scenarios" --store-durations
+	@uv run pytest tests/ -m "unit or integration or e2e or scenarios" --store-durations
 	@echo "$(BLUE)ℹ️  Commit .test_durations to apply the rebalance to CI$(RESET)"
 
 generate-report-classes: venv ## Development: Regenerate the derived reports.* privacy-class module; commit the result

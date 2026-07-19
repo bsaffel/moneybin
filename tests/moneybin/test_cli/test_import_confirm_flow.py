@@ -1178,3 +1178,67 @@ class TestImportConfirmCommand:
         assert "Account binding required" in result.output
         assert "wf-checking" in result.output
         assert "cand87654321" in result.output
+
+
+class TestSignRecoveryDirection:
+    """A sign confirmation must name the two conventions actually on offer.
+
+    The PDF guidance was written for the first-contact card inference, where the
+    proposal is always `negative_is_income` and the alternative is always
+    `negative_is_expense` — so "is this a credit card?" is both answerable and
+    correct. Self-heal introduced the opposite direction: a re-derivation can
+    propose `negative_is_expense` for a format the user previously ratified as a
+    card. Rendered with the card framing, `--confirm` then does the *opposite* of
+    what the text says, and no printed command lets the user keep the convention
+    they had.
+    """
+
+    def _pdf_actions(self, **kwargs: object) -> list[str]:
+        from moneybin.cli.commands.import_cmd import (
+            _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        )
+
+        return _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+            "statement.pdf",
+            channel="pdf",
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_first_contact_card_proposal_keeps_the_card_framing(self) -> None:
+        """No prior convention → the card question is accurate; don't regress it."""
+        actions = self._pdf_actions(proposed_sign="negative_is_income")
+
+        assert any("IS a credit card" in a for a in actions)
+        assert any("--confirm" in a for a in actions)
+        assert any("--sign negative_is_expense" in a for a in actions)
+
+    def test_an_un_inverting_repair_offers_a_way_back_to_the_old_convention(
+        self,
+    ) -> None:
+        """The direction self-heal added: card → as-printed.
+
+        `--confirm` here ratifies `negative_is_expense`, so card framing would be
+        actively wrong, and `--sign negative_is_expense` (the old "not a card"
+        escape hatch) is now identical to `--confirm` — leaving the user with two
+        commands that do the same thing and none that keeps the card convention.
+        """
+        actions = self._pdf_actions(
+            proposed_sign="negative_is_expense",
+            prior_sign="negative_is_income",
+        )
+
+        joined = "\n".join(actions)
+        # The escape hatch must exist and must name the OLD convention.
+        assert "--sign negative_is_income" in joined
+        # And the card framing must be gone — it describes the wrong direction.
+        assert "IS a credit card" not in joined
+        assert "records charges as expenses" not in joined.split("--confirm")[0]
+
+    def test_a_re_inverting_repair_offers_a_way_back_too(self) -> None:
+        """The mirror case: as-printed → card. Both directions or neither."""
+        actions = self._pdf_actions(
+            proposed_sign="negative_is_income",
+            prior_sign="negative_is_expense",
+        )
+
+        assert "--sign negative_is_expense" in "\n".join(actions)

@@ -10,22 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Security
-- **Fixed several under-classification leaks that returned CRITICAL-tier
-  values (bank routing numbers) in the clear through `sql_query` /
-  `moneybin sql query`.** A CTE or derived table named after a real table,
-  CTE-nesting depth exhaustion, partial `UNION`-branch resolution,
-  `EXCEPT`/`INTERSECT` set operations, and opaque projection forms
-  (`COLUMNS(...)`, `PIVOT`, `UNPIVOT`, `SUMMARIZE`, the whole-row
-  pseudo-column, `UNNEST` of one) could each cause
-  `core.dim_accounts.routing_number` to resolve to `AGGREGATE` (LOW) instead
-  of its true `ROUTING_NUMBER` (CRITICAL) class, returning it unmasked. Most
-  of these were pre-existing defects in the SQL classifier already on
-  `main` — not introduced by this change — surfaced and fixed during an
-  audit prompted by the `reports.*` coverage-gap fix below. Any output
-  column an undeclared or unresolvable reference reaches now fails closed to
-  a new `DataClass.UNRESOLVED` (masked whole) instead of falling back to the
-  most-permissive class seen elsewhere in the query. (#330 follow-up)
+### Added
+- **An AI assistant can now resolve a credit-card PDF's sign inversion
+  without you leaving the chat.** `import_confirm(file_path=...,
+  confirm_pdf_sign=True)` shows you the statement's evidence and printed-vs-recorded
+  sample rows and asks you to approve; approving imports the statement, and
+  declining imports nothing. The assistant cannot answer the prompt on your
+  behalf, and if the statement turns out to have no such question pending,
+  nothing is imported. Previously this one case sent you to a terminal, even
+  though the same inversion already asked you in place on spreadsheet and
+  AI-extracted-PDF imports.
 
 ### Changed
 - **`reports.*` column privacy classes are now derived from each SQLMesh
@@ -50,8 +44,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reaching the caller without lineage having positively established what it
   holds; seeing it always means the value was masked, not that something
   broke.
-
-### Changed
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with
   every other currency field in the schema. Pre-launch, so this is a direct
@@ -64,6 +56,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **`moneybin import preview` can now read a PDF statement.** It previously
+  rejected every PDF with `Unsupported file type: '.pdf'`, because preview
+  routed all files through the spreadsheet detector — so the only way to ask
+  "will this statement extract cleanly, and how many rows?" without importing
+  was through an AI assistant. The command now reports the extraction verdict,
+  row count, confidence, and any pending credit-card sign confirmation (with
+  the evidence and printed-vs-recorded samples behind it). An unreadable file
+  — common on macOS, where statements sit in a folder your terminal hasn't
+  been granted access to — now explains itself and names the fix instead of
+  printing a stack trace. On a machine with no database yet, it points at
+  `db init` rather than `db unlock` — the latter cannot work before a database
+  exists. Spreadsheet-only options (`--format`, `--sheet`, `--delimiter`,
+  `--encoding`, `--override`) now say they were ignored when passed with a PDF,
+  instead of silently doing nothing.
+- **When a repaired statement layout wants to reverse a direction you already
+  approved, the choices you're offered now match what the commands do.** The
+  prompt was written for the common case — "is this a credit card?" — where the
+  answer always points the same way. A self-repaired layout can also propose the
+  *opposite* flip, and there the card wording described `--confirm` as doing the
+  reverse of what it does, and offered no command at all for keeping the
+  direction you already had. Both choices are now named by what they do, in
+  whichever direction the repair actually goes — in the terminal, in the
+  approval an AI assistant puts in front of you, in its suggested next steps,
+  and in the inbox's pending-file notes.
+- **A saved statement layout that stops reading correctly now repairs itself
+  instead of failing forever.** MoneyBin remembers how to read each statement
+  layout the first time it sees one. That saved recipe was a frozen copy, so
+  when an extraction bug was fixed, every layout already saved kept the old
+  broken behavior — the fix could never reach it, and each new statement of that
+  layout landed as an unparsed dump. Now, when a saved layout stops balancing,
+  MoneyBin re-reads the statement from scratch and, if the fresh read balances to
+  the cent, imports it and updates the saved layout. Two things it will not do on
+  its own: replace a layout you or the assisted reader authored, or change a
+  statement's income/expense direction. A layout you authored is left alone
+  entirely; a direction change is shown to you with the evidence and the
+  printed-vs-recorded samples, and nothing is imported until you approve or
+  override it — in either direction, including when the re-read wants to *undo*
+  an inversion you approved earlier. The repair is recorded in the audit log and
+  can be undone.
+- **Replacing a statement while its approval prompt is open no longer applies
+  your answer to the new file.** Re-saving a corrected export over the same path
+  mid-prompt could previously reverse every amount in a document you never
+  reviewed; the import is now refused instead. Affects all three confirmation
+  paths (spreadsheet, AI-extracted PDF, and card statement).
+- **Choosing an account for a PDF import now fails loudly instead of quietly
+  doing something else.** Both PDF import paths only ever supported pinning by
+  account id, but passing `account_bindings` or `account_metadata` was accepted
+  and then ignored — the transactions landed in an account derived from the
+  statement or the filename while you believed you had chosen one. Those
+  parameters are now refused with a message naming the one that works.
 - **Real credit-card PDF statements now extract their transactions instead of
   falling back to a raw dump.** Chase card statements (and others shaped like
   them) print their transaction table in three ways no synthetic sample did: a
@@ -153,6 +195,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "degrade to aggregates" without consent — no such behavior is implemented. It
   now states the truth: account/routing numbers are masked, all other fields
   reach the model provider as-is, and there is no consent gate yet.
+
+### Security
+- **CVE fixes via dependency bumps:** `mcp` 1.27.1 → 1.28.1, `pillow`
+  12.2.0 → 12.3.0, `httplib2` 0.31.2 → 0.32.0, closing 12 advisories. The
+  `mcp` ones affect MoneyBin's own MCP server: HTTP transports served
+  session requests without verifying the authenticated principal
+  (CVE-2026-52869), experimental task handlers let any client read or
+  cancel another client's tasks (CVE-2026-52870), and the WebSocket
+  transport had no Host/Origin validation (CVE-2026-59950). `pillow`
+  (reached through PDF import) covers unvalidated PCF glyph dimensions and
+  an `ImageCms` heap-corruption path; `httplib2` (reached through the
+  Google Sheets connector) covers unbounded gzip/deflate decompression of
+  response bodies. `mcp` and `httplib2` are now declared as direct
+  dependencies, since MoneyBin imports both. (#335)
+- **Fixed several under-classification leaks that returned CRITICAL-tier
+  values (bank routing numbers) in the clear through `sql_query` /
+  `moneybin sql query`.** A CTE or derived table named after a real table,
+  CTE-nesting depth exhaustion, partial `UNION`-branch resolution,
+  `EXCEPT`/`INTERSECT` set operations, and opaque projection forms
+  (`COLUMNS(...)`, `PIVOT`, `UNPIVOT`, `SUMMARIZE`, the whole-row
+  pseudo-column, `UNNEST` of one) could each cause
+  `core.dim_accounts.routing_number` to resolve to `AGGREGATE` (LOW) instead
+  of its true `ROUTING_NUMBER` (CRITICAL) class, returning it unmasked. Most
+  of these were pre-existing defects in the SQL classifier already on
+  `main` — not introduced by this change — surfaced and fixed during an
+  audit prompted by the `reports.*` coverage-gap fix below. Any output
+  column an undeclared or unresolvable reference reaches now fails closed to
+  a new `DataClass.UNRESOLVED` (masked whole) instead of falling back to the
+  most-permissive class seen elsewhere in the query. (#330 follow-up)
 
 ### Changed
 - **Google Sheets MCP connections can no longer set an inferred sign convention
@@ -1067,6 +1138,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - CVE fixes via dependency bumps: `urllib3` 2.6.3 → 2.7.0 (PR #127); `pip` and `python-multipart` advisories addressed (PR #124).
 
 ---
+
+
 
 ## [M1] — 2026-05-04 (Data Integrity)
 

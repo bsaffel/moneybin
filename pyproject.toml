@@ -69,6 +69,11 @@ dependencies = [
     "google-api-python-client>=2.0",
     "google-auth>=2.0",
     "google-auth-oauthlib>=1.0",
+    # Also a transitive dep of google-api-python-client, but declared directly
+    # because sheets_api.py imports it to build the timeout-bearing Http client —
+    # a future google-api-python-client pin change must not silently break that.
+    # Floor is PYSEC-2026-3444 (unbounded gzip/deflate decompression), fixed in 0.32.0.
+    "httplib2>=0.32.0",
     # Data validation and utilities
     "pydantic>=2.11.7",
     "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
@@ -87,10 +92,13 @@ dependencies = [
     #   pygments:     CVE-2026-4539  (via rich → sqlmesh/mcp, ipython) — fixed in 2.20.0
     #   pyjwt:        CVE-2026-32597 (via mcp[crypto])                 — fixed in 2.12.0
     #   joserfc:      CVE-2026-48990 (via authlib → fastmcp)           — fixed in 1.6.7
+    #   pillow:       PYSEC-2026-2253/2254/2255/2256/2257, 3451/3452/3453
+    #                 (via pdfplumber)                                 — fixed in 12.3.0
     "cryptography>=48.0.1",
     "pygments>=2.20.0",
     "pyjwt>=2.12.0",
     "joserfc>=1.6.7",
+    "pillow>=12.3.0",
     # Secret management and key derivation
     "keyring>=25.6.0",
     "argon2-cffi>=23.1.0",
@@ -100,6 +108,12 @@ dependencies = [
     "fastexcel>=0.19.0",
     # MCP server — primary AI assistant interface
     "fastmcp>=3.1,<4",
+    # Also a transitive dep of fastmcp, but declared directly because _registration.py,
+    # elicitation.py, middleware.py, and first_run.py import mcp.types independently —
+    # a future fastmcp pin change must not silently break those importers.
+    # Floor is CVE-2026-52869/52870 (unverified principal on HTTP transports; cross-client
+    # task access) and CVE-2026-59950 (no WebSocket Host/Origin validation), all fixed by 1.28.1.
+    "mcp>=1.28.1",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
     "tomlkit>=0.13.2",
     "httpx>=0.27",
