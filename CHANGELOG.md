@@ -22,6 +22,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   AI-extracted-PDF imports.
 
 ### Changed
+- **Your accounts now show the bank's name instead of its routing code.**
+  A Chase account read as `B1` and a Wells Fargo one as `WF`, because OFX
+  files carry a short institution code where you'd expect a name. Those now
+  resolve to `Chase` and `Wells Fargo`. Credit-card statements also no longer
+  come through untyped — a card that showed as `B1  …4387` now reads
+  `Chase credit card …4387`.
+- **`core.dim_accounts.account_type` now uses one vocabulary for every
+  source.** It previously carried whatever each source called things — OFX
+  said `CHECKING`/`CREDITLINE`, Plaid said `depository`/`credit`, a
+  spreadsheet said whatever was in the column — so `accounts --type credit`
+  silently missed accounts, the by-type summary split one concept into
+  several buckets, and an account could change its label when a different
+  source refreshed it. Values are now `depository`, `credit`, `loan`,
+  `investment`, `other` (`NULL` if the source spelling isn't recognized),
+  with the finer distinction kept in `account_subtype` (`checking`,
+  `savings`, `credit card`, ...). Account names are built from the subtype,
+  so they read `Wells Fargo checking …1789`, not `Wells Fargo depository
+  …1789`. Queries filtering on the old uppercase values need updating; run
+  `moneybin transform apply` to rebuild.
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with
   every other currency field in the schema. Pre-launch, so this is a direct
