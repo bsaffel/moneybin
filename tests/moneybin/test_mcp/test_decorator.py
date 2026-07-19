@@ -409,6 +409,78 @@ async def test_register_emits_tool_annotations() -> None:
 
 
 @pytest.mark.unit
+async def test_register_input_schema_extra_is_opt_in_and_validated() -> None:
+    """A schema overlay changes only the explicitly enhanced registration."""
+    from fastmcp import FastMCP
+
+    from moneybin.mcp._registration import register
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(dynamic_classification=True)
+    def state_tool(
+        state: str = "present",
+        amount: float | None = None,
+    ) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"state": state, "amount": amount})
+
+    base = FastMCP("base")
+    enhanced = FastMCP("enhanced")
+    register(base, state_tool, "state_tool", "Base schema.")
+    register(
+        enhanced,
+        state_tool,
+        "state_tool",
+        "Enhanced schema.",
+        input_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"state": {"const": "present"}},
+                        "required": ["state"],
+                    },
+                    "then": {"required": ["amount"]},
+                }
+            ]
+        },
+    )
+
+    base_tool = (await base._list_tools())[0]  # pyright: ignore[reportPrivateUsage]
+    enhanced_tool = (
+        await enhanced._list_tools()  # pyright: ignore[reportPrivateUsage]
+    )[0]
+    assert "allOf" not in base_tool.parameters
+    assert enhanced_tool.parameters == base_tool.parameters | {
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"state": {"const": "present"}},
+                    "required": ["state"],
+                },
+                "then": {"required": ["amount"]},
+            }
+        ]
+    }
+
+    invalid = FastMCP("invalid")
+    with pytest.raises(ValueError, match="unknown parameter"):
+        register(
+            invalid,
+            state_tool,
+            "state_tool",
+            "Invalid schema.",
+            input_schema_extra={"allOf": [{"then": {"required": ["missing"]}}]},
+        )
+    with pytest.raises(ValueError, match="cannot replace"):
+        register(
+            invalid,
+            state_tool,
+            "state_tool",
+            "Invalid schema.",
+            input_schema_extra={"properties": {}},
+        )
+
+
+@pytest.mark.unit
 async def test_register_privacy_actor_override_preserves_default_actor() -> None:
     """An explicit public actor changes only that registration's provenance."""
     from fastmcp import Client, FastMCP

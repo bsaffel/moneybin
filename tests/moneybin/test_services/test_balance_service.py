@@ -13,10 +13,9 @@ from moneybin.errors import UserError
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
     BalanceAssertionPayload,
-    BalanceAssertionRow,
     BalanceObservationListPayload,
 )
-from moneybin.services.balance_service import BalanceService
+from moneybin.services.balance_service import BalanceAssertionSnapshot, BalanceService
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -125,10 +124,18 @@ class TestAssertionsCRUD:
             Decimal("100.00"),
             actor="cli",
         )
-        seen: list[Decimal] = []
+        assertion_db.execute(
+            """
+            UPDATE app.balance_assertions
+            SET updated_at = ?
+            WHERE account_id = ? AND assertion_date = ?
+            """,
+            ["2026-02-01 12:34:56", "acct_a", assertion_date],
+        )
+        seen: list[tuple[Decimal, str]] = []
 
-        def refuse(assertion: BalanceAssertionRow) -> None:
-            seen.append(assertion.balance)
+        def refuse(assertion: BalanceAssertionSnapshot) -> None:
+            seen.append((assertion.balance, assertion.updated_at))
             raise UserError(
                 "Confirmation no longer matches the assertion.",
                 code="mutation_confirmation_mismatch",
@@ -142,7 +149,7 @@ class TestAssertionsCRUD:
                 verify=refuse,
             )
 
-        assert seen == [Decimal("100.00")]
+        assert seen == [(Decimal("100.00"), "2026-02-01 12:34:56")]
         assert svc.list_assertions("acct_a").assertions[0].balance == Decimal("100.00")
         delete_audits = assertion_db.execute(
             """

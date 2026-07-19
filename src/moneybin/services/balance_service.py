@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -24,6 +25,18 @@ from moneybin.services.audit_service import AuditService
 from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceAssertionSnapshot:
+    """Exact persisted assertion state used for pre-mutation verification."""
+
+    account_id: str
+    assertion_date: date
+    balance: Decimal
+    notes: str | None
+    created_at: str
+    updated_at: str
 
 
 def _observation_row_from_db(row: tuple[object, ...]) -> BalanceObservationRow:
@@ -53,6 +66,20 @@ def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
         balance=row[2],  # type: ignore[arg-type]
         notes=row[3],  # type: ignore[arg-type]
         created_at=str(row[4]),
+    )
+
+
+def _assertion_snapshot_from_db(
+    row: tuple[object, ...],
+) -> BalanceAssertionSnapshot:
+    """Construct the exact persisted snapshot from a SELECT result tuple."""
+    return BalanceAssertionSnapshot(
+        account_id=row[0],  # type: ignore[arg-type]
+        assertion_date=row[1],  # type: ignore[arg-type]
+        balance=row[2],  # type: ignore[arg-type]
+        notes=row[3],  # type: ignore[arg-type]
+        created_at=str(row[4]),
+        updated_at=str(row[5]),
     )
 
 
@@ -116,7 +143,7 @@ class BalanceService:
         assertion_date: date,
         *,
         actor: str,
-        verify: Callable[[BalanceAssertionRow], None] | None = None,
+        verify: Callable[[BalanceAssertionSnapshot], None] | None = None,
     ) -> bool:
         """Delete the assertion for (account_id, assertion_date).
 
@@ -132,7 +159,7 @@ class BalanceService:
         """
         self._db.begin()
         try:
-            assertion = self._find_assertion(account_id, assertion_date)
+            assertion = self._find_assertion_snapshot(account_id, assertion_date)
             if assertion is not None and verify is not None:
                 verify(assertion)
             deleted = (
@@ -188,6 +215,12 @@ class BalanceService:
         """Return one exact assertion, or ``None`` when absent."""
         return self._find_assertion(account_id, assertion_date)
 
+    def get_assertion_snapshot(
+        self, account_id: str, assertion_date: date
+    ) -> BalanceAssertionSnapshot | None:
+        """Return every persisted field used to verify a mutation target."""
+        return self._find_assertion_snapshot(account_id, assertion_date)
+
     def _load_assertion(
         self, account_id: str, assertion_date: date
     ) -> BalanceAssertionRow:
@@ -214,6 +247,23 @@ class BalanceService:
         if row is None:
             return None
         return _assertion_row_from_db(row)
+
+    def _find_assertion_snapshot(
+        self, account_id: str, assertion_date: date
+    ) -> BalanceAssertionSnapshot | None:
+        """Return the exact persisted row, including mutable metadata."""
+        row = self._db.execute(
+            f"""
+            SELECT
+                account_id, assertion_date, balance, notes, created_at, updated_at
+            FROM {BALANCE_ASSERTIONS.full_name}
+            WHERE account_id = ? AND assertion_date = ?
+            """,
+            [account_id, assertion_date],
+        ).fetchone()
+        if row is None:
+            return None
+        return _assertion_snapshot_from_db(row)
 
     # --- Reads ---
 

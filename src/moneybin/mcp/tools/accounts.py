@@ -38,7 +38,7 @@ from pydantic import Field, StrictBool
 from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -74,7 +74,6 @@ from moneybin.privacy.payloads.balances import (
     BalanceAssertionDeletePayload,
     BalanceAssertionListPayload,
     BalanceAssertionPayload,
-    BalanceAssertionRow,
     BalanceObservationListPayload,
 )
 from moneybin.privacy.redaction import redact_typed
@@ -84,7 +83,7 @@ from moneybin.services.account_links_service import (
     AccountLinksService,
 )
 from moneybin.services.account_service import CLEAR, AccountService
-from moneybin.services.balance_service import BalanceService
+from moneybin.services.balance_service import BalanceAssertionSnapshot, BalanceService
 from moneybin.services.entity_reference import (
     AmbiguousEntity,
     EntityCandidate,
@@ -1318,23 +1317,30 @@ def register_accounts_coarse_reads(mcp: FastMCP) -> None:
 # ─── Dormant coarse write replacements ────────────────────────────────────
 
 
+_BALANCE_ASSERTION_MAX = Decimal("9999999999999999.99")
+
 BalanceAmount = Annotated[
     FiniteDecimal,
-    Field(max_digits=18, decimal_places=2),
+    Field(
+        ge=-_BALANCE_ASSERTION_MAX,
+        le=_BALANCE_ASSERTION_MAX,
+        max_digits=18,
+        decimal_places=2,
+    ),
 ]
 
 
 def _load_balance_assertion_snapshot(
     account_id: str,
     as_of: _date,
-) -> BalanceAssertionRow | None:
+) -> BalanceAssertionSnapshot | None:
     """Load one assertion without retaining a read connection."""
     with get_database(read_only=True) as db:
-        return BalanceService(db).get_assertion(account_id, as_of)
+        return BalanceService(db).get_assertion_snapshot(account_id, as_of)
 
 
 def _balance_assertion_remove_binding(
-    snapshot: BalanceAssertionRow,
+    snapshot: BalanceAssertionSnapshot,
 ) -> ConfirmationBinding:
     """Bind approval to the exact live assertion about to be removed."""
     return ConfirmationBinding(
@@ -1346,6 +1352,7 @@ def _balance_assertion_remove_binding(
                 "amount": str(snapshot.balance),
                 "notes": snapshot.notes,
                 "created_at": snapshot.created_at,
+                "updated_at": snapshot.updated_at,
             },
         },
         resolved_ids=(snapshot.account_id, snapshot.assertion_date.isoformat()),
@@ -1388,7 +1395,7 @@ def _remove_balance_assertion(
 ) -> None:
     """Recompute, verify, and remove one assertion in one transaction."""
 
-    def verify(assertion: BalanceAssertionRow) -> None:
+    def verify(assertion: BalanceAssertionSnapshot) -> None:
         grant.verify(_balance_assertion_remove_binding(assertion))
 
     with get_database(read_only=False) as db:
@@ -1472,14 +1479,31 @@ async def accounts_balance_assert_coarse(
         )
         prior_state = "present"
 
+    operation_id = current_operation_id()
     return build_envelope(
         data=BalanceAssertionStatePayload(
             account_id=account_id,
             as_of=as_of,
             prior_state=prior_state,
             state=state,
-            operation_id=current_operation_id(),
-        )
+            operation_id=operation_id,
+        ),
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit",
+                arguments={"view": "detail", "operation_id": operation_id},
+                rationale="Inspect the exact mutation and its undoability.",
+                confidence="suggested",
+                idempotent=True,
+            ),
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": operation_id},
+                rationale="Reverse this balance assertion mutation.",
+                confidence="certain",
+                idempotent=False,
+            ),
+        ],
     )
 
 
@@ -1497,6 +1521,28 @@ def register_accounts_coarse_writes(mcp: FastMCP) -> None:
         "mutation with system_audit_undo(operation_id). Amounts are positions "
         "in the currency named by summary.display_currency.",
         privacy_actor="accounts_balance_assert",
+        input_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"state": {"const": "absent"}},
+                        "required": ["state"],
+                    },
+                    "then": {
+                        "not": {"anyOf": [{"required": ["amount"]}]},
+                    },
+                    "else": {
+                        "required": ["amount"],
+                        "properties": {
+                            "amount": {"not": {"type": "null"}},
+                        },
+                        "not": {
+                            "anyOf": [{"required": ["confirmation_token"]}],
+                        },
+                    },
+                }
+            ]
+        },
     )
 
 

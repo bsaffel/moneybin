@@ -13,7 +13,7 @@ from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 from mcp.types import TextContent
 from pydantic import TypeAdapter, ValidationError
 
-from moneybin.mcp.tools.accounts import register_accounts_coarse_writes
+from moneybin.mcp.tools.accounts import BalanceAmount, register_accounts_coarse_writes
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     AnnotationRequest,
@@ -385,6 +385,87 @@ async def test_balance_assertion_coarse_schema_and_annotations() -> None:
     assert numeric_schema["max_digits"] == 18
     assert advertised_types <= {"integer", "number"}
     assert "number" in advertised_types
+    Draft202012Validator.check_schema(tool.inputSchema)
+
+    valid_payloads = [
+        {"account": "ACC001", "as_of": "2026-07-01", "amount": 1250},
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "present",
+            "amount": 1250,
+        },
+        {"account": "ACC001", "as_of": "2026-07-01", "state": "absent"},
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "absent",
+            "confirmation_token": "token",
+        },
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "absent",
+            "confirmation_token": None,
+        },
+    ]
+    invalid_payloads = [
+        {"account": "ACC001", "as_of": "2026-07-01"},
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "present",
+        },
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "present",
+            "amount": None,
+        },
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "present",
+            "amount": 1250,
+            "confirmation_token": "token",
+        },
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "present",
+            "amount": 1250,
+            "confirmation_token": None,
+        },
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "absent",
+            "amount": 1250,
+        },
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "state": "absent",
+            "amount": None,
+        },
+    ]
+    for payload in valid_payloads:
+        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+    for payload in invalid_payloads:
+        with pytest.raises(JSONSchemaValidationError):
+            validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+
+
+def test_balance_assertion_amount_matches_decimal_18_2_extrema() -> None:
+    adapter = TypeAdapter(BalanceAmount)
+    maximum = Decimal("9999999999999999.99")
+
+    assert adapter.validate_python(maximum) == maximum
+    assert adapter.validate_python(-maximum) == -maximum
+    with pytest.raises(ValidationError):
+        adapter.validate_python(Decimal("10000000000000000.00"))
+    with pytest.raises(ValidationError):
+        adapter.validate_python(Decimal("-10000000000000000.00"))
 
 
 @pytest.mark.parametrize("amount", ["1250.00", True, 1250.001])
