@@ -338,7 +338,7 @@ those, `investment_price_discontinuity` reports a single-day market-value change
 exceeding a threshold on a date with no transaction — the observable signature of
 an unrecorded split or an adjustment-basis change.
 
-Restoring symmetry between the manual and Plaid split paths is M1J.4, tracked
+Restoring symmetry between the manual and Plaid split paths is M1J.5, tracked
 separately against the ledger rather than here.
 
 ---
@@ -500,7 +500,7 @@ and the CLI and MCP surface.
 - **Options, derivatives, short positions.**
 - **Tier 3, a sync-brokered keyed provider.** The `source` column and resolution
   rule accommodate it; nothing cross-repo lands here.
-- **Split-source symmetry.** M1J.4.
+- **Split-source symmetry.** M1J.5.
 
 ---
 
