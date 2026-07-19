@@ -74,9 +74,6 @@ from moneybin.privacy.payloads.reviews import (
 from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.repositories.categorization_decisions_repo import (
-    categorization_decision_id,
-)
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
@@ -208,6 +205,9 @@ def _pending_categorization_rows(
         ),
         reverse=True,
     )
+    attempts = service.project_pending_review_attempts([
+        str(row["transaction_id"]) for row in ordered
+    ])
     result: list[CategorizationReviewRow] = []
     for row in ordered:
         transaction = PendingTxnRow(
@@ -229,16 +229,12 @@ def _pending_categorization_rows(
             pending_transfer_match=bool(row.get("pending_transfer_match", False)),
         )
         summary = transaction.description or f"Transaction {transaction.transaction_id}"
-        persisted = service.review_decision_for_transaction(transaction.transaction_id)
-        if persisted is not None and persisted["status"] != "pending":
+        attempt = attempts.get(transaction.transaction_id)
+        if attempt is None:
             continue
         result.append(
             CategorizationReviewRow(
-                decision_id=(
-                    str(persisted["decision_id"])
-                    if persisted is not None
-                    else categorization_decision_id(transaction.transaction_id)
-                ),
+                decision_id=str(attempt["decision_id"]),
                 status="pending",
                 created_at=transaction.transaction_date,
                 summary=summary,
@@ -252,19 +248,16 @@ def _categorization_history_rows(
     service: CategorizationService,
 ) -> list[CategorizationReviewRow]:
     """Project canonical categorization decisions into history rows."""
-    categorizations = {
-        str(row["transaction_id"]): row for row in service.list_categorization_history()
-    }
     result: list[CategorizationReviewRow] = []
     for decision in service.list_review_decision_history():
         transaction_id = str(decision["transaction_id"])
-        row = categorizations.get(transaction_id, {})
-        category = cast(str | None, row.get("category"))
-        subcategory = cast(str | None, row.get("subcategory"))
+        category = cast(str | None, decision.get("category"))
+        subcategory = cast(str | None, decision.get("subcategory"))
         summary = (
             f"{category} / {subcategory}"
             if category is not None and subcategory
-            else category or "Rejected"
+            else category
+            or ("Superseded" if decision["status"] == "superseded" else "Rejected")
         )
         result.append(
             CategorizationReviewRow(
@@ -275,21 +268,27 @@ def _categorization_history_rows(
                 details=CategorizationHistoryDetails(
                     transaction_id=transaction_id,
                     decision_status=cast(
-                        Literal["accepted", "rejected"],
+                        Literal["accepted", "rejected", "superseded"],
                         decision["status"],
                     ),
                     category_id=cast(str | None, decision.get("category_id")),
                     category=category,
                     subcategory=subcategory,
-                    categorized_by=str(decision.get("decided_by") or "unknown"),
+                    categorized_by=str(
+                        decision.get("categorized_by")
+                        or decision.get("decided_by")
+                        or "unknown"
+                    ),
                     merchant_id=cast(str | None, decision.get("merchant_id")),
                     confidence=(
-                        float(cast(Decimal, row["confidence"]))
-                        if row.get("confidence") is not None
+                        float(cast(Decimal, decision["confidence"]))
+                        if decision.get("confidence") is not None
                         else None
                     ),
-                    rule_id=cast(str | None, row.get("rule_id")),
-                    source_type=str(row.get("source_type") or "internal"),
+                    rule_id=cast(str | None, decision.get("rule_id")),
+                    source_type=str(decision.get("source_type") or "internal"),
+                    reversed_at=_text(decision.get("reversed_at")),
+                    reversed_by=cast(str | None, decision.get("reversed_by")),
                 ),
             )
         )

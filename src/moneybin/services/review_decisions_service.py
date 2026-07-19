@@ -187,9 +187,8 @@ class ReviewDecisionsService:
         self,
         request: CategorizationDecisionRequest,
     ) -> OrdinaryDecisionPlanItem:
-        decision = CategorizationDecisionsRepo(self._db).fetch_by_id(
-            request.decision_id
-        )
+        decision_repo = CategorizationDecisionsRepo(self._db)
+        decision = decision_repo.fetch_by_id(request.decision_id)
         if decision is not None and decision["status"] != "pending":
             raise UserError(
                 "The categorization decision is already decided.",
@@ -209,7 +208,8 @@ class ReviewDecisionsService:
                 (? IS NOT NULL AND tx.transaction_id = ?)
                 OR (
                     ? IS NULL
-                    AND 'cat_' || substr(sha256(tx.transaction_id), 1, 16) = ?
+                    AND 'cat_' || substr(sha256(tx.transaction_id), 1, 16)
+                        = left(?, 20)
                 )
             )
             LIMIT 1
@@ -227,6 +227,14 @@ class ReviewDecisionsService:
                 code=error_codes.MUTATION_NOT_FOUND,
             )
         transaction_id = str(row[0])
+        projected = decision_repo.project_pending_attempts([transaction_id]).get(
+            transaction_id
+        )
+        if projected is None or str(projected["decision_id"]) != request.decision_id:
+            raise UserError(
+                "No pending categorization decision exists for this id.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
         current_category = cast(str | None, row[1])
         if request.decision == "reject":
             if current_category is not None:
@@ -399,6 +407,7 @@ class ReviewDecisionsService:
                     decision_repo.ensure_pending(
                         cast(str, item.transaction_id),
                         actor=self._actor,
+                        expected_decision_id=item.request.decision_id,
                         in_outer_txn=True,
                     )
             live = self.plan_ordinary(decisions)
@@ -480,7 +489,7 @@ class ReviewDecisionsService:
         )
         source_id = str(decision["provisional_account_id"])
         candidate_id = str(decision["candidate_account_id"])
-        target_id = request.target_id or source_id
+        target_id = request.target_id or candidate_id
         status: Literal["accepted", "rejected"] = (
             "accepted" if request.decision == "accept" else "rejected"
         )
@@ -668,7 +677,7 @@ class ReviewDecisionsService:
         ).fetchone()
         source_id = str(binding[0]) if binding is not None else request.decision_id
         candidate_id = str(decision["candidate_security_id"])
-        target_id = request.target_id or source_id
+        target_id = request.target_id or candidate_id
         status: Literal["accepted", "rejected"] = (
             "accepted" if request.decision == "accept" else "rejected"
         )
@@ -880,33 +889,52 @@ class ReviewDecisionsService:
                 continue
             seen_groups.add(item.group_key)
             prepared.append(item)
-        account_accepts = [
-            item
-            for item in prepared
-            if item.changed
-            and item.request.decision == "accept"
-            and isinstance(item.request, AccountLinkDecisionRequest)
-        ]
+        indexed = [(decisions.index(item.request), item) for item in prepared]
         graph_error_ids: set[str] = set()
-        for position, left in enumerate(account_accepts):
-            for right in account_accepts[position + 1 :]:
+        for accept_index, accept in indexed:
+            if not accept.changed or accept.request.decision != "accept":
+                continue
+            domain_type = (
+                AccountLinkDecisionRequest
+                if isinstance(accept.request, AccountLinkDecisionRequest)
+                else (
+                    SecurityLinkDecisionRequest
+                    if isinstance(accept.request, SecurityLinkDecisionRequest)
+                    else None
+                )
+            )
+            if domain_type is None:
+                continue
+            for other_index, other in indexed:
                 if (
-                    left.source_id != right.target_id
-                    and left.target_id != right.source_id
+                    other is accept
+                    or not other.changed
+                    or not isinstance(other.request, domain_type)
                 ):
                     continue
-                request = right.request
+                overlaps_destroyed_source = accept.source_id in {
+                    other.source_id,
+                    other.target_id,
+                }
+                consumes_surviving_target = accept.target_id == other.source_id
+                if not overlaps_destroyed_source and not consumes_surviving_target:
+                    continue
+                error_index, request = max(
+                    (accept_index, accept.request),
+                    (other_index, other.request),
+                    key=lambda pair: pair[0],
+                )
                 if request.decision_id in graph_error_ids:
                     continue
                 graph_error_ids.add(request.decision_id)
                 errors.append({
-                    "index": decisions.index(request),
+                    "index": error_index,
                     "kind": request.kind,
                     "decision_id": request.decision_id,
                     "code": error_codes.MUTATION_INVALID_INPUT,
                     "reason": (
-                        "Account merges cannot use another batch source as an "
-                        "intermediate target."
+                        "Identity merges cannot consume a source or intermediate "
+                        "target referenced by another changed decision."
                     ),
                 })
         if errors:

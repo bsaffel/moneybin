@@ -9,7 +9,7 @@ fixture (session-template DB + monkeypatch for get_settings/SecretStore).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -221,6 +221,58 @@ async def test_identity_security_preflight_uses_exact_decision_lookup() -> None:
 
     assert response.error is None
     assert _decision_status(setup["decision_id"]) == "rejected"
+
+
+@pytest.mark.parametrize("second_outcome", ["accept", "reject"])
+async def test_identity_security_batch_rejects_source_target_overlap_graph(
+    second_outcome: Literal["accept", "reject"],
+) -> None:
+    setup = _merge_setup()
+    provisional_c = _mint(
+        name="Overlapping provisional security",
+        created_by="plaid",
+        ticker="OVR",
+    )
+    _bind(provisional_c, ref_value="sec_overlap_c")
+    _insert_decision(
+        decision_id="dsec_overlap_c_a",
+        candidate_security_id=setup["provisional"],
+        ref_value="sec_overlap_c",
+        provider_ticker="OVR",
+        provider_name="Overlapping provisional security",
+    )
+
+    second_request = (
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="dsec_overlap_c_a",
+            decision="accept",
+            target_id=setup["provisional"],
+        )
+        if second_outcome == "accept"
+        else SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="dsec_overlap_c_a",
+            decision="reject",
+        )
+    )
+    response = await identity_links_decide_coarse(
+        decisions=[
+            SecurityLinkDecisionRequest(
+                kind="security_link",
+                decision_id=setup["decision_id"],
+                decision="accept",
+                target_id=setup["survivor"],
+            ),
+            second_request,
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == "mutation_invalid_input"
+    assert response.error.details["errors"][0]["index"] == 1
+    assert _decision_status(setup["decision_id"]) == "pending"
+    assert _decision_status("dsec_overlap_c_a") == "pending"
 
 
 async def test_identity_security_blast_deduplicates_manual_core_transaction() -> None:

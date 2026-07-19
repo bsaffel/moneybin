@@ -71,7 +71,10 @@ class CategorizationHistoryDetails(BaseModel):
 
     state: Annotated[Literal["history"], DataClass.TXN_TYPE] = "history"
     transaction_id: Annotated[str, DataClass.RECORD_ID]
-    decision_status: Annotated[Literal["accepted", "rejected"], DataClass.TXN_TYPE]
+    decision_status: Annotated[
+        Literal["accepted", "rejected", "superseded"],
+        DataClass.TXN_TYPE,
+    ]
     category_id: Annotated[str | None, DataClass.CATEGORY]
     category: Annotated[str | None, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
@@ -80,6 +83,8 @@ class CategorizationHistoryDetails(BaseModel):
     confidence: Annotated[float | None, DataClass.AGGREGATE]
     rule_id: Annotated[str | None, DataClass.RECORD_ID]
     source_type: Annotated[str, DataClass.TXN_TYPE]
+    reversed_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    reversed_by: Annotated[str | None, DataClass.TXN_TYPE]
 
 
 CategorizationDetails = Annotated[

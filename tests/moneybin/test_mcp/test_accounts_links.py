@@ -351,6 +351,43 @@ async def test_identity_account_batch_rejects_intermediate_merge_graph() -> None
     assert _decision_status("coarse-account-graph-c-a") == "pending"
 
 
+async def test_identity_account_accept_reject_batch_rejects_overlap_graph() -> None:
+    first = _merge_setup(
+        decision_id="coarse-account-overlap-accept",
+        provisional="OVERLAP_A",
+        candidate="OVERLAP_B",
+    )
+    _seed_account("OVERLAP_C", "Overlap account C")
+    _seed_source_native_link("OVERLAP_C", "lnk_coarse-account-overlap-reject")
+    _insert_decision(
+        decision_id="coarse-account-overlap-reject",
+        provisional_account_id="OVERLAP_C",
+        candidate_account_id="OVERLAP_A",
+    )
+
+    response = await identity_links_decide_coarse(
+        decisions=[
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id=first["decision_id"],
+                decision="accept",
+                target_id=first["candidate"],
+            ),
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id="coarse-account-overlap-reject",
+                decision="reject",
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == "mutation_invalid_input"
+    assert response.error.details["errors"][0]["index"] == 1
+    assert _decision_status(first["decision_id"]) == "pending"
+    assert _decision_status("coarse-account-overlap-reject") == "pending"
+
+
 async def test_identity_mixed_reject_batch_is_atomic_and_one_operation() -> None:
     account = _merge_setup(decision_id="coarse-account-atomic")
     merchant_decision_id = "coarse-merchant-atomic"

@@ -306,8 +306,15 @@ class CategorizationService:
         """Return the canonical review decision for one transaction."""
         return self._review_decisions.fetch_by_transaction_id(transaction_id)
 
+    def project_pending_review_attempts(
+        self,
+        transaction_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Project versioned pending attempts for a transaction batch."""
+        return self._review_decisions.project_pending_attempts(transaction_ids)
+
     def list_review_decision_history(self) -> list[dict[str, Any]]:
-        """Return terminal categorization review decisions."""
+        """Return preserved categorization proposal-attempt history."""
         return self._review_decisions.history()
 
     def clear_category(self, transaction_id: str, *, actor: str) -> None:

@@ -373,20 +373,39 @@ subject to schema/evaluation gates before implementation.
 ### Review decision persistence
 
 `reviews_decide` uses each domain's canonical proposal store. Categorization
-proposals live in `app.categorization_decisions`, keyed by the deterministic
-`cat_<sha256(transaction_id)[:16]>` decision ID and constrained to one row per
-transaction. Their audited lifecycle is `pending` → `accepted` or `rejected`;
-accepted rows retain canonical category and optional merchant target IDs, while
-rejected rows retain no inferred targets. Existing transaction categorizations
-backfill once as system-decided accepted proposals with paired migration audit
-events. Match accept/reject state remains in the existing match-decision store.
+proposal attempts live in `app.categorization_decisions`. Attempt 1 uses the
+deterministic `cat_<sha256(transaction_id)[:16]>` decision ID; later attempts
+append `_aN` and are unique by transaction and attempt number. Each attempt
+advances once from `pending` to `accepted`, `rejected`, or `superseded`.
+Terminal attempts are immutable history snapshots: accepted attempts retain
+the canonical category and optional merchant target plus attribution;
+rejected and superseded attempts retain no inferred targets.
+
+The category repository's audit revision is the single re-review trigger.
+When a granular edit, clear, automated categorization, or undo changes a
+transaction after its latest attempt, the normalized pending read projects the
+next deterministic attempt. Materialization supersedes a stale pending attempt
+before inserting that next version; accepted and rejected rows are never
+reopened. Undo marks the terminal attempt reversed without erasing its outcome,
+so its audit history remains intact and the next attempt becomes reviewable.
+Pending projection batches category state and audit revisions rather than
+performing a per-transaction decision lookup.
+
+Existing transaction categorizations backfill once as system-decided accepted
+attempts with immutable snapshots and paired migration audit events. Legacy
+rows missing `category_id` or `categorized_at` stop V036 with an actionable
+error and leave the proposal table unchanged; the migration does not invent
+canonical identities or timestamps. Re-running V036 over a non-empty proposal
+table is idempotent. Match accept/reject state remains in the existing
+match-decision store.
 
 An ordinary batch materializes any deterministic categorization proposal and
 applies every terminal decision inside one operation and one transaction.
 Already-terminal IDs are structured constraint violations, including repeated
-rejects; they are not inferred from the current transaction category and are
-not treated as no-ops. The normalized review read projects the same decision
-IDs and terminal history without introducing a parallel review-state table.
+rejects; a later category-state revision receives a new attempt ID rather than
+mutating the terminal row. The normalized review read projects the same
+decision IDs and immutable terminal history without introducing a parallel
+review-state table.
 
 `identity_links_decide` requires confirmation for every material ordered batch
 that contains an accept, even when that accept is already satisfied and another

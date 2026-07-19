@@ -33,6 +33,7 @@ from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.review_decisions_service import ReviewDecisionsService
+from moneybin.services.undo_service import UndoService
 
 from .schema_assertions import (
     assert_literal_values,
@@ -819,6 +820,123 @@ async def test_categorization_reject_persists_and_leaves_pending_queue() -> None
         item for item in history.data.rows if item.decision_id == categorization_id
     )
     assert history_row.status == "rejected"
+
+
+async def test_categorization_history_uses_immutable_attempt_snapshot() -> None:
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+    accepted = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+    assert accepted.error is None
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+        service.create_category("Changed Later", actor="test")
+        service.set_category(
+            transaction_id,
+            category="Changed Later",
+            actor="test",
+        )
+
+    history = await reviews_coarse(kind="categorization", status="history")
+    row = next(
+        item for item in history.data.rows if item.decision_id == categorization_id
+    )
+
+    assert row.details.category == category
+    assert row.details.category_id != "Changed Later"
+
+
+async def test_categorization_clear_projects_next_versioned_attempt() -> None:
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+    accepted = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+    assert accepted.error is None
+    with get_database(read_only=False) as db:
+        CategorizationService(db).clear_category(transaction_id, actor="test")
+
+    pending = await reviews_coarse(kind="categorization", status="pending")
+
+    assert [item.decision_id for item in pending.data.rows] == [
+        categorization_decision_id(transaction_id, attempt_number=2)
+    ]
+
+
+async def test_categorization_accept_undo_preserves_history_and_new_attempt() -> None:
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+    accepted = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+    assert accepted.error is None
+    with get_database(read_only=False) as db:
+        UndoService(db).undo(str(accepted.data.operation_id), actor="mcp")
+
+    history = await reviews_coarse(kind="categorization", status="history")
+    pending = await reviews_coarse(kind="categorization", status="pending")
+
+    assert categorization_id in {item.decision_id for item in history.data.rows}
+    assert [item.decision_id for item in pending.data.rows] == [
+        categorization_decision_id(transaction_id, attempt_number=2)
+    ]
+
+
+async def test_categorization_reject_undo_preserves_history_and_new_attempt() -> None:
+    transaction_id, categorization_id, _match_id, _category = _seed_ordinary_decisions()
+    rejected = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="reject",
+            )
+        ]
+    )
+    assert rejected.error is None
+    with get_database(read_only=False) as db:
+        UndoService(db).undo(str(rejected.data.operation_id), actor="mcp")
+
+    history = await reviews_coarse(kind="categorization", status="history")
+    pending = await reviews_coarse(kind="categorization", status="pending")
+
+    assert categorization_id in {item.decision_id for item in history.data.rows}
+    assert [item.decision_id for item in pending.data.rows] == [
+        categorization_decision_id(transaction_id, attempt_number=2)
+    ]
+
+
+async def test_categorization_pending_uses_batch_attempt_projection() -> None:
+    _seed_ordinary_decisions()
+
+    with patch.object(
+        CategorizationService,
+        "review_decision_for_transaction",
+        side_effect=AssertionError("per-row decision lookup"),
+    ):
+        response = await reviews_coarse(kind="categorization", status="pending")
+
+    assert response.error is None
+    assert len(response.data.rows) == 1
 
 
 async def test_review_dormant_write_registrar_is_closed_and_max_risk() -> None:
