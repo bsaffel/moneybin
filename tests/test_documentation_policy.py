@@ -47,9 +47,9 @@ _COMPETITOR_DERIVATION = re.compile(
 # Inline links, reference-style definitions, and HTML hrefs — all three
 # Markdown link destinations a public doc could use to reach private/.
 _PRIVATE_LINK = re.compile(
-    r"\]\((?:\.{1,2}/)*private/"
-    r"|^\s*\[[^\]]+\]:\s*(?:\.{1,2}/)*private/"
-    r"|href=[\"'](?:\.{1,2}/)*private/"
+    r"\]\(/?(?:\.{1,2}/)*private/"
+    r"|^\s*\[[^\]]+\]:\s*/?(?:\.{1,2}/)*private/"
+    r"|href=[\"']/?(?:\.{1,2}/)*private/"
 )
 
 
