@@ -8,10 +8,14 @@ from unittest.mock import patch
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.mcp.tools.taxonomy import (
     register_taxonomy_coarse_reads,
+    register_taxonomy_coarse_writes,
     taxonomy_coarse,
+    taxonomy_set_coarse,
 )
+from moneybin.mcp.write_contracts import CategoryStateRequest, MerchantStateRequest
 from moneybin.privacy.payloads.categories import (
     CategoriesPayload,
     CategoryRow,
@@ -33,6 +37,489 @@ pytestmark = pytest.mark.usefixtures("mcp_db")
 async def test_taxonomy_projects_categories_and_merchants() -> None:
     assert (await taxonomy_coarse(view="categories")).data.kind == "categories"
     assert (await taxonomy_coarse(view="merchants")).data.kind == "merchants"
+
+
+async def test_taxonomy_batch_routes_category_and_merchant_targets() -> None:
+    response = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Dining",
+            ),
+            MerchantStateRequest(
+                kind="merchant",
+                state="present",
+                raw_pattern="TASK 6 CAFE",
+                canonical_name="Task 6 Cafe",
+                category="Task 6 Dining",
+            ),
+        ]
+    )
+
+    assert [item.kind for item in response.data.results] == [
+        "category",
+        "merchant",
+    ]
+
+
+async def test_taxonomy_merchant_absent_is_audited_and_undoable() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            MerchantStateRequest(
+                kind="merchant",
+                state="present",
+                raw_pattern="TASK 6 REMOVE",
+                canonical_name="Task 6 Remove",
+            )
+        ]
+    )
+    merchant_id = created.data.results[0].target_id
+    assert merchant_id is not None
+
+    first = await taxonomy_set_coarse(
+        items=[
+            MerchantStateRequest(
+                kind="merchant",
+                state="absent",
+                merchant_id=merchant_id,
+            )
+        ]
+    )
+    assert first.error is not None
+    token = first.error.details["confirmation_token"]
+    removed = await taxonomy_set_coarse(
+        items=[
+            MerchantStateRequest(
+                kind="merchant",
+                state="absent",
+                merchant_id=merchant_id,
+            )
+        ],
+        confirmation_token=token,
+    )
+    assert removed.error is None
+
+    rows = (await taxonomy_coarse(view="merchants")).data.rows
+    assert merchant_id not in {row.merchant_id for row in rows}
+
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    undo = await system_audit_undo(removed.data.operation_id)
+    assert undo.error is None
+    restored = (await taxonomy_coarse(view="merchants")).data.rows
+    assert merchant_id in {row.merchant_id for row in restored}
+
+
+async def test_taxonomy_category_absent_is_audited_and_undoable() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Temporary",
+            )
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    assert category_id is not None
+
+    first = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+            )
+        ]
+    )
+    assert first.error is not None
+    token = first.error.details["confirmation_token"]
+    removed = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+            )
+        ],
+        confirmation_token=token,
+    )
+    assert removed.error is None
+    rows = (await taxonomy_coarse(view="categories", include_inactive=True)).data.rows
+    assert category_id not in {row.category_id for row in rows}
+
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    undo = await system_audit_undo(removed.data.operation_id)
+    assert undo.error is None
+    restored = (
+        await taxonomy_coarse(view="categories", include_inactive=True)
+    ).data.rows
+    assert category_id in {row.category_id for row in restored}
+
+
+async def test_taxonomy_category_delete_preflights_usage_before_confirmation() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Referenced",
+            ),
+            MerchantStateRequest(
+                kind="merchant",
+                state="present",
+                raw_pattern="TASK 6 REFERENCED",
+                canonical_name="Task 6 Referenced",
+                category="Task 6 Referenced",
+            ),
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    assert category_id is not None
+
+    response = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+            )
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == "CATEGORY_HAS_REFERENCES"
+    assert "confirmation_token" not in response.error.details
+
+
+async def test_taxonomy_force_delete_cascades_and_undoes_one_operation() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Cascade",
+            ),
+            MerchantStateRequest(
+                kind="merchant",
+                state="present",
+                raw_pattern="TASK 6 CASCADE",
+                canonical_name="Task 6 Cascade",
+                category="Task 6 Cascade",
+            ),
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    merchant_id = created.data.results[1].target_id
+    assert category_id is not None
+    assert merchant_id is not None
+
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, category_id, categorized_by) "
+            "VALUES ('task6-txn', 'Task 6 Cascade', ?, 'user')",
+            [category_id],
+        )
+        db.execute(
+            "INSERT INTO app.budgets "
+            "(budget_id, category, category_id, monthly_amount, start_month) "
+            "VALUES ('task6-budget', 'Task 6 Cascade', ?, 100, '2026-07')",
+            [category_id],
+        )
+        db.execute(
+            "INSERT INTO app.transaction_splits "
+            "(split_id, transaction_id, amount, category, category_id, created_by) "
+            "VALUES ('task6-split', 'task6-txn', -10, 'Task 6 Cascade', ?, 'mcp')",
+            [category_id],
+        )
+        db.execute(
+            "INSERT INTO app.categorization_rules "
+            "(rule_id, name, merchant_pattern, category, category_id) "
+            "VALUES ('task6-rule', 'Task 6', 'TASK6', 'Task 6 Cascade', ?)",
+            [category_id],
+        )
+        db.execute(
+            "INSERT INTO app.proposed_rules "
+            "(proposed_rule_id, merchant_pattern, category, category_id) "
+            "VALUES ('task6-proposal', 'TASK6', 'Task 6 Cascade', ?)",
+            [category_id],
+        )
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, category_id) "
+            "VALUES ('task6', 'cascade', ?)",
+            [category_id],
+        )
+
+    first = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+                force=True,
+            )
+        ]
+    )
+    assert first.error is not None
+    removed = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+                force=True,
+            )
+        ],
+        confirmation_token=first.error.details["confirmation_token"],
+    )
+    assert removed.error is None
+    assert merchant_id not in {
+        row.merchant_id for row in (await taxonomy_coarse(view="merchants")).data.rows
+    }
+
+    with get_database(read_only=True) as db:
+        actions = db.execute(
+            "SELECT action FROM app.audit_log WHERE operation_id = ? "
+            "ORDER BY occurred_at, audit_id",
+            [removed.data.operation_id],
+        ).fetchall()
+    assert {row[0] for row in actions} == {
+        "budget.delete",
+        "category.clear",
+        "categorization_rule.delete",
+        "category_source_map.delete",
+        "proposed_rule.delete",
+        "split.remove",
+        "user_merchant.delete",
+        "user_category.delete",
+    }
+
+    from moneybin.mcp.tools.system import system_audit_undo
+
+    undo = await system_audit_undo(removed.data.operation_id)
+    assert undo.error is None
+    restored_merchants = (await taxonomy_coarse(view="merchants")).data.rows
+    assert merchant_id in {row.merchant_id for row in restored_merchants}
+    with get_database(read_only=True) as db:
+        restored_counts = db.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM app.transaction_categories
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM app.budgets WHERE category_id = ?),
+                (SELECT COUNT(*) FROM app.user_merchants WHERE category_id = ?),
+                (SELECT COUNT(*) FROM app.transaction_splits WHERE category_id = ?),
+                (SELECT COUNT(*) FROM app.categorization_rules
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM app.proposed_rules WHERE category_id = ?),
+                (SELECT COUNT(*) FROM app.category_source_map
+                  WHERE category_id = ?)
+            """,
+            [category_id] * 7,
+        ).fetchone()
+    assert restored_counts == (1, 1, 1, 1, 1, 1, 1)
+
+
+async def test_taxonomy_preflight_composes_merchant_and_category_removal() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Composed",
+            ),
+            MerchantStateRequest(
+                kind="merchant",
+                state="present",
+                raw_pattern="TASK 6 COMPOSED",
+                canonical_name="Task 6 Composed",
+                category="Task 6 Composed",
+            ),
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    merchant_id = created.data.results[1].target_id
+    assert category_id is not None
+    assert merchant_id is not None
+    requests: list[CategoryStateRequest | MerchantStateRequest] = [
+        MerchantStateRequest(
+            kind="merchant",
+            state="absent",
+            merchant_id=merchant_id,
+        ),
+        CategoryStateRequest(
+            kind="category",
+            state="absent",
+            category_id=category_id,
+        ),
+    ]
+
+    first = await taxonomy_set_coarse(items=requests)
+    assert first.error is not None
+    assert first.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    removed = await taxonomy_set_coarse(
+        items=requests,
+        confirmation_token=first.error.details["confirmation_token"],
+    )
+
+    assert removed.error is None
+    assert [result.changed for result in removed.data.results] == [True, True]
+
+
+async def test_taxonomy_delete_rejects_token_after_live_state_changes() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Stale",
+            )
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    assert category_id is not None
+    first = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+            )
+        ]
+    )
+    assert first.error is not None
+
+    inactive = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="inactive",
+                category_id=category_id,
+            )
+        ]
+    )
+    assert inactive.error is None
+    stale = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+            )
+        ],
+        confirmation_token=first.error.details["confirmation_token"],
+    )
+
+    assert stale.error is not None
+    assert stale.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+
+async def test_taxonomy_all_noop_batch_returns_nothing_to_do() -> None:
+    response = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id="missing-category",
+            ),
+            MerchantStateRequest(
+                kind="merchant",
+                state="absent",
+                merchant_id="missing-merchant",
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_NOTHING_TO_DO
+
+
+async def test_taxonomy_write_registrar_advertises_maximum_destructive_risk() -> None:
+    mcp = isolated_server(register_taxonomy_coarse_writes)
+
+    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert {tool.name for tool in tools} == {"taxonomy_set"}
+    tool = await listed_tool(mcp, "taxonomy_set")
+    assert tool.outputSchema is None
+    assert tool.annotations is not None
+    assert tool.annotations.destructiveHint is True
+    variants = tool.inputSchema["properties"]["items"]["items"]["oneOf"]
+    assert {variant["properties"]["kind"]["const"] for variant in variants} == {
+        "category",
+        "merchant",
+    }
+
+
+async def test_taxonomy_explicit_category_id_must_match_target_fields() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Original",
+            )
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    assert category_id is not None
+
+    mismatch = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category_id=category_id,
+                category="Task 6 Different",
+            )
+        ]
+    )
+
+    assert mismatch.error is not None
+    assert mismatch.error.code == error_codes.MUTATION_INVALID_INPUT
+
+
+async def test_taxonomy_rejects_merchant_target_for_removed_category() -> None:
+    created = await taxonomy_set_coarse(
+        items=[
+            CategoryStateRequest(
+                kind="category",
+                state="present",
+                category="Task 6 Contradiction",
+            )
+        ]
+    )
+    category_id = created.data.results[0].target_id
+    assert category_id is not None
+
+    response = await taxonomy_set_coarse(
+        items=[
+            MerchantStateRequest(
+                kind="merchant",
+                state="present",
+                raw_pattern="TASK 6 CONTRADICTION",
+                canonical_name="Task 6 Contradiction",
+                category="Task 6 Contradiction",
+            ),
+            CategoryStateRequest(
+                kind="category",
+                state="absent",
+                category_id=category_id,
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_INVALID_INPUT
+    assert not any(
+        row.raw_pattern == "TASK 6 CONTRADICTION"
+        for row in (await taxonomy_coarse(view="merchants")).data.rows
+    )
 
 
 def _category(

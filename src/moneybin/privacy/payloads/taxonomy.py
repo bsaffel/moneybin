@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -29,3 +30,24 @@ class TaxonomyMerchantsView(BaseModel):
 
 
 TaxonomyCoarsePayload = TaxonomyCategoriesView | TaxonomyMerchantsView
+
+
+@dataclass(frozen=True, slots=True)
+class TaxonomyStateResult:
+    """One applied taxonomy target in request order."""
+
+    kind: Annotated[Literal["category", "merchant"], DataClass.TXN_TYPE]
+    target_id: Annotated[str | None, DataClass.RECORD_ID]
+    state: Annotated[
+        Literal["present", "inactive", "absent"],
+        DataClass.TXN_TYPE,
+    ]
+    changed: Annotated[bool, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class TaxonomySetPayload:
+    """Result of one atomic taxonomy target-state batch."""
+
+    results: list[TaxonomyStateResult]
+    operation_id: Annotated[str, DataClass.RECORD_ID]

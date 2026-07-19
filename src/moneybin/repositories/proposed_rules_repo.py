@@ -248,6 +248,59 @@ class ProposedRulesRepo(BaseRepo):
             in_outer_txn=in_outer_txn,
         )
 
+    def delete(
+        self,
+        proposed_rule_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Delete one proposed rule with its full audit before-image."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(proposed_rule_id),
+                "proposed_rule_id",
+                proposed_rule_id,
+            )
+            self._db.execute(
+                f"DELETE FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef + parameterized value
+                "WHERE proposed_rule_id = ?",
+                [proposed_rule_id],
+            )
+            return self._emit_audit(
+                action="proposed_rule.delete",
+                target=(*self._audit_target, proposed_rule_id),
+                before=self._serialize_for_audit(before),
+                after=None,
+                actor=actor,
+            )
+
+    def delete_by_category(
+        self,
+        category_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> list[AuditEvent]:
+        """Delete every proposal using one category, with per-row audit."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            proposed_rule_ids = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT proposed_rule_id FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    "WHERE category_id = ? ORDER BY proposed_rule_id",
+                    [category_id],
+                ).fetchall()
+            ]
+            return [
+                self.delete(
+                    proposed_rule_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+                for proposed_rule_id in proposed_rule_ids
+            ]
+
     def _set_status(
         self,
         proposed_rule_id: str,

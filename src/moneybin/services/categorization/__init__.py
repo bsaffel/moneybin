@@ -115,12 +115,21 @@ from moneybin.services.categorization._shared import (
     validate_rule_items as validate_rule_items,
 )
 from moneybin.services.categorization.applier import (
+    CategoryStateTarget as CategoryStateTarget,
+)
+from moneybin.services.categorization.applier import (
     MatchApplier,
     RuleCreationResult,
     RuleStateTarget,
     RuleTargetPlan,
     RuleTargetResult,
+    TaxonomyStateTarget,
+    TaxonomyTargetPlan,
+    TaxonomyTargetResult,
     WriteOutcome,
+)
+from moneybin.services.categorization.applier import (
+    MerchantStateTarget as MerchantStateTarget,
 )
 from moneybin.services.categorization.assist import (
     AssistBridge,
@@ -473,10 +482,35 @@ class CategorizationService:
         subcategory: str | None = None,
         description: str | None = None,
         actor: str = "system",
+        in_outer_txn: bool = False,
     ) -> str:
         """Create a custom user category (active by default)."""
         return self._applier.create_category(
-            category, subcategory=subcategory, description=description, actor=actor
+            category,
+            subcategory=subcategory,
+            description=description,
+            actor=actor,
+            in_outer_txn=in_outer_txn,
+        )
+
+    def plan_taxonomy_targets(
+        self, targets: Sequence[TaxonomyStateTarget]
+    ) -> TaxonomyTargetPlan:
+        """Preflight category and merchant target states."""
+        return self._applier.plan_taxonomy_targets(targets)
+
+    def apply_taxonomy_targets(
+        self,
+        targets: Sequence[TaxonomyStateTarget],
+        *,
+        actor: str,
+        verify: Callable[[TaxonomyTargetPlan], None] | None = None,
+    ) -> list[TaxonomyTargetResult]:
+        """Apply a taxonomy target-state batch atomically."""
+        return self._applier.apply_taxonomy_targets(
+            targets,
+            actor=actor,
+            verify=verify,
         )
 
     def toggle_category(

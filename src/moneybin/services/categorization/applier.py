@@ -43,10 +43,14 @@ from moneybin.metrics.registry import (
     RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL,
 )
 from moneybin.privacy.payloads.categorize import RulesCreatePayload
+from moneybin.repositories.budgets_repo import BudgetsRepo
 from moneybin.repositories.categorization_rules_repo import CategorizationRulesRepo
+from moneybin.repositories.category_source_map_repo import CategorySourceMapRepo
+from moneybin.repositories.proposed_rules_repo import ProposedRulesRepo
 from moneybin.repositories.transaction_categories_repo import (
     TransactionCategoriesRepo,
 )
+from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.user_categories_repo import (
     CategoryOverridesRepo,
     UserCategoriesRepo,
@@ -180,6 +184,80 @@ class RuleTargetResult:
     changed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class CategoryStateTarget:
+    """One service-owned category target state."""
+
+    state: Literal["present", "inactive", "absent"]
+    category_id: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+    description: str | None = None
+    force: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MerchantStateTarget:
+    """One service-owned merchant mapping target state."""
+
+    state: Literal["present", "absent"]
+    merchant_id: str | None = None
+    raw_pattern: str | None = None
+    canonical_name: str | None = None
+    match_type: str | None = None
+    category: str | None = None
+    subcategory: str | None = None
+
+
+TaxonomyStateTarget = CategoryStateTarget | MerchantStateTarget
+
+
+@dataclass(frozen=True, slots=True)
+class TaxonomyTargetPlanItem:
+    """One resolved taxonomy target before mutation."""
+
+    target: TaxonomyStateTarget
+    target_id: str | None
+    action: Literal["create", "activate", "deactivate", "delete", "noop"]
+    before_state: dict[str, object] | None
+    usage: dict[str, int]
+    effective_usage: dict[str, int]
+
+    @property
+    def kind(self) -> Literal["category", "merchant"]:
+        """Return the target discriminator."""
+        if isinstance(self.target, CategoryStateTarget):
+            return "category"
+        return "merchant"
+
+
+@dataclass(frozen=True, slots=True)
+class TaxonomyTargetPlan:
+    """Complete no-write preflight for one taxonomy batch."""
+
+    items: tuple[TaxonomyTargetPlanItem, ...]
+
+    @property
+    def changed(self) -> tuple[TaxonomyTargetPlanItem, ...]:
+        """Return planned mutations only."""
+        return tuple(item for item in self.items if item.action != "noop")
+
+    @property
+    def destructive(self) -> bool:
+        """Return whether the batch includes a hard delete."""
+        return any(item.action == "delete" for item in self.items)
+
+
+@dataclass(frozen=True, slots=True)
+class TaxonomyTargetResult:
+    """One applied taxonomy target in request order."""
+
+    kind: Literal["category", "merchant"]
+    target_id: str | None
+    state: Literal["present", "inactive", "absent"]
+    changed: bool
+
+
 class MatchApplier:
     """All writes to ``app.*`` categorization tables.
 
@@ -205,8 +283,12 @@ class MatchApplier:
         self._user_categories = UserCategoriesRepo(db, audit=audit)
         self._category_overrides = CategoryOverridesRepo(db, audit=audit)
         self._user_merchants = UserMerchantsRepo(db, audit=audit)
+        self._budgets = BudgetsRepo(db, audit=audit)
+        self._category_source_map = CategorySourceMapRepo(db, audit=audit)
+        self._proposed_rules = ProposedRulesRepo(db, audit=audit)
         self._rules = CategorizationRulesRepo(db, audit=audit)
         self._tx_categories = TransactionCategoriesRepo(db, audit=audit)
+        self._tx_splits = TransactionSplitsRepo(db, audit=audit)
 
     @contextmanager
     def _transaction(self) -> Generator[None]:
@@ -904,6 +986,7 @@ class MatchApplier:
         subcategory: str | None = None,
         description: str | None = None,
         actor: str = "system",
+        in_outer_txn: bool = False,
     ) -> str:
         """Create a custom user category (active by default).
 
@@ -949,10 +1032,464 @@ class MatchApplier:
             subcategory=subcategory,
             description=description,
             actor=actor,
+            in_outer_txn=in_outer_txn,
         )
         if event.target_id is None:  # pragma: no cover — insert always sets the id
             raise RuntimeError("UserCategoriesRepo.insert returned no category_id")
         return event.target_id
+
+    def plan_taxonomy_targets(
+        self, targets: Sequence[TaxonomyStateTarget]
+    ) -> TaxonomyTargetPlan:
+        """Resolve the complete taxonomy batch before any write."""
+        category_rows = self._db.execute(
+            f"""
+            SELECT category_id, category, subcategory, description,
+                   is_default, is_active
+            FROM {CATEGORIES.full_name}
+            """  # noqa: S608  # TableRef constant
+        ).fetchall()
+        merchant_rows = self._db.execute(
+            f"""
+            SELECT merchant_id, raw_pattern, match_type, canonical_name,
+                   category, subcategory, category_id, created_by,
+                   exemplars, created_at, updated_at
+            FROM {USER_MERCHANTS.full_name}
+            """  # noqa: S608  # TableRef constant
+        ).fetchall()
+        category_by_id = {str(row[0]): row for row in category_rows}
+        category_by_name = {
+            (
+                str(row[1]).casefold(),
+                str(row[2]).casefold() if row[2] is not None else None,
+            ): row
+            for row in category_rows
+        }
+        planned_categories = {
+            (
+                target.category.casefold(),
+                target.subcategory.casefold() if target.subcategory else None,
+            )
+            for target in targets
+            if isinstance(target, CategoryStateTarget)
+            and target.state == "present"
+            and target.category is not None
+        }
+        removed_category_keys = {
+            (
+                str(category_by_id[target.category_id][1]).casefold(),
+                (
+                    str(category_by_id[target.category_id][2]).casefold()
+                    if category_by_id[target.category_id][2] is not None
+                    else None
+                ),
+            )
+            for target in targets
+            if isinstance(target, CategoryStateTarget)
+            and target.state == "absent"
+            and target.category_id in category_by_id
+        }
+        merchant_by_id = {str(row[0]): row for row in merchant_rows}
+        merchant_by_target = {
+            (row[1], row[2], row[3], row[4], row[5]): row for row in merchant_rows
+        }
+        planned_merchant_delete_ids = {
+            target.merchant_id
+            for target in targets
+            if isinstance(target, MerchantStateTarget)
+            and target.state == "absent"
+            and target.merchant_id in merchant_by_id
+        }
+        seen: set[tuple[str, object]] = set()
+        items: list[TaxonomyTargetPlanItem] = []
+        for target in targets:
+            if isinstance(target, CategoryStateTarget):
+                natural: tuple[str, str | None] | None = None
+                if target.category is not None:
+                    natural = (
+                        target.category.casefold(),
+                        target.subcategory.casefold() if target.subcategory else None,
+                    )
+                row = (
+                    category_by_id.get(target.category_id)
+                    if target.category_id is not None
+                    else category_by_name.get(cast(tuple[str, str | None], natural))
+                )
+                if (
+                    target.category_id is not None
+                    and row is None
+                    and target.state != "absent"
+                ):
+                    raise UserError(
+                        "Category target was not found.",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+                if (
+                    target.category_id is not None
+                    and row is not None
+                    and target.state == "present"
+                    and (
+                        row[1] != target.category
+                        or row[2] != target.subcategory
+                        or (
+                            target.description is not None
+                            and row[3] != target.description
+                        )
+                    )
+                ):
+                    raise UserError(
+                        "Explicit category ID does not match the requested target.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                identity: tuple[str, object] = (
+                    "category",
+                    str(row[0]) if row is not None else cast(object, natural),
+                )
+                if identity in seen:
+                    raise UserError(
+                        "A category can appear only once in one taxonomy batch.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                seen.add(identity)
+                if target.state == "present":
+                    action: Literal[
+                        "create", "activate", "deactivate", "delete", "noop"
+                    ] = (
+                        "create"
+                        if row is None
+                        else "noop"
+                        if bool(row[5])
+                        else "activate"
+                    )
+                elif row is None:
+                    action = "noop"
+                elif target.state == "inactive":
+                    action = "noop" if not bool(row[5]) else "deactivate"
+                else:
+                    action = "delete"
+                usage: dict[str, int] = {}
+                effective_usage: dict[str, int] = {}
+                if action == "delete" and row is not None:
+                    if bool(row[4]):
+                        raise UserError(
+                            "Default categories cannot be hard-deleted.",
+                            code="CATEGORY_IS_DEFAULT",
+                        )
+                    usage = self._category_usage(str(row[0]))
+                    effective_usage = dict(usage)
+                    effective_usage["merchants"] -= sum(
+                        1
+                        for merchant_id in planned_merchant_delete_ids
+                        if merchant_by_id[merchant_id][6] == row[0]
+                    )
+                    if any(effective_usage.values()) and not target.force:
+                        raise UserError(
+                            "Category is referenced; pass force=True to "
+                            "cascade-delete dependent rows.",
+                            code="CATEGORY_HAS_REFERENCES",
+                            details={
+                                "usage": usage,
+                                "effective_usage": effective_usage,
+                            },
+                        )
+                before: dict[str, object] | None = (
+                    dict(
+                        zip(
+                            (
+                                "category_id",
+                                "category",
+                                "subcategory",
+                                "description",
+                                "is_default",
+                                "is_active",
+                            ),
+                            row,
+                            strict=True,
+                        )
+                    )
+                    if row is not None
+                    else None
+                )
+                items.append(
+                    TaxonomyTargetPlanItem(
+                        target=target,
+                        target_id=str(row[0]) if row is not None else None,
+                        action=action,
+                        before_state=before,
+                        usage=usage,
+                        effective_usage=effective_usage,
+                    )
+                )
+                continue
+
+            match_type = target.match_type or "contains"
+            if target.category is not None:
+                category_key = (
+                    target.category.casefold(),
+                    target.subcategory.casefold() if target.subcategory else None,
+                )
+                if category_key in removed_category_keys:
+                    raise UserError(
+                        "A merchant cannot target a category removed by the "
+                        "same taxonomy batch.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                if (
+                    category_key not in category_by_name
+                    and category_key not in planned_categories
+                ):
+                    raise UserError(
+                        "Merchant mapping references a category that was not found.",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
+            natural_merchant = (
+                target.raw_pattern,
+                match_type,
+                target.canonical_name,
+                target.category,
+                target.subcategory,
+            )
+            row = (
+                merchant_by_id.get(target.merchant_id)
+                if target.merchant_id is not None
+                else merchant_by_target.get(natural_merchant)
+            )
+            if (
+                target.merchant_id is not None
+                and row is None
+                and target.state == "present"
+            ):
+                raise UserError(
+                    "Merchant mapping target was not found.",
+                    code=error_codes.MUTATION_NOT_FOUND,
+                )
+            if (
+                target.merchant_id is not None
+                and row is not None
+                and target.state == "present"
+                and (
+                    row[1] != target.raw_pattern
+                    or row[2] != match_type
+                    or row[3] != target.canonical_name
+                    or row[4] != target.category
+                    or row[5] != target.subcategory
+                )
+            ):
+                raise UserError(
+                    "Explicit merchant ID does not match the requested target.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            identity = (
+                "merchant",
+                str(row[0]) if row is not None else natural_merchant,
+            )
+            if identity in seen:
+                raise UserError(
+                    "A merchant mapping can appear only once in one taxonomy batch.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            seen.add(identity)
+            action = (
+                "create"
+                if target.state == "present" and row is None
+                else "delete"
+                if target.state == "absent" and row is not None
+                else "noop"
+            )
+            before = cast(
+                "dict[str, object] | None",
+                (
+                    dict(
+                        zip(
+                            (
+                                "merchant_id",
+                                "raw_pattern",
+                                "match_type",
+                                "canonical_name",
+                                "category",
+                                "subcategory",
+                                "category_id",
+                                "created_by",
+                                "exemplars",
+                                "created_at",
+                                "updated_at",
+                            ),
+                            row,
+                            strict=True,
+                        )
+                    )
+                    if row is not None
+                    else None
+                ),
+            )
+            items.append(
+                TaxonomyTargetPlanItem(
+                    target=target,
+                    target_id=str(row[0]) if row is not None else None,
+                    action=action,
+                    before_state=before,
+                    usage={},
+                    effective_usage={},
+                )
+            )
+        return TaxonomyTargetPlan(items=tuple(items))
+
+    def _category_usage(self, category_id: str) -> dict[str, int]:
+        """Return complete protected-table usage for one category."""
+        row = self._db.execute(
+            f"""
+            SELECT
+                (SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name}
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM {BUDGETS.full_name}
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM {USER_MERCHANTS.full_name}
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM {TRANSACTION_SPLITS.full_name}
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM {CATEGORIZATION_RULES.full_name}
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM {PROPOSED_RULES.full_name}
+                  WHERE category_id = ?),
+                (SELECT COUNT(*) FROM {CATEGORY_SOURCE_MAP.full_name}
+                  WHERE category_id = ?)
+            """,  # noqa: S608  # TableRef constants + parameterized values
+            [category_id] * 7,
+        ).fetchone()
+        labels = (
+            "transactions",
+            "budgets",
+            "merchants",
+            "splits",
+            "rules",
+            "proposed_rules",
+            "source_mappings",
+        )
+        return {
+            label: int(count) for label, count in zip(labels, row or (), strict=True)
+        }
+
+    def apply_taxonomy_targets(
+        self,
+        targets: Sequence[TaxonomyStateTarget],
+        *,
+        actor: str,
+        verify: Callable[[TaxonomyTargetPlan], None] | None = None,
+    ) -> list[TaxonomyTargetResult]:
+        """Re-preflight and apply one taxonomy batch atomically."""
+        self._db.begin()
+        try:
+            plan = self.plan_taxonomy_targets(targets)
+            if verify is not None:
+                verify(plan)
+            if not plan.changed:
+                raise UserError(
+                    "Every taxonomy target already has its requested state.",
+                    code=error_codes.MUTATION_NOTHING_TO_DO,
+                )
+            target_ids = [item.target_id for item in plan.items]
+            for index, item in enumerate(plan.items):
+                target = item.target
+                if item.action == "create" and isinstance(target, CategoryStateTarget):
+                    target_ids[index] = self.create_category(
+                        cast(str, target.category),
+                        subcategory=target.subcategory,
+                        description=target.description,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                elif item.action in {"activate", "deactivate"}:
+                    self.toggle_category(
+                        cast(str, item.target_id),
+                        is_active=item.action == "activate",
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+            for index, item in enumerate(plan.items):
+                target = item.target
+                if item.action == "create" and isinstance(target, MerchantStateTarget):
+                    target_ids[index] = self.create_merchant_core(
+                        target.raw_pattern,
+                        cast(str, target.canonical_name),
+                        match_type=cast(
+                            InternalMatchType,
+                            target.match_type or "contains",
+                        ),
+                        category=target.category,
+                        subcategory=target.subcategory,
+                        created_by="ai",
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                elif item.action == "delete" and isinstance(
+                    target, MerchantStateTarget
+                ):
+                    self._user_merchants.delete(
+                        cast(str, item.target_id),
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+            for item in plan.items:
+                target = item.target
+                if item.action != "delete" or not isinstance(
+                    target, CategoryStateTarget
+                ):
+                    continue
+                category_id = cast(str, item.target_id)
+                if target.force:
+                    self._tx_categories.delete_by_category(
+                        category_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    self._budgets.delete_by_category(
+                        category_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    self._user_merchants.delete_by_category(
+                        category_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    self._tx_splits.delete_by_category(
+                        category_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    self._rules.delete_by_category(
+                        category_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    self._proposed_rules.delete_by_category(
+                        category_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                    self._category_source_map.delete_by_category(
+                        category_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                self._user_categories.delete(
+                    category_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+            self._db.commit()
+            return [
+                TaxonomyTargetResult(
+                    kind=item.kind,
+                    target_id=target_ids[index],
+                    state=item.target.state,
+                    changed=item.action != "noop",
+                )
+                for index, item in enumerate(plan.items)
+            ]
+        except BaseException:
+            self._db.rollback()
+            raise
 
     def toggle_category(
         self,

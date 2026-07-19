@@ -12,6 +12,7 @@ deferred — these tools record and report consent only.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -19,11 +20,18 @@ from dataclasses import replace
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, JsonValue
 
+from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.consent import ConsentMode
@@ -36,6 +44,7 @@ from moneybin.privacy.log import (
 from moneybin.privacy.payloads.consent import (
     ConsentGrantRow,
     ConsentMutationPayload,
+    ConsentSetPayload,
     PrivacyCoarsePayload,
     PrivacyLogPayload,
     PrivacyLogRow,
@@ -45,7 +54,13 @@ from moneybin.privacy.payloads.consent import (
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.consent_service import ConsentService
+from moneybin.services.consent_service import (
+    ConsentService,
+    ConsentTargetPlan,
+    ConsentTargetResult,
+)
+from moneybin.services.mutation_context import current_operation_id
+from moneybin.vocabulary import ConsentFeatureCategory
 
 
 @mcp_tool(domain="privacy", read_only=False)
@@ -338,6 +353,174 @@ def register_privacy_coarse_reads(mcp: FastMCP) -> None:
     )
     # Plan 6 cutover removals: privacy_status and privacy_log. The live
     # registrations remain untouched until the atomic registry swap.
+
+
+def _consent_binding(plan: ConsentTargetPlan) -> ConfirmationBinding:
+    """Bind exact effective consent categories, backend, and before-state."""
+    before = [
+        {
+            "grant_id": grant.grant_id,
+            "feature_category": grant.feature_category,
+            "backend": grant.backend,
+            "consent_mode": grant.consent_mode.value,
+            "granted_at": grant.granted_at.isoformat(),
+            "revoked_at": (
+                grant.revoked_at.isoformat() if grant.revoked_at is not None else None
+            ),
+        }
+        for grant in plan.before
+    ]
+    arguments: dict[str, JsonValue] = {
+        "categories": list(plan.categories),
+        "state": plan.state,
+        "backend": plan.backend,
+        "mode": plan.mode.value if plan.mode is not None else None,
+        "before_state": cast(JsonValue, before),
+    }
+    return ConfirmationBinding(
+        arguments=arguments,
+        resolved_ids=tuple(grant.grant_id for grant in plan.before),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="privacy_consent_set",
+        blast_radius={
+            "categories": len(plan.categories),
+            "changed_grants": len(plan.changed_categories),
+            "revoked_grants": (
+                len(plan.changed_categories) if plan.state == "revoked" else 0
+            ),
+        },
+    )
+
+
+def _preview_consent_targets(
+    categories: list[str],
+    *,
+    state: Literal["granted", "revoked"],
+    backend: str | None,
+    mode: ConsentMode,
+) -> ConsentTargetPlan:
+    """Preflight one consent batch on a read-only connection."""
+    with get_database(read_only=True) as db:
+        return ConsentService(db).plan_targets(
+            categories,
+            state=state,
+            backend=backend,
+            mode=mode,
+        )
+
+
+def _apply_consent_targets(
+    plan: ConsentTargetPlan,
+    *,
+    operation_id: str,
+    grant: ConfirmationGrant | None,
+    expected_binding: ConfirmationBinding,
+) -> ConsentTargetResult:
+    """Revalidate and apply one consent batch through the shared service."""
+    with get_database(read_only=False) as db:
+        service = ConsentService(db)
+
+        def verify(live: ConsentTargetPlan) -> None:
+            binding = _consent_binding(live)
+            if grant is not None:
+                grant.verify(binding)
+            elif binding.canonical_bytes() != expected_binding.canonical_bytes():
+                raise UserError(
+                    "Consent state changed after preflight.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        return service.apply_targets(
+            plan,
+            actor="mcp.privacy_consent_set",
+            operation_id=operation_id,
+            verify=verify,
+        )
+
+
+@mcp_tool(
+    domain="privacy",
+    read_only=False,
+    destructive=True,
+    idempotent=True,
+)
+async def privacy_consent_set_coarse(
+    categories: list[ConsentFeatureCategory],
+    state: Literal["granted", "revoked"],
+    backend: str | None = None,
+    mode: Literal["persistent", "one-time"] = "persistent",
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[ConsentSetPayload]:
+    """Atomically declare consent granted or revoked for feature categories."""
+    if state == "revoked" and mode != "persistent":
+        raise UserError(
+            "mode is only valid when granting consent.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    operation_id = current_operation_id()
+    plan = await asyncio.to_thread(
+        _preview_consent_targets,
+        list(categories),
+        state=state,
+        backend=backend,
+        mode=ConsentMode(mode),
+    )
+    if confirmation_token is not None and state != "revoked":
+        raise UserError(
+            "confirmation_token is only valid for consent revocation.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if not plan.changed and confirmation_token is None:
+        raise UserError(
+            "Every consent category already has its requested state.",
+            code=error_codes.MUTATION_NOTHING_TO_DO,
+        )
+    binding = _consent_binding(plan)
+    grant: ConfirmationGrant | None = None
+    if state == "revoked":
+        grant = await grant_confirmation_or_raise(
+            binding=binding if confirmation_token is None else None,
+            message=(
+                "Revoke consent for these exact feature categories and backend? "
+                "The retained audit ledger can be inspected with system_audit."
+            ),
+            confirmation_token=confirmation_token,
+        )
+    result = await asyncio.to_thread(
+        _apply_consent_targets,
+        plan,
+        operation_id=operation_id,
+        grant=grant,
+        expected_binding=binding,
+    )
+    return build_envelope(
+        data=ConsentSetPayload(
+            categories=list(result.plan.categories),
+            state=result.plan.state,
+            backend=result.plan.backend,
+            consent_mode=(
+                result.plan.mode.value if result.plan.mode is not None else None
+            ),
+            effective_categories=list(result.effective_categories),
+            operation_id=operation_id,
+        ),
+        actions=["Use privacy(view='status') to inspect active consent"],
+    )
+
+
+def register_privacy_coarse_writes(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 declarative consent batch."""
+    register(
+        mcp,
+        privacy_consent_set_coarse,
+        "privacy_consent_set",
+        "Atomically grant or revoke consent for one or more feature categories. "
+        "Grant is runtime non-destructive and idempotent; revoke confirms the "
+        "exact normalized category set, backend, actor, profile, and live grants.",
+        privacy_actor="privacy_consent_set",
+    )
 
 
 def register_privacy_tools(mcp: FastMCP) -> None:

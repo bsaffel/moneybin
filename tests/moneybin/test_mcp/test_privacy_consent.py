@@ -6,6 +6,12 @@ import pytest
 
 from moneybin import error_codes
 from moneybin.config import clear_settings_cache, set_current_profile
+from moneybin.mcp.tools.privacy import (
+    privacy_consent_set_coarse,
+    register_privacy_coarse_writes,
+)
+
+from .schema_assertions import isolated_server, listed_tool
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -87,6 +93,130 @@ async def test_revoke_consent_tool(
     assert env.data.action == "revoked"
     status = await privacy_status()
     assert status.data.active_grants == []
+
+
+async def test_consent_revoke_confirms_exact_categories(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_backend(monkeypatch)
+    from moneybin.mcp.tools.privacy import (
+        privacy_consent_grant,
+        privacy_consent_set_coarse,
+    )
+
+    await privacy_consent_grant(category="mcp-data-sharing")
+    await privacy_consent_grant(category="matching-overview")
+
+    first = await privacy_consent_set_coarse(
+        categories=["matching-overview", "mcp-data-sharing"],
+        state="revoked",
+    )
+    assert first.error is not None
+    token = first.error.details["confirmation_token"]
+
+    second = await privacy_consent_set_coarse(
+        categories=["mcp-data-sharing", "matching-overview"],
+        state="revoked",
+        confirmation_token=token,
+    )
+
+    assert second.error is None
+    assert second.data.state == "revoked"
+
+
+async def test_consent_grant_normalizes_order_and_returns_effective_set(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_backend(monkeypatch)
+
+    response = await privacy_consent_set_coarse(
+        categories=["matching-overview", "mcp-data-sharing"],
+        state="granted",
+        mode="one-time",
+    )
+
+    assert response.error is None
+    assert response.data.categories == [
+        "matching-overview",
+        "mcp-data-sharing",
+    ]
+    assert response.data.effective_categories == response.data.categories
+    assert response.data.consent_mode == "one-time"
+
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        operation_ids = {
+            row[0]
+            for row in db.execute(
+                "SELECT operation_id FROM app.audit_log WHERE action = 'consent.grant'"
+            ).fetchall()
+        }
+    assert operation_ids == {response.data.operation_id}
+
+    noop = await privacy_consent_set_coarse(
+        categories=["mcp-data-sharing", "matching-overview"],
+        state="granted",
+        mode="persistent",
+    )
+    assert noop.error is not None
+    assert noop.error.code == error_codes.MUTATION_NOTHING_TO_DO
+
+
+async def test_consent_revoke_rejects_token_after_live_state_changes(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_backend(monkeypatch)
+    from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_consent_revoke
+
+    await privacy_consent_grant(category="mcp-data-sharing")
+    first = await privacy_consent_set_coarse(
+        categories=["mcp-data-sharing"],
+        state="revoked",
+    )
+    assert first.error is not None
+
+    await privacy_consent_revoke(category="mcp-data-sharing")
+    stale = await privacy_consent_set_coarse(
+        categories=["mcp-data-sharing"],
+        state="revoked",
+        confirmation_token=first.error.details["confirmation_token"],
+    )
+
+    assert stale.error is not None
+    assert stale.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+
+
+async def test_consent_revoke_rejects_one_time_mode(
+    mcp_db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_backend(monkeypatch)
+
+    response = await privacy_consent_set_coarse(
+        categories=["mcp-data-sharing"],
+        state="revoked",
+        mode="one-time",
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_INVALID_INPUT
+
+
+async def test_consent_dormant_registrar_advertises_closed_destructive_contract() -> (
+    None
+):
+    mcp = isolated_server(register_privacy_coarse_writes)
+
+    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert {tool.name for tool in tools} == {"privacy_consent_set"}
+    tool = await listed_tool(mcp, "privacy_consent_set")
+    assert tool.outputSchema is None
+    assert tool.annotations is not None
+    assert tool.annotations.destructiveHint is True
+    assert set(tool.inputSchema["properties"]["state"]["enum"]) == {
+        "granted",
+        "revoked",
+    }
 
 
 async def test_log_tool_returns_events(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -9,23 +10,43 @@ from dataclasses import replace
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import Field, StrictBool
+from pydantic import Field, JsonValue, StrictBool
 
+from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.write_contracts import (
+    CategoryStateRequest,
+    TaxonomyStateRequest,
+)
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.categories import CategoryRow, MerchantRow
 from moneybin.privacy.payloads.taxonomy import (
     TaxonomyCategoriesView,
     TaxonomyCoarsePayload,
     TaxonomyMerchantsView,
+    TaxonomySetPayload,
+    TaxonomyStateResult,
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.categorization import CategorizationService
+from moneybin.services.categorization import (
+    CategorizationService,
+    CategoryStateTarget,
+    MerchantStateTarget,
+    TaxonomyStateTarget,
+    TaxonomyTargetPlan,
+)
+from moneybin.services.mutation_context import current_operation_id
 
 _TAXONOMY_TOOL = "taxonomy"
 
@@ -281,4 +302,184 @@ def register_taxonomy_coarse_reads(mcp: FastMCP) -> None:
         "Read categories or merchant mappings with deterministic filtering and "
         "exact cursor pagination.",
         privacy_actor="taxonomy",
+    )
+
+
+def _to_taxonomy_target(request: TaxonomyStateRequest) -> TaxonomyStateTarget:
+    """Translate one strict transport request to the service target."""
+    if isinstance(request, CategoryStateRequest):
+        return CategoryStateTarget(
+            state=request.state,
+            category_id=request.category_id,
+            category=request.category,
+            subcategory=request.subcategory,
+            description=request.description,
+            force=bool(request.force),
+        )
+    return MerchantStateTarget(
+        state=request.state,
+        merchant_id=request.merchant_id,
+        raw_pattern=request.raw_pattern,
+        canonical_name=request.canonical_name,
+        match_type=request.match_type,
+        category=request.category,
+        subcategory=request.subcategory,
+    )
+
+
+def _taxonomy_binding(
+    items: list[TaxonomyStateRequest],
+    plan: TaxonomyTargetPlan,
+) -> ConfirmationBinding:
+    """Bind the exact ordered request and complete resolved before-state."""
+    before_state = json.loads(
+        json.dumps(
+            [
+                {
+                    "row": item.before_state,
+                    "usage": item.usage,
+                    "effective_usage": item.effective_usage,
+                }
+                for item in plan.items
+            ],
+            default=str,
+            separators=(",", ":"),
+        )
+    )
+    arguments: dict[str, JsonValue] = {
+        "items": [cast(JsonValue, item.model_dump(mode="json")) for item in items],
+        "before_state": cast(JsonValue, before_state),
+    }
+    resolved_ids: list[str] = []
+    for request, planned in zip(items, plan.items, strict=True):
+        for value in (
+            planned.target_id,
+            request.category_id
+            if isinstance(request, CategoryStateRequest)
+            else request.merchant_id,
+        ):
+            if value is not None and value not in resolved_ids:
+                resolved_ids.append(value)
+    return ConfirmationBinding(
+        arguments=arguments,
+        resolved_ids=tuple(resolved_ids),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="taxonomy_set",
+        blast_radius={
+            "targets": len(items),
+            "changed_targets": len(plan.changed),
+            "hard_deletes": sum(item.action == "delete" for item in plan.items),
+        },
+    )
+
+
+def _preview_taxonomy_targets(
+    targets: list[TaxonomyStateTarget],
+) -> TaxonomyTargetPlan:
+    """Preflight one taxonomy batch on a read-only connection."""
+    with get_database(read_only=True) as db:
+        return CategorizationService(db).plan_taxonomy_targets(targets)
+
+
+def _apply_taxonomy_targets(
+    items: list[TaxonomyStateRequest],
+    targets: list[TaxonomyStateTarget],
+    *,
+    grant: ConfirmationGrant | None,
+    expected_binding: ConfirmationBinding,
+) -> list[TaxonomyStateResult]:
+    """Revalidate and apply taxonomy targets on one write connection."""
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+
+        def verify(plan: TaxonomyTargetPlan) -> None:
+            binding = _taxonomy_binding(items, plan)
+            if grant is not None:
+                grant.verify(binding)
+            elif binding.canonical_bytes() != expected_binding.canonical_bytes():
+                raise UserError(
+                    "Taxonomy state changed after preflight.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        results = service.apply_taxonomy_targets(
+            targets,
+            actor="mcp",
+            verify=verify,
+        )
+    return [
+        TaxonomyStateResult(
+            kind=result.kind,
+            target_id=result.target_id,
+            state=result.state,
+            changed=result.changed,
+        )
+        for result in results
+    ]
+
+
+@mcp_tool(read_only=False, destructive=True, idempotent=True)
+async def taxonomy_set_coarse(
+    items: list[TaxonomyStateRequest],
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[TaxonomySetPayload]:
+    """Atomically declare category and merchant mapping target states."""
+    if not items:
+        raise UserError(
+            "items must contain at least one taxonomy target.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    targets = [_to_taxonomy_target(item) for item in items]
+    plan = await asyncio.to_thread(_preview_taxonomy_targets, targets)
+    binding = _taxonomy_binding(items, plan)
+    if not plan.changed and confirmation_token is None:
+        raise UserError(
+            "Every taxonomy target already has its requested state.",
+            code=error_codes.MUTATION_NOTHING_TO_DO,
+        )
+    grant: ConfirmationGrant | None = None
+    if plan.destructive or confirmation_token is not None:
+        grant = await grant_confirmation_or_raise(
+            binding=binding if confirmation_token is None else None,
+            message=(
+                "Confirm this complete taxonomy batch. Hard-deleted category "
+                "and merchant rows retain audit before-state and can be restored "
+                "with system_audit_undo(operation_id)."
+            ),
+            confirmation_token=confirmation_token,
+        )
+    results = await asyncio.to_thread(
+        _apply_taxonomy_targets,
+        items,
+        targets,
+        grant=grant,
+        expected_binding=binding,
+    )
+    operation_id = current_operation_id()
+    return build_envelope(
+        data=TaxonomySetPayload(results=results, operation_id=operation_id),
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": operation_id},
+                rationale="Restore the audited taxonomy mutation.",
+                confidence="certain",
+                idempotent=False,
+            )
+        ],
+    )
+
+
+def register_taxonomy_coarse_writes(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 taxonomy target-state batch."""
+    register(
+        mcp,
+        taxonomy_set_coarse,
+        "taxonomy_set",
+        "Atomically declare categories present, inactive, or absent and merchant "
+        "mappings present or absent. The tool advertises maximum destructive "
+        "risk and confirms only batches containing a resolved hard delete.",
+        privacy_actor="taxonomy_set",
     )

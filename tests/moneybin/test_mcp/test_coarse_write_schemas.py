@@ -14,6 +14,8 @@ from mcp.types import TextContent
 from pydantic import TypeAdapter, ValidationError
 
 from moneybin.mcp.tools.accounts import BalanceAmount, register_accounts_coarse_writes
+from moneybin.mcp.tools.privacy import register_privacy_coarse_writes
+from moneybin.mcp.tools.taxonomy import register_taxonomy_coarse_writes
 from moneybin.mcp.tools.transactions import register_transaction_coarse_writes
 from moneybin.mcp.tools.transactions_categorize import (
     register_categorization_coarse_writes,
@@ -553,6 +555,96 @@ async def test_categorization_rules_set_coarse_schema_and_annotations() -> None:
         validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
     with pytest.raises(JSONSchemaValidationError):
         validate_json_schema(invalid, tool.inputSchema, cls=Draft202012Validator)
+
+
+async def test_taxonomy_set_coarse_schema_and_annotations() -> None:
+    mcp = isolated_server(register_taxonomy_coarse_writes)
+
+    tool = await listed_tool(mcp, "taxonomy_set")
+
+    assert tool.outputSchema is None
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is True
+    assert tool.annotations.idempotentHint is True
+    assert "confirmation_token" in tool.inputSchema["properties"]
+    variants = {
+        branch["properties"]["kind"]["const"]: set(branch["required"])
+        for branch in tool.inputSchema["properties"]["items"]["items"]["oneOf"]
+    }
+    assert variants == {
+        "category": {"kind", "state"},
+        "merchant": {"kind", "state"},
+    }
+    Draft202012Validator.check_schema(tool.inputSchema)
+
+    for payload in (
+        {
+            "items": [
+                {
+                    "kind": "category",
+                    "state": "present",
+                    "category": "Food",
+                }
+            ]
+        },
+        {
+            "items": [
+                {
+                    "kind": "merchant",
+                    "state": "present",
+                    "raw_pattern": "CAFE",
+                    "canonical_name": "Cafe",
+                }
+            ]
+        },
+        {
+            "items": [
+                {
+                    "kind": "category",
+                    "state": "absent",
+                    "category_id": "category_1",
+                }
+            ],
+            "confirmation_token": "token",
+        },
+    ):
+        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+
+
+async def test_privacy_consent_set_coarse_schema_and_annotations() -> None:
+    mcp = isolated_server(register_privacy_coarse_writes)
+
+    tool = await listed_tool(mcp, "privacy_consent_set")
+
+    assert tool.outputSchema is None
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is True
+    assert tool.annotations.idempotentHint is True
+    assert set(tool.inputSchema["properties"]["state"]["enum"]) == {
+        "granted",
+        "revoked",
+    }
+    assert set(tool.inputSchema["properties"]["mode"]["enum"]) == {
+        "persistent",
+        "one-time",
+    }
+    Draft202012Validator.check_schema(tool.inputSchema)
+
+    for payload in (
+        {
+            "categories": ["mcp-data-sharing"],
+            "state": "granted",
+        },
+        {
+            "categories": ["mcp-data-sharing", "matching-overview"],
+            "state": "revoked",
+            "backend": "openai",
+            "confirmation_token": "token",
+        },
+    ):
+        validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
 
 
 def test_balance_assertion_amount_matches_decimal_18_2_extrema() -> None:

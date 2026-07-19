@@ -225,3 +225,31 @@ class CategorizationRulesRepo(BaseRepo):
                 after=None,
                 actor=actor,
             )
+
+    def delete_by_category(
+        self,
+        category_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> list[AuditEvent]:
+        """Delete every rule using one category, with per-row audit."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            rule_ids = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT rule_id FROM {CATEGORIZATION_RULES.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    "WHERE category_id = ? ORDER BY rule_id",
+                    [category_id],
+                ).fetchall()
+            ]
+            events: list[AuditEvent] = []
+            for rule_id in rule_ids:
+                event = self.delete(
+                    rule_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+                if event is not None:
+                    events.append(event)
+            return events

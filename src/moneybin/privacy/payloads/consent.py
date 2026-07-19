@@ -54,6 +54,18 @@ class ConsentMutationPayload:
 
 
 @dataclass(frozen=True, slots=True)
+class ConsentSetPayload:
+    """Effective consent state after one declarative batch."""
+
+    categories: Annotated[list[str], DataClass.CATEGORY]
+    state: Annotated[Literal["granted", "revoked"], DataClass.TXN_TYPE]
+    backend: Annotated[str, DataClass.INSTITUTION]
+    consent_mode: Annotated[str | None, DataClass.TXN_TYPE]
+    effective_categories: Annotated[list[str], DataClass.CATEGORY]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
 class ConsentRevokeAllPayload:
     """Result of privacy_revoke_all — count of grants revoked."""
 

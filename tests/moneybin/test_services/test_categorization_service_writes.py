@@ -12,10 +12,13 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization import (
     CategorizationRuleInput,
     CategorizationService,
+    CategoryStateTarget,
+    MerchantStateTarget,
     validate_rule_items,
 )
 from moneybin.services.categorization.applier import MatchApplier
@@ -1456,3 +1459,39 @@ class TestWriteCategorizationSourceType:
         ).fetchone()
         assert row is not None
         assert row[0] == "internal"
+
+
+def test_taxonomy_target_batch_rolls_back_late_failure(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late merchant failure rolls back the preceding category and audits."""
+    service = CategorizationService(db)
+    targets = [
+        CategoryStateTarget(
+            state="present",
+            category="Task 6 Atomic",
+        ),
+        MerchantStateTarget(
+            state="present",
+            raw_pattern="TASK 6 ATOMIC",
+            canonical_name="Task 6 Atomic",
+            category="Task 6 Atomic",
+        ),
+    ]
+
+    def fail_insert(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("late taxonomy failure")
+
+    monkeypatch.setattr(UserMerchantsRepo, "insert", fail_insert)
+    with pytest.raises(RuntimeError, match="late taxonomy failure"):
+        service.apply_taxonomy_targets(targets, actor="mcp")
+
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.user_categories WHERE category = 'Task 6 Atomic'"
+    ).fetchone() == (0,)
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.audit_log "
+        "WHERE action IN ('user_category.insert', 'user_merchant.insert') "
+        "AND actor = 'mcp'"
+    ).fetchone() == (0,)
