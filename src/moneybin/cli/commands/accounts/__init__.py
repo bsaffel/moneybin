@@ -87,7 +87,7 @@ def accounts_list(
     for acct in result.rows:
         display = acct.display_name or acct.account_id
         institution = acct.institution_name or ""
-        acct_type = acct.account_type
+        acct_type = acct.account_type or ""
         typer.echo(f"  {display}  [{institution}]  {acct_type}")
 
 

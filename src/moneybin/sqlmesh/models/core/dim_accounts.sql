@@ -163,9 +163,9 @@ SELECT
   GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
-    w.institution_name || ' ' || COALESCE(w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
+    w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
-    w.institution_name || ' ' || COALESCE(w.account_subtype, w.account_type),
+    w.institution_name || ' ' || COALESCE(s.account_subtype, w.account_subtype, w.account_type),
     w.institution_name,
     w.account_type,
     'Account ' || w.account_id

@@ -18,7 +18,11 @@ SELECT
   a.account_id AS source_account_key,
   a.routing_number,
   m.account_type,
-  COALESCE(m.account_subtype, LOWER(NULLIF(TRIM(a.account_type), ''))) AS account_subtype,
+  CASE
+    WHEN NOT m.alias IS NULL
+    THEN m.account_subtype
+    ELSE LOWER(NULLIF(TRIM(a.account_type), ''))
+  END AS account_subtype,
   a.institution_org,
   a.institution_fid,
   a.source_file,

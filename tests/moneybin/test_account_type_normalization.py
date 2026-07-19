@@ -346,3 +346,67 @@ def test_unmapped_plaid_type_still_yields_a_type(db: Database) -> None:
         "an unmapped Plaid type resolved to NULL, which drops its balances "
         "from fct_balances and therefore from net worth"
     )
+
+
+@pytest.mark.slow
+def test_mapped_alias_without_a_finer_subtype_stays_null(db: Database) -> None:
+    """A registry hit with no finer subtype must yield NULL, not the raw alias.
+
+    `CREDIT` maps to account_type 'credit' with a blank account_subtype, so
+    m.account_subtype is NULL and a bare COALESCE falls through to the raw text
+    — producing account_subtype='credit'. Because the dim merges account_subtype
+    by recency alone, a later generic import would then silently downgrade an
+    existing 'credit card' to 'credit' and regress display_name.
+    """
+    _tabular_account(db, native_key="tab-generic", account_type="credit")
+    _link(
+        db,
+        link_id="lnk-tab-gen",
+        account_id="canon-tab-gen",
+        ref_value="tab-generic",
+        source_type="csv",
+        source_origin="vocab_tab",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _dim_type(db, "canon-tab-gen") == ("credit", None)
+
+
+@pytest.mark.slow
+def test_display_name_honors_a_user_subtype_override(db: Database) -> None:
+    """display_name must render the same subtype the subtype column reports.
+
+    The output column is COALESCE(s.account_subtype, w.account_subtype), but the
+    display chain read only the pre-override merged value — so overriding the
+    subtype without also setting a display_name made the two disagree.
+    """
+    _ofx_account(db, native_key="ofx-override-1", account_type="SAVINGS")
+    _link(
+        db,
+        link_id="lnk-ovr-1",
+        account_id="canon-override-1",
+        ref_value="ofx-override-1",
+        source_type="ofx",
+        source_origin="vocab_ofx",
+    )
+    db.execute(
+        """
+        INSERT INTO app.account_settings (account_id, account_subtype, updated_at)
+        VALUES ('canon-override-1', 'money market', CURRENT_TIMESTAMP)
+        """  # noqa: S608  # test fixture
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT account_subtype, display_name FROM core.dim_accounts WHERE account_id = ?",
+        ["canon-override-1"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "money market"
+    assert "money market" in row[1], (
+        f"display_name {row[1]!r} ignores the user's subtype override"
+    )

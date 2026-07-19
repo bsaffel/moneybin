@@ -41,7 +41,7 @@ Related specs and docs:
    - **CLI:** interactive `[y/N]` prompt in TTY mode; `--yes` skips. Suggestions for near-misses ("did you mean 'checking'?").
    - **MCP:** write always succeeds; response envelope includes a `warnings: [...]` array with field, message, and suggestion. The agent decides whether to retry.
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
-8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_type + …last_four(account_id)`) → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`.
+8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_subtype + …last_four`) → `institution_name + …last_four` when the account has no type → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`. The subtype is preferred over the canonical `account_type` because "checking" reads to a human where "depository" does not; a user override of `account_subtype` flows through to the rendered name.
 9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). Archiving cascades `--exclude` atomically; unarchiving does NOT auto-restore include. See [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags. (`--default-cost-basis-method` added by [`investments-data-model.md`](investments-data-model.md).)
 10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) plus three read tools (`accounts`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources. The MCP-side boolean parameter for archive is `is_archived` (Pythonic prefix preferred for agent-facing names); the response data emits `archived` (the underlying dataclass field).
 11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
@@ -104,7 +104,7 @@ New columns (added to the final SELECT):
 
 | Column | Source | Notes |
 |---|---|---|
-| `display_name` | `COALESCE(s.display_name, institution_name \|\| ' ' \|\| account_type \|\| ' …' \|\| RIGHT(account_id, 4))` | Materialized resolution chain |
+| `display_name` | `COALESCE(s.display_name, institution_name \|\| ' ' \|\| account_subtype \|\| ' …' \|\| last_four, institution_name \|\| ' …' \|\| last_four, …)` | Materialized resolution chain |
 | `official_name` | `s.official_name` | Pass-through |
 | `last_four` | `s.last_four` | Pass-through |
 | `account_subtype` | `s.account_subtype` | Pass-through |
@@ -125,7 +125,7 @@ The `accounts` top-level group is created by this spec. All commands support `--
 ```
 moneybin accounts list [--include-archived] [--type TYPE] [--output json|table] [-q]
 ```
-- Default: hides `archived = TRUE`. Adds `--type` filter matching either source `account_type` or user-set `account_subtype`.
+- Default: hides `archived = TRUE`. Adds `--type` filter matching either the canonical `account_type` (`depository`, `credit`, `loan`, `investment`, `other`) or `account_subtype`.
 - Columns: `display_name`, `account_id`, `institution`, `type/subtype`, `last_four`, `included` (✓/✗), `last_activity`.
 - `--include-archived` adds archived rows with an `[archived]` annotation in the `included` column.
 

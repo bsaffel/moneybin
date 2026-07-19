@@ -10,7 +10,11 @@ SELECT
   a.account_number,
   a.account_number_masked,
   m.account_type,
-  COALESCE(m.account_subtype, LOWER(NULLIF(TRIM(a.account_type), ''))) AS account_subtype,
+  CASE
+    WHEN NOT m.alias IS NULL
+    THEN m.account_subtype
+    ELSE LOWER(NULLIF(TRIM(a.account_type), ''))
+  END AS account_subtype,
   a.institution_name,
   a.currency,
   NULL::TEXT AS routing_number,

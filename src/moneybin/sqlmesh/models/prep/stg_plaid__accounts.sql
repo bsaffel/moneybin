@@ -24,7 +24,14 @@ SELECT
   NULL::TEXT AS institution_fid,
   a.official_name,
   a.mask,
-  COALESCE(a.account_subtype, m.account_subtype, LOWER(NULLIF(TRIM(a.account_type), ''))) AS account_subtype,
+  COALESCE(
+    a.account_subtype,
+    CASE
+      WHEN NOT m.alias IS NULL
+      THEN m.account_subtype
+      ELSE LOWER(NULLIF(TRIM(a.account_type), ''))
+    END
+  ) AS account_subtype,
   a.source_file,
   a.source_type,
   a.source_origin,

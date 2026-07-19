@@ -523,11 +523,12 @@ class AccountService:
         by_type: dict[str, int] = dict(
             self._db.execute(
                 f"""
-                SELECT account_type, COUNT(*)
+                SELECT COALESCE(account_type, ?), COUNT(*)
                 FROM {DIM_ACCOUNTS.full_name}
                 WHERE NOT archived
-                GROUP BY account_type
-                """
+                GROUP BY 1
+                """,
+                [_UNSET_SUBTYPE_LABEL],
             ).fetchall()
         )
         by_subtype: dict[str, int] = dict(

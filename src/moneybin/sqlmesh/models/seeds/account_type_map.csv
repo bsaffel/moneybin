@@ -4,6 +4,7 @@ SAVINGS,depository,savings
 MONEYMRKT,depository,money market
 MONEY MARKET,depository,money market
 CD,depository,cd
+CMA,depository,cash management
 DEPOSITORY,depository,
 CREDITLINE,credit,line of credit
 LINE OF CREDIT,credit,line of credit
