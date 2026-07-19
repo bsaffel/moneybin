@@ -35,7 +35,7 @@ def recipe(
         ),
         RecoveryAction(
             tool="system_status",
-            arguments={"sections": ["doctor"]},
+            arguments={"sections": ["doctor"], "detail": "full"},
             rationale=(
                 "Re-run all invariants in deep-scan mode to surface the "
                 "specific raw/core count delta that caused the mismatch."

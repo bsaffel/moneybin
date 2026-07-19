@@ -131,15 +131,19 @@ def spending_trend(
             returns all three comparison columns regardless.
 
     Examples:
-        reports_spending(category="Groceries")
-        reports_spending(from_month="2023-01", to_month="2023-12")
+        reports(report_id="core:spending", parameters={"category": "Groceries"})
+        reports(report_id="core:spending", parameters={"from_month": "2023-01", "to_month": "2023-12"})
     """
     # Validate so agents see the allowed values and can't pass arbitrary strings;
     # the view returns all three comparison columns regardless, so `compare` has
     # no effect on the SQL below (caller-side intent only — the raise is reachable).
     if compare not in SPENDING_COMPARES:
         raise ValueError(f"Unknown compare: {compare}")
-    from_month, to_month, period, hint = resolve_window(from_month, to_month)
+    from_month, to_month, period, hint = resolve_window(
+        from_month,
+        to_month,
+        report_id="core:spending",
+    )
 
     sql = f"""
         SELECT year_month, category, total_spend, txn_count,
@@ -162,9 +166,10 @@ def spending_trend(
     sql += " ORDER BY year_month, total_spend DESC"
 
     actions = [
-        "Filter to one category with category='<name>' (see categories)",
-        "Use reports_cashflow for inflow/outflow/net (includes income)",
-        "Use reports_recurring to find subscription-like patterns",
+        "Run reports(report_id='core:spending', "
+        "parameters={'category': '<name>'}) to filter to one category",
+        "Run reports(report_id='core:cashflow') for inflow, outflow, and net",
+        "Run reports(report_id='core:recurring') for recurring charge patterns",
     ]
     if hint:
         actions.insert(0, hint)

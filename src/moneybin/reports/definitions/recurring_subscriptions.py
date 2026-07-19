@@ -122,8 +122,8 @@ def recurring_subscriptions(
             (None returns all).
 
     Examples:
-        reports_recurring(min_confidence=0.7)
-        reports_recurring(cadence="monthly", status="all")
+        reports(report_id="core:recurring", parameters={"min_confidence": 0.7})
+        reports(report_id="core:recurring", parameters={"cadence": "monthly", "status": "all"})
     """
     if status not in RECURRING_STATUSES:
         raise ValueError(f"Unknown status: {status}")

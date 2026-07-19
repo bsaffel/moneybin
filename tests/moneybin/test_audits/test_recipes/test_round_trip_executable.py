@@ -193,3 +193,13 @@ def test_every_explicit_recipe_module_is_registered() -> None:
             f"Add `register('{name}', {module.__name__.split('.')[-1]}.recipe)` "
             f"in moneybin/audits/recipes/__init__.py."
         )
+
+
+def test_dedup_reconciliation_requests_full_doctor_detail() -> None:
+    actions = dedup_reconciliation.recipe([], registry.RecipeContext(db=None))
+    doctor = next(action for action in actions if action.tool == "system_status")
+
+    assert doctor.arguments == {
+        "sections": ["doctor"],
+        "detail": "full",
+    }

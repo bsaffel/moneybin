@@ -117,7 +117,7 @@ def large_transactions(
         anomaly: account | category | none — filter to z>2.5 in the named scope.
 
     Examples:
-        reports_large_transactions(top=50, anomaly="account")
+        reports(report_id="core:large_transactions", parameters={"top": 50, "anomaly": "account"})
     """
     if anomaly not in LARGE_TXN_ANOMALIES:
         raise ValueError(f"Unknown anomaly: {anomaly}")

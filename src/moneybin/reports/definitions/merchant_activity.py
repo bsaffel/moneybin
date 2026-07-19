@@ -107,7 +107,7 @@ def merchant_activity(
         sort: spend | count | recent.
 
     Examples:
-        reports_merchants(top=10, sort="count")
+        reports(report_id="core:merchants", parameters={"top": 10, "sort": "count"})
     """
     if sort not in MERCHANTS_SORTS:
         raise ValueError(f"Unknown sort: {sort}")

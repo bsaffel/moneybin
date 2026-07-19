@@ -86,12 +86,16 @@ def cash_flow(
         by: account | category | account-and-category — how to group.
 
     Examples:
-        reports_cashflow(by="category", from_month="2024-01")
-        reports_cashflow(by="account")
+        reports(report_id="core:cashflow", parameters={"by": "category", "from_month": "2024-01"})
+        reports(report_id="core:cashflow", parameters={"by": "account"})
     """
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
-    from_month, to_month, period, hint = resolve_window(from_month, to_month)
+    from_month, to_month, period, hint = resolve_window(
+        from_month,
+        to_month,
+        report_id="core:cashflow",
+    )
 
     select_cols = "year_month"
     group_cols = "year_month"
@@ -122,8 +126,9 @@ def cash_flow(
     sql += f" GROUP BY {group_cols} ORDER BY year_month"  # noqa: S608  # group_cols allowlist
 
     actions = [
-        "Switch `by` to 'account', 'category', or 'account-and-category' to regroup",
-        "Use reports_spending for outflow-only trend with MoM/YoY deltas",
+        "Rerun reports(report_id='core:cashflow', "
+        "parameters={'by': 'category'}) to regroup by category",
+        "Run reports(report_id='core:spending') for outflow-only MoM and YoY trends",
     ]
     if hint:
         actions.insert(0, hint)

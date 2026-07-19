@@ -320,7 +320,8 @@ def transactions_categorize_stats(
         ),
         actions=[
             "Use reviews(kind='categorization') for uncategorized transactions",
-            "Use transactions_categorize_rules(view='inactive') for proposals",
+            "Use transactions_categorize_rules(view='history') to inspect "
+            "persisted rule state changes",
         ],
     )
 

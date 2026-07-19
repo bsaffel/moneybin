@@ -62,6 +62,18 @@ async def test_system_status_coarse_full_includes_auto_categorization() -> None:
     assert hasattr(section.statistics, "auto")
 
 
+async def test_system_status_auto_action_describes_persisted_rules() -> None:
+    response = await system_status_coarse(
+        sections=["categorization"],
+        detail="full",
+    )
+
+    text = " ".join(response.actions).lower()
+    assert "transactions_categorize_rules(view='history')" in text
+    assert "proposal" not in text
+    assert "inactive" not in text
+
+
 async def test_system_audit_coarse_detail_requires_exactly_one_identifier() -> None:
     missing = await system_audit_coarse(view="detail")
     duplicate = await system_audit_coarse(

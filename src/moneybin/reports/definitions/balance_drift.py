@@ -118,8 +118,8 @@ def balance_drift(
         since: ISO date; only assertions on or after.
 
     Examples:
-        reports_balance_drift(status="drift")
-        reports_balance_drift(account="Checking")
+        reports(report_id="core:balance_drift", parameters={"status": "drift"})
+        reports(report_id="core:balance_drift", parameters={"account": "Checking"})
     """
     if status not in DRIFT_STATUSES:
         raise ValueError(f"Unknown status: {status}")
@@ -149,7 +149,9 @@ def balance_drift(
     sql += " ORDER BY drift_abs DESC"
 
     actions = [
-        "Filter to one account with account='<name or id>'",
-        "Narrow to flagged rows with status='drift' (also: warning, clean, no-data)",
+        "Rerun reports(report_id='core:balance_drift', "
+        "parameters={'account': '<name or id>'}) to filter to one account",
+        "Rerun reports(report_id='core:balance_drift', "
+        "parameters={'status': 'drift'}) to show drift rows",
     ]
     return ReportQuery(sql, params, actions=actions)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -32,8 +33,14 @@ from moneybin.repositories.categorization_decisions_repo import (
     categorization_decision_id,
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.repositories.security_link_decisions_repo import (
+    SecurityLinkDecisionsRepo,
+)
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
+from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -49,6 +56,8 @@ from .schema_assertions import (
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
+
+_NOW = datetime.now(tz=UTC).isoformat()
 
 
 def _identity_plan(
@@ -87,6 +96,194 @@ def _identity_plan(
         for index, request in enumerate(decisions)
     )
     return IdentityDecisionPlan(items=items)
+
+
+def _identity_decision_status(kind: str, decision_id: str) -> str:
+    table = {
+        "account_link": "app.account_link_decisions",
+        "merchant_link": "app.merchant_link_decisions",
+        "security_link": "app.security_link_decisions",
+    }[kind]
+    with get_database(read_only=True) as db:
+        row = db.execute(
+            f"SELECT status FROM {table} WHERE decision_id = ?",  # noqa: S608  # table allowlist
+            [decision_id],
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def _seed_identity_account(account_id: str, display_name: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.dim_accounts (
+                account_id, account_type, institution_name, display_name
+            ) VALUES (?, 'CHECKING', 'Test Bank', ?)
+            """,
+            [account_id, display_name],
+        )
+
+
+def _seed_identity_account_link(account_id: str, link_id: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.account_links (
+                link_id, account_id, ref_kind, ref_value, source_type,
+                source_origin, status, decided_by, decided_at
+            ) VALUES (
+                ?, ?, 'source_native', ?, 'csv', 'test-bank',
+                'accepted', 'auto', ?
+            )
+            """,
+            [link_id, account_id, f"key-{account_id}", _NOW],
+        )
+
+
+def _identity_account_setup(label: str) -> dict[str, str]:
+    provisional = f"PROV_{label}"
+    candidate = f"ACC_{label}"
+    decision_id = f"account-{label}"
+    _seed_identity_account(provisional, f"Imported {label}")
+    _seed_identity_account(candidate, f"Canonical {label}")
+    _seed_identity_account_link(provisional, f"link-{label}")
+    _insert_account_link_decision(
+        decision_id=decision_id,
+        provisional_account_id=provisional,
+        candidate_account_id=candidate,
+        status="pending",
+        decided_at=_NOW,
+    )
+    return {
+        "candidate": candidate,
+        "decision_id": decision_id,
+        "provisional": provisional,
+    }
+
+
+def _seed_identity_merchant(merchant_id: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.user_merchants (
+                merchant_id, match_type, canonical_name, created_by
+            ) VALUES (?, 'oneOf', ?, 'user')
+            """,
+            [merchant_id, f"Merchant {merchant_id}"],
+        )
+
+
+def _identity_merchant_setup(label: str) -> dict[str, str]:
+    decision_id = f"merchant-{label}"
+    merchant_id = f"merchant-target-{label}"
+    _seed_identity_merchant(merchant_id)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.merchant_link_decisions (
+                decision_id, ref_kind, ref_value, source_type,
+                provider_merchant_name, candidate_merchant_id,
+                confidence_score, match_signals, status, decided_by, decided_at
+            ) VALUES (
+                ?, 'merchant_entity_id', ?, 'plaid', ?, ?, 0.62, '{}',
+                'pending', 'auto', ?
+            )
+            """,
+            [
+                decision_id,
+                f"entity-{label}",
+                f"Provider {label}",
+                merchant_id,
+                _NOW,
+            ],
+        )
+    return {"decision_id": decision_id, "merchant_id": merchant_id}
+
+
+def _mint_identity_security(
+    *,
+    name: str,
+    created_by: str,
+    ticker: str,
+) -> str:
+    with get_database(read_only=False) as db:
+        event = SecuritiesRepo(db).upsert(
+            security_id=None,
+            name=name,
+            security_type="etf",
+            ticker=ticker,
+            created_by=created_by,
+            actor="system" if created_by == "plaid" else "mcp",
+        )
+    assert event.target_id is not None
+    return event.target_id
+
+
+def _identity_security_setup(label: str) -> dict[str, str]:
+    survivor = _mint_identity_security(
+        name=f"Canonical security {label}",
+        created_by="user",
+        ticker=f"C{label[:4].upper()}",
+    )
+    provisional = _mint_identity_security(
+        name=f"Provider security {label}",
+        created_by="plaid",
+        ticker=f"P{label[:4].upper()}",
+    )
+    ref_value = f"security-ref-{label}"
+    decision_id = f"security-{label}"
+    with get_database(read_only=False) as db:
+        SecurityLinksRepo(db).insert(
+            security_id=provisional,
+            ref_kind="plaid_security_id",
+            ref_value=ref_value,
+            source_type="plaid",
+            decided_by="auto",
+            actor="system",
+        )
+        SecurityLinkDecisionsRepo(db).insert(
+            decision_id=decision_id,
+            ref_kind="plaid_security_id",
+            ref_value=ref_value,
+            source_type="plaid",
+            candidate_security_id=survivor,
+            provider_ticker=f"P{label[:4].upper()}",
+            provider_name=f"Provider security {label}",
+            confidence_score=0.5,
+            match_reason="fuzzy_name",
+            actor="system",
+        )
+    return {
+        "decision_id": decision_id,
+        "provisional": provisional,
+        "survivor": survivor,
+    }
+
+
+def _seed_identity_merchant_transaction(
+    transaction_id: str,
+    merchant_id: str,
+) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                merchant_id, transaction_type, is_pending, currency_code,
+                source_type, source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-18', -4.00, 4.00, 'expense',
+                'Existing merchant transaction', ?, 'DEBIT', false, 'USD',
+                'ofx', '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
+                '2026-07', '2026-Q3'
+            )
+            """,
+            [transaction_id, merchant_id],
+        )
 
 
 @pytest.mark.parametrize(
@@ -894,6 +1091,336 @@ async def test_categorization_pending_uses_batch_attempt_projection() -> None:
 
     assert response.error is None
     assert len(response.data.rows) == 1
+
+
+async def test_identity_standard_boundary_accepts_and_rejects_each_domain() -> None:
+    account_accept = _identity_account_setup("accept")
+    account_reject = _identity_account_setup("reject")
+    merchant_accept = _identity_merchant_setup("accept")
+    merchant_reject = _identity_merchant_setup("reject")
+    security_accept = _identity_security_setup("accept")
+    security_reject = _identity_security_setup("reject")
+    cases = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account_accept["decision_id"],
+            decision="accept",
+            target_id=account_accept["candidate"],
+        ),
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account_reject["decision_id"],
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant_accept["decision_id"],
+            decision="accept",
+            target_id=merchant_accept["merchant_id"],
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant_reject["decision_id"],
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=security_accept["decision_id"],
+            decision="accept",
+            target_id=security_accept["survivor"],
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=security_reject["decision_id"],
+            decision="reject",
+        ),
+    ]
+
+    for request in cases:
+        required = await identity_links_decide_coarse(decisions=[request])
+        response = required
+        if request.decision == "accept":
+            assert required.error is not None
+            assert required.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+            assert required.error.details is not None
+            response = await identity_links_decide_coarse(
+                decisions=[request],
+                confirmation_token=str(required.error.details["confirmation_token"]),
+            )
+
+        assert response.error is None
+        assert response.data.results[0].status == (
+            "accepted" if request.decision == "accept" else "rejected"
+        )
+        assert (
+            _identity_decision_status(request.kind, request.decision_id)
+            == response.data.results[0].status
+        )
+
+
+async def test_identity_account_persisted_state_mismatch_consumes_token() -> None:
+    setup = _identity_account_setup("state-mismatch")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["candidate"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            UPDATE app.account_link_decisions
+            SET confidence_score = 0.61
+            WHERE decision_id = ?
+            """,
+            [setup["decision_id"]],
+        )
+
+    mismatched = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+    replayed = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert mismatched.error is not None
+    assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert replayed.error is not None
+    assert replayed.error.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+    assert _identity_decision_status("account_link", setup["decision_id"]) == "pending"
+
+
+async def test_identity_security_persisted_state_mismatch_consumes_token() -> None:
+    setup = _identity_security_setup("state-mismatch")
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+    with get_database(read_only=False) as db:
+        db.execute(
+            "UPDATE app.securities SET name = ? WHERE security_id = ?",
+            ["Changed after confirmation", setup["survivor"]],
+        )
+
+    mismatched = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+    replayed = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=token,
+    )
+
+    assert mismatched.error is not None
+    assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert replayed.error is not None
+    assert replayed.error.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+    assert _identity_decision_status("security_link", setup["decision_id"]) == "pending"
+
+
+async def test_identity_security_confirmation_ignores_unrelated_catalog_state() -> None:
+    setup = _identity_security_setup("stable")
+    decisions = [
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["survivor"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=decisions)
+    assert required.error is not None
+    assert required.error.details is not None
+    _mint_identity_security(
+        name="Unrelated security",
+        created_by="user",
+        ticker="OTHER",
+    )
+
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert response.error is None
+    assert _identity_decision_status("security_link", setup["decision_id"]) == (
+        "accepted"
+    )
+
+
+async def test_identity_confirmation_uses_exact_merchant_blast_radius() -> None:
+    setup = _identity_merchant_setup("blast")
+    _seed_identity_merchant_transaction(
+        "merchant-blast-existing",
+        setup["merchant_id"],
+    )
+    decisions = [
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["merchant_id"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+
+    assert required.error is not None
+    assert required.error.details is not None
+    assert required.error.details["blast_radius"] == {
+        "accounts": 0,
+        "merchants": 1,
+        "securities": 0,
+        "transactions": 0,
+        "lots": 0,
+    }
+    _seed_identity_merchant_transaction(
+        "merchant-blast-unrelated",
+        setup["merchant_id"],
+    )
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+    assert response.error is None
+
+
+async def test_identity_account_batch_rejects_intermediate_merge_graph() -> None:
+    first = _identity_account_setup("graph-a-b")
+    _seed_identity_account("GRAPH_C", "Graph account C")
+    _seed_identity_account_link("GRAPH_C", "link-graph-c-a")
+    _insert_account_link_decision(
+        decision_id="account-graph-c-a",
+        provisional_account_id="GRAPH_C",
+        candidate_account_id=first["provisional"],
+        status="pending",
+        decided_at=_NOW,
+    )
+
+    response = await identity_links_decide_coarse(
+        decisions=[
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id=first["decision_id"],
+                decision="accept",
+                target_id=first["candidate"],
+            ),
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id="account-graph-c-a",
+                decision="accept",
+                target_id=first["provisional"],
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == error_codes.MUTATION_INVALID_INPUT
+    assert response.error.details is not None
+    assert response.error.details["errors"][0]["index"] == 1
+    assert "intermediate" in response.error.details["errors"][0]["reason"]
+    assert _identity_decision_status("account_link", first["decision_id"]) == "pending"
+    assert _identity_decision_status("account_link", "account-graph-c-a") == "pending"
+
+
+async def test_identity_mixed_late_failure_rolls_back_then_shares_operation_id() -> (
+    None
+):
+    account = _identity_account_setup("atomic")
+    merchant = _identity_merchant_setup("atomic")
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant["decision_id"],
+            decision="reject",
+        ),
+    ]
+
+    with patch.object(
+        MerchantLinksService,
+        "set",
+        side_effect=RuntimeError("injected late failure"),
+    ):
+        with pytest.raises(RuntimeError, match="injected late failure"):
+            await identity_links_decide_coarse(decisions=decisions)
+
+    assert _identity_decision_status("account_link", account["decision_id"]) == (
+        "pending"
+    )
+    assert _identity_decision_status("merchant_link", merchant["decision_id"]) == (
+        "pending"
+    )
+
+    response = await identity_links_decide_coarse(decisions=decisions)
+
+    assert response.error is None
+    assert len({item.operation_id for item in response.data.results}) == 1
+    assert response.data.results[0].operation_id == response.data.operation_id
+    with get_database(read_only=True) as db:
+        audit_operation_ids = {
+            str(row[0])
+            for row in db.execute(
+                """
+                SELECT DISTINCT operation_id
+                FROM app.audit_log
+                WHERE target_id IN (?, ?)
+                """,
+                [account["decision_id"], merchant["decision_id"]],
+            ).fetchall()
+        }
+    assert audit_operation_ids == {response.data.operation_id}
+
+
+async def test_identity_standard_write_reports_low_sensitivity() -> None:
+    setup = _identity_merchant_setup("sensitivity")
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_review_coarse_writes)
+
+    with patch("moneybin.mcp.decorator.write_privacy_event", captured.append):
+        response = await call_tool_raw(
+            mcp,
+            "identity_links_decide",
+            {
+                "decisions": [
+                    {
+                        "kind": "merchant_link",
+                        "decision_id": setup["decision_id"],
+                        "decision": "reject",
+                    }
+                ]
+            },
+        )
+
+    assert response.structuredContent is not None
+    assert response.structuredContent["status"] == "ok"
+    assert len(captured) == 1
+    assert captured[0]["sensitivity"] == "low"
+    assert captured[0]["classes_returned"] == [
+        "aggregate",
+        "record_id",
+        "txn_type",
+    ]
 
 
 def test_identity_confirmation_binds_order_state_ids_and_blast_radius() -> None:

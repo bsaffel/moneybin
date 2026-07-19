@@ -87,34 +87,38 @@ def categorization_organize() -> str:
 
 @mcp.prompt()
 def review_auto_rules() -> str:
-    """Review proposed auto-categorization rules and approve or reject them."""
+    """Review persisted categorization rules and apply confirmed state changes."""
     return _dedent("""
-        Help me review proposed auto-categorization rules. Show pending
-        proposals with sample transactions, explain the pattern, and let
-        me approve or reject them.
+        Help me review the persisted categorization rules that MoneyBin can
+        currently read and change.
 
-        **Goal:** Walk the user through pending auto-rule proposals so
-        they can promote useful rules to active and reject noisy ones.
+        **Goal:** Audit active rule behavior and prior rule changes, then apply
+        only the full target states the user confirms.
 
         **Relevant tools:**
-        - system_status(sections=['categorization']) — coverage and rule health
-        - transactions_categorize_rules(view='inactive') — proposed rules
-        - transactions_categorize_rules_set — approve or remove rule state
-        - transactions_categorize_rules(view='active') — active rules
+        - system_status(sections=['categorization'], detail='full') — coverage
+          and aggregate automatic-rule health
+        - transactions_categorize_rules(view='active') — current active rules
+        - transactions_categorize_rules(view='history') — prior rule state changes
+        - transactions_categorize_rules_set — declare confirmed target states
+        - transactions_categorize_run — apply active rules to uncategorized rows
 
         **Workflow:**
-        1. Check system_status(sections=['categorization'])
-        2. Fetch proposals with transactions_categorize_rules(view='inactive')
-        3. For each proposal, show the merchant pattern, suggested
-           category, sample matching transactions, and trigger count
-        4. Group user decisions and submit full target states with
+        1. Check system_status(sections=['categorization'], detail='full')
+        2. Read transactions_categorize_rules(view='active')
+        3. Use transactions_categorize_rules(view='history') when the user
+           needs context about a rule's prior changes
+        4. Explain each selected rule's matcher, category, priority, and state
+        5. Confirm the batch, then submit full target states with
            transactions_categorize_rules_set
+        6. If requested, call transactions_categorize_run(methods=['rules'])
+           to apply the surviving active rules to uncategorized rows
 
         **Guardrails:**
-        - Always show sample transactions before asking for approval
-        - Flag proposals that seem overly broad or ambiguous
-        - Confirm batches with the user before submitting auto_accept
-        - Approved rules categorize matching transactions immediately
+        - Do not infer evidence that the rule read contract does not return
+        - Flag matchers that look overly broad or ambiguous
+        - Confirm every target-state batch before changing persisted rules
+        - Creating a rule and running the categorizer are separate operations
     """)
 
 

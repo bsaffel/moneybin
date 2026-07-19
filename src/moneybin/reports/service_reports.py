@@ -248,9 +248,12 @@ def _execute_networth(
         columns=[column.name for column in _SNAPSHOT_COLUMNS],
         max_rows=limit,
         actions=[
-            "Use core:networth_history for the time series",
-            "Use accounts_balance_history to drill into one account",
-            "Use accounts to inspect archived or excluded accounts",
+            "Run reports(report_id='core:networth_history', "
+            "parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) "
+            "for the time series",
+            "Run accounts_balances(view='history', reference='<account>') "
+            "to drill into one account",
+            "Run accounts(include_closed=True) to inspect closed or excluded accounts",
         ],
         period=(
             snapshot.balance_date.isoformat()
@@ -286,8 +289,10 @@ def _execute_networth_history(
         columns=[column.name for column in _HISTORY_COLUMNS],
         max_rows=limit,
         actions=[
-            "Use core:networth for a single-date snapshot with account breakdown",
-            "Switch interval to daily or weekly for finer resolution",
+            "Run reports(report_id='core:networth') for a single-date account breakdown",
+            "Rerun reports(report_id='core:networth_history', "
+            "parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD', "
+            "'interval': 'weekly'}) for finer resolution",
         ],
         period=f"{from_date.isoformat()} to {to_date.isoformat()} ({interval})",
     )
