@@ -26,7 +26,7 @@ PDF), syncs Plaid-linked accounts, and connects Google Sheets — all into one
 AES-256-GCM-encrypted [DuckDB](https://duckdb.org) file. Query it three ways:
 the CLI, raw SQL, or an MCP server exposing more than 100 tools to Claude,
 Cursor, VS Code, Gemini CLI, Codex, and other clients. Every surface reads the
-same tables, so an answer from the AI is a query you can rerun yourself.
+same tables.
 
 ![Downloaded Files, Linked Accounts, and Connected Sheets flow into an
 Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
@@ -34,6 +34,30 @@ Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/as
 Local only. No telemetry. No vendor account. Account and routing numbers leave
 the machine only as masked placeholders (`****1234`) — no consent tier unlocks
 the real value. AGPL-3.0, so it stays that way.
+
+## Ask your money anything
+
+```bash
+uv run moneybin mcp install --client claude-code   # or claude-desktop, cursor, gemini-cli, codex, ...
+```
+
+One command wires the MCP server into the AI client you already use. Then ask,
+in your own words:
+
+- *"What changed in my dining spending over the last three months, and which
+  merchants explain it?"*
+- *"Find my recurring subscriptions and their annual cost."*
+- *"Show me the SQL behind that number."*
+
+That last one is the point: the assistant queries the same tables the CLI
+reads, so an answer is a query you can rerun — not a paragraph you have to
+trust.
+
+The boundary, plainly: the MCP server runs locally and sends nothing anywhere.
+The AI client you connect is what talks to a model provider — a question to a
+cloud-hosted assistant shares whatever data the answer required. LLM-assisted
+categorization is opt-in and strips amounts, dates, and account identifiers
+before the prompt leaves. Details: [threat model](docs/guides/threat-model.md).
 
 ## Sixty seconds on synthetic data
 
@@ -96,22 +120,6 @@ Imports are idempotent — re-import an overlapping month and source IDs plus
 content matching keep the count right. Coming from Tiller, Mint, or YNAB, the
 [data import guide](docs/guides/data-import.md) has a migration path per tool,
 and documents how to revert a batch.
-
-## Ask through your AI client
-
-```bash
-uv run moneybin mcp install --client claude-code   # or claude-desktop, cursor, gemini-cli, codex, ...
-```
-
-Then ask: *"What changed in my dining spending over the last three months, and
-which merchants explain it?"* The answer comes from the same tables as the
-CLI — ask for the SQL and rerun it yourself.
-
-The boundary, plainly: the MCP server runs locally and sends nothing anywhere.
-The AI client you connect is what talks to a model provider — a question to a
-cloud-hosted assistant shares whatever data the answer required. LLM-assisted
-categorization is opt-in and strips amounts, dates, and account identifiers
-before the prompt leaves. Details: [threat model](docs/guides/threat-model.md).
 
 ## What it is not
 
