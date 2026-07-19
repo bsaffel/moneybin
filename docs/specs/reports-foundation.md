@@ -164,6 +164,20 @@ mode, so an author may downgrade a column below its derived floor **with an
 explicit inline reason**. CI fails unless every declared column is either
 derivation-matched **or** carries an explicit downgrade.
 
+The floor is ordered on **`(tier, mask strength)`**, not tier alone. Tier alone
+is insufficient at CRITICAL: all four CRITICAL classes share `Tier.CRITICAL`
+but `ROUTING_NUMBER`/`UNRESOLVED` mask wholly while
+`ACCOUNT_IDENTIFIER`/`INSTITUTION_ACCOUNT_NUMBER` mask partially
+(`"****" + value[-4:]`), and runtime masking keys off the **declared** class —
+so declaring `ACCOUNT_IDENTIFIER` where derivation says `ROUTING_NUMBER` sits
+at the same tier yet publishes the real routing number's last four digits.
+Below CRITICAL every transform is passthrough, so strength is constant there
+and the ordering reduces to the tier comparison; over-declaring across tiers
+stays safe and stays silent. Strength is measured from `redaction.py`'s
+`_TRANSFORMS` (`redaction.mask_strength`) rather than from a second
+hand-maintained list, so adding a `DataClass` cannot weaken the guard without
+failing a test.
+
 Scope note: the existing classifier already handles the cases that would
 otherwise need downgrades most often. `COUNT(*)`/`COUNT(DISTINCT x)` resolve to
 `AGGREGATE` through the counting-aggregate rule rather than inheriting the
@@ -255,7 +269,11 @@ in M2P.3.
   DuckDB catalog rather than the declared registry — preserve that property; it
   is what makes the guard capable of catching an *undeclared* view.
 - **R3:** a deliberately downgraded column passes CI; an undeclared mismatch
-  fails.
+  fails. Both directions of the equal-CRITICAL case are required: a declared
+  `ACCOUNT_IDENTIFIER` against a derived `ROUTING_NUMBER` must fail (equal
+  tier, weaker transform), while the reverse must pass — a tier-only comparison
+  passes both and is the specific blindness this covers. A below-CRITICAL
+  over-declaration must still pass, or the guard has tightened into noise.
 - **R5:** `core.uncategorized_queue.account_id` passes through unmasked via
   `sql_query`, same as every other `account_id` column (`RECORD_ID`, spec D6)
   — it does NOT mask; the categorization surface still works end-to-end.

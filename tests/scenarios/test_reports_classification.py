@@ -16,11 +16,14 @@ This does not additionally require ``account_id`` to be declared
 classified ``RECORD_ID`` (LOW) everywhere in ``CLASSIFICATION`` (spec D6,
 commit c465f181), and derivation reproduces that answer for reports.* views
 that select it unchanged. A handful of runners over-declare it
-``ACCOUNT_IDENTIFIER`` anyway (safe — over-declaring never leaks, per
-``test_declared_classes_match_derivation``'s tier comparison in
-``tests/privacy/test_report_class_derivation.py``), but requiring it
-uniformly here would be wrong for a view that correctly declares
-``RECORD_ID``.
+``ACCOUNT_IDENTIFIER`` anyway — safe because ``RECORD_ID`` is LOW, so that
+over-declares ACROSS tiers, which
+``test_declared_classes_match_derivation``'s ``(tier, mask strength)``
+comparison in ``tests/privacy/test_report_class_derivation.py`` allows. It is
+NOT an instance of "over-declaring never leaks": at equal CRITICAL tier a
+partial-masking class standing in for a whole-masking one does leak. Requiring
+``ACCOUNT_IDENTIFIER`` uniformly here would be wrong for a view that correctly
+declares ``RECORD_ID``.
 
 A trivial hand-written fixture view (as the unit tests use) would not catch a
 gap between a report's declared map and its real multi-CTE view — that gap is

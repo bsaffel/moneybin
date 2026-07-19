@@ -802,8 +802,12 @@ def test_reports_class_map_is_keyed_by_reports_schema() -> None:
 # (LOW) everywhere in CLASSIFICATION (spec D6, commit c465f181) — see
 # test_account_id_passes_through_unmasked in test_sql_query.py. Some runners
 # (cash_flow, balance_drift, large_transactions) over-declare it
-# ACCOUNT_IDENTIFIER anyway, which is safe (over-declaring never leaks) but
-# not required, so no universal per-class assertion belongs here.
+# ACCOUNT_IDENTIFIER anyway. That is safe here because it over-declares ACROSS
+# tiers (RECORD_ID is LOW, ACCOUNT_IDENTIFIER CRITICAL) — NOT because
+# over-declaring is safe in general: at equal CRITICAL tier a partial-masking
+# class standing in for a whole-masking one leaks (see _declaration_is_safe in
+# test_report_class_derivation.py). It is not required either, so no universal
+# per-class assertion belongs here.
 # Equivalent regression coverage now lives in
 # test_account_id_derives_from_classification_not_the_gap_fallback
 # (test_report_class_derivation.py) and test_generated_classes_are_current

@@ -38,15 +38,27 @@ complete, and fails the build if the two disagree.
   **the same classifier** that masks ad-hoc `sql_query` SQL at runtime. Do not
   write a second classification path for reports.
 - `tests/privacy/test_report_class_derivation.py::test_declared_classes_match_derivation`
-  compares declared vs. derived **by tier**, not class identity — over-declaring
-  (e.g. declaring a passthrough column `ACCOUNT_IDENTIFIER` when derivation
-  would say `RECORD_ID`) always passes, because over-declaring never leaks.
-  Only a genuine downgrade (`declared.tier < derived.tier`) needs a
-  `class_downgrades` reason; an unreasoned downgrade fails CI — and so does a
-  `class_downgrades` reason for a column that is no longer genuinely below its
-  derived floor (a stale entry must be deleted, not left in the tree). Needs
-  no database, so it runs in the default `make check test` gate, not
-  `make test-scenarios`.
+  compares declared vs. derived on **`(tier, mask strength)`** — not class
+  identity, and not tier alone. Over-declaring across tiers (e.g. declaring a
+  passthrough column `ACCOUNT_IDENTIFIER` when derivation would say
+  `RECORD_ID`) always passes. A declaration that masks more weakly than
+  derivation needs a `class_downgrades` reason; an unreasoned one fails CI —
+  and so does a `class_downgrades` reason for a column that is no longer
+  genuinely weaker than its derived floor (a stale entry must be deleted, not
+  left in the tree). Needs no database, so it runs in the default
+  `make check test` gate, not `make test-scenarios`.
+- **At CRITICAL, over-declaring is not automatically safe — the transform
+  matters.** Below CRITICAL every transform is passthrough, so a higher tier is
+  strictly more masking and tier alone decides. At CRITICAL it does not: all
+  four classes share `Tier.CRITICAL` but `ROUTING_NUMBER` and `UNRESOLVED` mask
+  **wholly** (`'021000021'` → `'*****'`) while `ACCOUNT_IDENTIFIER` and
+  `INSTITUTION_ACCOUNT_NUMBER` mask **partially** (`'021000021'` →
+  `'****0021'`). Runtime masking keys off the **declared** class, so declaring
+  `ACCOUNT_IDENTIFIER` for a column that derives to `ROUTING_NUMBER` publishes
+  the real routing number's last four digits. **Never replace a whole-masking
+  class with a partial-masking one.** The guard measures each class's strength
+  from `redaction.py`'s `_TRANSFORMS` (`redaction.mask_strength`) rather than
+  from a hand-kept list, so a new `DataClass` cannot silently weaken it.
 - `tests/scenarios/test_reports_classification.py::test_reports_declared_classes_cover_real_views`
   enumerates every **deployed** `reports.*` view from the live DuckDB catalog
   (not the declared registry) and fails if any real column is undeclared —
@@ -100,9 +112,10 @@ account number, not PII. Every `account_id` column in `CLASSIFICATION` is
 Decision 1 (opaque-by-construction) and Decision 6 (the reclassification from
 `ACCOUNT_IDENTIFIER` to `RECORD_ID` this depends on). Declare a report's
 `account_id` output column `RECORD_ID` to match. Declaring it
-`ACCOUNT_IDENTIFIER` still passes CI (an over-declare never fails the tier
-comparison above) but masks a column that is safe to expose and is not the
-pattern to copy into a new report.
+`ACCOUNT_IDENTIFIER` still passes CI (`RECORD_ID` is LOW, so declaring a
+CRITICAL class for it over-declares across tiers, which the comparison above
+allows) but masks a column that is safe to expose and is not the pattern to
+copy into a new report.
 
 ## This rule documents a contract CI already enforces
 

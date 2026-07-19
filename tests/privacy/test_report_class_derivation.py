@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from moneybin.privacy.redaction import MaskStrength, mask_strength
 from moneybin.privacy.report_class_derivation import (
     ReportDerivationError,
     derive_core_view_classes,
     derive_report_classes,
 )
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import DataClass, Tier
 
 
 def _derive_one(model_sql: str, models_root: Path) -> dict[tuple[str, str], object]:
@@ -48,8 +49,10 @@ def test_account_id_derives_from_classification_not_the_gap_fallback() -> None:
     privacy unmask safe"): it's a minted surrogate key, not PII — see
     taxonomy.py's CLASSIFICATION and
     docs/specs/privacy-data-classification.md. cash_flow's runner over-declares
-    it ACCOUNT_IDENTIFIER anyway (safe — over-declaring never leaks), but this
-    pins derivation's own answer, which is exactly the drift Task 3/4 exist to
+    it ACCOUNT_IDENTIFIER anyway — safe because RECORD_ID is LOW and this
+    over-declares ACROSS tiers, not because over-declaring is safe in general
+    (at equal CRITICAL tier it is not; see ``_declaration_is_safe``). This pins
+    derivation's own answer, which is exactly the drift Task 3/4 exist to
     surface.
     """
     derived = derive_report_classes()
@@ -238,19 +241,65 @@ def _all_class_downgrades() -> dict[tuple[str, str], dict[str, str]]:
     return out
 
 
+def _declaration_is_safe(declared: DataClass, derived: DataClass) -> bool:
+    """True when ``declared`` hides a value at least as well as ``derived``.
+
+    Ordered on ``(tier, mask_strength)`` lexicographically. Tier alone is NOT
+    sufficient, and the gap it leaves is the whole reason this helper exists:
+    all four CRITICAL classes share ``Tier.CRITICAL`` but do not share a
+    transform, so a tier-only comparison rates ACCOUNT_IDENTIFIER (masks
+    PARTIAL, ``"****" + value[-4:]``) an adequate stand-in for ROUTING_NUMBER
+    (masks WHOLE). Runtime masking keys off the DECLARED class, so that
+    declaration publishes the real routing number's last four digits while the
+    guard reports nothing.
+
+    Below CRITICAL every transform is passthrough, so every strength there is
+    equal and this reduces to exactly the tier comparison it replaces — an
+    over-declaration like TXN_AMOUNT-where-CATEGORY-was-derived still passes.
+    Demanding class identity there would only manufacture false failures over
+    classes that mask identically.
+
+    Strength comes from ``redaction.mask_strength``, which measures each
+    class's own ``_TRANSFORMS`` entry rather than consulting a list of
+    whole-masking classes; a list would rot silently the first time a
+    ``DataClass`` was added without updating it.
+    """
+    return (declared.tier, mask_strength(declared)) >= (
+        derived.tier,
+        mask_strength(derived),
+    )
+
+
+def _weakness(declared: DataClass, derived: DataClass) -> str:
+    """Describe HOW ``declared`` falls short of ``derived``, for the failure text."""
+    if declared.tier < derived.tier:
+        return (
+            f"declared {declared.name} (tier {declared.tier.name}) is below "
+            f"derived {derived.name} (tier {derived.tier.name})"
+        )
+    return (
+        f"declared {declared.name} masks {mask_strength(declared).name} but "
+        f"derived {derived.name} masks {mask_strength(derived).name} at the "
+        f"same tier ({declared.tier.name}) — the declared class drives runtime "
+        "masking, so this weakens it"
+    )
+
+
 def test_declared_classes_match_derivation() -> None:
     """Every declared class is derivation-matched, explicitly downgraded, or stale.
 
     ``derive_report_classes`` (build-time, no DB — see ADR-013 follow-up in
     ``report_class_derivation.py``) recomputes each column's class from the
-    SQLMesh model source; this compares it against the declared contract.
-    Compares by **tier**, not class identity: redaction is tier-driven, so
-    ``declared.tier >= derived.tier`` is always safe (over-declaring never
-    leaks). Only a genuine downgrade (``declared.tier < derived.tier``)
-    requires an explicit, reasoned ``class_downgrades`` entry.
+    SQLMesh model source; this compares it against the declared contract via
+    ``_declaration_is_safe`` — **tier, then mask strength**, not class
+    identity. Over-declaring is safe below CRITICAL (every transform there is
+    passthrough) but not automatically safe at CRITICAL, where the four classes
+    share a tier and differ in transform; see that helper. Only a declaration
+    that masks strictly more weakly than derivation requires an explicit,
+    reasoned ``class_downgrades`` entry.
 
-    The inverse must also fail: a ``class_downgrades`` entry for a column
-    whose declared tier is NOT below its derived tier is a *stale*
+    The inverse must also fail: a ``class_downgrades`` entry for a column whose
+    declaration is NOT actually weaker than derivation is a *stale*
     declaration — the downgrade it once justified no longer applies (e.g. a
     future window-partition-key carve-out in the deriver could make several of
     today's downgrades unnecessary). Left unchecked, a stale entry would sit
@@ -271,21 +320,23 @@ def test_declared_classes_match_derivation() -> None:
                 problems.append(f"{key[0]}.{key[1]}.{column}: undeclared")
                 continue
             reason = downgrades.get(key, {}).get(column)
-            if declared_class.tier >= derived_class.tier:
+            if _declaration_is_safe(declared_class, derived_class):
                 if reason:
                     problems.append(
                         f"{key[0]}.{key[1]}.{column}: class_downgrades entry "
                         f"is stale — declared {declared_class.name} (tier "
-                        f"{declared_class.tier.name}) is not below derived "
-                        f"{derived_class.name} (tier {derived_class.tier.name}); "
-                        "delete this class_downgrades entry"
+                        f"{declared_class.tier.name}, masks "
+                        f"{mask_strength(declared_class).name}) is not weaker "
+                        f"than derived {derived_class.name} (tier "
+                        f"{derived_class.tier.name}, masks "
+                        f"{mask_strength(derived_class).name}); delete this "
+                        "class_downgrades entry"
                     )
                 continue
             if not reason:
                 problems.append(
-                    f"{key[0]}.{key[1]}.{column}: declared {declared_class.name} "
-                    f"(tier {declared_class.tier.name}) below derived "
-                    f"{derived_class.name} (tier {derived_class.tier.name}) "
+                    f"{key[0]}.{key[1]}.{column}: "
+                    f"{_weakness(declared_class, derived_class)} "
                     "with no class_downgrades reason"
                 )
     assert not problems, "Class declarations disagree with derivation:\n" + "\n".join(
@@ -294,7 +345,7 @@ def test_declared_classes_match_derivation() -> None:
 
 
 def test_core_declared_classes_match_derivation() -> None:
-    """Every derivable core.* view's CLASSIFICATION entry is tier-safe.
+    """Every derivable core.* view's CLASSIFICATION entry is mask-safe.
 
     Generalizes ``test_declared_classes_match_derivation`` above to core.*
     (see ``derive_core_view_classes``'s scoping rule: only the core view
@@ -304,8 +355,10 @@ def test_core_declared_classes_match_derivation() -> None:
     above).
 
     Unlike reports.*, CLASSIFICATION has no ``class_downgrades`` mechanism:
-    there is no reasoned-override channel to invent, so ANY genuine downgrade
-    (``declared.tier < derived.tier``) is unconditionally a problem here.
+    there is no reasoned-override channel to invent, so ANY declaration that
+    masks more weakly than derivation — whether by tier or, at equal tier, by
+    transform strength (see ``_declaration_is_safe``) — is unconditionally a
+    problem here.
     """
     from moneybin.privacy.report_class_derivation import derive_core_view_classes
     from moneybin.privacy.taxonomy import CLASSIFICATION
@@ -320,13 +373,135 @@ def test_core_declared_classes_match_derivation() -> None:
             if declared_class is None:
                 problems.append(f"{key[0]}.{key[1]}.{column}: undeclared")
                 continue
-            if declared_class.tier < derived_class.tier:
+            if not _declaration_is_safe(declared_class, derived_class):
                 problems.append(
-                    f"{key[0]}.{key[1]}.{column}: declared {declared_class.name} "
-                    f"(tier {declared_class.tier.name}) below derived "
-                    f"{derived_class.name} (tier {derived_class.tier.name}) — "
+                    f"{key[0]}.{key[1]}.{column}: "
+                    f"{_weakness(declared_class, derived_class)} — "
                     "CLASSIFICATION has no downgrade-with-reason mechanism"
                 )
     assert not problems, "core.* declarations disagree with derivation:\n" + "\n".join(
         problems
     )
+
+
+# ---------------------------------------------------------------------------
+# _declaration_is_safe — the comparison BOTH guards above run on every column.
+#
+# These cases are the guards' own unit tests. The equal-CRITICAL pair is not
+# hypothetical: under the previous tier-only comparison
+# (``declared.tier >= derived.tier``) a declared ACCOUNT_IDENTIFIER against a
+# derived ROUTING_NUMBER answered True and both guards passed in silence, while
+# runtime masking — which keys off the DECLARED class — turned '021000021' into
+# '****0021' and published the real routing number's last four digits.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("declared", "derived", "expected", "why"),
+    [
+        (
+            DataClass.ACCOUNT_IDENTIFIER,
+            DataClass.ROUTING_NUMBER,
+            False,
+            "equal CRITICAL tier, PARTIAL declared over WHOLE derived — the leak",
+        ),
+        (
+            DataClass.INSTITUTION_ACCOUNT_NUMBER,
+            DataClass.UNRESOLVED,
+            False,
+            "the same leak through the other partial-masking CRITICAL class",
+        ),
+        (
+            DataClass.ROUTING_NUMBER,
+            DataClass.ACCOUNT_IDENTIFIER,
+            True,
+            "equal tier, declared masks WHOLE where derived masks PARTIAL",
+        ),
+        (
+            DataClass.ACCOUNT_IDENTIFIER,
+            DataClass.ACCOUNT_IDENTIFIER,
+            True,
+            "same class is always safe",
+        ),
+        (
+            DataClass.ROUTING_NUMBER,
+            DataClass.UNRESOLVED,
+            True,
+            "different CRITICAL classes that mask identically stay interchangeable",
+        ),
+        (
+            DataClass.ACCOUNT_IDENTIFIER,
+            DataClass.INSTITUTION_ACCOUNT_NUMBER,
+            True,
+            "two PARTIAL classes at equal tier — identity is NOT required",
+        ),
+        (
+            DataClass.TXN_AMOUNT,
+            DataClass.CATEGORY,
+            True,
+            "below-CRITICAL over-declare: every transform there is passthrough",
+        ),
+        (
+            DataClass.ACCOUNT_IDENTIFIER,
+            DataClass.TXN_AMOUNT,
+            True,
+            "over-declare ACROSS tiers still passes — tier dominates strength",
+        ),
+        (
+            DataClass.CATEGORY,
+            DataClass.TXN_AMOUNT,
+            False,
+            "a genuine tier downgrade is still caught",
+        ),
+    ],
+)
+def test_declaration_safety_compares_mask_strength_not_only_tier(
+    declared: DataClass, derived: DataClass, expected: bool, why: str
+) -> None:
+    assert _declaration_is_safe(declared, derived) is expected, why
+
+
+def test_below_critical_comparison_is_unchanged_by_the_strength_rule() -> None:
+    """Adding strength must not start demanding class identity below CRITICAL.
+
+    Every transform below CRITICAL is passthrough, so strength is constant
+    there and the ordering must still reduce to the plain tier comparison. A
+    rule that tightened here would fail every one of the many legitimate
+    over-declarations in the tree (``account_id`` declared ACCOUNT_IDENTIFIER
+    where derivation says RECORD_ID, and so on) — noise, not signal.
+    """
+    below_critical = [dc for dc in DataClass if dc.tier is not Tier.CRITICAL]
+    assert below_critical, "fixture assumption: some classes sit below CRITICAL"
+    for dc in below_critical:
+        assert mask_strength(dc) is MaskStrength.PASSTHROUGH
+    for declared in below_critical:
+        for derived in below_critical:
+            assert _declaration_is_safe(declared, derived) is (
+                declared.tier >= derived.tier
+            )
+
+
+def test_every_data_class_has_a_measurable_mask_strength() -> None:
+    """No ``DataClass`` may reach the guards without a knowable strength.
+
+    ``mask_strength`` measures ``_TRANSFORMS`` and raises rather than defaulting
+    for an unmapped class, so a new class added without a transform fails loudly
+    here instead of being ranked as strong as a whole mask and quietly weakening
+    ``_declaration_is_safe`` for every column that uses it.
+    """
+    for dc in DataClass:
+        assert isinstance(mask_strength(dc), MaskStrength)
+
+
+def test_mask_strength_refuses_to_default_an_unmapped_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The no-default contract, exercised — not merely asserted in a docstring."""
+    from moneybin.privacy import redaction
+
+    monkeypatch.delitem(
+        redaction._TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
+        DataClass.ROUTING_NUMBER,
+    )
+    with pytest.raises(KeyError, match="no _TRANSFORMS entry"):
+        mask_strength(DataClass.ROUTING_NUMBER)
