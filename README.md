@@ -28,8 +28,12 @@ the CLI, raw SQL, or an MCP server exposing more than 100 tools to Claude,
 Cursor, VS Code, Gemini CLI, Codex, and other clients. Every surface reads the
 same tables.
 
-![Downloaded Files, Linked Accounts, and Connected Sheets flow into an
-Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
+<!-- markdownlint-disable MD033 -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/moneybin-workflow-on-dark.svg">
+  <img src="docs/assets/moneybin-workflow-on-light.svg" alt="Downloaded Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.">
+</picture>
+<!-- markdownlint-enable MD033 -->
 
 Local only. No telemetry. No vendor account. Account and routing numbers in
 typed fields leave the machine only as masked placeholders (`****1234`) — no

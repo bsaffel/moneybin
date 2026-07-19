@@ -3,15 +3,16 @@
   <desc id="description">Downloaded Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
-      <path d="M0,0 L0,6 L9,3 z" fill="#A88952"/>
+      <path d="M0,0 L0,6 L9,3 z" fill="#8A6A1C"/>
     </marker>
     <style>
-      .box { fill: #1C1C1A; stroke: #7D725C; stroke-width: 1.5; }
-      .core { fill: #2A2519; stroke: #A88952; stroke-width: 2; }
-      .label { fill: #F4EFE5; font: 600 19px system-ui, sans-serif; text-anchor: middle; }
-      .core-label { fill: #F4EFE5; font: 600 24px system-ui, sans-serif; text-anchor: middle; }
-      .sub { fill: #C9C1AF; font: 15px system-ui, sans-serif; text-anchor: middle; }
-      .arrow { fill: none; stroke: #A88952; stroke-width: 2; stroke-linecap: round; marker-end: url(#arrow); }
+      /* Light-theme tokens (design-system/tokens/colors.css [data-theme="light"]) */
+      .box { fill: #FDFCF9; stroke: #C9C3B6; stroke-width: 1.5; }
+      .core { fill: #EFE6CF; stroke: #8A6A1C; stroke-width: 2; }
+      .label { fill: #1C1A16; font: 600 19px system-ui, sans-serif; text-anchor: middle; }
+      .core-label { fill: #1C1A16; font: 600 24px system-ui, sans-serif; text-anchor: middle; }
+      .sub { fill: #5C564C; font: 15px system-ui, sans-serif; text-anchor: middle; }
+      .arrow { fill: none; stroke: #8A6A1C; stroke-width: 2; stroke-linecap: round; marker-end: url(#arrow); }
     </style>
   </defs>
   <rect class="box" x="35" y="60" width="230" height="80" rx="12"/>
