@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-09 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -11,7 +11,7 @@ The lane is narrow on purpose: your data stays on your machine, AI assists rathe
 
 ## Personas — already a good fit
 
-These are the people MoneyBin already serves well in what's shipped now. Install is still `git clone` + `uv` until the Homebrew tap lands — see "What's still rough" under each persona.
+These are the people MoneyBin already serves well in what's shipped now. Install is currently from source with `git clone` and `uv`.
 
 ### The Tiller-migrant CLI user
 
@@ -32,7 +32,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 
 **Data exit:** A plaintext-export command (CSV out of every core table) is planned but not shipped. Today the database itself is portable — one encrypted DuckDB file per profile, queryable with any DuckDB client.
 
-**What's still rough:** The install path is still `git clone` + `uv` + `make setup`; a Homebrew tap is planned. No visual UI yet — see the tracker persona below.
+**What's still rough:** The install path is still `git clone` + `uv` + `make setup`. No visual UI yet — see the tracker persona below.
 
 ### The agent-native developer
 
@@ -41,10 +41,9 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 **Job to be done:** Ask "what did I spend on AWS last quarter?" inside the same chat window where they write code. Get back a real answer with SQL behind it, not a hosted vendor's summary — and when the built-in answer isn't enough, have the agent *build* the missing piece.
 
 **Why MoneyBin fits today:**
-- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (nine clients supported).
+- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (eight supported client configurations).
 - Every MCP tool has a CLI twin with `--output json` parity; the CLI is a first-class agent surface, not an afterthought.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
-- It's built to be *extended* by the agent, not just queried by it. The schema and the import pipeline are stable surfaces an agent can build against today; a declarative report-runner contract and the broader extension contract (reports, packages, providers) are in flight. Together they make "vibe-code a custom report / importer / tracker on top of my own financial data" the intended workflow, not a hack — MoneyBin wants to be the first tool your agent reaches for.
 
 **What's still rough:** Today's MCP transport requires the AI client and MoneyBin to run on the same machine. Remote-client support (so ChatGPT web or a hosted assistant can reach a MoneyBin running elsewhere) is planned.
 
@@ -57,9 +56,8 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 **Why MoneyBin fits today:**
 - The data plane is one encrypted DuckDB file per profile, AES-encrypted at rest. Back it up like any other file, walk away with it whenever you want.
 - No hosted dependency for the core product. Bank-direct sync (when you opt in) goes through a server you can also self-host; OFX/QFX/CSV import is fully local.
-- Same code in the eventual hosted tier is what you self-host — AGPL guarantees that.
 
-**What's still rough:** No always-on daemon yet — MoneyBin runs when you invoke it. Linux works via PyPI but Mac is the primary target; Windows isn't on the roadmap.
+**What's still rough:** No always-on daemon yet — MoneyBin runs when you invoke it. macOS is the primary target; Linux is supported from source, and Windows has not yet been tested.
 
 ### The privacy-conscious power user
 
@@ -84,7 +82,7 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **Job to be done:** A polished visual surface for spending and net worth, with optional AI on the side — not a chatbot pretending to be an interface.
 
-**Why MoneyBin will fit:** A browser-based web UI is planned — dashboards, account management, balance reconciliation, multi-currency views. It will work on a phone browser, but **there is no native mobile app planned for v1.** The web UI runs against your local MoneyBin or, once it exists, the hosted tier.
+**Why MoneyBin may fit later:** A browser-based web UI is planned. It is not available today, and there is no native mobile app planned for v1.
 
 **Do you have to use AI?** No. AI is an optional layer over a deterministic SQL pipeline. Every number on the screen will exist whether or not you ever open a chat box; the AI is for asking questions about those numbers.
 
@@ -100,9 +98,9 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **Why MoneyBin will fit:** The core ledger is built and working: a manually-maintained securities catalog, an investment transaction ledger (buys, sells, reinvested dividends, interest, capital-gain distributions, transfers, splits, fees, return of capital), four cost-basis methods (FIFO, HIFO, specific identification, average cost), derived tax lots, and realized short-/long-term gain/loss reporting — the 1099-B surface. That math has been checked against a hand-labeled, full-tax-year fixture, not yet against a real broker's 1099-B — that reconciliation is the one gate left before this persona can trust the numbers at tax time, and partial trust is a worse outcome than none.
 
-Automated broker sync isn't built yet, so entry is manual today via `investments add` (CSV import will fill remaining gaps once it ships). When broker sync lands, it'll cover whatever brokers the sync framework supports — not a separate promise. Real estate, private equity, and illiquid assets stay manual.
+Plaid investment ingestion is available through `moneybin sync pull`; manual entry via `investments add` remains available. Real estate, private equity, and illiquid assets stay manual.
 
-**What's still rough:** No real-broker 1099-B tie-out yet — the cost-basis engine has only been proven against a synthetic fixture. No market pricing, so `investments holdings` shows quantity and cost basis but not current market value or unrealized gain/loss, and investment positions don't yet fold into net-worth reports. No automated broker sync for holdings — entry is manual today. Lot selection for a disposal can be overridden by hand (`investments lots select`), but there's no automated tax-loss-harvesting workflow, and no IRR/TWR performance views. **Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) in the meantime** — and track progress on the [roadmap](roadmap.md) (M1J).
+**What's still rough:** No real-broker 1099-B tie-out yet — the cost-basis engine has only been proven against a synthetic fixture. No market pricing, so `investments holdings` shows quantity and cost basis but not current market value or unrealized gain/loss, and investment positions don't yet fold into net-worth reports. Lot selection for a disposal can be overridden by hand (`investments lots select`), but there's no automated tax-loss-harvesting workflow, and no IRR/TWR performance views. **Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) in the meantime** — and track progress on the [roadmap](roadmap.md).
 
 ### The non-USD user
 

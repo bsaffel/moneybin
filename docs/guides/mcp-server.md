@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # MCP Server
 
 MoneyBin's MCP server is what lets you ask an AI assistant questions like *"Where did I overspend last month?"* and have it run the multi-step pipeline that answers them — import the latest file, refresh derived tables, fetch the right report, then summarize. The agent picks the tools, chains them via action hints embedded in every response, and discovers parameter schemas at runtime. The same surface is reachable from the CLI for parity; this guide is about the chat-driven path.
@@ -7,7 +7,7 @@ The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and register
 
 ## Install
 
-`moneybin mcp install --client <name>` writes the snippet your client expects (`--print` to inspect first). Supported clients today: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). ChatGPT on the **web/mobile** is not supported — those reach MCP only through remote connectors, which arrive with M3D. See [`mcp-clients.md`](mcp-clients.md) for paths and per-client caveats.
+`moneybin mcp install --client <name>` writes the snippet your client expects (`--print` to inspect first). Supported clients today: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). ChatGPT on the **web/mobile** cannot reach a local stdio server. See [`mcp-clients.md`](mcp-clients.md) for paths and per-client caveats.
 
 There is no `mcp uninstall` command today. To turn the integration off, remove the `moneybin` entry from your MCP client's config file (Claude Desktop's `claude_desktop_config.json`, Cursor's `mcp.json`, etc.) and restart the client.
 

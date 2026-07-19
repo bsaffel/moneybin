@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-24 -->
+<!-- Last reviewed: 2026-07-18 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions_get`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -156,7 +156,7 @@ Top-level orientation: where the data lives, whether it's healthy, what the audi
 | `system audit list` | List audit-log events with filters (`--actor`, `--action`, `--target-table`, `--target-id`, `--from`, `--to`, `--limit`). |
 | `system audit show <audit-id>` | Show one audit event plus any chained children. |
 
-**Related guides:** [`profiles-and-multi-user.md`](profiles-and-multi-user.md).
+**Related guides:** [`profiles.md`](profiles.md).
 
 ## Ingestion
 
@@ -199,7 +199,7 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 | `sync schedule show` | Show the active sync schedule. | — |
 | `sync schedule remove` | Disable scheduled sync. | — |
 
-**Related guides:** [`data-import.md`](data-import.md), [`watched-inbox.md`](watched-inbox.md), [`sync-server.md`](sync-server.md).
+**Related guides:** [`data-import.md`](data-import.md), [`data-pipeline.md`](data-pipeline.md).
 
 ## Refresh pipeline
 
@@ -349,7 +349,7 @@ Account entities (dim records) plus per-account workflows.
 
 `accounts set` cascades atomically: `--archive` also sets `--exclude` for net-worth in the same write; `--unarchive` does NOT auto-restore `--include`.
 
-**Related guides:** [`account-management.md`](account-management.md).
+**Related guides:** [`profiles.md`](profiles.md), [`data-pipeline.md`](data-pipeline.md).
 
 ### `assets`
 
@@ -393,7 +393,7 @@ Cross-domain analytical views. All commands support `--output json` and return t
 | `reports large-transactions` | Large transactions, optionally anomaly-filtered. | `--top`, `--anomaly {none,account,category}` |
 | `reports balance-drift` | Where computed balance diverges from asserted balance. | `--account`, `--status {drift,warning,clean,no-data,all}`, `--since` |
 
-**Related guides:** [`reports.md`](reports.md).
+**Related guides:** [`../features.md`](../features.md#reports).
 
 ## Budget
 
@@ -437,7 +437,7 @@ Lifecycle, exploration, and key management on the encrypted database.
 | `db migrate apply` | Apply pending schema migrations. | `--dry-run` |
 | `db migrate status` | Show applied migrations and pending ones. | — |
 
-**Related guides:** [`database-management.md`](database-management.md), [`threat-model.md`](threat-model.md).
+**Related guides:** [`database-security.md`](database-security.md), [`threat-model.md`](threat-model.md).
 
 ## Integrations
 
@@ -448,7 +448,7 @@ MCP server lifecycle and client install.
 | Command | Purpose | Key flags |
 |---|---|---|
 | `mcp serve` | Start the MCP server (stdio by default). Non-stdio transports are unauthenticated and refuse to start without `--insecure`. | `-t, --transport {stdio,sse,streamable-http}`, `--insecure` |
-| `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, chatgpt-desktop, vscode, cursor, windsurf, gemini-cli. (`chatgpt-desktop` shares Codex's `~/.codex/config.toml`; ChatGPT on the web needs remote MCP — M3D.) | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
+| `mcp install` | Install MoneyBin into an MCP client's config. Supported clients: claude-desktop, claude-code, codex, chatgpt-desktop, vscode, cursor, windsurf, gemini-cli. (`chatgpt-desktop` shares Codex's `~/.codex/config.toml`; ChatGPT on the web cannot reach a local stdio server.) | `-c, --client`, `-p, --profile`, `--print`, `-y, --yes` |
 | `mcp list-tools` | List every registered MCP tool with its sensitivity tier. | `-o, --output` |
 | `mcp list-prompts` | List every registered MCP prompt. | `-o, --output` |
 | `mcp config` | Show active MCP server configuration (profile, database path, max-rows, max-chars). | — |
@@ -591,6 +591,6 @@ moneybin system status --output json | jq -e '.summary.total_count > 0' \
 
 - [`data-import.md`](data-import.md) — import formats and the import lifecycle
 - [`categorization.md`](categorization.md) — rules, merchants, LLM-assist
-- [`reports.md`](reports.md) — what each report shows
+- [`../features.md`](../features.md#reports) — what each report shows
 - [`mcp-server.md`](mcp-server.md) — the MCP peer surface
-- [`database-management.md`](database-management.md) — encryption, backups, migrations
+- [`database-security.md`](database-security.md) — encryption, backups, migrations

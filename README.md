@@ -22,47 +22,31 @@
 MoneyBin turns bank files, spreadsheets, and connected-account data into one
 encrypted [DuckDB](https://duckdb.org) database on your machine. Work with it
 from the terminal, query it with SQL, or let an MCP-compatible assistant help
-you investigate it. The database is yours; no separate hosted financial app
-owns the canonical copy.
+you investigate it. The database is yours; no hosted service owns the
+canonical copy.
 
-That matters when you want to change tools, rebuild a report, or audit an
-answer instead of accepting a dashboard's conclusion.
-
-It is for people who want more than a dashboard and less than a pile of
-spreadsheets: a durable financial data layer that an AI assistant can
-inspect without becoming the source of truth.
+**Pre-v1, source install.** macOS is the primary target; Linux is supported,
+and Windows has not yet been tested. Start with the demo before trusting it
+with real financial data.
 
 ## Why this exists
 
-Personal finance data tends to fragment. A bank export has history, a
-spreadsheet has corrections, an aggregator has recent activity, and an AI
-answer has no obvious way to show where it came from. MoneyBin gives those
-inputs one modeled home and keeps the reasoning inspectable.
-
-- **Own the data.** Each profile is an AES-256-GCM-encrypted DuckDB file. Use
-  it locally without a vendor account, back it up like a file, and query it
-  with tools you already trust.
-- **Keep one canonical record.** Imports are recorded as batches, duplicate
-  records are reconciled across sources, and corrections live separately from
-  the source data. Re-importing overlapping history should not create a second
-  ledger.
-- **Ask better questions.** The CLI, SQL interface, and MCP server operate on
-  the same modeled tables. An assistant can help investigate spending or net
-  worth while you retain a direct route to the rows and queries behind it.
+- **Own the data.** Each profile is an AES-256-GCM-encrypted DuckDB file you
+  can back up and query locally.
+- **Keep a canonical record.** Import batches, deduplication, and curation
+  state are recorded separately from source data.
+- **Verify answers.** CLI, SQL, and MCP use the same modeled tables, so an
+  assistant never becomes the source of truth.
 
 ## The workflow
 
 ![Downloaded Files, Linked Accounts, and Connected Sheets flow into an
 Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
 
-Start with files you already have, such as CSV, OFX/QFX/QBO, Excel, Parquet,
-or a bank-statement PDF with selectable text. MoneyBin can also pull connected
-bank data through Plaid and live tabular data from Google Sheets. Those inputs
-flow through one pipeline before reports, SQL, and AI tools read them.
-
-That separation is intentional. An import is evidence, derived tables are
-rebuildable, and your notes, tags, categories, and other edits are auditable
-state rather than hidden changes to the source file.
+Inputs include CSV, OFX/QFX/QBO, Excel, Parquet, and selectable-text PDFs,
+plus linked Plaid accounts and connected Google Sheets. Imports remain source
+evidence; derived tables can be rebuilt, while notes, tags, categories, and
+other edits are auditable state.
 
 ## Try it safely
 
@@ -74,10 +58,10 @@ supported, and Windows has not yet been tested. You need Python 3.12+,
 git clone https://github.com/bsaffel/moneybin.git
 cd moneybin
 make setup
-moneybin demo
+uv run moneybin demo
 ```
 
-`moneybin demo` creates a dedicated profile populated only with deterministic
+`uv run moneybin demo` creates a dedicated profile populated only with deterministic
 synthetic data. It runs the normal pipeline, checks the result, and prints a
 first net-worth answer. Re-running it rebuilds that demo profile; it never
 imports or changes a real profile.
@@ -89,9 +73,9 @@ evaluate a query or MCP workflow before pointing it at personal history.
 Use the demo to ask a few concrete questions:
 
 ```bash
-moneybin reports spending
-moneybin reports cashflow
-moneybin sql query "SELECT * FROM reports.net_worth LIMIT 10"
+uv run moneybin reports spending
+uv run moneybin reports cashflow
+uv run moneybin sql query "SELECT * FROM reports.net_worth LIMIT 10"
 ```
 
 The demo command switches the active profile to `demo` after a clean run. If
@@ -103,9 +87,9 @@ When you are ready to work with real data, create a separate profile and point
 MoneyBin at an export you can keep:
 
 ```bash
-moneybin profile create personal
-moneybin import files ~/Downloads/checking.qfx
-moneybin reports networth
+uv run moneybin profile create personal
+uv run moneybin import files ~/Downloads/checking.qfx
+uv run moneybin reports networth
 ```
 
 The import command refreshes derived data automatically. You can safely repeat
@@ -114,20 +98,17 @@ and content-based matching to avoid double-counting. Before a large first
 import, create an encrypted backup:
 
 ```bash
-moneybin db backup
-moneybin import files ~/Downloads/transactions.csv
-moneybin reports spending
+uv run moneybin db backup
+uv run moneybin import files ~/Downloads/transactions.csv
+uv run moneybin reports spending
 ```
 
 Use the [data import guide](docs/guides/data-import.md) for source-specific
 paths, including migrations from Tiller, Mint, YNAB, and generic CSV exports.
 It also documents what data survives an import and how to revert a batch.
 
-You do not have to abandon your current workflow on day one. Start with an
-export, inspect the imported rows, and keep the source files as your fallback.
-MoneyBin preserves the source evidence and records how each import was handled,
-so you can validate totals before making it the place you return to every
-month. The goal is confidence, not a migration leap of faith.
+Start with an export, inspect the imported rows, and keep the source files
+until you have validated the totals.
 
 ## Use an assistant without hiding the data model
 
@@ -136,7 +117,7 @@ Claude Code, Cursor, VS Code, Gemini CLI, and Codex. The installer writes the
 appropriate local client configuration:
 
 ```bash
-moneybin mcp install --client claude-code --profile personal
+uv run moneybin mcp install --client claude-code --profile personal
 ```
 
 Once connected, use the assistant for questions that benefit from exploration:
@@ -147,9 +128,8 @@ Once connected, use the assistant for questions that benefit from exploration:
 > Show my current net worth and the accounts with the largest month-over-month
 > change.
 
-The MCP server, CLI, and read-only SQL interface are peers over the same data.
-Tool responses include structured results and next-step hints; you can always
-fall back to the CLI or SQL when you want to verify a conclusion yourself.
+The MCP server runs over the same data model as the CLI and read-only SQL
+interface. Use SQL or the CLI to inspect a conclusion yourself.
 
 ### Know the AI boundary
 
@@ -169,15 +149,12 @@ MoneyBin is pre-v1 and in daily use by its author. Its working center is a
 local, source-backed ledger for people comfortable with a terminal or an
 MCP-enabled client.
 
-The everyday loop is working: import or sync data, let MoneyBin rebuild the
-canonical tables, review what needs attention, and ask for reports or direct
-queries. It covers balances, spending, cash flow, recurring activity, and net
-worth without forcing you into a separate reporting store.
-
-The model also carries curation state—categories, merchants, notes, tags, and
-splits—without overwriting source data. An investment ledger supports positions,
-tax lots, and realized gains; its limitations are documented plainly before you
-rely on it for a tax workflow.
+- Import or sync data, rebuild canonical tables, and query balances, spending,
+  cash flow, recurring activity, and net worth.
+- Keep categories, merchants, notes, tags, and splits without overwriting
+  source data.
+- Track investment positions, tax lots, and realized gains; do not treat it as
+  tax-preparation software.
 
 The detailed boundary—including source support, known limitations, and which
 workflows have been exercised end to end—is in [What Works Today](docs/features.md).

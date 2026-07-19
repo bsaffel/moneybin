@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # MoneyBin Documentation
 
 Documentation for MoneyBin. The pages below are organized by what you're trying to do.
@@ -9,9 +9,9 @@ Three recommended paths. Pick the row that matches you.
 
 | You are... | Read in this order |
 |---|---|
-| **First-time visitor, deciding whether MoneyBin fits** | [`audience.md`](audience.md) → [`features.md`](features.md) → [top-level README Quick Start](../README.md#quick-start) |
+| **First-time visitor, deciding whether MoneyBin fits** | [`audience.md`](audience.md) → [`features.md`](features.md) → [top-level README demo](../README.md#try-it-safely) |
 | **Power user setting up and running it daily** | [`guides/data-import.md`](guides/data-import.md) → [`guides/cli-reference.md`](guides/cli-reference.md) → [`guides/categorization.md`](guides/categorization.md) |
-| **Building agents on top of MoneyBin** | [`guides/mcp-server.md`](guides/mcp-server.md) (envelope, tool catalog, sensitivity tiers) → [`reference/prompts/`](reference/prompts/) (example prompts and workflows) → [`guides/mcp-clients.md`](guides/mcp-clients.md) (per-client install) |
+| **Building agents on top of MoneyBin** | [`guides/mcp-server.md`](guides/mcp-server.md) (tool contract and sensitivity tiers) → [`guides/mcp-clients.md`](guides/mcp-clients.md) (per-client install) |
 
 Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- Last reviewed: YYYY-MM-DD -->` header at the top — if the date looks old relative to recent CHANGELOG entries, the doc may lag the code.
 
@@ -26,7 +26,7 @@ Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- La
 
 ### Install and first run
 
-- **[Top-level README quick start](../README.md#quick-start)** — Clone, `make setup`, first import.
+- **[Top-level README demo](../README.md#try-it-safely)** — Clone, `make setup`, and evaluate with synthetic data.
 - **[Data import](guides/data-import.md)** — All supported file formats (OFX/QFX/QBO, CSV, TSV, Excel, Parquet, Feather) and the inbox workflow. Covers migration from Tiller, Monarch, Copilot exports.
 - **[Profiles](guides/profiles.md)** — Isolation boundaries, profile lifecycle, per-profile config.
 
@@ -42,7 +42,7 @@ Use your browser's Ctrl/Cmd-F to search this index; every doc carries a `<!-- La
 For builders. The first two links are the developer surface; the last two are for end-user client setup.
 
 - **[MCP server](guides/mcp-server.md)** — The builder doc. Tool catalog, response envelope, sensitivity tiers, latency and cost guidance for planning tool budgets.
-- **[Example prompts and workflows](reference/prompts/)** — Ready-to-use prompts (monthly review, anomaly detection, tax prep, transaction search) you can adapt for your own agent.
+- **[MCP prompts](reference/prompts/)** — The prompt starters registered by the local server.
 - **[Setting up Claude Desktop](guides/setting-up-claude-desktop.md)** — The end-user happy path: install, one `mcp install` command, restart, ask a first question.
 - **[MCP clients](guides/mcp-clients.md)** — Per-client setup for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex, and the ChatGPT desktop app (plus why ChatGPT on the web can't connect yet).
 - **Extending the server** — See [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) for the recipe (service, decorator, CLI peer, tests).
@@ -51,6 +51,7 @@ For builders. The first two links are the developer surface; the last two are fo
 
 - **[Database security](guides/database-security.md)** — AES-256-GCM encryption, Argon2id key derivation, key management, schema migrations.
 - **[Threat model](guides/threat-model.md)** — What MoneyBin defends against, what it doesn't, where the trust boundaries sit.
+- **[What the AI Provider Sees](guides/what-the-ai-sees.md)** — What a connected AI client can receive and send to its model provider.
 - **[Observability](guides/observability.md)** — Structured logging, the metrics registry, redaction.
 
 ### Query your data directly
@@ -82,7 +83,7 @@ Deep mechanics — not required reading, but useful when you're debugging or ext
 
 ## Browse by directory
 
-`guides/` (how-tos) · `reference/` (lookup material, including [`reference/prompts/`](reference/prompts/)) · `architecture/` (focused architectural notes) · `tech/` (internal-mechanics deep-dives) · `specs/` (feature specs, indexed by [`specs/INDEX.md`](specs/INDEX.md)) · `decisions/` (ADRs) · `assets/` (images).
+`guides/` (how-tos) · `reference/` (lookup material) · `architecture/` (focused architectural notes) · `tech/` (internal-mechanics deep-dives) · `specs/` (feature specs, indexed by [`specs/INDEX.md`](specs/INDEX.md)) · `decisions/` (ADRs) · `assets/` (images).
 
 ## What changed when
 

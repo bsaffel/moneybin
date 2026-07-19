@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Configuring MCP Clients
 
 MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
@@ -31,7 +31,7 @@ The supported `--client` values are:
 - `codex` (CLI, Desktop app, IDE extension — all share `~/.codex/config.toml`)
 - `chatgpt-desktop` (the ChatGPT desktop app hosts Codex and shares that same file — installing for either covers both)
 
-ChatGPT on the **web** is the one surface that cannot reach a local MoneyBin; it needs remote MCP (M3D). See [ChatGPT desktop app](#chatgpt-desktop-app).
+ChatGPT on the **web** cannot reach a local MoneyBin. See [ChatGPT desktop app](#chatgpt-desktop-app).
 
 If `--client` is omitted, `claude-desktop` is the default. To look up the install path the command would write to (without writing), use:
 
@@ -79,7 +79,7 @@ Anthropic's desktop app for macOS and Windows.
 
 Anthropic now blesses **desktop extensions (`.mcpb` bundles)** as the primary way to add a local MCP server: one file, installed through the app's own UI, no JSON editing. Hand-editing `claude_desktop_config.json` still works and is still supported — it is simply the legacy path now.
 
-**MoneyBin does not ship an `.mcpb` bundle yet** (it is tracked under M3B, alongside the PyPI publish). Until it does, the config-file path below is the way in — it is the legacy path, not a broken one.
+**MoneyBin does not ship an `.mcpb` bundle.** The config-file path below is the supported way to install it.
 
 ```bash
 moneybin mcp install --client claude-desktop -y
@@ -91,7 +91,7 @@ moneybin mcp install --client claude-desktop -y
 - **Server lifecycle:** One server process per app instance, spawned at launch and reused across all chats. Opening "New chat" does not spawn another server.
 - **Confirmation UI:** Renders Claude's standard tool-call approval prompt. Tools marked `destructiveHint=true` (categorization commits, rule deletes, refresh runs) render with a more explicit confirmation than read-only tools.
 
-**Cowork sessions can't see MoneyBin.** Claude's Cowork surface runs *remote* sessions in Anthropic's cloud, and a remote session cannot reach an MCP server running on your machine — it will behave as though MoneyBin isn't installed. Local Claude Desktop sessions see it normally. This is not a misconfiguration; a local stdio server is simply unreachable from a cloud session (the fix is remote MCP transport, tracked as M3D).
+**Cowork sessions can't see MoneyBin.** Claude's Cowork surface runs *remote* sessions in Anthropic's cloud, and a remote session cannot reach an MCP server running on your machine — it will behave as though MoneyBin isn't installed. Local Claude Desktop sessions see it normally. This is not a misconfiguration; a local stdio server is simply unreachable from a cloud session.
 
 **Managed / work devices.** If Claude Desktop is administered by an organization, two admin flags decide whether any of this is available to you: `isLocalDevMcpEnabled` (local MCP servers at all) and `isDesktopExtensionEnabled` (`.mcpb` extensions). With them off, MoneyBin cannot be installed into that Claude Desktop, and the failure looks like the server silently never appearing. Check with whoever administers the device before debugging further.
 
@@ -221,7 +221,7 @@ moneybin mcp install --client chatgpt-desktop -y
 - **Restart required:** Yes. In ChatGPT, the server appears under **Settings → MCP servers**; select **Restart** there to pick it up. You can also add it through that UI by hand (Add server → choose **STDIO** → paste the command).
 - **Server lifecycle:** One server per app instance; the shared config also means every `codex` shell invocation auto-loads MoneyBin — see [Concurrency](#concurrency-which-clients-share-a-server).
 
-> **ChatGPT on the web cannot see this.** "ChatGPT web doesn't read local Codex configuration files" — it reaches MCP only through *remote* connectors over HTTPS, and MoneyBin's server is local. Connecting chatgpt.com (or mobile) needs authenticated remote transport, tracked as **M3D** on the [roadmap](../roadmap.md).
+> **ChatGPT on the web cannot see this.** "ChatGPT web doesn't read local Codex configuration files" — it reaches MCP only through *remote* connectors over HTTPS, and MoneyBin's server is local.
 >
 > **Do not** reach for `moneybin mcp serve --transport streamable-http --insecure` to bridge that gap. It has no authentication at all — anyone who can reach the port can read and write your finances — and ChatGPT's cloud can't reach a port on your laptop anyway. See [Transport](#transport).
 

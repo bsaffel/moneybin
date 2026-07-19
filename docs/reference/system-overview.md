@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # System Overview
 
 MoneyBin is a local-first, AI-native personal finance platform. This page is the orientation map — what each major piece does, how they fit together, and what runs when. For the architectural depth (primitives, contracts, layers, internal invariants), see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`data-model.md`](data-model.md). For the full reference, see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).
@@ -11,7 +11,7 @@ Five runtime components plus three cross-cutting concerns. The data they share i
 |---|---|---|---|
 | **Local DuckDB store** | Storage | One encrypted file per profile under `~/.moneybin/profiles/<name>/moneybin.duckdb`. Holds `raw → prep → core → reports` plus the `app.*` overlay. | [`database-security.md`](../guides/database-security.md), [`data-model.md`](data-model.md) |
 | **CLI** | Runtime (per-invocation) | Typer-based command surface (Typer is the argparse-style CLI framework); first-class agent peer to MCP. Every command supports `--output json` and returns the same response envelope as the matching MCP tool. | [`cli-reference.md`](../guides/cli-reference.md) |
-| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). Registers around seventy tools across roughly a dozen domains. Stdio transport today; Streamable HTTP planned. | [`mcp-server.md`](../guides/mcp-server.md) |
+| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). Registers more than 100 tools across roughly a dozen domains. Stdio transport today. | [`mcp-server.md`](../guides/mcp-server.md) |
 | **SQLMesh pipeline** | Runtime (on-demand) | Compiles and runs the `raw → prep → core → reports` transformations. SQLMesh owns every write to `prep.*`, `core.*`, `reports.*`, `meta.*`, and `seeds.*`. | [`data-pipeline.md`](../guides/data-pipeline.md) |
 | **Sync client** | Runtime (on-demand) | Talks to `moneybin-sync` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
 | **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that enforces sensitivity tiers, redaction, and the read/write allowlist for every MCP call. DDL is rejected; managed writes target `app.*` and `raw.*` only. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
@@ -117,7 +117,7 @@ Once `db init` completes, the keychain (or your passphrase) holds the key; subse
 
 ## Surfaces
 
-The three peer surfaces (CLI, MCP, SQL) and the planned Web UI all read from the same `core.*` / `reports.*` interface set and the same `app.*` overlay. Writes from MCP are restricted to `app.*` (user state) and `raw.*` (imports and manual entry) by the privacy middleware, and the MCP `sql_query` tool enforces read-only via SQL parsing. The CLI's `moneybin db shell` and `moneybin db query` attach the database **writable** — the convention forbids writes to `core.*` and `reports.*`, but the middleware does not run on those paths, so ad-hoc SQL is on you.
+The three current surfaces (CLI, MCP, SQL) read from the same `core.*` / `reports.*` interface set and the same `app.*` overlay. Writes from MCP are restricted to `app.*` (user state) and `raw.*` (imports and manual entry) by the privacy middleware, and the MCP `sql_query` tool enforces read-only via SQL parsing. The CLI's `moneybin db shell` and `moneybin db query` attach the database **writable** — the convention forbids writes to `core.*` and `reports.*`, but the middleware does not run on those paths, so ad-hoc SQL is on you.
 
 ### CLI
 
@@ -125,15 +125,11 @@ Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `r
 
 ### MCP server
 
-Around seventy tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today; Streamable HTTP is planned alongside the web UI. Supported in eight clients today — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
+More than 100 tools across roughly a dozen domains (`accounts.*`, `transactions.*`, `transactions.categorize.*`, `reports.*`, `refresh`, `sync.*`, `merchants.*`, `sql`, and a handful more). Stdio transport today. Supported in eight client configurations — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)
 
 ### SQL
 
 Read-only DuckDB query against the `core.*` and `reports.*` interface set. Reachable via `moneybin db shell`, the `sql_query` MCP tool, and any DuckDB-compatible client given the profile's encryption key. External clients (DBeaver, Datasette, the plain `duckdb` CLI, Python/R notebooks) need that key — `moneybin db key` prints it for the current profile. → [`sql-access.md`](../guides/sql-access.md)
-
-### Web UI
-
-Planned. A browser-based dashboard for net worth, spending, account management, balance reconciliation, and review queues. Will run against a local MoneyBin via the Streamable HTTP MCP transport, or against the hosted tier once it lands. Not a native mobile app — the web UI will work in a phone browser, but no native iOS/Android client is on the v1 roadmap. → [`roadmap.md`](../roadmap.md)
 
 ## Lifecycle of an MCP tool call
 
