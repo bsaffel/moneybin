@@ -10,6 +10,11 @@ before producing anything:
 - `design-system/readme.md` — brand direction, voice, and content rules
 - `design-system/tokens/` — colors, typography, shape (CSS custom properties)
 - `design-system/guidelines/*.html` — specimen cards (Colors, Type, Shape, Brand, Charts, Iconography, Voice)
+- **The four binding grammar docs** — each wins in its own domain over anything summarized here or elsewhere. Read the one that covers what you are building:
+  - `design-system/charts.md` — chart grammar (interpolation, color tiers, provenance ladder, selection)
+  - `design-system/motion.md` — motion doctrine (state-bearing motion only; amounts never animate)
+  - `design-system/patterns.md` — app chrome (rail shell, floating layer, ⌘K palette, table anatomy, import mapper, chord registry)
+  - `design-system/ai-surface.md` — the ask surface, consent tiers, provider policy
 - `design-system/components/<group>/<Name>.jsx` + `.prompt.md` — the real components (Button, Chip, Icon, Amount, WidgetCard, VaultStatusBar, Mark, Wordmark, DuckKey)
 - `design-system/ui_kits/web_app/index.html` — a full dashboard exemplar
 
