@@ -5,6 +5,14 @@
    average cost the pooled remaining basis is the meaningful figure and can
    exceed a lot's own total.
 
+   Market value is WITHHELD (status 'withheld', both figures NULL) whenever the share
+   COUNT is known wrong — a broker snapshot contradicting the ledger, an unreconciled
+   split, or a fresh snapshot omitting a position the ledger still carries. The
+   predicate is quantity-specific by design: market value is quantity x price and does
+   not touch cost basis, so the broader investment_holdings_divergence and
+   investment_staging_rejects doctor checks would each withhold a correct number for
+   reasons that cannot affect it.
+
    The provider_reported_* columns are STORE-DON'T-TRUST: the broker's CLAIM
    about the same position, joined from its newest holdings snapshot and never
    blended into the ledger-derived figures above them. They exist to be
@@ -111,6 +119,94 @@ WITH positions AS (
     price_date <= CURRENT_DATE
   QUALIFY
     ROW_NUMBER() OVER (PARTITION BY security_id, quote_currency ORDER BY price_date DESC) = 1
+), split_reject_securities AS (
+  /* A Plaid-reported split is routed to review as split_underivable and held out of
+     core.fct_investment_transactions, because a derived multiplier that is wrong
+     corrupts the basis of the whole position. Until it lands, the position still
+     reports the PRE-split quantity, and quantity x price is wrong by the split factor
+     while every other signal reads healthy. Detected per SECURITY: a split is a
+     corporate action, so a reject arriving through one account implicates every
+     position in that security. */
+  SELECT DISTINCT
+    security_id,
+    trade_date
+  FROM prep.stg_plaid__investment_transactions
+  WHERE
+    review_reason = 'split_underivable' AND NOT security_id IS NULL
+), position_split_events AS (
+  /* Resolved per POSITION: a ledger that already carries a split on that date has been
+     restated correctly, whoever supplied it. This is also what makes the withhold
+     self-clearing — when the Plaid split behaviour is settled and the events reach the
+     ledger, positions stop withholding with no resolved-flag to maintain. */
+  SELECT DISTINCT
+    account_id,
+    security_id,
+    trade_date
+  FROM core.fct_investment_transactions
+  WHERE
+    type = 'split'
+), broker_covered_accounts AS (
+  /* An account is broker-covered when its item has a current snapshot receipt. Without
+     this scope the phantom clause below would fire on every manual-only account, whose
+     provider claim is NULL simply because no broker reports it — silently unvaluing
+     every manually-tracked position in the database.
+
+     Joined on source_origin alone, NOT on source_file: coverage is a property of the
+     ITEM, and requiring the account to appear in the newest snapshot itself would make
+     the phantom clause unreachable — a position dropped from that snapshot is exactly
+     the case being detected. */
+  SELECT DISTINCT
+    h.account_id
+  FROM prep.stg_plaid__investment_holdings AS h
+  JOIN newest_snapshot AS ns
+    ON ns.source_origin = h.source_origin
+), withheld AS (
+  /* Three clauses, none redundant — each guards a failure the others miss, and all
+     three are quantity-specific: market value is quantity x price and does not depend
+     on cost basis at all, so gating on investment_holdings_divergence (which also
+     fails on a pure cost-basis mismatch) or on investment_staging_rejects (which fires
+     on unmapped_subtype and transfer_direction_underivable too) would withhold a
+     correct number for unrelated reasons.
+
+     The third is not covered by the first: when a fresh snapshot omits a position the
+     ledger still carries, provider_reported_quantity is NULL, so
+     `quantity <> provider_reported_quantity` evaluates to UNKNOWN rather than true and
+     the position would slip through — publishing a market value for shares the broker
+     says are gone and overstating net worth by exactly that amount. */
+  SELECT
+    pos.account_id,
+    pos.security_id,
+    (
+      NOT pr.provider_reported_quantity IS NULL
+      AND pos.quantity <> pr.provider_reported_quantity
+    )
+    OR EXISTS(
+      SELECT
+        1
+      FROM split_reject_securities AS sr
+      WHERE
+        sr.security_id = pos.security_id
+        AND NOT EXISTS(
+          SELECT
+            1
+          FROM position_split_events AS pse
+          WHERE
+            pse.account_id = pos.account_id
+            AND pse.security_id = pos.security_id
+            AND pse.trade_date = sr.trade_date
+        )
+    )
+    OR (
+      pos.account_id IN (
+        SELECT
+          account_id
+        FROM broker_covered_accounts
+      )
+      AND pr.provider_reported_quantity IS NULL
+    ) AS is_withheld
+  FROM positions AS pos
+  LEFT JOIN provider_reported AS pr
+    ON pr.account_id = pos.account_id AND pr.security_id = pos.security_id
 )
 SELECT
   p.account_id, /* FK to core.dim_accounts (grain) */
@@ -119,24 +215,34 @@ SELECT
   p.cost_basis, /* Total open basis (Σ cost_basis_remaining); cast back to (18,2) — SUM widens to (38,2) */
   p.average_cost, /* cost_basis / quantity; cast wraps the WHOLE division so the result is DECIMAL(28,10), not DOUBLE (DuckDB decimal / promotes to DOUBLE); (28,10) for crypto fractional-unit precision; NULL when quantity is 0 */
   p.currency_code, /* Denominating currency (one per position) */
-  (
-    p.quantity * lp.close
-  )::DECIMAL(18, 2) AS market_value, /* quantity × the resolved close. NULL — never zero — when no usable price applies: a zero is indistinguishable from a worthless position and silently understates every aggregate that sums it */
-  (
-    (
+  CASE
+    WHEN wh.is_withheld
+    THEN NULL
+    ELSE (
       p.quantity * lp.close
-    )::DECIMAL(18, 2) - p.cost_basis
-  )::DECIMAL(18, 2) AS unrealized_gain, /* market_value less cost basis; NULL whenever market_value is NULL. Realized gain is ledger-derived and lives in core.fct_realized_gains */
+    )::DECIMAL(18, 2)
+  END AS market_value, /* quantity × the resolved close. NULL — never zero — when no usable price applies or the quantity is known wrong: a zero is indistinguishable from a worthless position and silently understates every aggregate that sums it */
+  CASE
+    WHEN wh.is_withheld
+    THEN NULL
+    ELSE (
+      (
+        p.quantity * lp.close
+      )::DECIMAL(18, 2) - p.cost_basis
+    )::DECIMAL(18, 2)
+  END AS unrealized_gain, /* market_value less cost basis; NULL whenever market_value is NULL. Realized gain is ledger-derived and lives in core.fct_realized_gains */
   lp.price_date, /* The date of the close used, which may be earlier than today; NULL when unpriced */
   lp.source AS price_source, /* Which source supplied the close (see core.fct_security_prices); NULL when unpriced */
-  CAST(CURRENT_DATE - lp.price_date AS INT) AS days_since_observed, /* Calendar days between the price used and today (uncategorized_queue.age_days precedent for this CAST-subtraction form). DATE_DIFF('day', ...) here fails all 6 of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault */
+  CAST(CURRENT_DATE - lp.price_date AS INT) AS days_since_observed, /* Calendar days between the price used and today (uncategorized_queue.age_days precedent for this CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault */
   CASE
+    WHEN wh.is_withheld
+    THEN 'withheld'
     WHEN lp.close IS NULL
     THEN 'unpriced'
     WHEN lp.price_date = CURRENT_DATE
     THEN 'valued'
     ELSE 'carried_forward'
-  END AS valuation_status, /* valued | carried_forward | unpriced | withheld. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure */
+  END AS valuation_status, /* valued | carried_forward | unpriced | withheld. Every status either carries a number the reader can rely on or carries none at all — no status publishes a qualified figure. The non-valued statuses stay distinct because each has a different remedy: unpriced wants a price feed; withheld wants the share count reconciled — an unreconciled split recorded, a broker divergence resolved, or a position the broker no longer reports closed out */
   pr.provider_reported_quantity, /* NON-AUTHORITATIVE: the broker's claimed open units in its newest snapshot. Reconciliation reference only — `quantity` above is MoneyBin's figure. NULL = the broker's newest snapshot does not report this position */
   pr.provider_reported_cost_basis, /* NON-AUTHORITATIVE: the broker's claimed cost basis. Never overwrites or feeds `cost_basis` above; system doctor warns when the two diverge */
   pr.provider_reported_value, /* NON-AUTHORITATIVE: the broker's claimed market value. MoneyBin computes `market_value` above independently, as quantity × its own resolved close, and never blends this claim into it — no doctor check reconciles the two yet */
@@ -147,3 +253,5 @@ LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id
 LEFT JOIN latest_price AS lp
   ON lp.security_id = p.security_id AND lp.quote_currency = p.currency_code
+LEFT JOIN withheld AS wh
+  ON wh.account_id = p.account_id AND wh.security_id = p.security_id
