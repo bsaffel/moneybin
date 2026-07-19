@@ -47,6 +47,7 @@ from moneybin.mcp.confirmation import (
 )
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.mcp.write_contracts import FiniteDecimal
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
@@ -67,11 +68,13 @@ from moneybin.privacy.payloads.accounts import (
     AccountsResolveView,
     AccountsSummaryView,
     AccountSummaryStats,
+    BalanceAssertionStatePayload,
 )
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionDeletePayload,
     BalanceAssertionListPayload,
     BalanceAssertionPayload,
+    BalanceAssertionRow,
     BalanceObservationListPayload,
 )
 from moneybin.privacy.redaction import redact_typed
@@ -88,6 +91,7 @@ from moneybin.services.entity_reference import (
     MissingEntity,
     resolve_entity_reference,
 )
+from moneybin.services.mutation_context import current_operation_id
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
@@ -1309,6 +1313,191 @@ def register_accounts_coarse_reads(mcp: FastMCP) -> None:
     # Plan 6 cutover removals: accounts_get, accounts_summary, accounts_resolve,
     # accounts_balance_history, and accounts_balance_assertions. The live
     # registrations stay untouched until the complete registry activates.
+
+
+# ─── Dormant coarse write replacements ────────────────────────────────────
+
+
+BalanceAmount = Annotated[
+    FiniteDecimal,
+    Field(max_digits=18, decimal_places=2),
+]
+
+
+def _load_balance_assertion_snapshot(
+    account_id: str,
+    as_of: _date,
+) -> BalanceAssertionRow | None:
+    """Load one assertion without retaining a read connection."""
+    with get_database(read_only=True) as db:
+        return BalanceService(db).get_assertion(account_id, as_of)
+
+
+def _balance_assertion_remove_binding(
+    snapshot: BalanceAssertionRow,
+) -> ConfirmationBinding:
+    """Bind approval to the exact live assertion about to be removed."""
+    return ConfirmationBinding(
+        arguments={
+            "account_id": snapshot.account_id,
+            "as_of": snapshot.assertion_date.isoformat(),
+            "state": "absent",
+            "assertion": {
+                "amount": str(snapshot.balance),
+                "notes": snapshot.notes,
+                "created_at": snapshot.created_at,
+            },
+        },
+        resolved_ids=(snapshot.account_id, snapshot.assertion_date.isoformat()),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="balance_assertion_remove",
+        blast_radius={"assertions": 1},
+    )
+
+
+def _assert_balance_present(
+    account_id: str,
+    as_of: _date,
+    amount: Decimal,
+) -> Literal["present", "absent"]:
+    """Upsert an assertion unless its amount already matches the target."""
+    with get_database(read_only=False) as db:
+        service = BalanceService(db)
+        prior = service.get_assertion(account_id, as_of)
+        if prior is not None and prior.balance == amount:
+            raise UserError(
+                "The balance assertion already matches the requested state.",
+                code=error_codes.MUTATION_NOTHING_TO_DO,
+            )
+        service.assert_balance(
+            account_id=account_id,
+            assertion_date=as_of,
+            balance=amount,
+            notes=prior.notes if prior is not None else None,
+            actor="mcp",
+        )
+    return "present" if prior is not None else "absent"
+
+
+def _remove_balance_assertion(
+    account_id: str,
+    as_of: _date,
+    grant: ConfirmationGrant,
+) -> None:
+    """Recompute, verify, and remove one assertion in one transaction."""
+
+    def verify(assertion: BalanceAssertionRow) -> None:
+        grant.verify(_balance_assertion_remove_binding(assertion))
+
+    with get_database(read_only=False) as db:
+        removed = BalanceService(db).delete_assertion(
+            account_id,
+            as_of,
+            actor="mcp",
+            verify=verify,
+        )
+    if not removed:
+        raise UserError(
+            "The balance assertion is already absent.",
+            code=error_codes.MUTATION_NOTHING_TO_DO,
+        )
+
+
+@mcp_tool(read_only=False, destructive=True, idempotent=True)
+async def accounts_balance_assert_coarse(
+    account: str,
+    as_of: _date,
+    state: Literal["present", "absent"] = "present",
+    amount: BalanceAmount | None = None,
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[BalanceAssertionStatePayload]:
+    """Declare one resolved account's balance assertion present or absent."""
+    if state == "present" and amount is None:
+        raise UserError(
+            "state='present' requires amount.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if state == "absent" and amount is not None:
+        raise UserError(
+            "amount is only valid with state='present'.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if state == "present" and confirmation_token is not None:
+        raise UserError(
+            "confirmation_token is only valid with state='absent'.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+
+    account_id = await _resolve_account_reference(account, include_closed=True)
+    if state == "present":
+        prior_state = await asyncio.to_thread(
+            _assert_balance_present,
+            account_id,
+            as_of,
+            cast(Decimal, amount),
+        )
+    else:
+        if confirmation_token is None:
+            snapshot = await asyncio.to_thread(
+                _load_balance_assertion_snapshot,
+                account_id,
+                as_of,
+            )
+            if snapshot is None:
+                raise UserError(
+                    "The balance assertion is already absent.",
+                    code=error_codes.MUTATION_NOTHING_TO_DO,
+                )
+            binding = _balance_assertion_remove_binding(snapshot)
+            message = (
+                "Remove the manual balance assertion for account "
+                f"{account_id} on {as_of.isoformat()}? This hard-deletes the "
+                "assertion; recover it with system_audit_undo(operation_id)."
+            )
+        else:
+            binding = None
+            message = ""
+        grant = await grant_confirmation_or_raise(
+            binding=binding,
+            message=message,
+            confirmation_token=confirmation_token,
+        )
+        await asyncio.to_thread(
+            _remove_balance_assertion,
+            account_id,
+            as_of,
+            grant,
+        )
+        prior_state = "present"
+
+    return build_envelope(
+        data=BalanceAssertionStatePayload(
+            account_id=account_id,
+            as_of=as_of,
+            prior_state=prior_state,
+            state=state,
+            operation_id=current_operation_id(),
+        )
+    )
+
+
+def register_accounts_coarse_writes(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 declarative balance assertion write."""
+    register(
+        mcp,
+        accounts_balance_assert_coarse,
+        "accounts_balance_assert",
+        "Declare a manual balance assertion present or absent for one resolved "
+        "account and date. Present requires amount and upserts "
+        "app.balance_assertions; absent forbids amount, requires exact "
+        "payload-bound confirmation, and hard-deletes the assertion. Repeat an "
+        "unchanged target state returns mutation_nothing_to_do. Reverse a "
+        "mutation with system_audit_undo(operation_id). Amounts are positions "
+        "in the currency named by summary.display_currency.",
+        privacy_actor="accounts_balance_assert",
+    )
 
 
 # ─── Registration ──────────────────────────────────────────────────────────

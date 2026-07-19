@@ -14,6 +14,7 @@ surrogate (spec D6) is not PII. CRITICAL propagates from
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -189,6 +190,17 @@ AccountsBalancesCoarsePayload = Annotated[
     | AccountsBalancesAssertionsView,
     Field(discriminator="kind"),
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceAssertionStatePayload:
+    """Result of declaring one balance assertion's target state."""
+
+    account_id: Annotated[str, DataClass.RECORD_ID]
+    as_of: Annotated[date, DataClass.TXN_DATE]
+    prior_state: Annotated[Literal["present", "absent"], DataClass.TXN_TYPE]
+    state: Annotated[Literal["present", "absent"], DataClass.TXN_TYPE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
 @dataclass(frozen=True, slots=True)

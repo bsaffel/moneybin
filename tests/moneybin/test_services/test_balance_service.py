@@ -13,6 +13,7 @@ from moneybin.errors import UserError
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
     BalanceAssertionPayload,
+    BalanceAssertionRow,
     BalanceObservationListPayload,
 )
 from moneybin.services.balance_service import BalanceService
@@ -111,6 +112,47 @@ class TestAssertionsCRUD:
     def test_delete_silent_on_missing(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
         svc.delete_assertion("acct_a", date(2099, 1, 1), actor="cli")  # no error
+
+    @pytest.mark.unit
+    def test_delete_verifies_live_assertion_inside_atomic_write(
+        self, assertion_db: Database
+    ) -> None:
+        svc = BalanceService(assertion_db)
+        assertion_date = date(2026, 1, 31)
+        svc.assert_balance(
+            "acct_a",
+            assertion_date,
+            Decimal("100.00"),
+            actor="cli",
+        )
+        seen: list[Decimal] = []
+
+        def refuse(assertion: BalanceAssertionRow) -> None:
+            seen.append(assertion.balance)
+            raise UserError(
+                "Confirmation no longer matches the assertion.",
+                code="mutation_confirmation_mismatch",
+            )
+
+        with pytest.raises(UserError, match="no longer matches"):
+            svc.delete_assertion(
+                "acct_a",
+                assertion_date,
+                actor="cli",
+                verify=refuse,
+            )
+
+        assert seen == [Decimal("100.00")]
+        assert svc.list_assertions("acct_a").assertions[0].balance == Decimal("100.00")
+        delete_audits = assertion_db.execute(
+            """
+            SELECT 1
+            FROM app.audit_log
+            WHERE target_id = ? AND action = 'balance_assertion.delete'
+            """,
+            ["acct_a|2026-01-31"],
+        ).fetchall()
+        assert delete_audits == []
 
     @pytest.mark.unit
     def test_list_filters_by_account(self, assertion_db: Database) -> None:

@@ -10,6 +10,7 @@ the rename / include / archive / unarchive narrow tools.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,11 +19,13 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.accounts import (
+    accounts_balance_assert_coarse,
     accounts_balances_coarse,
     accounts_coarse,
     accounts_resolve,
     accounts_set,
     register_accounts_coarse_reads,
+    register_accounts_coarse_writes,
     register_accounts_tools,
 )
 
@@ -451,6 +454,231 @@ class TestDormantCoarseAccountReads:
         assert "accounts_balances" in names
         assert "accounts_balance_history" in names
         assert "accounts_balance_assertions" in names
+
+
+class TestDormantCoarseBalanceAssertionWrite:
+    """Target-state behavior for the dormant declarative assertion callback."""
+
+    @pytest.mark.unit
+    async def test_present_requires_amount(self, mcp_db: Path) -> None:
+        response = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+        )
+
+        assert response.error is not None
+        assert response.error.code == "mutation_invalid_input"
+
+    @pytest.mark.unit
+    async def test_absent_forbids_amount(self, mcp_db: Path) -> None:
+        response = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            state="absent",
+            amount=Decimal("1250.00"),
+        )
+
+        assert response.error is not None
+        assert response.error.code == "mutation_invalid_input"
+
+    @pytest.mark.unit
+    async def test_present_resolves_reference_and_upserts_target(
+        self, mcp_db: Path
+    ) -> None:
+        with get_database(read_only=False) as db:
+            db.execute(
+                "UPDATE core.dim_accounts SET display_name = ? WHERE account_id = ?",
+                ["House Checking", "ACC001"],
+            )
+
+        created = await accounts_balance_assert_coarse(
+            account="House Checking",
+            as_of=date(2026, 7, 1),
+            amount=Decimal("1250.00"),
+        )
+        updated = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            amount=Decimal("1300.00"),
+        )
+
+        assert created.data.account_id == "ACC001"
+        assert created.data.as_of == date(2026, 7, 1)
+        assert created.data.prior_state == "absent"
+        assert created.data.state == "present"
+        assert created.data.operation_id.startswith("op_")
+        assert updated.data.prior_state == "present"
+        assert updated.data.state == "present"
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                """
+                SELECT balance
+                FROM app.balance_assertions
+                WHERE account_id = ? AND assertion_date = ?
+                """,
+                ["ACC001", date(2026, 7, 1)],
+            ).fetchone()
+        assert row == (Decimal("1300.00"),)
+
+    @pytest.mark.unit
+    async def test_present_already_satisfied_is_noop(self, mcp_db: Path) -> None:
+        first = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            amount=Decimal("1250.00"),
+        )
+        second = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            amount=Decimal("1250.00"),
+        )
+
+        assert first.error is None
+        assert second.error is not None
+        assert second.error.code == "mutation_nothing_to_do"
+        with get_database(read_only=True) as db:
+            audits = db.execute(
+                """
+                SELECT action
+                FROM app.audit_log
+                WHERE target_id = ?
+                """,
+                ["ACC001|2026-07-01"],
+            ).fetchall()
+        assert audits == [("balance_assertion.set",)]
+
+    @pytest.mark.unit
+    async def test_absent_already_satisfied_is_noop_without_confirmation(
+        self, mcp_db: Path
+    ) -> None:
+        response = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            state="absent",
+        )
+
+        assert response.error is not None
+        assert response.error.code == "mutation_nothing_to_do"
+        assert response.error.details is None
+
+    @pytest.mark.unit
+    async def test_absent_uses_exact_payload_bound_confirmation(
+        self, mcp_db: Path
+    ) -> None:
+        present = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            amount=Decimal("1250.00"),
+        )
+        required = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            state="absent",
+        )
+        assert required.error is not None
+        assert required.error.code == "mutation_confirmation_required"
+        assert required.error.details is not None
+        assert required.error.details["operation_kind"] == "balance_assertion_remove"
+        assert required.error.details["blast_radius"] == {"assertions": 1}
+        token = required.error.details["confirmation_token"]
+
+        removed = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            state="absent",
+            confirmation_token=token,
+        )
+
+        assert removed.error is None
+        assert removed.data.account_id == "ACC001"
+        assert removed.data.prior_state == "present"
+        assert removed.data.state == "absent"
+        assert removed.data.operation_id != present.data.operation_id
+        with get_database(read_only=True) as db:
+            assertion = db.execute(
+                """
+                SELECT 1
+                FROM app.balance_assertions
+                WHERE account_id = ? AND assertion_date = ?
+                """,
+                ["ACC001", date(2026, 7, 1)],
+            ).fetchone()
+            audit = db.execute(
+                """
+                SELECT actor, action, operation_id
+                FROM app.audit_log
+                WHERE target_id = ? AND action = 'balance_assertion.delete'
+                """,
+                ["ACC001|2026-07-01"],
+            ).fetchall()
+        assert assertion is None
+        assert audit == [("mcp", "balance_assertion.delete", removed.data.operation_id)]
+
+    @pytest.mark.unit
+    async def test_absent_recomputes_exact_assertion_before_delete(
+        self, mcp_db: Path
+    ) -> None:
+        await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            amount=Decimal("1250.00"),
+        )
+        required = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            state="absent",
+        )
+        assert required.error is not None
+        assert required.error.details is not None
+        token = required.error.details["confirmation_token"]
+        await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            amount=Decimal("1300.00"),
+        )
+
+        refused = await accounts_balance_assert_coarse(
+            account="ACC001",
+            as_of=date(2026, 7, 1),
+            state="absent",
+            confirmation_token=token,
+        )
+
+        assert refused.error is not None
+        assert refused.error.code == "mutation_confirmation_mismatch"
+        with get_database(read_only=True) as db:
+            row = db.execute(
+                """
+                SELECT balance
+                FROM app.balance_assertions
+                WHERE account_id = ? AND assertion_date = ?
+                """,
+                ["ACC001", date(2026, 7, 1)],
+            ).fetchone()
+            delete_audits = db.execute(
+                """
+                SELECT 1
+                FROM app.audit_log
+                WHERE target_id = ? AND action = 'balance_assertion.delete'
+                """,
+                ["ACC001|2026-07-01"],
+            ).fetchall()
+        assert row == (Decimal("1300.00"),)
+        assert delete_audits == []
+
+    @pytest.mark.unit
+    async def test_dormant_write_registrar_only_registers_replacement(self) -> None:
+        srv = FastMCP("test")
+        register_accounts_coarse_writes(srv)
+
+        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+        assert [tool.name for tool in tools] == ["accounts_balance_assert"]
+        tool = tools[0]
+        assert tool.annotations is not None
+        assert tool.annotations.readOnlyHint is False
+        assert tool.annotations.destructiveHint is True
+        assert tool.annotations.idempotentHint is True
 
 
 class TestAccountsResolveRegistration:

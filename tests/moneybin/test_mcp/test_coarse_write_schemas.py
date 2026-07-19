@@ -4,13 +4,16 @@ import json
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, get_args
+from unittest.mock import patch
 
 import pytest
 from jsonschema import Draft202012Validator
 from jsonschema import validate as validate_json_schema
 from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
+from mcp.types import TextContent
 from pydantic import TypeAdapter, ValidationError
 
+from moneybin.mcp.tools.accounts import register_accounts_coarse_writes
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     AnnotationRequest,
@@ -31,6 +34,8 @@ from moneybin.mcp.write_contracts import (
 from moneybin.privacy.consent import FEATURE_CATEGORIES
 from moneybin.services.categorization._shared import MatchType as ServiceMatchType
 from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
+
+from .schema_assertions import call_tool_raw, isolated_server, listed_tool
 
 EVAL_CASES_PATH = Path(__file__).parents[2] / "fixtures/mcp_eval/cases.json"
 
@@ -351,6 +356,95 @@ def test_decimal_schema_advertises_json_numbers_not_strings() -> None:
     }
     assert advertised_types <= {"integer", "number"}
     assert "number" in advertised_types
+
+
+async def test_balance_assertion_coarse_schema_and_annotations() -> None:
+    mcp = isolated_server(register_accounts_coarse_writes)
+
+    tool = await listed_tool(mcp, "accounts_balance_assert")
+    amount_schema = tool.inputSchema["properties"]["amount"]
+    numeric_schema = amount_schema["anyOf"][0]
+    advertised_types = {branch["type"] for branch in numeric_schema["anyOf"]}
+
+    assert tool.outputSchema is None
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is True
+    assert tool.annotations.idempotentHint is True
+    assert tool.inputSchema["properties"]["as_of"] == {
+        "format": "date",
+        "type": "string",
+    }
+    assert set(tool.inputSchema["properties"]["state"]["enum"]) == {
+        "present",
+        "absent",
+    }
+    assert tool.inputSchema["properties"]["state"]["default"] == "present"
+    assert amount_schema["anyOf"][1] == {"type": "null"}
+    assert numeric_schema["decimal_places"] == 2
+    assert numeric_schema["max_digits"] == 18
+    assert advertised_types <= {"integer", "number"}
+    assert "number" in advertised_types
+
+
+@pytest.mark.parametrize("amount", ["1250.00", True, 1250.001])
+async def test_balance_assertion_coarse_rejects_non_json_decimal_boundaries(
+    amount: object,
+) -> None:
+    mcp = isolated_server(register_accounts_coarse_writes)
+
+    response = await call_tool_raw(
+        mcp,
+        "accounts_balance_assert",
+        {
+            "account": "ACC001",
+            "as_of": "2026-07-01",
+            "amount": amount,
+        },
+    )
+
+    assert response.isError is True
+
+
+async def test_balance_assertion_coarse_transport_and_public_actor(
+    mcp_db: object,
+) -> None:
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_accounts_coarse_writes)
+
+    with patch("moneybin.mcp.decorator.write_privacy_event", captured.append):
+        response = await call_tool_raw(
+            mcp,
+            "accounts_balance_assert",
+            {
+                "account": "ACC001",
+                "as_of": "2026-07-01",
+                "amount": 1250.0,
+            },
+        )
+
+    text = next(
+        block.text for block in response.content if isinstance(block, TextContent)
+    )
+    assert response.isError is False
+    assert response.structuredContent is not None
+    assert json.loads(text) == response.structuredContent
+    assert response.structuredContent["data"] == {
+        "account_id": "ACC001",
+        "as_of": "2026-07-01",
+        "operation_id": response.structuredContent["data"]["operation_id"],
+        "prior_state": "absent",
+        "state": "present",
+    }
+    assert response.structuredContent["summary"]["sensitivity"] == "medium"
+    assert len(captured) == 1
+    assert captured[0]["actor"] == "mcp.accounts_balance_assert"
+    assert captured[0]["sensitivity"] == "medium"
+    assert set(captured[0]["classes_returned"]) == {
+        "record_id",
+        "txn_date",
+        "txn_type",
+    }
 
 
 @pytest.mark.parametrize(
