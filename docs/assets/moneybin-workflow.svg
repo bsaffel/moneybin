@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 520" role="img" aria-labelledby="title description">
   <title id="title">MoneyBin data flow</title>
   <desc id="description">Downloaded Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.</desc>
   <defs>
@@ -8,34 +8,66 @@
     <style>
       .box { fill: #1C1C1A; stroke: #7D725C; stroke-width: 1.5; }
       .core { fill: #2A2519; stroke: #A88952; stroke-width: 2; }
-      .label { fill: #F4EFE5; font: 600 19px system-ui, sans-serif; text-anchor: middle; }
-      .core-label { fill: #F4EFE5; font: 600 24px system-ui, sans-serif; text-anchor: middle; }
-      .sub { fill: #C9C1AF; font: 15px system-ui, sans-serif; text-anchor: middle; }
+      .label { fill: #F4EFE5; font: 600 18px system-ui, sans-serif; text-anchor: middle; }
+      .core-label { fill: #F4EFE5; font: 600 22px system-ui, sans-serif; text-anchor: middle; }
+      .sub { fill: #C9C1AF; font: 14px system-ui, sans-serif; text-anchor: middle; }
+      .icon { fill: none; stroke: #C7A85A; stroke-width: 1.7; stroke-linecap: square; stroke-linejoin: miter; }
+      .core-icon { fill: none; stroke: #E0BE69; stroke-width: 2; stroke-linecap: square; stroke-linejoin: miter; }
       .arrow { fill: none; stroke: #A88952; stroke-width: 2; stroke-linecap: round; marker-end: url(#arrow); }
     </style>
   </defs>
-  <rect class="box" x="35" y="60" width="230" height="80" rx="12"/>
-  <text class="label" x="150" y="92">Downloaded Files</text>
-  <text class="sub" x="150" y="117">CSV · OFX · PDF</text>
-  <rect class="box" x="35" y="210" width="230" height="80" rx="12"/>
-  <text class="label" x="150" y="242">Linked Accounts</text>
-  <text class="sub" x="150" y="267">Plaid</text>
-  <rect class="box" x="35" y="360" width="230" height="80" rx="12"/>
-  <text class="label" x="150" y="392">Connected Sheets</text>
-  <text class="sub" x="150" y="417">Google Sheets</text>
-  <rect class="core" x="395" y="190" width="210" height="120" rx="14"/>
-  <text class="core-label" x="500" y="239">Encrypted Local</text>
-  <text class="core-label" x="500" y="271">DuckDB</text>
-  <rect class="box" x="735" y="60" width="230" height="80" rx="12"/>
-  <text class="label" x="850" y="108">CLI</text>
-  <rect class="box" x="735" y="210" width="230" height="80" rx="12"/>
-  <text class="label" x="850" y="258">SQL</text>
-  <rect class="box" x="735" y="360" width="230" height="80" rx="12"/>
-  <text class="label" x="850" y="408">MCP</text>
-  <path class="arrow" d="M265,100 H285 C345,100 315,215 375,215 H395"/>
-  <path class="arrow" d="M265,250 H395"/>
-  <path class="arrow" d="M265,400 H285 C345,400 315,285 375,285 H395"/>
-  <path class="arrow" d="M605,215 H625 C685,215 655,100 715,100 H735"/>
-  <path class="arrow" d="M605,250 H735"/>
-  <path class="arrow" d="M605,285 H625 C685,285 655,400 715,400 H735"/>
+
+  <rect class="box" x="35" y="45" width="230" height="110" rx="12"/>
+  <g class="icon" transform="translate(138 63)">
+    <path d="M4 2.5h11l5 5v17H4z"/><path d="M15 2.5v5h5"/><path d="M7 13h10M7 17h10M7 21h7"/>
+  </g>
+  <text class="label" x="150" y="116">Downloaded Files</text>
+  <text class="sub" x="150" y="140">CSV · OFX · PDF</text>
+
+  <rect class="box" x="35" y="205" width="230" height="110" rx="12"/>
+  <g class="icon" transform="translate(138 221)">
+    <path d="M3 23V8l9-5 9 5v15"/><path d="M2 23h20M7 11h2M13 11h2M17 11h2M7 15h2M13 15h2M17 15h2M10 23v-5h4v5"/>
+  </g>
+  <text class="label" x="150" y="276">Linked Accounts</text>
+  <text class="sub" x="150" y="300">Plaid</text>
+
+  <rect class="box" x="35" y="365" width="230" height="110" rx="12"/>
+  <g class="icon" transform="translate(138 381)">
+    <rect x="3" y="3" width="20" height="20"/><path d="M3 10h20M10 3v20"/><path d="M14 14h5M14 18h5"/>
+  </g>
+  <text class="label" x="150" y="436">Connected Sheets</text>
+  <text class="sub" x="150" y="460">Google Sheets</text>
+
+  <rect class="core" x="385" y="175" width="230" height="170" rx="14"/>
+  <g class="core-icon" transform="translate(484 193)">
+    <ellipse cx="16" cy="5" rx="12" ry="4"/><path d="M4 5v18c0 2.2 5.4 4 12 4s12-1.8 12-4V5"/><path d="M4 14c0 2.2 5.4 4 12 4s12-1.8 12-4"/>
+    <rect x="11" y="16" width="10" height="8" rx="1"/><path d="M13 16v-3a3 3 0 0 1 6 0v3"/>
+  </g>
+  <text class="core-label" x="500" y="276">Encrypted Local</text>
+  <text class="core-label" x="500" y="306">DuckDB</text>
+
+  <rect class="box" x="735" y="45" width="230" height="110" rx="12"/>
+  <g class="icon" transform="translate(838 63)">
+    <path d="M4 5l7 7-7 7M14 19h7"/>
+  </g>
+  <text class="label" x="850" y="124">CLI</text>
+
+  <rect class="box" x="735" y="205" width="230" height="110" rx="12"/>
+  <g class="icon" transform="translate(838 223)">
+    <path d="M4 4h16v16H4z"/><path d="M7 9h2M11 9h2M15 9h2M7 13h6M15 13h2"/>
+  </g>
+  <text class="label" x="850" y="284">SQL</text>
+
+  <rect class="box" x="735" y="365" width="230" height="110" rx="12"/>
+  <g class="icon" transform="translate(838 381)">
+    <circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 11l10-5M7 13l10 5"/>
+  </g>
+  <text class="label" x="850" y="444">MCP</text>
+
+  <path class="arrow" d="M265,100 H290 C340,100 320,220 370,220 H385"/>
+  <path class="arrow" d="M265,260 H385"/>
+  <path class="arrow" d="M265,420 H290 C340,420 320,300 370,300 H385"/>
+  <path class="arrow" d="M615,220 H630 C680,220 660,100 710,100 H735"/>
+  <path class="arrow" d="M615,260 H735"/>
+  <path class="arrow" d="M615,300 H630 C680,300 660,420 710,420 H735"/>
 </svg>
