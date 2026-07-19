@@ -425,7 +425,7 @@ async def test_system_doctor_invariants_carry_recovery_actions_field(
 
 
 @pytest.mark.unit
-async def test_system_doctor_orphan_state_withholds_unexecutable_actions(
+async def test_system_doctor_orphan_state_emits_executable_actions(
     mcp_db: object,
 ) -> None:
     """Orphan app rows do not advertise retired or invalid cleanup tools."""
@@ -448,7 +448,10 @@ async def test_system_doctor_orphan_state_withholds_unexecutable_actions(
     invariants = result.to_dict()["data"]["invariants"]
     orphan = next(i for i in invariants if i["name"] == "orphan_app_state")
     assert orphan["status"] == "fail"
-    assert orphan["recovery_actions"] == []
+    assert [action["tool"] for action in orphan["recovery_actions"]] == [
+        "transactions_annotate",
+        "transactions_annotate",
+    ]
 
 
 # ── system_audit_undo / _history / _get ─────────────────────────────────────

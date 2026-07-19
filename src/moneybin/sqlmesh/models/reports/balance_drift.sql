@@ -12,7 +12,13 @@ WITH positions AS (
     a.display_name AS account_name,
     ba.assertion_date,
     ba.balance AS asserted_balance,
-    fbd.balance - fbd.reconciliation_delta AS computed_balance
+    CASE
+      WHEN NOT fbd.is_observed
+      THEN fbd.balance
+      WHEN NOT fbd.reconciliation_delta IS NULL
+      THEN fbd.balance - fbd.reconciliation_delta
+      ELSE NULL
+    END AS computed_balance
   FROM app.balance_assertions AS ba
   INNER JOIN core.dim_accounts AS a
     ON ba.account_id = a.account_id
@@ -35,7 +41,7 @@ SELECT
   account_name, /* Account display name */
   assertion_date, /* User-asserted balance date */
   asserted_balance, /* User-entered balance for this date */
-  computed_balance, /* Independent transaction-derived position: daily winning balance minus reconciliation_delta; NULL without a prior anchor */
+  computed_balance, /* Interpolated daily balance or observed balance minus its adjustment; NULL for a missing row or first observation */
   drift, /* asserted_balance - computed_balance */
   ABS(drift) AS drift_abs, /* For default sort */
   CASE WHEN asserted_balance <> 0 THEN drift / asserted_balance ELSE NULL END AS drift_pct, /* drift / asserted_balance */

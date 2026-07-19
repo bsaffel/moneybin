@@ -60,6 +60,8 @@ class _StoredAuthSession:
     verification_url: str | None
     expiration: str
     device_code: str | None
+    poll_interval_seconds: float = 5.0
+    next_poll_at: str | None = None
     error_code: str | None = None
 
     def safe_result(self, *, replayed: bool = False) -> SyncAuthResult:
@@ -99,7 +101,8 @@ class SyncAuthService:
         """Start a device flow and persist only its secret half in keychain storage."""
         challenge = self._client.begin_login()
         auth_session_id = f"syncauth_{uuid.uuid4().hex}"
-        expiration = self._now() + timedelta(seconds=challenge.expires_in)
+        now = self._now()
+        expiration = now + timedelta(seconds=challenge.expires_in)
         session = _StoredAuthSession(
             auth_session_id=auth_session_id,
             status="pending",
@@ -110,6 +113,8 @@ class SyncAuthService:
             ),
             expiration=expiration.isoformat(),
             device_code=challenge.device_code.get_secret_value(),
+            poll_interval_seconds=challenge.interval,
+            next_poll_at=(now + timedelta(seconds=challenge.interval)).isoformat(),
         )
         with self._acquire_lock():
             sessions = self._load_collection()
@@ -122,9 +127,10 @@ class SyncAuthService:
         with self._acquire_lock():
             sessions = self._load_collection()
             session = self._get_session(sessions, auth_session_id)
+            now = self._now()
             if session.status != "pending":
                 return session.safe_result(replayed=True)
-            if self._now() >= datetime.fromisoformat(session.expiration):
+            if now >= datetime.fromisoformat(session.expiration):
                 expired = replace(
                     session,
                     status="expired",
@@ -134,6 +140,10 @@ class SyncAuthService:
                 sessions[auth_session_id] = expired
                 self._save_collection(sessions)
                 return expired.safe_result()
+            if session.next_poll_at is not None and now < datetime.fromisoformat(
+                session.next_poll_at
+            ):
+                return session.safe_result()
             if session.device_code is None:
                 raise UserError(
                     "Authentication session cannot be resumed.",
@@ -159,13 +169,26 @@ class SyncAuthService:
                 self._save_collection(sessions)
                 return terminal.safe_result()
             except SyncAPIError:
+                pending = self._schedule_next_poll(session, now=now)
+                sessions[auth_session_id] = pending
+                self._save_collection(sessions)
                 return replace(
-                    session.safe_result(),
+                    pending.safe_result(),
                     status="provider_error",
                     error_code="sync_provider_error",
                 )
             if polled.status != "authenticated":
-                return session.safe_result()
+                interval = session.poll_interval_seconds
+                if polled.status == "slow_down":
+                    interval += 5.0
+                pending = self._schedule_next_poll(
+                    session,
+                    now=now,
+                    interval=interval,
+                )
+                sessions[auth_session_id] = pending
+                self._save_collection(sessions)
+                return pending.safe_result()
             authenticated = replace(
                 session,
                 status="authenticated",
@@ -175,6 +198,21 @@ class SyncAuthService:
             sessions[auth_session_id] = authenticated
             self._save_collection(sessions)
             return authenticated.safe_result()
+
+    @staticmethod
+    def _schedule_next_poll(
+        session: _StoredAuthSession,
+        *,
+        now: datetime,
+        interval: float | None = None,
+    ) -> _StoredAuthSession:
+        """Persist the RFC 8628 minimum delay before another provider poll."""
+        poll_interval = session.poll_interval_seconds if interval is None else interval
+        return replace(
+            session,
+            poll_interval_seconds=poll_interval,
+            next_poll_at=(now + timedelta(seconds=poll_interval)).isoformat(),
+        )
 
     def logout(self) -> SyncLogoutResult:
         """Clear scoped broker tokens and every persisted device-auth session."""

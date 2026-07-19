@@ -397,7 +397,7 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 | `account_name` | VARCHAR | Resolved display name. |
 | `assertion_date` | DATE | User-asserted balance date. |
 | `asserted_balance` | DECIMAL(18,2) | User-entered value. |
-| `computed_balance` | DECIMAL(18,2) | Carry-forward from `core.fct_balances_daily`; NULL if missing. |
+| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation. |
 | `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |

@@ -68,7 +68,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
 | `import_files` | `force`, `paths`, `refresh` | Import files | Audited workflow / maximum medium |
 | `import_preview` | `file_path` | Inspect an import before mutation | Read / dynamic / maximum critical / file-derived |
-| `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum medium / preview-derived |
+| `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum medium / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / maximum medium / import-derived |
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch | Audited recovery / maximum low |
 | `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / maximum medium |
@@ -76,7 +76,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / maximum medium |
 | `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / maximum medium / session-derived |
 | `sync_pull` | `institution` | Pull linked-provider data | External mutation / maximum medium |
-| `sync_disconnect` | `institution`, `mode` | Disconnect provider or credentials | Destructive write / maximum low |
+| `sync_disconnect` | `confirmation_token`, `institution`, `mode` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / maximum low |
 | `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / maximum medium / connection-derived |
 | `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / maximum medium / connection-derived |
 | `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / maximum medium |
@@ -113,8 +113,12 @@ and confirmation contracts.
   paired `_set`, `_decide`, or domain verb tools retain material write and
   confirmation boundaries.
 - `import_files` and `import_preview` establish an import; `import_confirm`
-  ratifies system proposals; `import_status` and `import_revert` provide
-  recovery. `refresh_run` owns the bounded derived-state workflow.
+  ratifies system proposals, including an elicited human decision for a PDF
+  sign inversion. Clients without elicitation receive an opaque,
+  payload-bound `confirmation_token` and retry the same operation; both paths
+  recompute and compare the live proposal inside the write transaction before
+  importing. `import_status` and `import_revert` provide recovery.
+  `refresh_run` owns the bounded derived-state workflow.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 

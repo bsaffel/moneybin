@@ -82,6 +82,10 @@ async def test_sync_workflow_renders_explicit_auth_variants() -> None:
         "enum": ["institution", "logout"],
         "type": "string",
     }
+    assert tools["sync_disconnect"].parameters["properties"]["confirmation_token"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "default": None,
+    }
 
 
 @pytest.mark.unit
@@ -144,6 +148,21 @@ async def test_sync_disconnect_logout_clears_scoped_auth(
     assert envelope.data.status == "logged_out"
     assert envelope.data.cleared_auth_sessions == 2
     assert any("sync_link" in action for action in envelope.actions)
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_auth_service")
+async def test_sync_disconnect_logout_rejects_confirmation_token(
+    mock_build: MagicMock,
+) -> None:
+    envelope = await sync_module.sync_disconnect(
+        mode="logout",
+        confirmation_token="institution-only-token",  # noqa: S106  # opaque test token
+    )
+
+    assert envelope.error is not None
+    assert envelope.error.code == "SYNC_CONFIRMATION_NOT_ALLOWED"
+    mock_build.return_value.logout.assert_not_called()
 
 
 def test_sync_workflow_registrar_uses_public_privacy_actor_names() -> None:

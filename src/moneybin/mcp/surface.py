@@ -178,7 +178,9 @@ def _name_delta(expected_names: frozenset[str], actual_names: frozenset[str]) ->
 
 def _first_sentence(description: str) -> str:
     for index, character in enumerate(description):
-        if character in ".!?":
+        if character in ".!?" and (
+            index == len(description) - 1 or description[index + 1].isspace()
+        ):
             return description[: index + 1]
     return description
 

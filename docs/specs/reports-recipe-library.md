@@ -361,10 +361,13 @@ MCP: `reports_large_transactions`. Tier 1.
 winning `balance` is not an independent comparison when the user assertion
 wins same-date precedence. The independent transaction-derived position is
 therefore reconstructed as
-`fct_balances_daily.balance - fct_balances_daily.reconciliation_delta`, using
-the reconciliation contract defined in `reports-net-worth.md`. A NULL
-`reconciliation_delta` means no prior anchor exists, so `computed_balance`
-stays NULL and the row becomes `status = 'no-data'`.
+the interpolated daily balance when `is_observed = false`, or as
+`fct_balances_daily.balance - fct_balances_daily.reconciliation_delta` on an
+observed day with an adjustment, using the reconciliation contract defined in
+`reports-net-worth.md`. The adjustment is NULL both on interpolated days and
+on the first observation, so `is_observed` is required to distinguish them.
+The first observation has no prior transaction-derived anchor and remains
+`status = 'no-data'`; a missing daily row does as well.
 
 **Columns:**
 
@@ -374,7 +377,7 @@ stays NULL and the row becomes `status = 'no-data'`.
 | `account_name` | `VARCHAR` | Account display name |
 | `assertion_date` | `DATE` | User-asserted balance date |
 | `asserted_balance` | `DECIMAL(18,2)` | User-entered balance for this date |
-| `computed_balance` | `DECIMAL(18,2)` | Independent transaction-derived position reconstructed as daily winning balance minus reconciliation_delta; NULL without a prior anchor |
+| `computed_balance` | `DECIMAL(18,2)` | Interpolated daily balance, or observed balance minus its same-day reconciliation adjustment; NULL for a missing row or first observation |
 | `drift` | `DECIMAL(18,2)` | asserted_balance - computed_balance |
 | `drift_abs` | `DECIMAL(18,2)` | ABS(drift); for default sort |
 | `drift_pct` | `DECIMAL(8,4)` | drift / asserted_balance; NULL if asserted_balance = 0 |

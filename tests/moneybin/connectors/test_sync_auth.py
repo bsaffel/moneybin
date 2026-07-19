@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -71,14 +71,14 @@ def _service(
     )
 
 
-def _challenge() -> DeviceAuthorizationChallenge:
+def _challenge(*, interval: float = 0.0) -> DeviceAuthorizationChallenge:
     return DeviceAuthorizationChallenge(
         device_code=SecretStr("secret-device-code"),
         user_code="ABCD-EFGH",
         verification_uri="https://auth.example/activate",
         verification_uri_complete="https://auth.example/activate?code=ABCD-EFGH",
         expires_in=900,
-        interval=5,
+        interval=interval,
     )
 
 
@@ -136,6 +136,79 @@ def test_status_completion_stores_terminal_state_and_is_idempotent(
     assert replay.replayed is True
     assert client.poll_login.call_count == 2
     assert "secret-device-code" not in " ".join(patched_keyring.values.values())
+
+
+def test_status_upgrades_stored_session_without_poll_schedule_fields(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    """Sessions persisted before polling backoff shipped remain resumable."""
+    auth_session_id = "syncauth_legacy"
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps({
+        auth_session_id: {
+            "auth_session_id": auth_session_id,
+            "status": "pending",
+            "user_code": "ABCD-EFGH",
+            "verification_url": "https://auth.example/activate",
+            "expiration": "2026-07-19T00:15:00+00:00",
+            "device_code": "secret-device-code",
+            "error_code": None,
+        }
+    })
+    client = MagicMock()
+    client.poll_login.return_value = LoginPollResult(status="pending")
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    result = service.status(auth_session_id)
+
+    assert result.status == "pending"
+    client.poll_login.assert_called_once_with("secret-device-code")
+    stored = json.loads(next(iter(patched_keyring.values.values())))[auth_session_id]
+    assert stored["poll_interval_seconds"] == 5.0
+    assert stored["next_poll_at"] == "2026-07-19T00:00:05+00:00"
+
+
+def test_slow_down_persists_and_enforces_increased_poll_interval(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    now = [datetime(2026, 7, 19, tzinfo=UTC)]
+    client = MagicMock()
+    client.begin_login.return_value = _challenge(interval=5)
+    client.poll_login.side_effect = [
+        LoginPollResult(status="slow_down"),
+        LoginPollResult(status="pending"),
+    ]
+    service = SyncAuthService(
+        client=client,
+        secrets=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+        now=lambda: now[0],
+    )
+    auth_session_id = service.begin().auth_session_id
+
+    assert service.status(auth_session_id).status == "pending"
+    client.poll_login.assert_not_called()
+
+    now[0] += timedelta(seconds=5)
+    assert service.status(auth_session_id).status == "pending"
+    assert client.poll_login.call_count == 1
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    stored = collection[auth_session_id]
+    assert stored["poll_interval_seconds"] == 10.0
+    assert stored["next_poll_at"] == "2026-07-19T00:00:15+00:00"
+
+    now[0] += timedelta(seconds=5)
+    assert service.status(auth_session_id).status == "pending"
+    assert client.poll_login.call_count == 1
+
+    now[0] += timedelta(seconds=5)
+    assert service.status(auth_session_id).status == "pending"
+    assert client.poll_login.call_count == 2
 
 
 def test_expired_session_never_calls_provider(

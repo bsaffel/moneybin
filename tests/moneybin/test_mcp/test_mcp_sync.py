@@ -9,6 +9,7 @@ import pytest
 from fastmcp import FastMCP
 
 from moneybin.connectors.sync_models import (
+    ConnectedInstitution,
     InstitutionResult,
     LinkInitiateResponse,
     PullResult,
@@ -92,6 +93,38 @@ async def test_sync_pull_surfaces_security_resolution_failure(
     actions_text = " ".join(envelope.actions)
     assert "security resolution failed" in actions_text.lower()
     assert "sync_pull" in actions_text
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_pull_coarse_preserves_partial_failure_recovery_actions(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.pull.return_value = PullResult(
+        job_id="j1",
+        transactions_loaded=0,
+        accounts_loaded=0,
+        balances_loaded=0,
+        transactions_removed=0,
+        institutions=[],
+        transforms_error="apply failed",
+        security_resolution={"pending": 1},
+        security_resolution_error="resolution failed",
+        investment_source_overlap_accounts=["acct_1"],
+    )
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_pull_coarse
+
+    envelope = await sync_pull_coarse()
+
+    actions = " ".join(envelope.actions)
+    assert "security resolution failed" in actions
+    assert "refresh_run" in actions
+    assert "reviews(kind='security_links')" in actions
+    assert "system_status(sections=['doctor'])" in actions
+    assert "investments_securities_links_pending" not in actions
+    assert "system_doctor" not in actions
 
 
 @pytest.mark.unit
@@ -233,13 +266,87 @@ async def test_sync_status_mcp_tool_registered() -> None:
 @patch("moneybin.mcp.tools.sync._build_sync_service")
 async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
     service = MagicMock()
+    connection = ConnectedInstitution(
+        id="conn_uuid",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    service.plan_disconnect.return_value = connection
+
+    def disconnect_confirmed(
+        *,
+        institution: str,
+        verify: object,
+    ) -> ConnectedInstitution:
+        assert institution == "Chase"
+        verify(connection)  # type: ignore[operator]
+        return connection
+
+    service.disconnect_confirmed.side_effect = disconnect_confirmed
     mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_disconnect
 
-    envelope = await sync_disconnect(institution="Chase")
-    service.disconnect.assert_called_once_with(institution="Chase")
+    required = await sync_disconnect(institution="Chase")
+
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+    assert required.error.details is not None
+    service.disconnect_confirmed.assert_not_called()
+
+    envelope = await sync_disconnect(
+        institution="Chase",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    service.disconnect_confirmed.assert_called_once()
     # SyncDisconnectPayload has only TXN_TYPE + INSTITUTION → Tier.LOW derived sensitivity
     assert envelope.summary.sensitivity == "low"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_refuses_confirmation_after_live_target_changes(
+    mock_build: MagicMock,
+) -> None:
+    original = ConnectedInstitution(
+        id="conn_uuid",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    changed = original.model_copy(update={"id": "conn_replaced"})
+    service = MagicMock()
+    service.plan_disconnect.return_value = original
+
+    def disconnect_confirmed(
+        *,
+        institution: str,
+        verify: object,
+    ) -> ConnectedInstitution:
+        assert institution == "Chase"
+        verify(changed)  # type: ignore[operator]
+        return changed
+
+    service.disconnect_confirmed.side_effect = disconnect_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(institution="Chase")
+    assert required.error is not None
+    assert required.error.details is not None
+
+    result = await sync_disconnect(
+        institution="Chase",
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert result.error is not None
+    assert result.error.code == "mutation_confirmation_mismatch"
 
 
 @pytest.mark.unit

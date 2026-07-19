@@ -916,12 +916,24 @@ async def _resolve_account_reference(
     """Resolve a user-facing account reference through the shared ladder."""
     response = await _run_account_read(
         accounts,
-        include_archived=include_closed,
+        include_archived=True,
         type_filter=None,
+    )
+    for account in response.data.rows:
+        if account.account_id == reference:
+            return account.account_id
+    candidates = _account_candidates(
+        AccountListPayload(
+            rows=[
+                account
+                for account in response.data.rows
+                if include_closed or not account.archived
+            ]
+        )
     )
     resolution = resolve_entity_reference(
         reference,
-        _account_candidates(response.data),
+        candidates,
     )
     if isinstance(resolution, AmbiguousEntity):
         raise UserError(

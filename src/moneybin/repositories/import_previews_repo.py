@@ -202,9 +202,12 @@ class ImportPreviewsRepo(BaseRepo):
                 SELECT preview_id
                 FROM {IMPORT_PREVIEWS.full_name}
                 WHERE expires_at <= ?
-                   OR preview_id NOT IN (
-                       SELECT preview_id
-                       FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                   OR (
+                       consumed_at IS NULL
+                       AND preview_id NOT IN (
+                           SELECT preview_id
+                           FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                       )
                    )
                 ORDER BY preview_id
                 """,  # noqa: S608  # TableRefs + parameterized cutoff

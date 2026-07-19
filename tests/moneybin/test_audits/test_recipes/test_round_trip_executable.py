@@ -34,12 +34,14 @@ from moneybin.audits.recipes import (
 )
 from moneybin.mcp.tools.refresh import refresh_run
 from moneybin.mcp.tools.system import system_status_coarse
+from moneybin.mcp.tools.transactions import transactions_annotate_coarse
 from moneybin.mcp.tools.transactions_categorize import transactions_categorize_run
 
 # All MCP tool functions a PR4 recipe may name. New tools cited in future
 # recipes MUST be added here — that requirement is the whole point of this
 # fixture; the test fails fast if a recipe references an unregistered name.
 _TOOLS: dict[str, Callable[..., Any]] = {
+    "transactions_annotate": transactions_annotate_coarse,
     "transactions_categorize_run": transactions_categorize_run,
     "refresh_run": refresh_run,
     "system_status": system_status_coarse,
@@ -94,10 +96,10 @@ def _literal_members(annotation: object) -> tuple[Any, ...] | None:
 # recipe. Empty list also tested to confirm recipes don't choke on it.
 _RECIPE_CASES = [
     pytest.param("orphan_app_state", [], id="orphan_app_state-empty"),
-    pytest.param("orphan_app_state", ["note:n1"], id="orphan_app_state-note"),
+    pytest.param("orphan_app_state", ["note:txn1"], id="orphan_app_state-note"),
     pytest.param("orphan_app_state", ["tag:txn5"], id="orphan_app_state-tag"),
     pytest.param(
-        "orphan_app_state", ["note:n1", "tag:txn5"], id="orphan_app_state-mixed"
+        "orphan_app_state", ["note:txn1", "tag:txn5"], id="orphan_app_state-mixed"
     ),
     pytest.param("categorization_coverage", [], id="categorization_coverage"),
     pytest.param("dedup_reconciliation", [], id="dedup_reconciliation"),

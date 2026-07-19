@@ -234,7 +234,7 @@ async def test_accepted_elicitation_returns_verifiable_digest_grant(
     ctx.elicit.assert_awaited_once_with(
         "Delete four transactions?",
         response_type=bool,
-        response_title="Confirm destructive operation",
+        response_title="Confirm high-impact operation",
         response_description=("Select true only after reviewing the exact operation."),
     )
     assert isinstance(grant, ConfirmationGrant)

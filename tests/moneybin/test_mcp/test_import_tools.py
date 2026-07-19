@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -25,6 +26,7 @@ from moneybin.mcp.tools.import_tools import (
     import_confirm,
     import_confirm_coarse,
     import_files,
+    import_files_coarse,
     import_formats,
     import_preview,
     import_preview_coarse,
@@ -68,6 +70,91 @@ async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> N
     assert "confirmation" in (revert.description or "").lower()
     assert "system_audit_undo" in (revert.description or "")
     assert "confirmation_token" in revert.parameters["properties"]
+    confirm = next(tool for tool in tools if tool.name == "import_confirm")
+    assert "confirmation_token" in confirm.parameters["properties"]
+
+
+def test_import_human_confirmation_tools_allow_decision_window() -> None:
+    """Every public import tool that can elicit allows the established timeout."""
+    assert import_confirm_coarse._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+    assert import_revert_coarse._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+
+
+async def test_import_files_coarse_preserves_warning_actions(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.privacy.payloads.imports import ImportFilesPayload, ImportPerFileRow
+    from moneybin.protocol.envelope import build_envelope
+
+    response = build_envelope(
+        data=ImportFilesPayload(
+            imported_count=1,
+            failed_count=0,
+            total_count=1,
+            transforms_applied=False,
+            transforms_duration_seconds=None,
+            transforms_error="refresh failed",
+            files=[
+                ImportPerFileRow(
+                    path="/Users/example/statement.csv",
+                    status="complete",
+                    source_type="csv",
+                    rows_loaded=1,
+                    import_id="imp_warning",
+                    error=None,
+                )
+            ],
+        ),
+        actions=[
+            "Refresh failed after import — call refresh_run to retry",
+            "Use import_status(sections=['formats']) to inspect saved layouts",
+        ],
+    )
+    monkeypatch.setattr(
+        import_tools_module,
+        "import_files",
+        MagicMock(return_value=response),
+    )
+
+    result = await import_files_coarse(paths=["/Users/example/statement.csv"])
+
+    assert "Refresh failed after import — call refresh_run to retry" in result.actions
+    assert any(
+        "import_status(sections=['formats'])" in action for action in result.actions
+    )
+
+
+async def test_import_revert_coarse_preserves_error_recovery(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.protocol.envelope import build_error_envelope
+
+    recovery = RecoveryAction(
+        tool="system_audit_undo",
+        arguments={"operation_id": "op_recovery"},
+        rationale="Restore the accepted import state.",
+        confidence="certain",
+        idempotent=False,
+    )
+    response = build_error_envelope(
+        error=UserError(
+            "Accepted state blocks revert.",
+            code="revert_accepted",
+            recovery_actions=[recovery],
+        ),
+        actions=["Inspect the accepted decision before retrying."],
+    )
+    monkeypatch.setattr(
+        import_tools_module,
+        "import_revert",
+        MagicMock(return_value=response),
+    )
+
+    result = await import_revert_coarse(import_id="imp_accepted")
+
+    assert result.error is not None
+    assert result.actions == ["Inspect the accepted decision before retrying."]
+    assert result.recovery_actions == [recovery]
 
 
 @pytest.mark.parametrize(
@@ -328,6 +415,35 @@ def _valid_bridge_response() -> dict[str, object]:
     }
 
 
+def _coarse_sign_error(
+    channel: Channel,
+    *,
+    evidence: tuple[str, ...] = ("minimum payment", "credit limit"),
+) -> ImportConfirmationRequiredError:
+    """Return a sign proposal suitable for coarse confirm replay tests."""
+    from moneybin.services.import_confirmation import SignConventionProposal
+
+    return ImportConfirmationRequiredError(
+        ConfirmationRequired(
+            channel=channel,
+            confidence=_make_confidence(score=0.75, tier="medium"),
+            proposed=SignConventionProposal(
+                sign_convention="negative_is_income",
+                evidence=evidence,
+                sample_rows=[
+                    {
+                        "description": "COFFEE SHOP",
+                        "as_printed": "150.00",
+                        "as_recorded": "-150.00",
+                    }
+                ],
+            ),
+            reason="sign_convention",
+            error_message="This looks like a credit-card statement.",
+        )
+    )
+
+
 def _track_completed_rollbacks(
     monkeypatch: MonkeyPatch,
     events: list[str],
@@ -563,7 +679,7 @@ async def test_import_preview_pdf_direct_modes_are_typed_and_route_to_import_fil
     assert response.classes_returned
 
 
-async def test_import_preview_pdf_sign_mode_keeps_cli_only_action(
+async def test_import_preview_pdf_sign_mode_routes_to_human_confirm(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -581,9 +697,734 @@ async def test_import_preview_pdf_sign_mode_keeps_cli_only_action(
         response = await import_preview_coarse(file_path=str(pdf))
 
     assert response.data.kind == "pdf_sign"
-    assert any("moneybin import files" in action for action in response.actions)
-    assert not any("import_confirm(" in action for action in response.actions)
+    assert any(
+        f"import_confirm(preview_id='{response.data.preview_id}')" in action
+        for action in response.actions
+    )
     assert "txn_amount" in (response.classes_returned or [])
+
+
+async def test_import_confirm_coarse_elicits_pdf_sign_then_imports_snapshot(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.privacy.payloads.imports import ImportPdfSignAppliedPayload
+    from moneybin.services.import_service import ImportResult
+
+    pdf = tmp_path / "statement.pdf"
+    source_bytes = b"%PDF sign fixture"
+    pdf.write_bytes(source_bytes)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_service = MagicMock()
+    preview_service.pdf_preview.side_effect = _sign_error()
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=preview_service,
+    ):
+        preview = await import_preview_coarse(file_path=str(pdf))
+
+    apply = MagicMock(
+        side_effect=[
+            _sign_error(),
+            _sign_error(),
+            ImportResult(
+                file_path=str(pdf),
+                file_type="pdf",
+                transactions=2,
+                import_id="imp_pdf_sign",
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        apply,
+    )
+    confirm = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_tools.grant_confirmation_or_raise",
+        confirm,
+    )
+    threaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def observed_to_thread(
+        func: object,
+        /,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        threaded.append(func.__name__)  # type: ignore[attr-defined]
+        return await real_to_thread(func, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(import_tools_module.asyncio, "to_thread", observed_to_thread)
+
+    response = await import_confirm_coarse(preview_id=preview.data.preview_id)
+
+    assert response.error is None
+    assert isinstance(response.data, ImportPdfSignAppliedPayload)
+    assert response.data.kind == "pdf_sign_applied"
+    assert response.data.import_id == "imp_pdf_sign"
+    confirm.assert_awaited_once()
+    assert apply.call_count == 3
+    assert apply.call_args_list[0].kwargs["confirm"] is False
+    assert apply.call_args_list[1].kwargs["confirm"] is False
+    assert apply.call_args_list[2].kwargs["confirm"] is True
+    assert apply.call_args_list[2].kwargs["source_bytes"] == source_bytes
+    assert [name for name in threaded if name.startswith("_")] == [
+        "_load_import_confirm_preview",
+        "_run_import_confirm_attempt",
+        "_run_import_confirm_attempt",
+    ]
+
+
+async def test_import_confirm_coarse_refuses_changed_pdf_sign_proposal(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF sign fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "sign_convention",
+        },
+    )
+    apply = MagicMock(
+        side_effect=[
+            _coarse_sign_error("pdf"),
+            _coarse_sign_error("pdf", evidence=("account type changed",)),
+        ]
+    )
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        apply,
+    )
+    confirm = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_tools.grant_confirmation_or_raise",
+        confirm,
+    )
+
+    response = await import_confirm_coarse(preview_id=preview_id)
+
+    assert response.error is not None
+    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    confirm.assert_awaited_once()
+    assert [call.kwargs["confirm"] for call in apply.call_args_list] == [False, False]
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        assert ImportPreviewsRepo(db).get(preview_id)["consumed_at"] is None  # type: ignore[index]
+
+
+async def test_import_confirm_coarse_refuses_disappeared_pdf_sign_proposal(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.services.import_service import ImportResult
+
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF sign fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "sign_convention",
+        },
+    )
+    apply = MagicMock(
+        side_effect=[
+            _coarse_sign_error("pdf"),
+            ImportResult(
+                file_path=str(pdf),
+                file_type="pdf",
+                transactions=1,
+                import_id="must_rollback",
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_tools.grant_confirmation_or_raise",
+        AsyncMock(return_value=MagicMock()),
+    )
+
+    response = await import_confirm_coarse(preview_id=preview_id)
+
+    assert response.error is not None
+    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert [call.kwargs["confirm"] for call in apply.call_args_list] == [False, False]
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        preview = ImportPreviewsRepo(db).get(preview_id)
+        assert preview is not None
+        assert preview["consumed_at"] is None
+        assert preview["import_id"] is None
+
+
+@pytest.mark.parametrize("channel", ["pdf", "tabular", "bridge"])
+@pytest.mark.parametrize("proposal_state", ["changed", "disappeared"])
+async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    channel: str,
+    proposal_state: str,
+) -> None:
+    from moneybin.loaders import import_log
+    from moneybin.services.import_service import ImportResult, ImportService
+
+    source = tmp_path / ("statement.csv" if channel == "tabular" else "statement.pdf")
+    if channel == "tabular":
+        source.write_text("Date,Description,Amount\n2026-07-01,Coffee,4.50\n")
+    else:
+        source.write_bytes(b"%PDF sign fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    if channel == "tabular":
+        preview_id = (
+            await import_preview_coarse(file_path=str(source))
+        ).data.preview_id
+    else:
+        preview_id = _issue_coarse_preview(
+            source,
+            channel="pdf",
+            data=(
+                {
+                    "status": "confirmation_required",
+                    "channel": "pdf",
+                    "reason": "low_confidence",
+                    "bridge_payload": {},
+                }
+                if channel == "bridge"
+                else {
+                    "status": "confirmation_required",
+                    "channel": "pdf",
+                    "reason": "sign_convention",
+                }
+            ),
+        )
+    proposal_channel: Channel = "tabular" if channel == "tabular" else "pdf"
+    calls = 0
+
+    def apply(service: ImportService, *_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _coarse_sign_error(proposal_channel)
+        import_id = import_log.begin_import(
+            service._db,  # pyright: ignore[reportPrivateUsage]
+            source_file=str(source),
+            source_type="pdf",
+            source_origin="rollback_probe",
+            account_names=["rollback_probe"],
+        )
+        service._db.execute(  # pyright: ignore[reportPrivateUsage]
+            "INSERT INTO raw.pdf_seeds "
+            "(alias, row_hash, data, source_file, page, import_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                "rollback_probe",
+                f"probe_{channel}_{proposal_state}",
+                "{}",
+                str(source),
+                1,
+                import_id,
+            ],
+        )
+        if proposal_state == "changed":
+            raise _coarse_sign_error(
+                proposal_channel,
+                evidence=("proposal changed after approval",),
+            )
+        if channel == "bridge":
+            return SimpleNamespace(
+                outcome="applied",
+                import_id=import_id,
+                rows_loaded=1,
+                format_name="must_rollback",
+                expected_row_count=1,
+                actual_row_count=1,
+                rows_diverged=False,
+                reject_reason=None,
+            )
+        return ImportResult(
+            file_path=str(source),
+            file_type="pdf" if channel == "pdf" else "tabular",
+            transactions=1,
+            import_id=import_id,
+        )
+
+    method = "apply_pdf_bridge_response" if channel == "bridge" else "import_file"
+    monkeypatch.setattr(
+        f"moneybin.services.import_service.ImportService.{method}",
+        apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_tools.grant_confirmation_or_raise",
+        AsyncMock(return_value=MagicMock()),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=(
+            {"recipe": {"version": 1}, "rows": [{}]} if channel == "bridge" else None
+        ),
+        account_name="Credit card" if channel == "tabular" else None,
+    )
+
+    assert response.error is not None
+    assert response.error.code == "IMPORT_SIGN_PROPOSAL_CHANGED"
+    assert calls == 2
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    with get_database(read_only=True) as db:
+        import_log_count = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        seed_count = db.execute("SELECT COUNT(*) FROM raw.pdf_seeds").fetchone()
+        assert import_log_count is not None and import_log_count[0] == 0
+        assert seed_count is not None and seed_count[0] == 0
+        repo = ImportPreviewsRepo(db)
+        preview = repo.get(preview_id)
+        assert preview is not None and preview["consumed_at"] is None
+        assert repo.get_source_bytes(preview_id) == source.read_bytes()
+
+
+async def test_import_confirm_coarse_revalidates_tabular_sign_inside_write_attempt(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.services.import_service import ImportResult
+
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Coffee,4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    proposal = _coarse_sign_error("tabular")
+    apply = MagicMock(
+        side_effect=[
+            proposal,
+            proposal,
+            ImportResult(
+                file_path=str(csv),
+                file_type="tabular",
+                transactions=1,
+                import_id="imp_tabular_sign",
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_tools.grant_confirmation_or_raise",
+        AsyncMock(return_value=MagicMock()),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Credit card",
+    )
+
+    assert response.error is None
+    assert [
+        call.kwargs["human_sign_confirmation"] for call in apply.call_args_list
+    ] == [False, False, True]
+
+
+async def test_import_confirm_coarse_revalidates_bridge_sign_inside_write_attempt(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    proposal = _coarse_sign_error("pdf")
+    applied = SimpleNamespace(
+        outcome="applied",
+        import_id="imp_bridge_sign",
+        rows_loaded=1,
+        format_name="bridge_recipe",
+        expected_row_count=1,
+        actual_row_count=1,
+        rows_diverged=False,
+        reject_reason=None,
+    )
+    apply = MagicMock(side_effect=[proposal, proposal, applied])
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_tools.grant_confirmation_or_raise",
+        AsyncMock(return_value=MagicMock()),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": {"version": 1}, "rows": [{}]},
+    )
+
+    assert response.error is None
+    assert [call.kwargs["confirm"] for call in apply.call_args_list] == [
+        False,
+        False,
+        True,
+    ]
+
+
+async def test_import_confirm_duration_excludes_human_confirmation_wait(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.services.import_service import ImportResult
+
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF sign fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "sign_convention",
+        },
+    )
+    starts: list[float] = []
+
+    def attempt(**kwargs: object) -> object:
+        starts.append(cast(float, kwargs["started"]))
+        if len(starts) == 1:
+            raise _coarse_sign_error("pdf")
+        return (
+            None,
+            ImportResult(
+                file_path=str(pdf),
+                file_type="pdf",
+                transactions=1,
+                import_id="imp_duration",
+            ),
+            "imp_duration",
+        )
+
+    monkeypatch.setattr(import_tools_module, "_run_import_confirm_attempt", attempt)
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.import_tools.grant_confirmation_or_raise",
+        AsyncMock(return_value=MagicMock()),
+    )
+    monkeypatch.setattr(
+        import_tools_module,
+        "time",
+        SimpleNamespace(monotonic=MagicMock(side_effect=[10.0, 1000.0])),
+    )
+
+    response = await import_confirm_coarse(preview_id=preview_id)
+
+    assert response.error is None
+    assert starts == [10.0, 1000.0]
+
+
+async def test_import_confirm_bridge_sign_degraded_client_retries_with_opaque_token(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    proposal = _coarse_sign_error("pdf")
+    applied = SimpleNamespace(
+        outcome="applied",
+        import_id="imp_bridge_token",
+        rows_loaded=1,
+        format_name="bridge_recipe",
+        expected_row_count=1,
+        actual_row_count=1,
+        rows_diverged=False,
+        reject_reason=None,
+    )
+    apply = MagicMock(side_effect=[proposal, proposal, proposal, applied])
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        MagicMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation",
+        MagicMock(return_value=False),
+    )
+    bridge_response = {"recipe": {"version": 1}, "rows": [{}]}
+
+    required = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=bridge_response,
+    )
+
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+    assert "bridge_response" not in required.error.details
+    confirmed = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=bridge_response,
+        confirmation_token=token,
+    )
+
+    assert confirmed.error is None
+    assert confirmed.data.import_id == "imp_bridge_token"
+    assert [call.kwargs["confirm"] for call in apply.call_args_list] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+    replayed = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=bridge_response,
+        confirmation_token=token,
+    )
+    assert replayed.error is not None
+    assert replayed.error.code == "mutation_confirmation_replayed"
+
+
+async def test_import_confirm_token_reconstruction_does_not_double_count_sign_proposal(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.metrics.registry import PDF_SIGN_GATE_TOTAL
+
+    pdf = write_card_statement_pdf(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "sign_convention",
+        },
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        MagicMock(return_value=None),
+    )
+    proposed = PDF_SIGN_GATE_TOTAL.labels(outcome="proposed")
+    confirmed_metric = PDF_SIGN_GATE_TOTAL.labels(outcome="confirmed")
+    proposed_before = proposed._value.get()  # type: ignore[attr-defined]  # testing prometheus internals
+    confirmed_before = confirmed_metric._value.get()  # type: ignore[attr-defined]  # testing prometheus internals
+
+    required = await import_confirm_coarse(preview_id=preview_id)
+
+    assert required.error is not None
+    assert required.error.details is not None
+    assert proposed._value.get() == proposed_before + 1  # type: ignore[attr-defined]  # testing prometheus internals
+    confirmed = await import_confirm_coarse(
+        preview_id=preview_id,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert confirmed.error is None
+    assert proposed._value.get() == proposed_before + 1  # type: ignore[attr-defined]  # testing prometheus internals
+    assert confirmed_metric._value.get() == confirmed_before + 1  # type: ignore[attr-defined]  # testing prometheus internals
+
+
+async def test_import_confirm_bridge_token_without_reconstructed_proposal_is_mismatch(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin import error_codes
+
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    proposal = _coarse_sign_error("pdf")
+    invalid = SimpleNamespace(
+        outcome="invalid",
+        import_id=None,
+        rows_loaded=0,
+        format_name=None,
+        expected_row_count=1,
+        actual_row_count=0,
+        rows_diverged=True,
+        reject_reason="reconciliation_failed",
+    )
+    apply = MagicMock(side_effect=[proposal, invalid])
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        MagicMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation",
+        MagicMock(return_value=False),
+    )
+    bridge_response = {"recipe": {"version": 1}, "rows": [{}]}
+    required = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=bridge_response,
+    )
+    assert required.error is not None
+    assert required.error.details is not None
+
+    retried = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=bridge_response,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert retried.error is not None
+    assert retried.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert [call.kwargs["confirm"] for call in apply.call_args_list] == [False, False]
+
+
+async def test_import_confirm_bridge_token_is_bound_to_exact_response(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin import error_codes
+
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    proposal = _coarse_sign_error("pdf")
+    apply = MagicMock(side_effect=[proposal, proposal, proposal])
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        apply,
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        MagicMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation.supports_elicitation",
+        MagicMock(return_value=False),
+    )
+    original_response = {"recipe": {"version": 1}, "rows": [{}]}
+    required = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response=original_response,
+    )
+    assert required.error is not None
+    assert required.error.details is not None
+
+    changed = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": {"version": 2}, "rows": [{}]},
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+
+    assert changed.error is not None
+    assert changed.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert all(call.kwargs["confirm"] is False for call in apply.call_args_list)
+    from moneybin.database import get_database
+
+    with get_database(read_only=True) as db:
+        import_log_count = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        assert import_log_count is not None and import_log_count[0] == 0
+
+
+async def test_import_confirm_coarse_preserves_sign_warning(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from moneybin.services.import_service import ImportResult
+
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Coffee,-4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        MagicMock(
+            return_value=ImportResult(
+                file_path=str(csv),
+                file_type="tabular",
+                transactions=1,
+                import_id="imp_sign_warning",
+                sign_correction_suggested=True,
+            )
+        ),
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    assert any(
+        "Sign convention may be inverted" in action for action in response.actions
+    )
 
 
 def test_import_workflow_registrar_uses_public_privacy_actor_names() -> None:
@@ -1010,43 +1851,28 @@ async def test_import_confirm_tabular_transform_failures_observed_after_rollback
     success.labels.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("preview_data", "code"),
-    [
-        (
-            {
-                "status": "preview",
-                "channel": "pdf",
-                "deterministic": True,
-            },
-            "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
-        ),
-        (
-            {
-                "status": "confirmation_required",
-                "channel": "pdf",
-                "reason": "sign_convention",
-            },
-            "IMPORT_PREVIEW_SIGN_CONFIRMATION_CLI_REQUIRED",
-        ),
-    ],
-)
-async def test_import_confirm_coarse_preserves_non_bridge_pdf_divisions(
+async def test_import_confirm_coarse_rejects_pdf_without_confirmation_gate(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
-    preview_data: dict[str, object],
-    code: str,
 ) -> None:
     pdf = tmp_path / "statement.pdf"
     pdf.write_bytes(b"%PDF fixture")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    preview_id = _issue_coarse_preview(pdf, channel="pdf", data=preview_data)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "preview",
+            "channel": "pdf",
+            "deterministic": True,
+        },
+    )
 
     response = await import_confirm_coarse(preview_id=preview_id)
 
     assert response.error is not None
-    assert response.error.code == code
+    assert response.error.code == "IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED"
 
 
 async def test_import_preview_coarse_keeps_ofx_on_direct_import_surface(

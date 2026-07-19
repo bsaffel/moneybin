@@ -17,7 +17,10 @@ from moneybin.extractors.tabular.date_detection import (
     detect_date_format,
     parse_amount_str,
 )
-from moneybin.extractors.tabular.format_detector import FormatInfo
+from moneybin.extractors.tabular.format_detector import (
+    FormatInfo,
+    _read_sample_lines,  # pyright: ignore[reportPrivateUsage]  # shared package helper
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,17 +270,15 @@ def _detect_header(
         row is present.
     """
     enc = encoding if encoding != "utf-8-sig" else "utf-8"
-    lines: list[str] = []
-    try:
-        if source_bytes is None:
-            text = path.read_text(encoding=enc, errors="replace")
-        else:
-            text = source_bytes.decode(enc, errors="replace")
-        lines.extend(
-            line.rstrip("\n\r").lstrip("\ufeff") for line in text.splitlines()[:30]
+    lines = [
+        line.lstrip("\ufeff")
+        for line in _read_sample_lines(
+            path,
+            enc,
+            n=30,
+            source_bytes=source_bytes,
         )
-    except OSError:
-        return 0, True
+    ]
 
     # Two passes (see docstring): find a label row followed by data, else fall
     # back to the first data row as headerless.
@@ -337,25 +338,19 @@ def _row_looks_like_data_at(
         True when the row at ``row_index`` parses as a transaction record.
     """
     enc = encoding if encoding != "utf-8-sig" else "utf-8"
-    try:
-        if source_bytes is None:
-            text = path.read_text(encoding=enc, errors="replace")
-        else:
-            text = source_bytes.decode(enc, errors="replace")
-        for i, line in enumerate(text.splitlines()):
-            if i == row_index:
-                # lstrip a leading BOM: a utf-8-sig file is decoded as utf-8
-                # here (polars-compatible), so physical line 0 may retain it.
-                parts = line.rstrip("\n\r").lstrip("\ufeff").split(delimiter)
-                non_empty = [
-                    p.strip().strip('"').strip("'") for p in parts if p.strip()
-                ]
-                return _looks_like_data_row(non_empty) if non_empty else False
-            if i > row_index:
-                break
-    except OSError:
+    lines = _read_sample_lines(
+        path,
+        enc,
+        n=row_index + 1,
+        source_bytes=source_bytes,
+    )
+    if row_index >= len(lines):
         return False
-    return False
+    # lstrip a leading BOM: a utf-8-sig file is decoded as utf-8 here
+    # (polars-compatible), so physical line 0 may retain it.
+    parts = lines[row_index].lstrip("\ufeff").split(delimiter)
+    non_empty = [p.strip().strip('"').strip("'") for p in parts if p.strip()]
+    return _looks_like_data_row(non_empty) if non_empty else False
 
 
 def _looks_like_data_row(cells: list[str]) -> bool:

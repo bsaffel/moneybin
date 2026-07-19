@@ -279,6 +279,23 @@ def test_description_budget_violations_measure_each_kind_of_debt() -> None:
     assert ("long_description", "description") in observed
 
 
+def test_description_budget_ignores_dots_inside_identifiers() -> None:
+    inventory = _inventory(
+        _tool(
+            "dotted_identifier",
+            "Inspect app.securities records with enough additional explanation "
+            "that this opening sentence exceeds the one-hundred-and-twenty "
+            "character selection budget.",
+        )
+    )
+
+    violations = description_budget_violations(inventory)
+
+    assert ("dotted_identifier", "first_sentence") in {
+        (violation.tool_name, violation.budget) for violation in violations
+    }
+
+
 @pytest.mark.parametrize("description", [None, "", "   "])
 def test_description_budget_rejects_missing_or_empty_prose(
     description: str | None,

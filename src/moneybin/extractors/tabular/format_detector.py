@@ -4,11 +4,17 @@ Determines file type, delimiter, encoding, and enforces size guardrails
 before any data is read.
 """
 
+import codecs
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_ENCODING_SAMPLE_BYTES = 64 * 1024
+_SAMPLE_READ_CHARS = 8192
+_PHYSICAL_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 
 # Extension → file_type mapping (also used by import_service._detect_file_type)
 _EXTENSION_MAP: dict[str, str] = {
@@ -223,10 +229,12 @@ def detect_encoding(path: Path, *, source_bytes: bytes | None = None) -> str:
     """
     if source_bytes is None:
         with open(path, "rb") as f:
-            raw = f.read()
+            sample = f.read(_ENCODING_SAMPLE_BYTES + 1)
+        reached_eof = len(sample) <= _ENCODING_SAMPLE_BYTES
     else:
-        raw = source_bytes
-    bom = raw[:4]
+        sample = source_bytes
+        reached_eof = True
+    bom = sample[:4]
     if bom.startswith(b"\xef\xbb\xbf"):
         return "utf-8-sig"
     if bom.startswith(b"\xff\xfe"):
@@ -235,14 +243,20 @@ def detect_encoding(path: Path, *, source_bytes: bytes | None = None) -> str:
         return "utf-16-be"
 
     try:
-        raw[:8192].decode("utf-8")
+        if source_bytes is None:
+            codecs.getincrementaldecoder("utf-8")().decode(
+                sample,
+                final=reached_eof,
+            )
+        else:
+            source_bytes.decode("utf-8")
         return "utf-8"
     except UnicodeDecodeError:
         pass
 
     from charset_normalizer import from_bytes
 
-    result = from_bytes(raw)
+    result = from_bytes(sample)
     best = result.best()
     if best and best.encoding:
         return best.encoding
@@ -257,13 +271,37 @@ def _read_sample_lines(
     *,
     source_bytes: bytes | None = None,
 ) -> list[str]:
-    lines: list[str] = []
+    if n <= 0:
+        return []
     try:
         if source_bytes is None:
-            text = path.read_text(encoding=encoding, errors="replace")
+            with open(
+                path,
+                encoding=encoding,
+                errors="replace",
+                newline="",
+            ) as f:
+                chunks: list[str] = []
+                break_count = 0
+                previous_ended_cr = False
+                while break_count < n:
+                    chunk = f.read(_SAMPLE_READ_CHARS)
+                    if not chunk:
+                        break
+                    break_count += (
+                        chunk.count("\r") + chunk.count("\n") - chunk.count("\r\n")
+                    )
+                    if previous_ended_cr and chunk.startswith("\n"):
+                        break_count -= 1
+                    chunks.append(chunk)
+                    previous_ended_cr = chunk.endswith("\r")
+                text = "".join(chunks)
         else:
             text = source_bytes.decode(encoding, errors="replace")
-        lines.extend(line.rstrip("\n\r") for line in text.splitlines()[:n])
     except Exception:  # noqa: BLE001 — broad catch intentional: best-effort sampling, failure handled by caller
         logger.debug(f"Could not read sample lines from {path}", exc_info=True)
-    return lines
+        return []
+    physical_lines = _PHYSICAL_LINE_BREAK_RE.split(text, maxsplit=n)
+    if physical_lines and physical_lines[-1] == "" and text.endswith(("\r", "\n")):
+        physical_lines.pop()
+    return physical_lines[:n]

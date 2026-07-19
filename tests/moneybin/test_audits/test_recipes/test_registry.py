@@ -30,9 +30,22 @@ def test_recipe_signature_returns_list_of_recovery_action() -> None:
     assert out == []
 
 
-def test_orphan_recipe_with_affected_ids_withholds_unexecutable_actions() -> None:
+def test_orphan_recipe_with_affected_ids_emits_coarse_cleanup_action() -> None:
     recipe = registry.get("orphan_app_state")
     assert recipe is not None
     ctx = registry.RecipeContext(db=None)
-    out = recipe(["note:n1"], ctx)
-    assert out == []
+    out = recipe(["note:txn1"], ctx)
+    assert [(action.tool, action.arguments) for action in out] == [
+        (
+            "transactions_annotate",
+            {
+                "requests": [
+                    {
+                        "kind": "note_set",
+                        "transaction_id": "txn1",
+                        "note": None,
+                    }
+                ]
+            },
+        )
+    ]

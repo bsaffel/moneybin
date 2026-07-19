@@ -1608,6 +1608,8 @@ class ImportService:
             human_sign_confirmation=human_sign_confirmation,
             is_first_contact=matched_format is None,
             evidence=sign_evidence_header or resolved.field_mapping.get("amount", ""),
+            emit_metrics=emit_metrics,
+            observations=observations,
         )
 
         # Determine account info
@@ -2095,6 +2097,9 @@ class ImportService:
         canonical: Path,
         doc: "PdfDocument",
         decision: "RouteDecision",
+        *,
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> NoReturn:
         """Hand a bridge-eligible PDF to the driving agent. Always raises.
 
@@ -2169,7 +2174,13 @@ class ImportService:
                 "confidence": decision.confidence,
             },
         )
-        PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="proposed").inc()
+        record_counter(
+            PDF_BRIDGE_EGRESS_TOTAL,
+            labels={"outcome": "proposed"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
+        )
         bands = get_settings().import_.confidence
         confidence_obj = Confidence(
             score=decision.confidence,
@@ -2420,7 +2431,13 @@ class ImportService:
         # The bridge response is agent-authored, not a human ratification. A
         # recipe that inverts every amount therefore follows the same gate as
         # deterministic PDFs before it can persist or load any rows.
-        decision = self._gate_pdf_sign_convention(decision, sign=None, confirm=confirm)
+        decision = self._gate_pdf_sign_convention(
+            decision,
+            sign=None,
+            confirm=confirm,
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
         if (
             confirm
             and decision.recipe is not None
@@ -2509,6 +2526,8 @@ class ImportService:
         *,
         sign: str | None,
         confirm: bool,
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> "RouteDecision":
         """Ratify, override, or gate an auto-derived sign inversion.
 
@@ -2571,7 +2590,12 @@ class ImportService:
                     f"convention does not read.",
                     code="invalid_sign_convention",
                 )
-            PDF_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
+            record_counter(
+                PDF_SIGN_GATE_TOTAL,
+                labels={"outcome": "overridden"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             # Ratify only a DISAGREEING override. sign_ratified marks the
             # convention as a human assertion the replay guard must defer to on
             # every future statement of this format
@@ -2606,9 +2630,20 @@ class ImportService:
             # ratified. The confirm here is per-change, not per-format: the
             # earlier ratification was about the OLD convention.
             if confirm:
-                PDF_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+                record_counter(
+                    PDF_SIGN_GATE_TOTAL,
+                    labels={"outcome": "confirmed"},
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                )
                 return decision
-            PDF_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
+            record_counter(
+                PDF_SIGN_GATE_TOTAL,
+                labels={"outcome": "proposed"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
             raise ImportConfirmationRequiredError(
                 ConfirmationRequired(
                     channel="pdf",
@@ -2643,7 +2678,12 @@ class ImportService:
             return decision
 
         if confirm:
-            PDF_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+            record_counter(
+                PDF_SIGN_GATE_TOTAL,
+                labels={"outcome": "confirmed"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             # Deliberately NOT sign_ratified. `confirm` ratifies "this IS a card",
             # and the resulting negative_is_income recipe already replays cleanly —
             # the marker check re-confirms it on every real card statement. Setting
@@ -2652,7 +2692,13 @@ class ImportService:
             # format's fingerprint would import every paycheck as an expense.
             return decision
 
-        PDF_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
+        record_counter(
+            PDF_SIGN_GATE_TOTAL,
+            labels={"outcome": "proposed"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
+        )
         raise ImportConfirmationRequiredError(
             ConfirmationRequired(
                 channel="pdf",
@@ -2685,6 +2731,8 @@ class ImportService:
         human_sign_confirmation: bool,
         is_first_contact: bool,
         evidence: str,
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> None:
         """Require a human to ratify an inferred tabular ledger inversion."""
         from moneybin.metrics.registry import TABULAR_SIGN_GATE_TOTAL
@@ -2692,13 +2740,29 @@ class ImportService:
         if detected_sign != "negative_is_income" or not is_first_contact:
             return
         if sign is not None:
-            TABULAR_SIGN_GATE_TOTAL.labels(outcome="overridden").inc()
+            record_counter(
+                TABULAR_SIGN_GATE_TOTAL,
+                labels={"outcome": "overridden"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             return
         if human_sign_confirmation:
-            TABULAR_SIGN_GATE_TOTAL.labels(outcome="confirmed").inc()
+            record_counter(
+                TABULAR_SIGN_GATE_TOTAL,
+                labels={"outcome": "confirmed"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             return
 
-        TABULAR_SIGN_GATE_TOTAL.labels(outcome="proposed").inc()
+        record_counter(
+            TABULAR_SIGN_GATE_TOTAL,
+            labels={"outcome": "proposed"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
+        )
         raise ImportConfirmationRequiredError(
             ConfirmationRequired(
                 channel="tabular",
@@ -2719,7 +2783,11 @@ class ImportService:
         )
 
     def _persist_replayed_sign_override(
-        self, decision: "RouteDecision", *, import_id: str
+        self,
+        decision: "RouteDecision",
+        *,
+        import_id: str,
+        in_outer_txn: bool = False,
     ) -> None:
         """Re-persist a saved format's recipe after an explicit `sign=` on a REPLAY.
 
@@ -2762,12 +2830,15 @@ class ImportService:
                 # Not "system": the convention is a human assertion, not a
                 # detection. The service can't see which surface it arrived on.
                 actor="import",
+                in_outer_txn=in_outer_txn,
             )
             logger.info(
                 f"PDF format {name!r} recipe re-persisted with the user's sign "
                 f"override (import_id={import_id[:8]}...)"
             )
         except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+            if in_outer_txn:
+                raise
             logger.warning(
                 f"PDF bump_version failed for format {name!r} (import_id="
                 f"{import_id[:8]}...) — the sign override applied to this import "
@@ -2776,7 +2847,11 @@ class ImportService:
             )
 
     def _persist_self_healed_recipe(
-        self, decision: "RouteDecision", *, import_id: str
+        self,
+        decision: "RouteDecision",
+        *,
+        import_id: str,
+        in_outer_txn: bool = False,
     ) -> None:
         """Write back a recipe that routing re-derived after a replay stopped reconciling.
 
@@ -2810,12 +2885,15 @@ class ImportService:
                 # "system": a detection repaired its own earlier detection. No
                 # human asserted anything here.
                 actor="system",
+                in_outer_txn=in_outer_txn,
             )
             logger.info(
                 f"PDF format {name!r} recipe repaired by re-derivation "
                 f"(import_id={import_id[:8]}...)"
             )
         except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+            if in_outer_txn:
+                raise
             logger.warning(
                 f"PDF bump_version failed for re-derived format {name!r} "
                 f"(import_id={import_id[:8]}...) — this import landed but the "
@@ -2827,11 +2905,15 @@ class ImportService:
         self,
         file_path: Path,
         *,
+        source_bytes: bytes | None = None,
         save_format: bool = True,
         account_id: str | None = None,
         actor_kind: "ActorKind" = "human",
         sign: str | None = None,
         confirm: bool = False,
+        in_outer_txn: bool = False,
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> ImportResult:
         """Import a native-text PDF via the Phase 2a routing state machine.
 
@@ -2853,6 +2935,7 @@ class ImportService:
 
         Args:
             file_path: Path to the PDF file.
+            source_bytes: Immutable PDF object to extract instead of reopening path.
             save_format: When False, suppresses every write to
                 ``app.pdf_formats`` — the auto-derived recipe save on first
                 contact AND the recipe re-persist a ``sign=`` triggers on a
@@ -2878,6 +2961,9 @@ class ImportService:
             confirm: Ratify an auto-derived ``negative_is_income`` (credit-card)
                 inversion. Without it, such a statement raises
                 ``ImportConfirmationRequiredError`` and loads nothing.
+            in_outer_txn: Join a caller-owned transaction for every write.
+            emit_metrics: Emit Prometheus observations during this call.
+            observations: Buffer observations for a caller-owned transaction.
         """
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
@@ -2895,10 +2981,19 @@ class ImportService:
         # a dangling import row — begin_import below marks the commitment to a
         # write (transactions or seed).
         try:
-            doc = PDFExtractor().extract(canonical)
+            if source_bytes is None:
+                doc = PDFExtractor().extract(canonical)
+            else:
+                doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
             decision = route_pdf_import(doc, self._db)
         except Exception:
-            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            record_counter(
+                PDF_IMPORT_TOTAL,
+                labels={"outcome": "failed", "rung": "deterministic"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
             raise
 
         # Scanned / image-only PDF: no selectable text layer. Nothing for the
@@ -2910,7 +3005,13 @@ class ImportService:
         # "No tables extracted" failure or a silent empty seed. Raised before
         # begin_import, so no dangling import_log row is left behind.
         if not doc.text_lines and not doc.tables:
-            PDF_IMPORT_TOTAL.labels(outcome="unsupported", rung="deterministic").inc()
+            record_counter(
+                PDF_IMPORT_TOTAL,
+                labels={"outcome": "unsupported", "rung": "deterministic"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
             raise UserError(
                 "This PDF has no selectable text layer — it looks scanned or "
                 "image-only. Extracting transactions from it needs a "
@@ -2933,7 +3034,13 @@ class ImportService:
             and decision.outcome != "transactions"
             and decision.reason in _BRIDGE_ELIGIBLE_REASONS
         ):
-            self._raise_pdf_bridge_escalation(canonical, doc, decision)
+            self._raise_pdf_bridge_escalation(
+                canonical,
+                doc,
+                decision,
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
 
         # Sign gate: an auto-derived inversion needs ratification, an explicit
         # `sign=` overrules the detector. Sits OUTSIDE the extract/route
@@ -2941,7 +3048,13 @@ class ImportService:
         # it as one (PDF_IMPORT_TOTAL{outcome="failed"}) would misreport the
         # gate's whole purpose. Raises before begin_import: nothing loads, and no
         # import_log row is stranded in "importing".
-        decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
+        decision = self._gate_pdf_sign_convention(
+            decision,
+            sign=sign,
+            confirm=confirm,
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
 
         # A saved `sign=` override just replayed: the polarity guard stood down for
         # this document (auto_derive.recipe_polarity_fits short-circuits on
@@ -2988,6 +3101,9 @@ class ImportService:
                 save_format=save_format,
                 account_id_override=account_id,
                 sign_override=sign,
+                in_outer_txn=in_outer_txn,
+                emit_metrics=emit_metrics,
+                observations=observations,
             )
 
         # Seed path (Phase 1 fallback) ——————————————————————————————————
@@ -3029,7 +3145,13 @@ class ImportService:
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
                 )
-            PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic").inc()
+            record_counter(
+                PDF_IMPORT_TOTAL,
+                labels={"outcome": "failed", "rung": "deterministic"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+                disposition="rollback",
+            )
             raise
 
         import_log.finalize_import(
@@ -3039,8 +3161,19 @@ class ImportService:
             rows_total=extracted,
             rows_imported=inserted,
         )
-        PDF_IMPORT_TOTAL.labels(outcome="seed", rung="deterministic").inc()
-        PDF_SEED_ROWS_TOTAL.labels(alias=resolved_alias).inc(inserted)
+        record_counter(
+            PDF_IMPORT_TOTAL,
+            labels={"outcome": "seed", "rung": "deterministic"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
+        record_counter(
+            PDF_SEED_ROWS_TOTAL,
+            labels={"alias": resolved_alias},
+            amount=inserted,
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
         result.details = {"seed_rows": inserted, "seed_rows_extracted": extracted}
         result.transactions = 0
         logger.info(
@@ -3411,9 +3544,17 @@ class ImportService:
                 # which on a re-derived decision IS the repaired recipe — so the
                 # repair still lands and the two paths don't spend two versions
                 # (and two audit rows) on one import.
-                self._persist_replayed_sign_override(decision, import_id=import_id)
+                self._persist_replayed_sign_override(
+                    decision,
+                    import_id=import_id,
+                    in_outer_txn=in_outer_txn,
+                )
             elif decision.rederived and save_format:
-                self._persist_self_healed_recipe(decision, import_id=import_id)
+                self._persist_self_healed_recipe(
+                    decision,
+                    import_id=import_id,
+                    in_outer_txn=in_outer_txn,
+                )
             try:
                 self._pdf_formats.record_use(decision.matched_format_name)
             except Exception:  # noqa: BLE001 — observability bump must not roll back data
@@ -3784,11 +3925,15 @@ class ImportService:
         if file_type == "pdf":
             return self._import_pdf(
                 path,
+                source_bytes=source_bytes,
                 save_format=save_format,
                 account_id=account_id,
                 actor_kind=actor_kind,
                 sign=sign,
                 confirm=confirm,
+                in_outer_txn=in_outer_txn,
+                emit_metrics=emit_metrics,
+                observations=observations,
             )
         raise ValueError(f"Unsupported file type: {file_type}")
 

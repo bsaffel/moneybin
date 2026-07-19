@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.connectors.sync_models import (
+    DeviceAuthorizationChallenge,
     SyncDataResponse,
     SyncHolding,
     SyncInvestmentTransaction,
@@ -22,6 +23,17 @@ _BASE: dict[str, Any] = {
         "institutions": [],
     },
 }
+
+
+def test_device_authorization_challenge_defaults_interval_to_five_seconds() -> None:
+    challenge = DeviceAuthorizationChallenge.model_validate({
+        "device_code": "secret-device-code",
+        "user_code": "ABCD-EFGH",
+        "verification_uri": "https://auth.example/activate",
+        "expires_in": 900,
+    })
+
+    assert challenge.interval == 5.0
 
 
 def test_payload_without_investment_arrays_validates() -> None:

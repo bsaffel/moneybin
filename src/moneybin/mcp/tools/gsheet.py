@@ -759,6 +759,7 @@ def _purge_binding(plan: Any) -> ConfirmationBinding:
     idempotent=False,
     destructive=True,
     open_world=True,
+    timeout_seconds=180.0,
     dynamic_classification=True,
     maximum_sensitivity=Sensitivity.MEDIUM,
 )

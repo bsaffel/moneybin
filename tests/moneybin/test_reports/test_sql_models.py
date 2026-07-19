@@ -62,6 +62,7 @@ def _install_balance_drift_sources(model_db: Database) -> None:
             account_id VARCHAR,
             balance_date DATE,
             balance DECIMAL(18, 2),
+            is_observed BOOLEAN,
             reconciliation_delta DECIMAL(18, 2)
         )
     """)
@@ -90,12 +91,13 @@ def test_balance_drift_uses_independent_transaction_derived_position(
     # records reconciliation_delta = $1,200 - $1,000 = $200.
     model_db.execute(
         """
-        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?)
+        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?)
         """,
         [
             "checking",
             "2026-04-01",
             Decimal("1200.00"),
+            True,
             Decimal("200.00"),
         ],
     )
@@ -117,8 +119,10 @@ def test_balance_drift_uses_independent_transaction_derived_position(
     )
 
 
-def test_balance_drift_without_prior_anchor_is_no_data(model_db: Database) -> None:
-    """An assertion without a prior anchor has no independent comparison."""
+def test_balance_drift_without_reconciliation_adjustment_uses_daily_balance(
+    model_db: Database,
+) -> None:
+    """An interpolated daily balance has no reconciliation adjustment."""
     _install_balance_drift_sources(model_db)
     model_db.execute(
         """
@@ -129,9 +133,39 @@ def test_balance_drift_without_prior_anchor_is_no_data(model_db: Database) -> No
     )
     model_db.execute(
         """
-        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?)
+        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?)
         """,
-        ["checking", "2026-04-01", Decimal("1200.00"), None],
+        ["checking", "2026-04-01", Decimal("1200.00"), False, None],
+    )
+
+    _install_report(model_db, "balance_drift")
+
+    row = model_db.execute(
+        """
+        SELECT computed_balance, drift, status
+        FROM reports.balance_drift
+        """
+    ).fetchone()
+    assert row == (Decimal("1200.00"), Decimal("0.00"), "clean")
+
+
+def test_balance_drift_first_observation_has_no_independent_position(
+    model_db: Database,
+) -> None:
+    """The first observed balance has no prior transaction-derived anchor."""
+    _install_balance_drift_sources(model_db)
+    model_db.execute(
+        """
+        INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
+        VALUES (?, ?, ?)
+        """,
+        ["checking", "2026-04-01", Decimal("1200.00")],
+    )
+    model_db.execute(
+        """
+        INSERT INTO core.fct_balances_daily VALUES (?, ?, ?, ?, ?)
+        """,
+        ["checking", "2026-04-01", Decimal("1200.00"), True, None],
     )
 
     _install_report(model_db, "balance_drift")

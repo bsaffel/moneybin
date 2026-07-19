@@ -551,6 +551,46 @@ class TestTabularConfirmationFlow:
 
         assert result.import_id is not None
 
+    def test_inferred_sign_proposal_metric_is_buffered(
+        self,
+        db: Database,
+    ) -> None:
+        from moneybin.metrics.observations import MetricObservations
+        from moneybin.metrics.registry import TABULAR_SIGN_GATE_TOTAL
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        inverted = _make_mapping_result(
+            score=0.95,
+            confidence="high",
+            sign_convention="negative_is_income",
+            sign_needs_confirmation=True,
+        )
+        observations = MetricObservations()
+        metric = TABULAR_SIGN_GATE_TOTAL.labels(outcome="proposed")
+        before = metric._value.get()  # type: ignore[reportPrivateUsage]
+        with (
+            patch(
+                "moneybin.extractors.tabular.column_mapper.map_columns",
+                return_value=inverted,
+            ),
+            pytest.raises(ImportConfirmationRequiredError),
+        ):
+            ImportService(db).import_file(
+                _STANDARD_CSV,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                emit_metrics=False,
+                observations=observations,
+            )
+
+        assert metric._value.get() == before  # type: ignore[reportPrivateUsage]
+        observations.flush("rollback")
+        assert metric._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
     def test_explicit_sign_override_loads_and_records_gate_metric(
         self, db: Database
     ) -> None:

@@ -271,6 +271,19 @@ class TestStandardCoarseAccountReads:
         }
 
     @pytest.mark.unit
+    async def test_account_detail_resolves_exact_archived_id_without_listing_it(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_named_account("CLOSED_ID", display_name="Closed", archived=True)
+
+        detail = await accounts_coarse(view="detail", reference="CLOSED_ID")
+        active = await accounts_coarse(view="list")
+
+        assert detail.error is None
+        assert detail.data.account.account_id == "CLOSED_ID"
+        assert "CLOSED_ID" not in {row.account_id for row in active.data.rows}
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         ("kwargs", "code"),
         [

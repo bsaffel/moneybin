@@ -59,7 +59,6 @@ _MANUAL_SOURCE_TYPE = "manual"
 # raw.manual_transactions.source_origin is always 'user' (schema DEFAULT) and is
 # the manual native account key's scope; both feed the transaction_id hash.
 _MANUAL_SOURCE_ORIGIN = "user"
-_MIN_ACCOUNT_FUZZY_CONFIDENCE = 0.4
 
 
 def _state_digest(value: object) -> str:
@@ -410,11 +409,12 @@ class TransactionService:
     def _prepare_annotation(self, request: AnnotationRequest) -> _PreparedAnnotation:
         """Resolve every batch target before writes begin."""
         if isinstance(request, NoteSet):
-            self._annotation_transaction_amount(request.transaction_id)
             if request.note is not None:
                 validate_note_text(request.note)
             desired = [] if request.note is None else [request.note]
             current = self.list_notes(request.transaction_id)
+            if request.note is not None or not current:
+                self._annotation_transaction_amount(request.transaction_id)
             return _PreparedAnnotation(
                 request=request,
                 target_ids=(request.transaction_id,),
@@ -424,8 +424,9 @@ class TransactionService:
             )
 
         if isinstance(request, TagsSet):
-            self._annotation_transaction_amount(request.transaction_id)
             mutation = self._prepare_tags_set(request.transaction_id, request.tags)
+            if request.tags or not mutation.to_remove:
+                self._annotation_transaction_amount(request.transaction_id)
             return _PreparedAnnotation(
                 request=request,
                 target_ids=(request.transaction_id,),
@@ -605,13 +606,18 @@ class TransactionService:
         )
 
     def _resolve_account_ids(self, accounts: list[str]) -> list[str]:
-        """Resolve display names or IDs to account_id strings.
-
-        Batches exact account_id lookups in one query, then fuzzy-matches any
-        remaining entries via AccountService. Unresolvable entries are silently
-        skipped.
-        """
-        from moneybin.services.account_service import AccountService
+        """Resolve every account reference exactly without partial results."""
+        from moneybin.services.account_service import (
+            AccountNotFoundError,
+            AccountService,
+            AmbiguousAccountError,
+        )
+        from moneybin.services.entity_reference import (
+            AmbiguousEntity,
+            EntityCandidate,
+            MissingEntity,
+            resolve_entity_reference,
+        )
 
         placeholders = ", ".join("?" * len(accounts))
         exact_rows = self._db.execute(
@@ -620,20 +626,55 @@ class TransactionService:
         ).fetchall()
         exact_ids = {str(r[0]) for r in exact_rows}
 
-        resolved: list[str] = []
-        unmatched: list[str] = []
-        for a in accounts:
-            (resolved if a in exact_ids else unmatched).append(a)
+        rows = (
+            AccountService(self._db)
+            .list_accounts(
+                include_archived=False,
+                type_filter=None,
+            )
+            .rows
+        )
+        candidates = [
+            EntityCandidate(
+                entity_id=row.account_id,
+                display_name=row.display_name or row.account_id,
+                aliases=tuple(
+                    value
+                    for value in (
+                        row.institution_name,
+                        row.account_type,
+                        row.account_subtype,
+                    )
+                    if value is not None
+                ),
+            )
+            for row in rows
+        ]
+        names = {
+            candidate.entity_id: candidate.display_name for candidate in candidates
+        }
 
-        if unmatched:
-            service = AccountService(self._db)
-            for entry in unmatched:
-                payload = service.resolve(entry, limit=1)
-                if (
-                    payload.matches
-                    and payload.matches[0].confidence >= _MIN_ACCOUNT_FUZZY_CONFIDENCE
-                ):
-                    resolved.append(payload.matches[0].account_id)
+        resolved: list[str] = []
+        for account in accounts:
+            if account in exact_ids:
+                resolved.append(account)
+                continue
+            resolution = resolve_entity_reference(account, candidates)
+            if isinstance(resolution, MissingEntity):
+                raise AccountNotFoundError(
+                    account,
+                    [
+                        (candidate.entity_id, candidate.display_name)
+                        for candidate in candidates
+                    ],
+                )
+            if isinstance(resolution, AmbiguousEntity):
+                raise AmbiguousAccountError(
+                    account,
+                    list(resolution.candidate_ids),
+                    [names[account_id] for account_id in resolution.candidate_ids],
+                )
+            resolved.append(resolution.entity_id)
         return resolved
 
     def get(
@@ -654,9 +695,9 @@ class TransactionService:
 
         Reads from core.fct_transactions, which already joins curation columns
         (notes, tags, splits) from the app schema. Account entries in `accounts`
-        are resolved: exact account_id matches are used directly; everything else
-        is fuzzy-matched against display names via AccountService. Unresolvable
-        entries are silently skipped.
+        are resolved as exact account IDs or unambiguous normalized names and
+        aliases. Any unresolved entry rejects the whole filter instead of
+        returning a partial result.
 
         Pagination is offset-based internally; the cursor is base64(str(offset))
         so callers treat it as opaque.
@@ -676,8 +717,6 @@ class TransactionService:
         account_ids: list[str] | None = None
         if accounts:
             account_ids = self._resolve_account_ids(accounts)
-            if not account_ids:
-                return TransactionGetResult(transactions=[], next_cursor=None)
         page = self._query_transactions(
             account_ids=account_ids,
             date_from=date_from,

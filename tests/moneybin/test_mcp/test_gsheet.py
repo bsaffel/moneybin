@@ -263,9 +263,13 @@ async def test_gsheet_write_tool_schemas_hide_sign_confirmation_inputs() -> None
 @pytest.mark.unit
 def test_gsheet_write_tools_allow_human_confirmation_timeout() -> None:
     """The public mode-aware workflow owns the human decision window."""
-    from moneybin.mcp.tools.gsheet import gsheet_connect_coarse
+    from moneybin.mcp.tools.gsheet import (
+        gsheet_connect_coarse,
+        gsheet_disconnect_coarse,
+    )
 
     assert gsheet_connect_coarse._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+    assert gsheet_disconnect_coarse._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

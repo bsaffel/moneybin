@@ -104,6 +104,45 @@ def test_consume_binds_exact_file_and_records_result(db: Database) -> None:
     assert repo.get_source_bytes(preview_id) is None  # type: ignore[attr-defined]
 
 
+def test_purge_retains_consumed_preview_provenance(db: Database) -> None:
+    """A completed preview remains auditable after its source snapshot is deleted."""
+    repo = _repo(db)
+    preview_id = _issue(repo)
+
+    db.begin()
+    try:
+        repo.consume(  # type: ignore[attr-defined]
+            preview_id,
+            file_sha256="a" * 64,
+            file_size_bytes=128,
+            now=NOW + timedelta(seconds=1),
+            actor="mcp",
+            in_outer_txn=True,
+        )
+        repo.record_result(  # type: ignore[attr-defined]
+            preview_id,
+            import_id="imp_completed",
+            actor="mcp",
+            in_outer_txn=True,
+        )
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+
+    assert (
+        repo.purge_expired(  # type: ignore[attr-defined]
+            now=NOW + timedelta(seconds=2),
+            actor="system",
+        )
+        == 0
+    )
+    row = repo.get(preview_id)  # type: ignore[attr-defined]
+    assert row is not None
+    assert row["import_id"] == "imp_completed"
+    assert repo.get_source_bytes(preview_id) is None  # type: ignore[attr-defined]
+
+
 @pytest.mark.parametrize(
     ("expires_at", "consume_at", "sha256", "code"),
     [

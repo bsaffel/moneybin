@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
-from pydantic import Field, TypeAdapter
+from pydantic import Field, JsonValue, TypeAdapter
+
+from moneybin import error_codes
 
 if TYPE_CHECKING:
     from moneybin.services.import_confirmation import ConfirmationRequired
@@ -59,6 +61,7 @@ from moneybin.privacy.payloads.imports import (
     ImportPdfBridgePreviewPayload,
     ImportPdfDirectPreviewPayload,
     ImportPdfFormatRow,
+    ImportPdfSignAppliedPayload,
     ImportPdfSignPreviewPayload,
     ImportPerFileRow,
     ImportPreviewCoarsePayload,
@@ -1065,7 +1068,8 @@ def import_preview_coarse(
             expires_at=expires_wire,
         )
         actions = [
-            action for action in response.actions if "import_confirm(" not in action
+            "Use import_confirm(preview_id=...) before the preview expires; "
+            "MoneyBin will ask the human to approve the sign inversion.",
         ]
     else:
         payload = ImportPdfDirectPreviewPayload(
@@ -1119,6 +1123,11 @@ def import_preview_coarse(
         actions = [
             f"Use import_confirm(preview_id='{preview_id}', "
             "bridge_response={...}) before the preview expires.",
+        ]
+    elif isinstance(final_payload, ImportPdfSignPreviewPayload):
+        actions = [
+            f"Use import_confirm(preview_id='{preview_id}') before the preview "
+            "expires; MoneyBin will ask the human to approve the sign inversion.",
         ]
     return cast(
         ResponseEnvelope[ImportPreviewCoarsePayload],
@@ -2368,33 +2377,13 @@ async def import_confirm(
     )
 
 
-@mcp_tool(
-    read_only=False,
-    idempotent=False,
-    dynamic_classification=True,
-    maximum_sensitivity=Sensitivity.MEDIUM,
-)
-def import_confirm_coarse(
+def _load_import_confirm_preview(
     preview_id: str,
-    *,
-    bridge_response: dict[str, Any] | None = None,
-    save_format: bool = True,
-    account_id: str | None = None,
-    account_name: str | None = None,
-    account_bindings: dict[str, str] | None = None,
-    account_metadata: dict[str, dict[str, str]] | None = None,
-) -> ResponseEnvelope[ImportConfirmCoarsePayload]:
-    """Atomically consume one unchanged tabular or PDF-bridge preview."""
-    from moneybin.metrics.observations import MetricObservations
-    from moneybin.metrics.registry import IMPORT_DURATION_SECONDS, IMPORT_RECORDS_TOTAL
+) -> tuple[dict[str, Any], Path, bytes]:
+    """Load one persisted preview and its immutable source object."""
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
-    from moneybin.services.import_service import ImportService
 
-    started = time.monotonic()
-    observations = MetricObservations()
-    bridge_result: Any | None = None
-    result: Any | None = None
-    with get_database(read_only=False) as db:
+    with get_database(read_only=True) as db:
         repo = ImportPreviewsRepo(db)
         preview = repo.get(preview_id)
         if preview is None:
@@ -2409,43 +2398,97 @@ def import_confirm_coarse(
                 "The immutable import preview snapshot is unavailable.",
                 code="IMPORT_PREVIEW_SNAPSHOT_MISSING",
             )
-        snapshot_data = cast(
-            dict[str, Any],
-            preview["snapshot_json"]["data"],
-        )
-        channel = preview["channel"]
-        if channel == "ofx":
-            raise UserError(
-                "OFX/QFX/QBO files import directly with import_files.",
-                code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
-            )
-        if channel == "pdf":
-            if snapshot_data.get("reason") == "sign_convention":
-                raise UserError(
-                    "Credit-card PDF sign confirmation must be completed in the "
-                    "CLI so the human explicitly approves the whole-statement "
-                    "sign inversion.",
-                    code="IMPORT_PREVIEW_SIGN_CONFIRMATION_CLI_REQUIRED",
-                )
-            if (
-                snapshot_data.get("status") != "confirmation_required"
-                or "bridge_payload" not in snapshot_data
-            ):
-                raise UserError(
-                    "This PDF preview does not require a bridge response; use "
-                    "import_files to run its deterministic or seed path.",
-                    code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
-                )
-            if bridge_response is None:
-                raise UserError(
-                    "A PDF bridge preview requires bridge_response={recipe, rows}.",
-                    code="IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED",
-                )
-        elif bridge_response is not None:
-            raise UserError(
-                "bridge_response is valid only for a PDF bridge preview.",
-                code="IMPORT_PREVIEW_CHANNEL_CONFLICT",
-            )
+    return preview, path, source_bytes
+
+
+def _canonical_json_sha256(value: object) -> str:
+    """Hash one JSON value using the confirmation broker's canonical form."""
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _import_sign_confirmation_binding(
+    *,
+    preview_id: str,
+    path: Path,
+    source_bytes: bytes,
+    channel: str,
+    proposal: dict[str, object],
+    bridge_response: dict[str, Any] | None,
+    save_format: bool,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+) -> ConfirmationBinding:
+    """Bind one sign approval to the exact preview, proposal, and request."""
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    arguments = TypeAdapter(dict[str, JsonValue]).validate_python({
+        "preview_id": preview_id,
+        "path": str(path),
+        "channel": channel,
+        "source_sha256": source_sha256,
+        "source_size_bytes": len(source_bytes),
+        "proposal_sha256": _canonical_json_sha256(proposal),
+        "bridge_response_sha256": (
+            _canonical_json_sha256(bridge_response)
+            if bridge_response is not None
+            else None
+        ),
+        "save_format": save_format,
+        "account_id": account_id,
+        "account_name": account_name,
+        "account_bindings": account_bindings,
+        "account_metadata": account_metadata,
+    })
+    return ConfirmationBinding(
+        arguments=arguments,
+        resolved_ids=(preview_id, source_sha256),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="import_sign_confirmation",
+        blast_radius={"imports": 1, "source_snapshots": 1},
+    )
+
+
+def _run_import_confirm_attempt(
+    *,
+    preview_id: str,
+    path: Path,
+    source_bytes: bytes,
+    channel: str,
+    pdf_sign: bool,
+    bridge_response: dict[str, Any] | None,
+    save_format: bool,
+    account_id: str | None,
+    account_name: str | None,
+    account_bindings: dict[str, str] | None,
+    account_metadata: dict[str, dict[str, str]] | None,
+    approved_sign_proposal: dict[str, object] | None,
+    confirmation_grant: ConfirmationGrant | None,
+    started: float,
+) -> tuple[Any | None, Any | None, str] | ResponseEnvelope[ImportConfirmCoarsePayload]:
+    """Run one atomic import attempt off the MCP event loop."""
+    from moneybin.metrics.observations import MetricObservations
+    from moneybin.metrics.registry import IMPORT_DURATION_SECONDS, IMPORT_RECORDS_TOTAL
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+    from moneybin.services.import_confirmation import (
+        ImportConfirmationRequiredError,
+        confirmation_payload_dict,
+    )
+    from moneybin.services.import_service import ImportService
+
+    observations = MetricObservations()
+    bridge_result: Any | None = None
+    result: Any | None = None
+    with get_database(read_only=False) as db:
+        repo = ImportPreviewsRepo(db)
         live_identity = _file_identity(path)
         db.begin()
         try:
@@ -2458,40 +2501,8 @@ def import_confirm_coarse(
                 in_outer_txn=True,
             )
             service = ImportService(db)
-            if channel == "pdf":
-                bridge_result = service.apply_pdf_bridge_response(
-                    path,
-                    cast(dict[str, Any], bridge_response),
-                    save_format=save_format,
-                    account_id=account_id,
-                    source_bytes=source_bytes,
-                    in_outer_txn=True,
-                    emit_metrics=False,
-                    observations=observations,
-                )
-                if bridge_result.outcome == "invalid":
-                    db.rollback()
-                    observations.flush("rollback")
-                    return cast(
-                        ResponseEnvelope[ImportConfirmCoarsePayload],
-                        _import_dynamic_envelope(
-                            ImportPdfBridgeInvalidPayload(
-                                kind="pdf_bridge_invalid",
-                                preview_id=preview_id,
-                                status="invalid",
-                                reject_reason=bridge_result.reject_reason,
-                                expected_row_count=bridge_result.expected_row_count,
-                                actual_row_count=bridge_result.actual_row_count,
-                                rows_diverged=bridge_result.rows_diverged,
-                            ),
-                            actions=[
-                                "Revise the bridge recipe or extracted rows and "
-                                "retry this same preview before it expires.",
-                            ],
-                        ),
-                    )
-                import_id = bridge_result.import_id
-            else:
+            reviewed_plan: Any | None = None
+            if channel != "pdf":
                 from moneybin.services.import_service import ReviewedTabularPlan
 
                 plan_value = consumed["snapshot_json"].get("plan")
@@ -2503,7 +2514,45 @@ def import_confirm_coarse(
                 reviewed_plan = ReviewedTabularPlan.from_dict(
                     cast(dict[str, Any], plan_value)
                 )
-                result = service.import_file(
+
+            def run_channel(
+                *,
+                confirm_sign: bool,
+                channel_observations: MetricObservations,
+            ) -> tuple[Any | None, Any | None, str | None]:
+                """Run the selected channel without crossing the transaction boundary."""
+                if channel == "pdf" and pdf_sign:
+                    channel_result = service.import_file(
+                        path,
+                        source_bytes=source_bytes,
+                        save_format=save_format,
+                        account_id=account_id,
+                        actor_kind="agent",
+                        confirm=confirm_sign,
+                        refresh=False,
+                        in_outer_txn=True,
+                        emit_metrics=False,
+                        observations=channel_observations,
+                    )
+                    return None, channel_result, channel_result.import_id
+                if channel == "pdf":
+                    channel_bridge_result = service.apply_pdf_bridge_response(
+                        path,
+                        cast(dict[str, Any], bridge_response),
+                        save_format=save_format,
+                        account_id=account_id,
+                        source_bytes=source_bytes,
+                        in_outer_txn=True,
+                        emit_metrics=False,
+                        observations=channel_observations,
+                        confirm=confirm_sign,
+                    )
+                    return (
+                        channel_bridge_result,
+                        None,
+                        channel_bridge_result.import_id,
+                    )
+                channel_result = service.import_file(
                     path,
                     source_bytes=source_bytes,
                     reviewed_plan=reviewed_plan,
@@ -2513,12 +2562,92 @@ def import_confirm_coarse(
                     account_bindings=account_bindings,
                     account_metadata=account_metadata,
                     actor_kind="agent",
+                    human_sign_confirmation=confirm_sign,
                     refresh=False,
                     in_outer_txn=True,
                     emit_metrics=False,
-                    observations=observations,
+                    observations=channel_observations,
                 )
-                import_id = result.import_id
+                return None, channel_result, channel_result.import_id
+
+            if approved_sign_proposal is not None:
+                if confirmation_grant is None:
+                    raise RuntimeError("approved sign proposal lacks a grant")
+                try:
+                    run_channel(
+                        confirm_sign=False,
+                        channel_observations=MetricObservations(),
+                    )
+                except ImportConfirmationRequiredError as current_confirmation:
+                    current = current_confirmation.outcome
+                    if (
+                        current.reason == "sign_convention"
+                        and confirmation_payload_dict(current) == approved_sign_proposal
+                    ):
+                        pass
+                    else:
+                        raise UserError(
+                            "The sign proposal changed after approval; re-run the "
+                            "preview and review the current proposal.",
+                            code="IMPORT_SIGN_PROPOSAL_CHANGED",
+                        ) from current_confirmation
+                else:
+                    raise UserError(
+                        "The approved sign proposal is no longer pending; re-run the "
+                        "preview before importing.",
+                        code="IMPORT_SIGN_PROPOSAL_CHANGED",
+                    )
+                confirmation_grant.verify(
+                    _import_sign_confirmation_binding(
+                        preview_id=preview_id,
+                        path=path,
+                        source_bytes=source_bytes,
+                        channel=channel,
+                        proposal=approved_sign_proposal,
+                        bridge_response=bridge_response,
+                        save_format=save_format,
+                        account_id=account_id,
+                        account_name=account_name,
+                        account_bindings=account_bindings,
+                        account_metadata=account_metadata,
+                    )
+                )
+
+            channel_observations = (
+                MetricObservations()
+                if confirmation_grant is not None and approved_sign_proposal is None
+                else observations
+            )
+            bridge_result, result, import_id = run_channel(
+                confirm_sign=approved_sign_proposal is not None,
+                channel_observations=channel_observations,
+            )
+            if confirmation_grant is not None and approved_sign_proposal is None:
+                raise UserError(
+                    "The confirmation token does not match a pending sign proposal.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+            if bridge_result is not None and bridge_result.outcome == "invalid":
+                db.rollback()
+                observations.flush("rollback")
+                return cast(
+                    ResponseEnvelope[ImportConfirmCoarsePayload],
+                    _import_dynamic_envelope(
+                        ImportPdfBridgeInvalidPayload(
+                            kind="pdf_bridge_invalid",
+                            preview_id=preview_id,
+                            status="invalid",
+                            reject_reason=bridge_result.reject_reason,
+                            expected_row_count=bridge_result.expected_row_count,
+                            actual_row_count=bridge_result.actual_row_count,
+                            rows_diverged=bridge_result.rows_diverged,
+                        ),
+                        actions=[
+                            "Revise the bridge recipe or extracted rows and retry "
+                            "this same preview before it expires.",
+                        ],
+                    ),
+                )
             if import_id is None:
                 raise RuntimeError("confirmed import completed without an import ID")
             repo.record_result(
@@ -2551,7 +2680,164 @@ def import_confirm_coarse(
             observations.flush("rollback")
             raise
 
-    source_type = "pdf" if channel == "pdf" else "tabular"
+    from moneybin.services.inbox_service import InboxService
+
+    InboxService.for_active_profile_no_db().archive_confirmed_file(path)
+    return bridge_result, result, import_id
+
+
+@mcp_tool(
+    read_only=False,
+    idempotent=False,
+    timeout_seconds=180.0,
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.MEDIUM,
+)
+async def import_confirm_coarse(
+    preview_id: str,
+    *,
+    bridge_response: dict[str, Any] | None = None,
+    save_format: bool = True,
+    account_id: str | None = None,
+    account_name: str | None = None,
+    account_bindings: dict[str, str] | None = None,
+    account_metadata: dict[str, dict[str, str]] | None = None,
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[ImportConfirmCoarsePayload]:
+    """Consume one unchanged preview, eliciting human approval for sign inversion."""
+    from moneybin.services.import_confirmation import (
+        ConfirmationRequired,
+        ImportConfirmationRequiredError,
+        confirmation_payload_dict,
+    )
+
+    confirmation_grant: ConfirmationGrant | None = None
+    if confirmation_token is not None:
+        confirmation_grant = await grant_confirmation_or_raise(
+            binding=None,
+            message="",
+            confirmation_token=confirmation_token,
+        )
+    started = time.monotonic()
+    preview, path, source_bytes = await asyncio.to_thread(
+        _load_import_confirm_preview,
+        preview_id,
+    )
+    snapshot_data = cast(
+        dict[str, Any],
+        preview["snapshot_json"]["data"],
+    )
+    channel = preview["channel"]
+    if channel == "ofx":
+        raise UserError(
+            "OFX/QFX/QBO files import directly with import_files.",
+            code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+        )
+    pdf_sign = channel == "pdf" and snapshot_data.get("reason") == "sign_convention"
+    if channel == "pdf":
+        _reject_unsupported_pdf_account_signals(
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+        if pdf_sign:
+            if bridge_response is not None:
+                raise UserError(
+                    "A PDF sign preview does not accept bridge_response.",
+                    code="IMPORT_PREVIEW_CHANNEL_CONFLICT",
+                )
+        elif (
+            snapshot_data.get("status") != "confirmation_required"
+            or "bridge_payload" not in snapshot_data
+        ):
+            raise UserError(
+                "This PDF preview does not require a bridge response; use "
+                "import_files to run its deterministic or seed path.",
+                code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
+            )
+        elif bridge_response is None:
+            raise UserError(
+                "A PDF bridge preview requires bridge_response={recipe, rows}.",
+                code="IMPORT_PREVIEW_BRIDGE_RESPONSE_REQUIRED",
+            )
+    elif bridge_response is not None:
+        raise UserError(
+            "bridge_response is valid only for a PDF bridge preview.",
+            code="IMPORT_PREVIEW_CHANNEL_CONFLICT",
+        )
+
+    bridge_result: Any | None = None
+    result: Any | None = None
+    import_id: str | None = None
+    approved_sign_proposal: dict[str, object] | None = None
+    while True:
+        try:
+            attempt = await asyncio.to_thread(
+                _run_import_confirm_attempt,
+                preview_id=preview_id,
+                path=path,
+                source_bytes=source_bytes,
+                channel=channel,
+                pdf_sign=pdf_sign,
+                bridge_response=bridge_response,
+                save_format=save_format,
+                account_id=account_id,
+                account_name=account_name,
+                account_bindings=account_bindings,
+                account_metadata=account_metadata,
+                approved_sign_proposal=approved_sign_proposal,
+                confirmation_grant=confirmation_grant,
+                started=started,
+            )
+        except ImportConfirmationRequiredError as confirmation:
+            raw_outcome = getattr(cast(object, confirmation), "outcome", None)
+            if not isinstance(raw_outcome, ConfirmationRequired):
+                raise RuntimeError(
+                    "confirmation error lacks a typed outcome"
+                ) from confirmation
+            outcome = raw_outcome
+            if (
+                outcome.reason != "sign_convention"
+                or approved_sign_proposal is not None
+            ):
+                raise
+        else:
+            if isinstance(attempt, ResponseEnvelope):
+                return attempt
+            bridge_result, result, import_id = attempt
+            break
+        source = (
+            "PDF bridge recipe"
+            if bridge_response is not None
+            else "PDF statement"
+            if channel == "pdf"
+            else "tabular import"
+        )
+        approved_sign_proposal = confirmation_payload_dict(outcome)
+        binding = _import_sign_confirmation_binding(
+            preview_id=preview_id,
+            path=path,
+            source_bytes=source_bytes,
+            channel=channel,
+            proposal=approved_sign_proposal,
+            bridge_response=bridge_response,
+            save_format=save_format,
+            account_id=account_id,
+            account_name=account_name,
+            account_bindings=account_bindings,
+            account_metadata=account_metadata,
+        )
+        if confirmation_grant is None:
+            confirmation_grant = await grant_confirmation_or_raise(
+                binding=binding,
+                message=_sign_confirmation_message(
+                    approved_sign_proposal,
+                    source=source,
+                ),
+                confirmation_token=None,
+            )
+        started = time.monotonic()
+
     if bridge_result is None and result is None:
         raise RuntimeError("confirmed import produced no channel result")
     if bridge_result is not None:
@@ -2562,9 +2848,6 @@ def import_confirm_coarse(
             raise RuntimeError("tabular import produced no result")
         rows_loaded = result.transactions
         merged_mapping = dict(result.field_mapping or {})
-    from moneybin.services.inbox_service import InboxService
-
-    InboxService.for_active_profile_no_db().archive_confirmed_file(path)
     if bridge_result is not None:
         payload: Any = ImportPdfBridgeAppliedPayload(
             preview_id=preview_id,
@@ -2573,6 +2856,15 @@ def import_confirm_coarse(
             merged_mapping=merged_mapping,
             format_name=bridge_result.format_name,
         )
+    elif channel == "pdf":
+        if result is None:
+            raise RuntimeError("PDF sign import produced no result")
+        payload = ImportPdfSignAppliedPayload(
+            preview_id=preview_id,
+            import_id=import_id,
+            rows_loaded=rows_loaded,
+            format_name=result.pdf_format_name,
+        )
     else:
         payload = ImportTabularConfirmCoarsePayload(
             preview_id=preview_id,
@@ -2580,15 +2872,28 @@ def import_confirm_coarse(
             rows_loaded=rows_loaded,
             merged_mapping=merged_mapping,
         )
+    actions = [
+        f"Use import_revert(import_id='{import_id}') to undo this import.",
+        "Use import_status(sections=['imports'], "
+        f"import_id='{import_id}') to verify it.",
+    ]
+    if bridge_result is not None and bridge_result.rows_diverged:
+        actions.insert(
+            0,
+            f"The bridge recipe reproduced {bridge_result.actual_row_count} rows "
+            f"instead of the {bridge_result.expected_row_count} returned by the "
+            "agent; the reconciled reproduced rows were loaded.",
+        )
+    if result is not None and result.sign_correction_suggested:
+        actions.insert(
+            0,
+            "Sign convention may be inverted — inspect the imported amounts.",
+        )
     return cast(
         ResponseEnvelope[ImportConfirmCoarsePayload],
         _import_dynamic_envelope(
             payload,
-            actions=[
-                f"Use import_revert(import_id='{import_id}') to undo this import.",
-                "Use import_status(sections=['imports'], "
-                f"import_id='{import_id}') to verify it.",
-            ],
+            actions=actions,
         ),
     )
 
@@ -2618,7 +2923,11 @@ def import_files_coarse(
         refresh=refresh,
         force=force,
     )
-    actions: list[str] = []
+    actions = [
+        action
+        for action in response.actions
+        if "import_confirm(file_path=" not in action
+    ]
     for row in response.data.files:
         if row.status == "confirmation_required":
             actions.append(
@@ -2633,7 +2942,12 @@ def import_files_coarse(
     return replace(response, actions=list(dict.fromkeys(actions)))
 
 
-@mcp_tool(read_only=False, destructive=True, idempotent=False)
+@mcp_tool(
+    read_only=False,
+    destructive=True,
+    idempotent=False,
+    timeout_seconds=180.0,
+)
 async def import_revert_coarse(
     import_id: str | None = None,
     operation: Literal["revert_import", "delete_saved_format"] = "revert_import",
@@ -2664,14 +2978,22 @@ async def import_revert_coarse(
         )
 
     response = import_revert(import_id=cast(str, import_id))
+    if response.error is not None:
+        return cast(
+            ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload],
+            response,
+        )
     return cast(
         ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload],
         replace(
             response,
-            actions=[
-                "Use import_status(sections=['imports'], "
-                f"import_id='{import_id}') to verify the reverted state."
-            ],
+            actions=list(
+                dict.fromkeys([
+                    *response.actions,
+                    "Use import_status(sections=['imports'], "
+                    f"import_id='{import_id}') to verify the reverted state.",
+                ])
+            ),
         ),
     )
 
@@ -2723,7 +3045,8 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
         (
             import_confirm_coarse,
             "import_confirm",
-            "Atomically consume an unchanged preview and import its file.",
+            "Atomically consume an unchanged preview and import its file, "
+            "eliciting human approval before any sign inversion.",
         ),
         (
             import_status_coarse,

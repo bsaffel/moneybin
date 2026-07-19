@@ -38,12 +38,27 @@ logger = logging.getLogger(__name__)
 _SETTABLE_STATUSES: frozenset[str] = frozenset({"accepted", "rejected"})
 
 
-def _non_pending_recovery(current_status: str) -> RecoveryAction:
+def _non_pending_recovery(
+    current_status: str,
+    *,
+    accepted_operation_id: str | None = None,
+) -> RecoveryAction:
     """Recovery action for a set_status call on a non-pending decision.
 
-    All terminal states route to normalized match history, where the user can
-    inspect the existing decision before choosing a valid next operation.
+    Accepted decisions point directly at their audited operation so the agent
+    can reverse the merge. Other terminal states route to normalized history.
     """
+    if current_status == "accepted" and accepted_operation_id is not None:
+        return RecoveryAction(
+            tool="system_audit_undo",
+            arguments={"operation_id": accepted_operation_id},
+            rationale=(
+                "This match is already accepted and merged into core. Reverse "
+                "the audited acceptance operation before choosing another state."
+            ),
+            confidence="suggested",
+            idempotent=False,
+        )
     return RecoveryAction(
         tool="reviews",
         arguments={"kind": "matches", "status": "history"},
@@ -204,11 +219,27 @@ class MatchingService:
             current_status = current["match_status"]
             if current_status != status:
                 if current_status != "pending":
+                    accepted_operation_id = None
+                    if current_status == "accepted":
+                        from moneybin.services.audit_service import AuditService
+
+                        events = AuditService(self._db).list_events(
+                            target_table="match_decisions",
+                            target_id=match_id,
+                            limit=1,
+                        )
+                        if events:
+                            accepted_operation_id = events[0].operation_id
                     raise UserError(
                         f"Cannot set match {match_id!r} to {status!r}: it is "
                         f"{current_status!r}, not pending.",
                         code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
-                        recovery_actions=[_non_pending_recovery(current_status)],
+                        recovery_actions=[
+                            _non_pending_recovery(
+                                current_status,
+                                accepted_operation_id=accepted_operation_id,
+                            )
+                        ],
                     )
                 self._match_repo().update_status(
                     match_id,

@@ -629,7 +629,7 @@ def test_compare_cli_persists_truthful_contract_fixture_evidence(
     assert payload["evidence"]["host"] == "contract-fixture"
     assert payload["evidence"]["model"] == "deterministic"
     assert payload["evidence"]["baseline_run_date"] == "2026-07-17"
-    assert payload["evidence"]["candidate_run_date"] == "2026-07-17"
+    assert payload["evidence"]["candidate_run_date"] == "2026-07-19"
     assert payload["evidence"]["context_budget"] == {
         "limit": 0.02,
         "ratio": None,

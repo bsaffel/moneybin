@@ -1,4 +1,4 @@
-"""Payload-bound confirmation for destructive MCP mutations."""
+"""Payload-bound confirmation for high-impact MCP operations."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def _mismatch() -> UserError:
 
 def _confirmation_declined() -> UserError:
     return UserError(
-        "The destructive mutation was not confirmed.",
+        "The high-impact operation was not confirmed.",
         code=error_codes.MUTATION_CONFIRMATION_DECLINED,
         details={"reason": "declined"},
     )
@@ -178,7 +178,7 @@ def _confirmation_required(
     expires_in_seconds: int,
 ) -> UserError:
     return UserError(
-        "This destructive mutation needs explicit confirmation.",
+        "This high-impact operation needs explicit confirmation.",
         code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
         details={
             "confirmation_token": token,
@@ -211,7 +211,7 @@ async def grant_confirmation_or_raise(
         result = await ctx.elicit(
             message,
             response_type=bool,
-            response_title="Confirm destructive operation",
+            response_title="Confirm high-impact operation",
             response_description=(
                 "Select true only after reviewing the exact operation."
             ),

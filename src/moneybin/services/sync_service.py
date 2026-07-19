@@ -458,13 +458,30 @@ class SyncService:
 
     def disconnect(self, *, institution: str) -> None:
         """Resolve institution name to connection id and call client.disconnect()."""
+        inst = self.plan_disconnect(institution=institution)
+        self.client.disconnect(inst.id)
+
+    def plan_disconnect(self, *, institution: str) -> ConnectedInstitution:
+        """Resolve the exact live connection that an institution disconnect targets."""
         inst = self._find_institution(institution)
         if inst is None:
             raise ValueError(
                 f"no connected institution matching '{institution}' — "
                 f"run `moneybin sync status` to list connected banks"
             )
+        return inst
+
+    def disconnect_confirmed(
+        self,
+        *,
+        institution: str,
+        verify: Callable[[ConnectedInstitution], None],
+    ) -> ConnectedInstitution:
+        """Verify the live target immediately before deleting the connection."""
+        inst = self.plan_disconnect(institution=institution)
+        verify(inst)
         self.client.disconnect(inst.id)
+        return inst
 
     def _guidance_for(
         self, *, status: str, error_code: str | None, institution: str

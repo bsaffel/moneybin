@@ -233,12 +233,11 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
     ("requested", "expected"),
     [
         (None, 1),
-        (0, 0),
         (1, 1),
         (100, 1),
     ],
 )
-async def test_reports_preserves_zero_and_caps_only_positive_limits(
+async def test_reports_caps_positive_limits(
     requested: int | None,
     expected: int,
 ) -> None:
@@ -268,7 +267,8 @@ async def test_reports_preserves_zero_and_caps_only_positive_limits(
 
 
 @pytest.mark.unit
-async def test_reports_negative_limit_reaches_catalog_validation() -> None:
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_reports_rejects_non_positive_limit(limit: int) -> None:
     catalog = ReportCatalog((_transport_report(),))
     db = cast(Database, MagicMock(spec=Database))
 
@@ -287,7 +287,7 @@ async def test_reports_negative_limit_reaches_catalog_validation() -> None:
         response = await reports(
             report_id="test:transport",
             parameters={"account_filters": {"primary": "acct_11112222"}},
-            limit=-1,
+            limit=limit,
         )
 
     assert response.to_dict()["status"] == "error"
@@ -330,6 +330,12 @@ async def test_generic_reports_fastmcp_schema_and_catalog_transport() -> None:
         "integer",
         "null",
     }
+    integer_limit = next(
+        branch
+        for branch in properties["limit"]["anyOf"]
+        if branch.get("type") == "integer"
+    )
+    assert integer_limit["minimum"] == 1
     assert "sql" not in tool.inputSchema["properties"]
     assert "catalog" in (tool.description or "").lower()
     assert "registered read-only report" in (tool.description or "").lower()

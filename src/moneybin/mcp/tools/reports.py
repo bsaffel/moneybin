@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastmcp import FastMCP
-from pydantic import JsonValue
+from pydantic import Field, JsonValue
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -26,7 +28,7 @@ from moneybin.reports._framework.catalog import (
 def reports(
     report_id: str | None = None,
     parameters: dict[str, JsonValue] | None = None,
-    limit: int | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] | None = None,
 ) -> ResponseEnvelope[ReportsPayload]:
     """Browse the report catalog or execute one registered read-only report."""
     catalog = get_report_catalog()
@@ -43,6 +45,12 @@ def reports(
             total_count=len(payload.reports),
             returned_count=len(payload.reports),
             classes_returned=["aggregate"],
+        )
+
+    if limit is not None and limit < 1:
+        raise UserError(
+            "limit must be at least 1",
+            code="REPORT_LIMIT_INVALID",
         )
 
     session_max = get_max_rows()

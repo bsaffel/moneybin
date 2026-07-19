@@ -95,7 +95,7 @@ def test_orphan_note_is_flagged(db: Database) -> None:
     _insert_note(db, note_id="orphan_n1", transaction_id="missing_txn")
     result = DoctorService(db)._run_orphan_app_state()
     assert result.status == "fail"
-    assert "note:orphan_n1" in result.affected_ids
+    assert "note:missing_txn" in result.affected_ids
 
 
 def test_orphan_tag_is_flagged_once_per_transaction(db: Database) -> None:
@@ -118,7 +118,7 @@ def test_orphan_mix_of_notes_and_tags(db: Database) -> None:
     _insert_tag(db, transaction_id="gone2", tag="x")
     result = DoctorService(db)._run_orphan_app_state()
     assert result.status == "fail"
-    assert set(result.affected_ids) == {"note:orphan_n1", "tag:gone2"}
+    assert set(result.affected_ids) == {"note:gone1", "tag:gone2"}
 
 
 def test_pending_manual_note_is_not_flagged(db: Database) -> None:
@@ -165,7 +165,7 @@ def test_truly_orphaned_note_still_flagged_alongside_pending_manual(
     _insert_note(db, note_id="orphan_n", transaction_id="totally_gone")
     result = DoctorService(db)._run_orphan_app_state()
     assert result.status == "fail"
-    assert result.affected_ids == ["note:orphan_n"]
+    assert result.affected_ids == ["note:totally_gone"]
 
 
 def test_deduped_manual_note_is_known_limitation(db: Database) -> None:
@@ -203,7 +203,7 @@ def test_deduped_manual_note_is_known_limitation(db: Database) -> None:
     assert result.status == "pass"
 
 
-def test_run_all_withholds_unexecutable_orphan_recovery_actions(
+def test_run_all_populates_recovery_actions_for_orphan_app_state(
     db: Database,
 ) -> None:
     """End-to-end wiring check for the orphan_app_state recipe.
@@ -226,4 +226,11 @@ def test_run_all_withholds_unexecutable_orphan_recovery_actions(
     assert len(orphan_results) == 1
     orphan = orphan_results[0]
     assert orphan.status == "fail"
-    assert orphan.recovery_actions == []
+    assert orphan.recovery_actions is not None
+    assert [action.tool for action in orphan.recovery_actions] == [
+        "transactions_annotate",
+        "transactions_annotate",
+    ]
+    assert {
+        action.arguments["requests"][0]["kind"] for action in orphan.recovery_actions
+    } == {"note_set", "tags_set"}

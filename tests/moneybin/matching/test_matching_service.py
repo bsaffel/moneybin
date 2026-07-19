@@ -12,6 +12,7 @@ from moneybin.matching.persistence import (
     get_match_decision,
 )
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.services.audit_service import AuditService
 from moneybin.services.matching_service import MatchingService
 from tests.moneybin.test_mcp.schema_assertions import (
     assert_recovery_actions_executable,
@@ -82,10 +83,31 @@ async def test_set_status_unknown_id_raises_not_found_with_recovery(
     )
 
 
-async def test_reject_accepted_raises_constraint_with_history_recovery(
+async def test_reject_accepted_raises_constraint_with_undo_recovery(
     db: Database,
 ) -> None:
-    _seed(db, "m4", "accepted")
+    _seed(db, "m4", "pending")
+    insert_operation_id = (
+        AuditService(db)
+        .list_events(
+            target_table="match_decisions",
+            target_id="m4",
+            limit=1,
+        )[0]
+        .operation_id
+    )
+    MatchingService(db).set_status("m4", status="accepted")
+    acceptance_operation_id = (
+        AuditService(db)
+        .list_events(
+            target_table="match_decisions",
+            target_id="m4",
+            limit=1,
+        )[0]
+        .operation_id
+    )
+    assert acceptance_operation_id != insert_operation_id
+
     with pytest.raises(UserError) as exc:
         MatchingService(db).set_status("m4", status="rejected")
     err = exc.value
@@ -93,10 +115,8 @@ async def test_reject_accepted_raises_constraint_with_history_recovery(
     assert err.recovery_actions
     action = err.recovery_actions[0]
     await assert_recovery_actions_executable(err.recovery_actions)
-    assert (action.tool, action.arguments) == (
-        "reviews",
-        {"kind": "matches", "status": "history"},
-    )
+    assert action.tool == "system_audit_undo"
+    assert action.arguments == {"operation_id": acceptance_operation_id}
 
 
 async def test_set_rejected_match_recovery_points_at_history(db: Database) -> None:

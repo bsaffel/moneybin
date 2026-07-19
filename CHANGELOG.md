@@ -12,14 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - **An AI assistant can now resolve a credit-card PDF's sign inversion
-  without you leaving the chat.** `import_confirm(file_path=...,
-  confirm_pdf_sign=True)` shows you the statement's evidence and printed-vs-recorded
-  sample rows and asks you to approve; approving imports the statement, and
-  declining imports nothing. The assistant cannot answer the prompt on your
-  behalf, and if the statement turns out to have no such question pending,
-  nothing is imported. Previously this one case sent you to a terminal, even
-  though the same inversion already asked you in place on spreadsheet and
-  AI-extracted-PDF imports.
+  without you leaving the chat.** `import_preview(file_path=...)` followed by
+  `import_confirm(preview_id=...)` shows you the statement's evidence and
+  printed-vs-recorded sample rows and asks you to approve; approving imports
+  the statement, and declining imports nothing. Clients without an in-chat
+  prompt receive a single-use confirmation token for retrying the same bound
+  request. The assistant cannot approve on your behalf, and if the statement
+  turns out to have no such question pending, nothing is imported. Previously
+  this one case sent you to a terminal, even though the same inversion already
+  asked you in place on spreadsheet and AI-extracted-PDF imports.
 
 ### Changed
 - **`reports.*` column privacy classes are now derived from each SQLMesh
@@ -56,6 +57,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **The consolidated MCP surface now preserves the safety and recovery
+  contracts of the operations it replaces.** Permanent institution
+  disconnects require payload-bound confirmation; human import decisions keep
+  their 180-second window; PDF sign inversions can be approved over MCP against
+  immutable preview bytes; partial import/sync failures retain actionable
+  guidance; and orphan annotations and accepted matches again expose
+  executable recovery through the standard 45-tool registry. (#344)
+- **Import preview parsing no longer drops rows or provenance at edge cases.**
+  Header detection counts physical CSV lines, UTF-8 probing tolerates a
+  multibyte character at the sample boundary, path-based detection stays
+  bounded instead of loading the whole file, and completed preview-to-import
+  records survive snapshot cleanup. (#344)
+- **Coarse reads no longer return plausible but incomplete results.** Balance
+  drift distinguishes interpolated days from first observations, transaction
+  account filters reject unresolved partial matches, archived accounts resolve
+  by exact ID, and report limits must be positive. (#344)
 - **`moneybin import preview` can now read a PDF statement.** It previously
   rejected every PDF with `Unsupported file type: '.pdf'`, because preview
   routed all files through the spreadsheet detector — so the only way to ask
@@ -239,7 +256,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   defer schemas from that identical registry without reconnect, packs, or
   profiles. Reports extend the `reports` catalog rather than consuming tool
   slots, and future tools require the published admission record. The
-  deterministic comparison reduced metadata from 90,734 to 44,926 bytes;
+  deterministic comparison reduced metadata from 90,734 to 45,154 bytes;
   promotion remains pending observed context-budget and host-deferral evidence.
 - **Executable CLI/MCP capability parity.** A checked outcome map now covers all
   45 standard MCP tools and every implemented Typer path by service ownership

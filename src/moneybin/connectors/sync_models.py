@@ -33,7 +33,7 @@ class DeviceAuthorizationChallenge(BaseModel):
     verification_uri: str | None = None
     verification_uri_complete: str | None = None
     expires_in: int = Field(gt=0)
-    interval: float = Field(ge=0)
+    interval: float = Field(default=5.0, ge=0)
 
     @model_validator(mode="after")
     def _require_verification_uri(self) -> Self:

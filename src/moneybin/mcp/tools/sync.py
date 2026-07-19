@@ -9,16 +9,21 @@ remains CLI-only because it handles passphrase material.
 
 from __future__ import annotations
 
-import logging
+import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
 
+from moneybin.config import get_settings
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
@@ -47,9 +52,7 @@ from moneybin.protocol.envelope import (
 )
 
 if TYPE_CHECKING:
-    from moneybin.connectors.sync_models import PullResult
-
-logger = logging.getLogger(__name__)
+    from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 
 
 def _build_sync_client() -> Any:
@@ -433,14 +436,56 @@ def sync_pull_coarse(
     institution: str | None = None,
 ) -> ResponseEnvelope[SyncPullPayload]:
     """Pull while keeping recovery actions inside the isolated cohort."""
-    response = sync_pull(institution=institution)
-    return replace(
-        response,
-        actions=[
-            "Use sync_status to inspect connection health and decide whether "
-            "another pull is needed."
-        ],
+    return sync_pull(institution=institution)
+
+
+def _sync_disconnect_binding(
+    institution: str,
+    connection: ConnectedInstitution,
+) -> ConfirmationBinding:
+    """Bind confirmation to one exact live remote institution connection."""
+    return ConfirmationBinding(
+        arguments={
+            "institution": institution.casefold(),
+            "mode": "institution",
+            "institution_name": connection.institution_name,
+            "provider": connection.provider,
+            "status": connection.status,
+        },
+        resolved_ids=(connection.id, connection.provider_item_id),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="sync_disconnect_institution",
+        blast_radius={"institutions": 1},
     )
+
+
+def _sync_logout() -> Any:
+    """Run blocking credential cleanup outside the MCP event loop."""
+    return _build_sync_auth_service().logout()
+
+
+def _plan_sync_disconnect(institution: str) -> ConnectedInstitution:
+    """Resolve one live disconnect target outside the MCP event loop."""
+    with _build_sync_service() as service:
+        return service.plan_disconnect(institution=institution)
+
+
+def _disconnect_sync_confirmed(
+    institution: str,
+    grant: ConfirmationGrant,
+) -> ConnectedInstitution:
+    """Re-resolve, verify, and delete one connection outside the event loop."""
+
+    def verify(live: ConnectedInstitution) -> None:
+        grant.verify(_sync_disconnect_binding(institution, live))
+
+    with _build_sync_service() as service:
+        return service.disconnect_confirmed(
+            institution=institution,
+            verify=verify,
+        )
 
 
 @mcp_tool(
@@ -448,10 +493,12 @@ def sync_pull_coarse(
     destructive=True,
     idempotent=False,
     open_world=True,
+    timeout_seconds=180.0,
 )
-def sync_disconnect(
+async def sync_disconnect(
     institution: str | None = None,
     mode: Literal["institution", "logout"] = "institution",
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
     """Disconnect an institution or clear scoped sync credentials.
 
@@ -465,7 +512,12 @@ def sync_disconnect(
                 "institution is valid only when mode='institution'.",
                 code="SYNC_DISCONNECT_MODE_CONFLICT",
             )
-        result = _build_sync_auth_service().logout()
+        if confirmation_token is not None:
+            raise UserError(
+                "confirmation_token is valid only when mode='institution'.",
+                code="SYNC_CONFIRMATION_NOT_ALLOWED",
+            )
+        result = await asyncio.to_thread(_sync_logout)
         return build_envelope(
             data=SyncLogoutView(
                 status=result.status,
@@ -480,14 +532,30 @@ def sync_disconnect(
             "institution is required when mode='institution'.",
             code="SYNC_INSTITUTION_REQUIRED",
         )
-    with _build_sync_service() as service:
-        service.disconnect(institution=institution)
+    binding: ConfirmationBinding | None = None
+    if confirmation_token is None:
+        plan = await asyncio.to_thread(_plan_sync_disconnect, institution)
+        binding = _sync_disconnect_binding(institution, plan)
+    grant: ConfirmationGrant = await grant_confirmation_or_raise(
+        binding=binding,
+        message=(
+            "Permanently disconnect this exact institution from future syncs? "
+            "Previously pulled local rows remain."
+        ),
+        confirmation_token=confirmation_token,
+    )
+
+    disconnected = await asyncio.to_thread(
+        _disconnect_sync_confirmed,
+        institution,
+        grant,
+    )
     return build_envelope(
         data=SyncInstitutionDisconnectView(
             status="disconnected",
-            institution=institution,
+            institution=disconnected.institution_name or institution,
         ),
-        actions=[],
+        actions=["Use sync_status to inspect remaining institution connections."],
     )
 
 

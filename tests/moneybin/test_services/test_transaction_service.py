@@ -139,6 +139,83 @@ class TestAnnotationBatches:
         assert service.list_splits("T1") == []
 
     @pytest.mark.unit
+    def test_apply_annotations_clears_existing_orphan_note_and_tags(
+        self, transaction_db: Database
+    ) -> None:
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_notes
+                (note_id, transaction_id, text, author)
+            VALUES ('orphan_note', 'MISSING', 'old', 'test')
+            """
+        )
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_tags
+                (transaction_id, tag, applied_by)
+            VALUES ('MISSING', 'old', 'test')
+            """
+        )
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                NoteSet(kind="note_set", transaction_id="MISSING", note=None),
+                TagsSet(kind="tags_set", transaction_id="MISSING", tags=[]),
+            ],
+            actor="mcp",
+            operation_id="op_orphan_cleanup",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [True, True]
+        assert service.list_notes("MISSING") == []
+        assert service.list_tags("MISSING") == []
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "annotation_request",
+        [
+            NoteSet(kind="note_set", transaction_id="MISSING", note="new"),
+            TagsSet(kind="tags_set", transaction_id="MISSING", tags=["new"]),
+        ],
+    )
+    def test_apply_annotations_rejects_creating_orphan_state(
+        self,
+        transaction_db: Database,
+        annotation_request: NoteSet | TagsSet,
+    ) -> None:
+        with pytest.raises(UserError) as exc:
+            TransactionService(transaction_db).apply_annotations(
+                [annotation_request],
+                actor="mcp",
+                operation_id="op_orphan_create",
+            )
+
+        assert exc.value.code == "TRANSACTION_REFERENCE_NOT_FOUND"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "annotation_request",
+        [
+            NoteSet(kind="note_set", transaction_id="MISSING", note=None),
+            TagsSet(kind="tags_set", transaction_id="MISSING", tags=[]),
+        ],
+    )
+    def test_apply_annotations_rejects_empty_unknown_orphan_cleanup(
+        self,
+        transaction_db: Database,
+        annotation_request: NoteSet | TagsSet,
+    ) -> None:
+        with pytest.raises(UserError) as exc:
+            TransactionService(transaction_db).apply_annotations(
+                [annotation_request],
+                actor="mcp",
+                operation_id="op_orphan_missing",
+            )
+
+        assert exc.value.code == "TRANSACTION_REFERENCE_NOT_FOUND"
+
+    @pytest.mark.unit
     def test_apply_annotations_rejects_empty_and_all_noop_batches(
         self, transaction_db: Database
     ) -> None:

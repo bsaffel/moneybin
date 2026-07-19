@@ -15,14 +15,16 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.extractors.pdf.ir import PdfDocument, PdfTable
+from moneybin.metrics.observations import MetricObservations
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
@@ -153,6 +155,190 @@ def _service_with_fake_pdf(
     return svc, fake_pdf
 
 
+def _count(db: Database, query: str) -> int:
+    """Return one COUNT(*) result."""
+    row = db.execute(query).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+@pytest.mark.integration
+def test_pdf_transaction_import_joins_outer_transaction_and_buffers_metrics(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    doc = _standard_doc()
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    observations = MetricObservations()
+    metric = PDF_IMPORT_TOTAL.labels(outcome="transactions", rung="deterministic")
+    before = metric._value.get()  # type: ignore[reportPrivateUsage]
+
+    db.begin()
+    try:
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ):
+            result = svc.import_file(
+                fake_pdf,
+                refresh=False,
+                in_outer_txn=True,
+                emit_metrics=False,
+                observations=observations,
+            )
+        assert result.transactions == 2
+        assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 2
+    finally:
+        db.rollback()
+
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
+    assert _count(db, "SELECT COUNT(*) FROM raw.tabular_accounts") == 0
+    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.pdf_formats") == 0
+    assert metric._value.get() == before  # type: ignore[reportPrivateUsage]
+    observations.flush("rollback")
+    assert metric._value.get() == before  # type: ignore[reportPrivateUsage]
+
+
+@pytest.mark.integration
+def test_pdf_seed_import_joins_outer_transaction_and_buffers_metrics(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL, PDF_SEED_ROWS_TOTAL
+
+    doc = _standard_doc(opening="1000.00", closing="9999.00")
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+    observations = MetricObservations()
+    import_metric = PDF_IMPORT_TOTAL.labels(outcome="seed", rung="deterministic")
+    seed_metric = PDF_SEED_ROWS_TOTAL.labels(alias="statement")
+    import_before = import_metric._value.get()  # type: ignore[reportPrivateUsage]
+    seed_before = seed_metric._value.get()  # type: ignore[reportPrivateUsage]
+
+    db.begin()
+    try:
+        with patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            return_value=doc,
+        ):
+            result = svc.import_file(
+                fake_pdf,
+                refresh=False,
+                in_outer_txn=True,
+                emit_metrics=False,
+                observations=observations,
+            )
+        assert result.details["seed_rows"] == 2
+        assert _count(db, "SELECT COUNT(*) FROM raw.pdf_seeds") == 2
+    finally:
+        db.rollback()
+
+    assert _count(db, "SELECT COUNT(*) FROM raw.pdf_seeds") == 0
+    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert import_metric._value.get() == import_before  # type: ignore[reportPrivateUsage]
+    assert seed_metric._value.get() == seed_before  # type: ignore[reportPrivateUsage]
+    observations.flush("rollback")
+    assert import_metric._value.get() == import_before  # type: ignore[reportPrivateUsage]
+    assert seed_metric._value.get() == seed_before  # type: ignore[reportPrivateUsage]
+
+
+@pytest.mark.integration
+def test_pdf_extraction_failure_metric_can_be_buffered(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    from moneybin.metrics.registry import PDF_IMPORT_TOTAL
+
+    svc, fake_pdf = _service_with_fake_pdf(db, _standard_doc(), tmp_path)
+    observations = MetricObservations()
+    metric = PDF_IMPORT_TOTAL.labels(outcome="failed", rung="deterministic")
+    before = metric._value.get()  # type: ignore[reportPrivateUsage]
+
+    with (
+        patch(
+            "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+            side_effect=ValueError("bad PDF"),
+        ),
+        pytest.raises(ValueError, match="bad PDF"),
+    ):
+        svc.import_file(
+            fake_pdf,
+            refresh=False,
+            emit_metrics=False,
+            observations=observations,
+        )
+
+    assert metric._value.get() == before  # type: ignore[reportPrivateUsage]
+    observations.flush("rollback")
+    assert metric._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
+
+@pytest.mark.integration
+def test_pdf_sign_proposal_metric_is_buffered_once(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    from moneybin.metrics.registry import PDF_SIGN_GATE_TOTAL
+
+    observations = MetricObservations()
+    metric = PDF_SIGN_GATE_TOTAL.labels(outcome="proposed")
+    before = metric._value.get()  # type: ignore[reportPrivateUsage]
+
+    with pytest.raises(ImportConfirmationRequiredError):
+        ImportService(db).import_file(
+            write_card_statement_pdf(tmp_path),
+            refresh=False,
+            save_format=False,
+            emit_metrics=False,
+            observations=observations,
+        )
+
+    assert metric._value.get() == before  # type: ignore[reportPrivateUsage]
+    observations.flush("rollback")
+    assert metric._value.get() == before + 1  # type: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    "helper_name",
+    ["_persist_replayed_sign_override", "_persist_self_healed_recipe"],
+)
+def test_pdf_saved_recipe_bookkeeping_re_raises_inside_outer_transaction(
+    db: Database,
+    helper_name: str,
+) -> None:
+    recipe = MagicMock()
+    recipe.model_dump.return_value = {"sign_convention": "negative_is_expense"}
+    decision = SimpleNamespace(
+        matched_format_name="saved_pdf",
+        recipe=recipe,
+        fp={"issuer": "Example"},
+    )
+    service = ImportService(db)
+
+    with (
+        patch.object(
+            PdfFormatsRepo,
+            "get_by_fingerprint",
+            return_value=None,
+        ),
+        patch.object(
+            PdfFormatsRepo,
+            "bump_version",
+            side_effect=RuntimeError("bookkeeping failed"),
+        ) as bump,
+        pytest.raises(RuntimeError, match="bookkeeping failed"),
+    ):
+        getattr(service, helper_name)(
+            decision,
+            import_id="imp_outer",
+            in_outer_txn=True,
+        )
+
+    assert bump.call_args.kwargs["in_outer_txn"] is True
+
+
 # ---------------------------------------------------------------------------
 # Test 1: First contact — auto-derive, routes to tabular_transactions, saves format
 # ---------------------------------------------------------------------------
@@ -187,6 +373,32 @@ def test_pdf_first_contact_routes_to_transactions_and_saves_format(
     formats = db.execute("SELECT COUNT(*) FROM app.pdf_formats").fetchone()
     assert formats is not None
     assert formats[0] == 1
+
+
+@pytest.mark.integration
+def test_pdf_import_extracts_supplied_immutable_bytes(
+    db: Database,
+    tmp_path: Path,
+) -> None:
+    """The PDF path parses the previewed object instead of reopening live content."""
+    doc = _standard_doc()
+    source_bytes = b"%PDF immutable preview object"
+    svc, fake_pdf = _service_with_fake_pdf(db, doc, tmp_path)
+
+    with patch(
+        "moneybin.extractors.pdf.extractor.PDFExtractor.extract",
+        return_value=doc,
+    ) as extract:
+        svc.import_file(
+            fake_pdf,
+            source_bytes=source_bytes,
+            refresh=False,
+        )
+
+    extract.assert_called_once_with(
+        fake_pdf.resolve(),
+        source_bytes=source_bytes,
+    )
 
 
 # ---------------------------------------------------------------------------

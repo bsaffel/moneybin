@@ -1,9 +1,9 @@
 """Recipe for the ``orphan_app_state`` audit.
 
-The standard transaction annotation boundary requires a canonical transaction,
-so it cannot safely clear app rows whose transaction is absent from core. The
-recipe therefore emits no falsely executable recovery action for the audit's
-``note:`` and ``tag:`` identifiers and logs the unsupported cleanup explicitly.
+Orphan notes and tags are cleared through the standard declarative transaction
+annotation boundary. The service permits only empty target states when the
+transaction is absent, so this repair path cannot attach new app state to an
+unknown transaction.
 
 Unknown prefixes are surfaced via ``logger.warning`` so audit-recipe drift
 (e.g., a future ``split:<split_id>`` branch added to the audit but not the
@@ -25,16 +25,35 @@ def recipe(
     affected_ids: list[str],
     context: RecipeContext,  # noqa: ARG001 — pure recipe; signature mandated by registry
 ) -> list[RecoveryAction]:
-    """Warn for orphan state that has no executable standard cleanup."""
+    """Produce one executable declarative clear per orphan transaction."""
+    actions: list[RecoveryAction] = []
     for aid in affected_ids:
         if aid.startswith("note:"):
-            note_id = aid[len("note:") :]
-            if not note_id:
-                logger.warning(f"orphan_app_state recipe: empty note_id in {aid!r}")
+            txn_id = aid[len("note:") :]
+            if not txn_id:
+                logger.warning(
+                    f"orphan_app_state recipe: empty transaction_id in {aid!r}"
+                )
                 continue
-            logger.warning(
-                f"orphan_app_state recipe: note {note_id!r} has no standard "
-                "cleanup action because its transaction is absent from core"
+            actions.append(
+                RecoveryAction(
+                    tool="transactions_annotate",
+                    arguments={
+                        "requests": [
+                            {
+                                "kind": "note_set",
+                                "transaction_id": txn_id,
+                                "note": None,
+                            }
+                        ]
+                    },
+                    rationale=(
+                        "Clear notes whose transaction is absent from the "
+                        "canonical transaction view."
+                    ),
+                    confidence="certain",
+                    idempotent=True,
+                )
             )
         elif aid.startswith("tag:"):
             txn_id = aid[len("tag:") :]
@@ -43,10 +62,25 @@ def recipe(
                     f"orphan_app_state recipe: empty transaction_id in {aid!r}"
                 )
                 continue
-            logger.warning(
-                f"orphan_app_state recipe: tags for transaction {txn_id!r} have "
-                "no standard cleanup action because the transaction is absent "
-                "from core"
+            actions.append(
+                RecoveryAction(
+                    tool="transactions_annotate",
+                    arguments={
+                        "requests": [
+                            {
+                                "kind": "tags_set",
+                                "transaction_id": txn_id,
+                                "tags": [],
+                            }
+                        ]
+                    },
+                    rationale=(
+                        "Clear tags whose transaction is absent from the "
+                        "canonical transaction view."
+                    ),
+                    confidence="certain",
+                    idempotent=True,
+                )
             )
         else:
             # Audit-recipe drift guard: a new audit prefix added to
@@ -56,4 +90,4 @@ def recipe(
                 f"orphan_app_state recipe: unknown id prefix in {aid!r} "
                 "(expected 'note:' or 'tag:'); skipping"
             )
-    return []
+    return actions

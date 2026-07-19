@@ -81,8 +81,10 @@ the implementation:
 3. The existing sync quartet now exposes device authorization without adding
    tools: `sync_link(mode="login")` begins, `sync_status(auth_session_id=...)`
    polls, and `sync_disconnect(mode="logout")` clears credentials and pending
-   profile-scoped sessions. The CLI login remains a blocking wrapper over the
-   same begin/poll client primitives.
+   profile-scoped sessions. Institution disconnects use payload-bound
+   confirmation and re-resolve the live connection immediately before the
+   remote delete. The CLI login remains a blocking wrapper over the same
+   begin/poll client primitives.
 4. `transactions categorize rules apply` now invokes only the rules engine,
    matching its command intent and
    `transactions_categorize_run(methods=["rules"])`; it no longer applies

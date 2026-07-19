@@ -231,7 +231,7 @@ class ImportPdfSignSample(BaseModel):
 
 
 class ImportPdfSignPreviewPayload(BaseModel):
-    """CLI-only credit-card sign confirmation preview."""
+    """Human-confirmable credit-card sign inversion preview."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -517,6 +517,21 @@ class ImportPdfBridgeAppliedPayload(BaseModel):
     format_name: Annotated[str | None, DataClass.RECORD_ID]
 
 
+class ImportPdfSignAppliedPayload(BaseModel):
+    """Successful human-confirmed PDF sign inversion."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["pdf_sign_applied"], DataClass.TXN_TYPE] = (
+        "pdf_sign_applied"
+    )
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    import_id: Annotated[str, DataClass.RECORD_ID]
+    rows_loaded: Annotated[int, DataClass.AGGREGATE]
+    status: Annotated[Literal["applied"], DataClass.TXN_TYPE] = "applied"
+    format_name: Annotated[str | None, DataClass.RECORD_ID]
+
+
 class ImportPdfBridgeInvalidPayload(BaseModel):
     """Retryable invalid PDF bridge response."""
 
@@ -536,6 +551,7 @@ class ImportPdfBridgeInvalidPayload(BaseModel):
 ImportConfirmCoarsePayload = Annotated[
     ImportTabularConfirmCoarsePayload
     | ImportPdfBridgeAppliedPayload
+    | ImportPdfSignAppliedPayload
     | ImportPdfBridgeInvalidPayload,
     Field(discriminator="kind"),
 ]

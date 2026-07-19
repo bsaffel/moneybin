@@ -1,5 +1,5 @@
 {
-  "sha256": "be0982903e876d4d9420160eeb9045e22613fc506ec1c9ebca620b8c76075ece",
+  "sha256": "df85b3b750fc80acdea8bee56f896fec90bb44bd68e75eb7b945ba8da9c6ed1b",
   "tool_count": 45,
   "tools": [
     {
@@ -1089,7 +1089,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically consume an unchanged preview and import its file.",
+        "description": "Atomically consume an unchanged preview and import its file, eliciting human approval before any sign inversion.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1158,6 +1158,17 @@
               ],
               "default": null
             },
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "preview_id": {
               "type": "string"
             },
@@ -1178,12 +1189,12 @@
         },
         "name": "import_confirm"
       },
-      "description_bytes": 60,
-      "input_schema_bytes": 706,
+      "description_bytes": 112,
+      "input_schema_bytes": 788,
       "name": "import_confirm",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 960
+      "total_bytes": 1094
     },
     {
       "annotation_bytes": 91,
@@ -2186,6 +2197,7 @@
             "limit": {
               "anyOf": [
                 {
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
@@ -2230,11 +2242,11 @@
         "name": "reports"
       },
       "description_bytes": 249,
-      "input_schema_bytes": 304,
+      "input_schema_bytes": 316,
       "name": "reports",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 747
+      "total_bytes": 759
     },
     {
       "annotation_bytes": 89,
@@ -2583,6 +2595,17 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "confirmation_token": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "institution": {
               "anyOf": [
                 {
@@ -2613,11 +2636,11 @@
         "name": "sync_disconnect"
       },
       "description_bytes": 68,
-      "input_schema_bytes": 217,
+      "input_schema_bytes": 299,
       "name": "sync_disconnect",
       "other_bytes": 57,
       "output_schema_bytes": 0,
-      "total_bytes": 478
+      "total_bytes": 560
     },
     {
       "annotation_bytes": 90,
@@ -4404,5 +4427,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 44926
+  "total_bytes": 45154
 }
