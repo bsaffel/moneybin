@@ -32,6 +32,7 @@ from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     MerchantLinkDecisionRequest,
 )
+from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.merchant_links_service import MerchantLinksService
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -198,6 +199,28 @@ async def test_identity_batch_rejects_account_link_without_confirmation() -> Non
     assert _decision_status(setup["decision_id"]) == "rejected"
 
 
+async def test_identity_account_preflight_uses_exact_decision_lookup() -> None:
+    setup = _merge_setup(decision_id="coarse-account-exact")
+
+    with patch.object(
+        AccountLinksService,
+        "history",
+        side_effect=AssertionError("unbounded history lookup"),
+    ):
+        response = await identity_links_decide_coarse(
+            decisions=[
+                AccountLinkDecisionRequest(
+                    kind="account_link",
+                    decision_id=setup["decision_id"],
+                    decision="reject",
+                )
+            ]
+        )
+
+    assert response.error is None
+    assert _decision_status(setup["decision_id"]) == "rejected"
+
+
 async def test_identity_batch_binding_captures_complete_account_before_state() -> None:
     setup = _merge_setup(decision_id="coarse-account-before-state")
     decisions = [
@@ -249,6 +272,83 @@ def _seed_coarse_merchant_reject(decision_id: str) -> None:
             """,  # noqa: S608  # test fixture data
             [decision_id],
         )
+
+
+async def test_identity_mixed_batch_confirms_even_when_accept_is_satisfied() -> None:
+    account = _merge_setup(decision_id="coarse-account-satisfied-accept")
+    accepted = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id=account["decision_id"],
+            decision="accept",
+            target_id=account["candidate"],
+        )
+    ]
+    required = await identity_links_decide_coarse(decisions=accepted)
+    await identity_links_decide_coarse(
+        decisions=accepted,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+    merchant_decision_id = "coarse-merchant-after-satisfied-accept"
+    _seed_coarse_merchant_reject(merchant_decision_id)
+    mixed = [
+        *accepted,
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=merchant_decision_id,
+            decision="reject",
+        ),
+    ]
+
+    response = await identity_links_decide_coarse(decisions=mixed)
+
+    assert response.error is not None
+    assert response.error.code == "mutation_confirmation_required"
+    with get_database(read_only=True) as db:
+        status = db.execute(
+            "SELECT status FROM app.merchant_link_decisions WHERE decision_id = ?",
+            [merchant_decision_id],
+        ).fetchone()
+    assert status == ("pending",)
+
+
+async def test_identity_account_batch_rejects_intermediate_merge_graph() -> None:
+    first = _merge_setup(
+        decision_id="coarse-account-graph-a-b",
+        provisional="GRAPH_A",
+        candidate="GRAPH_B",
+    )
+    _seed_account("GRAPH_C", "Graph account C")
+    _seed_source_native_link("GRAPH_C", "lnk_coarse-account-graph-c-a")
+    _insert_decision(
+        decision_id="coarse-account-graph-c-a",
+        provisional_account_id="GRAPH_C",
+        candidate_account_id="GRAPH_A",
+    )
+
+    response = await identity_links_decide_coarse(
+        decisions=[
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id=first["decision_id"],
+                decision="accept",
+                target_id=first["candidate"],
+            ),
+            AccountLinkDecisionRequest(
+                kind="account_link",
+                decision_id="coarse-account-graph-c-a",
+                decision="accept",
+                target_id="GRAPH_A",
+            ),
+        ]
+    )
+
+    assert response.error is not None
+    assert response.error.code == "mutation_invalid_input"
+    assert response.error.details["errors"][0]["index"] == 1
+    assert "intermediate" in response.error.details["errors"][0]["reason"]
+    assert _decision_status(first["decision_id"]) == "pending"
+    assert _decision_status("coarse-account-graph-c-a") == "pending"
 
 
 async def test_identity_mixed_reject_batch_is_atomic_and_one_operation() -> None:

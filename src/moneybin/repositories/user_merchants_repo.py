@@ -123,14 +123,17 @@ class UserMerchantsRepo(BaseRepo):
             self._db.execute(
                 f"""
                 UPDATE {USER_MERCHANTS.full_name}
-                SET exemplars = list_distinct(list_append(exemplars, ?)),
+                SET exemplars = CASE
+                        WHEN list_contains(exemplars, ?) THEN exemplars
+                        ELSE list_append(exemplars, ?)
+                    END,
                     updated_at = CASE
                         WHEN list_contains(exemplars, ?) THEN updated_at
                         ELSE CURRENT_TIMESTAMP
                     END
                 WHERE merchant_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [match_text, match_text, merchant_id],
+                [match_text, match_text, match_text, merchant_id],
             )
             after = self._fetch_row(merchant_id)
             return self._emit_audit(

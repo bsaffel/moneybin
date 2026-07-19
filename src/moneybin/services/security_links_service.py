@@ -178,6 +178,10 @@ class SecurityLinksService:
         """All decisions (any status) newest-first by ``decided_at``. Read-only."""
         return self._decisions.history(limit=limit)
 
+    def decision_by_id(self, decision_id: str) -> dict[str, Any] | None:
+        """Return one exact decision row by ID."""
+        return self._decisions.fetch_by_id(decision_id)
+
     def accept_impact(
         self,
         decision_id: str,

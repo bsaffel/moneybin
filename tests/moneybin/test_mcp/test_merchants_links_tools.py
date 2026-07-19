@@ -30,6 +30,7 @@ from moneybin.mcp.tools.merchants import (
 )
 from moneybin.mcp.tools.reviews import identity_links_decide_coarse
 from moneybin.mcp.write_contracts import MerchantLinkDecisionRequest
+from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.merchant_resolver import HarvestResult
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -151,6 +152,28 @@ def _seed_merchant(merchant_id: str) -> None:
         )
 
 
+def _seed_merchant_transaction(transaction_id: str, merchant_id: str) -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                merchant_id, transaction_type, is_pending, currency_code,
+                source_type, source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-18', -4.00, 4.00, 'expense',
+                'Existing merchant transaction', ?, 'DEBIT', false, 'USD',
+                'ofx', '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
+                '2026-07', '2026-Q3'
+            )
+            """,  # noqa: S608  # test fixture data
+            [transaction_id, merchant_id],
+        )
+
+
 async def test_identity_batch_accepts_merchant_link_with_one_token() -> None:
     setup = _bind_setup(decision_id="coarse-merchant-accept")
     decisions = [
@@ -177,6 +200,67 @@ async def test_identity_batch_accepts_merchant_link_with_one_token() -> None:
     assert _decision_status(setup["decision_id"]) == "accepted"
 
 
+async def test_identity_merchant_blast_excludes_unrelated_categorized_transactions() -> (
+    None
+):
+    setup = _bind_setup(decision_id="coarse-merchant-exact-blast")
+    _seed_merchant_transaction("merchant-blast-existing", setup["merchant_id"])
+    decisions = [
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["merchant_id"],
+        )
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+
+    assert required.error is not None
+    assert required.error.details["blast_radius"] == {
+        "accounts": 0,
+        "merchants": 1,
+        "securities": 0,
+        "transactions": 0,
+        "lots": 0,
+    }
+    _seed_merchant_transaction("merchant-blast-unrelated", setup["merchant_id"])
+    response = await identity_links_decide_coarse(
+        decisions=decisions,
+        confirmation_token=str(required.error.details["confirmation_token"]),
+    )
+    assert response.error is None
+    assert _decision_status(setup["decision_id"]) == "accepted"
+
+
+async def test_identity_merchant_batch_counts_shared_target_once() -> None:
+    setup = _bind_setup(decision_id="coarse-merchant-shared-target-a")
+    _insert_decision(
+        decision_id="coarse-merchant-shared-target-b",
+        ref_value="entity_shared_target_b",
+        candidate_merchant_id=setup["merchant_id"],
+    )
+    decisions = [
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id=setup["decision_id"],
+            decision="accept",
+            target_id=setup["merchant_id"],
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="coarse-merchant-shared-target-b",
+            decision="accept",
+            target_id=setup["merchant_id"],
+        ),
+    ]
+
+    required = await identity_links_decide_coarse(decisions=decisions)
+
+    assert required.error is not None
+    assert required.error.details["blast_radius"]["merchants"] == 1
+
+
 async def test_identity_batch_rejects_merchant_link_without_confirmation() -> None:
     setup = _bind_setup(decision_id="coarse-merchant-reject")
 
@@ -192,6 +276,28 @@ async def test_identity_batch_rejects_merchant_link_without_confirmation() -> No
 
     assert response.error is None
     assert response.data.results[0].status == "rejected"
+    assert _decision_status(setup["decision_id"]) == "rejected"
+
+
+async def test_identity_merchant_preflight_uses_exact_decision_lookup() -> None:
+    setup = _bind_setup(decision_id="coarse-merchant-exact")
+
+    with patch.object(
+        MerchantLinksService,
+        "history",
+        side_effect=AssertionError("unbounded history lookup"),
+    ):
+        response = await identity_links_decide_coarse(
+            decisions=[
+                MerchantLinkDecisionRequest(
+                    kind="merchant_link",
+                    decision_id=setup["decision_id"],
+                    decision="reject",
+                )
+            ]
+        )
+
+    assert response.error is None
     assert _decision_status(setup["decision_id"]) == "rejected"
 
 

@@ -187,6 +187,16 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "start_month": DataClass.TXN_DATE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("app", "categorization_decisions"): {
+        "category_id": DataClass.RECORD_ID,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "decided_by": DataClass.TXN_TYPE,
+        "decision_id": DataClass.RECORD_ID,
+        "merchant_id": DataClass.RECORD_ID,
+        "proposed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "status": DataClass.TXN_TYPE,
+        "transaction_id": DataClass.RECORD_ID,
+    },
     ("app", "categorization_rules"): {
         "account_id": DataClass.RECORD_ID,
         "category": DataClass.CATEGORY,

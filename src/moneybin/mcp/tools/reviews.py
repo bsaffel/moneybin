@@ -74,6 +74,9 @@ from moneybin.privacy.payloads.reviews import (
 from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.repositories.categorization_decisions_repo import (
+    categorization_decision_id,
+)
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
@@ -226,9 +229,16 @@ def _pending_categorization_rows(
             pending_transfer_match=bool(row.get("pending_transfer_match", False)),
         )
         summary = transaction.description or f"Transaction {transaction.transaction_id}"
+        persisted = service.review_decision_for_transaction(transaction.transaction_id)
+        if persisted is not None and persisted["status"] != "pending":
+            continue
         result.append(
             CategorizationReviewRow(
-                decision_id=transaction.transaction_id,
+                decision_id=(
+                    str(persisted["decision_id"])
+                    if persisted is not None
+                    else categorization_decision_id(transaction.transaction_id)
+                ),
                 status="pending",
                 created_at=transaction.transaction_date,
                 summary=summary,
@@ -241,26 +251,38 @@ def _pending_categorization_rows(
 def _categorization_history_rows(
     service: CategorizationService,
 ) -> list[CategorizationReviewRow]:
-    """Project persisted transaction-category decisions into history rows."""
+    """Project canonical categorization decisions into history rows."""
+    categorizations = {
+        str(row["transaction_id"]): row for row in service.list_categorization_history()
+    }
     result: list[CategorizationReviewRow] = []
-    for row in service.list_categorization_history():
-        category = str(row["category"])
+    for decision in service.list_review_decision_history():
+        transaction_id = str(decision["transaction_id"])
+        row = categorizations.get(transaction_id, {})
+        category = cast(str | None, row.get("category"))
         subcategory = cast(str | None, row.get("subcategory"))
-        summary = f"{category} / {subcategory}" if subcategory else category
-        transaction_id = str(row["transaction_id"])
+        summary = (
+            f"{category} / {subcategory}"
+            if category is not None and subcategory
+            else category or "Rejected"
+        )
         result.append(
             CategorizationReviewRow(
-                decision_id=transaction_id,
-                status="categorized",
-                created_at=_text(row.get("categorized_at")),
+                decision_id=str(decision["decision_id"]),
+                status=str(decision["status"]),
+                created_at=_text(decision.get("decided_at")),
                 summary=summary,
                 details=CategorizationHistoryDetails(
                     transaction_id=transaction_id,
-                    category_id=cast(str | None, row.get("category_id")),
+                    decision_status=cast(
+                        Literal["accepted", "rejected"],
+                        decision["status"],
+                    ),
+                    category_id=cast(str | None, decision.get("category_id")),
                     category=category,
                     subcategory=subcategory,
-                    categorized_by=str(row.get("categorized_by") or "unknown"),
-                    merchant_id=cast(str | None, row.get("merchant_id")),
+                    categorized_by=str(decision.get("decided_by") or "unknown"),
+                    merchant_id=cast(str | None, decision.get("merchant_id")),
                     confidence=(
                         float(cast(Decimal, row["confidence"]))
                         if row.get("confidence") is not None
@@ -720,7 +742,9 @@ def _identity_binding(
             if value not in resolved_ids:
                 resolved_ids.append(value)
     blast_radius = {
-        key: sum(item.blast_radius[key] for item in plan.items)
+        key: len({
+            entity_id for item in plan.items for entity_id in item.affected_ids[key]
+        })
         for key in ("accounts", "merchants", "securities", "transactions", "lots")
     }
     return ConfirmationBinding(

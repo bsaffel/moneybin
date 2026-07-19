@@ -24,6 +24,9 @@ from moneybin.mcp.write_contracts import (
     ReviewDecisionRequest,
     SecurityLinkDecisionRequest,
 )
+from moneybin.repositories.categorization_decisions_repo import (
+    CategorizationDecisionsRepo,
+)
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services._text import build_match_inputs
 from moneybin.services.account_links_service import AccountLinksService
@@ -62,10 +65,13 @@ class OrdinaryDecisionPlanItem:
     request: CategorizationDecisionRequest | MatchDecisionRequest
     changed: bool
     status: str
+    transaction_id: str | None = None
+    category_id: str | None = None
     category_changed: bool = False
     merchant_changed: bool = False
     merchant_id: str | None = None
     match_text: str | None = None
+    merchant_group_key: tuple[str, str, str | None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +85,7 @@ class IdentityDecisionPlanItem:
     target_id: str
     group_key: tuple[str, ...]
     before_state: JsonValue
-    blast_radius: dict[str, int]
+    affected_ids: dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +101,9 @@ class IdentityDecisionPlan:
 
     @property
     def destructive(self) -> bool:
-        """Return whether any material branch accepts an identity merge."""
-        return any(
-            item.changed and item.request.decision == "accept" for item in self.items
+        """Return whether the material batch contains an identity merge accept."""
+        return self.changed_count > 0 and any(
+            item.request.decision == "accept" for item in self.items
         )
 
 
@@ -129,17 +135,13 @@ def _query_json_rows(
     ]
 
 
-def _history_row(
-    rows: list[dict[str, Any]],
+def _decision_row(
+    row: dict[str, Any] | None,
     decision_id: str,
     *,
     kind: str,
 ) -> dict[str, Any]:
-    """Find one complete decision row or raise a sanitized not-found error."""
-    row = next(
-        (candidate for candidate in rows if candidate["decision_id"] == decision_id),
-        None,
-    )
+    """Require one exact decision row or raise a sanitized not-found error."""
     if row is None:
         raise UserError(
             f"No {kind} decision exists for this id.",
@@ -148,13 +150,13 @@ def _history_row(
     return row
 
 
-def _count_rows(db: Database, sql: str, params: list[Any]) -> int:
-    """Return a best-effort entity count for a confirmation blast radius."""
+def _query_ids(db: Database, sql: str, params: list[Any]) -> tuple[str, ...]:
+    """Return stable distinct logical IDs for a confirmation blast radius."""
     try:
-        row = db.execute(sql, params).fetchone()
+        rows = db.execute(sql, params).fetchall()
     except duckdb.CatalogException:
-        return 0
-    return int(row[0]) if row else 0
+        return ()
+    return tuple(dict.fromkeys(str(row[0]) for row in rows if row[0] is not None))
 
 
 class ReviewDecisionsService:
@@ -185,34 +187,58 @@ class ReviewDecisionsService:
         self,
         request: CategorizationDecisionRequest,
     ) -> OrdinaryDecisionPlanItem:
+        decision = CategorizationDecisionsRepo(self._db).fetch_by_id(
+            request.decision_id
+        )
+        if decision is not None and decision["status"] != "pending":
+            raise UserError(
+                "The categorization decision is already decided.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
+        transaction_id = (
+            str(decision["transaction_id"]) if decision is not None else None
+        )
         row = self._db.execute(
             f"""
-            SELECT tc.category, tc.subcategory, tx.description, tx.memo
+            SELECT tx.transaction_id, tc.category, tc.subcategory,
+                   tx.description, tx.memo
             FROM {FCT_TRANSACTIONS.full_name} AS tx
             LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
               ON tc.transaction_id = tx.transaction_id
-            WHERE tx.transaction_id = ?
+            WHERE (
+                (? IS NOT NULL AND tx.transaction_id = ?)
+                OR (
+                    ? IS NULL
+                    AND 'cat_' || substr(sha256(tx.transaction_id), 1, 16) = ?
+                )
+            )
             LIMIT 1
             """,  # noqa: S608  # TableRef constants + parameterized value
-            [request.decision_id],
+            [
+                transaction_id,
+                transaction_id,
+                transaction_id,
+                request.decision_id,
+            ],
         ).fetchone()
         if row is None:
             raise UserError(
-                "No transaction exists for this categorization decision.",
+                "No pending categorization decision exists for this id.",
                 code=error_codes.MUTATION_NOT_FOUND,
             )
-        current_category = cast(str | None, row[0])
-        current_subcategory = cast(str | None, row[1])
+        transaction_id = str(row[0])
+        current_category = cast(str | None, row[1])
         if request.decision == "reject":
             if current_category is not None:
                 raise UserError(
-                    "The categorization decision is already decided.",
+                    "The transaction was categorized after this proposal was created.",
                     code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                 )
             return OrdinaryDecisionPlanItem(
                 request=request,
-                changed=False,
+                changed=True,
                 status="rejected",
+                transaction_id=transaction_id,
             )
 
         category_row = self._db.execute(
@@ -231,25 +257,19 @@ class ReviewDecisionsService:
                 "The requested category target does not exist or is inactive.",
                 code=error_codes.MUTATION_NOT_FOUND,
             )
-        category_changed = current_category is None
         if current_category is not None:
-            if not (
-                current_category == request.category
-                and current_subcategory == request.subcategory
-            ):
-                raise UserError(
-                    "The categorization decision is already decided differently.",
-                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
-                )
-            category_changed = False
+            raise UserError(
+                "The transaction was categorized after this proposal was created.",
+                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+            )
 
         merchant_id: str | None = None
         merchant_changed = False
         match_text: str | None = None
         if request.canonical_merchant_name is not None:
             match_text, _description, _memo = build_match_inputs(
-                cast(str | None, row[2]),
                 cast(str | None, row[3]),
+                cast(str | None, row[4]),
             )
             if match_text:
                 categorization = CategorizationService(self._db)
@@ -272,12 +292,21 @@ class ReviewDecisionsService:
                     merchant_changed = not bool(exemplar_row and exemplar_row[0])
         return OrdinaryDecisionPlanItem(
             request=request,
-            changed=category_changed or merchant_changed,
+            changed=True,
             status="accepted",
-            category_changed=category_changed,
+            transaction_id=transaction_id,
+            category_id=str(category_row[0]),
+            category_changed=True,
             merchant_changed=merchant_changed,
             merchant_id=merchant_id,
             match_text=match_text,
+            merchant_group_key=(
+                request.canonical_merchant_name,
+                cast(str, request.category),
+                request.subcategory,
+            )
+            if request.canonical_merchant_name is not None
+            else None,
         )
 
     def _prepare_match(
@@ -292,15 +321,9 @@ class ReviewDecisionsService:
             )
         target = "accepted" if request.decision == "accept" else "rejected"
         current = str(row["match_status"])
-        if current == target:
-            return OrdinaryDecisionPlanItem(
-                request=request,
-                changed=False,
-                status=target,
-            )
         if current != "pending":
             raise UserError(
-                "The match decision is already decided differently.",
+                "The match decision is already decided.",
                 code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
             )
         return OrdinaryDecisionPlanItem(
@@ -366,31 +389,65 @@ class ReviewDecisionsService:
     ) -> tuple[OrdinaryDecisionPlanItem, ...]:
         """Revalidate and atomically apply an ordinary decision batch."""
         initial = self.plan_ordinary(decisions)
-        if not any(item.changed for item in initial):
-            raise UserError(
-                "Every review decision is already satisfied or has no persisted change.",
-                code=error_codes.MUTATION_NOTHING_TO_DO,
-            )
+        created_merchant_ids: list[str] = []
+        touched_merchant_ids: list[str] = []
         self._db.begin()
         try:
+            decision_repo = CategorizationDecisionsRepo(self._db)
+            for item in initial:
+                if isinstance(item.request, CategorizationDecisionRequest):
+                    decision_repo.ensure_pending(
+                        cast(str, item.transaction_id),
+                        actor=self._actor,
+                        in_outer_txn=True,
+                    )
             live = self.plan_ordinary(decisions)
             category_service = CategorizationService(self._db)
             match_repo = MatchDecisionsRepo(self._db)
+            batch_merchants: dict[tuple[str, str, str | None], str] = {}
             for item in live:
                 if not item.changed:
                     continue
                 request = item.request
                 if isinstance(request, CategorizationDecisionRequest):
-                    category_service.apply_review_categorization_in_active_txn(
+                    merchant_id = item.merchant_id
+                    if request.decision == "accept":
+                        if item.merchant_group_key is not None:
+                            merchant_id = batch_merchants.get(
+                                item.merchant_group_key,
+                                merchant_id,
+                            )
+                        creates_merchant = merchant_id is None and item.merchant_changed
+                        merchant_id = (
+                            category_service.apply_review_categorization_in_active_txn(
+                                cast(str, item.transaction_id),
+                                category=cast(str, request.category),
+                                subcategory=request.subcategory,
+                                canonical_merchant_name=request.canonical_merchant_name,
+                                match_text=item.match_text,
+                                existing_merchant_id=merchant_id,
+                                category_changed=item.category_changed,
+                                merchant_changed=item.merchant_changed,
+                                actor=self._actor,
+                            )
+                        )
+                        if (
+                            merchant_id is not None
+                            and item.merchant_group_key is not None
+                        ):
+                            batch_merchants[item.merchant_group_key] = merchant_id
+                        if merchant_id is not None and item.merchant_changed:
+                            touched_merchant_ids.append(merchant_id)
+                            if creates_merchant:
+                                created_merchant_ids.append(merchant_id)
+                    decision_repo.update_status(
                         request.decision_id,
-                        category=cast(str, request.category),
-                        subcategory=request.subcategory,
-                        canonical_merchant_name=request.canonical_merchant_name,
-                        match_text=item.match_text,
-                        existing_merchant_id=item.merchant_id,
-                        category_changed=item.category_changed,
-                        merchant_changed=item.merchant_changed,
+                        status=cast(Literal["accepted", "rejected"], item.status),
+                        category_id=item.category_id,
+                        merchant_id=merchant_id,
+                        decided_by="user",
                         actor=self._actor,
+                        in_outer_txn=True,
                     )
                 else:
                     match_repo.update_status(
@@ -404,6 +461,11 @@ class ReviewDecisionsService:
         except BaseException:
             self._db.rollback()
             raise
+        if touched_merchant_ids:
+            category_service.record_committed_review_merchants(
+                created_merchant_ids=tuple(created_merchant_ids),
+                touched_merchant_ids=tuple(touched_merchant_ids),
+            )
         return live
 
     def _prepare_account(
@@ -411,8 +473,8 @@ class ReviewDecisionsService:
         request: AccountLinkDecisionRequest,
     ) -> IdentityDecisionPlanItem:
         service = AccountLinksService(self._db, actor=self._actor)
-        decision = _history_row(
-            service.history(limit=None),
+        decision = _decision_row(
+            service.decision_by_id(request.decision_id),
             request.decision_id,
             kind="account-link",
         )
@@ -463,10 +525,20 @@ class ReviewDecisionsService:
             """,  # noqa: S608  # TableRef constant + parameterized value
             [source_id],
         )
-        transactions = _count_rows(
-            self._db,
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} WHERE account_id = ?",  # noqa: S608  # TableRef constant
-            [source_id],
+        material_accept = changed and request.decision == "accept"
+        transactions = (
+            _query_ids(
+                self._db,
+                f"""
+                SELECT DISTINCT transaction_id
+                FROM {FCT_TRANSACTIONS.full_name}
+                WHERE account_id = ?
+                ORDER BY transaction_id
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [source_id],
+            )
+            if material_accept
+            else ()
         )
         return IdentityDecisionPlanItem(
             request=request,
@@ -480,12 +552,14 @@ class ReviewDecisionsService:
                 "affected_decisions": decisions,
                 "accepted_links": links,
             }),
-            blast_radius={
-                "accounts": 2 if request.decision == "accept" else 1,
-                "merchants": 0,
-                "securities": 0,
-                "transactions": transactions if request.decision == "accept" else 0,
-                "lots": 0,
+            affected_ids={
+                "accounts": tuple(dict.fromkeys((source_id, target_id)))
+                if material_accept
+                else (),
+                "merchants": (),
+                "securities": (),
+                "transactions": transactions,
+                "lots": (),
             },
         )
 
@@ -494,8 +568,8 @@ class ReviewDecisionsService:
         request: MerchantLinkDecisionRequest,
     ) -> IdentityDecisionPlanItem:
         service = MerchantLinksService(self._db, actor=self._actor)
-        decision = _history_row(
-            service.history(limit=None),
+        decision = _decision_row(
+            service.decision_by_id(request.decision_id),
             request.decision_id,
             kind="merchant-link",
         )
@@ -547,11 +621,7 @@ class ReviewDecisionsService:
             """,  # noqa: S608  # TableRef constant + parameterized values
             [decision["source_type"], decision["ref_value"]],
         )
-        transactions = _count_rows(
-            self._db,
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} WHERE merchant_id = ?",  # noqa: S608  # TableRef constant
-            [target_id],
-        )
+        material_accept = changed and request.decision == "accept"
         return IdentityDecisionPlanItem(
             request=request,
             changed=changed,
@@ -568,12 +638,12 @@ class ReviewDecisionsService:
                 "affected_decisions": decisions,
                 "existing_links": links,
             }),
-            blast_radius={
-                "accounts": 0,
-                "merchants": 1,
-                "securities": 0,
-                "transactions": transactions,
-                "lots": 0,
+            affected_ids={
+                "accounts": (),
+                "merchants": (target_id,) if material_accept else (),
+                "securities": (),
+                "transactions": (),
+                "lots": (),
             },
         )
 
@@ -582,8 +652,8 @@ class ReviewDecisionsService:
         request: SecurityLinkDecisionRequest,
     ) -> IdentityDecisionPlanItem:
         service = SecurityLinksService(self._db, actor=self._actor)
-        decision = _history_row(
-            service.history(limit=None),
+        decision = _decision_row(
+            service.decision_by_id(request.decision_id),
             request.decision_id,
             kind="security-link",
         )
@@ -676,17 +746,52 @@ class ReviewDecisionsService:
                 [disposal_id],
             )
         ]
-        transactions = _count_rows(
-            self._db,
-            f"SELECT COUNT(*) FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "
-            "WHERE security_id = ?",  # noqa: S608  # TableRef constant
-            [source_id],
-        ) + len(manual)
-        lots = _count_rows(
-            self._db,
-            f"SELECT COUNT(*) FROM {FCT_INVESTMENT_LOTS.full_name} "
-            "WHERE security_id = ?",  # noqa: S608  # TableRef constant
-            [source_id],
+        material_accept = changed and request.decision == "accept"
+        core_transactions = (
+            _query_ids(
+                self._db,
+                f"""
+                SELECT DISTINCT investment_transaction_id
+                FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
+                WHERE security_id = ?
+                ORDER BY investment_transaction_id
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [source_id],
+            )
+            if material_accept
+            else ()
+        )
+        manual_transactions = (
+            _query_ids(
+                self._db,
+                f"""
+                SELECT DISTINCT COALESCE(
+                    investment_transaction_id,
+                    source_transaction_id
+                )
+                FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name}
+                WHERE security_id = ?
+                ORDER BY 1
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [source_id],
+            )
+            if material_accept
+            else ()
+        )
+        transactions = tuple(dict.fromkeys((*core_transactions, *manual_transactions)))
+        lots = (
+            _query_ids(
+                self._db,
+                f"""
+                SELECT DISTINCT lot_id
+                FROM {FCT_INVESTMENT_LOTS.full_name}
+                WHERE security_id = ?
+                ORDER BY lot_id
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [source_id],
+            )
+            if material_accept
+            else ()
         )
         return IdentityDecisionPlanItem(
             request=request,
@@ -708,12 +813,14 @@ class ReviewDecisionsService:
                 "manual_investment_transactions": manual,
                 "lot_selections": selections,
             }),
-            blast_radius={
-                "accounts": 0,
-                "merchants": 0,
-                "securities": 2 if request.decision == "accept" else 1,
-                "transactions": transactions if request.decision == "accept" else 0,
-                "lots": lots if request.decision == "accept" else 0,
+            affected_ids={
+                "accounts": (),
+                "merchants": (),
+                "securities": tuple(dict.fromkeys((source_id, target_id)))
+                if material_accept
+                else (),
+                "transactions": transactions,
+                "lots": lots,
             },
         )
 
@@ -773,6 +880,35 @@ class ReviewDecisionsService:
                 continue
             seen_groups.add(item.group_key)
             prepared.append(item)
+        account_accepts = [
+            item
+            for item in prepared
+            if item.changed
+            and item.request.decision == "accept"
+            and isinstance(item.request, AccountLinkDecisionRequest)
+        ]
+        graph_error_ids: set[str] = set()
+        for position, left in enumerate(account_accepts):
+            for right in account_accepts[position + 1 :]:
+                if (
+                    left.source_id != right.target_id
+                    and left.target_id != right.source_id
+                ):
+                    continue
+                request = right.request
+                if request.decision_id in graph_error_ids:
+                    continue
+                graph_error_ids.add(request.decision_id)
+                errors.append({
+                    "index": decisions.index(request),
+                    "kind": request.kind,
+                    "decision_id": request.decision_id,
+                    "code": error_codes.MUTATION_INVALID_INPUT,
+                    "reason": (
+                        "Account merges cannot use another batch source as an "
+                        "intermediate target."
+                    ),
+                })
         if errors:
             raise UserError(
                 "Identity decision preflight failed.",

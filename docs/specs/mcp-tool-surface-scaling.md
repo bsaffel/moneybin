@@ -370,6 +370,31 @@ subject to schema/evaluation gates before implementation.
 | Privacy | `privacy`, `privacy_consent_set` | Consent/audit status and declarative consent |
 | Platform | `refresh_run`, `sql_query`, `sql_schema` | Derived-state refresh and the two core SQL capabilities |
 
+### Review decision persistence
+
+`reviews_decide` uses each domain's canonical proposal store. Categorization
+proposals live in `app.categorization_decisions`, keyed by the deterministic
+`cat_<sha256(transaction_id)[:16]>` decision ID and constrained to one row per
+transaction. Their audited lifecycle is `pending` → `accepted` or `rejected`;
+accepted rows retain canonical category and optional merchant target IDs, while
+rejected rows retain no inferred targets. Existing transaction categorizations
+backfill once as system-decided accepted proposals with paired migration audit
+events. Match accept/reject state remains in the existing match-decision store.
+
+An ordinary batch materializes any deterministic categorization proposal and
+applies every terminal decision inside one operation and one transaction.
+Already-terminal IDs are structured constraint violations, including repeated
+rejects; they are not inferred from the current transaction category and are
+not treated as no-ops. The normalized review read projects the same decision
+IDs and terminal history without introducing a parallel review-state table.
+
+`identity_links_decide` requires confirmation for every material ordered batch
+that contains an accept, even when that accept is already satisfied and another
+item supplies the material change. Confirmation blast radii count distinct
+logical IDs actually affected by changed accepts; provider-link acceptance does
+not claim unrelated already-categorized transactions, and manual investment
+events already represented in core are counted once.
+
 ### Major consolidation map
 
 | Existing/candidate tools | Proposed contract |

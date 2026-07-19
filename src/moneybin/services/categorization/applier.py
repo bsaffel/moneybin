@@ -353,9 +353,10 @@ class MatchApplier:
         merchant_id = event.target_id
         if merchant_id is None:  # pragma: no cover — insert always sets the id
             raise RuntimeError("UserMerchantsRepo.insert returned no merchant_id")
-        if exemplars:
+        if exemplars and not in_outer_txn:
             MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(len(exemplars))
-        logger.info(f"Created user merchant {merchant_id}")
+        if not in_outer_txn:
+            logger.info(f"Created user merchant {merchant_id}")
         return merchant_id
 
     def find_merchant_by_canonical_name(
@@ -421,8 +422,30 @@ class MatchApplier:
         )
         exemplars = cast("list[str]", (event.after_value or {}).get("exemplars") or [])
         new_size = len(exemplars)
-        MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(new_size)
+        if not in_outer_txn:
+            MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(new_size)
         return new_size
+
+    def record_committed_review_merchants(
+        self,
+        *,
+        created_merchant_ids: tuple[str, ...],
+        touched_merchant_ids: tuple[str, ...],
+    ) -> None:
+        """Publish merchant observability only after the outer transaction commits."""
+        for merchant_id in dict.fromkeys(touched_merchant_ids):
+            row = self._db.execute(
+                f"""
+                SELECT len(exemplars)
+                FROM {USER_MERCHANTS.full_name}
+                WHERE merchant_id = ?
+                """,  # noqa: S608  # TableRef constant + parameterized value
+                [merchant_id],
+            ).fetchone()
+            if row is not None:
+                MERCHANT_EXEMPLAR_COUNT.labels(merchant_id=merchant_id).set(int(row[0]))
+        for merchant_id in dict.fromkeys(created_merchant_ids):
+            logger.info(f"Created user merchant {merchant_id}")
 
     # -- Rule management --
 

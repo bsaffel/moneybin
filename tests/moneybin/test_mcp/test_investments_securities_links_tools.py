@@ -34,6 +34,7 @@ from moneybin.repositories.security_link_decisions_repo import (
     SecurityLinkDecisionsRepo,
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
+from moneybin.services.security_links_service import SecurityLinksService
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -198,6 +199,69 @@ async def test_identity_batch_rejects_security_link_without_confirmation() -> No
     assert response.error is None
     assert response.data.results[0].status == "rejected"
     assert _decision_status(setup["decision_id"]) == "rejected"
+
+
+async def test_identity_security_preflight_uses_exact_decision_lookup() -> None:
+    setup = _merge_setup()
+
+    with patch.object(
+        SecurityLinksService,
+        "history",
+        side_effect=AssertionError("unbounded history lookup"),
+    ):
+        response = await identity_links_decide_coarse(
+            decisions=[
+                SecurityLinkDecisionRequest(
+                    kind="security_link",
+                    decision_id=setup["decision_id"],
+                    decision="reject",
+                )
+            ]
+        )
+
+    assert response.error is None
+    assert _decision_status(setup["decision_id"]) == "rejected"
+
+
+async def test_identity_security_blast_deduplicates_manual_core_transaction() -> None:
+    setup = _merge_setup()
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO raw.manual_investment_transactions (
+                source_transaction_id, import_id, account_id, security_id,
+                security_ref, type, trade_date, quantity, price, amount,
+                created_by, investment_transaction_id
+            ) VALUES (
+                'manual_blast_dedup', 'imp_blast', 'acc_1', ?, 'VTI', 'buy',
+                DATE '2024-05-01', 10, 100, -1000, 'cli', 'inv_blast_dedup'
+            )
+            """,
+            [setup["provisional"]],
+        )
+        db.execute(
+            "CREATE TABLE core.fct_investment_transactions "
+            "(investment_transaction_id VARCHAR, security_id VARCHAR)"
+        )
+        db.execute(
+            "INSERT INTO core.fct_investment_transactions "
+            "(investment_transaction_id, security_id) VALUES (?, ?)",
+            ["inv_blast_dedup", setup["provisional"]],
+        )
+
+    required = await identity_links_decide_coarse(
+        decisions=[
+            SecurityLinkDecisionRequest(
+                kind="security_link",
+                decision_id=setup["decision_id"],
+                decision="accept",
+                target_id=setup["survivor"],
+            )
+        ]
+    )
+
+    assert required.error is not None
+    assert required.error.details["blast_radius"]["transactions"] == 1
 
 
 async def test_identity_batch_binding_captures_security_catalog_before_state() -> None:

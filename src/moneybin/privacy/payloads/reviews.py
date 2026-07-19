@@ -65,14 +65,15 @@ class CategorizationPendingDetails(BaseModel):
 
 
 class CategorizationHistoryDetails(BaseModel):
-    """One persisted transaction categorization."""
+    """One terminal transaction categorization decision."""
 
     model_config = ConfigDict(frozen=True)
 
     state: Annotated[Literal["history"], DataClass.TXN_TYPE] = "history"
     transaction_id: Annotated[str, DataClass.RECORD_ID]
+    decision_status: Annotated[Literal["accepted", "rejected"], DataClass.TXN_TYPE]
     category_id: Annotated[str | None, DataClass.CATEGORY]
-    category: Annotated[str, DataClass.CATEGORY]
+    category: Annotated[str | None, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
     categorized_by: Annotated[str, DataClass.TXN_TYPE]
     merchant_id: Annotated[str | None, DataClass.RECORD_ID]

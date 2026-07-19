@@ -63,6 +63,9 @@ from moneybin.privacy.payloads.categorize import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope as ResponseEnvelope
 from moneybin.protocol.envelope import build_envelope as build_envelope
+from moneybin.repositories.categorization_decisions_repo import (
+    CategorizationDecisionsRepo,
+)
 from moneybin.services._text import (
     build_match_inputs as build_match_inputs,
 )
@@ -181,6 +184,7 @@ class CategorizationService:
         """
         self._audit = audit if audit is not None else AuditService(db)
         self._matcher = CategorizationMatcher(db)
+        self._review_decisions = CategorizationDecisionsRepo(db)
         self._applier = MatchApplier(db, audit=self._audit)
         self._assist = AssistBridge(db)
         self._queries = CategorizationQueries(db)
@@ -238,7 +242,7 @@ class CategorizationService:
         category_changed: bool,
         merchant_changed: bool,
         actor: str,
-    ) -> None:
+    ) -> str | None:
         """Apply one preflighted review categorization inside the caller's transaction."""
         if category_changed:
             self.set_category_in_active_txn(
@@ -248,7 +252,7 @@ class CategorizationService:
                 actor=actor,
             )
         if not merchant_changed or canonical_merchant_name is None or not match_text:
-            return
+            return existing_merchant_id
         if existing_merchant_id is not None:
             self._applier.append_exemplar(
                 existing_merchant_id,
@@ -256,8 +260,8 @@ class CategorizationService:
                 actor=actor,
                 in_outer_txn=True,
             )
-            return
-        self._applier.create_merchant_core(
+            return existing_merchant_id
+        return self._applier.create_merchant_core(
             None,
             canonical_merchant_name,
             match_type="oneOf",
@@ -282,6 +286,29 @@ class CategorizationService:
             category=category,
             subcategory=subcategory,
         )
+
+    def record_committed_review_merchants(
+        self,
+        *,
+        created_merchant_ids: tuple[str, ...],
+        touched_merchant_ids: tuple[str, ...],
+    ) -> None:
+        """Publish deferred review-merchant observability after commit."""
+        self._applier.record_committed_review_merchants(
+            created_merchant_ids=created_merchant_ids,
+            touched_merchant_ids=touched_merchant_ids,
+        )
+
+    def review_decision_for_transaction(
+        self,
+        transaction_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the canonical review decision for one transaction."""
+        return self._review_decisions.fetch_by_transaction_id(transaction_id)
+
+    def list_review_decision_history(self) -> list[dict[str, Any]]:
+        """Return terminal categorization review decisions."""
+        return self._review_decisions.history()
 
     def clear_category(self, transaction_id: str, *, actor: str) -> None:
         """Delete a transaction's category row and emit ``category.clear`` audit."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from unittest.mock import patch
 
@@ -25,9 +26,13 @@ from moneybin.mcp.write_contracts import (
     CategorizationDecisionRequest,
     MatchDecisionRequest,
 )
+from moneybin.repositories.categorization_decisions_repo import (
+    categorization_decision_id,
+)
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
+from moneybin.services.review_decisions_service import ReviewDecisionsService
 
 from .schema_assertions import (
     assert_literal_values,
@@ -445,7 +450,7 @@ async def test_review_raw_transport_rejects_invalid_arguments(
     assert response.isError is True
 
 
-def _seed_ordinary_decisions() -> tuple[str, str, str]:
+def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
     transaction_id = "TX_REVIEW_DECIDE"
     match_id = "MATCH_REVIEW_DECIDE"
     category = "Task 5 Review"
@@ -469,6 +474,30 @@ def _seed_ordinary_decisions() -> tuple[str, str, str]:
             [transaction_id],
         )
         CategorizationService(db).create_category(category, actor="test")
+        db.execute(
+            """
+            CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+            SELECT
+                transaction_id,
+                account_id,
+                CAST(NULL AS VARCHAR) AS account_name,
+                transaction_date AS txn_date,
+                amount,
+                description,
+                CAST(NULL AS VARCHAR) AS merchant_id,
+                CAST(NULL AS VARCHAR) AS merchant_normalized,
+                CAST(1 AS INTEGER) AS age_days,
+                CAST(1 AS DOUBLE) AS priority_score,
+                source_type,
+                CAST(NULL AS VARCHAR) AS source_id
+            FROM core.fct_transactions AS tx
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM app.transaction_categories AS tc
+                WHERE tc.transaction_id = tx.transaction_id
+            )
+            """
+        )
         MatchDecisionsRepo(db).insert(
             match_id=match_id,
             source_transaction_id_a="ordinary-a",
@@ -484,17 +513,22 @@ def _seed_ordinary_decisions() -> tuple[str, str, str]:
             decided_by="auto",
             actor="test",
         )
-    return transaction_id, match_id, category
+    return (
+        transaction_id,
+        categorization_decision_id(transaction_id),
+        match_id,
+        category,
+    )
 
 
 async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
-    transaction_id, match_id, category = _seed_ordinary_decisions()
+    _transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
 
     response = await reviews_decide_coarse(
         decisions=[
             CategorizationDecisionRequest(
                 kind="categorization",
-                decision_id=transaction_id,
+                decision_id=categorization_id,
                 decision="accept",
                 category=category,
             ),
@@ -519,13 +553,13 @@ async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
 
 
 async def test_ordinary_batch_preflights_before_first_write() -> None:
-    transaction_id, _match_id, category = _seed_ordinary_decisions()
+    transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
 
     response = await reviews_decide_coarse(
         decisions=[
             CategorizationDecisionRequest(
                 kind="categorization",
-                decision_id=transaction_id,
+                decision_id=categorization_id,
                 decision="accept",
                 category=category,
             ),
@@ -559,13 +593,13 @@ async def test_ordinary_batch_preflights_before_first_write() -> None:
 async def test_ordinary_categorization_accept_preserves_commit_merchant_semantics() -> (
     None
 ):
-    transaction_id, _match_id, category = _seed_ordinary_decisions()
+    _transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
 
     response = await reviews_decide_coarse(
         decisions=[
             CategorizationDecisionRequest(
                 kind="categorization",
-                decision_id=transaction_id,
+                decision_id=categorization_id,
                 decision="accept",
                 category=category,
                 canonical_merchant_name="Task Five Merchant",
@@ -586,12 +620,150 @@ async def test_ordinary_categorization_accept_preserves_commit_merchant_semantic
     assert list(row[2]) == ["Task 5 review decision"]
 
 
-async def test_ordinary_all_already_satisfied_is_nothing_to_do() -> None:
-    transaction_id, match_id, category = _seed_ordinary_decisions()
+async def test_ordinary_batch_coalesces_shared_new_merchant_in_input_order() -> None:
+    _first_transaction_id, first_id, _match_id, category = _seed_ordinary_decisions()
+    second_transaction_id = "TX_REVIEW_DECIDE_SECOND"
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at, transaction_year,
+                transaction_month, transaction_day, transaction_day_of_week,
+                transaction_year_month, transaction_year_quarter
+            ) VALUES (
+                ?, 'ACC001', '2026-07-18', -18.00, 18.00, 'expense',
+                'Task 5 second review decision', 'DEBIT', false, 'USD', 'ofx',
+                '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
+                '2026-07', '2026-Q3'
+            )
+            """,  # noqa: S608  # test fixture data
+            [second_transaction_id],
+        )
+    second_id = categorization_decision_id(second_transaction_id)
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=first_id,
+                decision="accept",
+                category=category,
+                canonical_merchant_name="Shared Review Merchant",
+            ),
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=second_id,
+                decision="accept",
+                category=category,
+                canonical_merchant_name="Shared Review Merchant",
+            ),
+        ]
+    )
+
+    assert response.error is None
+    with get_database(read_only=True) as db:
+        merchants = db.execute(
+            "SELECT merchant_id, exemplars FROM app.user_merchants "
+            "WHERE canonical_name = ?",
+            ["Shared Review Merchant"],
+        ).fetchall()
+        decisions = db.execute(
+            "SELECT merchant_id, status FROM app.categorization_decisions "
+            "WHERE decision_id IN (?, ?) ORDER BY decision_id",
+            [first_id, second_id],
+        ).fetchall()
+    assert len(merchants) == 1
+    assert list(merchants[0][1]) == [
+        "Task 5 review decision",
+        "Task 5 second review decision",
+    ]
+    assert decisions == [
+        (merchants[0][0], "accepted"),
+        (merchants[0][0], "accepted"),
+    ]
+
+
+def test_ordinary_late_failure_rolls_back_state_audit_and_observability(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
+    requests = [
+        CategorizationDecisionRequest(
+            kind="categorization",
+            decision_id=categorization_id,
+            decision="accept",
+            category=category,
+            canonical_merchant_name="Rolled Back Review Merchant",
+        ),
+        MatchDecisionRequest(
+            kind="match",
+            decision_id=match_id,
+            decision="reject",
+        ),
+    ]
+    with get_database(read_only=True) as db:
+        audit_before_row = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    assert audit_before_row is not None
+    audit_before = int(audit_before_row[0])
+    caplog.clear()
+
+    with (
+        get_database(read_only=False) as db,
+        patch.object(
+            MatchDecisionsRepo,
+            "update_status",
+            side_effect=RuntimeError("late match failure"),
+        ),
+        patch(
+            "moneybin.services.categorization.applier.MERCHANT_EXEMPLAR_COUNT.labels"
+        ) as metric_labels,
+        pytest.raises(RuntimeError, match="late match failure"),
+    ):
+        with caplog.at_level(
+            logging.INFO,
+            logger="moneybin.services.categorization.applier",
+        ):
+            ReviewDecisionsService(db, actor="mcp").apply_ordinary(requests)
+
+    metric_labels.assert_not_called()
+    assert "Created user merchant" not in caplog.text
+    with get_database(read_only=True) as db:
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
+                [transaction_id],
+            ).fetchone()
+            is None
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.user_merchants WHERE canonical_name = ?",
+                ["Rolled Back Review Merchant"],
+            ).fetchone()
+            is None
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.categorization_decisions WHERE decision_id = ?",
+                [categorization_id],
+            ).fetchone()
+            is None
+        )
+        audit_after_row = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    assert audit_after_row is not None
+    audit_after = int(audit_after_row[0])
+    assert audit_after == audit_before
+
+
+async def test_ordinary_already_decided_ids_return_structured_errors() -> None:
+    _transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
     decisions = [
         CategorizationDecisionRequest(
             kind="categorization",
-            decision_id=transaction_id,
+            decision_id=categorization_id,
             decision="accept",
             category=category,
         ),
@@ -607,7 +779,46 @@ async def test_ordinary_all_already_satisfied_is_nothing_to_do() -> None:
     second = await reviews_decide_coarse(decisions=decisions)
 
     assert second.error is not None
-    assert second.error.code == "mutation_nothing_to_do"
+    assert second.error.code == "mutation_invalid_input"
+    assert second.error.details is not None
+    assert [
+        (error["kind"], error["decision_id"], error["code"])
+        for error in second.error.details["errors"]
+    ] == [
+        ("categorization", categorization_id, "mutation_constraint_violation"),
+        ("match", match_id, "mutation_constraint_violation"),
+    ]
+
+
+async def test_categorization_reject_persists_and_leaves_pending_queue() -> None:
+    transaction_id, categorization_id, _match_id, _category = _seed_ordinary_decisions()
+    pending = await reviews_coarse(kind="categorization", status="pending")
+    row = next(
+        item for item in pending.data.rows if item.decision_id == categorization_id
+    )
+    assert row.details.transaction.transaction_id == transaction_id
+
+    rejected = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="reject",
+            )
+        ]
+    )
+
+    assert rejected.error is None
+    assert rejected.data.results[0].status == "rejected"
+    pending_after = await reviews_coarse(kind="categorization", status="pending")
+    assert categorization_id not in {
+        item.decision_id for item in pending_after.data.rows
+    }
+    history = await reviews_coarse(kind="categorization", status="history")
+    history_row = next(
+        item for item in history.data.rows if item.decision_id == categorization_id
+    )
+    assert history_row.status == "rejected"
 
 
 async def test_review_dormant_write_registrar_is_closed_and_max_risk() -> None:
