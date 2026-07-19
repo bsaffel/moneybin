@@ -72,6 +72,39 @@ _VALUE_ERROR_PATTERNS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _sign_sidecar_actions(
+    moved_path: Path, *, proposed_sign: str | None, prior_sign: str | None
+) -> list[str]:
+    """The honest recoveries for a sign gate, written into the pending sidecar.
+
+    Third rendering of the same decision (CLI ``_sign_recovery_commands``, MCP
+    ``_sign_confirm_actions``, here), so it branches on ``prior_sign`` the same
+    way they do: the credit-card question is only accurate for a first-contact
+    inference, where the proposal is always ``negative_is_income``. A self-healed
+    recipe can re-derive to either polarity, and the card framing would then name
+    the wrong direction and leave no command that keeps the convention in force.
+    """
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
+        sign_convention_effect,
+    )
+
+    if prior_sign is None:
+        return [
+            f"If it IS a credit card: moneybin import files {moved_path} "
+            "--confirm (records charges as expenses, payments as credits).",
+            f"If it is NOT a credit card: moneybin import files "
+            f"{moved_path} --sign negative_is_expense (records amounts "
+            "exactly as printed).",
+        ]
+    accepted = proposed_sign or "the re-derived convention"
+    return [
+        f"Accept the change — {sign_convention_effect(accepted)}: "
+        f"moneybin import files {moved_path} --confirm.",
+        f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
+        f"moneybin import files {moved_path} --sign {prior_sign}.",
+    ]
+
+
 class InboxBusyError(Exception):
     """Another sync is in progress for this profile."""
 
@@ -672,6 +705,7 @@ class InboxService:
         # printed-vs-recorded rows into the sidecar so the "magic" (a whole-ledger
         # flip) stays visible to whoever ratifies it. See write_pending_sidecar.
         sign_convention: str | None = None
+        sign_prior_convention: str | None = None
         sign_evidence: list[str] = []
         sign_sample_rows: list[dict[str, str]] = []
         if isinstance(outcome_obj.proposed, ProposedMapping):
@@ -679,6 +713,7 @@ class InboxService:
             unmapped_columns = list(outcome_obj.proposed.unmapped_columns)
         elif isinstance(outcome_obj.proposed, SignConventionProposal):
             sign_convention = outcome_obj.proposed.sign_convention
+            sign_prior_convention = outcome_obj.proposed.prior_sign_convention
             sign_evidence = list(outcome_obj.proposed.evidence)
             sign_sample_rows = [dict(r) for r in outcome_obj.proposed.sample_rows]
 
@@ -703,6 +738,7 @@ class InboxService:
             account_hint=account_hint,
             account_proposals=pending_proposals,
             sign_convention=sign_convention,
+            sign_prior_convention=sign_prior_convention,
             sign_evidence=sign_evidence,
             sign_sample_rows=sign_sample_rows,
             error_message=outcome_obj.error_message,
@@ -799,6 +835,7 @@ class InboxService:
         account_hint: str | None = None,
         account_proposals: list[AccountProposalDict] | None = None,
         sign_convention: str | None = None,
+        sign_prior_convention: str | None = None,
         sign_evidence: list[str] | None = None,
         sign_sample_rows: list[dict[str, str]] | None = None,
         error_message: str = "",
@@ -846,15 +883,14 @@ class InboxService:
                 "reason": reason,
                 "error_message": error_message,
                 "sign_convention": sign_convention,
+                "sign_prior_convention": sign_prior_convention,
                 "sign_evidence": list(sign_evidence or []),
                 "sign_sample_rows": [dict(r) for r in (sign_sample_rows or [])],
-                "actions": [
-                    f"If it IS a credit card: moneybin import files {moved_path} "
-                    "--confirm (records charges as expenses, payments as credits).",
-                    f"If it is NOT a credit card: moneybin import files "
-                    f"{moved_path} --sign negative_is_expense (records amounts "
-                    "exactly as printed).",
-                ],
+                "actions": _sign_sidecar_actions(
+                    moved_path,
+                    proposed_sign=sign_convention,
+                    prior_sign=sign_prior_convention,
+                ),
             }
             sidecar.write_text(yaml.safe_dump(payload, sort_keys=False))
             sidecar.chmod(_FILE_MODE)

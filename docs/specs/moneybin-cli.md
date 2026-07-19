@@ -136,7 +136,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     [--account-meta K:field=value]  Metadata for a 'new' account (repeatable)
 |   |     [--output text|json]       JSON emits the standard ResponseEnvelope
 |   +-- history                    -- Show recent import batches
-|   +-- preview                    -- Detect format / column mapping without writing
+|   +-- preview                    -- Inspect a file without writing: tabular -> format
+|   |                                 + column mapping; PDF -> extraction verdict, row
+|   |                                 count, and any pending sign confirmation
 |   +-- revert                     -- Undo a recent import batch by import_id
 |   +-- status                     -- End-to-end import health and diagnostics
 |   +-- formats                    -- Manage saved import format definitions (tabular + PDF)

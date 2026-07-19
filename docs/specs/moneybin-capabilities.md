@@ -134,6 +134,7 @@ not-yet-built.
 | 71| Show recent security-link decisions (all statuses) | `investments_securities_links_history` *(`limit=50`)* | `investments securities links history` *(`--limit`, `--output json`)* | — | live |
 | 72| Review pending auto-rule proposals with each proposal's estimated blast radius | `transactions_categorize_auto_review` *(returns `estimated_match_count` + `is_broad` per proposal)* | `transactions categorize auto review` | — | live |
 | 73| Accept or reject pending auto-rule proposals (a broad proposal requires an explicit override) | `transactions_categorize_auto_accept` *(`accept`, `reject`, `allow_broad` — required to promote an `is_broad` proposal)* | `transactions categorize auto accept --accept/--reject [--allow-broad]` | — | live |
+| 74| Inspect a file before importing it — what would land, and does anything need confirming | `import_preview` *(`file_path`; tabular → detected format + column mapping + sample rows; PDF → extraction verdict, reason, row count, confidence, layout; raises `confirmation_required` for a pending sign convention or a bridge escalation)* | `import preview <file>` *(same two shapes; a pending sign confirmation prints the card evidence and printed-vs-recorded samples rather than resolving it — preview never imports)* | — | live |
 
 *(Bootstrap rows only; full table populates incrementally as
 follow-up work closes the parity backlog. A prior row covering

@@ -69,6 +69,29 @@ class SignConventionProposal:
     sign_convention: str
     evidence: tuple[str, ...]
     sample_rows: list[dict[str, str]]
+    #: The convention this proposal would REPLACE, when one was already in force
+    #: (a self-healed recipe that re-derived to the opposite polarity). None on a
+    #: first-contact inference, where there is no prior to keep. Surfaces are
+    #: expected to branch on it: with no prior, the proposal is always
+    #: negative_is_income and "is this a credit card?" is the honest question;
+    #: with one, the flip can run either direction and the question is instead
+    #: "keep the old convention or take the new one?".
+    prior_sign_convention: str | None = None
+
+
+#: What each sign convention does to the ledger, in the user's terms. Lives here
+#: rather than in either surface so the CLI prompt and the MCP ``actions[]`` can't
+#: drift into describing the same flip two different ways.
+_SIGN_CONVENTION_EFFECT = {
+    "negative_is_expense": "records amounts exactly as printed",
+    "negative_is_income": "records charges as expenses and payments as credits",
+    "split_debit_credit": "reads debit and credit columns separately",
+}
+
+
+def sign_convention_effect(convention: str) -> str:
+    """Plain-English effect of ``convention`` on the ledger."""
+    return _SIGN_CONVENTION_EFFECT.get(convention, f"records amounts as {convention}")
 
 
 @dataclass(frozen=True)
@@ -144,15 +167,24 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     new channel field (e.g. ``bridge_payload``) should land in one place. The
     tabular fields (``proposed_mapping``, ``unmapped_columns``) are populated
     from a ``ProposedMapping`` proposal; ``bridge_payload`` from a
-    ``BridgePayload`` proposal; ``sign_convention``/``sign_evidence``/
-    ``sign_sample_rows`` from a ``SignConventionProposal``; the unused fields
-    are empty/None for the channel.
+    ``BridgePayload`` proposal; ``sign_convention``/``sign_prior_convention``/
+    ``sign_evidence``/``sign_sample_rows`` from a ``SignConventionProposal``;
+    the unused fields are empty/None for the channel.
+
+    Every surface that renders a sign decision — the CLI prompt and recovery
+    commands, the MCP ``actions[]`` and elicitation prompt, and the inbox
+    pending sidecar — must branch on ``sign_prior_convention``. It is what
+    distinguishes a first-contact card inference (always toward
+    ``negative_is_income``) from a self-healed recipe that re-derived to the
+    opposite polarity; describing the latter with the former's wording tells
+    the reader the reverse of what confirming does.
     """
     proposed = outcome.proposed
     proposed_mapping: dict[str, str] = {}
     unmapped: list[str] = []
     bridge_payload: dict[str, Any] | None = None
     sign_convention: str | None = None
+    sign_prior_convention: str | None = None
     sign_evidence: list[str] = []
     sign_sample_rows: list[dict[str, str]] = []
     if isinstance(proposed, ProposedMapping):
@@ -160,6 +192,7 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         unmapped = list(proposed.unmapped_columns)
     elif isinstance(proposed, SignConventionProposal):
         sign_convention = proposed.sign_convention
+        sign_prior_convention = proposed.prior_sign_convention
         sign_evidence = list(proposed.evidence)
         sign_sample_rows = [dict(r) for r in proposed.sample_rows]
     else:
@@ -177,6 +210,7 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "unmapped_columns": unmapped,
         "bridge_payload": bridge_payload,
         "sign_convention": sign_convention,
+        "sign_prior_convention": sign_prior_convention,
         "sign_evidence": sign_evidence,
         "sign_sample_rows": sign_sample_rows,
         "account_proposals": list(outcome.account_proposals),

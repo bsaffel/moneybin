@@ -1792,6 +1792,101 @@ class TestImportConfirmPdfSign:
         # The concrete flip the human is ratifying, not just an abstract claim.
         assert "39.83" in message
 
+    def _un_inverting_sign_error(self) -> ImportConfirmationRequiredError:
+        """A self-heal repair proposing the OPPOSITE of the card inference.
+
+        Mirrors what `_attempt_self_heal` hands the gate when a previously
+        ratified `negative_is_income` recipe re-derives as `negative_is_expense`
+        (exercised end-to-end by `test_a_repair_that_un_inverts_the_ledger_is_gated`).
+        """
+        from moneybin.services.import_confirmation import SignConventionProposal
+
+        return ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="pdf",
+                confidence=_make_confidence(score=1.0, tier="high"),
+                proposed=SignConventionProposal(
+                    sign_convention="negative_is_expense",
+                    prior_sign_convention="negative_is_income",
+                    evidence=("Minimum Payment Due",),
+                    sample_rows=[{"printed": "39.83", "recorded": "39.83"}],
+                ),
+                reason="sign_convention",
+                error_message="The saved layout was re-derived.",
+            )
+        )
+
+    async def test_the_elicitation_prompt_describes_the_flip_that_will_apply(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The prompt a human approves must match what approving does.
+
+        This is the last thing shown before a ledger-wide sign change is
+        applied, so a wrong direction here is the most expensive place for one:
+        the human either approves a flip they were told was its opposite, or
+        rejects a correct repair. The card wording is right for a first-contact
+        inference and backwards for a repair that *un*-inverts.
+        """
+        from moneybin.services.import_service import ImportResult
+
+        pdf = self._card_pdf(tmp_path, monkeypatch)
+        mock_service = MagicMock()
+        mock_service.pdf_preview.side_effect = self._un_inverting_sign_error()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(pdf), file_type="pdf", transactions=1, import_id="x"
+        )
+        confirm = AsyncMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+            patch("moneybin.services.inbox_service.InboxService"),
+        ):
+            await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
+
+        assert confirm.await_args is not None
+        message = confirm.await_args.args[0]
+        # Approving here accepts the as-printed convention, so the prompt must
+        # not tell the human it identifies a credit card and reverses amounts.
+        assert "credit card" not in message.lower()
+        assert "charges become negative expenses" not in message
+        # Both conventions must be named, so the direction is unambiguous.
+        assert "negative_is_income" in message
+        assert "negative_is_expense" in message
+
+    async def test_the_elicitation_prompt_keeps_card_framing_on_first_contact(
+        self, tmp_path: Path, monkeypatch: MonkeyPatch
+    ) -> None:
+        """The common case must not regress into convention jargon.
+
+        With no prior convention the proposal is always `negative_is_income`,
+        and "is this a credit card?" is the question the human can actually
+        answer.
+        """
+        from moneybin.services.import_service import ImportResult
+
+        pdf = self._card_pdf(tmp_path, monkeypatch)
+        mock_service = MagicMock()
+        mock_service.pdf_preview.side_effect = self._sign_error()
+        mock_service.import_file.return_value = ImportResult(
+            file_path=str(pdf), file_type="pdf", transactions=1, import_id="x"
+        )
+        confirm = AsyncMock()
+        with (
+            patch(
+                "moneybin.services.import_service.ImportService",
+                return_value=mock_service,
+            ),
+            patch("moneybin.mcp.elicitation.confirm_or_raise", confirm),
+            patch("moneybin.services.inbox_service.InboxService"),
+        ):
+            await import_confirm(file_path=str(pdf), confirm_pdf_sign=True)
+
+        assert confirm.await_args is not None
+        assert "credit card" in confirm.await_args.args[0].lower()
+
     async def test_confirm_pdf_sign_rejected_alongside_bridge_response(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:

@@ -34,6 +34,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **`moneybin import preview` can now read a PDF statement.** It previously
+  rejected every PDF with `Unsupported file type: '.pdf'`, because preview
+  routed all files through the spreadsheet detector — so the only way to ask
+  "will this statement extract cleanly, and how many rows?" without importing
+  was through an AI assistant. The command now reports the extraction verdict,
+  row count, confidence, and any pending credit-card sign confirmation (with
+  the evidence and printed-vs-recorded samples behind it). An unreadable file
+  — common on macOS, where statements sit in a folder your terminal hasn't
+  been granted access to — now explains itself and names the fix instead of
+  printing a stack trace. On a machine with no database yet, it points at
+  `db init` rather than `db unlock` — the latter cannot work before a database
+  exists. Spreadsheet-only options (`--format`, `--sheet`, `--delimiter`,
+  `--encoding`, `--override`) now say they were ignored when passed with a PDF,
+  instead of silently doing nothing.
+- **When a repaired statement layout wants to reverse a direction you already
+  approved, the choices you're offered now match what the commands do.** The
+  prompt was written for the common case — "is this a credit card?" — where the
+  answer always points the same way. A self-repaired layout can also propose the
+  *opposite* flip, and there the card wording described `--confirm` as doing the
+  reverse of what it does, and offered no command at all for keeping the
+  direction you already had. Both choices are now named by what they do, in
+  whichever direction the repair actually goes — in the terminal, in the
+  approval an AI assistant puts in front of you, in its suggested next steps,
+  and in the inbox's pending-file notes.
+- **A saved statement layout that stops reading correctly now repairs itself
+  instead of failing forever.** MoneyBin remembers how to read each statement
+  layout the first time it sees one. That saved recipe was a frozen copy, so
+  when an extraction bug was fixed, every layout already saved kept the old
+  broken behavior — the fix could never reach it, and each new statement of that
+  layout landed as an unparsed dump. Now, when a saved layout stops balancing,
+  MoneyBin re-reads the statement from scratch and, if the fresh read balances to
+  the cent, imports it and updates the saved layout. Two things it will not do on
+  its own: replace a layout you or the assisted reader authored, or change a
+  statement's income/expense direction. A layout you authored is left alone
+  entirely; a direction change is shown to you with the evidence and the
+  printed-vs-recorded samples, and nothing is imported until you approve or
+  override it — in either direction, including when the re-read wants to *undo*
+  an inversion you approved earlier. The repair is recorded in the audit log and
+  can be undone.
 - **Replacing a statement while its approval prompt is open no longer applies
   your answer to the new file.** Re-saving a corrected export over the same path
   mid-prompt could previously reverse every amount in a document you never
