@@ -105,6 +105,7 @@ flowchart LR
     end
     subgraph corel["core — resolved"]
         L["core.fct_investment_transactions<br/>trade-implied prices"]
+        Q["core.fct_investment_lots<br/>dated quantity"]
         F["core.fct_security_prices"]
         H["core.dim_holdings"]
         D["core.fct_holdings_daily"]
@@ -118,6 +119,7 @@ flowchart LR
     L --> F
     F --> H
     F --> D
+    Q --> D
 ```
 
 ### New table: `raw.security_prices`
@@ -130,11 +132,27 @@ The provider cache. Immutable, append-only, one row per observation.
 | `price_date` | DATE | the date the price applies to |
 | `quote_currency` | VARCHAR | ISO 4217; the currency the price is expressed in |
 | `source` | VARCHAR | `plaid`, `stooq`, `coingecko` — provider observations only |
+| `source_origin` | VARCHAR | which connection produced it; `''` for single-tenant feeds |
 | `close` | DECIMAL(28,10) | price of one unit |
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
 | `fetched_at` | TIMESTAMP | when the row was observed |
 
-Primary key `(security_id, price_date, quote_currency, source)`.
+Primary key `(security_id, price_date, quote_currency, source, source_origin)`.
+
+**`source_origin` keeps two Plaid connections from colliding.** Two linked items
+can each report a close for the same security on the same date. Without the
+column those are one row by identity, so an append-only table must either reject
+the second or lose it. `source_origin` mirrors the column
+`raw.plaid_securities` already carries. Feeds with a single global answer —
+stooq, CoinGecko — write `''`.
+
+**Only `close_price` becomes a price row.** Plaid carries two price-shaped
+fields, and they are not the same kind of fact. `close_price` on the security
+record is a security-level close and belongs here. `institution_price` on a
+holding is a per-`(account, security)` valuation, not a property of the security,
+and it already lands on `core.dim_holdings` as `provider_reported_value` under
+the store-don't-trust convention. Routing both into one security-grain table
+would collide two different measurements under one key.
 
 **Quote currency belongs in the key.** A security quoted in two currencies — an
 ADR against its ordinary listing, a venue reporting pence against another
@@ -203,8 +221,25 @@ of `quantity × close`, following the `fct_balances_daily.py` Python-model
 precedent. Every row carries `price_date`, `days_since_observed`, and
 `valuation_status`. Kind FULL.
 
-The date spine runs to `max(last_transaction_date, last_price_date)`, so a
-position with no recent trades keeps being valued as long as prices arrive.
+**Quantity comes from the dated ledger, not from `core.dim_holdings`.**
+`dim_holdings` has grain `(account_id, security_id)` and reports the position as
+it stands now, so multiplying it by a historical close would value every past
+date at today's share count — wrong for every position touched by a buy, sale,
+transfer, or split. Quantity for a date is the sum of `remaining_quantity` over
+`core.fct_investment_lots` whose acquisition date is on or before that date and
+whose disposal is after it. That is also what makes the split arithmetic correct:
+lot quantities are already restated as of each date.
+
+**The spine is global and runs through today.** It starts at the earliest
+transaction across all positions and ends at `today`, matching
+`fct_balances_daily.py`, whose spine must end at the newest observation across
+all accounts rather than each account's own. A per-position bound would drop a
+position out of `reports.net_worth` the moment its own data went stale while
+other positions kept valuing — a silent, load-bearing omission. Ending the spine
+at the last price would also make carry-forward unobservable: weekends, holidays,
+and provider outages are exactly when a carried-forward value with rising
+`days_since_observed` needs to be published. An open position with no price at
+all still emits rows, carrying `valuation_status = 'unpriced'`.
 
 ---
 
@@ -217,10 +252,17 @@ date, which price applies?
 candidates = union of provider observations, overrides, and trade-implied prices
              where price_date <= as_of_date
                and price_basis = 'raw'
-               and price_date >= first_available_price_on(security, source)
+               and (source_rank > 2                                  -- non-provider
+                    or price_date >= first_available_price_on(security, source))
 
-winner     = argmax(price_date), ties broken by source rank
+winner     = argmax(price_date), ties broken by ascending source_rank,
+             which is a total order
 ```
+
+The floor applies to provider observations only. Overrides and trade-implied
+prices are not rows in `raw.security_prices`, so their floor would evaluate to
+NULL and `price_date >= NULL` would silently discard every one of them — taking
+manual valuation for feedless securities and the trade-implied fallback with it.
 
 **Bounded lookback.** Only prices dated on or before the as-of date are
 candidates. A price observed after the valuation date never values it.
@@ -229,14 +271,22 @@ candidates. A price observed after the valuation date never values it.
 holidays, and providers skip days beyond that. Resolution takes the most recent
 earlier close, which is what makes a continuous daily series possible at all.
 
-**Source rank breaks same-date ties**, in this order:
+**Source rank breaks same-date ties.** It is a total order over sources, not a
+grouping — two sources sharing a tier would leave `argmax` with multiple winners
+and let a rebuild pick a different price each time, which fails the
+deterministic-resolution requirement.
 
 | Rank | Source | Rationale |
 |---|---|---|
 | 1 | `override` | The user stated it. |
-| 2 | broker-carried (`plaid`) | The institution holding the position reported it. |
-| 3 | market feed (`stooq`, `coingecko`) | A settled public close. |
-| 4 | `trade_implied` | An execution price reflects one order's size and spread. |
+| 2 | `plaid` | The institution holding the position reported it. |
+| 3 | `stooq` | A settled public close. |
+| 4 | `coingecko` | A settled public close; ranked below stooq only to break ties, since the two never cover the same security. |
+| 5 | `trade_implied` | An execution price reflects one order's size and spread. |
+
+A new adapter takes the next free rank. Where two providers disagree on the same
+date the rank picks one deterministically and `system doctor` reports the
+disagreement — resolution stays stable, and the conflict stays visible.
 
 **Freshness dominates rank.** An override applies to one
 `(security_id, price_date, quote_currency)`. Within that date it beats every
@@ -325,11 +375,27 @@ pre-split quantity.
 Publishing a market value against that quantity produces a number wrong by the
 split factor while every other signal reads healthy. So Pillar C withholds it.
 
-**Existing checks already detect the condition.** `investment_holdings_divergence`
-compares `quantity` against `provider_reported_quantity` with exact inequality,
-and `investment_staging_rejects` reports the held-out split at the moment it
-arrives. Pillar C consumes those signals: a position flagged by either publishes
-`valuation_status = 'withheld'` and a NULL `market_value`. It adds no second
+**Existing checks already detect the condition, but their result is too coarse to
+consume whole.** `investment_holdings_divergence` compares `quantity` against
+`provider_reported_quantity` with exact inequality — and also fails on a pure
+cost-basis mismatch where quantity agrees. `investment_staging_rejects` fires on
+any non-null `review_reason`, including `unmapped_subtype` and
+`transfer_direction_underivable`. Neither of those implies a wrong quantity, and
+market value is `quantity × price` — it does not depend on cost basis at all.
+Gating on the aggregate check result would withhold a correct market value for
+unrelated reasons, contradicting Requirement 9.
+
+So withholding uses a **quantity-specific predicate over the same underlying
+data**, evaluated per position:
+
+```
+withheld = quantity <> provider_reported_quantity          -- the divergence
+                                                            -- check's quantity leg
+           or exists a staging row for this security with
+              review_reason = 'split_underivable'
+```
+
+Pillar C reuses those two signals and adds no second
 alarm for a condition an existing check already covers.
 
 **One gap needs a new check.** Divergence detection requires a broker snapshot to
@@ -436,15 +502,43 @@ A change to `core` grain requires `make test-scenarios`, which the default
 
 ---
 
+## Metrics
+
+Registered in `src/moneybin/metrics/registry.py` per
+[`observability.md`](observability.md). A refresh reaches the network and can
+partially fail, so it is unobservable without them.
+
+| Metric | Type | Labels | Purpose |
+|---|---|---|---|
+| `price_refresh_duration_seconds` | Histogram | `source` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
+| `price_refresh_securities_total` | Counter | `source`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
+| `price_rows_written_total` | Counter | `source` | Ingest volume, and the check that a backfill wrote what it claimed. |
+| `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities. |
+| `price_staleness_days` | Gauge | — | Maximum `days_since_observed` across held securities. One number answering "how old is the oldest price my net worth rests on." |
+
+No metric carries a security identifier or a monetary value as a label — labels
+stay low-cardinality and non-identifying, per the logging and privacy rules.
+
+---
+
 ## Implementation plan
 
 Three phases, each independently shippable.
 
-**C.1 — broker-carried prices and current value.** No network code. Route the
-`close_price` and `institution_price` Plaid already delivers into
-`raw.security_prices`, build `core.fct_security_prices`, extend
-`core.dim_holdings`. Closes the no-market-value gap for every Plaid brokerage
-user.
+**C.1 — broker-carried prices and current value.** No outbound network code.
+Capture the `close_price` Plaid already delivers into `raw.security_prices`,
+build `core.fct_security_prices`, extend `core.dim_holdings`. Closes the
+no-market-value gap for every Plaid brokerage user.
+
+**The capture happens in the extractor, not in a staging view.**
+`raw.plaid_securities` is written with `on_conflict="upsert"` keyed
+`(security_id, source_origin)`, so each pull overwrites the previous
+`close_price` in place. A model reading that table sees only the newest value and
+can never reconstruct the history it already destroyed. `PlaidExtractor` must
+therefore append the price row during ingestion, in the same pass that upserts
+the security. This is why the price history is append-only while the securities
+table is not: the two have different retention contracts, and only the extractor
+sits between them.
 
 **C.2 — feeds, overrides, and staleness.** The two adapters, the override table
 and repo, trade-implied prices, the first-available floor, staleness surfacing,
@@ -472,8 +566,9 @@ and the CLI and MCP surface.
 ### Files to modify
 
 - `src/moneybin/sqlmesh/models/core/dim_holdings.sql` — valuation columns
-- `src/moneybin/sqlmesh/models/prep/stg_plaid__securities.sql` — route
-  `close_price` into the price cache
+- `src/moneybin/extractors/plaid/extractor.py` — append `close_price` to
+  `raw.security_prices` during ingestion, before the upsert overwrites it
+- `src/moneybin/metrics/registry.py` — the five price metrics
 - `src/moneybin/services/doctor_service.py` — `investment_price_discontinuity`
 - `src/moneybin/config.py` — staleness defaults, backfill bound
 - `src/moneybin/tables.py` — new table constants
