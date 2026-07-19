@@ -8,6 +8,8 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.mcp.write_contracts import NoteSet, SplitsSet, TagsSet
 from moneybin.services._validators import InvalidSlugError
 from moneybin.services.audit_service import AuditService
 from moneybin.services.transaction_service import (
@@ -85,6 +87,50 @@ class TestEmptyResults:
         assert isinstance(result, TransactionGetResult)
         assert result.transactions == []
         assert result.next_cursor is None
+
+
+class TestAnnotationBatches:
+    """Tests for atomic declarative transaction annotation batches."""
+
+    @pytest.mark.unit
+    def test_apply_annotations_preflights_before_mutating_any_target(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        with pytest.raises(UserError, match="transaction reference"):
+            service.apply_annotations(
+                [
+                    NoteSet(kind="note_set", transaction_id="T1", note="trip"),
+                    TagsSet(kind="tags_set", transaction_id="UNKNOWN", tags=["x"]),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_batch",
+            )
+
+        assert service.list_notes("T1") == []
+        assert service.list_tags("T1") == []
+        audit_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE operation_id = ?",
+            ["op_annotation_batch"],
+        ).fetchone()
+        assert audit_count == (0,)
+
+    @pytest.mark.unit
+    def test_apply_annotations_allows_empty_splits_to_clear_target_state(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_split("T1", Decimal("-50"), actor="mcp")
+
+        result = service.apply_annotations(
+            [SplitsSet(kind="splits_set", transaction_id="T1", splits=[])],
+            actor="mcp",
+            operation_id="op_annotation_clear_splits",
+        )
+
+        assert result.outcomes[0].changed is True
+        assert service.list_splits("T1") == []
 
 
 class TestNotes:

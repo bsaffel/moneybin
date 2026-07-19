@@ -28,6 +28,7 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.write_contracts import AnnotationRequest
 from moneybin.privacy.payloads.transactions import (
     MatchesHistoryPayload,
     MatchesPendingPayload,
@@ -36,6 +37,8 @@ from moneybin.privacy.payloads.transactions import (
     MatchRunPayload,
     MatchSetPayload,
     ReviewStatusPayload,
+    TransactionAnnotationBatchPayload,
+    TransactionAnnotationOutcome,
     TransactionGetPayload,
     TransactionRow,
 )
@@ -49,6 +52,7 @@ from moneybin.services.entity_reference import (
     resolve_entity_reference,
 )
 from moneybin.services.matching_service import MatchingService
+from moneybin.services.mutation_context import current_operation_id
 from moneybin.services.transaction_service import (
     OperationalTransactionResult,
     TransactionGetResult,
@@ -444,6 +448,53 @@ def register_transaction_coarse_reads(mcp: FastMCP) -> None:
     )
     # Plan 6 removes transactions_get from the live registry. Largest and
     # anomalous transaction analysis remains in the reports catalog.
+
+
+@mcp_tool(read_only=False)
+def transactions_annotate_coarse(
+    requests: list[AnnotationRequest],
+) -> ResponseEnvelope[TransactionAnnotationBatchPayload]:
+    """Atomically declare complete note, tag, split, and tag-rename states."""
+    operation_id = current_operation_id()
+    with get_database(read_only=False) as db:
+        result = TransactionService(db).apply_annotations(
+            requests,
+            actor="mcp",
+            operation_id=operation_id,
+        )
+    return build_envelope(
+        data=TransactionAnnotationBatchPayload(
+            applied_count=len(result.outcomes),
+            operation_id=result.operation_id,
+            outcomes=[
+                TransactionAnnotationOutcome(
+                    kind=outcome.kind,
+                    target_ids=list(outcome.target_ids),
+                    changed=outcome.changed,
+                    operation_id=result.operation_id,
+                )
+                for outcome in result.outcomes
+            ],
+        ),
+        actions=[
+            "Use system_audit(view='detail', operation_id=...) to inspect this batch",
+            "Use system_audit_undo(operation_id=...) to reverse this batch",
+        ],
+    )
+
+
+def register_transaction_coarse_writes(mcp: FastMCP) -> None:
+    """Register the dormant Plan 6 atomic transaction annotation batch."""
+    register(
+        mcp,
+        transactions_annotate_coarse,
+        "transactions_annotate",
+        "Atomically declare complete note, tag, and split states or rename one tag "
+        "globally. Every request is preflighted before any write; failure leaves "
+        "the whole batch unchanged. Results retain request order and share one "
+        "operation_id for audit inspection or system_audit_undo recovery.",
+        privacy_actor="transactions_annotate",
+    )
 
 
 def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:

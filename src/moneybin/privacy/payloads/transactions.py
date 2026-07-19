@@ -65,6 +65,30 @@ class TransactionGetPayload:
 
 
 # ---------------------------------------------------------------------------
+# transactions_annotate
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionAnnotationOutcome:
+    """One requested annotation target state, retained in request order."""
+
+    kind: Annotated[str, DataClass.TXN_TYPE]
+    target_ids: Annotated[list[str], DataClass.RECORD_ID]
+    changed: Annotated[bool, DataClass.TXN_TYPE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionAnnotationBatchPayload:
+    """Payload for ``transactions_annotate`` — atomic annotation outcomes."""
+
+    applied_count: Annotated[int, DataClass.AGGREGATE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+    outcomes: list[TransactionAnnotationOutcome]
+
+
+# ---------------------------------------------------------------------------
 # transactions_review
 # ---------------------------------------------------------------------------
 

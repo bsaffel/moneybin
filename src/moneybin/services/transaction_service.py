@@ -12,18 +12,27 @@ import binascii
 import hashlib
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.mcp.write_contracts import (
+    AnnotationRequest,
+    NoteSet,
+    SplitsSet,
+    TagsSet,
+)
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services._validators import validate_note_text, validate_slug
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
+from moneybin.services.mutation_context import operation
 from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
@@ -156,6 +165,32 @@ class TagRenameResult:
 
 
 @dataclass(frozen=True, slots=True)
+class AnnotationOutcome:
+    """One annotation request's material outcome."""
+
+    kind: Literal["note_set", "tags_set", "splits_set", "tag_rename"]
+    target_ids: tuple[str, ...]
+    changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationBatchResult:
+    """Ordered outcomes from one atomic annotation batch."""
+
+    operation_id: str
+    outcomes: tuple[AnnotationOutcome, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedAnnotation:
+    """A fully resolved annotation request, ready for a single write transaction."""
+
+    request: AnnotationRequest
+    category_ids: tuple[str | None, ...] = ()
+    target_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Split:
     """One row of ``app.transaction_splits``."""
 
@@ -200,6 +235,248 @@ class TransactionService:
         self._notes_repo = TransactionNotesRepo(db, audit=self._audit)
         self._tags_repo = TransactionTagsRepo(db, audit=self._audit)
         self._splits_repo = TransactionSplitsRepo(db, audit=self._audit)
+
+    def apply_annotations(
+        self,
+        requests: Sequence[AnnotationRequest],
+        *,
+        actor: str,
+        operation_id: str,
+    ) -> AnnotationBatchResult:
+        """Apply complete annotation target states atomically after full preflight."""
+        prepared = tuple(self._prepare_annotation(request) for request in requests)
+        with operation(operation_id):
+            self._db.begin()
+            try:
+                outcomes = tuple(
+                    self._apply_prepared_annotation(item, actor=actor)
+                    for item in prepared
+                )
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return AnnotationBatchResult(operation_id=operation_id, outcomes=outcomes)
+
+    def _prepare_annotation(self, request: AnnotationRequest) -> _PreparedAnnotation:
+        """Resolve every batch target before writes begin."""
+        if isinstance(request, NoteSet):
+            self._annotation_transaction_amount(request.transaction_id)
+            if request.note is not None:
+                validate_note_text(request.note)
+            return _PreparedAnnotation(
+                request=request,
+                target_ids=(request.transaction_id,),
+            )
+
+        if isinstance(request, TagsSet):
+            self._annotation_transaction_amount(request.transaction_id)
+            for tag in request.tags:
+                validate_slug(tag)
+            return _PreparedAnnotation(
+                request=request,
+                target_ids=(request.transaction_id,),
+            )
+
+        if isinstance(request, SplitsSet):
+            transaction_amount = self._annotation_transaction_amount(
+                request.transaction_id
+            )
+            category_ids: list[str | None] = []
+            total = Decimal("0")
+            for split in request.splits:
+                category_id = resolve_category_id(
+                    self._db,
+                    split.category,
+                    split.subcategory,
+                )
+                if split.category is not None and category_id is None:
+                    raise UserError(
+                        "The split category reference did not match a category.",
+                        code="CATEGORY_REFERENCE_NOT_FOUND",
+                    )
+                category_ids.append(category_id)
+                total += split.amount
+            if request.splits and total != transaction_amount:
+                raise UserError(
+                    "Split amounts must total the transaction amount.",
+                    code="SPLIT_TOTAL_INVALID",
+                )
+            return _PreparedAnnotation(
+                request=request,
+                category_ids=tuple(category_ids),
+                target_ids=(request.transaction_id,),
+            )
+
+        validate_slug(request.old_name)
+        validate_slug(request.new_name)
+        rows = self._db.conn.execute(
+            """
+            SELECT transaction_id
+              FROM app.transaction_tags
+             WHERE tag = ?
+             ORDER BY transaction_id
+            """,
+            [request.old_name],
+        ).fetchall()
+        if not rows:
+            raise UserError(
+                "The tag reference did not match any transaction annotations.",
+                code="TAG_REFERENCE_NOT_FOUND",
+            )
+        target_ids = tuple(str(row[0]) for row in rows)
+        conflicts = self._db.conn.execute(
+            """
+            SELECT transaction_id
+              FROM app.transaction_tags
+             WHERE tag = ? AND transaction_id IN (
+                SELECT transaction_id
+                  FROM app.transaction_tags
+                 WHERE tag = ?
+             )
+            """,
+            [request.new_name, request.old_name],
+        ).fetchall()
+        if conflicts:
+            raise UserError(
+                "The tag rename would duplicate an existing tag target.",
+                code="TAG_RENAME_CONFLICT",
+            )
+        return _PreparedAnnotation(request=request, target_ids=target_ids)
+
+    def _annotation_transaction_amount(self, transaction_id: str) -> Decimal:
+        """Resolve one annotation transaction and return its signed amount."""
+        row = self._db.conn.execute(
+            f"SELECT amount FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",  # noqa: S608  # TableRef constant
+            [transaction_id],
+        ).fetchone()
+        if row is None:
+            raise UserError(
+                "The transaction reference did not match a transaction.",
+                code="TRANSACTION_REFERENCE_NOT_FOUND",
+            )
+        amount = row[0]
+        return amount if isinstance(amount, Decimal) else Decimal(str(amount))
+
+    def _apply_prepared_annotation(
+        self,
+        prepared: _PreparedAnnotation,
+        *,
+        actor: str,
+    ) -> AnnotationOutcome:
+        """Apply one preflighted target state inside the caller's transaction."""
+        request = prepared.request
+        if isinstance(request, NoteSet):
+            desired = [] if request.note is None else [request.note]
+            notes = self.list_notes(request.transaction_id)
+            changed = [note.text for note in notes] != desired
+            if changed:
+                for note in notes:
+                    self._notes_repo.delete(
+                        note_id=note.note_id,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                if request.note is not None:
+                    self._notes_repo.add(
+                        transaction_id=request.transaction_id,
+                        note_id=uuid.uuid4().hex[:12],
+                        text=request.note,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=changed,
+            )
+
+        if isinstance(request, TagsSet):
+            desired = set(request.tags)
+            current = set(self.list_tags(request.transaction_id))
+            changed = current != desired
+            if changed:
+                for tag in sorted(desired - current):
+                    self._tags_repo.add(
+                        transaction_id=request.transaction_id,
+                        tag=tag,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                for tag in sorted(current - desired):
+                    self._tags_repo.remove(
+                        transaction_id=request.transaction_id,
+                        tag=tag,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=changed,
+            )
+
+        if isinstance(request, SplitsSet):
+            desired = [
+                (split.amount, split.category, split.subcategory, split.note)
+                for split in request.splits
+            ]
+            current = [
+                (split.amount, split.category, split.subcategory, split.note)
+                for split in self.list_splits(request.transaction_id)
+            ]
+            changed = current != desired
+            if changed:
+                self._splits_repo.clear(
+                    transaction_id=request.transaction_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+                for ord_idx, (split, category_id) in enumerate(
+                    zip(request.splits, prepared.category_ids, strict=True)
+                ):
+                    self._splits_repo.insert(
+                        split_id=uuid.uuid4().hex[:12],
+                        transaction_id=request.transaction_id,
+                        amount=split.amount,
+                        category=split.category,
+                        subcategory=split.subcategory,
+                        category_id=category_id,
+                        note=split.note,
+                        ord=ord_idx,
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=changed,
+            )
+
+        parent = self._audit.record_audit_event(
+            action="tag.rename",
+            target=(*_AUDIT_TARGET_TAGS, None),
+            before={"old_tag": request.old_name},
+            after={
+                "new_tag": request.new_name,
+                "row_count": len(prepared.target_ids),
+            },
+            actor=actor,
+        )
+        for transaction_id in prepared.target_ids:
+            self._tags_repo.rename_row(
+                transaction_id=transaction_id,
+                old_tag=request.old_name,
+                new_tag=request.new_name,
+                actor=actor,
+                parent_audit_id=parent.audit_id,
+                in_outer_txn=True,
+            )
+        return AnnotationOutcome(
+            kind=request.kind,
+            target_ids=prepared.target_ids,
+            changed=True,
+        )
 
     def _resolve_account_ids(self, accounts: list[str]) -> list[str]:
         """Resolve display names or IDs to account_id strings.

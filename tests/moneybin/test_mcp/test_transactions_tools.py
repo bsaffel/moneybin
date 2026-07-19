@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,13 +10,128 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.transactions import (
+    register_transaction_coarse_writes,
     register_transactions_tools,
+    transactions_annotate_coarse,
     transactions_matches_pending,
     transactions_matches_run,
     transactions_review,
 )
+from moneybin.mcp.write_contracts import (
+    NoteSet,
+    SplitsSet,
+    SplitTarget,
+    TagRename,
+    TagsSet,
+)
+from moneybin.services.transaction_service import TransactionService
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
+
+
+def _seed_annotation_transactions() -> None:
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                source_extracted_at, loaded_at,
+                transaction_year, transaction_month, transaction_day,
+                transaction_day_of_week, transaction_year_month,
+                transaction_year_quarter
+            ) VALUES
+            ('TX_1', 'ACC001', '2026-07-01', -20.00, 20.00, 'expense',
+             'Restaurant', 'DEBIT', false, 'USD', 'ofx',
+             '2026-07-01', CURRENT_TIMESTAMP,
+             2026, 7, 1, 3, '2026-07', '2026-Q3'),
+            ('TX_2', 'ACC001', '2026-07-02', -30.00, 30.00, 'expense',
+             'Grocer', 'DEBIT', false, 'USD', 'ofx',
+             '2026-07-02', CURRENT_TIMESTAMP,
+             2026, 7, 2, 4, '2026-07', '2026-Q3')
+            """  # noqa: S608  # test input, not executing SQL
+        )
+        db.execute(
+            """
+            INSERT INTO app.transaction_tags (transaction_id, tag, applied_by)
+            VALUES ('TX_RENAME', 'food', 'test')
+            """  # noqa: S608  # test input, not executing SQL
+        )
+
+
+@pytest.mark.unit
+async def test_annotation_batch_applies_all_variants(mcp_db: object) -> None:
+    _seed_annotation_transactions()
+
+    response = await transactions_annotate_coarse(
+        requests=[
+            NoteSet(kind="note_set", transaction_id="TX_1", note="trip"),
+            TagsSet(kind="tags_set", transaction_id="TX_1", tags=["travel"]),
+            SplitsSet(
+                kind="splits_set",
+                transaction_id="TX_2",
+                splits=[
+                    SplitTarget(amount=Decimal("-20"), category=None),
+                    SplitTarget(amount=Decimal("-10"), category=None),
+                ],
+            ),
+            TagRename(kind="tag_rename", old_name="food", new_name="dining"),
+        ]
+    )
+
+    assert response.data.applied_count == 4
+    assert response.data.operation_id
+    assert [outcome.kind for outcome in response.data.outcomes] == [
+        "note_set",
+        "tags_set",
+        "splits_set",
+        "tag_rename",
+    ]
+    assert all(outcome.changed for outcome in response.data.outcomes)
+    assert all(
+        outcome.operation_id == response.data.operation_id
+        for outcome in response.data.outcomes
+    )
+
+    with get_database(read_only=True) as db:
+        service = TransactionService(db)
+        assert [note.text for note in service.list_notes("TX_1")] == ["trip"]
+        assert service.list_tags("TX_1") == ["travel"]
+        assert [split.amount for split in service.list_splits("TX_2")] == [
+            Decimal("-20"),
+            Decimal("-10"),
+        ]
+
+
+@pytest.mark.unit
+async def test_annotation_batch_rolls_back_when_last_request_is_invalid(
+    mcp_db: object,
+) -> None:
+    _seed_annotation_transactions()
+
+    response = await transactions_annotate_coarse(
+        requests=[
+            NoteSet(kind="note_set", transaction_id="TX_1", note="trip"),
+            NoteSet(kind="note_set", transaction_id="UNKNOWN", note="bad"),
+        ]
+    )
+
+    assert response.error is not None
+    with get_database(read_only=True) as db:
+        assert TransactionService(db).list_notes("TX_1") == []
+
+
+@pytest.mark.unit
+async def test_annotation_coarse_registrar_exposes_only_batch_tool() -> None:
+    server = FastMCP("test")
+    register_transaction_coarse_writes(server)
+
+    names = {
+        tool.name
+        for tool in await server._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # test server inventory
+    }
+    assert names == {"transactions_annotate"}
 
 
 @pytest.mark.unit

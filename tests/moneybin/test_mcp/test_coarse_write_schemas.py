@@ -14,6 +14,7 @@ from mcp.types import TextContent
 from pydantic import TypeAdapter, ValidationError
 
 from moneybin.mcp.tools.accounts import BalanceAmount, register_accounts_coarse_writes
+from moneybin.mcp.tools.transactions import register_transaction_coarse_writes
 from moneybin.mcp.write_contracts import (
     AccountLinkDecisionRequest,
     AnnotationRequest,
@@ -454,6 +455,29 @@ async def test_balance_assertion_coarse_schema_and_annotations() -> None:
     for payload in invalid_payloads:
         with pytest.raises(JSONSchemaValidationError):
             validate_json_schema(payload, tool.inputSchema, cls=Draft202012Validator)
+
+
+async def test_transaction_annotation_coarse_schema_and_annotations() -> None:
+    mcp = isolated_server(register_transaction_coarse_writes)
+
+    tool = await listed_tool(mcp, "transactions_annotate")
+
+    assert tool.outputSchema is None
+    assert tool.annotations is not None
+    assert tool.annotations.readOnlyHint is False
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.idempotentHint is True
+    variants = {
+        branch["properties"]["kind"]["const"]: set(branch["required"])
+        for branch in tool.inputSchema["properties"]["requests"]["items"]["oneOf"]
+    }
+    assert variants == {
+        "note_set": {"kind", "transaction_id", "note"},
+        "tags_set": {"kind", "transaction_id", "tags"},
+        "splits_set": {"kind", "transaction_id", "splits"},
+        "tag_rename": {"kind", "old_name", "new_name"},
+    }
+    Draft202012Validator.check_schema(tool.inputSchema)
 
 
 def test_balance_assertion_amount_matches_decimal_18_2_extrema() -> None:
