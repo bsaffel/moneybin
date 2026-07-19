@@ -40,12 +40,15 @@ those claims is verifiable in source — AGPL-3.0.
 ## Ask your money anything
 
 ```bash
-uv run moneybin mcp install --client claude-code   # or claude-desktop, cursor, gemini-cli, codex, ...
+uv run moneybin mcp install --client claude-desktop   # or claude-code, cursor, gemini-cli, codex, ...
 ```
 
 One command — run from the project checkout the [next
 section](#sixty-seconds-on-synthetic-data) sets up — wires the MCP server into
-the AI client you already use. Then ask, in your own words:
+the AI client you already use; restart the client and it's there. (Claude Code
+is deliberately session-scoped — the [MCP clients
+guide](docs/guides/mcp-clients.md) has each client's launch notes.) Then ask,
+in your own words:
 
 - *"What changed in my dining spending over the last three months, and which
   merchants explain it?"*
