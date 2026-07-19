@@ -306,3 +306,43 @@ def test_legacy_empty_string_account_type_normalizes_to_null(db: Database) -> No
         ctx.plan(auto_apply=True, no_prompts=True)
 
     assert _dim_type(db, "canon-legacy-em") == (None, None)
+
+
+@pytest.mark.slow
+def test_unmapped_plaid_type_still_yields_a_type(db: Database) -> None:
+    """An unrecognized Plaid type must not become NULL.
+
+    core.fct_balances filters Plaid balances on `NOT a.account_type IS NULL`
+    and signs liabilities from that same column. Resolving an unmapped alias to
+    NULL would drop every balance for that account out of fct_balances — and so
+    out of net worth — silently. Plaid's own vocabulary is the canonical one, so
+    its raw value is a safe fallback; that is not true of the other sources.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.plaid_accounts
+            (account_id, account_type, account_subtype, institution_name, mask,
+             official_name, source_file, source_type, source_origin,
+             extracted_at, loaded_at)
+        VALUES ('plaid-novel', 'crypto_wallet', NULL, 'Novel Bank', '4242',
+                'Novel', 'plaid://novel', 'plaid', 'novel_inst',
+                '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
+        """  # noqa: S608  # test fixture
+    )
+    _link(
+        db,
+        link_id="lnk-plaid-nv",
+        account_id="canon-plaid-nv",
+        ref_value="plaid-novel",
+        source_type="plaid",
+        source_origin="novel_inst",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    account_type, _ = _dim_type(db, "canon-plaid-nv")
+    assert account_type is not None, (
+        "an unmapped Plaid type resolved to NULL, which drops its balances "
+        "from fct_balances and therefore from net worth"
+    )

@@ -665,3 +665,44 @@ def test_extract_balances_captures_curdef(
     assert "currency_code" in balances.columns
     first_row = balances.row(0, named=True)
     assert first_row["currency_code"] == "USD"
+
+
+class TestOFXAccountTypeDerivation:
+    """<ACCTTYPE> when present, else the statement container's own type.
+
+    Neither <CCACCTFROM> nor <INVACCTFROM> carries <ACCTTYPE> per the OFX spec —
+    the container itself states what kind of account it is, and ofxparse exposes
+    that as ``account.type``.
+    """
+
+    @staticmethod
+    def _account(account_type: str, kind: int) -> object:
+        import ofxparse  # noqa: PLC0415
+
+        acct = ofxparse.Account()
+        acct.account_type = account_type
+        acct.type = kind
+        return acct
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("declared", "kind", "expected"),
+        [
+            # A declared <ACCTTYPE> always wins over the container.
+            ("CHECKING", 1, "CHECKING"),
+            ("SAVINGS", 1, "SAVINGS"),
+            # No <ACCTTYPE>: fall back to what the container says.
+            ("", 2, "CREDITCARD"),
+            ("", 3, "INVESTMENT"),
+            # Genuinely unknown stays absent rather than guessed.
+            ("", 0, None),
+        ],
+    )
+    def test_type_falls_back_to_the_statement_container(
+        self, declared: str, kind: int, expected: str | None
+    ) -> None:
+        from moneybin.extractors.ofx.extractor import (  # noqa: PLC0415
+            _ofx_account_type,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        assert _ofx_account_type(self._account(declared, kind)) == expected

@@ -437,7 +437,7 @@ class AccountService:
                 account_id=str(row[0]),
                 display_name=row[1],
                 institution_name=row[2],
-                account_type=str(row[3]),
+                account_type=row[3],
                 account_subtype=row[4],
                 holder_category=row[5],
                 currency_code=str(row[6]),
@@ -491,7 +491,7 @@ class AccountService:
             display_name=r["display_name"],  # type: ignore[arg-type]
             official_name=r["official_name"],  # type: ignore[arg-type]
             institution_name=r["institution_name"],  # type: ignore[arg-type]
-            account_type=str(r["account_type"]),
+            account_type=r["account_type"],  # type: ignore[arg-type]
             account_subtype=r["account_subtype"],  # type: ignore[arg-type]
             holder_category=r["holder_category"],  # type: ignore[arg-type]
             currency_code=str(r["currency_code"]),

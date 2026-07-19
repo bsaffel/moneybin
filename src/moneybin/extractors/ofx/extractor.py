@@ -83,23 +83,33 @@ def _none_if_blank(value: str | None) -> str | None:
     return stripped or None
 
 
+#: Statement containers that state the account kind structurally instead of via
+#: ``<ACCTTYPE>``. Per the OFX spec neither ``<CCACCTFROM>`` (inside
+#: ``<CCSTMTRS>``) nor ``<INVACCTFROM>`` (inside ``<INVSTMTRS>``) carries that
+#: element — being wrapped in the container *is* the statement of type. ofxparse
+#: reports it as ``account.type`` while leaving ``account_type`` at ``''``.
+_CONTAINER_ACCOUNT_TYPES = {
+    ofxparse.AccountType.CreditCard: "CREDITCARD",
+    ofxparse.AccountType.Investment: "INVESTMENT",
+}
+
+
 def _ofx_account_type(account: Any) -> str | None:
     """Account type from ``<ACCTTYPE>``, falling back to the statement container.
 
-    A credit-card statement is a ``<CCSTMTRS>`` wrapping a ``<CCACCTFROM>``, and
-    per the OFX spec that container carries no ``<ACCTTYPE>`` — the fact that it
-    is a card is expressed by the container itself. ofxparse surfaces that as
-    ``account.type`` (``AccountType.CreditCard``) while leaving ``account_type``
-    empty, so reading only the latter discards a distinction the file does state.
-    Emitted in the file's own uppercase vocabulary; seeds.account_type_map is
-    what maps it to the canonical ``credit``.
+    Reading only ``<ACCTTYPE>`` discards a distinction the file does state, just
+    in a different place — which left every credit-card and brokerage account
+    untyped. Values are emitted in the file's own uppercase vocabulary;
+    seeds.account_type_map is what maps them to the canonical ``credit`` /
+    ``investment``. An unrecognized container yields None rather than a guess.
     """
     declared = _none_if_blank(account.account_type)
     if declared is not None:
         return declared
-    if getattr(account, "type", None) == ofxparse.AccountType.CreditCard:
-        return "CREDITCARD"
-    return None
+    container: Any = getattr(account, "type", None)
+    if container is None:
+        return None
+    return _CONTAINER_ACCOUNT_TYPES.get(container)
 
 
 def _fitid_content_signature(row: dict[str, Any]) -> str:
