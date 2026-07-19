@@ -557,6 +557,117 @@ def test_holding_for_an_item_absent_from_metadata_names_the_accounts_real_item(
         _load(db, payload, job_id="job-missing-item")
 
 
+def test_close_price_lands_in_the_price_history(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """The security-level close becomes a durable observation, keyed by Plaid's own id."""
+    _load(db, sync_data)
+    row = db.execute(
+        """
+        SELECT provider_security_key, price_date, quote_currency, source,
+               source_origin, close, price_basis
+        FROM raw.security_prices
+        WHERE provider_security_key = 'sec_aapl'
+        """
+    ).fetchone()
+    assert row == (
+        "sec_aapl",
+        date(2026, 7, 8),
+        "USD",
+        "plaid",
+        "item_1",
+        Decimal("214.5500000000"),
+        "raw",
+    )
+
+
+def test_security_without_a_price_yields_no_row(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A NULL close must not become a NULL-keyed or zero-valued observation.
+
+    sec_dup arrives from both item_1 (priced, see the fixture) and item_2
+    (unpriced) -- scope by source_origin so this only proves the item_2 leg.
+    """
+    _load(db, sync_data)
+    row = db.execute(
+        "SELECT COUNT(*) FROM raw.security_prices "
+        "WHERE provider_security_key = ? AND source_origin = ?",
+        ["sec_dup", "item_2"],
+    ).fetchone()
+    assert row is not None and row[0] == 0
+
+
+def test_unofficial_currency_code_is_used_when_iso_is_absent(db: Database) -> None:
+    """The two currency fields are mutually exclusive; the row needs whichever arrived.
+
+    Inline payload (the shared fixture's securities are pinned by
+    test_sync_service.py's resolver-candidate counts) so a crypto-shaped
+    security can carry unofficial_currency_code with no iso_currency_code.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [],
+        "securities": [
+            {
+                "security_id": "sec_btc",
+                "provider_item_id": "item_1",
+                "ticker_symbol": "BTC",
+                "name": "Bitcoin",
+                "type": "cryptocurrency",
+                "close_price": "61000.1234567890",
+                "close_price_as_of": "2026-07-15",
+                "unofficial_currency_code": "USD",
+            }
+        ],
+        "metadata": {
+            "job_id": "j-btc",
+            "synced_at": "2026-07-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+    _load(db, SyncDataResponse.model_validate(payload), job_id="j-btc")
+    row = db.execute(
+        "SELECT quote_currency FROM raw.security_prices WHERE provider_security_key = ?",
+        ["sec_btc"],
+    ).fetchone()
+    assert row is not None and row[0] == "USD"
+
+
+def test_price_history_is_append_only_across_reloads(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A re-sync must neither duplicate an observation nor overwrite the stored one.
+
+    raw.plaid_securities is upsert-keyed, so its close_price is replaced in place on
+    every pull. The price history has the opposite retention contract: first write wins.
+    """
+    _load(db, sync_data, job_id="job-1")
+    db.execute(
+        "UPDATE raw.security_prices SET close = 999.0 WHERE provider_security_key = ?",
+        ["sec_aapl"],
+    )
+    _load(db, sync_data, job_id="job-2")
+
+    rows = db.execute(
+        "SELECT close FROM raw.security_prices WHERE provider_security_key = ?",
+        ["sec_aapl"],
+    ).fetchall()
+    assert len(rows) == 1, "a re-reported observation must not append a second row"
+    assert rows[0][0] == Decimal("999.0000000000"), (
+        "the stored row must survive; on_conflict='ignore' means first write wins"
+    )
+
+
+def test_load_result_counts_price_rows(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    result = _load(db, sync_data)
+    assert result.security_prices_loaded == 2
+
+
 def test_empty_arrays_load_cleanly(db: Database) -> None:
     payload = {
         "accounts": [],

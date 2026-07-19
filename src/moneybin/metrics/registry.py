@@ -621,6 +621,12 @@ INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL = Counter(
     "Plaid investment rows whose |amount| reconciles under neither fee convention",
 )
 
+PRICE_ROWS_WRITTEN_TOTAL = Counter(
+    "moneybin_price_rows_written_total",
+    "Price observations written to raw.security_prices, by source",
+    ["source"],
+)
+
 SECURITY_LINK_OUTCOMES_TOTAL = Counter(
     "moneybin_security_link_outcomes_total",
     "SecurityResolver ladder outcomes per resolved security",
