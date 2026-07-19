@@ -195,6 +195,115 @@ class TestAnnotationBatches:
         assert service.list_tags("T1") == ["dining"]
 
     @pytest.mark.unit
+    def test_apply_annotations_rejects_tag_set_that_creates_later_rename_source(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagsSet(kind="tags_set", transaction_id="T1", tags=["food"]),
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="food",
+                        new_name="dining",
+                    ),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_created_rename_source",
+            )
+
+        assert service.list_tags("T1") == []
+        assert (
+            AuditService(transaction_db).events_for_operation(
+                "op_annotation_created_rename_source"
+            )
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_rename_chain_resolved_from_initial_state(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="food",
+                        new_name="dining",
+                    ),
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="dining",
+                        new_name="travel",
+                    ),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_rename_chain",
+            )
+
+        assert service.list_tags("T1") == ["food"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_rename_before_dependent_tag_set(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="food",
+                        new_name="dining",
+                    ),
+                    TagsSet(
+                        kind="tags_set",
+                        transaction_id="T1",
+                        tags=["dining", "travel"],
+                    ),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_rename_then_tags",
+            )
+
+        assert service.list_tags("T1") == ["food"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_allows_tag_set_unrelated_to_later_rename_effect(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        result = service.apply_annotations(
+            [
+                TagsSet(
+                    kind="tags_set",
+                    transaction_id="T1",
+                    tags=["food", "travel"],
+                ),
+                TagRename(
+                    kind="tag_rename",
+                    old_name="food",
+                    new_name="dining",
+                ),
+            ],
+            actor="mcp",
+            operation_id="op_annotation_unrelated_tag_effect",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [True, True]
+        assert service.list_tags("T1") == ["dining", "travel"]
+
+    @pytest.mark.unit
     def test_apply_annotations_rolls_back_base_exception(
         self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:

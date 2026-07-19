@@ -474,19 +474,14 @@ class TransactionService:
     ) -> None:
         """Reject batches whose independently resolved diffs alter each other."""
         seen: set[tuple[str, str]] = set()
-        tag_sets: list[_PreparedTagsSet] = []
-        renames: list[_PreparedTagRename] = []
+        earlier_tag_effects: list[tuple[str, str]] = []
         for item in prepared:
             request = item.request
+            mutation = item.mutation
             if isinstance(request, TagRename):
                 key = (request.kind, f"{request.old_name}:{request.new_name}")
-                mutation = item.mutation
-                if isinstance(mutation, _PreparedTagRename) and mutation.changed:
-                    renames.append(mutation)
             else:
                 key = (request.kind, request.transaction_id)
-                if isinstance(item.mutation, _PreparedTagsSet):
-                    tag_sets.append(item.mutation)
             if key in seen:
                 raise UserError(
                     "Annotation requests overlap the same target state.",
@@ -494,24 +489,39 @@ class TransactionService:
                 )
             seen.add(key)
 
-        for idx, rename in enumerate(renames):
-            rename_names = {rename.old_name, rename.new_name}
-            targets = set(rename.target_ids)
-            for tag_set in tag_sets:
-                tag_names = set(tag_set.desired) | set(tag_set.to_remove)
-                if tag_set.transaction_id in targets or rename_names & tag_names:
-                    raise UserError(
-                        "Annotation requests overlap tag rename targets.",
-                        code=error_codes.MUTATION_INVALID_INPUT,
-                    )
-            for other in renames[idx + 1 :]:
-                if rename_names & {other.old_name, other.new_name} or targets & set(
-                    other.target_ids
+            if isinstance(mutation, _PreparedTagRename):
+                targets = set(mutation.target_ids)
+                if any(
+                    tag == mutation.old_name
+                    or (tag == mutation.new_name and transaction_id in targets)
+                    for transaction_id, tag in earlier_tag_effects
                 ):
                     raise UserError(
-                        "Annotation requests overlap tag rename targets.",
+                        "Annotation requests overlap because an earlier tag "
+                        "mutation changes a later prepared rename.",
                         code=error_codes.MUTATION_INVALID_INPUT,
                     )
+                earlier_tag_effects.extend(
+                    (transaction_id, tag)
+                    for transaction_id in mutation.target_ids
+                    for tag in (mutation.old_name, mutation.new_name)
+                )
+                continue
+
+            if isinstance(mutation, _PreparedTagsSet):
+                if any(
+                    transaction_id == mutation.transaction_id
+                    for transaction_id, _tag in earlier_tag_effects
+                ):
+                    raise UserError(
+                        "Annotation requests overlap because an earlier tag "
+                        "mutation changes a later prepared tag set.",
+                        code=error_codes.MUTATION_INVALID_INPUT,
+                    )
+                earlier_tag_effects.extend(
+                    (mutation.transaction_id, tag)
+                    for tag in (*mutation.to_add, *mutation.to_remove)
+                )
 
     def _annotation_transaction_amount(self, transaction_id: str) -> Decimal:
         """Resolve one annotation transaction and return its signed amount."""
