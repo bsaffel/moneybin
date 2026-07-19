@@ -16,7 +16,6 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.privacy.sql_lineage import reports_class_map
 from moneybin.privacy.sql_query import (
     _ALLOWED_QUERY_SCHEMAS,  # pyright: ignore[reportPrivateUsage]
     execute_sql_query,
@@ -398,78 +397,76 @@ def test_reports_schema_is_queryable() -> None:
     assert "meta" not in _ALLOWED_QUERY_SCHEMAS
 
 
-def test_reports_class_map_bridges_uncategorized_queue_and_net_worth() -> None:
-    """No-DB sanity: the transitional bridge covers both runner-less views.
+def test_reports_net_worth_balance_columns_classify_high(
+    populated_db: Database,
+) -> None:
+    """reports.net_worth's BALANCE columns classify HIGH end-to-end (#330).
 
-    `reports_class_map()` merges `@report(classes=...)` declarations with
-    `BRIDGED_REPORT_CLASSES` (`reports/definitions/_bridged_classes.py`) for
-    views deployed without a runner yet. Pins that `uncategorized_queue`'s
-    `account_id` resolves CRITICAL (`ACCOUNT_IDENTIFIER`) and that
-    `net_worth` is registered, so a bridge-entry regression fails here
-    before it fails as a masking hole in `execute_sql_query`.
+    Retargeted #330 regression test — this used to be
+    `test_reports_uncategorized_queue_masks_account_id`, which asserted that
+    `uncategorized_queue.account_id` masks. That assertion was wrong:
+    `account_id` is a deliberately opaque minted surrogate classified
+    `RECORD_ID` (LOW), same as every other `account_id` column in
+    `CLASSIFICATION` (spec D6, commit c465f181) — see
+    `test_account_id_passes_through_unmasked`. Masking it was an artifact of
+    the now-deleted hand-written bridge's mistaken premise, not a real
+    privacy requirement.
+
+    What #330 actually broke was never caught at this (fast, unit-level)
+    layer: the retired `test_reports_class_map_bridges_uncategorized_queue_and_net_worth`
+    only asserted `("reports", "net_worth") in reports_class_map()` —
+    membership, not the TIER of its declared columns — the identical
+    "coverage guard checks presence, not depth" shape that let
+    `uncategorized_queue.account_id` slip through unmasked in the first
+    place. This test closes that gap for `net_worth`'s BALANCE columns (now
+    declared via the generated `_derived_classes.py` module, Task 4's
+    replacement for the bridge) at unit speed, rather than relying solely on
+    the scenario-level `test_declared_classes_match_derivation`.
     """
-    mapping = reports_class_map()
-    assert (
-        mapping[("reports", "uncategorized_queue")]["account_id"]
-        is DataClass.ACCOUNT_IDENTIFIER
-    )
-    assert ("reports", "net_worth") in mapping
-
-
-def test_reports_uncategorized_queue_masks_account_id(populated_db: Database) -> None:
-    """A real `reports.*` bridged view masks its CRITICAL column end-to-end.
-
-    Mirrors `sqlmesh/models/reports/uncategorized_queue.sql` over the
-    fixture's `core.*` tables (no scenario/SQLMesh build) so this runs at
-    unit speed. Proves two things together: the `reports` schema is
-    queryable through `execute_sql_query`, and `account_id` — classified
-    CRITICAL by the transitional bridge, unlike `dim_accounts.account_id`
-    which is LOW (see `test_account_id_passes_through_unmasked`) — is
-    actually masked when read through the bridged view, not just declared
-    masked in the class map.
-    """
-    _seed_account(populated_db)
-    populated_db.execute(
-        "INSERT INTO core.fct_transactions "
-        "(transaction_id, account_id, transaction_date, amount, "
-        " amount_absolute, transaction_direction, description, "
-        " category, is_transfer, source_type, loaded_at, updated_at) "
-        "VALUES ('TXN_UNCAT', 'ACC000123456789', '2025-06-15', -42.50, "
-        " 42.50, 'expense', 'Uncategorized coffee', "
-        " NULL, FALSE, 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
-    )
-    # Local to this (function-scoped) populated_db instance — does not touch
-    # the shared conftest.py fixture other tests depend on.
     populated_db.execute("""
-        CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+        CREATE OR REPLACE VIEW reports.net_worth AS
         SELECT
-            t.transaction_id,
-            t.account_id,
-            a.display_name AS account_name,
-            t.transaction_date AS txn_date,
-            t.amount,
-            t.description,
-            t.merchant_id,
-            t.merchant_name AS merchant_normalized,
-            CAST(CURRENT_DATE - t.transaction_date AS INT) AS age_days,
-            ABS(t.amount) * CAST(CURRENT_DATE - t.transaction_date AS INT)
-                AS priority_score,
-            t.source_type,
-            NULL::TEXT AS source_id
-        FROM core.fct_transactions AS t
-        INNER JOIN core.dim_accounts AS a ON t.account_id = a.account_id
-        WHERE t.category IS NULL AND NOT t.is_transfer AND NOT a.archived
+            DATE '2026-06-15' AS balance_date,
+            CAST(125000.00 AS DECIMAL(18,2)) AS net_worth,
+            2 AS account_count,
+            CAST(150000.00 AS DECIMAL(18,2)) AS total_assets,
+            CAST(-25000.00 AS DECIMAL(18,2)) AS total_liabilities
     """)
 
     result = execute_sql_query(
         populated_db,
-        "SELECT account_id FROM reports.uncategorized_queue LIMIT 5",
+        "SELECT net_worth, total_assets, total_liabilities FROM reports.net_worth",
         max_rows=5,
     )
 
-    assert result.tier is Tier.CRITICAL
-    assert len(result.records) == 1
-    assert str(result.records[0]["account_id"]).startswith("****")
+    assert result.tier is Tier.HIGH
+    assert result.output_classes["net_worth"] is DataClass.BALANCE
+    assert result.output_classes["total_assets"] is DataClass.BALANCE
+    assert result.output_classes["total_liabilities"] is DataClass.BALANCE
+    # HIGH-tier BALANCE passes through unmasked here (redaction.py:
+    # _passthrough) — HIGH gates on MCP consent, not value redaction in this
+    # primitive. Confirms the columns aren't ALSO wrongly over-masked.
+    assert result.records[0]["net_worth"] == 125000.00
+
+
+def test_generated_classes_are_current() -> None:
+    """The checked-in generated module matches what derivation produces now.
+
+    Regenerate with: uv run python scripts/generate_derived_report_classes.py
+    """
+    from moneybin.privacy.report_class_derivation import derive_report_classes
+    from moneybin.reports._framework.registry import spec_of
+    from moneybin.reports.definitions import ALL_REPORTS
+    from moneybin.reports.definitions._derived_classes import (
+        DERIVED_REPORT_CLASSES,
+    )
+
+    derived = derive_report_classes()
+    runner_keys = {(spec_of(r).view.schema, spec_of(r).view.name) for r in ALL_REPORTS}
+    expected = {key: cols for key, cols in derived.items() if key not in runner_keys}
+    assert DERIVED_REPORT_CLASSES == expected, (
+        "Regenerate with: uv run python scripts/generate_derived_report_classes.py"
+    )
 
 
 def test_undeclared_deployed_column_fails_closed(populated_db: Database) -> None:

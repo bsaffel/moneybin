@@ -6,14 +6,20 @@ redaction masks by that map. SQLMesh deploys each ``reports.*`` view as a
 can't classify it — declared classes are the contract. ``sql_query`` allows the
 whole ``reports`` schema, so this scenario enumerates every DEPLOYED
 ``reports.*`` view (not just the ``@report`` runners — some views predate a
-runner or have none yet) and asserts each is fully covered by
-``reports_class_map()`` (a runner's declared classes OR the transitional
-bridge in ``reports/definitions/_bridged_classes.py``):
+runner or have none yet) and asserts **completeness**: every column the
+deployed view exposes is declared in ``reports_class_map()`` (a runner's
+declared classes OR the generated ``reports/definitions/_derived_classes.py``
+module), so no column hits the fail-closed fallback at runtime.
 
-  1. **Completeness** — every column the deployed view exposes is declared, so
-     no column hits the fail-closed fallback at runtime.
-  2. **Identifier safety** — ``account_id``, where present, is declared
-     ``ACCOUNT_IDENTIFIER`` (CRITICAL), which ``redact_records`` masks.
+This does not additionally require ``account_id`` to be declared
+``ACCOUNT_IDENTIFIER``: it is a deliberately opaque minted surrogate
+classified ``RECORD_ID`` (LOW) everywhere in ``CLASSIFICATION`` (spec D6,
+commit c465f181), and derivation reproduces that answer for reports.* views
+that select it unchanged. A handful of runners over-declare it
+``ACCOUNT_IDENTIFIER`` anyway (safe — over-declaring never leaks, per
+``test_declared_classes_match_derivation``'s tier comparison below), but
+requiring it uniformly here would be wrong for a view that correctly
+declares ``RECORD_ID``.
 
 A trivial hand-written fixture view (as the unit tests use) would not catch a
 gap between a report's declared map and its real multi-CTE view — that gap is
@@ -25,7 +31,6 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
-from moneybin.privacy.taxonomy import DataClass
 from moneybin.validation.result import AssertionResult
 from tests.scenarios._runner import load_shipped_scenario, run_scenario
 
@@ -36,8 +41,9 @@ def _classification_assertions(db: Database) -> list[AssertionResult]:
     class_map = reports_class_map()
     results: list[AssertionResult] = []
     # Every DEPLOYED reports.* view must be covered by reports_class_map (a
-    # runner's declared classes OR the transitional bridge). sql_query allows
-    # the whole reports schema, so an uncovered view leaks via the fallback.
+    # runner's declared classes OR the generated _derived_classes.py module).
+    # sql_query allows the whole reports schema, so an uncovered view leaks
+    # via the fallback.
     deployed = [
         r[0]
         for r in db.execute(
@@ -63,21 +69,6 @@ def _classification_assertions(db: Database) -> list[AssertionResult]:
                 ),
             )
         )
-        if "account_id" in real_cols:
-            declared_ac = declared.get("account_id")
-            ok = declared_ac is DataClass.ACCOUNT_IDENTIFIER
-            results.append(
-                AssertionResult(
-                    name=f"reports_{view}_account_id_is_critical",
-                    passed=ok,
-                    details={"account_id": str(declared_ac)},
-                    error=(
-                        None
-                        if ok
-                        else f"reports.{view}: account_id is {declared_ac}, not ACCOUNT_IDENTIFIER"
-                    ),
-                )
-            )
     return results
 
 
@@ -92,10 +83,10 @@ def test_reports_declared_classes_cover_real_views() -> None:
 def _all_class_downgrades() -> dict[tuple[str, str], dict[str, str]]:
     """(schema, table) -> {column: reason}, from every ``@report`` runner.
 
-    Bridged runner-less views (``reports/definitions/_bridged_classes.py``)
-    carry no ``class_downgrades`` — a bridge entry is a direct declaration,
-    not a decorator-attached spec, so there is nothing to downgrade *from*
-    here; correct the bridge dict itself if its declared class is wrong.
+    Runner-less views (``reports/definitions/_derived_classes.py``, generated)
+    carry no ``class_downgrades`` — a generated entry is derivation's own
+    answer, not a decorator-attached spec with an author-supplied override, so
+    there is nothing to downgrade *from* here.
     """
     from moneybin.reports._framework.registry import spec_of
     from moneybin.reports.definitions import ALL_REPORTS

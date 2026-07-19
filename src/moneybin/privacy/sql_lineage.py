@@ -1140,39 +1140,41 @@ def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
 
     Reports declare their classes on @report(classes=...) (ADR-013); lineage
     can't derive them because SQLMesh deploys reports.* as `SELECT *` pointers.
-    A deployed reports.* view without an @report runner yet (net_worth,
-    uncategorized_queue) is covered by the transitional bridge in
-    reports/definitions/_bridged_classes.py instead — see that module's
-    docstring. Both sources are imported lazily to avoid a privacy<->reports
-    import cycle and to keep the CLI cold-start path from eagerly loading
-    report runners.
+    A deployed reports.* view without an @report runner yet (net_worth) is
+    covered by the generated module in reports/definitions/_derived_classes.py
+    instead — see that module's docstring and
+    scripts/generate_derived_report_classes.py. Both sources are imported
+    lazily to avoid a privacy<->reports import cycle and to keep the CLI
+    cold-start path from eagerly loading report runners.
+
+    The generator excludes every runner-backed view by construction (it reads
+    ALL_REPORTS to build the exclusion set), so a key present in both sources
+    is impossible rather than merely detected — unlike the hand-written bridge
+    this module replaced, there is no duplicate-guard to maintain here.
 
     Coverage (package reports): this maps only the in-tree ``ALL_REPORTS``
-    runners plus the bridge. The framework also ships ``discover_reports()``
-    (``reports/_framework/registry.py``) for package-contributed ``@report``
-    runners, but that scanner is NOT wired into the live server yet, so no
-    ``reports.*`` view outside ``ALL_REPORTS``/the bridge can be deployed today.
-    When package-report discovery IS wired in (M2M), it MUST feed this map too —
-    otherwise a package report with an undeclared CRITICAL column resolves to the
-    unmasked ``AGGREGATE`` fallback, reopening the masking hole the bridge closed.
+    runners plus the generated module. The framework also ships
+    ``discover_reports()`` (``reports/_framework/registry.py``) for
+    package-contributed ``@report`` runners, but that scanner is NOT wired
+    into the live server yet, so no ``reports.*`` view outside
+    ``ALL_REPORTS``/the generated module can be deployed today. When
+    package-report discovery IS wired in (M2M), it MUST feed this map too —
+    otherwise a package report with an undeclared CRITICAL column resolves to
+    the unmasked ``AGGREGATE`` fallback, reopening the masking hole this
+    module closes.
     Backstop: ``test_reports_classification.py`` fails if any *deployed*
     ``reports.*`` view is uncovered here.
     """
     from moneybin.reports._framework.registry import spec_of  # noqa: PLC0415
     from moneybin.reports.definitions import ALL_REPORTS  # noqa: PLC0415
-    from moneybin.reports.definitions._bridged_classes import (  # noqa: PLC0415
-        BRIDGED_REPORT_CLASSES,
+    from moneybin.reports.definitions._derived_classes import (  # noqa: PLC0415
+        DERIVED_REPORT_CLASSES,
     )
 
     out: dict[tuple[str, str], dict[str, DataClass]] = {}
     for runner in ALL_REPORTS:
         spec = spec_of(runner)
         out[(spec.view.schema, spec.view.name)] = dict(spec.classes)
-    for key, cols in BRIDGED_REPORT_CLASSES.items():
-        if key in out:
-            raise RuntimeError(
-                f"reports class bridge {key} duplicates an @report runner; "
-                "remove the bridge entry now that the view has a runner"
-            )
+    for key, cols in DERIVED_REPORT_CLASSES.items():
         out[key] = dict(cols)
     return out

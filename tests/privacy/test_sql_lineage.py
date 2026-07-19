@@ -758,12 +758,18 @@ def test_reports_class_map_is_keyed_by_reports_schema() -> None:
     assert all(schema == "reports" for (schema, _table) in m)
 
 
-def test_reports_class_map_account_id_is_critical() -> None:
-    # Every report that exposes account_id must declare it CRITICAL (ADR-013).
-    m = reports_class_map()
-    for cols in m.values():
-        if "account_id" in cols:
-            assert cols["account_id"] is DataClass.ACCOUNT_IDENTIFIER
+# A prior version of this module asserted every report's account_id column
+# must declare ACCOUNT_IDENTIFIER (CRITICAL). That premise is wrong:
+# account_id is a deliberately opaque minted surrogate classified RECORD_ID
+# (LOW) everywhere in CLASSIFICATION (spec D6, commit c465f181) — see
+# test_account_id_passes_through_unmasked in test_sql_query.py. Some runners
+# (cash_flow, balance_drift, large_transactions) over-declare it
+# ACCOUNT_IDENTIFIER anyway, which is safe (over-declaring never leaks) but
+# not required, so no universal per-class assertion belongs here.
+# Equivalent regression coverage now lives in
+# test_account_id_derives_from_classification_not_the_gap_fallback
+# (test_report_class_derivation.py) and test_generated_classes_are_current
+# (test_sql_query.py).
 
 
 # ---------------------------------------------------------------------------
