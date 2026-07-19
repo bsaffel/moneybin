@@ -104,8 +104,7 @@ flowchart LR
         O["app.security_price_overrides"]
     end
     subgraph corel["core — resolved"]
-        L["core.fct_investment_transactions<br/>trade-implied prices"]
-        Q["core.fct_investment_lots<br/>dated quantity"]
+        L["core.fct_investment_transactions<br/>trade-implied prices · dated quantity replay"]
         F["core.fct_security_prices"]
         H["core.dim_holdings"]
         D["core.fct_holdings_daily"]
@@ -119,7 +118,7 @@ flowchart LR
     L --> F
     F --> H
     F --> D
-    Q --> D
+    L --> D
 ```
 
 ### New table: `raw.security_prices`
@@ -128,7 +127,7 @@ The provider cache. Immutable, append-only, one row per observation.
 
 | Column | Type | Notes |
 |---|---|---|
-| `security_id` | VARCHAR | FK to `app.securities` |
+| `provider_security_key` | VARCHAR | the provider's own identifier — Plaid's `security_id`, a ticker, a `coingecko_id` |
 | `price_date` | DATE | the date the price applies to |
 | `quote_currency` | VARCHAR | ISO 4217; the currency the price is expressed in |
 | `source` | VARCHAR | `plaid`, `stooq`, `coingecko` — provider observations only |
@@ -137,9 +136,19 @@ The provider cache. Immutable, append-only, one row per observation.
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
 | `fetched_at` | TIMESTAMP | when the row was observed |
 
-Primary key `(security_id, price_date, quote_currency, source, source_origin)`.
+Primary key
+`(source, source_origin, provider_security_key, price_date, quote_currency)`.
 
-**`source_origin` keeps two Plaid connections from colliding.** Two linked items
+**`raw` stores the provider's key, not the canonical one.** Canonical
+`security_id` is minted by `SecurityResolver`, which `sync_service.pull()` runs
+*after* `_load_securities()`. An extractor writing at ingestion time therefore
+does not yet have it, and on a first pull for a new security it cannot: it would
+have to write an orphan FK or drop the observation. Storing the provider key
+matches every other `raw.plaid_*` table, and resolution to `security_id` happens
+in staging where the link tables are available — the layer that exists for
+exactly this normalization.
+
+**`source_origin` keeps two connections from colliding.** Two linked Plaid items
 can each report a close for the same security on the same date. Without the
 column those are one row by identity, so an append-only table must either reject
 the second or lose it. `source_origin` mirrors the column
@@ -185,9 +194,15 @@ touches this table.
 
 ### New model: `prep.stg_security_prices`
 
-Staging view over `raw.security_prices` — type casting, currency-code
-normalization, and rejection of non-positive closes. Kind VIEW. Core models read
-staging, never `raw` directly.
+Staging view over `raw.security_prices`. Kind VIEW. Core models read staging,
+never `raw` directly.
+
+It does three things: casts types and normalizes currency codes, rejects
+non-positive closes, and **resolves `provider_security_key` to the canonical
+`security_id`** through the same link tables `SecurityResolver` populates. A row
+whose provider key has not resolved yet stays in `raw` and is absent from
+staging — it is not dropped, and it appears once its security resolves.
+`investment_unresolved_securities` already reports that backlog.
 
 ### New model: `core.fct_security_prices`
 
@@ -221,14 +236,28 @@ of `quantity × close`, following the `fct_balances_daily.py` Python-model
 precedent. Every row carries `price_date`, `days_since_observed`, and
 `valuation_status`. Kind FULL.
 
-**Quantity comes from the dated ledger, not from `core.dim_holdings`.**
-`dim_holdings` has grain `(account_id, security_id)` and reports the position as
-it stands now, so multiplying it by a historical close would value every past
-date at today's share count — wrong for every position touched by a buy, sale,
-transfer, or split. Quantity for a date is the sum of `remaining_quantity` over
-`core.fct_investment_lots` whose acquisition date is on or before that date and
-whose disposal is after it. That is also what makes the split arithmetic correct:
-lot quantities are already restated as of each date.
+**Quantity comes from replaying the ledger, not from any derived table.**
+`core.dim_holdings` has grain `(account_id, security_id)` and reports the
+position as it stands now, so multiplying it by a historical close would value
+every past date at today's share count — wrong for every position touched by a
+buy, sale, transfer, or split.
+
+`core.fct_investment_lots` cannot supply it either, and the reason matters. That
+model stores each lot's *final* state: `remaining_quantity` is what survives
+after every disposal, with no disposal date recorded, so a fully-sold lot reads
+zero on every historical date rather than on the dates after its sale. Worse for
+this spec's purpose, `_apply_split` scales `original_quantity` and
+`remaining_quantity` in place, so the stored numbers are post-split on every
+date — reading them for a pre-split date reintroduces exactly the double-count
+`price_basis = 'raw'` exists to prevent.
+
+So `fct_holdings_daily` **replays `core.fct_investment_transactions`** — the
+ledger the umbrella names as the source of truth — accumulating quantity per
+`(account_id, security_id)` forward through the date spine, applying each event
+on its own date and each split multiplier on the split's date. This is the same
+sequential-replay shape `fct_investment_lots.py` already uses and the reason both
+are Python models rather than SQL: the state at each date depends on the state
+before it.
 
 **The spine is global and runs through today.** It starts at the earliest
 transaction across all positions and ends at `today`, matching
@@ -252,17 +281,31 @@ date, which price applies?
 candidates = union of provider observations, overrides, and trade-implied prices
              where price_date <= as_of_date
                and price_basis = 'raw'
-               and (source_rank > 2                                  -- non-provider
+               and (source not in ('plaid', 'stooq', 'coingecko')   -- non-provider
                     or price_date >= first_available_price_on(security, source))
 
-winner     = argmax(price_date), ties broken by ascending source_rank,
-             which is a total order
+winner     = first row ordered by
+               price_date DESC,          -- freshness dominates
+               source_rank ASC,          -- then declared precedence
+               source_origin ASC,        -- then the connection
+               observation_key ASC       -- then the row's own identifier
 ```
 
-The floor applies to provider observations only. Overrides and trade-implied
-prices are not rows in `raw.security_prices`, so their floor would evaluate to
-NULL and `price_date >= NULL` would silently discard every one of them — taking
-manual valuation for feedless securities and the trade-implied fallback with it.
+The floor applies to provider observations only, predicated on **source
+identity** rather than rank. Overrides and trade-implied prices are not rows in
+`raw.security_prices`, so their floor evaluates to NULL and `price_date >= NULL`
+would silently discard every one of them, taking manual valuation for feedless
+securities with it. Rank cannot carry this test: `override` is rank 1 and
+`trade_implied` is rank 5, so no threshold separates the two non-provider sources
+from the three provider ones.
+
+The ordering is a **total** order, not a partial one. `price_date` and
+`source_rank` alone leave ties: two Plaid connections differ only by
+`source_origin`, and several trade-implied executions can share one day. Without
+the last two keys a rebuild can select a different price — or the same price with
+different reported provenance — from identical inputs. `observation_key` is the
+row's own unique identifier: `provider_security_key` for a provider observation,
+the transaction id for a trade-implied one.
 
 **Bounded lookback.** Only prices dated on or before the as-of date are
 candidates. A price observed after the valuation date never values it.
@@ -485,9 +528,20 @@ prices.
 - **Resolution comparator** — table-driven over the as-of date, source rank, and
   override matrix. Covers an override losing to a newer provider row, a future
   price never valuing a past date, and the first-available floor.
-- **Split arithmetic** — a 2:1 split with historical quantity from the ledger,
-  asserting pre-split dates value at the pre-split quantity and price. Then the
-  desync case: a Plaid-held-out split publishes `withheld`, not a number.
+- **Split arithmetic** — a 2:1 split with historical quantity from the ledger
+  replay, asserting pre-split dates value at the pre-split quantity and price.
+  Assert against the replay specifically: `fct_investment_lots` stores post-split
+  quantities on every date, so a test reading it would pass while being wrong.
+  Then the desync case: a Plaid-held-out split publishes `withheld`, not a number.
+- **Dated quantity replay** — a position bought, partly sold, split, then fully
+  sold reports the correct quantity on a date inside each interval, and zero
+  after the final disposal.
+- **Resolution totality** — two Plaid connections reporting the same security,
+  date, and currency pick the same winner across repeated rebuilds; likewise two
+  trade-implied executions on one day.
+- **Non-provider floor exemption** — an override and a trade-implied price for a
+  security with no provider rows both survive resolution rather than being
+  filtered out by a NULL floor.
 - **Carry-forward** — a weekend and a holiday produce continuous daily rows with
   `carried_forward` status and correct `days_since_observed`.
 - **Unpriced** — a security with no source yields NULL market value, and a
@@ -566,8 +620,9 @@ and the CLI and MCP surface.
 ### Files to modify
 
 - `src/moneybin/sqlmesh/models/core/dim_holdings.sql` — valuation columns
-- `src/moneybin/extractors/plaid/extractor.py` — append `close_price` to
-  `raw.security_prices` during ingestion, before the upsert overwrites it
+- `src/moneybin/extractors/plaid/extractor.py` — append `close_price` keyed by
+  Plaid's own security key to `raw.security_prices` during ingestion, before the
+  upsert overwrites it and before the resolver has minted a canonical id
 - `src/moneybin/metrics/registry.py` — the five price metrics
 - `src/moneybin/services/doctor_service.py` — `investment_price_discontinuity`
 - `src/moneybin/config.py` — staleness defaults, backfill bound
