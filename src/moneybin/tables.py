@@ -122,6 +122,10 @@ FCT_INVESTMENT_TRANSACTIONS = TableRef(
 FCT_INVESTMENT_LOTS = TableRef("core", "fct_investment_lots", audience="interface")
 FCT_REALIZED_GAINS = TableRef("core", "fct_realized_gains", audience="interface")
 DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
+SECURITY_PRICES = TableRef("raw", "security_prices")
+# FCT_SECURITY_PRICES (core.fct_security_prices, audience="interface") is added in
+# Task 4 alongside the model that creates it — INTERFACE_TABLES is a live contract
+# (see module docstring) and the table doesn't exist in the catalog until then.
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
