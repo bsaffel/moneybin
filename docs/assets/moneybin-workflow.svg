@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 500" role="img" aria-labelledby="title description">
   <title id="title">MoneyBin data flow</title>
-  <desc id="description">Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.</desc>
+  <desc id="description">Downloaded Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
       <path d="M0,0 L0,6 L9,3 z" fill="#A88952"/>
@@ -15,7 +15,7 @@
     </style>
   </defs>
   <rect class="box" x="35" y="60" width="230" height="80" rx="12"/>
-  <text class="label" x="150" y="92">Files</text>
+  <text class="label" x="150" y="92">Downloaded Files</text>
   <text class="sub" x="150" y="117">CSV · OFX · PDF</text>
   <rect class="box" x="35" y="210" width="230" height="80" rx="12"/>
   <text class="label" x="150" y="242">Linked Accounts</text>

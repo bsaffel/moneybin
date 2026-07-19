@@ -52,8 +52,8 @@ inputs one modeled home and keeps the reasoning inspectable.
 
 ## The workflow
 
-![Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local
-DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
+![Downloaded Files, Linked Accounts, and Connected Sheets flow into an
+Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
 
 Start with files you already have, such as CSV, OFX/QFX/QBO, Excel, Parquet,
 or a bank-statement PDF with selectable text. MoneyBin can also pull connected
