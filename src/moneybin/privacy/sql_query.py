@@ -336,13 +336,12 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
     # Route on the positive metadata test, never on `not is_data_query`: this
     # branch executes its string unclassified, so anything neither recognizably
     # data nor recognizably metadata must be refused rather than run.
-    if not is_data_query(tree) and not is_metadata_query(tree):
-        raise UserError(
-            "Only SELECT queries and DESCRIBE/SHOW/PRAGMA/EXPLAIN are supported.",
-            code=error_codes.SQL_INVALID_QUERY,
-        )
-
     if not is_data_query(tree):
+        if not is_metadata_query(tree):
+            raise UserError(
+                "Only SELECT queries and DESCRIBE/SHOW/PRAGMA/EXPLAIN are supported.",
+                code=error_codes.SQL_INVALID_QUERY,
+            )
         columns, rows, truncated = _fetch_metadata(db, query, max_rows)
         records = [dict(zip(columns, row, strict=False)) for row in rows]
         return SqlQueryResult(

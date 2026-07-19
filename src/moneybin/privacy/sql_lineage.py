@@ -95,12 +95,32 @@ def _normalize(sql: str) -> str:
     return _WHITESPACE.sub(" ", sql.strip())
 
 
+def _block_statements(tree: exp.Block) -> list[exp.Expr]:
+    """The real statements in ``tree``, dropping parse artifacts.
+
+    A trailing ``; -- comment`` lands as an ``exp.Semicolon`` carrying the
+    comment, and a doubled ``;;`` as ``None``. Neither is a statement.
+    """
+    return [
+        e
+        for e in tree.expressions
+        if e is not None and not isinstance(e, exp.Semicolon)
+    ]
+
+
 @functools.lru_cache(maxsize=256)
 def _parse_normalized(normalized_sql: str) -> exp.Expr:
     try:
         tree = sqlglot.parse_one(normalized_sql, dialect="duckdb")
     except ParseError as e:
         raise SqlParseError(str(e)) from e
+    # `SELECT 1; -- note` and `SELECT 1;;` parse to a Block wrapping one real
+    # statement. Unwrap here so no consumer has to know Blocks exist; a Block
+    # with two real statements is left intact for `is_multi_statement`.
+    if isinstance(tree, exp.Block):
+        statements = _block_statements(tree)
+        if len(statements) == 1:
+            return statements[0]
     return tree
 
 
@@ -1228,15 +1248,20 @@ def is_metadata_query(tree: exp.Expr) -> bool:
 
 
 def is_multi_statement(tree: exp.Expr) -> bool:
-    """True when ``tree`` holds more than one statement.
+    """True when ``tree`` holds more than one real statement.
 
     sqlglot parses ``SELECT 1; SELECT 2`` into a single ``exp.Block``. DuckDB
     executes such a string and returns the LAST statement's rows, while every
     classifier here reads the first — so a trailing statement can return
     columns the class map never saw. Callers must refuse these before any
     classification decision.
+
+    A ``Block`` alone is not the signal: sqlglot also builds one for a lone
+    statement with a trailing ``; -- comment`` (tail is an ``exp.Semicolon``
+    carrying the comment) or a doubled ``;;`` (tail is ``None``). Both are one
+    statement written the ordinary way, so count the real statements instead.
     """
-    return isinstance(tree, exp.Block)
+    return isinstance(tree, exp.Block) and len(_block_statements(tree)) > 1
 
 
 def tables_outside_schemas(

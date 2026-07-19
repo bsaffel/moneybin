@@ -254,6 +254,36 @@ def test_multi_statement_query_is_rejected() -> None:
     assert "one statement" in error
 
 
+def test_trailing_comment_or_semicolon_is_still_one_statement() -> None:
+    """``SELECT 1; -- note`` is one statement and must be accepted.
+
+    sqlglot puts the tail of ``SELECT 1; -- note`` in an ``exp.Block`` beside
+    the SELECT — as an ``exp.Semicolon`` carrying the comment, or ``None`` for
+    a bare extra ``;``. Treating any ``Block`` as multi-statement therefore
+    refuses two ordinary ways to end a hand-written query. Only a Block
+    holding more than one real statement is the smuggling shape.
+    """
+    assert validate_read_only_query("SELECT 1 AS a; -- how many rows") is None
+    assert validate_read_only_query("SELECT 1 AS a;;") is None
+
+
+def test_trailing_comment_query_still_executes(populated_db: Database) -> None:
+    """A query ending ``; -- note`` runs and classifies like the bare statement.
+
+    Accepting it at the validator is not enough: it reaches the router still
+    wrapped in an ``exp.Block``, which is neither data nor metadata, so the
+    fail-closed route would refuse it one layer later. The single real
+    statement has to be unwrapped before any of that.
+    """
+    result = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(*) AS n FROM core.dim_accounts; -- how many",
+        max_rows=100,
+    )
+    assert result.records[0]["n"] >= 0
+    assert result.is_metadata is False
+
+
 def test_trailing_statement_cannot_smuggle_critical_columns(
     populated_db: Database,
 ) -> None:
