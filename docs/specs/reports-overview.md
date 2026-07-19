@@ -173,7 +173,8 @@ The headline capability. `app.user_reports`; create/run/list/edit/delete across
 MCP **and** CLI with the same envelope and privacy path as built-ins; classes
 resolved by construction via `resolve_output_classes`; and the verification
 surface — "show me the SQL", lineage to source rows, freshness. Roadmap item
-**M2I** ("Show me the SQL" report lineage) lands here.
+**M2I** ("Show me the SQL" report lineage) lands here. Specified in
+[`reports-dynamic.md`](reports-dynamic.md).
 
 ### C — Materialization & distribution (M2P.3)
 
@@ -229,6 +230,11 @@ enumerate the *exposed* set.
   addressing reconciliation.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
-- **Dynamic reports over floored columns** — see the section above. Resolve in B.
+- ~~**Dynamic reports over floored columns**~~ — **resolved in B.** Report
+  creation is restricted to fully-classified schemas (`core`, `app`,
+  `reports`). `raw`/`prep` are not reachable through `sql_query` today, so the
+  question is not yet live; when M2O.2 opens them behind a content-net floor,
+  whether a *durable* artifact may be built over floored columns is decided
+  there. See [`reports-dynamic.md`](reports-dynamic.md) R2.
 - **Milestone reconciliation.** This umbrella claims **M2P**; `extension-contracts.md`
   milestones contributor UX at M3I. Reconcile at `draft → ready`.
