@@ -117,7 +117,7 @@ yet. The author's own finances run on it daily. macOS is the primary target,
 Linux is supported, Windows is untested. The Plaid leg is author-tested
 against a production account but has had no non-author validation. Calibrate
 accordingly: start on the demo, then import file exports you keep anyway, and
-run `moneybin db backup` before anything large.
+run `uv run moneybin db backup` before anything large.
 
 ## Bring your own data
 
