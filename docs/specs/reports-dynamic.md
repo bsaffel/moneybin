@@ -86,18 +86,33 @@ New protected `app.*` table, paired per convention across
 | `classes` | `JSON NOT NULL` | Derived map, keyed by DuckDB result column name |
 | `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: reason}` |
 | `snapshot_version` | `BIGINT NOT NULL` | Schema version classes were derived against |
+| `is_active` | `BOOLEAN NOT NULL DEFAULT true` | False = archived; hidden from the default catalog |
 | `created_at` / `updated_at` | `TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` | House convention |
 
 Under [Invariant 10](app-integrity-invariant.md), all mutation routes through
-`UserReportsRepo(BaseRepo)` in `src/moneybin/repositories/` — `create`,
-`update`, `delete`, each capturing the **full** pre-mutation row in
-`before_value` per Req 4, each returning an `AuditEvent`. Services compose the
-repo; no service issues raw DML against this table. `doctor_service`
-`_run_app_integrity` gains one `_run_app_audit_coverage(USER_REPORTS,
-"report_id")` call.
+`UserReportsRepo(BaseRepo)` in `src/moneybin/repositories/` — `create`, `set`,
+`delete`, each capturing the **full** pre-mutation row in `before_value` per
+Req 4, each returning an `AuditEvent`. Services compose the repo; no service
+issues raw DML against this table. `doctor_service` `_run_app_integrity` gains
+one `_run_app_audit_coverage(USER_REPORTS, "report_id")` call.
 
-No `deleted_at`. Recoverability comes from full-row audit capture and the
-generic `undo_event`, not from tombstones.
+#### Archive is domain state; `deleted_at` is not the mechanism
+
+`is_active` follows the lifecycle-flag pattern already used by
+`app.categories` and `app.categorization_rules`, and archiving is expressed as
+`reports_set(name, is_active=False)` — the resolution `surface-design.md`
+prescribes for exactly this shape ("`_toggle` — too narrow. Use `_set` with a
+typed field"). Archived reports stay runnable by name; archiving suppresses
+catalog noise, it does not revoke access.
+
+There is deliberately **no `deleted_at`**. Soft delete as a *recoverability*
+mechanism would be a second, weaker implementation of a job Invariant 10
+already does: full-row `before_value` capture plus the generic `undo_event`
+restore a deleted report exactly. The archive flag is unrelated to recovery —
+it is user intent about visibility. Nor does the flag need an `archived_at`
+companion: the archiving mutation's own `app.audit_log` row carries its
+timestamp, so a dedicated column would duplicate audit state and could drift
+from it.
 
 ### R2 — Save-time classification is invisible
 
@@ -181,14 +196,22 @@ second-class, and the MCP tool list never mutates mid-session.
 | Run any report | `reports_run` | `moneybin reports run` |
 | List all tiers | `reports_list` | `moneybin reports list` |
 | Save | `reports_create` | `moneybin reports create` |
-| Edit | `reports_edit` | `moneybin reports edit` |
+| Update / archive | `reports_set` | `moneybin reports set` |
 | Delete | `reports_delete` | `moneybin reports delete` |
 | Inspect | `reports_explain` | `moneybin reports explain` |
 | Downgrade a class | `reports_reclassify` | `moneybin reports reclassify` |
 
+Verb choices follow `surface-design.md`: `_create` is a strict create so a name
+collision errors rather than silently overwriting someone's report, and `_set`
+is the paired idempotent partial update — which is why archiving needs no tool
+of its own. `_edit` and `_update` are not used; they are synonyms of `_set`.
+`_reclassify` stays a distinct domain verb because it carries D5's mandatory
+`reason` argument, which a generic field-set would erase.
+
 `reports_list` returns built-in, extension, and user reports in one catalog with
-a `tier` field. A saved name that collides with a built-in is rejected at save
-time rather than shadowing it.
+a `tier` field, **excluding archived reports by default**; `include_archived`
+(CLI `--archived`) widens it. A saved name that collides with a built-in is
+rejected at save time rather than shadowing it.
 
 Both surfaces are peers per `.claude/rules/cli.md` — same envelope, same
 redaction, same audit actor threading.
