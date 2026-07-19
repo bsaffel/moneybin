@@ -162,7 +162,7 @@ SELECT
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
   s.holder_category, /* 'personal' / 'business' / 'joint' */
-  COALESCE(s.iso_currency_code, 'USD') AS iso_currency_code, /* ISO-4217 currency code; defaults to USD until multi-currency.md ships */
+  COALESCE(s.currency_code, 'USD') AS currency_code, /* ISO-4217 currency code; NULL falls back to USD (M1K.1 Part B adds the true no-blend guard) */
   s.credit_limit, /* User-asserted credit limit on credit cards / lines */
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from agg_net_worth */
   COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth /* Whether this account contributes to agg_net_worth */

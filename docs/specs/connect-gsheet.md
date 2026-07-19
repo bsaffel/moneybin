@@ -30,9 +30,11 @@ Connect time chooses the adapter: high-confidence transactions detection → `tr
 - [`identifiers.md`](../../.claude/rules/identifiers.md) — `connection_id` uses truncated-UUID strategy (strategy 3, app-layer entity with no natural key).
 - [`surface-design.md`](../../.claude/rules/surface-design.md) — gsheet operations classified into the five-shape taxonomy; see "CLI / MCP Surface" below.
 
-### Competitive context
+### User context
 
-Tiller is the dominant Google-Sheets-as-personal-finance product (~$80/yr, 100k+ users). Tiller users have years of categorization work, custom report tabs, and shared family budgeting workflows pinned to their workbook. Asking them to abandon the sheet to migrate to MoneyBin is a non-starter.
+Some users have years of categorization work, custom reports, and household
+workflows embedded in a Google Sheets workbook. Requiring them to abandon that
+workbook would make live-sheet adoption impractical.
 
 What this enables:
 
@@ -46,7 +48,7 @@ What this enables:
 |---|---|
 | OAuth user-flow over service account | Better UX (one-click connect vs. 15 min of Google Cloud Console setup). Accept the verification path; pre-launch ship in "unverified" or "testing" mode. Aligns with the "Bias Toward UX/DX/AX" principle in AGENTS.md. |
 | PKCE with embedded public client ID, no client secret | Avoids the "secret in open source" awkwardness; Google explicitly supports this for installed apps. |
-| Live mirror + soft-delete + stable-key detection, no write-back v1 | Magic-by-default for sheets with stable ID columns (Tiller users get edit-preserves-identity for free); content-hash fallback still mirrors correctly via diff. Write-back (Tiller-style `_moneybin_id` injection) is opt-in v2 — keeps read-only OAuth scope and avoids mutating user data. |
+| Live mirror + soft-delete + stable-key detection, no write-back v1 | Magic-by-default for sheets with stable ID columns; content-hash fallback still mirrors correctly via diff. Injecting a `_moneybin_id` into the source sheet is opt-in v2—v1 keeps read-only OAuth scope and avoids mutating user data. |
 | Reuse `raw.tabular_transactions` with `source_type='gsheet'` | Coherence per `design-principles.md` — gsheet IS a tabular source. Downstream (matching, categorization, reports) automatically picks up gsheet data with zero changes. One new column (`deleted_from_source_at`) supports the soft-delete contract. |
 | Strict drift refusal per-connection | Containment: a drifted sheet skips its pull but doesn't block other connections or the rest of `refresh_run`. User decides explicitly via `gsheet reconnect`. Prevents bad data from silently flowing through. |
 | Soft-fail on transient failures (auth, rate-limit, network) | Refresh keeps working with stale gsheet data + visible warning, rather than blocking all of MoneyBin on a transient Google API issue. |
@@ -72,8 +74,8 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 1. **Connect a sheet** via `moneybin gsheet connect <url>` (or `gsheet_connect` MCP). URL must include `/edit#gid=N` or `?gid=N` so the tab is unambiguous.
 2. **OAuth on first run.** Open browser to Google consent (PKCE flow, embedded public client ID, no client secret). Capture redirect on `localhost:<random-port>`. Store refresh token in `SecretStore` (keyring).
 3. **Detection at connect time.** Fetch sheet headers + sample rows, run `extractors/tabular/` Stages 1–3 (format detect, read, column mapping). Produce mapping + confidence tier.
-4. **Confirmation gate.** High confidence + `--yes` flag → auto-confirm. Low confidence → refuse with actionable error. Medium → interactive confirmation (CLI prompt; MCP returns mapping for caller to accept). Confidence bands are aligned to `ImportSettings.confidence` (`T_high=0.90`, `T_med=0.70` defaults; configurable via `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` / `__T_MED`). Realized by [`smart-import-confirmation.md`](smart-import-confirmation.md).
-5. **Pin the detection result.** Save `column_mapping`, `header_signature`, `date_format`, `sign_convention`, `number_format`, `skip_rows`, `skip_trailing_patterns` to `app.gsheet_connections`. The pinned mapping is the contract for subsequent pulls.
+4. **Confirmation gate.** High confidence + `--yes` flag → auto-confirm. Low confidence → refuse with actionable error. Medium → interactive confirmation (CLI prompt; MCP returns mapping for caller to accept). An inferred `negative_is_income` is always a separate whole-ledger sign decision: CLI requires explicit `--sign`; MCP elicits a real human confirmation and never exposes an agent-settable sign override. The final mapping shape and convention must agree: a single `amount` column rejects `split_debit_credit`, while a resolved debit/credit pair rejects either single-column convention. Both mismatches fail before connection insert/update or pull. Confidence bands are aligned to `ImportSettings.confidence` (`T_high=0.90`, `T_med=0.70` defaults; configurable via `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` / `__T_MED`). Realized by [`smart-import-confirmation.md`](smart-import-confirmation.md).
+5. **Pin the detection result.** Only after all confirmation gates pass, save `column_mapping`, `header_signature`, `date_format`, `sign_convention`, `number_format`, `skip_rows`, `skip_trailing_patterns` to `app.gsheet_connections`. The pinned mapping is the contract for subsequent pulls.
 6. **Initial pull.** After save, trigger a normal pull (same path as subsequent pulls). Triggers end-of-pull refresh pipeline by default.
 7. **Reconnect** via `moneybin gsheet reconnect <id>` — re-runs detection against the sheet's current state, updates the pinned mapping if the user confirms, clears any drift state.
 8. **Disconnect** soft by default: `app.gsheet_connections.status='disconnected'`, raw rows retained for audit. `--purge` hard-deletes the connection row + all rows in `raw.tabular_transactions` with matching `source_origin`.

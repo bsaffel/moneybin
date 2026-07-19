@@ -22,7 +22,11 @@ WITH positions AS (
     NOT a.archived
 ), deltas AS (
   SELECT
-    *,
+    account_id,
+    account_name,
+    assertion_date,
+    asserted_balance,
+    computed_balance,
     asserted_balance - computed_balance AS drift
   FROM positions
 )

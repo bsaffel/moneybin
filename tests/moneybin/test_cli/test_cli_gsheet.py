@@ -135,6 +135,17 @@ def test_gsheet_auth_json_output(mock_build: MagicMock) -> None:
 
 
 @pytest.mark.unit
+def test_gsheet_connect_help_describes_role_derived_sign_behavior() -> None:
+    result = runner.invoke(app, ["gsheet", "connect", "--help"])
+    help_text = " ".join(result.output.split())
+
+    assert result.exit_code == 0, result.output
+    assert "positive_is_expense" not in help_text
+    assert "detected debit or credit role" in help_text
+    assert "cannot derive polarity" in help_text
+
+
+@pytest.mark.unit
 @patch("moneybin.cli.commands.gsheet._build_connection_service")
 def test_gsheet_connect_text_output(mock_build: MagicMock) -> None:
     service = MagicMock()

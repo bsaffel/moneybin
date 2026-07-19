@@ -4,7 +4,11 @@
 export interface ChipProps {
   /** Default 'category'. 'sql' renders the brass SQL provenance chip (defaults to "SQL" text). */
   variant?: 'category' | 'sql' | 'meta';
-  /** For 'sql': brass border when the SQL panel is open. */
+  /**
+   * Selected state. On 'category' → verdigris text + border (an active filter —
+   * interaction, per the accent tiers); on 'sql' → brass border when the SQL panel
+   * is open (provenance stays brass, never verdigris).
+   */
   active?: boolean;
   onClick?: () => void;
   children?: React.ReactNode;

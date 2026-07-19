@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-17 -->
 # Direct SQL Access
 
 MoneyBin stores your finances in an encrypted DuckDB file. You can query it from your own scripts and clients with the same SQL you'd write against any DuckDB. This guide covers the read-only surface, how to connect from external tools, and the patterns that hold up across releases.
@@ -219,7 +219,7 @@ The MCP `sql_query` tool is the agent-safe SQL path. Its allowed-statement check
 - **Multi-statement input:** not split — the whole string is checked as one statement. A semicolon followed by a write keyword is rejected by the body scan.
 - **Row cap:** `mcp.max_rows` from `MoneyBinSettings` (default **1000**). Results are buffered, not streamed.
 - **Time cap:** `mcp.tool_timeout_seconds` (default **30 s**) applied by the MCP decorator. On timeout the active DuckDB statement is interrupted.
-- **Sensitivity tier:** `medium`. The tool requires the `mcp-data-sharing` consent grant; calls and their queries are logged to `app.audit_log` per the privacy middleware. Row content is not logged.
+- **Sensitivity tier:** derived per call from the columns your query returns (the max class among them). Each call is recorded to the per-call privacy log (`privacy.log.jsonl`) with the tool name, tier, returned data classes, and row count — **not** the query text and **not** row content. CRITICAL columns (account/routing numbers) are masked in the results by column classification; an output column the classifier can't resolve fails closed to the most-sensitive treatment. There is no consent-grant requirement today (the consent ledger records but does not gate). See [What the AI Provider Sees](what-the-ai-sees.md).
 
 For schema-aware composition without burning tokens on the full catalog, call `sql_schema(table=None)` first (compact catalog) and then `sql_schema(table='core.fct_transactions')` for the table you need.
 

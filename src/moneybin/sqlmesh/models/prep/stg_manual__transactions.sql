@@ -20,7 +20,7 @@ SELECT
   t.payment_channel,
   t.transaction_type,
   t.check_number,
-  COALESCE(t.currency_code, 'USD') AS currency_code,
+  t.currency_code,
   t.created_at,
   t.created_by
 FROM raw.manual_transactions AS t

@@ -35,11 +35,11 @@ from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
     CATEGORIZATION_RULES,
+    CORE_UNCATEGORIZED_QUEUE,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
     MATCH_DECISIONS,
     MERCHANTS,
-    REPORTS_UNCATEGORIZED_QUEUE,
     STG_PLAID_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
 )
@@ -264,7 +264,7 @@ class CategorizationQueries:
     ) -> list[dict[str, Any]] | None:
         """List uncategorized transactions from the curator-impact view.
 
-        Uses ``reports.uncategorized_queue`` which already excludes transfer
+        Uses ``core.uncategorized_queue`` which already excludes transfer
         pairs and archived accounts and provides pre-computed ``age_days`` and
         ``priority_score`` columns needed for impact-sort.
 
@@ -290,7 +290,7 @@ class CategorizationQueries:
             SELECT transaction_id, account_id, account_name, txn_date, amount,
                    description, merchant_id, merchant_normalized, age_days,
                    priority_score, source_type, source_id
-            FROM {REPORTS_UNCATEGORIZED_QUEUE.full_name}
+            FROM {CORE_UNCATEGORIZED_QUEUE.full_name}
             WHERE ABS(amount) >= ?
         """  # noqa: S608  # TableRef constant + allowlisted sort literal
         params: list[object] = [min_amount]
@@ -315,7 +315,7 @@ class CategorizationQueries:
                 "to rebuild derived views.",
                 code="schema_out_of_date",
                 hint="refresh_run",
-                details={"missing_object": REPORTS_UNCATEGORIZED_QUEUE.full_name},
+                details={"missing_object": CORE_UNCATEGORIZED_QUEUE.full_name},
             ) from e
 
         pending_matches = self._transactions_with_pending_matches()

@@ -26,6 +26,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummary,
     AccountSummaryStats,
 )
+from moneybin.services._validators import validate_currency_code
 from moneybin.services.audit_service import AuditService
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
@@ -163,7 +164,6 @@ def suggest_holder_category(value: str) -> str | None:
 
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
-_ISO_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
 # Sentinel used in summary() count_by_subtype to represent accounts with
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
@@ -184,7 +184,7 @@ class AccountSettings:
     last_four: str | None = None
     account_subtype: str | None = None
     holder_category: str | None = None
-    iso_currency_code: str | None = None
+    currency_code: str | None = None
     credit_limit: Decimal | None = None
     archived: bool = False
     include_in_net_worth: bool = True
@@ -199,7 +199,7 @@ class AccountSettings:
             "last_four": self.last_four,
             "account_subtype": self.account_subtype,
             "holder_category": self.holder_category,
-            "iso_currency_code": self.iso_currency_code,
+            "currency_code": self.currency_code,
             "credit_limit": self.credit_limit,
             "archived": self.archived,
             "include_in_net_worth": self.include_in_net_worth,
@@ -224,10 +224,8 @@ class AccountSettings:
         if self.holder_category is not None:
             if not 1 <= len(self.holder_category) <= 32:
                 raise ValueError("holder_category must be 1-32 characters")
-        if self.iso_currency_code is not None and not _ISO_CURRENCY_RE.match(
-            self.iso_currency_code
-        ):
-            raise ValueError("iso_currency_code must be exactly 3 uppercase letters")
+        if self.currency_code is not None:
+            validate_currency_code(self.currency_code)
         if self.credit_limit is not None and self.credit_limit < Decimal("0"):
             raise ValueError("credit_limit must be non-negative")
 
@@ -365,7 +363,7 @@ class AccountService:
         row = self._db.execute(
             f"""
             SELECT account_id, display_name, official_name, last_four,
-                   account_subtype, holder_category, iso_currency_code,
+                   account_subtype, holder_category, currency_code,
                    credit_limit, archived, include_in_net_worth,
                    default_cost_basis_method
             FROM {ACCOUNT_SETTINGS.full_name}
@@ -382,7 +380,7 @@ class AccountService:
             last_four=row[3],
             account_subtype=row[4],
             holder_category=row[5],
-            iso_currency_code=row[6],
+            currency_code=row[6],
             credit_limit=row[7],
             archived=row[8],
             include_in_net_worth=row[9],
@@ -420,7 +418,7 @@ class AccountService:
             "account_type",
             "account_subtype",
             "holder_category",
-            "iso_currency_code",
+            "currency_code",
             "archived",
             "include_in_net_worth",
             "last_four",
@@ -442,7 +440,7 @@ class AccountService:
                 account_type=str(row[3]),
                 account_subtype=row[4],
                 holder_category=row[5],
-                iso_currency_code=str(row[6]),
+                currency_code=str(row[6]),
                 archived=bool(row[7]),
                 include_in_net_worth=bool(row[8]),
                 last_four=row[9],
@@ -467,7 +465,7 @@ class AccountService:
             "account_type",
             "account_subtype",
             "holder_category",
-            "iso_currency_code",
+            "currency_code",
             "last_four",
             "credit_limit",
             "archived",
@@ -496,7 +494,7 @@ class AccountService:
             account_type=str(r["account_type"]),
             account_subtype=r["account_subtype"],  # type: ignore[arg-type]
             holder_category=r["holder_category"],  # type: ignore[arg-type]
-            iso_currency_code=str(r["iso_currency_code"]),
+            currency_code=str(r["currency_code"]),
             last_four=r["last_four"],  # type: ignore[arg-type]
             routing_number=r["routing_number"],  # type: ignore[arg-type]
             credit_limit=r["credit_limit"],  # type: ignore[arg-type]
@@ -621,7 +619,7 @@ class AccountService:
         last_four: str | None | object = None,
         account_subtype: str | None | object = None,
         holder_category: str | None | object = None,
-        iso_currency_code: str | None | object = None,
+        currency_code: str | None | object = None,
         credit_limit: Decimal | None | object = None,
         display_name: str | None | object = None,
         default_cost_basis_method: str | None | object = None,
@@ -670,7 +668,7 @@ class AccountService:
         _resolve("last_four", last_four)
         _resolve("account_subtype", account_subtype)
         _resolve("holder_category", holder_category)
-        _resolve("iso_currency_code", iso_currency_code)
+        _resolve("currency_code", currency_code)
         _resolve("credit_limit", credit_limit)
         _resolve("display_name", display_name)
         _resolve("default_cost_basis_method", default_cost_basis_method)
@@ -722,7 +720,7 @@ class AccountService:
             last_four=updated.last_four,
             account_subtype=updated.account_subtype,
             holder_category=updated.holder_category,
-            iso_currency_code=updated.iso_currency_code,
+            currency_code=updated.currency_code,
             credit_limit=updated.credit_limit,
             archived=updated.archived,
             include_in_net_worth=updated.include_in_net_worth,

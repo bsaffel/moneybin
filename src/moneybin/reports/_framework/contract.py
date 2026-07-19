@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -109,6 +109,10 @@ class ReportSpec:
     params: tuple[ParamSpec, ...] = ()
     examples: tuple[str, ...] = ()
     domain: str | None = None
+    class_downgrades: Mapping[str, str] = field(default_factory=dict)
+    """Column → why it is declared below its derived class. CI requires a reason
+    for every downgrade; derivation over-classifies computed columns, and
+    over-masking a BI surface is its own failure mode."""
 
     def __post_init__(self) -> None:
         if _REPORT_ID.fullmatch(self.report_id) is None:
@@ -142,6 +146,7 @@ def report(
     columns: tuple[OutputColumn, ...],
     semantics: ReportSemantics,
     domain: str | None = None,
+    class_downgrades: Mapping[str, str] | None = None,
 ) -> Callable[[Runner], Runner]:
     """Mark a runner as a report and attach its introspected :class:`ReportSpec`.
 
@@ -164,6 +169,9 @@ def report(
         columns: Ordered output column descriptions and privacy classes.
         semantics: Financial interpretation metadata for the report metrics.
         domain: Optional MCP namespace tag.
+        class_downgrades: Column → reason, for every column whose declared
+            class sits below its CI-derived floor (``derive_report_classes``).
+            Over-declaring never needs a reason; only a genuine downgrade does.
     """
     # Imported lazily to avoid a contract<->introspect import cycle.
     from moneybin.reports._framework.introspect import build_spec
@@ -179,6 +187,7 @@ def report(
             columns=columns,
             semantics=semantics,
             domain=domain,
+            class_downgrades=class_downgrades,
         )
         return fn
 

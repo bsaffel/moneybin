@@ -190,13 +190,13 @@ def test_new_binding_captures_account_metadata(
                 "display_name": "WF Checking",
                 "account_subtype": "checking",
                 "last_four": "4267",
-                "iso_currency_code": "USD",
+                "currency_code": "USD",
             }
         },
     )
     minted = _minted_account_id(db, "wf-checking")
     row = db.execute(
-        "SELECT display_name, last_four, account_subtype, iso_currency_code "
+        "SELECT display_name, last_four, account_subtype, currency_code "
         "FROM app.account_settings WHERE account_id=?",
         [minted],
     ).fetchone()

@@ -351,9 +351,8 @@ class TestCategorizePendingSortParam:
     @staticmethod
     def _install_view_with_transactions() -> None:
         with get_database(read_only=False) as db:
-            db.execute("CREATE SCHEMA IF NOT EXISTS reports")
             db.execute("""
-                CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+                CREATE OR REPLACE VIEW core.uncategorized_queue AS
                 SELECT
                     'T1' AS transaction_id, 'ACC001' AS account_id,
                     'Test Bank Checking' AS account_name,

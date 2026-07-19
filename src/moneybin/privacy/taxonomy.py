@@ -63,6 +63,17 @@ class DataClass(StrEnum):
     AGGREGATE = "aggregate"
     RECORD_ID = "record_id"
     TIMESTAMP_OBSERVABILITY = "timestamp_observability"
+    # Not a classification — the absence of one. Assigned by the fail-closed
+    # paths in ``sql_lineage`` / ``sql_query`` when a column reaches the user
+    # WITHOUT lineage having positively established what it holds (an
+    # undeclared deployed column, or a runtime column no projection resolved
+    # to). It is CRITICAL and masked WHOLE: a partial mask such as
+    # ACCOUNT_IDENTIFIER's ``"****" + value[-4:]`` would surface the last four
+    # characters of a value we cannot name, and the whole point of this class
+    # is that we do not know what those characters are. Never write it into
+    # ``CLASSIFICATION`` or a ``@report(classes=…)`` map — declaring a column
+    # "unresolved" defeats the completeness tests that exist to catch gaps.
+    UNRESOLVED = "unresolved"
 
     @property
     def tier(self) -> Tier:
@@ -88,6 +99,7 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
     DataClass.AGGREGATE: Tier.LOW,
     DataClass.RECORD_ID: Tier.LOW,
     DataClass.TIMESTAMP_OBSERVABILITY: Tier.LOW,
+    DataClass.UNRESOLVED: Tier.CRITICAL,
 }
 
 # Keyed by (schema, table) -> {column: DataClass}. Every column in
@@ -135,11 +147,11 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_subtype": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
         "credit_limit": DataClass.BALANCE,
+        "currency_code": DataClass.CURRENCY,
         "display_name": DataClass.USER_NOTE,
         "holder_category": DataClass.TXN_TYPE,
         "default_cost_basis_method": DataClass.TXN_TYPE,
         "include_in_net_worth": DataClass.TXN_TYPE,
-        "iso_currency_code": DataClass.CURRENCY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "official_name": DataClass.INSTITUTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -576,13 +588,13 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_type": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
         "credit_limit": DataClass.BALANCE,
+        "currency_code": DataClass.CURRENCY,
         "display_name": DataClass.USER_NOTE,
         "extracted_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "holder_category": DataClass.TXN_TYPE,
         "include_in_net_worth": DataClass.TXN_TYPE,
         "institution_fid": DataClass.INSTITUTION,
         "institution_name": DataClass.INSTITUTION,
-        "iso_currency_code": DataClass.CURRENCY,
         "last_four": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         "loaded_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "official_name": DataClass.INSTITUTION,
@@ -625,6 +637,12 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("core", "dim_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,
+        # FK to core.dim_categories.category_id — missed here until the
+        # generalized derivation check (reports-foundation.md) caught it: the
+        # completeness test's core.dim_merchants stub (tests/moneybin/
+        # db_helpers.py) had independently drifted to omit this column too,
+        # so neither guard alone would have surfaced the gap.
+        "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "created_by": DataClass.TXN_TYPE,
         "exemplars": DataClass.MERCHANT_NAME,
@@ -654,6 +672,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_id": DataClass.RECORD_ID,
         "balance": DataClass.BALANCE,
         "balance_date": DataClass.TXN_DATE,
+        "currency_code": DataClass.CURRENCY,
         "source_ref": DataClass.RECORD_ID,
         "source_type": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -662,6 +681,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_id": DataClass.RECORD_ID,
         "balance": DataClass.BALANCE,
         "balance_date": DataClass.TXN_DATE,
+        "currency_code": DataClass.CURRENCY,
         "is_observed": DataClass.TXN_TYPE,
         "observation_source": DataClass.TXN_TYPE,
         "reconciliation_delta": DataClass.BALANCE,
@@ -804,5 +824,30 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "transaction_year_quarter": DataClass.TXN_DATE,
         "transfer_pair_id": DataClass.RECORD_ID,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "uncategorized_queue"): {
+        # Curator-impact queue for the categorization surface
+        # (services/categorization/queries.py, transactions_categorize_pending);
+        # moved out of reports.* per reports-foundation.md R5. account_id is
+        # RECORD_ID here to match every other account_id in this registry
+        # (spec D6) — NOT ACCOUNT_IDENTIFIER, unlike the deleted
+        # _bridged_classes.py entry this mirrors.
+        "transaction_id": DataClass.RECORD_ID,
+        "account_id": DataClass.RECORD_ID,
+        "account_name": DataClass.USER_NOTE,
+        "txn_date": DataClass.TXN_DATE,
+        "amount": DataClass.TXN_AMOUNT,
+        "description": DataClass.DESCRIPTION,
+        "merchant_id": DataClass.RECORD_ID,
+        "merchant_normalized": DataClass.MERCHANT_NAME,
+        # CURRENT_DATE is public, so age_days is bijective with txn_date
+        # (txn_date = CURRENT_DATE - age_days) — a date, not an aggregate.
+        "age_days": DataClass.TXN_DATE,
+        # ABS(amount) * age_days: exact once age_days is visible (>= MEDIUM
+        # tier), so priority_score recovers ABS(amount) by division at any
+        # tier that unmasks age_days but not amount. Must stay HIGH.
+        "priority_score": DataClass.TXN_AMOUNT,
+        "source_type": DataClass.TXN_TYPE,
+        "source_id": DataClass.RECORD_ID,
     },
 }

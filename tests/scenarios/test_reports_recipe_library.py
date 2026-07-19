@@ -1,8 +1,12 @@
 """Scenario: reports-recipe-library — exercise reports.* views + migrations.
 
-Verifies that the eight ``reports.*`` SQLMesh views (added in Wave 2C) all
-materialize against the basic synthetic persona, and that the four atomic
-migrations they entail landed cleanly:
+Verifies that the eight SQLMesh views added in Wave 2C all materialize
+against the basic synthetic persona, and that the four atomic migrations
+they entail landed cleanly. Seven of the eight still live in ``reports.*``;
+``uncategorized_queue`` moved to ``core.*`` after reports-foundation.md R5
+(service-internal, not a user-facing report) but is still exercised here —
+this scenario's job is "did the pipeline materialize every view," not
+"is every view still in reports.*":
 
   - ``core.agg_net_worth`` retired in favor of ``reports.net_worth``.
   - ``app.categories`` retired in favor of ``core.dim_categories``.
@@ -32,7 +36,7 @@ Be Independently Derived"):
     multiple distinct merchants per spending category.
   * ``reports.large_transactions`` ≥ 1: view returns one row per non-transfer
     transaction; ≥ 100 rows by the same persona derivation as fct above.
-  * ``reports.uncategorized_queue`` ≥ 0: may legitimately be empty if
+  * ``core.uncategorized_queue`` ≥ 0: may legitimately be empty if
     categorize covered every txn — kept as a smoke check (view materializes).
   * ``reports.recurring_subscriptions`` ≥ 0: persona has 5 monthly recurring
     descriptions but they're generated under varied amounts (electric is
@@ -70,15 +74,16 @@ _RETIRED_ENTITIES: tuple[str, ...] = (
     "app.merchants",
 )
 
-# Tables/views expected to be PRESENT after the migrations. Includes both
-# the eight reports.* views and the two new core dimensions.
+# Tables/views expected to be PRESENT after the migrations. Includes the
+# seven reports.* views, core.uncategorized_queue (moved out of reports.*
+# per reports-foundation.md R5), and the two new core dimensions.
 _PRESENT_ENTITIES: tuple[str, ...] = (
     "core.dim_categories",
     "core.dim_merchants",
+    "core.uncategorized_queue",
     "reports.net_worth",
     "reports.cash_flow",
     "reports.spending_trend",
-    "reports.uncategorized_queue",
     "reports.merchant_activity",
     "reports.large_transactions",
     "reports.balance_drift",
@@ -94,7 +99,7 @@ _VIEW_MIN_ROWS: dict[str, int] = {
     "reports.large_transactions": 1,
     # 0-floor views materialize but may legitimately be empty on the basic
     # persona; the row-count check still catches a SQL error during SELECT.
-    "reports.uncategorized_queue": 0,
+    "core.uncategorized_queue": 0,
     "reports.recurring_subscriptions": 0,
     "reports.balance_drift": 0,
 }

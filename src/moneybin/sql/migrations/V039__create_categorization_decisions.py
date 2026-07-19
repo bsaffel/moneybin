@@ -1,4 +1,4 @@
-"""V036: create and deterministically backfill categorization attempts."""
+"""V039: create and deterministically backfill categorization attempts."""
 
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ def _validate_legacy_rows(db: duckdb.DuckDBPyConnection) -> None:
         count = int(row[0]) if row is not None else 0
         if count:
             raise ValueError(
-                "V036 cannot backfill accepted categorization attempts: "
+                "V039 cannot backfill accepted categorization attempts: "
                 f"{count} app.transaction_categories row(s) have NULL {column}. "
                 f"Populate a canonical {column} for every legacy row, then retry "
                 "the migration."
@@ -121,9 +121,9 @@ def migrate(conn: object) -> None:
     """Create versioned attempts and audit deterministic accepted backfill."""
     db = conn
     if not isinstance(db, duckdb.DuckDBPyConnection):
-        raise TypeError("V036 requires a DuckDB connection")
+        raise TypeError("V039 requires a DuckDB connection")
     _validate_legacy_rows(db)
-    logger.debug("V036: CREATE TABLE app.categorization_decisions")
+    logger.debug("V039: CREATE TABLE app.categorization_decisions")
     db.execute(_CREATE_SQL)
     for column, comment in _COMMENTS:
         escaped = comment.replace("'", "''")
@@ -245,9 +245,9 @@ def migrate(conn: object) -> None:
                 uuid.uuid4().hex,
                 decision_id,
                 json.dumps(after),
-                f"op_migration_v036_{decision_id}",
-                json.dumps({"migration": "V036"}),
+                f"op_migration_v039_{decision_id}",
+                json.dumps({"migration": "V039"}),
             ],
         )
         inserted += 1
-    logger.debug(f"V036: backfilled {inserted} categorization decision(s)")
+    logger.debug(f"V039: backfilled {inserted} categorization decision(s)")

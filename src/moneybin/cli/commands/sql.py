@@ -1,10 +1,11 @@
 """moneybin sql — privacy-safe ad-hoc SQL (lineage + CRITICAL masking).
 
 The agent/operator path for ad-hoc SQL that runs through the SAME privacy
-enforcement as the ``sql_query`` MCP tool: read-only gate, core/app schema
-restriction, sqlglot column lineage, and CRITICAL masking. Contrast with
-``moneybin db query`` / ``db shell`` / ``db ui``, which are raw, unmasked
-direct-DB access (they emit an operator-bypass banner pointing here).
+enforcement as the ``sql_query`` MCP tool: read-only gate, core/app/reports
+schema restriction, sqlglot column lineage, and CRITICAL masking. Contrast
+with ``moneybin db query`` / ``db shell`` / ``db ui``, which are raw,
+unmasked direct-DB access (they emit an operator-bypass banner pointing
+here).
 """
 
 from __future__ import annotations
@@ -53,11 +54,11 @@ def sql_query_command(
     """Execute a read-only SQL query with privacy enforcement.
 
     The privacy-safe counterpart to ``moneybin db query``: only SELECT, WITH,
-    DESCRIBE, SHOW, PRAGMA, and EXPLAIN are allowed, limited to the ``core``
-    and ``app`` schemas. Each output column is classified via SQL lineage;
-    CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>),
-    exactly like the typed tools and the ``sql_query`` MCP tool. Other tiers
-    (amounts, descriptions, dates) pass through in the clear.
+    DESCRIBE, SHOW, PRAGMA, and EXPLAIN are allowed, limited to the ``core``,
+    ``app``, and ``reports`` schemas. Each output column is classified via SQL
+    lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked
+    (****<last4>), exactly like the typed tools and the ``sql_query`` MCP tool.
+    Other tiers (amounts, descriptions, dates) pass through in the clear.
 
     Amounts use the accounting convention: negative = expense, positive = income.
 

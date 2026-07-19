@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import date
+
 import pytest
 
 from moneybin.extractors.pdf.recipe import (
@@ -266,3 +269,182 @@ def test_cast_decimal_handles_empty_string() -> None:
 
     fld = FieldExtraction(name="amount", pattern=r".*", cast="decimal")
     assert _cast(fld, "") == Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# Year-less date resolution (_resolve_yearless_date)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "period", "expected"),
+    [
+        # Cycle crosses year-end: the two period years both resolve the row.
+        ("12/26", (date(2024, 12, 23), date(2025, 1, 22)), date(2024, 12, 26)),
+        ("01/15", (date(2024, 12, 23), date(2025, 1, 22)), date(2025, 1, 15)),
+        # Cycle within ONE calendar year, row just BEFORE it (posted-date drift
+        # across the year boundary): must resolve to the PRIOR year, not this one.
+        # The period offers only 2025 as a period year, so without an adjacent-year
+        # candidate this silently stored 2025-12-31 — ~a year late.
+        ("12/31", (date(2025, 1, 1), date(2025, 1, 31)), date(2024, 12, 31)),
+        # Cycle within one year, row just AFTER it → the following year.
+        ("01/02", (date(2024, 12, 1), date(2024, 12, 31)), date(2025, 1, 2)),
+    ],
+)
+def test_resolve_yearless_date_brackets_year_including_adjacent(
+    raw: str,
+    period: tuple[date, date],
+    expected: date,
+) -> None:
+    """A year-less MM/DD row resolves via the billing period, adjacent years included.
+
+    The within-window year wins when the date lands inside the cycle; a date that
+    drifts just past a year boundary falls back to the closest year — which may be
+    the period's adjacent year, not one of its two endpoints.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        _resolve_yearless_date,  # pyright: ignore[reportPrivateUsage] -- year-bracket probe
+    )
+
+    assert _resolve_yearless_date(raw, "%m/%d", period) == expected
+
+
+def test_resolve_yearless_date_rejects_far_out_of_period_date() -> None:
+    """A MM/DD far outside the billing cycle is an anomaly — reject, don't guess.
+
+    The out-of-window fallback tolerates a few days of posting drift, but a date
+    months from the cycle (an OCR garble or a misparsed line) has no correct year.
+    Reconciliation can't catch a wrong year (it sums amounts, never validates
+    dates), so the resolver refuses rather than silently assign an arbitrary one —
+    the row then fails to cast and the statement routes to seed.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        _resolve_yearless_date,  # pyright: ignore[reportPrivateUsage] -- drift-bound probe
+    )
+
+    period = (date(2025, 1, 1), date(2025, 1, 31))
+    with pytest.raises(ValueError, match="outside the billing period"):
+        _resolve_yearless_date("06/15", "%m/%d", period)  # ~5 months out
+
+
+def test_resolve_yearless_date_resolves_leap_day() -> None:
+    """A 02/29 transaction resolves in a leap year, not strptime's non-leap 1900.
+
+    Parsing "02/29" against "%m/%d" alone defaults to year 1900 (not a leap year)
+    and raises before any candidate year is tried; the leap-safe parse extracts
+    month/day first, then brackets the real (leap) year from the period.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        _resolve_yearless_date,  # pyright: ignore[reportPrivateUsage] -- leap-day probe
+    )
+
+    period = (date(2024, 2, 1), date(2024, 2, 29))  # 2024 is a leap year
+    assert _resolve_yearless_date("02/29", "%m/%d", period) == date(2024, 2, 29)
+
+
+def test_execute_recipe_raises_on_unresolvable_yearless_row() -> None:
+    """A year-less row with no capturable period fails the whole extraction.
+
+    Rather than silently skip the row (risking a net-zero silent loss), the
+    executor raises YearlessDateError so the caller can route to seed/bridge
+    instead of importing a partial ledger.
+    """
+    from moneybin.extractors.pdf.recipe import YearlessDateError
+
+    recipe = Recipe.model_validate(
+        _make_recipe(
+            metadata_anchors=[],  # decline metadata capture → no period available
+            fields=[
+                _make_field("date", r"\d{2}/\d{2}", "date", "%m/%d"),
+                _make_field("amount", r"-?\d+\.\d{2}", "decimal"),
+            ],
+        )
+    )
+    text = "\n".join(["TRANSACTIONS", "12/26   -100.00", "TOTAL"])
+
+    with pytest.raises(YearlessDateError):
+        execute_recipe(recipe, text)
+
+
+def test_execute_recipe_resolves_yearless_year_from_declared_period_anchors() -> None:
+    """A recipe's own period anchors let execute_recipe resolve year-less rows.
+
+    This is the bridge's durable capability: an agent that declares
+    period_start/period_end anchors for a non-default cycle label ("Cycle …" here,
+    which DEFAULT_ANCHORS don't recognise) gets its MM/DD rows bracketed to full
+    dates, so a year-less statement imports instead of dead-ending in a seed.
+    """
+    from decimal import Decimal
+
+    recipe = Recipe.model_validate(
+        _make_recipe(
+            metadata_anchors=[
+                _make_field("period_start", r"Cycle\s+(\d{2}/\d{2}/\d{2})", "date"),
+                _make_field(
+                    "period_end",
+                    r"Cycle\s+\d{2}/\d{2}/\d{2}\s*-\s*(\d{2}/\d{2}/\d{2})",
+                    "date",
+                ),
+            ],
+            fields=[
+                _make_field("date", r"\d{2}/\d{2}", "date", "%m/%d"),
+                _make_field("description", r".+", "str"),
+                _make_field("amount", r"-?\d+\.\d{2}", "decimal"),
+            ],
+        )
+    )
+    text = "\n".join([
+        "Cycle 12/23/24 - 01/22/25",  # a non-default period label the agent read
+        "TRANSACTIONS",
+        "12/26   PAYMENT THANK YOU   -100.00",
+        "01/15   BOOKSTORE   40.00",
+        "TOTAL",
+    ])
+
+    result = execute_recipe(recipe, text)
+
+    # The cycle crosses year-end, so 12/xx → opening year, 01/xx → closing year.
+    assert [(r["date"], r["amount"]) for r in result.rows] == [
+        (date(2024, 12, 26), Decimal("-100.00")),
+        (date(2025, 1, 15), Decimal("40.00")),
+    ]
+
+
+def test_missing_end_anchor_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+    """The end-anchor fallback fires routinely — it must not log at WARNING.
+
+    auto-derive defaults end_anchor to "Total:", but most real statements use
+    "Totals"/"TOTAL"/none, so this fallback fires on virtually every successful
+    import. Logging it at WARNING trains operators to ignore real warnings.
+    A missing START anchor is different — that one is genuinely misconfigured
+    and must keep warning.
+    """
+    from moneybin.extractors.pdf.recipe import (
+        RegionAnchors,
+        _carve_region,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    anchors = RegionAnchors(start_anchor="ACTIVITY", end_anchor="Total:")
+    text = "preamble\nACTIVITY\n01/05   COFFEE   25.00\n"
+
+    with caplog.at_level(logging.DEBUG):
+        carved = _carve_region(text, anchors)
+
+    assert "COFFEE" in carved
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings == [], f"routine end-anchor fallback logged at WARNING: {warnings}"
+
+
+def test_missing_start_anchor_still_warns(caplog: pytest.LogCaptureFixture) -> None:
+    """A missing start anchor means a misconfigured recipe — keep it at WARNING."""
+    from moneybin.extractors.pdf.recipe import (
+        RegionAnchors,
+        _carve_region,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    anchors = RegionAnchors(start_anchor="NO_SUCH_HEADER", end_anchor="Total:")
+
+    with caplog.at_level(logging.DEBUG):
+        _carve_region("some text\n", anchors)
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING]

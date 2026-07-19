@@ -307,6 +307,62 @@ class TestGetCandidatesTransfers:
         )
         assert len(candidates) == 0
 
+    def test_includes_unknown_currency_pair(self, transfer_table: Database) -> None:
+        """Two transactions with NULL currency_code must still be found.
+
+        Regression test: `currency_code IS NULL` on both sides must not be
+        excluded by the blocking predicate. SQL's `NULL = NULL` evaluates to
+        NULL (not TRUE), so a naive `a.currency_code = b.currency_code`
+        silently drops every pair where currency wasn't captured upstream —
+        which, post multi-currency Task 4, is the common case (uncaptured
+        currency is now honestly NULL instead of defaulted to 'USD').
+        """
+        transfer_table.execute(
+            """
+            INSERT INTO _test_unioned (
+                source_transaction_id, account_id, transaction_date, amount,
+                description, source_type, source_origin, source_file, currency_code
+            ) VALUES
+                ('a', 'checking', '2026-03-15'::DATE, -100.00, 'TRANSFER', 'csv', 'bank', 'f.csv', NULL),
+                ('b', 'savings',  '2026-03-15'::DATE,  100.00, 'TRANSFER', 'csv', 'bank', 'f.csv', NULL)
+            """
+        )
+        candidates = get_candidates_transfers(
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
+        )
+        assert len(candidates) == 1
+
+    def test_includes_one_side_unknown_currency_pair(
+        self, transfer_table: Database
+    ) -> None:
+        """One side NULL, other side a known currency must still be found.
+
+        This is a deliberate, narrower gap than full strictness would allow:
+        a known-vs-unknown pair is not blocked, only known-vs-different-known
+        is (see test_excludes_currency_mismatch). Tightening this further is
+        out of scope for this fix.
+        """
+        transfer_table.execute(
+            """
+            INSERT INTO _test_unioned (
+                source_transaction_id, account_id, transaction_date, amount,
+                description, source_type, source_origin, source_file, currency_code
+            ) VALUES
+                ('a', 'checking', '2026-03-15'::DATE, -100.00, 'TRANSFER', 'csv', 'bank', 'f.csv', NULL),
+                ('b', 'savings',  '2026-03-15'::DATE,  100.00, 'TRANSFER', 'csv', 'bank', 'f.csv', 'USD')
+            """
+        )
+        candidates = get_candidates_transfers(
+            transfer_table,
+            table="main._test_unioned",
+            date_window_days=3,
+            signal_weights=_DEFAULT_WEIGHTS,
+        )
+        assert len(candidates) == 1
+
     def test_respects_excluded_ids(self, transfer_table: Database) -> None:
         _insert_transfer_row(
             transfer_table,

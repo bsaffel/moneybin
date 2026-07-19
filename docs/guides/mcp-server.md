@@ -22,6 +22,12 @@ Install a client entry with:
 moneybin mcp install --client <name>
 ```
 
+[`mcp-clients.md`](mcp-clients.md) lists the supported clients, config paths,
+and restart requirements. Remove the MoneyBin entry from that client config to
+disconnect it; there is no `mcp uninstall` command. If no profile exists, the
+first tool call either elicits a profile name or returns the CLI profile-creation
+instruction, depending on the client's elicitation support.
+
 After the client starts `moneybin mcp serve`, ask it to call `system_status`
 first. Use `reports` without a `report_id` to inspect the analytical catalog,
 then call `reports(report_id=..., parameters=...)` for a selected report.
@@ -35,6 +41,9 @@ tool results to its model provider. Sensitivity classification and critical
 field masking are wired today. The consent ledger exists, but global consent
 enforcement and automatic degraded responses are deferred; treat data requested
 through a cloud client as data shared with that provider.
+Read [`what-the-ai-sees.md`](what-the-ai-sees.md) before connecting real data:
+it is the detailed, code-verified account of provider exposure, masking, local
+records, connector egress, and local-model use.
 
 ## Contract status
 

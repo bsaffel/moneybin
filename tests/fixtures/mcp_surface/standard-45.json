@@ -1,5 +1,5 @@
 {
-  "sha256": "ac49e48a2612edbec7aedd49a12f91239d5c304fb7834933c359129f4249cc12",
+  "sha256": "be0982903e876d4d9420160eeb9045e22613fc506ec1c9ebca620b8c76075ece",
   "tool_count": 45,
   "tools": [
     {
@@ -343,7 +343,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Set account metadata and behavioral settings by stable account ID. Writes app.account_settings; call again with prior values to revert.",
+        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). Archiving (is_archived=True) cascades include_in_net_worth=False atomically; unarchive does NOT restore the prior include value. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -379,6 +379,17 @@
               "anyOf": [
                 {
                   "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "currency_code": {
+              "anyOf": [
+                {
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -441,17 +452,6 @@
               ],
               "default": null
             },
-            "iso_currency_code": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
             "last_four": {
               "anyOf": [
                 {
@@ -487,12 +487,12 @@
         },
         "name": "accounts_set"
       },
-      "description_bytes": 135,
-      "input_schema_bytes": 1010,
+      "description_bytes": 730,
+      "input_schema_bytes": 1006,
       "name": "accounts_set",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 1336
+      "total_bytes": 1927
     },
     {
       "annotation_bytes": 89,
@@ -641,17 +641,6 @@
               "default": false,
               "type": "boolean"
             },
-            "sign": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
-            },
             "url": {
               "anyOf": [
                 {
@@ -674,11 +663,11 @@
         "name": "gsheet_connect"
       },
       "description_bytes": 63,
-      "input_schema_bytes": 896,
+      "input_schema_bytes": 828,
       "name": "gsheet_connect",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 1152
+      "total_bytes": 1084
     },
     {
       "annotation_bytes": 89,
@@ -4415,5 +4404,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 44403
+  "total_bytes": 44926
 }

@@ -1,7 +1,9 @@
 scenario: reports-recipe-library
 description: >
-  Exercise the eight reports.* SQLMesh views end-to-end against the basic
-  synthetic persona, and assert four migrations landed cleanly:
+  Exercise the eight SQLMesh views added in Wave 2C end-to-end against the
+  basic synthetic persona (seven in reports.*, plus core.uncategorized_queue
+  since reports-foundation.md R5 moved it out), and assert four migrations
+  landed cleanly:
     - core.agg_net_worth dropped, replaced by reports.net_worth
     - app.categories retired, replaced by core.dim_categories
     - app.merchants retired, replaced by core.dim_merchants

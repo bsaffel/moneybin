@@ -83,7 +83,7 @@ def doctor_db(db: Database) -> Database:
         INSERT INTO core.dim_accounts (
             account_id, routing_number, account_type, institution_name,
             institution_fid, source_type, source_file, extracted_at, loaded_at,
-            updated_at, display_name, iso_currency_code,
+            updated_at, display_name, currency_code,
             archived, include_in_net_worth
         ) VALUES ('ACC1', '111', 'CHECKING', 'Bank', 'fid', 'ofx',
                   'a.qfx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,

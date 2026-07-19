@@ -101,6 +101,48 @@ def test_transactions_create_with_note_and_tags(
     assert row[0] == 1
 
 
+def test_transactions_create_omitted_currency_stays_null(
+    runner: CliRunner, db: Database
+) -> None:
+    result = runner.invoke(
+        app,
+        ["transactions", "create", "--account", "A1", "--", "-12.50", "Coffee"],
+    )
+    assert result.exit_code == 0, result.output
+    row = db.conn.execute(
+        "SELECT currency_code FROM raw.manual_transactions WHERE account_id = ?",
+        ["A1"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None
+
+
+def test_transactions_create_explicit_currency_passes_through(
+    runner: CliRunner, db: Database
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "transactions",
+            "create",
+            "--account",
+            "A1",
+            "--currency",
+            "EUR",
+            "--",
+            "-12.50",
+            "Coffee",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    row = db.conn.execute(
+        "SELECT currency_code FROM raw.manual_transactions WHERE account_id = ?",
+        ["A1"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "EUR"
+
+
 def test_transactions_create_invalid_amount_exits_2(
     runner: CliRunner, db: Database
 ) -> None:

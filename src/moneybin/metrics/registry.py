@@ -112,6 +112,18 @@ PDF_REPLAY_GUARD_FAILURE_TOTAL = Counter(
     "Saved PDF format matched but reconciliation failed (recipe drift signal).",
 )
 
+# What happened AFTER a replay-guard failure. Without this, a fleet where every
+# failure self-heals is indistinguishable from one where every failure seeds —
+# PDF_REPLAY_GUARD_FAILURE_TOTAL fires before the repair is attempted, so it
+# counts the trigger, not the outcome. Cardinality is fixed at 5 by the literal
+# label set below.
+PDF_SELF_HEAL_TOTAL = Counter(
+    "moneybin_pdf_self_heal_total",
+    "Outcome of re-deriving a saved PDF recipe that stopped reconciling.",
+    ["outcome"],  # repaired | repaired_pending_sign | refused_not_detected
+    # | underivable | still_unreconciled
+)
+
 # Phase 1: cardinality bounded by distinct PDF aliases per user (~dozens).
 # Revisit before multi-user hosted launch (M3E).
 PDF_SEED_ROWS_TOTAL = Counter(
@@ -144,6 +156,15 @@ PDF_BRIDGE_EGRESS_TOTAL = Counter(
 PDF_SIGN_GATE_TOTAL = Counter(
     "moneybin_pdf_sign_gate_total",
     "PDF sign-convention gate outcomes by resolution.",
+    ["outcome"],  # values: "proposed", "confirmed", "overridden"
+)
+
+# Tabular imports can infer the same whole-ledger inversion from a ``credit``
+# header. Keep its outcomes separate from PDFs so an unexpected rise points to
+# the channel whose detector needs attention.
+TABULAR_SIGN_GATE_TOTAL = Counter(
+    "moneybin_tabular_sign_gate_total",
+    "Tabular sign-convention gate outcomes by resolution.",
     ["outcome"],  # values: "proposed", "confirmed", "overridden"
 )
 

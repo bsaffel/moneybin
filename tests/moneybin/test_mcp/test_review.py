@@ -631,7 +631,7 @@ def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
         CategorizationService(db).create_category(category, actor="test")
         db.execute(
             """
-            CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+            CREATE OR REPLACE VIEW core.uncategorized_queue AS
             SELECT
                 transaction_id,
                 account_id,

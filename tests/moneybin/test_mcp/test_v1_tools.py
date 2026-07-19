@@ -1,9 +1,9 @@
 # tests/moneybin/test_mcp/test_v1_tools.py
-"""Tests for view-backed reports.* MCP tools.
+"""Tests for the transactions_categorize_pending MCP tool.
 
-These tests stub the ``reports.*`` views directly (the SQLMesh layer is
-exercised in scenario tests) and exercise the MCP tool wrappers against
-those stubs to confirm parameter validation, SQL composition, and
+Stubs ``core.uncategorized_queue`` directly (the SQLMesh layer is
+exercised in scenario tests) and exercises the MCP tool wrapper against
+that stub to confirm parameter validation, SQL composition, and
 envelope shape.
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.database import Database, get_database
+from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp.tools.transactions_categorize import (
     transactions_categorize_pending,
@@ -23,12 +23,8 @@ from moneybin.mcp.tools.transactions_categorize import (
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
-def _create_reports_schema(db: Database) -> None:
-    db.conn.execute("CREATE SCHEMA IF NOT EXISTS reports")
-
-
 class TestCategorizePendingGet:
-    """Stubs reports.uncategorized_queue; exercises filters + limit.
+    """Stubs core.uncategorized_queue; exercises filters + limit.
 
     Covers transactions_categorize_pending (replaced reports_uncategorized).
     """
@@ -36,9 +32,8 @@ class TestCategorizePendingGet:
     @staticmethod
     def _install_view() -> None:
         with get_database(read_only=False) as db:
-            _create_reports_schema(db)
             db.conn.execute("""
-                CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+                CREATE OR REPLACE VIEW core.uncategorized_queue AS
                 SELECT
                     'T1' AS transaction_id, 'ACC001' AS account_id,
                     'Test Bank Checking' AS account_name,
@@ -121,7 +116,7 @@ class TestCategorizePendingGet:
         self._install_resolver_accounts()
         with get_database(read_only=False) as db:
             db.conn.execute("""
-                CREATE OR REPLACE VIEW reports.uncategorized_queue AS
+                CREATE OR REPLACE VIEW core.uncategorized_queue AS
                 SELECT
                     'TA' AS transaction_id, 'A1' AS account_id,
                     'Alpha' AS account_name,

@@ -112,37 +112,6 @@ union can cost more schema bytes than several narrow tools. MoneyBin therefore
 measures count, descriptions, input schemas, output schemas, annotations, and
 total serialized metadata.
 
-### Competitor evidence
-
-FinLynq v4 consolidated 117 advertised HTTP tools to 75 and exposes 51 by
-default. It folded CRUD families into thirteen `manage_*` discriminated unions
-and hides 25 import/reconciliation tools behind a scope or persistent setting.
-Its implementation validates several MoneyBin choices:
-
-- tool-selection evals and deterministic `tools/list` snapshots are useful;
-- payload-bound destructive confirmation is stronger than a boolean flag;
-- shared server instructions and distinct description openings improve agent
-  orientation;
-- hidden, time-bounded aliases can support a breaking migration without
-  consuming advertised slots.
-
-It also demonstrates what MoneyBin should avoid:
-
-- broad unions required custom `oneOf` rendering and client-specific coercion
-  for stringified numbers, booleans, arrays, and objects;
-- tools containing both list and delete modes carry conservative destructive
-  annotations even for read calls;
-- the default is not capability-complete;
-- HTTP and stdio surfaces differ materially;
-- reducing names does not prove serialized metadata decreased;
-- its checked-in eval harness scores only first-tool choice and contains no
-  persisted public run result.
-
-Treeline's thirteen-tool surface reaches a lower count through raw SQL and
-generic mutation. That transfers domain validation, privacy, audit,
-confirmation, and recovery into model reasoning. MoneyBin keeps read-only SQL
-as a core escape hatch but rejects generic write SQL.
-
 ## Design invariants
 
 ### 1. One bounded standard registry
@@ -474,12 +443,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic Plan 6
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 44,403 bytes of serialized metadata, zero advertised output schemas,
+contains 45 tools, 44,926 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`ac49e48a2612edbec7aedd49a12f91239d5c304fb7834933c359129f4249cc12`.
+`be0982903e876d4d9420160eeb9045e22613fc506ec1c9ebca620b8c76075ece`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -46,331 bytes (-51.1%). The deterministic estimate is 11,101
+The delta is -45,808 bytes (-50.5%). The deterministic estimate is 11,232
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -761,8 +730,9 @@ injection and preserves original identities.
 
 Rejected as a general pattern. It relocates complexity into large unions, mixes
 read/write and safety contracts, can worsen approval behavior, and may not
-reduce bytes. FinLynq v4's custom schema rendering and coercion work are direct
-evidence of the interoperability cost.
+reduce bytes. MoneyBin admits a coarse operation only when its rendered schema
+stays valid across representative clients and the operation retains one
+coherent safety contract.
 
 ### Replace domain tools with SQL and generic mutation
 
@@ -809,8 +779,3 @@ not_observed; host-native deferral: not_observed; `promotion_ready: false`.
 - [MCP client best practices: progressive tool discovery](https://modelcontextprotocol.io/docs/develop/clients/client-best-practices)
 - [MCP tool schema and structured output](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
 - [OpenAI Agents SDK: deferred loading and tool namespaces](https://openai.github.io/openai-agents-python/tools/)
-- [FinLynq v4 tool counts](https://github.com/finlynq/finlynq/blob/main/src/lib/mcp/tool-counts.ts)
-- [FinLynq toolsets](https://github.com/finlynq/finlynq/blob/main/src/lib/mcp/toolsets.ts)
-- [FinLynq consolidated schema tests](https://github.com/finlynq/finlynq/blob/main/tests/mcp/consolidated-schema-contract.test.ts)
-- [FinLynq evaluation harness](https://github.com/finlynq/finlynq/blob/main/tests/mcp/eval/run-eval.ts)
-- [Treeline MCP implementation](https://github.com/treeline-money/treeline/blob/main/cli/src/commands/mcp.rs)

@@ -6,6 +6,18 @@
 - **Status:** implemented
 - **Milestone:** M2A ("brand surface" cluster — recipe library + `moneybin doctor`)
 
+> **Migration note (2026-07-18):** `reports.uncategorized_queue` moved to
+> `core.uncategorized_queue` as part of
+> [`reports-foundation.md`](reports-foundation.md) R5: membership in
+> `reports.*` is the definition of "user-facing report," and this view's only
+> runtime reader is `services/categorization/queries.py` (backing
+> `reviews(kind="categorization", status="pending")`), never a `reports *` CLI command or
+> `reports_*` MCP tool. The live model is
+> `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`; the `TableRef`
+> is `CORE_UNCATEGORIZED_QUEUE`. Original section text below still describes
+> the other seven `reports.*` views accurately and is preserved for
+> historical context.
+
 ## Goal
 
 Ship the first wave of `reports.*` SQLMesh views — eight curated, named, queryable presentation models that back the `moneybin reports *` CLI surface and the `reports_*` MCP tools. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)), and make MoneyBin's "show me the SQL" demo land: every number a user or AI sees has a named SQLMesh model file behind it that can be inspected, modified, and re-queried.
@@ -50,7 +62,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 | Decision | Rationale | Where it lands |
 |---|---|---|
 | Eight models in v1, not fifteen | Hits the 6–10 range from the brief; every model independently demoable; future iterations add narrower models (income_sources, recurring-detail) | §Models |
-| `recurring_subscriptions` ships with `confidence` column (0.0–1.0) | A survey of PFM subscription detection (Actual Budget, Copilot, Monarch, Rocket Money, Firefly III) found none exposes a confidence score; tools are binary suggested/accepted. Surfacing the score lets users and AI consumers apply their own thresholds rather than accepting a hidden classifier. | §Models §`reports.recurring_subscriptions` |
+| `recurring_subscriptions` ships with `confidence` column (0.0–1.0) | A candidate generator has inherent uncertainty. Surfacing its score lets users and AI consumers apply their own thresholds rather than accepting a hidden classifier. | §Models §`reports.recurring_subscriptions` |
 | Wide-grain principle: prefer powerful views consumers can aggregate over narrow single-purpose ones | Drove `top_merchants → merchant_activity` (top-N is just `ORDER BY total_spend DESC LIMIT N` against the wider view) and `year_over_year_spending → spending_trend` (one model supports YoY, MoM, and 3-month-trailing comparisons). Future report specs apply the same lens. | §Models |
 | `reports.net_worth` (with underscore), not `reports.networth` | Reintroduces space/underscore for readability. Overrides the gate spec's name; landed via [Migrations](#migrations) below. | §Migrations |
 | Sequenced before `moneybin-doctor.md` | Doctor's `balance_drift` traffic-light comes from `reports.balance_drift`. Recipe-library lands first; doctor reads the view. | §Sequencing |
@@ -490,7 +502,7 @@ moneybin reports
 +-- balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
 ```
 
-The `uncategorized_queue` view ships but no `reports uncategorized` command is registered — agents use `transactions_categorize_pending` for the curation queue (see [`reports.uncategorized_queue`](#reportsuncategorized_queue)). `reports budget` and the `reports health` stub were also removed: budget is synthesized from `BudgetService` rather than a `reports.*` view and returns through the framework once M3C ships a `reports.budget` view; `health` had no backing spec.
+The `uncategorized_queue` view ships but no `reports uncategorized` command is registered — agents use `reviews(kind="categorization", status="pending")` for the curation queue (see [`reports.uncategorized_queue`](#reportsuncategorized_queue)). `reports budget` and the `reports health` stub were also removed: budget is synthesized from `BudgetService` rather than a `reports.*` view and returns through the framework once M3C ships a `reports.budget` view; `health` had no backing spec.
 
 All commands support `--output json` per `moneybin-cli.md`. JSON output uses `ResponseEnvelope` shape per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry.
 
@@ -622,7 +634,9 @@ Specific audits per model:
 - `reports.cash_flow` — `unique_combination_of_columns(year_month, account_id, category)`. (NULL category is permitted; DuckDB's grouping handles it.)
 - `reports.spending_trend` — `unique_combination_of_columns(year_month, category)`.
 - `reports.recurring_subscriptions` — `not_null(merchant_normalized, cadence, confidence)`. Confidence range is asserted in scenario tests, not as an audit (DuckDB SQLMesh audits don't natively support range checks; would be a custom audit).
-- `reports.uncategorized_queue` — `not_null(transaction_id, priority_score)`.
+- `reports.uncategorized_queue` — planned `not_null(transaction_id, priority_score)`;
+  never implemented. The shipped `core.uncategorized_queue.sql` (see the
+  migration note above) declares no `audits(...)` block at all.
 - `reports.merchant_activity` — `unique_combination_of_columns(merchant_normalized)`, `not_null(total_spend, txn_count)`.
 - `reports.large_transactions` — `not_null(transaction_id, amount)`.
 - `reports.balance_drift` — `unique_combination_of_columns(account_id, assertion_date)`, `not_null(asserted_balance)`.
@@ -680,7 +694,11 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 
 ## Out of Scope
 
-- **Subscription acceptance/rejection state.** The suggest-then-confirm pattern in Actual/Copilot/Monarch needs a user-state table (e.g., `app.recurring_subscriptions` with accepted/rejected/snooze states). That is a future spec — likely an extension of `transaction-curation.md` or its own `subscription-curation.md`. `reports.recurring_subscriptions` is a candidate generator only.
+- **Subscription acceptance/rejection state.** A user-confirmed subscription
+  workflow needs a user-state table (e.g., `app.recurring_subscriptions` with
+  accepted/rejected/snooze states). That is a future spec — likely an extension
+  of `transaction-curation.md` or its own `subscription-curation.md`.
+  `reports.recurring_subscriptions` is a candidate generator only.
 - **Income recurring detection.** Mirror of `recurring_subscriptions` for inflows (paychecks, recurring deposits). Worth adding once subscription-curation lands and the patterns are validated; deferred to keep v1 focused.
 - **Multi-currency rollups.** Owned by future `multi-currency.md` (M1K). All `reports.*` v1 models assume profile currency. See `architecture-shared-primitives.md` §Open Architectural Questions (b).
 - **Forecast/projection models.** "What will my net worth be in 6 months?" is a separate concern (forecasting); recipe library is descriptive analytics only.

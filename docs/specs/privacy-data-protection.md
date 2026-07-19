@@ -30,11 +30,12 @@ account numbers, or spending patterns.
 - [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) — data sensitivity taxonomy
   referenced by the log sanitization rules.
 
-### Competitive context
-No open-source personal finance tool encrypts the local database by default. This is a
-genuine differentiator: MoneyBin is among the few tools in this space where a copied
-database file is a useless encrypted blob without the key. See [`docs/comparison.md`](../comparison.md)
-for the wider competitor landscape.
+### Security outcome
+
+A copied MoneyBin database must be unreadable without its key. This requirement
+protects portable profile files when a device, backup, or cloud-synchronized
+directory is exposed; it does not depend on full-disk encryption being present
+or correctly configured.
 
 ## Threat Model
 

@@ -273,7 +273,7 @@ def accounts_set(
     _add("last_four", last_four, clear_last_four)
     _add("account_subtype", subtype, clear_subtype)
     _add("holder_category", holder_category, clear_holder_category)
-    _add("iso_currency_code", currency, clear_currency)
+    _add("currency_code", currency, clear_currency)
     _add("display_name", display_name, clear_display_name)
     _add(
         "default_cost_basis_method",

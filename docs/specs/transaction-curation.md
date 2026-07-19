@@ -14,7 +14,10 @@ This spec is the curator's surface — the row-by-row grooming that turns "data 
 
 M0–M1 shipped a defensible engine: encrypted DuckDB, smart import + dedup + transfer detection, rule + auto-rule categorization, accounts and net worth, ~33 MCP tools. The product today is a credible "ETL + canonical store + MCP surface for personal finance."
 
-The **Curator segment** is MoneyBin's most defensible position: "I want my financial history to be a clean, verifiable, queryable record I trust — not a passive feed from a black-box service. I'll spend an hour a month grooming it because the result is mine." Lunch Money, Tiller, Fina, Beancount/Fava users self-select into curating; MoneyBin's encrypted-local-DuckDB + MCP-native posture serves them better than any competitor — *if* the curation surface exists.
+The target curator wants financial history to be a clean, verifiable, queryable
+record they trust—not a passive feed from a black-box service—and is willing to
+groom it because the result remains theirs. MoneyBin's encrypted local database
+and MCP-native posture serve that workflow only if the curation surface exists.
 
 It currently doesn't. `app.transaction_notes` exists with single-note semantics; nothing else (tags, splits, import labels, audit history, manual entry) is reachable from CLI or MCP. Manual entry is in-scope: a curator can't trust a record they can't repair.
 
@@ -155,7 +158,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     payment_channel         VARCHAR, -- Optional: in_store, online, other
     transaction_type        VARCHAR, -- Optional source-style type code
     check_number            VARCHAR, -- Optional check number
-    currency_code           VARCHAR DEFAULT 'USD', -- ISO 4217 currency code
+    currency_code           VARCHAR, -- ISO 4217 currency code; NULL when unspecified (never guessed — see multi-currency.md)
     created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- When the row was inserted
     created_by              VARCHAR NOT NULL -- 'cli' or 'mcp'; future-extensible for multi-user identity
 );
@@ -432,7 +435,7 @@ transactions create <amount> <description>
     [--tag TAG]                 Repeatable; e.g. --tag tax:business --tag vacation:hawaii-2026
     [--check-number N]
     [--payment-channel CH]
-    [--currency CODE]           Default: USD
+    [--currency CODE]           Default: unspecified (never guessed — see multi-currency.md)
     [--yes]                     Skip confirmation
 ```
 

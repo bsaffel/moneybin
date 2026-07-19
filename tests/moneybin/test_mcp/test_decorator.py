@@ -7,7 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from moneybin import error_codes
-from moneybin.mcp.decorator import mcp_tool
+from moneybin.errors import UserError
+from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
 from moneybin.privacy.introspection import PrivacyContractError
 from moneybin.privacy.payloads.accounts import AccountListPayload
@@ -150,6 +151,30 @@ class TestMCPToolDecorator:
                 dynamic_classification=True,
                 maximum_sensitivity=Sensitivity.HIGH,
             )(my_tool)
+
+
+@pytest.mark.unit
+async def test_internal_envelope_adapter_is_not_public_tool_metadata() -> None:
+    """Internal helpers stay awaitable without becoming MCP registry candidates."""
+
+    @internal_envelope_adapter(sensitivity=Sensitivity.MEDIUM)
+    def helper(*, fail: bool = False) -> ResponseEnvelope[Any]:
+        if fail:
+            raise UserError("declined", code="DECLINED")
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=1, returned_count=1),
+            data=[{"value": 42}],
+        )
+
+    assert not any(name.startswith("_mcp_") for name in vars(helper))
+
+    success = await helper()
+    assert success.summary.sensitivity == "medium"
+
+    failure = await helper(fail=True)
+    assert failure.error is not None
+    assert failure.error.code == "DECLINED"
+    assert failure.summary.sensitivity == "low"
 
 
 @pytest.mark.unit

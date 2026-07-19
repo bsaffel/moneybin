@@ -1,4 +1,4 @@
-Standard MoneyBin button; use `primary` (brass) for the single main action on a surface, `secondary` for everything else, `ghost` for tertiary/inline actions.
+Standard MoneyBin button; use `primary` (gilt fill, ink label) for the single main action on a surface, `secondary` for everything else, `ghost` for tertiary/inline actions.
 
 ```jsx
 <Button variant="primary" onClick={add}>Add widget</Button>

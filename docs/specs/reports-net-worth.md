@@ -18,7 +18,9 @@ Provide accurate, authoritative balance tracking per account and net worth compu
 
 ## Background
 
-Net worth over time is a headline feature that every competitor (Beancount, Firefly III, Actual, Maybe/Sure) ships. MoneyBin has the raw data — OFX balance snapshots, CSV running balances — but no materialized view or user-facing surface.
+MoneyBin has the raw data needed for net worth over time—OFX balance snapshots
+and CSV running balances—but needs an authoritative materialized view and
+user-facing surface.
 
 The core design principle: **accurate or absent, never best effort.** A balance derived solely from summing transactions without an authoritative anchor is unreliable (missing transactions, timing differences, fees not captured). Instead, this feature anchors on balance observations from institutions and interpolates between them using transaction data.
 

@@ -8,7 +8,10 @@
 
 ## Goal
 
-MoneyBin's strategic frame is that the largest competitor isn't other PFM apps — it's the cohort of technically inclined users rolling their own finance system on DuckDB/dbt/Plaid/Streamlit. The hypothesis: be the platform those users converge on instead of starting from scratch, with a contributor-facing surface designed with the same rigor as the MCP and CLI surfaces.
+MoneyBin should be a durable foundation for technically inclined users who
+would otherwise assemble their own finance system from DuckDB, transformation
+tools, provider APIs, and one-off interfaces. That requires a contributor-facing
+surface designed with the same rigor as the MCP and CLI surfaces.
 
 This spec defines that contributor-facing surface: three extension types, their trust postures, their registration mechanisms, their quality progression, and the guided-contribution skills shipped alongside. Together they answer: *how does someone who wants to extend MoneyBin do so, cleanly and predictably?*
 
@@ -680,7 +683,8 @@ Same tier names; different evidence by extension type. Each row in the tables be
 
 ### Verified Publisher signal
 
-A lighter, cheaper trust signal layered on top of the Quality Scale — modeled on VS Code's and npm's verified-publisher pattern.
+A lighter, cheaper trust signal layered on top of the Quality Scale. It binds a
+publisher identity to demonstrated control of a domain and release-signing key.
 
 For external packages and reports (post-launch marketplace), `publisher.verified: true` requires:
 

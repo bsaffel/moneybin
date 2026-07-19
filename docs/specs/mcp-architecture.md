@@ -42,7 +42,9 @@ in-progress
 
 ### Import-first rationale
 
-Traditional personal finance tools (Beancount, GnuCash, YNAB) treat manual transaction entry as a primary workflow. This made sense when bank data was hard to get. In 2026, with OFX exports, CSV downloads, and Plaid API access, manual entry is a legacy interaction model.
+MoneyBin is designed around records from files and connectors. With OFX exports,
+CSV downloads, and provider APIs available, source-backed imports give every
+transaction durable provenance; manual entry cannot provide that guarantee.
 
 MoneyBin's position:
 
@@ -671,7 +673,7 @@ This spec's job is to ensure that when the Apps spec arrives, it finds a tool su
 
 ### Remote HTTP transport (future milestone — design inputs)
 
-Today the server ships full-capability stdio plus **unauthenticated** HTTP fallbacks (`--transport streamable-http` and `--transport sse` — both run with no auth branch and expose the identical full tool surface); authenticated remote HTTP is a future milestone, not part of v1. The auth model, token lifecycle, and scope semantics are a one-way-door surface, so capturing the shape now — while it costs nothing — keeps the eventual spec from re-deriving it. Shipped competitor implementations prove out each piece:
+Today the server ships full-capability stdio plus **unauthenticated** HTTP fallbacks (`--transport streamable-http` and `--transport sse` — both run with no auth branch and expose the identical full tool surface); authenticated remote HTTP is a future milestone, not part of v1. The auth model, token lifecycle, and scope semantics are a one-way-door surface, so capturing the required properties now keeps the eventual spec from re-deriving them:
 
 - **Scope-filtered tool registration at connect.** Tools outside the session's granted scope are never registered, so they never appear in the tool list — better AX than registering everything and refusing at call time. This composes with, rather than reopens, the §3 "full surface at connect" decision: full surface *within the granted scope*.
 - **Self-issued OAuth for self-hosters.** A self-hosted instance mints its own per-client, scope-exact tokens with no dependency on a cloud identity provider — a shipped open-source implementation demonstrates this end to end. A hosted deployment may still front a managed IdP; the self-hosted path must not require one.

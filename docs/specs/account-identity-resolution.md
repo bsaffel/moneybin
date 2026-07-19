@@ -93,72 +93,25 @@ note above also understates aggregator exports: Monarch/Tiller account labels
 often embed the last4 (`Daily Expense (...1789)`). Decision 8's capture table is
 authoritative.
 
-## Prior art
+## Identity evidence
 
-Parallel research across seven well-documented players (GnuCash, Plaid,
-SnapTrade, Firefly III, Actual Budget, Maybe, Beancount/hledger) converges hard:
+The source data establishes the constraints directly:
 
-**Every serious tool keeps a canonical account distinct from per-source ids.**
-- **Actual Budget** — internal account UUID `id` + the provider's external
-  `account_id` / `official_name` / `account_sync_source` stored on the same row;
-  a one-time "Link Account" step, then remembered. Transaction dedup is a
-  separate layer keyed on `imported_id` (OFX FITID), with a 5-day / exact-amount
-  / fuzzy-payee fallback.
-- **GnuCash** — canonical Chart-of-Accounts account + an attached **"Online ID"**
-  (OFX `BANKID`+`ACCTID`); first import shows an account-selection dialog, then
-  re-imports auto-route silently; mappings editable later in an "Import Map
-  Editor."
-- **Firefly III** — asset account matched by **IBAN / account number**
-  auto-match ("if the IBAN matches you have no choice"); only genuinely ambiguous
-  rows fall to the manual mapping dropdown; resolution persisted in a reusable
-  config.
-- **Plaid `persistent_account_id`** / **SnapTrade `institution_account_id`** —
-  purpose-built *stable cross-link keys*, distinct from the ephemeral
-  connection-scoped id, specifically to trace the same account across re-links.
-- **Beancount / hledger** — the cautionary counter-examples: the account *name*
-  **is** the identity, with no cross-source layer, so they structurally **cannot**
-  auto-collapse the same account across sources.
-
-A second round of research focused on the **import-time interaction** —
-how each tool learns *which account/institution a file belongs to* — found an
-even stronger convergence: **the account is a binding the user makes, not a fact
-detected from the file.**
-
-- **Actual Budget** — you open an account, then import *into* it; the file's own
-  identity is irrelevant.
-- **GnuCash** — the CSV assistant has a base **"Account" dropdown** (pick the
-  target up front); OFX binds bank-id→account once, then remembers it.
-- **Firefly III** — auto-matches on IBAN/number, and when the file lacks them
-  falls back to a user-picked **"Default import account."**
-- **hledger / beancount** — one rules-file / importer **bound to one account**
-  (`account1`, `account()`), reused silently.
-- **Maybe** — a per-distinct-value account-mapping review (match-by-name or
-  **"create new account"**), remembered as a reusable template.
-
-And **institution is not a concept at import time in any of them** — it folds
-into "the account." Only Tiller's CSV carries an `Institution` column; only the
-aggregator *connect* flows (Plaid Link's institution picker) select it
-explicitly.
-
-Lessons that drive this design:
-
-1. **GnuCash's defining limitation is exactly our core requirement.** GnuCash
-   stores only **one** Online ID per account, so it can't collapse the same
-   account arriving under different source keys. We must support **many native
-   refs → one canonical account (1:N)**. This is the single most transferable
-   idea: a canonical account + a *set* of attached native identity keys.
-2. **Plaid's dedup guidance demotes `institution + last4` to a candidate** — with
-   a hard warning: *"Never detect duplicates by matching a mask with an account
-   number"* (a `mask` is usually but not always the last 4); treat a
-   composite-only match as a **candidate requiring confirmation, not an
-   auto-merge**.
-3. **The account is bound, not detected — so confirm at first contact, then
-   remember.** The reliable path is: auto-resolve on a remembered ref or a strong
-   confirmer; otherwise *ask once* (at import, with candidates and a "new account"
-   escape) and remember the binding. This is the universal first-contact pattern,
-   and it maps directly onto MoneyBin's existing `import_preview`→`import_confirm`
-   seam — which today confirms *columns* and must be extended to confirm the
-   *account* (see [§Decision 7](#decision-7--import-time-ux--ax-detect--confirm--remember)).
+1. **A canonical account has no universal natural key.** A full number reaches
+   some file imports but not every provider; a provider token is source-specific;
+   and a display name is mutable and collision-prone. One real account can arrive
+   under many native references, so MoneyBin needs **many native refs → one
+   canonical account (1:N)**.
+2. **`institution + last4` is evidence, not identity.** A mask is often—but not
+   always—the last four digits, and the same combination can describe more than
+   one account. A composite-only match therefore creates a review candidate; it
+   never auto-merges accounts.
+3. **The account is bound, not detected.** Auto-resolve only on a remembered ref
+   or a strong confirmer. At first contact, otherwise ask once with candidates
+   and a "new account" escape, then remember the accepted binding. This extends
+   the existing `import_preview`→`import_confirm` seam from column confirmation
+   to account confirmation (see
+   [§Decision 7](#decision-7--import-time-ux--ax-detect--confirm--remember)).
 
 ## Decision 1 — Canonical `account_id` is an opaque, minted, non-PII surrogate
 
@@ -248,8 +201,7 @@ the existing repo-enforced-invariant pattern):**
   source_origin, ref_value)` is unique among `accepted` rows where
   `ref_kind='source_native'`. Scoping by `source_origin` prevents cross-
   institution slug collisions (two banks each with a "checking" CSV → distinct
-  `source_origin` → distinct keys). This is what makes re-import idempotent (the
-  "remembered mapping" of GnuCash / Actual / Firefly).
+  `source_origin` → distinct keys). This is what makes re-import idempotent.
 - **Strong-ref uniqueness** — `(ref_kind, ref_value)` is unique among `accepted`
   rows where `ref_kind ∈ {full_number, persistent_token}`: one strong ref → one
   canonical account.
@@ -433,14 +385,13 @@ gold key and the unmatched fallback. If `transaction_id` keeps depending on
 `account_id`, every account re-mint or merge re-hashes every affected
 `transaction_id`, orphaning all `app.*` curation keyed on it.
 
-The field is near-unanimous (Actual, Firefly, Maybe, GnuCash, Plaid): **content
-must not *be* identity** — identity is stable, the source key is a separate dedup
-key. But those tools *mutate in place*; MoneyBin *derives* `core`. A true stable
+A bare content hash cannot provide stable references when source identity is
+enriched or observations merge. But MoneyBin *derives* `core`; a true stable
 surrogate would need a per-transaction identity registry that survives every
-rebuild — hot app-state at transaction volume, weakening derive-from-raw where it
-matters most. Plaid (the closest analog) instead re-mints on the pending→posted
-enrichment and ships a **forwarding pointer** (`pending_transaction_id`). Full
-analysis + the account-vs-transaction asymmetry: [ADR-015](../decisions/015-transaction-identity-content-derived.md).
+rebuild—hot app-state at transaction volume, weakening derive-from-raw where it
+matters most. The required contract is a **forwarding pointer** when an id
+changes. Full analysis and the account-vs-transaction asymmetry are in
+[ADR-015](../decisions/015-transaction-identity-content-derived.md).
 
 **Decision: content-derived id + alias forwarding (not a surrogate).**
 
@@ -479,10 +430,10 @@ analysis + the account-vs-transaction asymmetry: [ADR-015](../decisions/015-tran
    transactions hash their own identity.
 3. **Alias map for reference durability.** A new `app.transaction_id_aliases`
    (`old_id → new_id`, append-only, written only on id-changing merges) lets SQL,
-   agent, external, and curation-FK references resolve old→new — the Plaid pointer
-   model. `transaction_id` is exposed via `sql_query` / `moneybin://schema`, so
-   this resolution contract is documented there: a held id stays *resolvable*,
-   not necessarily byte-stable.
+   agent, external, and curation-FK references resolve old→new.
+   `transaction_id` is exposed via `sql_query` / `moneybin://schema`, so this
+   resolution contract is documented there: a held id stays *resolvable*, not
+   necessarily byte-stable.
 
 Brittleness in any one source key (a mutated FITID; CSV's description-bearing
 per-source hash) thus degrades to a forwarding pointer, never an orphan. Two
@@ -643,7 +594,7 @@ is a bare slug. When the confirm outcome is **"new account,"** capture alongside
 the binding: **display name**, **account subtype** (checking/savings/**credit** —
 drives sign convention + net-worth inclusion), **last_four**, and **currency**.
 All four are **existing `app.account_settings` fields** (`display_name`,
-`account_subtype`, `last_four`, `iso_currency_code`), so this needs no new schema
+`account_subtype`, `last_four`, `currency_code`), so this needs no new schema
 and isn't blocked on `account-subtype-detail.md` / `multi-currency.md` (those
 refine validation/semantics later). Inferred defaults (subtype from the account
 name, currency from a Tiller column / OFX `CURDEF`) pre-fill the confirm; the user

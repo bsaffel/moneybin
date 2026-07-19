@@ -191,10 +191,14 @@ jobs:
         run: ./scripts/smoke_install.sh dist
 
   test-integration:
-    name: Integration tests
+    name: Integration tests (shard ${{ matrix.group }})
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
 
@@ -211,8 +215,21 @@ jobs:
           curl -fsSL https://install.duckdb.org | sh
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
+      # Shard the integration suite with pytest-split, same pattern as test-unit
+      # and test-e2e. This was the workflow's critical path at ~12.5 min — more
+      # than double any other job — so it, not Scenarios, set overall PR time.
+      # 4-way brings it under the ~5 min Scenarios floor.
+      #
+      # NOTE: `make update-test-durations` records `unit or e2e or scenarios`
+      # only, so these tests have no entry in .test_durations yet and pytest-split
+      # falls back to a count-based split. That already wins here (integration is
+      # the long pole by wall-clock, not by per-test variance), and the marker has
+      # been added to the durations target so the next refresh balances by time.
       - name: Test
-        run: uv run pytest tests/ -m integration -v --durations=25
+        run: |
+          uv run pytest tests/ -m integration -v \
+            --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
+            --durations=25
 
   test-e2e:
     name: E2E tests (shard ${{ matrix.group }})

@@ -19,6 +19,12 @@ doesn't change between PRs.
 This module is the single bottleneck for "what gets masked." Future
 classes added to ``DataClass`` MUST have an entry in
 ``_TRANSFORMS`` — the unit tests will fail otherwise.
+
+Because ``_TRANSFORMS`` is that bottleneck, it is also the only honest source
+for how *strongly* a class masks. ``mask_strength`` measures each entry rather
+than restating the answer in a second list, so guards that compare two classes
+(declared vs. derived report classification, for one) cannot be weakened by
+adding a ``DataClass`` and forgetting to update a list somewhere else.
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ import types
 import typing
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
+from enum import IntEnum
 from typing import Annotated, Any, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
@@ -80,6 +87,22 @@ def _mask_routing_number(value: str | None, _consent: ConsentSet | None) -> str 
     return "*****"
 
 
+def _mask_unresolved(value: Any, _consent: ConsentSet | None) -> Any:
+    """UNRESOLVED → constant ``"*****"`` (or ``None`` for nullable).
+
+    Deliberately typed ``Any``, not ``str | None``: this is the only transform
+    reached by a column whose TYPE lineage never established either. The dynamic
+    SQL surface routes DuckDB values of any shape here — a ``BIGINT`` from
+    ``SUMMARIZE``, a whole-row ``STRUCT`` from ``SELECT dim_accounts FROM
+    core.dim_accounts`` — and a mask that indexed or measured the value (as
+    ``_mask_account_identifier`` does) would raise ``TypeError`` on those and
+    fail the query OPEN through the caller's error path.
+    """
+    if value is None:
+        return None
+    return "*****"
+
+
 def _passthrough(value: Any, _consent: ConsentSet | None) -> Any:
     return value
 
@@ -88,6 +111,7 @@ _TRANSFORMS: dict[DataClass, Any] = {
     DataClass.ACCOUNT_IDENTIFIER: _mask_account_identifier,
     DataClass.INSTITUTION_ACCOUNT_NUMBER: _mask_account_identifier,
     DataClass.ROUTING_NUMBER: _mask_routing_number,
+    DataClass.UNRESOLVED: _mask_unresolved,
     # HIGH-tier — pass through in PR 2 (PR 3 adds bucketing).
     DataClass.BALANCE: _passthrough,
     DataClass.TXN_AMOUNT: _passthrough,
@@ -106,6 +130,69 @@ _TRANSFORMS: dict[DataClass, Any] = {
     DataClass.RECORD_ID: _passthrough,
     DataClass.TIMESTAMP_OBSERVABILITY: _passthrough,
 }
+
+
+class MaskStrength(IntEnum):
+    """How much of a value a class's transform destroys. Ordered weakest-first.
+
+    Tier says how *sensitive* a class is; strength says how *hard* its transform
+    hides the value. The two are independent, and conflating them leaks: all
+    four CRITICAL classes share ``Tier.CRITICAL``, but ROUTING_NUMBER and
+    UNRESOLVED mask WHOLE while ACCOUNT_IDENTIFIER and
+    INSTITUTION_ACCOUNT_NUMBER mask PARTIAL (``"****" + value[-4:]``). Standing
+    a PARTIAL class in for a WHOLE one at the same tier publishes the last four
+    characters of a value the declaration does not describe — the same
+    order-dependence ``sql_lineage._combined_class`` collapses to
+    ``FAIL_CLOSED_CLASS``, reached through the declaration path instead.
+    """
+
+    PASSTHROUGH = 0
+    PARTIAL = 1
+    WHOLE = 2
+
+
+# Two probes of equal length sharing no character in any position, so no
+# partial mask can map both to one output and be misread as WHOLE.
+_STRENGTH_PROBES = ("1234567890AB", "ZYXWVUTSRQPO")
+
+
+def mask_strength(data_class: DataClass) -> MaskStrength:
+    """Return how strongly ``data_class``'s transform masks, measured from it.
+
+    Strength is *observed* by running the class's own ``_TRANSFORMS`` entry over
+    two disjoint probes — never read off a hand-maintained list of "which
+    classes mask wholly." A second list would be a copy of ``_TRANSFORMS`` that
+    nothing forces anyone to update: adding a ``DataClass`` whose transform
+    masks partially would leave it absent from the list, silently ranked as
+    strong as a whole mask, and every guard built on this ordering would weaken
+    without a single test turning red. Measuring means a new class gets a real
+    answer the moment its transform lands.
+
+    A transform whose output is independent of its input destroys the value
+    entirely (WHOLE); one that echoes the input destroys nothing (PASSTHROUGH);
+    anything in between retains some of it (PARTIAL). A future
+    information-destroying-but-input-dependent transform (a hash, say) measures
+    PARTIAL, which is the conservative direction — it makes this ordering
+    stricter than reality and fails a guard loudly rather than passing one
+    quietly.
+
+    Raises ``KeyError`` for a class with no ``_TRANSFORMS`` entry rather than
+    defaulting: an unmappable class has no knowable strength, and defaulting one
+    is precisely how the guard would weaken in silence. ``test_redaction.py``'s
+    completeness test keeps the mapping total.
+    """
+    transform = _TRANSFORMS.get(data_class)
+    if transform is None:
+        raise KeyError(
+            f"{data_class.name} has no _TRANSFORMS entry, so its mask strength "
+            "is unknowable. Add the transform — never default it."
+        )
+    outputs = [transform(probe, None) for probe in _STRENGTH_PROBES]
+    if outputs == list(_STRENGTH_PROBES):
+        return MaskStrength.PASSTHROUGH
+    if outputs[0] == outputs[1]:
+        return MaskStrength.WHOLE
+    return MaskStrength.PARTIAL
 
 
 def has_active_transform(payload_type: Any) -> bool:

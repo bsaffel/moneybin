@@ -1,22 +1,60 @@
-<!-- Last reviewed: 2026-07-09 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Roadmap
 
-Pre-v1 roadmap. Each milestone is a coherent slice of work, not a calendar date — we don't commit dates pre-v1. Statuses below reflect what's merged to `main` today; the dated record of individual changes lives in [`CHANGELOG.md`](../CHANGELOG.md). For "is this for me?" see [`audience.md`](audience.md); for where MoneyBin fits and who to use instead, [`comparison.md`](comparison.md); for shipped capability detail, [`features.md`](features.md).
+MoneyBin is pre-v1 and solo-maintained. The AGPL license guarantees the code
+outlives the maintainer — anyone can fork, host, or continue development under
+the same terms. This page shows direction, not dates; we don't commit to dates
+pre-v1.
 
-**Maturity signal.** MoneyBin is pre-v1 and pre-launch. File-based usage (CSV/OFX/QFX/QBO import, categorization, net-worth, MCP query) has shipped and is in daily use by the author. Plaid sync's link → sync → reconcile round-trip is built and validated end-to-end against a Production Plaid account by the author; the remaining gap is that no one other than the author has exercised it yet.
+For what you can use now, see [What Works Today](features.md); the
+[Changelog](../CHANGELOG.md) carries the dated record.
 
-**Your data, your file.** MoneyBin stores everything in a local encrypted DuckDB file on your machine. Today's exit path is direct SQL access to that file — the data is yours. A one-command `moneybin export` (CSV / Excel / Google Sheets) is an M1 deliverable, not yet shipped.
+## Where it stands
 
-## How we sequence — depth before storefront
+The engine comes before the storefront: each milestone closes on a falsifiable
+gate, not a calendar date. The Plaid link → sync → reconcile flow is
+author-tested against a production account but still needs non-author
+validation. Start with the synthetic `moneybin demo` profile to explore the
+product without real financial data.
 
-MoneyBin is built to be the option a serious user converges on because the foundation is rock-solid. So we finish the engine before we polish the storefront. Work is organized into four milestones, each closed by a **test-functionality gate** — a concrete, falsifiable bar the whole milestone must pass before the next one starts (with one deliberate exception: the first public release, below):
+## Milestones and their gates
 
-| Milestone | What it means | Closes when (the gate) |
+| Milestone | Focus | Closes when | State |
+|---|---|---|---|
+| **M0 — Foundation** | Secure local storage, CLI/MCP frameworks, privacy middleware | Shipped. | ✅ |
+| **M1 — Ingestion Core** | Every way money gets in, landing in one trustworthy encrypted warehouse | Every import format passes an end-to-end scenario; a multi-currency round-trip reconciles to a bank statement within $0.01; investment cost basis ties to a real broker 1099-B for a full tax year; `system doctor` is clean. | 🚧 |
+| **M2 — Analysis & Reports** | Every essential report, each answer traceable to source rows | Each report has a correctness scenario against known ground truth; categorization and transfer accuracy hold their thresholds; every number is explainable via lineage. | 🚧 |
+| **M3 — Productization & Distribution** | Evaluation, packaging, web UI, and the opt-in hosted tier | The full suite is green; the anonymized real-data parity check passes; privacy and security checks pass. M3 close = v1. | 🚧 |
+
+A quiet first public release precedes those gates. Its bar is narrower —
+installable, not done: imports validated against real data, the Plaid
+round-trip exercised beyond the author, a minimal web surface, and a PyPI
+publish. Availability, not promotion.
+
+## Current and planned increments
+
+| Address | Outcome | Status |
 |---|---|---|
-| **M0 — Foundation** ✅ | The generic engine — encryption, database, MCP/CLI frameworks, testing infrastructure, privacy middleware. | Shipped. |
-| **M1 — Ingestion Core** 🚧 | Every way your money gets in — every file format, Plaid sync, investments, multi-currency — landing in one trustworthy, auditable, encrypted warehouse. | **Ingestion-Complete:** every import format has a passing end-to-end scenario; a multi-currency round-trip and an investment 1099-B tie-out both reconcile; the pipeline reproduces a parity check against real (anonymized) data; `system doctor` is clean. |
-| **M2 — Analysis & Reports** | Every essential report and answer, built on that complete foundation — net worth, budgets, recurring/subscriptions, goals, and more — each traceable back to source rows. | **Analysis-Complete:** each report has a correctness scenario checked against known ground truth; categorization and transfer accuracy hold their thresholds; every report number is explainable via lineage. |
-| **M3 — Productization & Distribution** | The approachable, delightful surface — Web UI, migration guides, packaging, and the opt-in hosted tier — now that there's a complete, hardened app underneath. | **Pre-Distribution:** the full suite is green; the anonymized real-data parity check passes; `system doctor` is clean on a real profile; privacy/security checks pass. **M3 close (hosted launch) = v1.** |
+| **M0** | Encryption, multi-profile storage, database coordination, CLI/MCP foundations, privacy controls, integrity checks | ✅ shipped |
+| **M1A–M1F** | Tabular and financial-file imports, inbox workflow, matching, categorization, curation, Google Sheets | ✅ shipped |
+| **M1G** | Plaid cash, credit-card, and investment sync | ✅ shipped; non-author validation open — [sync-plaid.md](specs/sync-plaid.md) |
+| **M1I** | Native PDF import: deterministic recipe ladder, saved per-format replay, agent-bridge escalation | ✅ shipped — [smart-import-pdf.md](specs/smart-import-pdf.md) |
+| **M1J** | Investment ledger, tax lots, cost basis, realized gains, Plaid investment ingestion | 🚧 ledger shipped; closes on a real-broker 1099-B tie-out; market prices and net-worth integration remain — [investments-data-model.md](specs/investments-data-model.md) |
+| **M1H, M1Q** | Import confirmation and contributor extension contracts | 🚧 — [smart-import-confirmation.md](specs/smart-import-confirmation.md), [extension-contracts.md](specs/extension-contracts.md) |
+| **M1K** | Multi-currency (capture shipped; conversion staged on top) | 🚧 — [multi-currency.md](specs/multi-currency.md) |
+| **M1L–M1P** | Recovery completion, pipeline reconciliation, export bundle, anonymized fixtures | 🚧/📐/🗓️ per increment — see the [spec index](specs/INDEX.md) |
+| **M1S–M1W** | Cross-source account, merchant, and category identity resolution; category taxonomy audit | ✅ shipped |
+| **M1R, M1X** | Format-compatibility fixtures; account subtype detail and Plaid liabilities | 🗓️ planned |
+| **M2A–M2B** | Curated reports plus net-worth and balance tracking | ✅ shipped |
+| **M2C–M2P** | Budgets, recurring review, goals, projections, packages, richer report lineage | 📐/🗓️ per increment — see the [spec index](specs/INDEX.md) |
+| **M3A** | Safe evaluator path: `moneybin demo` and first-run | 🚧 demo shipped; first-run work remains |
+| **M3B** | Packaging and tester distribution (PyPI first; brew and `.mcpb` follow) | 🚧 release automation in place; no published package yet |
+| **M3C** | Local web UI for review, data quality, accounts, reports | 📐 — [ui-architecture.md](specs/ui-architecture.md) |
+| **M3D, M3H, M3J** | Remote MCP with auth (unlocks ChatGPT web and claude.ai connectors), opt-in hosted tier, self-host operations | 🗓️ planned |
+| **M3E–M3G, M3I** | Migration guides, doc polish and landing, agent context resource, extension contributor UX | 🚧/🗓️ per increment |
+| **M3K–M3M** | CLI/MCP UX standards, shared UI architecture, MCP App surface | 📐/🗓️ per increment |
+| **M3N** | MCP first-run setup (elicitation-driven profile creation) | ✅ shipped |
+| **M3O** | First-party directory listings (Claude Connectors Directory, ChatGPT Apps) | 📐 — [ai-client-compatibility.md](specs/ai-client-compatibility.md) |
 
 Deliberately, the **front end is sequenced after the engine and the reports**. A narrow review console ships earlier (M3A, pulled forward) — but as a *testing and trust* surface, not a user-acquisition play. We'd rather be complete and correct than first.
 
@@ -173,25 +211,24 @@ Designed or noted, but not gating launch. Listed without commitment.
 
 ## Explicitly out of scope
 
-To keep solo capacity focused, these are **not on the roadmap** — many never will be. When one of these is a hard requirement, the alternative noted is genuinely the better fit (see [`audience.md`](audience.md) for the full "not yet for you" table).
+Solo capacity stays focused. These are not on the roadmap — many never will
+be. Where one is a hard requirement, the noted alternative is the better fit
+(the [audience guide](audience.md) has the full table).
 
-- **No native mobile apps.** A web-based read-only viewer is the most we'll ship; account linking and editing stay on desktop.
-- **First-class split transactions** (parked; split-via-annotation ships in M1E).
-- **Envelope budgeting** (zero-based). Use YNAB or Actual Budget.
+- **Native mobile apps.** The planned web UI will run in a phone browser; account linking and editing stay on desktop.
+- **Envelope budgeting.** Use YNAB or Actual Budget.
 - **Direct broker APIs beyond Plaid.** CSV import covers the long tail.
-- **Receipt scanning / per-item OCR.**
-- **Email-forwarding ingestion.**
-- **Tax-form generation** (Schedule D, Form 8949). Use Beancount or a professional accountant. The `us_tax` reference package ships *reporting* helpers (realized gain/loss summaries, cost-basis snapshots) on top of M1J investments — not official form output.
-- **Public REST API for third-party integrations.** Build when a real consumer requests it.
-- **Windows native distribution.** Linux works via PyPI; Mac is the curator audience.
-- **Enterprise / SOC 2 path.** Consumer + indie tier; revisit only on enterprise signal.
+- **Receipt scanning, per-item OCR, and email-forwarding ingestion.**
+- **Tax-form generation** (Schedule D, Form 8949). The `us_tax` package ships reporting helpers, not official form output.
+- **Public REST API.** Built when a real consumer requests it.
+- **Windows native distribution.** macOS is the primary target; Linux runs from source.
+- **Enterprise / SOC 2 path.** Consumer and indie tier; revisit on enterprise signal.
 - **Crypto-heavy or DeFi-only tracking.** Use Rotki.
 - **Small-business accounting with payroll.** Use QuickBooks.
 
----
+## Design references
 
-## How roadmap state changes
-
-Statuses move when work merges and the relevant spec marks `implemented`. CHANGELOG records the dated merge; this page records the milestone/increment shape. The README defers here. Milestones close against the gates above — a milestone isn't "done" until its gate passes.
-
-MoneyBin is solo-maintained. The AGPL license guarantees the code outlives the maintainer — anyone can fork, host, or continue development under the same terms. See [`licensing.md`](licensing.md).
+Specs live in [`docs/specs/`](specs/), indexed by [INDEX.md](specs/INDEX.md);
+decision records in [decisions](decisions/). A spec can be more granular than
+this page; the roadmap stays the canonical map of milestone addresses and
+product direction.

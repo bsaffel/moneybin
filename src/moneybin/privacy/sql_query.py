@@ -4,8 +4,8 @@
 This is the shared primitive behind the ``sql_query`` MCP tool and the
 ``moneybin sql query`` CLI command. Both surfaces call
 :func:`execute_sql_query`, so privacy enforcement is
-structural rather than per-surface: the read-only gate, the core/app schema
-restriction, sqlglot column lineage, and CRITICAL masking all run here, below
+structural rather than per-surface: the read-only gate, the queryable-schema
+allowlist, sqlglot column lineage, and CRITICAL masking all run here, below
 the adapters. Neither surface can return rows that skipped redaction, and a
 future third surface inherits the same guarantees by calling this primitive.
 
@@ -17,6 +17,7 @@ that still import it from there.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.redaction import redact_records
 from moneybin.privacy.sql_lineage import (
+    FAIL_CLOSED_CLASS,
     SqlParseError,
     SqlSchemaError,
     derive_query_tier,
@@ -43,11 +45,10 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 
 logger = logging.getLogger(__name__)
 
-# Data queries may reference only the schemas the privacy CLASSIFICATION
-# registry covers, so every queryable column has a known data class and the
-# masking guarantee is sound. reports.* is deferred until its views are
-# classified (tracked as a follow-up); raw/prep/meta are internal schemas.
-_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app"})
+# Data queries may reference these schemas: core/app (CLASSIFICATION registry)
+# and reports (declared @report classes, ADR-013). raw/prep land in Phase 2
+# (CRITICAL declarations + content-net floor); meta/seeds stay internal.
+_ALLOWED_QUERY_SCHEMAS = frozenset({"core", "app", "reports"})
 
 # --- Read-only / file-access safety gate -----------------------------------
 # DuckDB table-valued functions that read local files or make network requests.
@@ -191,11 +192,107 @@ def _fetch(
     return columns, rows[:max_rows], truncated
 
 
+def _classes_by_result_column(
+    columns: list[str],
+    output_classes: dict[str, DataClass],
+    query: str,
+) -> dict[str, DataClass]:
+    """Map every DuckDB RESULT column to a DataClass, failing closed on a miss.
+
+    Matching is BY NAME, which is robust to any divergence between sqlglot's
+    projection order and DuckDB's runtime column order (the ``SELECT *`` case) —
+    a positional join is not. Named projections and expanded ``*`` columns match
+    directly.
+
+    A miss means one of two very different things, and they must not be
+    conflated:
+
+    1. **Naming-only divergence.** sqlglot keyed an unaliased projection
+       differently than DuckDB named it (``COUNT(*)`` → DuckDB
+       ``count_star()`` vs lineage ``*``; ``MIN(account_id)`` → DuckDB
+       ``min(account_id)`` vs lineage ``?_0``). Lineage RESOLVED this column;
+       only the label differs.
+    2. **Missing lineage** — the dangerous case: the query produced runtime
+       columns lineage never saw at all. ``COLUMNS('.*')``, ``PIVOT``,
+       ``UNPIVOT``, ``SUMMARIZE`` and ``UNNEST`` over a row struct each emit
+       12–19 such columns from a single projection.
+
+    Cardinality separates them. Case 1 preserves the projection count, so when
+    it matches, position reconciles the two namings exactly (``output_classes``
+    is insertion-ordered by projection). Case 2 is precisely the case where one
+    projection fans out into many runtime columns, so the counts disagree and
+    every unmatched column fails closed to ``FAIL_CLOSED_CLASS``.
+
+    Failing closed on case 1 is not "merely conservative" — it masks
+    ``SELECT COUNT(*)``, returning ``'*****'`` and a CRITICAL tier for the most
+    common analytical query there is.
+
+    A miss must NOT fall back to the max class present in ``output_classes``.
+    That is what this code used to do, under a comment asserting "an unmasked
+    CRITICAL value can therefore never slip through" — and the assertion was
+    false in the only case that mattered. When lineage classified the single
+    opaque projection AGGREGATE, "the most sensitive class present" WAS
+    AGGREGATE, so all 19 columns of ``core.dim_accounts`` fell back to LOW and
+    ``routing_number`` was returned in the clear. A fallback computed from the
+    classes that happened to resolve cannot bound the classes that did not.
+    """
+    # A name shared by two result columns identifies neither. Lineage would
+    # hand both the one class it resolved — and since the caller builds records
+    # with dict(zip(columns, row)), the LAST value wins, so a safe literal's
+    # class can front for a sensitive column that overwrites it
+    # (SELECT 0 AS routing_number, COLUMNS('routing_number')). Nothing
+    # downstream can recover the association, so the whole row fails closed.
+    if len(set(columns)) != len(columns):
+        return {col: _fail_closed(col, query) for col in columns}
+
+    if all(col in output_classes for col in columns):
+        return {col: output_classes[col] for col in columns}
+
+    if len(columns) == len(output_classes):
+        positional = dict(zip(columns, output_classes.values(), strict=True))
+        # Position is only trustworthy if the two orderings actually agree, and
+        # every column whose name DID match is a free check on that: if any of
+        # them lands on a different class positionally, the orders are skewed
+        # and every positional answer here is suspect — including the ones for
+        # columns with no name to check against. Fall through to fail closed
+        # rather than shift a LOW class onto a CRITICAL column.
+        if all(
+            positional[col] is output_classes[col]
+            for col in columns
+            if col in output_classes
+        ):
+            return positional
+
+    return {
+        col: (
+            output_classes[col] if col in output_classes else _fail_closed(col, query)
+        )
+        for col in columns
+    }
+
+
+def _fail_closed(column: str, query: str) -> DataClass:
+    sql_hash = hashlib.sha256(query.encode()).hexdigest()[:12]
+    column_hash = hashlib.sha256(column.encode()).hexdigest()[:12]
+    # For an ordinary named/expanded projection the column NAME is an
+    # identifier DuckDB derives from the query text. But the opaque-projection
+    # family this fail-closed path exists to catch — PIVOT, UNPIVOT,
+    # COLUMNS(lambda) — is exactly the case where DuckDB derives the column
+    # NAME from ROW DATA (e.g. one output column per distinct merchant name),
+    # so this path cannot assume the name is safe to log. Only its hash is
+    # logged, same treatment as the query text (No PII in logs).
+    logger.warning(
+        f"sql_query: result column (sha256={column_hash}) absent from lineage "
+        f"output; failing closed (sql sha256={sql_hash})"
+    )
+    return FAIL_CLOSED_CLASS
+
+
 def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryResult:
     """Run a read-only SQL query with full privacy enforcement.
 
     Pipeline: read-only gate → parse → metadata-or-data routing → (data:
-    core/app schema gate → sqlglot lineage → execute → CRITICAL masking).
+    allowlisted schema gate → sqlglot lineage → execute → CRITICAL masking).
     Returns redacted rows plus the resolved tier and per-column classes.
 
     Args:
@@ -242,9 +339,12 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         disallowed = tables_outside_schemas(qtree, snapshot, _ALLOWED_QUERY_SCHEMAS)
         if disallowed:
             raise UserError(
-                "Queries are limited to the core and app schemas.",
+                "Queries are limited to these schemas: "
+                f"{', '.join(sorted(_ALLOWED_QUERY_SCHEMAS))}.",
                 code=error_codes.SQL_SCHEMA_NOT_ALLOWED,
-                hint="Use the curated report views; raw/prep are internal schemas.",
+                hint=(
+                    "reports is directly queryable; raw/prep/meta are internal schemas."
+                ),
                 details={"disallowed": sorted(set(disallowed))},
             )
         output_classes = resolve_output_classes(qtree, snapshot, query)
@@ -270,28 +370,19 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
         ) from e
 
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    # Map each DuckDB result column to its DataClass BY NAME. This is robust to
-    # any divergence between sqlglot's projection order and DuckDB's runtime
-    # column order (the SELECT * case), which a positional join is not. Named
-    # projections and expanded `*` columns match by name directly. Unaliased
-    # expressions are the one mismatch — sqlglot names MIN(account_id) ''/'?_i'
-    # while DuckDB names it 'min(account_id)' — so they FAIL CLOSED to the
-    # query's max tier. An unmasked CRITICAL value therefore can never slip
-    # through: a name we can't resolve is treated as the most sensitive class
-    # present (over-redaction, not under-redaction).
-    fallback = (
-        max(output_classes.values(), key=lambda c: c.tier)
-        if output_classes
-        else DataClass.AGGREGATE
-    )
-    col_classes = {col: output_classes.get(col, fallback) for col in columns}
+    col_classes = _classes_by_result_column(columns, output_classes, query)
     redacted = redact_records(records, col_classes, consent=None)
 
     return SqlQueryResult(
         records=redacted,
         columns=columns,
-        output_classes=output_classes,
-        tier=derive_query_tier(output_classes),
+        # The per-RESULT-column map, not lineage's raw output. Lineage keys its
+        # answer by sqlglot projection name, which for the opaque constructs
+        # below is not a result column name at all; reporting that map would let
+        # `tier` and `classes_returned` advertise LOW for a column this function
+        # just masked.
+        output_classes=col_classes,
+        tier=derive_query_tier(col_classes),
         # total_count > returned makes has_more true downstream. We don't pay
         # for an exact COUNT(*); +1 signals "at least one more row".
         total_count=max_rows + 1 if truncated else len(records),

@@ -29,7 +29,11 @@ from moneybin.connectors.gsheet.adapters.base import (
     GSheetConnection,
     LoadResult,
 )
-from moneybin.connectors.gsheet.errors import GSheetError, GSheetUnreachableError
+from moneybin.connectors.gsheet.errors import (
+    GSheetError,
+    GSheetSignConfirmationRequiredError,
+    GSheetUnreachableError,
+)
 from moneybin.connectors.gsheet.sheets_api import SheetsAPI
 from moneybin.connectors.gsheet.url_parser import parse_sheet_url
 from moneybin.database import Database
@@ -78,6 +82,8 @@ class ConnectionRequest:
     account_id: str | None = None
     column_mapping: dict[str, str] | None = None
     sign: SignConventionType | None = None
+    # Internal MCP retry signal after human elicitation; never persisted.
+    human_sign_confirmation: bool = False
     yes: bool = False
     accept_seed_fallback: bool = False
     no_initial_pull: bool = False
@@ -108,6 +114,121 @@ class GSheetPurgePlan:
     connection_before_state: dict[str, Any]
     raw_before_state: tuple[dict[str, Any], ...]
     blast_radius: dict[str, int]
+
+
+def _inferred_sign_evidence_header(detection: DetectionResult) -> str | None:
+    """Return the exact mapped amount header behind an inferred inversion."""
+    if detection.sign_convention != "negative_is_income":
+        return None
+    return next(
+        (
+            source_header
+            for source_header, destination in detection.column_mapping.items()
+            if destination == "amount"
+        ),
+        None,
+    )
+
+
+def _resolve_transactions_sign_convention(
+    *,
+    detection: DetectionResult,
+    column_mapping: dict[str, str],
+    explicit_sign: SignConventionType | None,
+) -> tuple[str | None, str | None]:
+    """Resolve polarity from the final mapping shape and detected source role."""
+    dest_to_src = {dest: src for src, dest in column_mapping.items()}
+    has_split = (
+        "debit_amount" in dest_to_src
+        and "credit_amount" in dest_to_src
+        and "amount" not in dest_to_src
+    )
+    if has_split:
+        if explicit_sign is not None and explicit_sign != "split_debit_credit":
+            raise GSheetError(
+                f"--sign={explicit_sign!r} contradicts the resolved split "
+                "debit/credit mapping. Drop --sign (the shape implies "
+                "split_debit_credit) or change the column mapping to a "
+                "single amount column."
+            )
+        return "split_debit_credit", None
+
+    if explicit_sign == "split_debit_credit":
+        raise GSheetError(
+            "--sign='split_debit_credit' contradicts the resolved single "
+            "amount mapping. Drop --sign (the shape requires a single-column "
+            "convention) or map both debit_amount and credit_amount."
+        )
+
+    if explicit_sign is not None:
+        return explicit_sign, None
+
+    if detection.sign_convention != "split_debit_credit":
+        selected_source = dest_to_src.get("amount")
+        detected_source = next(
+            (
+                source_header
+                for source_header, destination in detection.column_mapping.items()
+                if destination == "amount"
+            ),
+            None,
+        )
+        if selected_source != detected_source:
+            source_label = (
+                repr(selected_source) if selected_source is not None else "None"
+            )
+            raise GSheetError(
+                "The mapping replaces the detected amount source with "
+                f"{source_label}, so MoneyBin cannot reuse the discarded "
+                "column's inferred polarity. Re-run with --sign "
+                "negative_is_expense or --sign negative_is_income; nothing "
+                "was saved or pulled."
+            )
+        return detection.sign_convention, _inferred_sign_evidence_header(detection)
+
+    selected_source = dest_to_src.get("amount")
+    selected_role = (
+        detection.column_mapping.get(selected_source) if selected_source else None
+    )
+    if selected_role == "debit_amount":
+        # The split transform records positive Debit cells as negative expenses.
+        # A single-column transform needs inversion to preserve that polarity.
+        return "negative_is_income", selected_source
+    if selected_role == "credit_amount":
+        # The split transform records positive Credit cells as positive income,
+        # which is already the native single-column convention.
+        return "negative_is_expense", None
+
+    source_label = repr(selected_source) if selected_source is not None else "None"
+    raise GSheetError(
+        "The mapping selects single amount source "
+        f"{source_label} from a detected split debit/credit layout, but MoneyBin "
+        "cannot derive that source's polarity. Re-run with --sign "
+        "negative_is_expense or --sign negative_is_income; nothing was saved "
+        "or pulled."
+    )
+
+
+def _require_inferred_sign_confirmation(
+    *,
+    resolved_convention: str | None,
+    sign_was_explicit: bool,
+    evidence_header: str | None,
+    human_sign_confirmation: bool,
+) -> None:
+    """Gate an inferred whole-ledger inversion on a human-owned signal."""
+    if (
+        resolved_convention != "negative_is_income"
+        or sign_was_explicit
+        or human_sign_confirmation
+    ):
+        return
+    if evidence_header is None:
+        raise RuntimeError("negative_is_income inference is missing header evidence")
+    raise GSheetSignConfirmationRequiredError(
+        proposed_convention="negative_is_income",
+        evidence_header=evidence_header,
+    )
 
 
 class GSheetConnectionService:
@@ -253,6 +374,7 @@ class GSheetConnectionService:
         # sign_convention_for_save is overwritten by the override path when the
         # merged mapping is split debit/credit; defaults to detection otherwise.
         sign_convention_for_save = detection.sign_convention
+        sign_evidence_header: str | None = None
         if target_adapter == "seed":
             column_mapping = detection.typed_columns
         elif target_adapter == "transactions":
@@ -314,56 +436,34 @@ class GSheetConnectionService:
                 raise GSheetError(str(e)) from e
             # Invert back to source→dest for storage.
             column_mapping = {src: dest for dest, src in merged_dest_to_src.items()}
-            # If the merged mapping is split debit/credit (whether the user
-            # added it via override or the detection produced it), the only
-            # sign convention that makes sense is split_debit_credit — the
-            # transform rejects rows when the convention disagrees with the
-            # mapping shape. Coerce here so a `--column-mapping
-            # debit_amount=Debit credit_amount=Credit` override doesn't
-            # silently persist a stale single-amount sign convention. Date
-            # format and number format remain detector-derived; remapping
-            # the date or amount source columns to a different format
-            # without `--date-format`/`--number-format` is still a documented
-            # reconnect path.
-            has_split = (
-                "debit_amount" in merged_dest_to_src
-                and "credit_amount" in merged_dest_to_src
-                and "amount" not in merged_dest_to_src
+            (
+                sign_convention_for_save,
+                sign_evidence_header,
+            ) = _resolve_transactions_sign_convention(
+                detection=detection,
+                column_mapping=column_mapping,
+                explicit_sign=req.sign,
             )
-            detector_was_split = detection.sign_convention == "split_debit_credit"
-            if has_split:
-                if req.sign is not None and req.sign != "split_debit_credit":
-                    raise GSheetError(
-                        f"--sign={req.sign!r} contradicts the resolved "
-                        "split debit/credit mapping. Drop --sign (the shape "
-                        "implies split_debit_credit) or change the column "
-                        "mapping to a single amount column."
-                    )
-                sign_convention_for_save = "split_debit_credit"
-            elif detector_was_split:
-                # Split → single via override: detector's split-only
-                # convention is no longer valid against the resolved
-                # single-amount mapping. When the caller doesn't pass
-                # --sign we fall back to the most common convention
-                # (negative_is_expense), but this is a guess: a
-                # credit-card-style export (positive_is_expense) would
-                # silently persist inverted polarity. Pass --sign on
-                # connect / reconnect to be explicit.
-                sign_convention_for_save = req.sign or "negative_is_expense"
-            else:
-                sign_convention_for_save = req.sign or detection.sign_convention
             IMPORT_DETECTION_SCORE.observe(detection.score)
             if req.column_mapping:
                 IMPORT_OVERRIDE_TOTAL.labels(channel="gsheet").inc()
-                IMPORT_CONFIRMATIONS_TOTAL.labels(
-                    channel="gsheet", tier=tier, outcome="overridden"
-                ).inc()
-            else:
-                IMPORT_CONFIRMATIONS_TOTAL.labels(
-                    channel="gsheet", tier=tier, outcome="accepted"
-                ).inc()
         else:
             column_mapping = detection.column_mapping
+
+        _require_inferred_sign_confirmation(
+            resolved_convention=sign_convention_for_save,
+            sign_was_explicit=req.sign is not None,
+            evidence_header=sign_evidence_header,
+            human_sign_confirmation=req.human_sign_confirmation,
+        )
+
+        if target_adapter == "transactions":
+            outcome = "overridden" if req.column_mapping else "accepted"
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet",
+                tier=tier,
+                outcome=outcome,
+            ).inc()
 
         connection_id = self._repo.insert(
             spreadsheet_id=spreadsheet_id,
@@ -543,9 +643,14 @@ class GSheetConnectionService:
         *,
         yes: bool = False,
         sign: SignConventionType | None = None,
+        human_sign_confirmation: bool = False,
         actor: str = "cli",
     ) -> ConnectResult:
-        """Re-detect against the current sheet, re-pin mapping, run a pull."""
+        """Re-detect, re-pin, and pull.
+
+        ``human_sign_confirmation`` is an internal MCP retry signal and is
+        never persisted.
+        """
         existing = self._repo.get(connection_id)
         if existing is None:
             raise GSheetError(f"Unknown connection: {connection_id}")
@@ -569,7 +674,6 @@ class GSheetConnectionService:
 
         adapter = ADAPTERS[existing["adapter"]]
         detection = adapter.detect(df, account_name=existing.get("account_name"))
-
         if existing["adapter"] == "transactions":
             bands = get_settings().import_.confidence
             tier = tier_for(detection.score, t_high=bands.t_high, t_med=bands.t_med)
@@ -605,41 +709,33 @@ class GSheetConnectionService:
         )
         if existing["adapter"] == "transactions":
             IMPORT_DETECTION_SCORE.observe(detection.score)
-            IMPORT_CONFIRMATIONS_TOTAL.labels(
-                channel="gsheet", tier=tier, outcome="accepted"
-            ).inc()
 
-        # Mirror connect() — coerce sign_convention to match the resolved
-        # amount shape. reconnect() doesn't accept a --column-mapping
-        # override today, so the gap only bites if the detector itself
-        # returned a sign/shape mismatch, but the symmetry keeps both
-        # write paths trustworthy as the gsheet surface evolves.
         if existing["adapter"] == "transactions":
-            dest_to_src_reconnect = {dest: src for src, dest in column_mapping.items()}
-            reconnect_has_split = (
-                "debit_amount" in dest_to_src_reconnect
-                and "credit_amount" in dest_to_src_reconnect
-                and "amount" not in dest_to_src_reconnect
+            (
+                sign_convention_to_save,
+                sign_evidence_header,
+            ) = _resolve_transactions_sign_convention(
+                detection=detection,
+                column_mapping=column_mapping,
+                explicit_sign=sign,
             )
-            reconnect_detector_was_split = (
-                detection.sign_convention == "split_debit_credit"
-            )
-            if reconnect_has_split:
-                if sign is not None and sign != "split_debit_credit":
-                    raise GSheetError(
-                        f"--sign={sign!r} contradicts the resolved split "
-                        "debit/credit mapping. Drop --sign or change the "
-                        "column mapping to a single amount column."
-                    )
-                sign_convention_to_save = "split_debit_credit"
-            elif reconnect_detector_was_split:
-                # See connect() — split→single fallback is a guess unless
-                # the caller passes --sign explicitly.
-                sign_convention_to_save = sign or "negative_is_expense"
-            else:
-                sign_convention_to_save = sign or detection.sign_convention
         else:
             sign_convention_to_save = sign or detection.sign_convention
+            sign_evidence_header = None
+
+        _require_inferred_sign_confirmation(
+            resolved_convention=sign_convention_to_save,
+            sign_was_explicit=sign is not None,
+            evidence_header=sign_evidence_header,
+            human_sign_confirmation=human_sign_confirmation,
+        )
+
+        if existing["adapter"] == "transactions":
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="gsheet",
+                tier=tier,
+                outcome="accepted",
+            ).inc()
 
         self._repo.update_mapping(
             connection_id,

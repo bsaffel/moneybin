@@ -175,7 +175,7 @@ class TestAccountSettingsModel:
             last_four="1234",
             account_subtype="checking",
             holder_category="personal",
-            iso_currency_code="USD",
+            currency_code="USD",
             credit_limit=Decimal("5000.00"),
             archived=False,
             include_in_net_worth=True,
@@ -197,11 +197,11 @@ class TestAccountSettingsModel:
             AccountSettings(account_id="a", last_four="123")
 
     @pytest.mark.unit
-    def test_iso_currency_code_format(self) -> None:
-        with pytest.raises(ValueError, match="iso_currency_code"):
-            AccountSettings(account_id="a", iso_currency_code="usd")  # lowercase
-        with pytest.raises(ValueError, match="iso_currency_code"):
-            AccountSettings(account_id="a", iso_currency_code="USDD")
+    def test_currency_code_format(self) -> None:
+        with pytest.raises(ValueError, match="currency_code"):
+            AccountSettings(account_id="a", currency_code="usd")  # lowercase
+        with pytest.raises(ValueError, match="currency_code"):
+            AccountSettings(account_id="a", currency_code="USDD")
 
     @pytest.mark.unit
     def test_credit_limit_non_negative(self) -> None:
@@ -505,7 +505,7 @@ def _insert_dim_account(
     last_four: str | None = None,
     account_subtype: str | None = None,
     holder_category: str | None = None,
-    iso_currency_code: str = "USD",
+    currency_code: str = "USD",
     credit_limit: Decimal | None = None,
     archived: bool = False,
     include_in_net_worth: bool = True,
@@ -527,7 +527,7 @@ def _insert_dim_account(
             institution_fid, source_type, source_file, extracted_at,
             loaded_at, updated_at,
             display_name, official_name, last_four, account_subtype,
-            holder_category, iso_currency_code, credit_limit,
+            holder_category, currency_code, credit_limit,
             archived, include_in_net_worth
         ) VALUES (?, ?, ?, ?, NULL, ?, 'test.qfx', '2025-01-01',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
@@ -544,7 +544,7 @@ def _insert_dim_account(
             last_four,
             account_subtype,
             holder_category,
-            iso_currency_code,
+            currency_code,
             credit_limit,
             archived,
             include_in_net_worth,

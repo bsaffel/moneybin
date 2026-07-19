@@ -1,4 +1,4 @@
-"""V037: create persisted import-preview trust state."""
+"""V040: create persisted import-preview trust state."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS raw.import_preview_snapshots (
 
 def migrate(conn: object) -> None:
     """Create additive import-preview metadata and encrypted byte storage."""
-    logger.debug("V037: CREATE TABLE IF NOT EXISTS app.import_previews")
+    logger.debug("V040: CREATE TABLE IF NOT EXISTS app.import_previews")
     conn.execute(_CREATE_TABLE_SQL)  # type: ignore[union-attr]
     conn.execute(_CREATE_SNAPSHOTS_SQL)  # type: ignore[union-attr]
-    logger.debug("V037: import preview metadata and snapshots ready")
+    logger.debug("V040: import preview metadata and snapshots ready")

@@ -1,5 +1,5 @@
 /**
- * MoneyBin button. Brass primary (the only large brass fill allowed), bordered secondary, ghost tertiary.
+ * MoneyBin button. Gilt primary fill (ink text via --on-accent-gilt), bordered secondary, ghost tertiary.
  * @startingPoint section="Core" subtitle="Primary / secondary / ghost buttons" viewport="700x150"
  */
 export interface ButtonProps {

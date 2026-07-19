@@ -121,8 +121,13 @@ first, implementing this shared shape rather than a PDF-only one.
    (subject to the replay/validation guard, Requirement 9).
 7. **`import_confirm` is the confirm step.** It accepts the channel-appropriate payload —
    `mapping={…}` / `accept=true` for tabular/gsheet, `recipe={…}, rows=[…]` for the PDF
-   bridge — validates it, saves the format, and loads. It is the terminal `_confirm` step
-   of the propose→review→confirm workflow.
+   bridge — validates it, saves the format, and loads. The CLI additionally accepts an
+   explicit human-owned tabular `--sign` override. `--confirm-sign` approves the inferred
+   `negative_is_income` inversion; `--sign negative_is_expense` rejects that inversion
+   and keeps the statement's printed signs. The two choices are mutually exclusive and
+   every recovery command replays the mapping, format-save, account identity, binding,
+   and metadata inputs because confirmation calls persist no partial state. It is the
+   terminal `_confirm` step of the propose→review→confirm workflow.
 8. **Override is partial-merge.** A supplied `mapping` overrides only the named
    destination fields; unspecified fields fall back to the detected mapping. Validation
    (reusing gsheet's `_validate_*_column_mapping`, generalized) rejects a mapping missing
@@ -273,7 +278,7 @@ shapes or verbs.** The confirm flow is the existing `import_*` family plus the r
 |---|---|---|
 | `import_files(paths, …)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
 | `import_preview(file)` | Shape 5 (read-projection) | Read-only inspect: proposed mapping, `Confidence`, samples, unmapped columns. For PDF, also emits the bridge payload (IR / page image + extraction request). |
-| `import_confirm(file, mapping?/accept?/recipe?/rows?, save_format=true)` | Shape 3, `_confirm` | Accept or override the proposed mapping/recipe: validate → save format → load. The single net-new surface element is the channel-varying payload. |
+| `import_confirm(file, mapping?/accept?/recipe?/rows?, sign?, save_format=true)` | Shape 3, `_confirm` | Accept or override the proposed mapping/recipe: validate → save format → load. CLI `sign` is an explicit human override; MCP keeps sign agent-inaccessible and elicits the human instead. |
 | `import_formats(type?)` | Shape 5 | List learned formats (tabular + pdf). |
 | `gsheet_connect` / `gsheet_reconnect` | `_connect` lifecycle | Keep their inline `--yes` / `--column-mapping`; share the confidence bands + `resolve_or_confirm` primitive underneath. |
 
@@ -281,7 +286,10 @@ shapes or verbs.** The confirm flow is the existing `import_*` family plus the r
 flagged fields and prompts `[Y / edit / n]` (tier shapes the default: `high` → `[Y/n]`,
 `low` → must `edit`). `edit` corrects individual fields (partial-merge). Non-TTY or
 `--output json` returns the `confirmation_required` envelope; the caller re-runs with
-`--confirm` / `--mapping field=col,…` (non-interactive parity per `cli.md`).
+`--confirm` / `--mapping field=col,…`. A tabular sign proposal then offers two lossless
+`import confirm` commands: `--confirm-sign` to approve the inferred inversion, or
+`--sign negative_is_expense` to keep amounts as printed (non-interactive parity per
+`cli.md`).
 
 **MCP (agent).** `import_files` returns the `confirmation_required` envelope; the agent
 inspects (optionally `import_preview`), then calls `import_confirm`. After confirming,
@@ -320,6 +328,31 @@ Mostly reuse — the confidence contract is a code-level type, not a table.
   home.
 - **Config:** `settings.import.confidence.t_high` / `t_med` (band thresholds);
   `settings.import.self_accept_high` (calibration gate, default `false`).
+
+### Google Sheets sign convention (PR #324)
+
+Google Sheets transactions are a tabular source and must not become a second
+sign-inversion policy. Before `connect` or `reconnect` persists
+`negative_is_income`, the connection service requires one of two human-owned
+signals:
+
+- **CLI:** `--sign` is the explicit human override. Without it, connect/reconnect
+  fail before saving the connection or running a pull and name the exact command
+  to re-run.
+- **MCP:** `gsheet_connect` and `gsheet_reconnect` do not accept `sign`. Their
+  wrappers surface the proposed inversion through `confirm_or_raise`; only a
+  successful human elicitation retry carries an internal confirmation signal to
+  the service.
+
+The confirmation is not persisted separately: a successful connection pins the
+selected convention in the existing `app.gsheet_connections` row. Every later
+reconnect re-detects and re-gates a newly inferred inversion before replacing
+that pinned mapping. No rejected or timed-out confirmation writes a connection
+or runs an initial pull.
+
+`import_confirm` also uses `timeout_seconds=180.0`, matching the existing
+human-elicitation tools. The default 30-second tool timeout is shorter than a
+reasonable review of a ledger-wide sign inversion.
 
 ## Implementation Plan
 
@@ -389,24 +422,18 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 - **Recovery:** confirmed import → `import_revert` removes rows; `system_audit_undo`
   reverses the format save; re-map via second `import_confirm` re-pins cleanly.
 - **CLI/MCP parity:** the `confirmation_required` envelope is identical shape on both
-  surfaces; `--confirm` / `--mapping` reproduce the interactive accept/override.
+  surfaces; `--confirm` / `--mapping` reproduce the interactive accept/override. CLI
+  sign recovery proves both shell-safe alternatives preserve every public confirmation
+  input and reach the service as either the private human approval or an explicit
+  `sign` override; MCP never receives the latter public input.
 
 ## Out of Scope
 
-- **Unified `ConfirmationRequired` envelope for `gsheet connect`/`reconnect`.**
-  Tabular `import_files` and the per-pull gsheet path both route through
-  `resolve_or_confirm` and surface `ImportConfirmationRequiredError` /
-  `confirmation_required` envelopes. The connect-time gate
-  (`gsheet_connect` / `gsheet reconnect`) is intentionally a different
-  surface — it establishes a persistent connection, not a one-shot import,
-  and uses domain errors (`LowConfidenceError`,
-  `AmbiguousDetectionError`) with actionable strings naming the recovery
-  flag (`--column-mapping`, `--yes`). The shared confidence contract
-  (`Confidence`, bands, `tier_for`) is enforced uniformly via
-  `to_confidence(bands)`; the *envelope shape* differs by surface
-  intentionally. Unifying it would require collapsing the
-  connect/reconnect/per-pull surfaces into one shape — explicitly out of
-  scope; per-pull and one-shot import already share the contract.
+- **Unified `ConfirmationRequired` envelope for gsheet connect/reconnect.**
+  Google Sheets stays a persistent-connection surface, so it does not reuse the
+  one-shot import envelope. CLI uses a domain error with a `--sign` recovery;
+  MCP performs its own human elicitation and retries internally. The shared
+  invariant is the approval boundary, not an identical response shape.
 - **CLI `import files <single-file>` preserves fail-loud refresh.**
   `ImportService.import_file(refresh=True)` raises `RuntimeError` when
   refresh fails after a successful raw load — the CLI exit code reflects

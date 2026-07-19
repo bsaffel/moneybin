@@ -32,7 +32,7 @@ def _make_account(
     account_type: str = "CHECKING",
     account_subtype: str | None = "checking",
     holder_category: str | None = "personal",
-    iso_currency_code: str = "USD",
+    currency_code: str = "USD",
     last_four: str | None = None,
     credit_limit: object = None,
     archived: bool = False,
@@ -45,7 +45,7 @@ def _make_account(
         "account_type": account_type,
         "account_subtype": account_subtype,
         "holder_category": holder_category,
-        "iso_currency_code": iso_currency_code,
+        "currency_code": currency_code,
         "last_four": last_four,
         "credit_limit": credit_limit,
         "archived": archived,
@@ -74,7 +74,7 @@ def _as_account_summary(d: dict[str, object]) -> AccountSummary:
         account_type=str(d["account_type"]),
         account_subtype=d.get("account_subtype"),  # type: ignore[arg-type]
         holder_category=d.get("holder_category"),  # type: ignore[arg-type]
-        iso_currency_code=str(d.get("iso_currency_code", "USD")),
+        currency_code=str(d.get("currency_code", "USD")),
         archived=bool(d.get("archived", False)),
         include_in_net_worth=bool(d.get("include_in_net_worth", True)),
         last_four=d.get("last_four"),  # type: ignore[arg-type]
@@ -260,7 +260,7 @@ class TestAccountsGet:
             account_type="CHECKING",
             account_subtype="checking",
             holder_category="personal",
-            iso_currency_code="USD",
+            currency_code="USD",
             last_four=None,
             routing_number="021000021",
             credit_limit=None,

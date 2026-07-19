@@ -46,7 +46,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `system_audit_undo` | `operation_id` | Reverse one undoable operation | Audited recovery / maximum low |
 | `reports` | `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / maximum critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / maximum critical / view-derived |
-| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `iso_currency_code`, `last_four`, `official_name` | Account target state | Audited write / maximum critical |
+| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / maximum critical |
 | `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / maximum high / balance-derived |
 | `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / maximum medium |
 | `investments` | `account`, `cursor`, `end`, `limit`, `open_only`, `security`, `start`, `view` | Holdings and ledger projection | Read / dynamic / maximum high / view-derived |
@@ -78,7 +78,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `sync_pull` | `institution` | Pull linked-provider data | External mutation / maximum medium |
 | `sync_disconnect` | `institution`, `mode` | Disconnect provider or credentials | Destructive write / maximum low |
 | `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / maximum medium / connection-derived |
-| `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `sign`, `url` | Bind user-controlled storage | Credential flow / dynamic / maximum medium / connection-derived |
+| `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / maximum medium / connection-derived |
 | `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / maximum medium |
 | `gsheet_disconnect` | `confirmation_token`, `connection_id`, `state` | Disconnect or purge a sheet binding | Destructive write / dynamic / maximum medium / connection-derived |
 | `privacy` | `cursor`, `limit`, `view` | Privacy and consent projection | Read / dynamic / maximum low / privacy-derived |

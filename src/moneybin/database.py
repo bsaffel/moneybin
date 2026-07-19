@@ -322,7 +322,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "last_four",
         "account_subtype",
         "holder_category",
-        "iso_currency_code",
+        "currency_code",
         "credit_limit",
         "archived",
         "include_in_net_worth",
@@ -335,6 +335,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "is_observed",
         "observation_source",
         "reconciliation_delta",
+        "currency_code",
     }),
 }
 

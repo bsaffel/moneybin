@@ -24,12 +24,11 @@
 
 ## Purpose
 
-Investments is MoneyBin's largest competitive moat: a personal-finance platform
-that produces **cost-basis output reconcilable against a real 1099-B for a full
-tax year**, computed independently from the user's own transaction ledger rather
-than trusted blindly from a broker feed. This doc fixes the vision, the data-model
-contract, the scope boundary, and the build order. Design and implementation
-details live in the child specs it points to.
+The investment system must produce **cost-basis output reconcilable against a
+real 1099-B for a full tax year**, computed independently from the user's own
+transaction ledger rather than trusted blindly from a broker feed. This doc
+fixes the vision, the data-model contract, the scope boundary, and the build
+order. Design and implementation details live in the child specs it points to.
 
 This is the keystone of milestone **M1J**. At least six already-written specs gate
 on it: Plaid Investments sync, portfolio/holdings reports, investment-transaction
@@ -185,8 +184,8 @@ parallel `staleness_days`, so prices and physical assets share one shape for the
 staleness concept. A stale close is never silently presented as the current
 price. This is the price-side application of
 "magic stays visible": the fallback itself is fine, silently misrepresenting its
-age is not. A shipped competitor already does exactly this (snapshot fallback
-plus gap-day staleness marking), confirming the shape.
+age is not. The explicit date and staleness measure are required so a fallback
+price cannot be mistaken for a current quote.
 
 ### Currency: column now, conversion later
 

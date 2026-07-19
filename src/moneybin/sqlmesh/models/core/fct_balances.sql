@@ -14,7 +14,8 @@ WITH ofx_balances AS (
     ledger_balance AS balance,
     'ofx' AS source_type,
     source_file AS source_ref,
-    loaded_at AS updated_at
+    loaded_at AS updated_at,
+    currency_code
   FROM prep.stg_ofx__balances
 ), tabular_balances AS (
   SELECT
@@ -23,7 +24,8 @@ WITH ofx_balances AS (
     balance,
     'tabular' AS source_type,
     source_file AS source_ref,
-    loaded_at AS updated_at
+    loaded_at AS updated_at,
+    currency AS currency_code
   FROM prep.stg_tabular__transactions
   WHERE
     NOT balance IS NULL
@@ -34,10 +36,11 @@ WITH ofx_balances AS (
     balance,
     'assertion' AS source_type,
     'user' AS source_ref,
-    updated_at
+    updated_at,
+    NULL::TEXT AS currency_code
   FROM app.balance_assertions
 ), plaid_balances AS (
-  /* Plaid reports credit/loan balances as a positive amount owed; core.fct_balances
+  /* Plaid reports credit/loan balances as a positive amount owed, core.fct_balances
      and reports.net_worth treat liabilities as negative (net_worth sums balances,
      positive = asset, negative = liability), so negate them via the account type.
      Rows with no current_balance are dropped, not anchored at 0 by
@@ -56,45 +59,38 @@ WITH ofx_balances AS (
     END AS balance,
     'plaid' AS source_type,
     b.source_origin AS source_ref,
-    b.loaded_at AS updated_at
+    b.loaded_at AS updated_at,
+    COALESCE(b.iso_currency_code, b.unofficial_currency_code) AS currency_code
   FROM prep.stg_plaid__balances AS b
   LEFT JOIN prep.stg_plaid__accounts AS a
     ON a.source_account_key = b.source_account_key AND a.source_origin = b.source_origin
   WHERE
     NOT b.current_balance IS NULL AND NOT a.account_type IS NULL
+), unioned AS (
+  SELECT
+    *
+  FROM ofx_balances
+  UNION ALL
+  SELECT
+    *
+  FROM tabular_balances
+  UNION ALL
+  SELECT
+    *
+  FROM user_assertions
+  UNION ALL
+  SELECT
+    *
+  FROM plaid_balances
 )
 SELECT
-  account_id, /* Source-system account identifier */
-  balance_date, /* Date the balance was observed */
-  balance, /* Observed balance amount */
-  source_type, /* Observation source: ofx, tabular, assertion, or plaid */
-  source_ref, /* Source file path (ofx/tabular), 'user' for assertions, or the Plaid item id */
-  updated_at /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
-FROM ofx_balances
-UNION ALL
-SELECT
-  account_id,
-  balance_date,
-  balance,
-  source_type,
-  source_ref,
-  updated_at
-FROM tabular_balances
-UNION ALL
-SELECT
-  account_id,
-  balance_date,
-  balance,
-  source_type,
-  source_ref,
-  updated_at
-FROM user_assertions
-UNION ALL
-SELECT
-  account_id,
-  balance_date,
-  balance,
-  source_type,
-  source_ref,
-  updated_at
-FROM plaid_balances
+  u.account_id, /* Source-system account identifier */
+  u.balance_date, /* Date the balance was observed */
+  u.balance, /* Observed balance amount */
+  u.source_type, /* Observation source: ofx, tabular, assertion, or plaid */
+  u.source_ref, /* Source file path (ofx/tabular), 'user' for assertions, or the Plaid item id */
+  u.updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. From the contributing observation's loaded_at (OFX/tabular) or created_at (user assertion). See docs/specs/core-updated-at-convention.md. */
+  COALESCE(u.currency_code, a.currency_code) AS currency_code /* the observation's own captured currency, else inherited from core.dim_accounts.currency_code (multi-currency.md Requirement 3) */
+FROM unioned AS u
+LEFT JOIN core.dim_accounts AS a
+  ON u.account_id = a.account_id

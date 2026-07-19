@@ -37,12 +37,10 @@ The narrow bug is "the interactive wizard runs on the MCP path." The durable
 fix is "MCP first-run is a first-class, agent-driven flow," which this spec
 delivers.
 
-How comparable tools handle this: none do in-band setup. Firefly III MCP
-requires creating an OAuth token in its web UI and pasting it into `.env`;
-Actual Budget MCP requires filesystem permissions or a server password set
-out-of-band. Requiring config to pre-exist before the server starts is the
-norm. An elicitation-driven first run puts MoneyBin ahead of that bar, in
-keeping with the project's UX/AX bias.
+Requiring config to pre-exist before the server starts is the ecosystem norm
+for local MCP servers. MoneyBin's UX/AX bias points the other way: the agent
+is already in session, so the session itself should finish setup — an
+elicitation-driven first run rather than an out-of-band config step.
 
 Related code: `src/moneybin/cli/commands/mcp.py` (`serve`),
 `src/moneybin/cli/utils.py` (`resolve_profile`, `_flags`),

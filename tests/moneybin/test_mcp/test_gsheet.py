@@ -8,8 +8,11 @@ Google Sheets API.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import shlex
 from dataclasses import replace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
@@ -21,7 +24,9 @@ from moneybin.connectors.gsheet.adapters.base import (
     LoadResult,
 )
 from moneybin.connectors.gsheet.connection_service import ConnectResult
+from moneybin.connectors.gsheet.errors import GSheetSignConfirmationRequiredError
 from moneybin.connectors.gsheet.pull_service import PullResult
+from moneybin.errors import UserError
 from moneybin.mcp.tools.gsheet import (
     gsheet_coarse,
     gsheet_connect_coarse,
@@ -144,7 +149,6 @@ async def test_gsheet_workflow_schemas_are_strict_and_target_state_based() -> No
         "account_name",
         "account_id",
         "column_mapping",
-        "sign",
         "confirm_mapping",
         "accept_seed_fallback",
         "no_initial_pull",
@@ -174,7 +178,6 @@ async def test_gsheet_workflow_schemas_are_strict_and_target_state_based() -> No
         ("account_name", "Checking"),
         ("account_id", "acct_1"),
         ("column_mapping", {"Date": "transaction_date"}),
-        ("sign", "negative_is_expense"),
         ("confirm_mapping", True),
         ("accept_seed_fallback", True),
         ("no_initial_pull", True),
@@ -232,6 +235,39 @@ async def test_gsheet_replacement_actions_are_closed_over_isolated_cohort(
     assert "gsheet_connect(connection_id=" in actions
 
 
+@pytest.mark.unit
+async def test_gsheet_write_tool_schemas_hide_sign_confirmation_inputs() -> None:
+    """Only a human elicitation can confirm sign; the agent-facing schema cannot."""
+    srv = FastMCP("test")
+    register_gsheet_tools(srv)
+    tools = {t.name: t for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert set(tools["gsheet_connect"].parameters["properties"]) == {
+        "url",
+        "connection_id",
+        "force_reauth",
+        "adapter",
+        "alias",
+        "account_name",
+        "account_id",
+        "column_mapping",
+        "confirm_mapping",
+        "accept_seed_fallback",
+        "no_initial_pull",
+    }
+    for tool in tools.values():
+        assert "sign" not in tool.parameters["properties"]
+        assert "human_sign_confirmation" not in tool.parameters["properties"]
+
+
+@pytest.mark.unit
+def test_gsheet_write_tools_allow_human_confirmation_timeout() -> None:
+    """The public mode-aware workflow owns the human decision window."""
+    from moneybin.mcp.tools.gsheet import gsheet_connect_coarse
+
+    assert gsheet_connect_coarse._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+
+
 # ---------------------------------------------------------------------------
 # gsheet_auth — status string only → Tier.LOW
 # ---------------------------------------------------------------------------
@@ -249,7 +285,7 @@ async def test_gsheet_auth_short_circuits_when_already_authorized(
 
     from moneybin.mcp.tools.gsheet import gsheet_auth
 
-    envelope = gsheet_auth()
+    envelope = await gsheet_auth()
     assert envelope.summary.sensitivity == "low"
     assert envelope.data.status == "already_authorized"
     oauth.authorize.assert_not_called()
@@ -267,7 +303,7 @@ async def test_gsheet_auth_runs_authorize_when_not_authorized(
 
     from moneybin.mcp.tools.gsheet import gsheet_auth
 
-    envelope = gsheet_auth()
+    envelope = await gsheet_auth()
     assert envelope.summary.sensitivity == "low"
     assert envelope.data.status == "authorized"
     oauth.authorize.assert_called_once()
@@ -285,7 +321,7 @@ async def test_gsheet_auth_force_reauth_runs_authorize_even_when_authorized(
 
     from moneybin.mcp.tools.gsheet import gsheet_auth
 
-    envelope = gsheet_auth(force_reauth=True)
+    envelope = await gsheet_auth(force_reauth=True)
     assert envelope.data.status == "authorized"
     oauth.authorize.assert_called_once()
 
@@ -311,15 +347,184 @@ async def test_gsheet_connect_returns_envelope_with_connection(
 
     from moneybin.mcp.tools.gsheet import gsheet_connect
 
-    envelope = gsheet_connect(
+    envelope = await gsheet_connect(
         url="https://docs.google.com/spreadsheets/d/abc/edit#gid=0"
     )
-    assert envelope.summary.sensitivity == "low"
+    assert envelope.summary.sensitivity == "medium"
     assert envelope.data.connection.connection_id == "conn_abc"
     assert envelope.data.initial_pull is not None
     assert envelope.data.initial_pull.rows_inserted == 10
     # Agent should see how to pull again and check status next
     assert any("gsheet_pull" in a for a in envelope.actions)
+
+
+@pytest.mark.unit
+@patch(
+    "moneybin.mcp.elicitation.confirm_or_raise",
+    new_callable=AsyncMock,
+)
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_connect_elicits_human_then_retries_sign_internally(
+    mock_build: MagicMock,
+    mock_confirm: AsyncMock,
+) -> None:
+    """An inferred inversion retries once only after the human confirms."""
+    from moneybin.cli.commands.gsheet import (
+        _parse_column_mapping,  # pyright: ignore[reportPrivateUsage]  # verifies fallback compatibility with the real CLI parser
+    )
+
+    evidence_header = "Card Purchases (+)"
+    service = MagicMock()
+    service.connect.side_effect = [
+        GSheetSignConfirmationRequiredError(
+            proposed_convention="negative_is_income",
+            evidence_header=evidence_header,
+        ),
+        ConnectResult(
+            connection=_make_connection(),
+            detection=_make_detection(),
+            initial_pull=_make_load_result(),
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    from moneybin.mcp.tools.gsheet import gsheet_connect
+
+    url = "https://docs.google.com/spreadsheets/d/sheet name/edit#gid=7"
+    column_mapping = {
+        "Merchant's Name": "description",
+        "Amount, USD": "amount",
+    }
+    envelope = await gsheet_connect(
+        url=url,
+        adapter="transactions",
+        alias="card feed",
+        account_name="Owner's Card",
+        account_id="acct card",
+        column_mapping=column_mapping,
+        yes=True,
+        accept_seed_fallback=True,
+        no_initial_pull=True,
+    )
+
+    assert envelope.data.connection.connection_id == "conn_abc"
+    assert service.connect.call_count == 2
+    first_request = service.connect.call_args_list[0].args[0]
+    retry_request = service.connect.call_args_list[1].args[0]
+    assert first_request.human_sign_confirmation is False
+    assert retry_request == replace(first_request, human_sign_confirmation=True)
+    assert first_request.sign is None
+    assert retry_request.sign is None
+    assert "human_sign_confirmation" not in repr(envelope.to_dict())
+    assert mock_confirm.await_args is not None
+    message = mock_confirm.await_args.args[0]
+    assert evidence_header in message
+    assert (
+        "This would invert every transaction amount: charges become expenses "
+        "and payments become credits."
+    ) in message
+    cli_equivalent = mock_confirm.await_args.kwargs["cli_equivalent"]
+    cli_tokens = shlex.split(cli_equivalent)
+    assert cli_tokens[:4] == ["moneybin", "gsheet", "connect", url]
+    assert cli_tokens[-2:] == ["--sign", "negative_is_income"]
+    assert cli_tokens[cli_tokens.index("--adapter") + 1] == "transactions"
+    assert cli_tokens[cli_tokens.index("--alias") + 1] == "card feed"
+    assert cli_tokens[cli_tokens.index("--account-name") + 1] == "Owner's Card"
+    assert cli_tokens[cli_tokens.index("--account-id") + 1] == "acct card"
+    serialized_mapping = cli_tokens[cli_tokens.index("--column-mapping") + 1]
+    assert json.loads(serialized_mapping) == column_mapping
+    assert _parse_column_mapping(serialized_mapping) == column_mapping
+    assert "--yes" in cli_tokens
+    assert "--accept-seed-fallback" in cli_tokens
+    assert "--no-initial-pull" in cli_tokens
+    assert "human_sign_confirmation" not in cli_equivalent
+
+
+@pytest.mark.unit
+@patch(
+    "moneybin.mcp.elicitation.confirm_or_raise",
+    new_callable=AsyncMock,
+)
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_connect_split_debit_override_uses_private_human_retry(
+    mock_build: MagicMock,
+    mock_confirm: AsyncMock,
+) -> None:
+    """The public source→destination override survives the one-shot retry."""
+    service = MagicMock()
+    service.connect.side_effect = [
+        GSheetSignConfirmationRequiredError(
+            proposed_convention="negative_is_income",
+            evidence_header="Debit",
+        ),
+        ConnectResult(
+            connection=_make_connection(),
+            detection=_make_detection(),
+            initial_pull=_make_load_result(),
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    from moneybin.mcp.tools.gsheet import gsheet_connect
+
+    await gsheet_connect(
+        url="https://docs.google.com/spreadsheets/d/card/edit#gid=0",
+        adapter="transactions",
+        account_id="acct_card",
+        column_mapping={"Debit": "amount"},
+        yes=True,
+    )
+
+    first_request = service.connect.call_args_list[0].args[0]
+    retry_request = service.connect.call_args_list[1].args[0]
+    assert first_request.column_mapping == {"Debit": "amount"}
+    assert retry_request == replace(first_request, human_sign_confirmation=True)
+    assert mock_confirm.await_args is not None
+    assert "Debit" in mock_confirm.await_args.args[0]
+    assert mock_confirm.await_args.kwargs["cli_equivalent"].endswith(
+        "--sign negative_is_income"
+    )
+    assert (
+        "human_sign_confirmation"
+        not in mock_confirm.await_args.kwargs["cli_equivalent"]
+    )
+
+
+@pytest.mark.unit
+@patch(
+    "moneybin.mcp.elicitation.confirm_or_raise",
+    new_callable=AsyncMock,
+)
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_connect_yes_does_not_self_confirm_sign(
+    mock_build: MagicMock,
+    mock_confirm: AsyncMock,
+) -> None:
+    """Yes accepts a mapping only; a rejected sign elicitation cannot retry."""
+    service = MagicMock()
+    service.connect.side_effect = GSheetSignConfirmationRequiredError(
+        proposed_convention="negative_is_income",
+        evidence_header="Amount",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    mock_confirm.side_effect = UserError(
+        "Sign confirmation declined.",
+        code="mutation_confirmation_required",
+    )
+
+    from moneybin.mcp.tools.gsheet import gsheet_connect
+
+    envelope = await gsheet_connect(
+        url="https://docs.google.com/spreadsheets/d/abc/edit#gid=0",
+        yes=True,
+    )
+
+    assert envelope.error is not None
+    assert service.connect.call_count == 1
+    request = service.connect.call_args.args[0]
+    assert request.yes is True
+    assert request.human_sign_confirmation is False
+    mock_confirm.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -583,12 +788,10 @@ async def test_gsheet_reconnect_returns_envelope(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
-    envelope = gsheet_reconnect(connection_id="conn_abc", yes=True)
-    assert envelope.summary.sensitivity == "low"
+    envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
+    assert envelope.summary.sensitivity == "medium"
     assert envelope.data.connection.status == "healthy"
-    service.reconnect.assert_called_once_with(
-        "conn_abc", yes=True, sign=None, actor="mcp"
-    )
+    service.reconnect.assert_called_once_with("conn_abc", yes=True, actor="mcp")
 
 
 @pytest.mark.unit
@@ -607,10 +810,94 @@ async def test_gsheet_reconnect_passes_yes_flag_through(
 
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
-    gsheet_reconnect(connection_id="conn_abc")  # default yes=False
-    service.reconnect.assert_called_once_with(
-        "conn_abc", yes=False, sign=None, actor="mcp"
+    await gsheet_reconnect(connection_id="conn_abc")  # default yes=False
+    service.reconnect.assert_called_once_with("conn_abc", yes=False, actor="mcp")
+
+
+@pytest.mark.unit
+@patch(
+    "moneybin.mcp.elicitation.confirm_or_raise",
+    new_callable=AsyncMock,
+)
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_reconnect_elicits_human_then_retries_sign_internally(
+    mock_build: MagicMock,
+    mock_confirm: AsyncMock,
+) -> None:
+    """Reconnect retries once with a private flag after human confirmation."""
+    evidence_header = "Debit/Credit Signal"
+    healed = replace(_make_connection(), status="healthy")
+    service = MagicMock()
+    service.reconnect.side_effect = [
+        GSheetSignConfirmationRequiredError(
+            proposed_convention="negative_is_income",
+            evidence_header=evidence_header,
+        ),
+        ConnectResult(
+            connection=healed,
+            detection=_make_detection(),
+            initial_pull=_make_load_result(),
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    from moneybin.mcp.tools.gsheet import gsheet_reconnect
+
+    envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
+
+    assert envelope.data.connection.status == "healthy"
+    assert "human_sign_confirmation" not in repr(envelope.to_dict())
+    assert service.reconnect.call_args_list == [
+        (
+            ("conn_abc",),
+            {"yes": True, "actor": "mcp"},
+        ),
+        (
+            ("conn_abc",),
+            {
+                "yes": True,
+                "human_sign_confirmation": True,
+                "actor": "mcp",
+            },
+        ),
+    ]
+    assert mock_confirm.await_args is not None
+    message = mock_confirm.await_args.args[0]
+    assert evidence_header in message
+    assert (
+        "This would invert every transaction amount: charges become expenses "
+        "and payments become credits."
+    ) in message
+    assert mock_confirm.await_args.kwargs["cli_equivalent"] == (
+        "moneybin gsheet reconnect conn_abc --yes --sign negative_is_income"
     )
+
+
+@pytest.mark.unit
+@patch(
+    "moneybin.mcp.elicitation.confirm_or_raise",
+    new_callable=AsyncMock,
+)
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_reconnect_timeout_does_not_retry(
+    mock_build: MagicMock,
+    mock_confirm: AsyncMock,
+) -> None:
+    """A timed-out human confirmation leaves reconnect at its first attempt."""
+    service = MagicMock()
+    service.reconnect.side_effect = GSheetSignConfirmationRequiredError(
+        proposed_convention="negative_is_income",
+        evidence_header="Amount",
+    )
+    mock_build.return_value.__enter__.return_value = service
+    mock_confirm.side_effect = asyncio.TimeoutError
+
+    from moneybin.mcp.tools.gsheet import gsheet_reconnect
+
+    with pytest.raises(asyncio.TimeoutError):
+        await gsheet_reconnect(connection_id="conn_abc")
+
+    service.reconnect.assert_called_once_with("conn_abc", yes=False, actor="mcp")
 
 
 # ---------------------------------------------------------------------------

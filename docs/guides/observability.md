@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Observability
 
 What MoneyBin records about itself, how to read it, and what's intentionally NOT recorded. Three surfaces: structured logs (per-profile log files + stderr), persisted metrics (in the `app.metrics` table), and the `system doctor` integrity sweep. The privacy threat model lives in [`threat-model.md`](threat-model.md); this guide is operational.
@@ -213,7 +213,7 @@ For agents and watchdog scripts driving MoneyBin directly:
 
 There is **no event subscription, webhook, or push notification** today. All access patterns are pull. A subscription contract is a candidate for a post-v1 release.
 
-For consolidated CLI exit-code and MCP error-envelope taxonomy, see [`cli-reference.md`](../reference/cli-reference.md) and [`mcp-server.md`](mcp-server.md) respectively.
+For consolidated CLI exit-code and MCP error-envelope taxonomy, see [`cli-reference.md`](cli-reference.md) and [`mcp-server.md`](mcp-server.md) respectively.
 
 ---
 

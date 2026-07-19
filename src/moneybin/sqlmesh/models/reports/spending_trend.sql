@@ -31,8 +31,8 @@ WITH monthly AS (
   FROM monthly
 ), calendar AS (
   SELECT
-    month_date::DATE AS month_date
-  FROM bounds, GENERATE_SERIES(first_month, last_month, INTERVAL '1' MONTH) AS series(month_date)
+    UNNEST(GENERATE_SERIES(first_month, last_month, INTERVAL '1' MONTH))::DATE AS month_date
+  FROM bounds
 ), dense_monthly AS (
   SELECT
     calendar.month_date,

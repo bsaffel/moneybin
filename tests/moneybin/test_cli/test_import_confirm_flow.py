@@ -10,6 +10,7 @@ argument parsing, exit codes, error messages, and JSON envelope shape.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -30,7 +31,7 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
     SignConventionProposal,
 )
-from moneybin.services.import_service import ImportResult
+from moneybin.services.import_service import BridgeApplyResult, ImportResult
 
 runner = CliRunner()
 
@@ -131,6 +132,62 @@ def _make_sign_confirmation_error() -> ImportConfirmationRequiredError:
         ),
     )
     return ImportConfirmationRequiredError(outcome)
+
+
+def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
+    """Both sign choices losslessly serialize every public confirmation input."""
+    from moneybin.cli.commands.import_cmd import (
+        _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+    )
+
+    actions = _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        "Owner's card.csv",
+        channel="tabular",
+        accept=False,
+        mapping={"description": "Merchant Name"},
+        save_format=False,
+        account_id="acct explicit",
+        account_name="Owner's Card",
+        account_bindings={"settled key": "acct existing", "minted card": "new"},
+        account_metadata={
+            "minted card": {
+                "display_name": "Owner's Card",
+                "last_four": "4267",
+            }
+        },
+    )
+
+    assert len(actions) == 2
+    approve_command = actions[0].split(": ", 1)[1]
+    native_command = actions[1].split(": ", 1)[1]
+    approve_tokens = shlex.split(approve_command)
+    native_tokens = shlex.split(native_command)
+
+    for command, tokens in (
+        (approve_command, approve_tokens),
+        (native_command, native_tokens),
+    ):
+        assert tokens[:4] == ["moneybin", "import", "confirm", "Owner's card.csv"]
+        assert "--accept" not in tokens
+        assert "--no-save-format" in tokens
+        assert tokens[tokens.index("--account-id") + 1] == "acct explicit"
+        assert tokens[tokens.index("--account-name") + 1] == "Owner's Card"
+        assert tokens[tokens.index("--mapping") + 1] == "description=Merchant Name"
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
+        } == {"settled key=acct existing", "minted card=new"}
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
+        } == {
+            "minted card:display_name=Owner's Card",
+            "minted card:last_four=4267",
+        }
+        assert "human_sign_confirmation" not in command
+
+    assert "--confirm-sign" in approve_tokens
+    assert "--sign" not in approve_tokens
+    assert "--confirm-sign" not in native_tokens
+    assert native_tokens[native_tokens.index("--sign") + 1] == "negative_is_expense"
 
 
 class TestImportFilesConfirmFlow:
@@ -509,6 +566,26 @@ class TestImportFilesConfirmFlow:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs.get("actor_kind") == "human"
 
+    def test_confirm_sign_flag_is_forwarded_with_confirm(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """`import files --confirm --confirm-sign` reaches the service unchanged."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--confirm", "--confirm-sign"],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["confirm"] is True
+        assert call_kwargs["human_sign_confirmation"] is True
+
     def test_single_path_uses_import_file_not_batch(
         self,
         mock_db: MagicMock,
@@ -584,6 +661,200 @@ class TestImportConfirmCommand:
         assert result.exit_code == 0
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["overrides"] == {"description": "Memo"}
+
+    def test_confirm_sign_is_distinct_from_mapping_accept(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """--confirm-sign, not --accept, carries the tabular sign decision."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--confirm-sign"]
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["confirm"] is True
+        assert call_kwargs["human_sign_confirmation"] is True
+
+    def test_generated_sign_recoveries_parse_to_lossless_service_arguments(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Both generated human choices execute through the real confirm parser."""
+        from moneybin.cli.commands.import_cmd import (
+            _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        )
+
+        csv_file = tmp_path / "Owner's card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,50.00,Coffee\n")
+        actions = _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+            str(csv_file),
+            channel="tabular",
+            accept=False,
+            mapping={"description": "Merchant Name"},
+            save_format=False,
+            account_id="acct explicit",
+            account_name="Owner's Card",
+            account_bindings={"settled key": "acct existing", "minted card": "new"},
+            account_metadata={
+                "minted card": {
+                    "display_name": "Owner's Card",
+                    "last_four": "4267",
+                }
+            },
+        )
+
+        for index, expected_sign in (
+            (0, None),
+            (1, "negative_is_expense"),
+        ):
+            command = actions[index].split(": ", 1)[1]
+            tokens = shlex.split(command)
+            result = runner.invoke(app, tokens[2:])
+
+            assert result.exit_code == 0, result.output
+            call_kwargs = mock_import_file.call_args.kwargs
+            assert call_kwargs["confirm"] is False
+            assert call_kwargs["overrides"] == {"description": "Merchant Name"}
+            assert call_kwargs["save_format"] is False
+            assert call_kwargs["account_id"] == "acct explicit"
+            assert call_kwargs["account_name"] == "Owner's Card"
+            assert call_kwargs["account_bindings"] == {
+                "settled key": "acct existing",
+                "minted card": "new",
+            }
+            assert call_kwargs["account_metadata"] == {
+                "minted card": {
+                    "display_name": "Owner's Card",
+                    "last_four": "4267",
+                }
+            }
+            assert call_kwargs.get("sign") == expected_sign
+            if index == 0:
+                assert call_kwargs["human_sign_confirmation"] is True
+            else:
+                assert "human_sign_confirmation" not in call_kwargs
+            mock_import_file.reset_mock()
+
+    def test_confirm_sign_and_explicit_sign_are_mutually_exclusive(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """One invocation cannot approve and override the sign simultaneously."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount\n2025-01-01,50.00\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--confirm-sign",
+                "--sign",
+                "negative_is_expense",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "alternate sign decisions" in result.output
+        mock_import_file.assert_not_called()
+
+    def test_bridge_response_rejects_tabular_sign_override(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The tabular sign option cannot be silently ignored by PDF bridge apply."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--sign",
+                "negative_is_expense",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--bridge-response cannot be combined" in result.output
+        assert "--sign" in result.output
+
+    def test_bridge_response_requires_explicit_confirm(self, tmp_path: Path) -> None:
+        """A JSON bridge recipe cannot load until the terminal user confirms it."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            ["confirm", str(pdf_file), "--bridge-response", str(response_file)],
+        )
+
+        assert result.exit_code != 0
+        assert "requires --confirm" in result.output
+
+    def test_confirmed_bridge_response_loads(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The CLI sends an explicit human confirmation to the shared service."""
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        apply = mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            return_value=BridgeApplyResult(
+                outcome="applied",
+                import_id="bridge123",
+                rows_loaded=2,
+                format_name="chase_abc123",
+                expected_row_count=2,
+                actual_row_count=2,
+                rows_diverged=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert apply.call_args.kwargs["confirm"] is True
+        assert apply.call_args.args[1] == {
+            "recipe": {},
+            "rows": [],
+        }
+        assert json.loads(result.output)["data"]["status"] == "applied"
 
     def test_requires_accept_or_mapping(
         self,
@@ -789,6 +1060,86 @@ class TestImportConfirmCommand:
         # Mapping/accept hints gated out for account_confirmation.
         assert not any("--mapping" in a for a in payload["actions"])
 
+    def test_account_recovery_after_sign_preserves_confirmation_inputs(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A later account gate retains the sign, mapping, and binding choices."""
+        csv_file = tmp_path / "card.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"description": "Memo"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("card-abc")],
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--confirm-sign",
+                "--mapping",
+                "description=Memo",
+                "--account-binding",
+                "settled=acct-123",
+                "--account-binding",
+                "minted=new",
+                "--account-meta",
+                "minted:display_name=Travel Card",
+                "--account-meta",
+                "minted:last_four=4267",
+                "--account-id",
+                "acct-explicit",
+                "--account-name",
+                "Card Account",
+                "--no-save-format",
+                "--output",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        actions = json.loads(result.output)["actions"]
+        recovery = next(action for action in actions if action.startswith("Re-run `"))
+        command = recovery.split("`", 2)[1]
+        tokens = shlex.split(command)
+        assert "--accept" in tokens
+        assert "--confirm-sign" in tokens
+        assert "--no-save-format" in tokens
+        assert tokens[tokens.index("--account-id") + 1] == "acct-explicit"
+        assert tokens[tokens.index("--account-name") + 1] == "Card Account"
+        assert tokens[tokens.index("--mapping") + 1] == "description=Memo"
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-binding"
+        } == {
+            "settled=acct-123",
+            "minted=new",
+            "card-abc=<account_id|new>",
+        }
+        assert {
+            tokens[i + 1] for i, arg in enumerate(tokens) if arg == "--account-meta"
+        } == {
+            "minted:display_name=Travel Card",
+            "minted:last_four=4267",
+        }
+        assert "human_sign_confirmation" not in command
+
     def test_account_confirmation_tty_renders_proposals(
         self,
         mock_db: MagicMock,
@@ -827,3 +1178,67 @@ class TestImportConfirmCommand:
         assert "Account binding required" in result.output
         assert "wf-checking" in result.output
         assert "cand87654321" in result.output
+
+
+class TestSignRecoveryDirection:
+    """A sign confirmation must name the two conventions actually on offer.
+
+    The PDF guidance was written for the first-contact card inference, where the
+    proposal is always `negative_is_income` and the alternative is always
+    `negative_is_expense` — so "is this a credit card?" is both answerable and
+    correct. Self-heal introduced the opposite direction: a re-derivation can
+    propose `negative_is_expense` for a format the user previously ratified as a
+    card. Rendered with the card framing, `--confirm` then does the *opposite* of
+    what the text says, and no printed command lets the user keep the convention
+    they had.
+    """
+
+    def _pdf_actions(self, **kwargs: object) -> list[str]:
+        from moneybin.cli.commands.import_cmd import (
+            _sign_recovery_commands,  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+        )
+
+        return _sign_recovery_commands(  # type: ignore[reportPrivateUsage]  # testing CLI recovery helper
+            "statement.pdf",
+            channel="pdf",
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_first_contact_card_proposal_keeps_the_card_framing(self) -> None:
+        """No prior convention → the card question is accurate; don't regress it."""
+        actions = self._pdf_actions(proposed_sign="negative_is_income")
+
+        assert any("IS a credit card" in a for a in actions)
+        assert any("--confirm" in a for a in actions)
+        assert any("--sign negative_is_expense" in a for a in actions)
+
+    def test_an_un_inverting_repair_offers_a_way_back_to_the_old_convention(
+        self,
+    ) -> None:
+        """The direction self-heal added: card → as-printed.
+
+        `--confirm` here ratifies `negative_is_expense`, so card framing would be
+        actively wrong, and `--sign negative_is_expense` (the old "not a card"
+        escape hatch) is now identical to `--confirm` — leaving the user with two
+        commands that do the same thing and none that keeps the card convention.
+        """
+        actions = self._pdf_actions(
+            proposed_sign="negative_is_expense",
+            prior_sign="negative_is_income",
+        )
+
+        joined = "\n".join(actions)
+        # The escape hatch must exist and must name the OLD convention.
+        assert "--sign negative_is_income" in joined
+        # And the card framing must be gone — it describes the wrong direction.
+        assert "IS a credit card" not in joined
+        assert "records charges as expenses" not in joined.split("--confirm")[0]
+
+    def test_a_re_inverting_repair_offers_a_way_back_too(self) -> None:
+        """The mirror case: as-printed → card. Both directions or neither."""
+        actions = self._pdf_actions(
+            proposed_sign="negative_is_income",
+            prior_sign="negative_is_expense",
+        )
+
+        assert "--sign negative_is_expense" in "\n".join(actions)

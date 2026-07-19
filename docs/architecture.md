@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-05-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # Architecture
 
 This is the one-page distillation. The full reference — invariants, layer mechanics, the writer-coordination contract — lives in [`docs/specs/architecture-shared-primitives.md`](specs/architecture-shared-primitives.md). Read that when you need depth; read this when you need the shape.
@@ -11,7 +11,7 @@ Five contracts hold across every surface, every release.
 
 - **Encrypted at rest by default.** AES-256-GCM on the DuckDB file, Argon2id KDF for passphrase mode, OS keychain integration for auto-key mode. No "demo mode" plaintext path. See [`docs/guides/database-security.md`](guides/database-security.md).
 - **Every number is traceable.** Numbers in `core.*` and `reports.*` are produced by named SQLMesh models from `raw.*` source rows. `meta.fct_transaction_provenance` records the cross-source lineage; `meta.model_freshness` records model-level recency. No service snapshots derived state into a side table.
-- **MCP, CLI, and SQL are peer surfaces.** Every user-facing capability is reachable from at least two of them with the same response shape (`ResponseEnvelope`) and the same redaction rules. The CLI is a first-class agent surface, not a human-only fallback. See [`docs/specs/moneybin-capabilities.md`](specs/moneybin-capabilities.md) for the per-capability map.
+- **CLI and MCP are peer surfaces.** Both drive the same service layer with the same response shape (`ResponseEnvelope`) and the same redaction rules; parity is the contract, and the per-capability map in [`docs/specs/moneybin-capabilities.md`](specs/moneybin-capabilities.md) tracks the few operations that lag on one side. The CLI is a first-class agent surface, not a human-only fallback. Direct SQL is deliberately different — an operator surface with a raw-row contract.
 - **PII never appears in logs.** Services log record counts, IDs, and status codes — never amounts, descriptions, or account numbers. `SanitizedLogFormatter` is an always-on safety net on every handler, not a license to be careless.
 - **Schema migrations are idempotent and reversible-by-snapshot.** Versioned migrations track in `app.schema_migrations`, self-heal stuck rows when the migration body changes, and respect the `no_auto_upgrade` gate. `moneybin db backup` / `moneybin db restore` provide the recovery path for `app.*` state that isn't derivable from `raw.*`.
 
@@ -66,7 +66,9 @@ Prefixes inside each schema describe **grain and role**: `fct_<entity>` for even
 | `reports.net_worth` | One row per (date, account) snapshot | Asset/liability rollup driving the net-worth report |
 | `reports.cash_flow` | One row per (period, category) | Income and expense rollup driving the cash-flow report |
 
-Schema is **stable but not yet frozen.** Pre-launch, breaking column changes are still on the table. Post-launch, the convention is additive: add columns, never rename or retype in place; deprecate-then-remove across two releases. See `.claude/rules/design-principles.md` §"Evolving a public contract post-launch".
+Schema is **stable but not yet frozen.** Pre-launch, breaking column changes
+are still on the table. Post-launch the convention is additive: add columns,
+never rename or retype in place; deprecate-then-remove across two releases.
 
 ## Surfaces
 
@@ -74,7 +76,7 @@ The CLI and MCP server are thin formatters around the service layer. The SQL lay
 
 ### MCP tools by domain
 
-The MCP server registers around seventy tools across roughly a dozen domains. Full enumeration in [`docs/guides/mcp-server.md`](guides/mcp-server.md).
+The MCP server registers more than 100 tools across roughly a dozen domains. Full enumeration in [`docs/guides/mcp-server.md`](guides/mcp-server.md).
 
 | Domain | What it does | Representative tools |
 |---|---|---|
@@ -100,7 +102,7 @@ Parity is functional, not nominal — same outcomes reachable on both surfaces, 
 
 ### Transport and auth
 
-MCP runs over **stdio today** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex, and the ChatGPT desktop app (which hosts Codex and shares its config) all attach this way. **ChatGPT on the web and mobile do not**: they reach MCP only through remote connectors over HTTPS, so they cannot see a local MoneyBin. A **Streamable HTTP transport with authentication is planned** (M3D) to unlock those and the hosted tier.
+MCP runs over **stdio today** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex, and the ChatGPT desktop app (which hosts Codex and shares its config) all attach this way. **ChatGPT on the web and mobile do not**: they reach MCP only through remote connectors over HTTPS, so they cannot see a local MoneyBin. A Streamable HTTP transport with authentication — tracked as M3D on the [roadmap](roadmap.md) — is what unlocks those.
 
 Each profile is encrypted with a key held in the OS keychain (auto-key mode) or derived from a passphrase you supply (passphrase mode). `moneybin db unlock` opens the database once per session; subsequent CLI commands and MCP sessions share that unlocked state via short-lived in-process connections.
 
@@ -114,7 +116,7 @@ Single-writer per profile. The encrypted DuckDB file is the unit of sync — Git
 
 ### Data portability
 
-The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. A first-class `moneybin export` (CSV / Beancount / SQL dump) is planned but not yet shipped; today the read-only SQL surface plus a DuckDB `COPY ... TO` is the working path. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
+The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. A first-class `moneybin export` (CSV / Beancount / SQL dump) is planned; today the working path is the read-only SQL surface plus a DuckDB `COPY ... TO`. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
 
 ## Primitives you'll touch
 
@@ -141,7 +143,7 @@ These are the contracts a consumer (MCP user, CLI driver, SQL writer) actually e
   ```
 
 - **`TableRef`** — registry of schema-qualified table names with an `audience` tag (`"interface"` vs `"internal"`). Import `TableRef.FCT_TRANSACTIONS` rather than hard-coding `"core.fct_transactions"`. The `moneybin://schema` MCP resource derives from the interface set, so what you can query is what the agent sees.
-- **Sensitivity tiers** (`low` / `medium` / `high`) — every MCP tool declares its tier; the privacy middleware enforces consent flows, redaction, and the 30-second timeout based on it. `low` = aggregates and counts, `medium` = row-level data with merchants and amounts, `high` = account numbers and PII-adjacent fields. Tools you call were built with the `@mcp_tool(sensitivity=...)` decorator — you don't write one, but you see the tier in every response's `summary.sensitivity`.
+- **Sensitivity tiers** (`low` / `medium` / `high`) — every MCP tool declares its tier; the middleware uses it to classify responses, redact fields, record audit metadata, and cap dispatch at 30 seconds. Consent gating is designed but not yet enforced. `low` = aggregates and counts, `medium` = row-level data with merchants and amounts, `high` = account numbers and PII-adjacent fields. Tools you call were built with the `@mcp_tool(sensitivity=...)` decorator — you don't write one, but you see the tier in every response's `summary.sensitivity`.
 - **Privacy middleware** — read-only validation for the general SQL tool (DDL and writes are rejected); managed-write validation that allows `INSERT` / `UPDATE` / `DELETE` only on `app.*` and `raw.*`. See [`docs/specs/mcp-architecture.md`](specs/mcp-architecture.md).
 
 ## Internal invariants

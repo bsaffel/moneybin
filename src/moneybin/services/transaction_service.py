@@ -32,7 +32,11 @@ from moneybin.mcp.write_contracts import (
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
-from moneybin.services._validators import validate_note_text, validate_slug
+from moneybin.services._validators import (
+    validate_currency_code,
+    validate_note_text,
+    validate_slug,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.services.mutation_context import operation
@@ -921,7 +925,7 @@ class TransactionService:
                         entry.get("payment_channel"),
                         entry.get("transaction_type"),
                         entry.get("check_number"),
-                        entry.get("currency_code") or "USD",
+                        entry.get("currency_code"),
                         actor,
                         transaction_id,
                     ],
@@ -1039,6 +1043,15 @@ class TransactionService:
         if not isinstance(description, str) or not description.strip():
             raise ValueError(f"entries[{idx}].description must be a non-empty string")
 
+        currency_code = entry.get("currency_code")
+        if currency_code is not None:
+            if not isinstance(currency_code, str):
+                raise ValueError(f"entries[{idx}].currency_code must be a string")
+            try:
+                validate_currency_code(currency_code)
+            except ValueError as e:
+                raise ValueError(f"entries[{idx}].{e}") from e
+
         return {
             "account_id": account_id,
             "amount": amount,
@@ -1049,7 +1062,7 @@ class TransactionService:
             "payment_channel": entry.get("payment_channel"),
             "transaction_type": entry.get("transaction_type"),
             "check_number": entry.get("check_number"),
-            "currency_code": entry.get("currency_code"),
+            "currency_code": currency_code,
             "category": entry.get("category"),
             "subcategory": entry.get("subcategory"),
         }

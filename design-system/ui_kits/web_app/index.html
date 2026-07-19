@@ -6,7 +6,7 @@
 <meta charset="utf-8">
 <title>MoneyBin — Dashboard home</title>
 <link rel="stylesheet" href="../../styles.css">
-<style>html,body{margin:0;padding:0;background:var(--bg-base)} *{box-sizing:border-box} @keyframes mbPulse{0%{opacity:1}50%{opacity:0.35}100%{opacity:1}}</style>
+<style>html,body{margin:0;padding:0;background:var(--bg-base)} *{box-sizing:border-box}</style>
 </head>
 <body style="font-family: var(--font-ui); font-size: 14px;">
 <!-- Static reference extraction of the brand kit's §09 dashboard. Values are the source of truth for implementation. -->
@@ -22,11 +22,11 @@
           <span style="font-family: var(--font-display); font-size: 18px; font-weight: 600;">MoneyBin</span>
         </div>
         <div style="display: flex; flex-direction: column; gap: 2px;">
-          <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; background: var(--bg-raised); color: var(--text-primary); font-weight: 500;"><svg width="15" height="15" viewBox="0 0 20 20"><rect x="2.75" y="2.75" width="6" height="6" rx="1" fill="none" stroke="var(--accent-brass)" stroke-width="1.8"></rect><rect x="11.25" y="2.75" width="6" height="6" rx="1" fill="none" stroke="var(--accent-brass)" stroke-width="1.8"></rect><rect x="2.75" y="11.25" width="6" height="6" rx="1" fill="none" stroke="var(--accent-brass)" stroke-width="1.8"></rect><rect x="11.25" y="11.25" width="6" height="6" rx="1" fill="none" stroke="var(--accent-brass)" stroke-width="1.8"></rect></svg>Home</div>
+          <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; background: var(--bg-raised); box-shadow: inset 2px 0 0 var(--accent-brass); color: var(--text-primary); font-weight: 500;"><svg width="15" height="15" viewBox="0 0 20 20"><rect x="2.75" y="2.75" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.8"></rect><rect x="11.25" y="2.75" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.8"></rect><rect x="2.75" y="11.25" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.8"></rect><rect x="11.25" y="11.25" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.8"></rect></svg>Home</div>
           <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><svg width="15" height="15" viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="9" rx="1.5" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></rect><line x1="3" y1="16" x2="17" y2="16" stroke="var(--text-secondary)" stroke-width="1.5"></line></svg>Accounts</div>
           <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><svg width="15" height="15" viewBox="0 0 20 20"><line x1="3" y1="5.5" x2="17" y2="5.5" stroke="var(--text-secondary)" stroke-width="1.5"></line><line x1="3" y1="10" x2="17" y2="10" stroke="var(--text-secondary)" stroke-width="1.5"></line><line x1="3" y1="14.5" x2="12" y2="14.5" stroke="var(--text-secondary)" stroke-width="1.5"></line></svg>Transactions</div>
           <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><svg width="15" height="15" viewBox="0 0 20 20"><circle cx="10" cy="10" r="6.5" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></circle><line x1="10" y1="6.5" x2="10" y2="10.5" stroke="var(--text-secondary)" stroke-width="1.5"></line><line x1="10" y1="10.5" x2="13" y2="12" stroke="var(--text-secondary)" stroke-width="1.5"></line></svg>Recurring</div>
-          <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><svg width="15" height="15" viewBox="0 0 20 20"><rect x="4" y="10" width="3" height="7" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></rect><rect x="8.5" y="6" width="3" height="11" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></rect><rect x="13" y="3" width="3" height="14" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></rect></svg>Reports</div>
+          <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><svg width="15" height="15" viewBox="0 0 20 20"><rect x="4" y="10" width="3" height="7" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></rect><rect x="8.5" y="6" width="3" height="11" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></rect><rect x="13" y="3" width="3" height="14" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></rect></svg>Analytics</div>
           <div style="height: 1px; background: var(--border-hairline); margin: 10px 8px;"></div>
           <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><span style="font-family: var(--font-data); font-size: 12px; width: 15px; text-align: center;">▸_</span>SQL console</div>
           <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><span style="font-family: var(--font-data); font-size: 12px; width: 15px; text-align: center;">@</span>Ask<span style="margin-left: auto; font-family: var(--font-data); font-size: 10px; color: var(--text-faint); border: 1px solid var(--border-hairline); border-radius: 3px; padding: 1px 5px;">MCP</span></div>
@@ -34,7 +34,7 @@
           <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 4px; color: var(--text-secondary);"><svg width="15" height="15" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="var(--text-secondary)" stroke-width="1.5"></circle><circle cx="10" cy="10" r="1.5" fill="var(--text-secondary)"></circle></svg>Settings</div>
         </div>
         <div style="margin-top: auto; border: 1px solid var(--border-hairline); border-radius: 4px; padding: 10px 12px; background: var(--bg-base);">
-          <div style="display: flex; align-items: center; gap: 7px; font-family: var(--font-data); font-size: 11px; color: var(--pos-income);"><span style="width: 6px; height: 6px; border-radius: 50%; background: var(--pos-income); animation: mbPulse 3s infinite;"></span>vault unlocked</div>
+          <div style="display: flex; align-items: center; gap: 7px; font-family: var(--font-data); font-size: 11px; color: var(--pos-income);"><span style="width: 6px; height: 6px; border-radius: 50%; background: var(--pos-income);"></span>vault unlocked</div>
           <div style="font-family: var(--font-data); font-size: 10px; color: var(--text-faint); margin-top: 5px; line-height: 1.6;">~/finance/vault.duckdb<br>AES-256-GCM · local only</div>
         </div>
       </nav>
@@ -50,7 +50,7 @@
             <div style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
               <div style="font-family: var(--font-data); font-size: 11px; color: var(--text-secondary); border: 1px solid var(--border-hairline); border-radius: 4px; padding: 5px 10px;">synced 4 min ago</div>
               <div style="font-family: var(--font-data); font-size: 11px; color: var(--text-secondary); border: 1px solid var(--border-hairline); border-radius: 4px; padding: 5px 10px;">⌘K</div>
-              <div style="font-size: 13px; font-weight: 500; color: var(--on-accent-brass); background: var(--accent-brass); border-radius: 4px; padding: 6px 14px;">Add widget</div>
+              <div style="font-size: 13px; font-weight: 500; color: var(--on-accent-gilt); background: var(--accent-gilt); border: 1px solid var(--accent-brass); border-radius: 4px; padding: 6px 14px;">Add widget</div>
             </div>
           </div>
 
@@ -92,7 +92,7 @@
                 <text x="779" y="266" text-anchor="middle" style="font-family: var(--font-data); font-size: 11px; fill: var(--text-faint);">Dec 25</text>
                 <text x="960" y="266" text-anchor="middle" style="font-family: var(--font-data); font-size: 11px; fill: var(--text-faint);">Apr 26</text>
                 <text x="1096" y="266" text-anchor="end" style="font-family: var(--font-data); font-size: 11px; fill: var(--text-faint);">Jul 26</text>
-                <path d="M56.0,216.7 L101.2,202.4 L146.4,210.5 L191.7,191.8 L236.9,174.6 L282.1,182.2 L327.3,160.6 L372.5,146.7 L417.7,156.9 L463.0,130.0 L508.2,115.7 L553.4,127.6 L598.6,140.4 L643.8,119.9 L689.0,105.4 L734.3,113.7 L779.5,93.2 L824.7,79.4 L869.9,89.8 L915.1,73.8 L960.3,87.3 L1005.6,68.9 L1050.8,79.5 L1096.0,52.1 L1096,244 L56,244 Z" fill="var(--accent-brass)" opacity="0.07"></path>
+                <path d="M56.0,216.7 L101.2,202.4 L146.4,210.5 L191.7,191.8 L236.9,174.6 L282.1,182.2 L327.3,160.6 L372.5,146.7 L417.7,156.9 L463.0,130.0 L508.2,115.7 L553.4,127.6 L598.6,140.4 L643.8,119.9 L689.0,105.4 L734.3,113.7 L779.5,93.2 L824.7,79.4 L869.9,89.8 L915.1,73.8 L960.3,87.3 L1005.6,68.9 L1050.8,79.5 L1096.0,52.1 L1096,244 L56,244 Z" fill="var(--accent-gilt)" opacity="0.07"></path>
                 <path d="M56.0,216.7 L101.2,202.4 L146.4,210.5 L191.7,191.8 L236.9,174.6 L282.1,182.2 L327.3,160.6 L372.5,146.7 L417.7,156.9 L463.0,130.0 L508.2,115.7 L553.4,127.6 L598.6,140.4 L643.8,119.9 L689.0,105.4 L734.3,113.7 L779.5,93.2 L824.7,79.4 L869.9,89.8 L915.1,73.8 L960.3,87.3 L1005.6,68.9 L1050.8,79.5 L1096.0,52.1" fill="none" stroke="var(--accent-brass)" stroke-width="1.75"></path>
 
                 <rect x="56" y="16" width="1040" height="236" fill="transparent" style="cursor: crosshair;"></rect>

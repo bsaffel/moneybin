@@ -435,3 +435,69 @@ def test_unruled_chase_statement_routes_transactions(tmp_path: Path) -> None:
                 f"Row {i} description mismatch: got {row['description']!r}, "
                 f"expected {expected['description']!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: Real Chase credit-card shape — wrapped header + sections + MM/DD dates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.scenarios
+@pytest.mark.slow
+def test_chase_card_unruled_wrapped_header_and_mmdd_dates(tmp_path: Path) -> None:
+    """The real Chase card layout imports end-to-end through the deterministic path.
+
+    Deeper F10 regression guard. `chase_checking_unruled` proved an unruled
+    statement derives, but real *card* statements still seeded on three defeats it
+    never reproduced: (A) a column header WRAPPED across two physical lines
+    ("Date of" / "Transaction … $ Amount") so no line splits into a date-led
+    3-cell header; (B) section sub-headers (PAYMENTS/PURCHASE/INTEREST) interleaved
+    among the rows; (C) MM/DD dates whose year lives only on the "Opening/Closing
+    Date" line, a cycle crossing year-end.
+
+    confirm=True accepts the negative_is_income inversion the card disclosures
+    propose, so the stored amounts are the flipped values (payment -50 → +50;
+    charges +25/+40/+5 → -25/-40/-5) and the dates carry the year inferred from
+    the 12/23/24-01/22/25 cycle (12/xx → 2024, 01/xx → 2025). Reconciliation runs
+    on the as-printed amounts and ties to the $20.00 balance delta, so a seed
+    fallback (broken derivation) fails this test.
+    """
+    gt = _load_yaml("chase_card_unruled")
+    assert gt["expected_outcome"] == "transactions"
+    assert gt["sign_convention"] == "negative_is_income"
+    expected = gt["expected_transactions"]
+
+    pdf_src = _pdf_path("chase_card_unruled")
+    pdf_copy = tmp_path / "chase_card_unruled.pdf"
+    shutil.copy(pdf_src, pdf_copy)
+
+    with scenario_env(_minimal_scenario("chase-card-unruled")) as (db, _tmp, _env):
+        svc = ImportService(db)
+        # confirm=True ratifies the proposed card sign inversion.
+        result = svc.import_file(pdf_copy, refresh=False, confirm=True)
+
+        assert result.transactions == len(expected), (
+            f"Card statement extracted {result.transactions} transactions, "
+            f"expected {len(expected)} — it likely fell back to the seed path"
+        )
+        assert result.import_id is not None
+        # One auto-derived recipe saved on first contact.
+        assert _count_pdf_formats(db) == 1
+
+        rows = _fetch_tabular_rows(db, result.import_id)
+        assert len(rows) == len(expected)
+        for i, (row, exp) in enumerate(zip(rows, expected, strict=True)):
+            # Year-inferred date — the whole point of defeat (C).
+            assert row["date"] == exp["date"], (
+                f"Row {i} date (year-inferred) mismatch: "
+                f"got {row['date']!r}, expected {exp['date']!r}"
+            )
+            # Stored amount is the card-flipped value.
+            assert row["amount"] == Decimal(exp["amount"]), (
+                f"Row {i} amount (card-flipped) mismatch: "
+                f"got {row['amount']}, expected {exp['amount']}"
+            )
+            assert row["description"] == exp["description"], (
+                f"Row {i} description mismatch: got {row['description']!r}, "
+                f"expected {exp['description']!r}"
+            )

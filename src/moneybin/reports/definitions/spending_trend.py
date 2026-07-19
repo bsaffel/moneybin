@@ -105,6 +105,14 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         exclusions=("transfers", "archived accounts", "non-outflows"),
         provenance=("reports.spending_trend",),
     ),
+    class_downgrades={
+        "mom_pct": "ratio of two already-declared TXN_AMOUNT columns "
+        "(total_spend / prev_month_spend); a percentage change reveals no "
+        "absolute dollar amount",
+        "yoy_pct": "ratio of two already-declared TXN_AMOUNT columns "
+        "(total_spend / prev_year_spend); a percentage change reveals no "
+        "absolute dollar amount",
+    },
 )
 def spending_trend(
     db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL

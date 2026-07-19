@@ -54,6 +54,17 @@ class TestMapColumnsHighConfidence:
         assert result.field_mapping["credit_amount"] == "Credit"
         assert result.sign_convention == "split_debit_credit"
 
+    def test_amount_header_is_preserved_as_sign_evidence(self) -> None:
+        df = _make_df({
+            "Date": ["01/15/2026"],
+            "Transaction Credit": ["-42.50"],
+            "Description": ["Payment"],
+        })
+        result = map_columns(df, overrides={"amount": "Transaction Credit"})
+        assert result.sign_convention == "negative_is_income"
+        assert result.sign_needs_confirmation is True
+        assert result.sign_evidence_header == "Transaction Credit"
+
 
 class TestMapColumnsMediumConfidence:
     """Tests for medium confidence with content-based matching."""

@@ -28,7 +28,7 @@ LLM extraction enters the loop.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from pydantic import ValidationError
@@ -59,16 +59,34 @@ from moneybin.extractors.pdf.confidence import is_high_confidence, score
 from moneybin.extractors.pdf.fingerprint import compute_fingerprint, match_format
 from moneybin.extractors.pdf.ir import PdfDocument
 from moneybin.extractors.pdf.metadata import StatementMetadata, capture_metadata
-from moneybin.extractors.pdf.recipe import FieldExtraction, Recipe, execute_recipe
+from moneybin.extractors.pdf.recipe import (
+    FieldExtraction,
+    Recipe,
+    YearlessDateError,
+    execute_recipe,
+    group_anchors,
+)
 from moneybin.extractors.pdf.reconciliation import reconcile
 from moneybin.metrics.registry import (
     PDF_EXTRACTION_CONFIDENCE,
     PDF_RECIPE_HIT_TOTAL,
     PDF_REPLAY_GUARD_FAILURE_TOTAL,
+    PDF_SELF_HEAL_TOTAL,
 )
-from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
+from moneybin.repositories.pdf_formats_repo import PdfFormat, PdfFormatsRepo
 
 logger = logging.getLogger(__name__)
+
+#: Metadata placeholder for derive_recipe, which documents its StatementMetadata
+#: parameter as forward-compatible and unused. Safe to share: the dataclass is
+#: frozen.
+_EMPTY_METADATA = StatementMetadata(
+    account_id=None,
+    period_start=None,
+    period_end=None,
+    opening_balance=None,
+    closing_balance=None,
+)
 
 # ---------------------------------------------------------------------------
 # Types
@@ -118,6 +136,17 @@ class RouteDecision:
     # The service surfaces these as the evidence behind a negative_is_income
     # proposal — an inversion the user cannot see the basis for is not reviewable.
     card_markers: tuple[str, ...] = ()
+    # True when a saved recipe stopped reconciling and was repaired by
+    # re-deriving from this document (see _attempt_self_heal). The recipe on
+    # this decision is then the FRESH one, not what app.pdf_formats holds, so
+    # the service must persist it via bump_version rather than record_use alone.
+    rederived: bool = False
+    # The sign convention the repaired recipe REPLACED, when re-derivation
+    # changed it; None when the repair kept the convention (the common case).
+    # Non-None is the signal that this decision must not load until a human
+    # ratifies the flip — see _gate_pdf_sign_convention, which cannot infer it:
+    # decision.recipe already carries the NEW convention by the time it looks.
+    rederived_from_sign: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +256,31 @@ def _canonicalize_rows(
 
     Build the per-field mapping once from recipe.fields and reuse it across
     every row so the work is O(rows · fields) once, not per-cell-per-call.
+
+    Multiple source columns can canonicalise to ``description`` — a wrapped row
+    reconstructed by shape splits into several middle cells (merchant + a
+    post-date or reference column), each named ``Description_n`` so
+    ``execute_recipe`` keeps them distinct, and every such name matches
+    ``DESC_NAME_RE``. Their values are JOINED in field order rather than
+    overwritten, so no merchant/detail component is silently dropped. Only
+    ``description`` is joined: it is the sole string-cast key a recipe can
+    legitimately repeat (two ``amount``/``date`` columns would be a malformed
+    recipe, and joining cast Decimals/dates is meaningless).
     """
     if not rows:
         return rows
     key_map = {f.name: _canonical_key(f) for f in recipe.fields}
-    return [{key_map.get(k, k.lower()): v for k, v in row.items()} for row in rows]
+    canonical: list[dict[str, Any]] = []
+    for row in rows:
+        merged: dict[str, Any] = {}
+        for k, v in row.items():
+            ckey = key_map.get(k, k.lower())
+            if ckey == "description" and ckey in merged:
+                merged[ckey] = f"{merged[ckey]} {v}".strip()
+            else:
+                merged[ckey] = v
+        canonical.append(merged)
+    return canonical
 
 
 def _compute_confidence(recipe: Recipe, rows: list[dict[str, Any]]) -> float:
@@ -337,14 +386,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     if recipe is None:
         # Auto-derive: metadata not yet captured; derive_recipe accepts an
         # empty StatementMetadata (documented as forward-compatible unused).
-        empty_meta = StatementMetadata(
-            account_id=None,
-            period_start=None,
-            period_end=None,
-            opening_balance=None,
-            closing_balance=None,
-        )
-        recipe = derive_recipe(doc, empty_meta)
+        recipe = derive_recipe(doc, _EMPTY_METADATA)
         if recipe is None:
             # derive_recipe collapses every failure into None, and reporting them
             # all as "no_transaction_table" (excluded from bridge escalation)
@@ -373,7 +415,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     # Steps 2-5 (execute → reconcile) are shared with the Phase 2b
     # bridge-apply path; see _run_recipe_pipeline.
     matched_name = saved_format.name if saved_format is not None else None
-    return _run_recipe_pipeline(
+    decision = _run_recipe_pipeline(
         recipe,
         document_text,
         fp,
@@ -381,6 +423,143 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
         matched_format_name=matched_name,
         card_markers=credit_card_markers(doc),
     )
+
+    if decision.reason == "replay_reconciliation_failed" and saved_format is not None:
+        healed = _attempt_self_heal(doc, document_text, fp, saved_format, decision)
+        if healed is not None:
+            return healed
+    return decision
+
+
+def _attempt_self_heal(
+    doc: PdfDocument,
+    document_text: str,
+    fp: dict[str, Any],
+    saved_format: PdfFormat,
+    failed: RouteDecision,
+) -> RouteDecision | None:
+    """Re-derive a saved recipe that stopped reconciling; None if unrepairable.
+
+    A persisted recipe is a frozen snapshot of the derivation logic that produced
+    it, so a fix to auto_derive can never reach a format already in
+    app.pdf_formats — the saved copy keeps mis-parsing forever and every future
+    statement of that layout seeds. This adds the missing rung to the existing
+    escalation ladder: replay → **re-derive** → seed.
+
+    Repair is deliberately narrow, because a recipe rewrite the user never sees
+    is exactly the kind of magic that has to stay bounded:
+
+    - **Only machine-derived formats** (``source == "detected"``). A bridge- or
+      manually-authored recipe encodes human intent; replacing it with an
+      auto-derived guess would silently discard that work. This holds only
+      because the first-contact save stamps ``source="bridge"`` on the bridge
+      rung — the column's original vocabulary folded "bridge-proposed + vetted"
+      *into* ``"detected"``, which made this guard a no-op for the case it
+      names. Rows written before that split are indistinguishable from an
+      auto-derive and remain eligible; the ``bump_version`` audit trail is what
+      makes such a repair reversible.
+    - **Never a silent sign-convention change.** ``bump_version`` mirrors the
+      recipe's ``sign_convention`` into the column every reader trusts, so an
+      unguarded heal could invert every amount with no human in the loop.
+      Repairing a *pattern* is safe; flipping *polarity* needs ratification, so
+      a flip is handed up via ``rederived_from_sign`` and held by
+      ``ImportService._gate_pdf_sign_convention`` rather than applied here.
+      Refusing outright (the first shape of this guard) was worse than it looked:
+      routing seeded, the gate ignores seed decisions, and so no ``--sign`` or
+      ``--confirm`` could ever authorize the repair — the statement became
+      permanently unimportable.
+
+    The fresh recipe earns its place by clearing the same ±1c reconciliation gate
+    a first-contact recipe must clear — it is proven against this document, not
+    assumed. Anything short of that returns None and the caller keeps the
+    original seed decision.
+    """
+    # Reuses the failed decision's markers: a pure function of doc, which has not
+    # changed, and scanning the whole document a second time buys nothing.
+    card_markers = failed.card_markers
+    saved_recipe = failed.recipe
+
+    if saved_format.source != "detected":
+        logger.info(
+            f"Saved format {saved_format.name!r} failed reconciliation but its "
+            f"source is {saved_format.source!r}, not 'detected' — declining to "
+            f"overwrite a human-authored recipe; routing to seed"
+        )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="refused_not_detected").inc()
+        return None
+
+    fresh = derive_recipe(doc, _EMPTY_METADATA)
+    if fresh is None:
+        logger.info(
+            f"Saved format {saved_format.name!r} failed reconciliation and the "
+            f"document could not be re-derived ({derivation_failure_reason(doc)})"
+            f" — routing to seed"
+        )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="underivable").inc()
+        return None
+
+    sign_changed = (
+        saved_recipe is not None
+        and fresh.sign_convention != saved_recipe.sign_convention
+    )
+    if saved_recipe is not None and not sign_changed:
+        # Carry the human's ratification forward. The sign convention is identical,
+        # so the decision the user already made still holds; letting it reset to
+        # False would re-prompt for an inversion they signed off on.
+        #
+        # Deliberately NOT carried when the convention changed: they ratified the
+        # OLD convention, and treating that as approval of a new one would launder
+        # a silent inversion through a decision made about something else.
+        fresh.sign_ratified = saved_recipe.sign_ratified
+
+    # recipe_source="auto_derive": the recipe is freshly derived, so it carries no
+    # metadata_anchors of its own and must fall back to DEFAULT_ANCHORS — and the
+    # replay-guard metrics already fired for the failed attempt above.
+    # matched_format_name is kept so the repair updates the EXISTING format row
+    # instead of colliding with it via save_new (which raises on a duplicate name).
+    retry = _run_recipe_pipeline(
+        fresh,
+        document_text,
+        fp,
+        recipe_source="auto_derive",
+        matched_format_name=saved_format.name,
+        card_markers=card_markers,
+    )
+    if retry.outcome != "transactions":
+        logger.info(
+            f"Saved format {saved_format.name!r} failed reconciliation and the "
+            f"re-derived recipe did not reconcile either (reason={retry.reason})"
+            f" — routing to seed"
+        )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="still_unreconciled").inc()
+        return None
+
+    if sign_changed:
+        # Reaches the service as a normal transactions decision so the sign gate
+        # can see it at all (the gate ignores seed decisions), but flagged so the
+        # gate refuses to load it until a human ratifies the flip. Returning it
+        # unflagged would apply the new polarity silently — the gate's own
+        # short-circuit only proposes for negative_is_income, so an
+        # income → expense repair would sail straight through.
+        assert saved_recipe is not None  # noqa: S101  # sign_changed implies it
+        logger.warning(
+            f"Saved format {saved_format.name!r} was repaired by re-derivation, "
+            f"but the sign convention changed ({saved_recipe.sign_convention} → "
+            f"{fresh.sign_convention}) — holding for human ratification"
+        )
+        PDF_SELF_HEAL_TOTAL.labels(outcome="repaired_pending_sign").inc()
+        return replace(
+            retry,
+            rederived=True,
+            rederived_from_sign=saved_recipe.sign_convention,
+        )
+
+    logger.info(
+        f"Saved format {saved_format.name!r} failed reconciliation but a "
+        f"re-derived recipe reconciles — repairing the saved recipe in place"
+    )
+    PDF_SELF_HEAL_TOTAL.labels(outcome="repaired").inc()
+    return replace(retry, rederived=True)
 
 
 def route_forced_recipe(doc: PdfDocument, recipe: Recipe) -> RouteDecision:
@@ -484,6 +663,45 @@ def _run_recipe_pipeline(
             fp=fp,
             card_markers=card_markers,
         )
+    except YearlessDateError:
+        # A year-less row couldn't be placed in time (no capturable period, or a
+        # date beyond posting drift). Fail the WHOLE extraction rather than let the
+        # executor silently drop the row. Both reasons are bridge-eligible so an
+        # agent can supply the period anchors the deterministic path lacked; on a
+        # saved-recipe replay use the replay reason + guard flag + the same
+        # replay-failure telemetry the reconciliation path emits, so a saved format
+        # whose year-less rows stop resolving is counted rather than silently
+        # escaping the guard metric. (First-contact uses transaction_table_underivable
+        # — a recipe existed but a row wouldn't cast; it is bridge-eligible either
+        # way, so the label difference from reconciliation_failed is cosmetic.)
+        if is_saved_replay:
+            PDF_RECIPE_HIT_TOTAL.labels(outcome="replay_failed").inc()
+            PDF_REPLAY_GUARD_FAILURE_TOTAL.inc()
+        logger.warning(
+            "execute_recipe: year-less date row unresolvable — routing to bridge"
+        )
+        return RouteDecision(
+            outcome="seed",
+            recipe=recipe,
+            rows=[],
+            metadata=StatementMetadata(
+                account_id=None,
+                period_start=None,
+                period_end=None,
+                opening_balance=None,
+                closing_balance=None,
+            ),
+            confidence=0.0,
+            reason=(
+                "replay_reconciliation_failed"
+                if is_saved_replay
+                else "transaction_table_underivable"
+            ),
+            replay_guard_failed=is_saved_replay,
+            matched_format_name=matched_format_name,
+            fp=fp,
+            card_markers=card_markers,
+        )
     rows = _canonicalize_rows(recipe, extracted.rows)
 
     if not rows:
@@ -534,26 +752,17 @@ def _run_recipe_pipeline(
     # ------------------------------------------------------------------
     # 4. Capture metadata
     # ------------------------------------------------------------------
-    # Replay path: use the saved recipe's metadata_anchors so a bridge-
-    # authored or manually corrected format with non-default balance/account
-    # labels can actually find its values on replay. Group by field name so
-    # multiple FieldExtraction entries with the same name (alternative
-    # patterns for the same field — e.g. the two default account_id anchors
-    # "Account Number: \\S+" and "Account ending in \\d+") are preserved as
-    # ordered alternatives. Without grouping, capture_metadata only sees the
-    # first pattern per name.
-    #
-    # Tri-state semantics on Recipe.metadata_anchors:
-    #   * None        → no anchors authored; fall back to DEFAULT_ANCHORS
-    #   * non-empty   → use the listed anchors verbatim
-    #   * empty list  → caller deliberately declines metadata capture
-    #                    (Phase 2b bridge-authored recipes for statement
-    #                    formats with no balance lines)
+    # Replay path: use the saved recipe's metadata_anchors so a bridge-authored or
+    # manually corrected format with non-default balance/account labels can find
+    # its values on replay. group_anchors regroups the flat FieldExtraction list
+    # into capture_metadata's {name: [pattern, ...]} shape — preserving multiple
+    # alternative patterns per field (e.g. the two default account_id anchors) and
+    # the tri-state None / [] / populated semantics of metadata_anchors (see its
+    # docstring). First-contact path (use_recipe_anchors False) leaves anchors_dict
+    # None so capture falls back to DEFAULT_ANCHORS.
     anchors_dict: dict[str, list[str]] | None = None
-    if use_recipe_anchors and recipe.metadata_anchors is not None:
-        anchors_dict = {}
-        for f in recipe.metadata_anchors:
-            anchors_dict.setdefault(f.name, []).append(f.pattern)
+    if use_recipe_anchors:
+        anchors_dict = group_anchors(recipe.metadata_anchors)
     metadata = capture_metadata(document_text, anchors=anchors_dict)
 
     if not metadata.is_complete_for_reconciliation():
@@ -600,9 +809,12 @@ def _run_recipe_pipeline(
         # Balance values intentionally omitted — `.claude/rules/security.md`
         # forbids logging financial values; the reason code suffices.
         _format_name = matched_format_name or "unknown"
+        # States the failure, not the outcome: route_pdf_import re-derives before
+        # deciding, so a "falling back to seed" claim here is contradicted by the
+        # very next log line whenever the repair succeeds.
         logger.warning(
             f"Replay recipe for format {_format_name!r} failed reconciliation "
-            f"(reason={recon.reason}) — falling back to seed"
+            f"(reason={recon.reason}) — attempting re-derivation"
         )
         return RouteDecision(
             outcome="seed",

@@ -36,7 +36,7 @@ mcp = FastMCP(
 
         Money amounts are JSON numbers in summary.display_currency. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
-        Privacy tiers are low, medium, high, and critical. Critical account and routing fields remain masked. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
+        Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other fields — including amounts, descriptions, and dates — reach the model provider as-is. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
 
         Destructive branches require explicit payload-bound confirmation. Inspect mutations with system_audit and recover supported app.* changes with system_audit_undo(operation_id).
         """

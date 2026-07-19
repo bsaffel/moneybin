@@ -42,7 +42,9 @@ def transactions_create(
     payment_channel: str | None = typer.Option(
         None, "--payment-channel", help="Payment channel (e.g., online, in_store)"
     ),
-    currency: str = typer.Option("USD", "--currency", help="ISO 4217 currency code"),
+    currency: str | None = typer.Option(
+        None, "--currency", help="ISO 4217 currency code"
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),  # noqa: ARG001 — no interactive prompt yet; flag reserved for parity
     output: OutputFormat = output_option,
 ) -> None:

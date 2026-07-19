@@ -88,6 +88,7 @@ def _build_spec(
     columns: tuple[OutputColumn, ...] = _COLUMNS,
     semantics: ReportSemantics = _SEMANTICS,
     domain: str | None = None,
+    class_downgrades: Mapping[str, str] | None = None,
 ) -> ReportSpec:
     return build_spec(
         runner,  # type: ignore[arg-type]
@@ -99,6 +100,7 @@ def _build_spec(
         columns=columns,
         semantics=semantics,
         domain=domain,
+        class_downgrades=class_downgrades,
     )
 
 
@@ -397,3 +399,53 @@ def test_report_spec_defensively_freezes_classes() -> None:
     assert spec.classes["value"] is DataClass.AGGREGATE
     with pytest.raises(TypeError):
         spec.classes["value"] = DataClass.TXN_AMOUNT  # type: ignore[index]  # immutable
+
+
+def test_build_spec_class_downgrades_defaults_to_empty() -> None:
+    spec = _build_spec()
+    assert spec.class_downgrades == {}
+
+
+def test_build_spec_records_class_downgrades() -> None:
+    spec = _build_spec(
+        class_downgrades={"value": "aggregate over amount; no single value leaks"},
+    )
+    assert spec.class_downgrades == {
+        "value": "aggregate over amount; no single value leaks"
+    }
+
+
+def test_build_spec_rejects_downgrade_for_unknown_column() -> None:
+    # A downgrade naming a column absent from `classes` is a stale declaration
+    # (e.g. the column was renamed or dropped) — must raise, not be ignored.
+    with pytest.raises(ValueError, match="class_downgrades"):
+        _build_spec(
+            class_downgrades={"nonexistent": "reason"},
+        )
+
+
+def test_build_spec_rejects_empty_downgrade_reason() -> None:
+    with pytest.raises(ValueError, match="class_downgrades"):
+        _build_spec(
+            class_downgrades={"value": "   "},
+        )
+
+
+def test_report_decorator_threads_class_downgrades() -> None:
+    @report(
+        report_id="test:sample",
+        name="sample",
+        view=REPORTS_MERCHANT_ACTIVITY,
+        classes=_CLASSES,
+        parameter_classes={"top": DataClass.AGGREGATE},
+        columns=_COLUMNS,
+        semantics=_SEMANTICS,
+        class_downgrades={"value": "aggregate over amount; no single value leaks"},
+    )
+    def runner(db: Database, *, top: int = 10) -> ReportQuery:
+        """One-line summary."""
+        return ReportQuery("SELECT 1", [])
+
+    assert runner._report_spec.class_downgrades == {  # type: ignore[attr-defined]
+        "value": "aggregate over amount; no single value leaks"
+    }

@@ -248,6 +248,56 @@ def _envelope_row_count(envelope: ResponseEnvelope[Any]) -> int:
     return envelope.summary.returned_count
 
 
+def _stamp_envelope_sensitivity(
+    envelope: ResponseEnvelope[Any], sensitivity: Sensitivity
+) -> ResponseEnvelope[Any]:
+    """Return an envelope stamped with the operation's static sensitivity."""
+    if sensitivity.value == envelope.summary.sensitivity:
+        return envelope
+    updated = dataclasses.replace(
+        envelope.summary,
+        sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
+    )
+    return dataclasses.replace(envelope, summary=updated)  # pyright: ignore[reportUnknownArgumentType]
+
+
+def internal_envelope_adapter(
+    *, sensitivity: Sensitivity
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Normalize an internal helper without publishing MCP tool metadata.
+
+    Coarse registered tools own timeout, privacy, redaction, and audit behavior.
+    This adapter only preserves the awaitable/error-envelope contract of helpers
+    composed beneath that public boundary.
+    """
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        is_coro = inspect.iscoroutinefunction(fn)
+        if inspect.isasyncgenfunction(fn) or inspect.isgeneratorfunction(fn):
+            raise TypeError(
+                f"{fn.__name__} is a generator — envelope helpers must return directly"
+            )
+
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
+            try:
+                if is_coro:
+                    result = await fn(*args, **kwargs)
+                else:
+                    result = await asyncio.to_thread(fn, *args, **kwargs)
+            except Exception as exc:
+                envelope = _classify_or_raise(fn.__name__, exc)
+            else:
+                envelope = _check_envelope(fn.__name__, result)
+            if envelope.error is None:
+                return _stamp_envelope_sensitivity(envelope, sensitivity)
+            return envelope
+
+        return wrapper
+
+    return decorator
+
+
 def mcp_tool(
     *,
     domain: str | None = None,
@@ -433,13 +483,7 @@ def mcp_tool(
             """
             if dynamic_classification:
                 return env
-            if sensitivity.value == env.summary.sensitivity:
-                return env
-            updated = dataclasses.replace(
-                env.summary,
-                sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
-            )
-            return dataclasses.replace(env, summary=updated)  # pyright: ignore[reportUnknownArgumentType]
+            return _stamp_envelope_sensitivity(env, sensitivity)
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
