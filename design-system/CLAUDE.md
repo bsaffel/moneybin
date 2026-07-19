@@ -37,7 +37,14 @@ a pointer, not a second copy; when the two disagree, `readme.md` wins.
   `chrome/` (VaultStatusBar) · `brand/` (Mark, Wordmark, DuckKey). Each ships a
   `.jsx` + `.d.ts` + `.prompt.md`.
 - `guidelines/*.html` — specimen cards (the visual contract).
-- `charts.md` — the binding chart grammar. It wins over any other chart prose.
+
+Four binding prose docs, each winning in its own domain over any other doc:
+
+- `charts.md` — chart grammar. It wins over any other chart prose.
+- `motion.md` — motion doctrine (state-bearing motion only).
+- `patterns.md` — app-pattern grammar (FilterBar, NavRail, floating layer, ⌘K
+  palette, import mapper) + the chord registry and canonical synthetic dataset.
+- `ai-surface.md` — the ask surface, consent tiers, and provider policy.
 
 ## Direction of truth
 

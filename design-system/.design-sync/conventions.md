@@ -63,6 +63,30 @@ Read before styling: `_ds/<folder>/styles.css` → `_ds_bundle.css` (every token
 `:root` definition) + `fonts/fonts.css`. Per-component API in `<Name>.d.ts`,
 usage in `<Name>.prompt.md`.
 
+Four binding grammar docs ship at the project root. Each wins in its own domain
+over anything summarized here — read the relevant one before building in it:
+
+- `charts.md` — chart grammar. Before drawing any chart.
+- `motion.md` — motion doctrine. Before animating anything.
+- `patterns.md` — app chrome: rail shell, floating layer, ⌘K palette, table
+  anatomy, import mapper, chord registry. Before building app structure.
+- `ai-surface.md` — ask-bar anatomy, consent tiers, provider policy. Before
+  building any AI or ask surface.
+
+The four rules most often broken before anyone thinks to look one up:
+
+- **Linear interpolation only** — never smooth or spline a line, and never
+  bridge a gap. Missing data is missing; balance data carries forward stepped.
+- **Amounts never animate** — no count-up, no ticking digits. A value change
+  swaps instantly; one 120ms `--accent-gilt-tint` fade is the only sanctioned cue.
+- **Chart color follows the accent tiers** — a lone value-over-time line is
+  `--accent-brass`; bars, areas, and dots are `--accent-gilt` fills; comparisons
+  draw `--chart-1` … `--chart-8` in order, six max before grouping to "Other",
+  and a category keeps its hue in every view.
+- **Motion reports a state change and nothing else** — 120ms flips, 180ms
+  surfaces, no entrance choreography, and no ambient or looping motion except
+  `sync` while a sync is actually in flight.
+
 ## Build snippet
 
 ```jsx
