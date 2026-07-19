@@ -604,6 +604,12 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("core", "dim_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,
+        # FK to core.dim_categories.category_id — missed here until the
+        # generalized derivation check (reports-foundation.md) caught it: the
+        # completeness test's core.dim_merchants stub (tests/moneybin/
+        # db_helpers.py) had independently drifted to omit this column too,
+        # so neither guard alone would have surfaced the gap.
+        "category_id": DataClass.RECORD_ID,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "created_by": DataClass.TXN_TYPE,
         "exemplars": DataClass.MERCHANT_NAME,

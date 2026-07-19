@@ -24,6 +24,17 @@ declares ``RECORD_ID``.
 A trivial hand-written fixture view (as the unit tests use) would not catch a
 gap between a report's declared map and its real multi-CTE view — that gap is
 exactly how the lineage approach leaked. This test closes that hole.
+
+``test_core_declared_classes_match_derivation`` extends the same tier
+comparison to ``core.*`` view models (see
+``moneybin.privacy.report_class_derivation.derive_core_view_classes`` for the
+scoping rule), comparing against ``CLASSIFICATION`` instead of a
+``@report``'s declared map. Moving ``core.uncategorized_queue`` out of
+``reports.*`` (reports-foundation.md R5) silently dropped it from
+derivation-backed verification the first time around, because derivation was
+hard-scoped to ``models/reports/*.sql`` — this generalization is what makes
+that impossible: a derivable view stays covered by a tier comparison whether
+it lives in ``reports.*`` or ``core.*``.
 """
 
 from __future__ import annotations
@@ -135,5 +146,45 @@ def test_declared_classes_match_derivation() -> None:
                     "with no class_downgrades reason"
                 )
     assert not problems, "Class declarations disagree with derivation:\n" + "\n".join(
+        problems
+    )
+
+
+@pytest.mark.scenarios
+def test_core_declared_classes_match_derivation() -> None:
+    """Every derivable core.* view's CLASSIFICATION entry is tier-safe.
+
+    Generalizes ``test_declared_classes_match_derivation`` above to core.*
+    (see ``derive_core_view_classes``'s scoping rule: only the core view
+    models this connectionless deriver can actually resolve are compared —
+    most of core.* reads prep.*/seeds.* or uses a shape the deriver can't
+    walk, and is excluded rather than compared; see
+    ``tests/privacy/test_report_class_derivation.py`` for that pinned set).
+
+    Unlike reports.*, CLASSIFICATION has no ``class_downgrades`` mechanism:
+    there is no reasoned-override channel to invent, so ANY genuine downgrade
+    (``declared.tier < derived.tier``) is unconditionally a problem here.
+    """
+    from moneybin.privacy.report_class_derivation import derive_core_view_classes
+    from moneybin.privacy.taxonomy import CLASSIFICATION
+
+    derived, _excluded = derive_core_view_classes()
+
+    problems: list[str] = []
+    for key, derived_cols in derived.items():
+        declared_cols = CLASSIFICATION.get(key, {})
+        for column, derived_class in derived_cols.items():
+            declared_class = declared_cols.get(column)
+            if declared_class is None:
+                problems.append(f"{key[0]}.{key[1]}.{column}: undeclared")
+                continue
+            if declared_class.tier < derived_class.tier:
+                problems.append(
+                    f"{key[0]}.{key[1]}.{column}: declared {declared_class.name} "
+                    f"(tier {declared_class.tier.name}) below derived "
+                    f"{derived_class.name} (tier {derived_class.tier.name}) — "
+                    "CLASSIFICATION has no downgrade-with-reason mechanism"
+                )
+    assert not problems, "core.* declarations disagree with derivation:\n" + "\n".join(
         problems
     )

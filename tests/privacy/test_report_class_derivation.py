@@ -1,4 +1,4 @@
-"""Build-time derivation of reports.* column classes (no DB connection)."""
+"""Build-time derivation of reports.*/core.* column classes (no DB connection)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import pytest
 
 from moneybin.privacy.report_class_derivation import (
     ReportDerivationError,
+    derive_core_view_classes,
     derive_report_classes,
 )
 from moneybin.privacy.taxonomy import DataClass
@@ -110,3 +111,81 @@ def test_derivation_rejects_star_in_a_cte_body(tmp_path: Path) -> None:
     """
     with pytest.raises(ReportDerivationError, match="SELECT \\*"):
         _derive_one(model, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# derive_core_view_classes: the generalized engine, applied to core.* views
+#
+# Unlike reports.* (every model must derive — see report_class_derivation.py's
+# module docstring), most of core.* is out of scope for this connectionless
+# deriver: 2 kind-FULL SQL models, 3 Python models, and most of the remaining
+# kind-VIEW models read prep.*/seeds.* (ordinary medallion data flow) or use a
+# shape (bare SELECT *, an unaliased single-table projection, UNNEST(...)
+# struct access) this no-qualify() deriver was never built to resolve. The
+# tests below pin BOTH sides of that split exactly, so a change to either
+# (a model starting to derive that used not to, or vice versa) requires a
+# deliberate edit here rather than silently passing or silently vanishing.
+# ---------------------------------------------------------------------------
+
+
+def test_derives_every_derivable_core_view() -> None:
+    derived, _excluded = derive_core_view_classes()
+    assert set(derived) == {
+        ("core", "dim_merchants"),
+        ("core", "uncategorized_queue"),
+    }
+
+
+def test_core_excludes_materialized_tables_by_kind() -> None:
+    """A kind-FULL SQL model is excluded before derivation is even attempted."""
+    _derived, excluded = derive_core_view_classes()
+    assert "kind=FULL" in excluded["core.dim_accounts"]
+    assert "kind=FULL" in excluded["core.fct_investment_transactions"]
+
+
+def test_core_excludes_python_models_by_filename() -> None:
+    """A SQLMesh Python model has no SQL text; excluded without being loaded."""
+    _derived, excluded = derive_core_view_classes()
+    for stem in ("fct_balances_daily", "fct_investment_lots", "fct_realized_gains"):
+        assert "python model" in excluded[stem]
+
+
+def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
+    """kind-VIEW models that fail derivation are excluded with the real reason.
+
+    Each of these legitimately reads prep.*/seeds.* (outside CLASSIFICATION's
+    core/app ground truth) or uses a shape this deriver can't walk without
+    ``qualify()`` (bare ``SELECT *``, or ``UNNEST(...)`` struct-field access) —
+    none is a bug to fix here; each is a real, stated scope boundary.
+    """
+    _derived, excluded = derive_core_view_classes()
+    unresolvable = {
+        "core.bridge_category_source_map",  # reads seeds.category_source_map
+        "core.bridge_transfers",  # reads prep.int_transactions__matched/merged
+        "core.dim_categories",  # reads seeds.categories
+        "core.dim_holdings",  # reads prep.stg_plaid__investment_holdings*
+        "core.dim_securities",  # unaliased single-table SELECT (no qualify())
+        "core.fct_balances",  # bare SELECT * inside a UNION ALL branch
+        "core.fct_transaction_lines",  # UNNEST(t.splits) struct-field access
+        "core.fct_transactions",  # reads prep.int_transactions__merged
+    }
+    assert unresolvable <= set(excluded)
+    for name in unresolvable:
+        assert "not resolvable" in excluded[name] or "SELECT *" in excluded[name]
+
+
+def test_uncategorized_queue_age_days_and_priority_score_derive_correctly() -> None:
+    """The two columns #330's finding singled out as the least-verified.
+
+    ``age_days`` is ``CURRENT_DATE - transaction_date`` (a date arithmetic
+    expression referencing only ``transaction_date``) and ``priority_score``
+    is ``ABS(amount) * age_days`` (referencing both ``amount`` and
+    ``transaction_date``, whose classes are TXN_AMOUNT/HIGH and
+    TXN_DATE/MEDIUM respectively) — derivation's max-tier-referenced-column
+    rule must answer TXN_DATE and TXN_AMOUNT, matching what taxonomy.py
+    declares.
+    """
+    derived, _excluded = derive_core_view_classes()
+    queue = derived[("core", "uncategorized_queue")]
+    assert queue["age_days"] is DataClass.TXN_DATE
+    assert queue["priority_score"] is DataClass.TXN_AMOUNT
