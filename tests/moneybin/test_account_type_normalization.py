@@ -250,7 +250,7 @@ def test_opaque_ofx_org_code_resolves_to_a_readable_institution_name(
     ).fetchone()
     assert row is not None
     assert row[0] == "Chase", f"expected the FID to resolve a name, got {row[0]!r}"
-    assert row[1] == "Chase credit …4387", row[1]
+    assert row[1] == "Chase credit card …4387", row[1]
 
 
 @pytest.mark.slow

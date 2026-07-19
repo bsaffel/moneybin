@@ -163,13 +163,13 @@ SELECT
   GREATEST(w.loaded_at, s.updated_at) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Does not advance on idempotent SQLMesh re-applies. See docs/specs/core-updated-at-convention.md. */
   COALESCE(
     s.display_name,
-    w.institution_name || ' ' || COALESCE(w.account_type, w.account_subtype) || ' …' || COALESCE(s.last_four, w.last_four_derived),
+    w.institution_name || ' ' || COALESCE(w.account_subtype, w.account_type) || ' …' || COALESCE(s.last_four, w.last_four_derived),
     w.institution_name || ' …' || COALESCE(s.last_four, w.last_four_derived),
-    w.institution_name || ' ' || COALESCE(w.account_type, w.account_subtype),
+    w.institution_name || ' ' || COALESCE(w.account_subtype, w.account_type),
     w.institution_name,
     w.account_type,
     'Account ' || w.account_id
-  ) AS display_name, /* Resolved display label: user override → derived (institution+type-or-subtype[+last4]) → institution+last4 → institution or type alone → 'Account <id>' terminal so it is never NULL. The institution+last4 branch is what keeps two typeless accounts at one institution distinguishable; without it both collapse to the bare institution name. */
+  ) AS display_name, /* Resolved display label: user override → derived (institution+subtype-or-type[+last4]; the subtype is preferred because 'checking' reads to a human where the canonical 'depository' does not) → institution+last4 → institution or type alone → 'Account <id>' terminal so it is never NULL. The institution+last4 branch is what keeps two typeless accounts at one institution distinguishable; without it both collapse to the bare institution name. */
   COALESCE(s.official_name, w.official_name) AS official_name, /* Institution's formal account name: user override (app.account_settings) else Plaid official_name */
   COALESCE(s.last_four, w.last_four_derived) AS last_four, /* Last 4 of account number: user-set app.account_settings.last_four, else derived per source (OFX source_account_key digits, Plaid mask, tabular account_number/masked). Never the full number. */
   COALESCE(s.account_subtype, w.account_subtype) AS account_subtype, /* Plaid-style subtype (checking, savings, credit card, mortgage, ...): user override else Plaid subtype */
