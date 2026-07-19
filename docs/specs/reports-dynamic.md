@@ -28,6 +28,7 @@ Roadmap item **M2I** ("show me the SQL" report lineage) lands here as R6.
   is not in the SQLMesh graph and cannot be `kind FULL`. Promotion is M2P.3.
 - **Sharing or installing** a saved report. Also M2P.3.
 - **Parameter inference.** Parameters are declared, never guessed from SQL.
+  See [R8](#r8--parameters-bind-by-name) for how they bind.
 - **Opening `raw`/`prep`.** See [R2](#r2--save-time-classification-is-invisible).
 
 ## The one architectural claim
@@ -135,10 +136,16 @@ Save pipeline:
    columns is decided there, not assumed here.
 4. `resolve_output_classes(..., strict=False)`. **Not strict.** An unresolvable
    projection must not fail the save.
-5. `DESCRIBE <query_sql>` for real DuckDB result column names — metadata only,
-   executes nothing, returns no rows — then bridge through
-   `_classes_by_result_column` and persist the reconciled map **keyed by DuckDB
-   column names**.
+5. `DESCRIBE <query_sql>` **with every declared parameter bound to NULL**, for
+   real DuckDB result column names — metadata only, executes nothing, returns
+   no rows — then bridge through `_classes_by_result_column` and persist the
+   reconciled map **keyed by DuckDB column names**.
+
+The NULL binding in step 5 is required, not incidental: DuckDB raises
+`InvalidInputException` on `DESCRIBE` of a query with unbound parameters, for
+both `$name` and `?` styles. Binding NULL is sufficient and safe — a SELECT
+list's column names derive from projection *structure*, not parameter *values*,
+so NULL-bound and value-bound `DESCRIBE` return identical names.
 
 Step 5 is load-bearing, not an optimization. `resolve_output_classes` returns
 names from sqlglot projections; `classify_columns` looks them up by DuckDB
@@ -220,7 +227,8 @@ redaction, same audit actor threading.
 
 `reports_explain(name)` returns, for any tier:
 
-- the SQL the report runs, with parameters bound as placeholders;
+- the SQL the report runs, in both forms defined by [R9](#r9--provenance-renders-identically-across-tiers)
+  (`sql` executed-with-literals, `sql_template` with named placeholders);
 - the resolved class map, per column, with provenance — which upstream column
   it descends from, or that it is computed or unresolved;
 - the upstream tables lineage resolved;
@@ -246,6 +254,43 @@ Repository tests follow the house pattern: row mutation, paired `app.audit_log`
 entry, `app_mutation_audit_emitted_total` increment, and rollback when audit
 raises.
 
+### R8 — Parameters bind by name
+
+Stored SQL uses DuckDB's **named** parameter syntax (`$month`), and declared
+parameters bind by name. Positional `?` binding is not used.
+
+The deciding argument is not ergonomics but silent failure. `reports_run(name,
+**params)` is keyword-based at both surfaces, so positional storage would need
+a name→position mapping maintained alongside the SQL — and editing stored SQL
+to add a `WHERE` clause shifts every subsequent position. That mis-binds
+arguments **silently**, producing wrong numbers rather than an error. Named
+binding cannot express that failure: an unknown or missing name raises.
+
+Concrete consequence for the implementer: `ReportQuery.params` widens from
+`Sequence[object]` to `Sequence[object] | Mapping[str, object]`, and
+`run_report`'s `db.execute(rq.sql, list(rq.params))` must stop calling `list()`
+— `list()` on a mapping yields its *keys*, which would bind parameter names as
+values. Both are internal abstractions behind a stable contract, so this is a
+two-way door; built-in runners keep working unchanged and may adopt named
+binding if it reads better.
+
+### R9 — Provenance renders identically across tiers
+
+`WidgetCard` requires every widget showing a number to pass `sql` — "a widget
+that can't state its query doesn't ship." All three tiers satisfy this from one
+source: `reports_explain` returns the query, so the brass SQL chip is fed
+identically whether the report came from a decorator or a row.
+
+`reports_explain` returns two forms, because the provenance ladder's bottom
+rung opens the query in the SQL console for direct editing and a template with
+unbound `$month` placeholders would fail there:
+
+- `sql` — the executed form with parameters rendered as quoted literals.
+  **Display only.** MoneyBin never executes this string; it exists so a user
+  can paste it into the console, where it re-enters through
+  `validate_read_only_query` and normal parameterization.
+- `sql_template` — the stored form with named placeholders intact.
+
 ## Observability
 
 | Metric | Type | Labels |
@@ -261,12 +306,7 @@ or whether users are quietly accumulating masked columns.
 
 ## Open questions
 
-- **Does a dynamic report earn a `provenance` chip in the UI surface?** The
-  design system requires every data widget to carry SQL provenance. A dynamic
-  report's provenance is its stored SQL, which `reports_explain` already
-  returns — confirm the chip renders identically for all three tiers when the
-  frontend lands.
-- **Parameter ergonomics.** v1 binds declared params positionally to `?`
-  placeholders, matching `ReportQuery(sql, params)`. Named binding is friendlier
-  for agents but is a public contract change; revisit if positional proves
-  awkward in practice.
+None. The two carried at drafting are resolved as R8 (parameters bind by name)
+and R9 (provenance renders identically across tiers). The umbrella's
+floored-columns question is resolved in R2 by deferring it to M2O.2, where it
+first becomes live.
