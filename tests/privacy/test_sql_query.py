@@ -239,6 +239,42 @@ def test_write_query_raises(populated_db: Database) -> None:
     assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
+def test_multi_statement_query_is_rejected() -> None:
+    """Two statements in one string are refused before any classification.
+
+    Guards the trailing-statement bypass: the read-only prefix check, the
+    file/URL scans, and the write-pattern scan all pass on
+    ``SELECT 1; SELECT <critical> FROM ...`` because every statement is
+    individually a legal read. Only a statement-count check catches it.
+    """
+    error = validate_read_only_query(
+        "SELECT 1 AS a; SELECT routing_number AS a FROM core.dim_accounts"
+    )
+    assert error is not None
+    assert "one statement" in error
+
+
+def test_trailing_statement_cannot_smuggle_critical_columns(
+    populated_db: Database,
+) -> None:
+    """A second statement cannot return CRITICAL data unclassified.
+
+    DuckDB executes a multi-statement string and returns the LAST statement's
+    rows, while the classifier reads the first. Before the statement-count
+    gate, ``is_data_query`` saw the two-statement ``Block`` as non-data and
+    routed the whole string to the metadata path — executing it and returning
+    routing numbers at ``Tier.LOW`` with ``output_classes == {}``, bypassing
+    redaction entirely.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT 1 AS a; SELECT routing_number AS a FROM core.dim_accounts",
+            max_rows=100,
+        )
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
+
+
 def test_unknown_table_raises(populated_db: Database) -> None:
     """A nonexistent table raises UserError(sql_unknown_table)."""
     with pytest.raises(UserError) as ei:

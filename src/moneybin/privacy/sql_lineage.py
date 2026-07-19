@@ -1202,6 +1202,43 @@ def is_data_query(tree: exp.Expr) -> bool:
     return isinstance(tree, (exp.Select, exp.SetOperation))
 
 
+# sqlglot has no EXPLAIN node for the DuckDB dialect — it falls back to the
+# generic exp.Command, which is ALSO what every statement it cannot parse
+# becomes. Matching the command word keeps unparsed syntax from riding in on
+# the same node type.
+_METADATA_COMMANDS = frozenset({"EXPLAIN"})
+
+
+def is_metadata_query(tree: exp.Expr) -> bool:
+    """True for DESCRIBE / SHOW / PRAGMA / EXPLAIN — and nothing else.
+
+    The complement of :func:`is_data_query` is NOT a safe test for "this is
+    metadata". Callers run metadata statements unclassified at LOW, so reading
+    "not a SELECT" as "safe to execute raw" makes every expression kind sqlglot
+    can produce a potential unredacted read — the door a top-level ``EXCEPT``
+    and a ``;``-separated ``Block`` each walked through. This allowlist is the
+    positive test callers need so an unrecognized tree fails closed.
+    """
+    if isinstance(tree, (exp.Describe, exp.Show, exp.Pragma)):
+        return True
+    return (
+        isinstance(tree, exp.Command)
+        and str(tree.this).strip().upper() in _METADATA_COMMANDS
+    )
+
+
+def is_multi_statement(tree: exp.Expr) -> bool:
+    """True when ``tree`` holds more than one statement.
+
+    sqlglot parses ``SELECT 1; SELECT 2`` into a single ``exp.Block``. DuckDB
+    executes such a string and returns the LAST statement's rows, while every
+    classifier here reads the first — so a trailing statement can return
+    columns the class map never saw. Callers must refuse these before any
+    classification decision.
+    """
+    return isinstance(tree, exp.Block)
+
+
 def tables_outside_schemas(
     tree: exp.Expr, snapshot: SchemaSnapshot, allowed: frozenset[str]
 ) -> list[str]:

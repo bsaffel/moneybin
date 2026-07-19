@@ -21,6 +21,7 @@ from moneybin.privacy.sql_lineage import (
     expand_star,
     get_current_schema_snapshot,
     is_data_query,
+    is_metadata_query,
     parse_cached,
     reports_class_map,
     resolve_output_classes,
@@ -491,6 +492,25 @@ def test_is_data_query_separates_data_from_metadata() -> None:
     assert not is_data_query(parse_cached("SHOW TABLES"))
     assert not is_data_query(parse_cached("PRAGMA database_list"))
     assert not is_data_query(parse_cached("EXPLAIN SELECT 1"))
+
+
+def test_is_metadata_query_is_an_allowlist_not_a_fallback() -> None:
+    """Only the four metadata statement kinds are metadata — nothing else.
+
+    ``not is_data_query(...)`` is not a safe stand-in for "this is metadata":
+    the metadata path executes its string unclassified at LOW, so every
+    expression kind sqlglot invents that isn't a SELECT would land there and
+    return unredacted rows. That default-open reading is what let a top-level
+    ``EXCEPT`` (see ``is_data_query``) and a ``;``-separated ``Block`` through.
+    A tree that is neither data nor one of these four must answer False so
+    callers fail closed.
+    """
+    assert is_metadata_query(parse_cached("DESCRIBE core.fct_transactions"))
+    assert is_metadata_query(parse_cached("SHOW TABLES"))
+    assert is_metadata_query(parse_cached("PRAGMA database_list"))
+    assert is_metadata_query(parse_cached("EXPLAIN SELECT 1"))
+    assert not is_metadata_query(parse_cached("SELECT 1"))
+    assert not is_metadata_query(parse_cached("SELECT 1; SELECT 2"))
 
 
 @pytest.mark.parametrize("op", ["EXCEPT", "INTERSECT"])

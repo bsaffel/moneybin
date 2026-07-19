@@ -37,6 +37,8 @@ from moneybin.privacy.sql_lineage import (
     expand_star,
     get_current_schema_snapshot,
     is_data_query,
+    is_metadata_query,
+    is_multi_statement,
     parse_cached,
     resolve_output_classes,
     tables_outside_schemas,
@@ -144,6 +146,17 @@ def validate_read_only_query(sql: str) -> str | None:
             "Write operations (INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, etc.) "
             "are not allowed."
         )
+
+    # Every statement in `SELECT 1; SELECT routing_number FROM ...` is
+    # individually a legal read, so none of the checks above fire — but DuckDB
+    # returns the LAST statement's rows while classification reads the first.
+    # A parse error here is not this gate's to report: return None and let the
+    # caller's parse surface it with its own error code.
+    try:
+        if is_multi_statement(parse_cached(stripped)):
+            return "Queries must be one statement; remove the extra ';'-separated SQL."
+    except SqlParseError:
+        return None
 
     return None
 
@@ -320,6 +333,15 @@ def execute_sql_query(db: Database, query: str, *, max_rows: int) -> SqlQueryRes
 
     # DESCRIBE/SHOW/PRAGMA/EXPLAIN return schema/plan text, not row data — run
     # them directly at LOW; the lineage gate applies only to data queries.
+    # Route on the positive metadata test, never on `not is_data_query`: this
+    # branch executes its string unclassified, so anything neither recognizably
+    # data nor recognizably metadata must be refused rather than run.
+    if not is_data_query(tree) and not is_metadata_query(tree):
+        raise UserError(
+            "Only SELECT queries and DESCRIBE/SHOW/PRAGMA/EXPLAIN are supported.",
+            code=error_codes.SQL_INVALID_QUERY,
+        )
+
     if not is_data_query(tree):
         columns, rows, truncated = _fetch_metadata(db, query, max_rows)
         records = [dict(zip(columns, row, strict=False)) for row in rows]
