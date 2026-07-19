@@ -34,9 +34,11 @@ position. That is the whole of Pillar C.
 Two constraints shape the design before any choice is made:
 
 1. **The extension seal.** `_seal_connection()` disables `HTTPFileSystem`,
-   `S3FileSystem`, and `HuggingFaceFileSystem` and sets `lock_configuration=true`.
-   No SQLMesh model reaches the network. Every price arrives through a Python
-   fetch that lands in `raw.*`; models read from there.
+   `S3FileSystem`, and `HuggingFaceFileSystem` on every connection; read-only
+   opens additionally set `lock_configuration=true`. The filesystem disable
+   alone is what closes the network, and it applies to the write connections
+   SQLMesh transforms run on. No SQLMesh model reaches the network. Every price
+   arrives through a Python fetch that lands in `raw.*`; models read from there.
 2. **Prices are observations, not a cache.** A historical close is immutable.
    Volume is small enough to store outright: 100 securities × 252 trading days ×
    10 years is roughly 126,000 rows.
@@ -158,10 +160,13 @@ stooq, CoinGecko — write `''`.
 **Only `close_price` becomes a price row.** Plaid carries two price-shaped
 fields, and they are not the same kind of fact. `close_price` on the security
 record is a security-level close and belongs here. `institution_price` on a
-holding is a per-`(account, security)` valuation, not a property of the security,
-and it already lands on `core.dim_holdings` as `provider_reported_value` under
-the store-don't-trust convention. Routing both into one security-grain table
-would collide two different measurements under one key.
+holding is a per-`(account, security)` valuation, not a property of the security.
+Routing both into one security-grain table would collide two different
+measurements under one key. `institution_price` reaches
+`prep.stg_plaid__investment_holdings` and stops there; `core.dim_holdings`
+carries the separate `institution_value` field as `provider_reported_value`
+under the store-don't-trust convention, so the per-account signal is already
+retained at the grain that fits it.
 
 **Quote currency belongs in the key.** A security quoted in two currencies — an
 ADR against its ordinary listing, a venue reporting pence against another
@@ -203,6 +208,29 @@ non-positive closes, and **resolves `provider_security_key` to the canonical
 whose provider key has not resolved yet stays in `raw` and is absent from
 staging — it is not dropped, and it appears once its security resolves.
 `investment_unresolved_securities` already reports that backlog.
+
+**Every provider resolves the same way, including the keyless feeds.**
+`app.security_links` is already provider-neutral by design — its header calls
+`(source_type, ref_kind, ref_value)` the strong-ref key and its `source_type`
+comment reads "plaid (future: ofx institutions, ...)" — but its `ref_kind` CHECK
+admits only `plaid_security_id` and `institution_security_id`. C.2 extends that
+CHECK with `stooq_ticker` and `coingecko_slug` in a migration, and the adapters
+bind through `SecurityLinksRepo` exactly as the Plaid path does.
+
+The two alternatives were considered and rejected against existing rules.
+Resolving at fetch time, since the adapter already holds a canonical
+`SecurityRef`, would leave Plaid resolving in staging and market feeds resolving
+in Python — two mechanisms for one job, which the coherence rule names as the
+largest source of rot. Binding through the `ticker` and `coingecko_id` columns
+`app.securities` already carries is cheaper still, but it is a text-keyed
+cross-table reference: `identifiers.md` Guard 3 requires the FK, and lists the
+`LOWER(ticker) = LOWER(?)` predicate such a join needs as a smell that the FK is
+missing. It also cannot disambiguate one ticker listed on two exchanges, and it
+records no audit trail for the binding.
+
+Extending the CHECK costs one migration per new provider. That is the price of a
+single resolution path whose bindings are reversible, audited, and uniform — and
+`app.*` schema is a one-way door, so the cheap shape is the expensive one.
 
 ### New model: `core.fct_security_prices`
 
@@ -279,6 +307,40 @@ and provider outages are exactly when a carried-forward value with rising
 `days_since_observed` needs to be published. An open position with no price at
 all still emits rows, carrying `valuation_status = 'unpriced'`.
 
+**Pre-window quantity is a floor, and says so.** Plaid's transaction window is
+roughly 24 months while its holdings snapshot reports the whole position, so an
+established account's long-held shares enter the ledger as synthetic
+`opening_bootstrap` rows dated `window_start - 1 day`
+(`prep.stg_plaid__opening_lots`). Replaying the ledger alone therefore reports
+zero quantity for every earlier date — a decade-held portfolio would value at
+zero until the window opens, then jump. Zero is the one answer that is certainly
+wrong.
+
+The bootstrap keeps each lot's real date in `original_acquisition_date`, so the
+replay seeds those lots at that date instead of at the window boundary. Three lot
+classes, and only the first is recoverable:
+
+| Lot class | Date available | Pre-window treatment |
+|---|---|---|
+| Real `original_purchase_datetime` before the window | Broker's actual date | Seeded at that date |
+| Real basis, no date (`stg_plaid__opening_lots` case G) | Synthetic, stamped at the window | Not seeded — the date is invented |
+| Residual the snapshot cannot explain (`basis_incomplete`) | None | Not seeded |
+
+The result is a **lower bound, not a measurement**: a lot's snapshot quantity is
+what survived to the window, so shares bought and sold entirely before it leave
+no lot and never appear. A position of 100 shares reduced to 80 by a pre-window
+sale reconstructs as 80 across the whole earlier period. Nothing in the data
+distinguishes that from a position that was always 80.
+
+Because the reconstructed curve is smooth and plausible, the qualification must
+travel with the number rather than live in documentation. Dates whose quantity
+rests on any seeded lot carry `valuation_status = 'reconstructed_floor'`;
+consumers render it as a bounded region, never as a measured line. Dates before a
+position's earliest seeded lot — and every date of a position whose pre-window
+shares are all class two or three — carry `unreconstructable` with a NULL market
+value. This extends the bootstrap's own standard, that every part of the
+reconstruction is either exact or explicitly flagged, to valuation.
+
 ---
 
 ## Price resolution
@@ -351,7 +413,17 @@ never silently overwrites it" — the guarantee is per-date. A mark on
 **Cross-source disagreement is a signal.** Two sources agreeing on a date is
 uninteresting; two sources disagreeing beyond a relative tolerance means one is
 wrong. `system doctor` reports the disagreement rather than resolution silently
-picking a winner.
+picking a winner — an inference that could be wrong surfaces where it happens
+rather than resolving quietly.
+
+The check is `investment_price_disagreement`, a sibling to
+`investment_price_discontinuity`: it fires when two sources hold rows for the
+same `(security_id, price_date, quote_currency)` differing by more than
+`price_disagreement_tolerance_pct` (a config field, following the staleness
+defaults). The two are separate checks because their remedies differ — a
+discontinuity says distrust a *day*, a disagreement says distrust a *feed* — and
+a single merged finding could not say which. It lands in C.2, the first phase in
+which a security can carry two sources at all.
 
 ### Trade-implied prices
 
@@ -387,13 +459,24 @@ Every valued row carries `valuation_status`:
 |---|---|
 | `valued` | A price exists for the valuation date. |
 | `carried_forward` | An earlier price was carried forward; `days_since_observed > 0`. |
+| `reconstructed_floor` | Priced, but quantity rests on a seeded pre-window lot and is a lower bound; see "Pre-window quantity is a floor". |
 | `unpriced` | No usable price. `market_value` is NULL. |
+| `unreconstructable` | Quantity is unknown for this date. `market_value` is NULL. |
 | `withheld` | Quantity is known to be wrong; see "Split desync". |
 
-`unpriced` and `withheld` set `market_value` to NULL, never zero. A zero is
-indistinguishable from a genuinely worthless position and silently understates
-every aggregate that sums it. Consumers reporting a portfolio total report the
-count of non-`valued` positions alongside it.
+`unpriced`, `unreconstructable`, and `withheld` set `market_value` to NULL, never
+zero. A zero is indistinguishable from a genuinely worthless position and
+silently understates every aggregate that sums it. Consumers reporting a
+portfolio total report the count of non-`valued` positions alongside it.
+
+The three non-`valued` NULL statuses are distinct on purpose, because each has a
+different remedy: `unpriced` wants a price feed, `unreconstructable` wants
+earlier transaction history, and `withheld` wants a split reconciled. Collapsing
+them into one "no value" state would tell the user something is missing without
+telling them what to do about it. `reconstructed_floor` is the one status that
+carries a number while qualifying it — a consumer that treats it as `valued`
+publishes a floor as a measurement, so surfaces render it as a bounded region and
+aggregates that include it are labelled as minimums.
 
 Staleness reuses the vocabulary `asset-tracking.md` establishes:
 `days_since_observed` on the valued row, `staleness_threshold_days` resolving
@@ -445,10 +528,31 @@ withheld = quantity <> provider_reported_quantity          -- the divergence
                                                             -- check's quantity leg
            or exists a staging row for this security with
               review_reason = 'split_underivable'
+              whose trade_date is not already covered by a
+              'split' event in THIS position's own ledger   -- detected per
+                                                            -- security, resolved
+                                                            -- per position
            or the position is flagged by
               investment_phantom_holdings                   -- broker no longer
                                                             -- reports it
 ```
+
+**The split clause is detected per security and resolved per position, and both
+halves are load-bearing.** A split is a corporate action on the security, so a
+reject arriving through one account is evidence that *every* position in that
+security may carry a pre-split quantity — scoping detection to the rejecting
+account would leave sibling positions valued at a quantity wrong by the split
+factor, which is the exact harm this section exists to prevent. But a position
+whose own ledger already carries a `split` event on that date has been restated
+correctly, whether the user entered it manually or another source supplied it,
+and withholding it would suppress a right answer.
+
+Checking the position's own ledger also makes the clause self-clearing: when the
+Plaid split behavior is settled and the events reach
+`core.fct_investment_transactions`, positions stop withholding without a separate
+resolved-flag to maintain. `prep.stg_plaid__investment_transactions` exposes
+canonical `account_id`, `security_id`, and `trade_date` on the reject row, so the
+predicate needs no new plumbing.
 
 The third clause is not redundant with the first. When a fresh snapshot omits a
 position the ledger still carries, `provider_reported_quantity` is NULL, so
@@ -540,9 +644,24 @@ data. Market values are the same class of data as the holdings they value.
 
 - `investments_prices_sync` — refresh; returns counts written, failed, and
   skipped, with per-security reasons.
+- `investments_prices_list` — the observation history for a security: every
+  stored row with its `source`, `price_date`, `quote_currency`, `price_basis`,
+  and whether it is the resolved winner for its date.
 - `investments_prices_set` — record a mark.
 - `investments_prices_delete` — remove a mark, returning the date to
   provider-derived valuation.
+
+`investments_prices_list` is not optional ergonomics. `mcp.md` makes MCP exposure
+the default and admits only two exceptions — secret material and hands-on
+operator territory — and price history is neither. It also closes a concrete gap:
+an agent about to call `_set` cannot otherwise discover that an override already
+exists for that date, because `investments_holdings` reports the *resolved* value
+and not the observations behind it. Writing blind over an existing mark is
+exactly the silent action `design-principles.md` requires a surface for.
+
+The grain differs from `investments_holdings` — observations per security-date
+rather than one row per position — which is why it is a separate tool rather than
+a flag on the holdings response.
 
 `investments_holdings` and `investments_gains` return `market_value`,
 `price_date`, `days_since_observed`, and `valuation_status` per position, plus a
@@ -562,9 +681,22 @@ prices.
   Assert against the replay specifically: `fct_investment_lots` stores post-split
   quantities on every date, so a test reading it would pass while being wrong.
   Then the desync case: a Plaid-held-out split publishes `withheld`, not a number.
+- **Split withhold scope** — one security held in three accounts with a single
+  `split_underivable` reject: the two positions with no `split` event in their own
+  ledger withhold, and the third, which recorded the split, still values. Then
+  the self-clearing case: once a `split` event reaches the ledger for a withheld
+  position, it values without any flag being cleared by hand.
 - **Dated quantity replay** — a position bought, partly sold, split, then fully
   sold reports the correct quantity on a date inside each interval, and zero
   after the final disposal.
+- **Pre-window reconstruction** — a position whose opening lots carry real
+  acquisition dates values those earlier dates as `reconstructed_floor`, never as
+  `valued`; a position whose pre-window shares are all residual or undated reports
+  `unreconstructable` with NULL market value; and no pre-window date ever reports
+  zero quantity.
+- **Cross-source disagreement** — two sources within tolerance on one date raise
+  nothing; beyond tolerance, `investment_price_disagreement` fires while
+  resolution still returns the rank winner deterministically.
 - **Resolution totality** — two Plaid connections reporting the same security,
   date, and currency pick the same winner across repeated rebuilds; likewise two
   trade-implied executions on one day.
@@ -576,6 +708,11 @@ prices.
 - **Unpriced** — a security with no source yields NULL market value, and a
   portfolio total reports the uncounted position.
 - **`price_basis` enforcement** — an adapter returning no basis fails ingest.
+- **Non-Plaid key binding** — a stooq ticker and a CoinGecko slug each bind
+  through `SecurityLinksRepo` and resolve in `prep.stg_security_prices`; an
+  unbound key leaves its row in `raw` and surfaces in
+  `investment_unresolved_securities` rather than vanishing. The migration test
+  runs against a populated `app.security_links`, per the migration-realism rule.
 - **Adapter fixtures** — recorded provider responses. No test performs a network
   call.
 - **Scenario coverage** for ingest → resolve → value → net worth.
@@ -596,7 +733,7 @@ partially fail, so it is unobservable without them.
 | `price_refresh_duration_seconds` | Histogram | `source` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
 | `price_refresh_securities_total` | Counter | `source`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
 | `price_rows_written_total` | Counter | `source` | Ingest volume, and the check that a backfill wrote what it claimed. |
-| `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities. |
+| `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `reconstructed_floor` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `reconstructed_floor` share is how much of the history is a lower bound. |
 | `price_staleness_days` | Gauge | — | Maximum `days_since_observed` across held securities. One number answering "how old is the oldest price my net worth rests on." |
 
 No metric carries a security identifier or a monetary value as a label — labels
@@ -623,11 +760,14 @@ the security. This is why the price history is append-only while the securities
 table is not: the two have different retention contracts, and only the extractor
 sits between them.
 
-**C.2 — feeds, overrides, and staleness.** The two adapters, the override table
-and repo, trade-implied prices, the first-available floor, staleness surfacing,
-and the CLI and MCP surface.
+**C.2 — feeds, overrides, and staleness.** The two adapters, the `ref_kind`
+extension that lets their keys bind, the override table and repo, trade-implied
+prices, the first-available floor, staleness surfacing,
+`investment_price_disagreement` (the first phase in which one security can carry
+two sources), and the CLI and MCP surface.
 
-**C.3 — the daily series.** `core.fct_holdings_daily` and
+**C.3 — the daily series.** `core.fct_holdings_daily`, the pre-window lot
+seeding with its `reconstructed_floor` / `unreconstructable` statuses, and
 `investment_price_discontinuity`. Unblocks Pillar D.
 
 ### Files to create
@@ -645,10 +785,17 @@ and the CLI and MCP surface.
 - `src/moneybin/services/price_service.py`
 - `src/moneybin/cli/commands/investments/prices.py`
 - `src/moneybin/mcp/tools/investment_prices.py`
+- `src/moneybin/sql/migrations/V0NN__extend_security_link_ref_kinds.py` (C.2) —
+  adds `stooq_ticker` and `coingecko_slug` to the `app.security_links.ref_kind`
+  CHECK. `V038` is the highest at the time of writing; take the next free number
+  when the work starts rather than reserving one now, since a migration that
+  collides with another branch's has to renumber anyway
 
 ### Files to modify
 
 - `src/moneybin/sqlmesh/models/core/dim_holdings.sql` — valuation columns
+- `src/moneybin/sql/schema/app_security_links.sql` — widen the `ref_kind` CHECK
+  to match the migration, so a fresh database and a migrated one agree
 - `src/moneybin/extractors/plaid/extractor.py` — append `close_price` keyed by
   Plaid's own security key to `raw.security_prices` during ingestion, before the
   upsert overwrites it and before the resolver has minted a canonical id
@@ -658,8 +805,11 @@ and the CLI and MCP surface.
   list plus a `raw_*.sql` glob inside provider directories, so a file added
   under `src/moneybin/sql/schema/` is not discovered on its own and the first
   write would hit a missing table
-- `src/moneybin/services/doctor_service.py` — `investment_price_discontinuity`
-- `src/moneybin/config.py` — staleness defaults, backfill bound
+- `src/moneybin/services/doctor_service.py` — `investment_price_disagreement`
+  (C.2) and `investment_price_discontinuity` (C.3), registered alongside the nine
+  existing investment checks
+- `src/moneybin/config.py` — staleness defaults, backfill bound,
+  `price_disagreement_tolerance_pct`
 - `src/moneybin/tables.py` — new table constants
 - `src/moneybin/cli/commands/investments/__init__.py` — register `prices`
 - `docs/specs/INDEX.md`, `docs/specs/investments-overview.md`,
@@ -753,19 +903,6 @@ and the CLI and MCP surface.
 ---
 
 ## Open questions
-
-- **How a non-Plaid provider key resolves to a canonical security.** Staging
-  resolves `provider_security_key` through `app.security_links`, whose `ref_kind`
-  CHECK admits only `plaid_security_id` and `institution_security_id`. A stooq
-  ticker or a CoinGecko slug has no representable binding, so a C.2 observation
-  would sit in `raw` and never reach staging. Three candidate shapes: extend the
-  CHECK with per-source `ref_kind` values (the table's `source_type` comment
-  already anticipates providers beyond Plaid); resolve at fetch time, since the
-  adapter is handed a `SecurityRef` that already carries the canonical id; or
-  bind through the `ticker` and `coingecko_id` columns `app.securities` already
-  has. The third is cheapest and the first is most consistent — the shapes differ
-  enough that picking blind is how the last three review rounds went. Settled by:
-  the C.2 adapter implementation, which is the first code that has to do it.
 
 - **stooq coverage and terms.** Its equity and ETF breadth against a real
   portfolio, and its terms for programmatic access, need checking before C.2 is
