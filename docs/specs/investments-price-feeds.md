@@ -307,39 +307,42 @@ and provider outages are exactly when a carried-forward value with rising
 `days_since_observed` needs to be published. An open position with no price at
 all still emits rows, carrying `valuation_status = 'unpriced'`.
 
-**Pre-window quantity is a floor, and says so.** Plaid's transaction window is
+**Pre-window dates report no value, and say why.** Plaid's transaction window is
 roughly 24 months while its holdings snapshot reports the whole position, so an
 established account's long-held shares enter the ledger as synthetic
 `opening_bootstrap` rows dated `window_start - 1 day`
-(`prep.stg_plaid__opening_lots`). Replaying the ledger alone therefore reports
-zero quantity for every earlier date — a decade-held portfolio would value at
-zero until the window opens, then jump. Zero is the one answer that is certainly
-wrong.
+(`prep.stg_plaid__opening_lots`). Replaying the ledger therefore yields no
+quantity for any earlier date. Those dates carry
+`valuation_status = 'unreconstructable'` and a NULL market value — never zero,
+which would be indistinguishable from a genuinely empty portfolio and would
+silently understate every aggregate that sums it.
 
-The bootstrap keeps each lot's real date in `original_acquisition_date`, so the
-replay seeds those lots at that date instead of at the window boundary. Three lot
-classes, and only the first is recoverable:
+**Why the broker's own acquisition dates do not rescue this.** The bootstrap
+preserves each lot's real date in `original_acquisition_date`, so seeding those
+lots at that date rather than at the window boundary looks like free history. It
+is not, and the reason is worth recording so the idea is not re-attempted.
+Plaid's `tax_lots[]` reports the **current, post-split** quantity beside the
+**pre-split** acquisition date. Valuing that quantity against the raw,
+unadjusted closes this spec stores overstates the position by the full split
+factor: a lot of 25 shares bought before a 4:1 split is reported as 100 shares
+dated to the original purchase, and 100 shares against a pre-split close is four
+times the truth.
 
-| Lot class | Date available | Pre-window treatment |
-|---|---|---|
-| Real `original_purchase_datetime` before the window | Broker's actual date | Seeded at that date |
-| Real basis, no date (`stg_plaid__opening_lots` case G) | Synthetic, stamped at the window | Not seeded — the date is invented |
-| Residual the snapshot cannot explain (`basis_incomplete`) | None | Not seeded |
+Nothing detects it. `prep.int_plaid__opening_positions` guards only
+`has_in_window_split` (`sp.trade_date >= p.window_start`), and a pre-window split
+produces no in-window transaction for Plaid to reject, so the
+`split_underivable` path never fires either. The error would be silent, smooth,
+and in the wrong direction — an overstatement, not the conservative floor it
+first appears to be.
 
-The result is a **lower bound, not a measurement**: a lot's snapshot quantity is
-what survived to the window, so shares bought and sold entirely before it leave
-no lot and never appear. A position of 100 shares reduced to 80 by a pre-window
-sale reconstructs as 80 across the whole earlier period. Nothing in the data
-distinguishes that from a position that was always 80.
-
-Because the reconstructed curve is smooth and plausible, the qualification must
-travel with the number rather than live in documentation. Dates whose quantity
-rests on any seeded lot carry `valuation_status = 'reconstructed_floor'`;
-consumers render it as a bounded region, never as a measured line. Dates before a
-position's earliest seeded lot — and every date of a position whose pre-window
-shares are all class two or three — carry `unreconstructable` with a NULL market
-value. This extends the bootstrap's own standard, that every part of the
-reconstruction is either exact or explicitly flagged, to valuation.
+The pairing that *is* sound is post-split quantity against a **split-adjusted**
+series, which is correct precisely because both sides are restated. That is
+genuine design work — sourcing an adjusted series, owning its refresh obligation
+after every corporate action, and reconciling it with this spec's raw-only
+storage rule — and it belongs to **M1J.6**, not to a clause here. Until it
+lands, an honest NULL beats a plausible wrong number: a missing value that names
+its reason is recoverable, while a published value that later has to be retracted
+is not.
 
 ---
 
@@ -417,13 +420,21 @@ picking a winner — an inference that could be wrong surfaces where it happens
 rather than resolving quietly.
 
 The check is `investment_price_disagreement`, a sibling to
-`investment_price_discontinuity`: it fires when two sources hold rows for the
-same `(security_id, price_date, quote_currency)` differing by more than
+`investment_price_discontinuity`: it fires when two *provider* sources —
+`source IN ('plaid', 'stooq', 'coingecko')` — hold rows for the same
+`(security_id, price_date, quote_currency)` differing by more than
 `price_disagreement_tolerance_pct` (a config field, following the staleness
-defaults). The two are separate checks because their remedies differ — a
-discontinuity says distrust a *day*, a disagreement says distrust a *feed* — and
-a single merged finding could not say which. It lands in C.2, the first phase in
-which a security can carry two sources at all.
+defaults). The comparison is deliberately restricted to provider closes, because
+the other two sources are *expected* to differ: an override exists precisely to
+correct a close the user believes is wrong, and a trade-implied price reflects
+one execution's size and spread rather than the day's close. Comparing those
+against a provider row would raise a standing warning on every ordinary
+correction and every intraday fill.
+
+The two are separate checks because their remedies differ — a discontinuity says
+distrust a *day*, a disagreement says distrust a *feed* — and a single merged
+finding could not say which. It lands in C.2, the first phase in which a security
+can carry two sources at all.
 
 ### Trade-implied prices
 
@@ -459,7 +470,6 @@ Every valued row carries `valuation_status`:
 |---|---|
 | `valued` | A price exists for the valuation date. |
 | `carried_forward` | An earlier price was carried forward; `days_since_observed > 0`. |
-| `reconstructed_floor` | Priced, but quantity rests on a seeded pre-window lot and is a lower bound; see "Pre-window quantity is a floor". |
 | `unpriced` | No usable price. `market_value` is NULL. |
 | `unreconstructable` | Quantity is unknown for this date. `market_value` is NULL. |
 | `withheld` | Quantity is known to be wrong; see "Split desync". |
@@ -473,10 +483,12 @@ The three non-`valued` NULL statuses are distinct on purpose, because each has a
 different remedy: `unpriced` wants a price feed, `unreconstructable` wants
 earlier transaction history, and `withheld` wants a split reconciled. Collapsing
 them into one "no value" state would tell the user something is missing without
-telling them what to do about it. `reconstructed_floor` is the one status that
-carries a number while qualifying it — a consumer that treats it as `valued`
-publishes a floor as a measurement, so surfaces render it as a bounded region and
-aggregates that include it are labelled as minimums.
+telling them what to do about it.
+
+Every status either carries a number the user can rely on or carries none at all.
+No status publishes a qualified figure, because a qualification the reader cannot
+evaluate is not a disclosure — and a number that later has to be retracted costs
+more trust than a NULL that named its reason from the start.
 
 Staleness reuses the vocabulary `asset-tracking.md` establishes:
 `days_since_observed` on the valued row, `staleness_threshold_days` resolving
@@ -689,11 +701,11 @@ prices.
 - **Dated quantity replay** — a position bought, partly sold, split, then fully
   sold reports the correct quantity on a date inside each interval, and zero
   after the final disposal.
-- **Pre-window reconstruction** — a position whose opening lots carry real
-  acquisition dates values those earlier dates as `reconstructed_floor`, never as
-  `valued`; a position whose pre-window shares are all residual or undated reports
-  `unreconstructable` with NULL market value; and no pre-window date ever reports
-  zero quantity.
+- **Pre-window dates** — a bootstrapped position reports `unreconstructable` with
+  NULL market value for every date before its `opening_bootstrap` row, never zero
+  and never a value derived from the lot's `original_acquisition_date`. The
+  regression that matters: a lot that split before the window must not value at
+  its post-split quantity against pre-split closes.
 - **Cross-source disagreement** — two sources within tolerance on one date raise
   nothing; beyond tolerance, `investment_price_disagreement` fires while
   resolution still returns the rank winner deterministically.
@@ -733,7 +745,7 @@ partially fail, so it is unobservable without them.
 | `price_refresh_duration_seconds` | Histogram | `source` | Per-adapter fetch latency; the signal that a provider is degrading before it fails. |
 | `price_refresh_securities_total` | Counter | `source`, `outcome` | `outcome` ∈ `written` / `failed` / `skipped`. Makes partial success countable rather than buried in a CLI string. |
 | `price_rows_written_total` | Counter | `source` | Ingest volume, and the check that a backfill wrote what it claimed. |
-| `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `reconstructed_floor` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `reconstructed_floor` share is how much of the history is a lower bound. |
+| `price_resolution_status_total` | Counter | `status` | `status` ∈ `valued` / `carried_forward` / `unpriced` / `unreconstructable` / `withheld`. Coverage over time; a rise in `unpriced` is the first sign a feed stopped matching securities, and the `unreconstructable` share is how much history M1J.6 would recover. |
 | `price_staleness_days` | Gauge | — | Maximum `days_since_observed` across held securities. One number answering "how old is the oldest price my net worth rests on." |
 
 No metric carries a security identifier or a monetary value as a label — labels
@@ -766,9 +778,9 @@ prices, the first-available floor, staleness surfacing,
 `investment_price_disagreement` (the first phase in which one security can carry
 two sources), and the CLI and MCP surface.
 
-**C.3 — the daily series.** `core.fct_holdings_daily`, the pre-window lot
-seeding with its `reconstructed_floor` / `unreconstructable` statuses, and
-`investment_price_discontinuity`. Unblocks Pillar D.
+**C.3 — the daily series.** `core.fct_holdings_daily` and
+`investment_price_discontinuity`. Unblocks Pillar D. Pre-window dates report
+`unreconstructable`; extending valuation earlier is M1J.6.
 
 ### Files to create
 
