@@ -534,6 +534,7 @@ def import_files_command(
                 # "Validation failed" prefix (this is a proposal, not a failure).
                 if outcome.error_message:
                     confirm_actions.append(outcome.error_message)
+                proposed_sign, prior_sign = _sign_direction(outcome)
                 confirm_actions.extend(
                     _sign_recovery_commands(
                         file_path_str,
@@ -543,6 +544,8 @@ def import_files_command(
                         save_format=save_format,
                         account_id=account_id,
                         account_name=account_name,
+                        proposed_sign=proposed_sign,
+                        prior_sign=prior_sign,
                     )
                 )
             else:
@@ -822,15 +825,25 @@ def _sign_recovery_commands(
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
+    proposed_sign: str | None = None,
+    prior_sign: str | None = None,
 ) -> list[str]:
-    """The two honest recoveries for a card sign-convention confirmation.
+    """The two honest recoveries for a sign-convention confirmation.
 
-    A card statement proposes inverting every amount (charges → expenses,
-    payments → credits). The user decides by re-running with the convention they
-    intend, never by blind-accepting a proposed mapping.
-    Shared by the JSON ``actions[]`` and the interactive prompt so the CLI never
-    drifts from the terminal command the gate's ``error_message`` already names.
-    Mirrors the MCP ``_sign_confirm_actions`` recovery.
+    The user decides by re-running with the convention they intend, never by
+    blind-accepting a proposed mapping. Shared by the JSON ``actions[]`` and the
+    interactive prompt so the CLI never drifts from the terminal command the
+    gate's ``error_message`` already names. Mirrors the MCP
+    ``_sign_confirm_actions`` recovery.
+
+    ``prior_sign`` decides the framing, because the two cases pose different
+    questions. Without one this is a first-contact card inference: the proposal
+    is always ``negative_is_income`` and the alternative always
+    ``negative_is_expense``, so "is this a credit card?" is both accurate and the
+    only question the user can actually answer. With one, a self-healed recipe
+    re-derived to the opposite polarity — which can run *either* direction, so
+    the card question may be exactly backwards. There the honest framing names
+    both conventions and what each does.
     """
     if channel == "tabular":
         approve_command = _tabular_confirmation_command(
@@ -864,13 +877,44 @@ def _sign_recovery_commands(
 
     import shlex  # noqa: PLC0415
 
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+        sign_convention_effect,
+    )
+
     quoted = shlex.quote(file_path_str)
+    if prior_sign is None:
+        return [
+            f"If it IS a credit card: moneybin import files {quoted} --confirm "
+            "(records charges as expenses, payments as credits).",
+            f"If it is NOT a credit card: moneybin import files {quoted} "
+            "--sign negative_is_expense (records amounts exactly as printed).",
+        ]
+
+    accepted = proposed_sign or "the re-derived convention"
     return [
-        f"If it IS a credit card: moneybin import files {quoted} --confirm "
-        "(records charges as expenses, payments as credits).",
-        f"If it is NOT a credit card: moneybin import files {quoted} "
-        "--sign negative_is_expense (records amounts exactly as printed).",
+        f"Accept the change — {sign_convention_effect(accepted)}: "
+        f"moneybin import files {quoted} --confirm.",
+        f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
+        f"moneybin import files {quoted} --sign {prior_sign}.",
     ]
+
+
+def _sign_direction(
+    outcome: ConfirmationRequired,
+) -> tuple[str | None, str | None]:
+    """The (proposed, prior) conventions for the recovery renderers.
+
+    ``(None, None)`` when the outcome isn't a sign proposal, which keeps the
+    default first-contact framing.
+    """
+    from moneybin.services.import_confirmation import (  # noqa: PLC0415  # module-scope import is TYPE_CHECKING-only (cold-start hygiene)
+        SignConventionProposal,
+    )
+
+    proposed = outcome.proposed
+    if not isinstance(proposed, SignConventionProposal):
+        return (None, None)
+    return (proposed.sign_convention, proposed.prior_sign_convention)
 
 
 def _render_sign_convention_prompt(
@@ -896,10 +940,20 @@ def _render_sign_convention_prompt(
     """
     typer.echo("\n👀  Sign convention confirmation required")
     typer.echo(f"   File: {file_path_str}")
-    typer.echo(
-        "   Recording it with this convention inverts every amount's sign — "
-        "negative values become income and positive values become expenses."
-    )
+    if proposed.prior_sign_convention is None:
+        typer.echo(
+            "   Recording it with this convention inverts every amount's sign — "
+            "negative values become income and positive values become expenses."
+        )
+    else:
+        # A repaired recipe can flip EITHER way, so the fixed sentence above
+        # describes the wrong direction half the time. Name both conventions.
+        typer.echo(
+            f"   This layout recorded amounts as "
+            f"{proposed.prior_sign_convention!r} before; the re-derived version "
+            f"records them as {proposed.sign_convention!r}. Every amount's sign "
+            f"flips relative to earlier imports of this format."
+        )
     if proposed.evidence:
         typer.echo(f"\n   Inference evidence: {', '.join(proposed.evidence)}")
     if proposed.sample_rows:
@@ -921,6 +975,8 @@ def _render_sign_convention_prompt(
         account_name=account_name,
         account_bindings=account_bindings,
         account_metadata=account_metadata,
+        proposed_sign=proposed.sign_convention,
+        prior_sign=proposed.prior_sign_convention,
     ):
         typer.echo(f"     {line}")
     typer.echo()
@@ -1273,6 +1329,7 @@ def import_confirm_command(
         if outcome.error_message:
             confirm_actions.append(f"Validation failed: {outcome.error_message}")
         if outcome.reason == "sign_convention":
+            proposed_sign, prior_sign = _sign_direction(outcome)
             confirm_actions.extend(
                 _sign_recovery_commands(
                     str(file_path),
@@ -1284,6 +1341,8 @@ def import_confirm_command(
                     account_name=account_name,
                     account_bindings=parsed_bindings,
                     account_metadata=parsed_metadata,
+                    proposed_sign=proposed_sign,
+                    prior_sign=prior_sign,
                 )
             )
         elif outcome.reason == "account_confirmation":
@@ -1597,7 +1656,7 @@ def _preview_pdf(source: Path) -> None:
     """
     from moneybin.database import (  # noqa: PLC0415
         DatabaseKeyError,
-        DatabaseNotInitializedError,
+        database_key_error_hint,
         get_database,
     )
     from moneybin.services.import_confirmation import (  # noqa: PLC0415
@@ -1609,16 +1668,19 @@ def _preview_pdf(source: Path) -> None:
     try:
         with get_database(read_only=False) as db:
             preview = ImportService(db).pdf_preview(source)
-    except DatabaseNotInitializedError as e:
+    except DatabaseKeyError as e:
         # The tabular branch degrades to built-in formats when there's no
         # database; a PDF cannot — the recipe rung reads app.pdf_formats. Say so
         # rather than dumping a traceback on a fresh install.
-        logger.error(f"❌ No database yet, so {source.name} can't be inspected: {e}")
-        logger.info("💡 Run 'moneybin db init' first.")
-        raise typer.Exit(1) from e
-    except DatabaseKeyError as e:
-        logger.error(f"❌ Database is locked: {e}")
-        logger.info("💡 Run 'moneybin db unlock' and retry.")
+        #
+        # This one exception covers both "never initialized" and "locked":
+        # read_only=False never raises DatabaseNotInitializedError (that path is
+        # read_only=True only), so a fresh install arrives here via
+        # SecretNotFoundError. database_key_error_hint() is what picks the right
+        # recovery — a hardcoded "db unlock" strands a fresh install on the one
+        # command that cannot work, since there is no salt to re-derive from.
+        logger.error(f"❌ Can't open the database, so {source.name} wasn't read: {e}")
+        logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except PermissionError as e:
         # Statements routinely live under ~/Documents or ~/Desktop, where macOS
@@ -1726,6 +1788,26 @@ def import_preview(
     if source.suffix.lower() == ".pdf":
         # Routed before the tabular stages below: none of format detection,
         # read_file, or column mapping apply to a statement PDF.
+        ignored = [
+            flag
+            for flag, value in (
+                ("--format", format_name),
+                ("--sheet", sheet),
+                ("--delimiter", delimiter),
+                ("--encoding", encoding),
+                ("--override", override),
+            )
+            if value
+        ]
+        if ignored:
+            # Say so rather than no-op silently: an agent that passed --format
+            # and got a clean report would otherwise conclude the flag was
+            # honoured, and repeat it on the import that follows.
+            logger.warning(
+                f"⚠️  Ignored for a PDF (tabular-only): {', '.join(ignored)}. "
+                f"A statement's structure comes from its recipe, not a column "
+                f"mapping."
+            )
         _preview_pdf(source)
         return
 

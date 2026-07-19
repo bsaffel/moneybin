@@ -187,6 +187,29 @@ def test_apply_persists_new_format(
     assert saved is not None and saved[0] == 1
 
 
+def test_apply_records_bridge_provenance_on_the_saved_format(
+    db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
+) -> None:
+    """A bridge-authored recipe must be distinguishable from a machine guess.
+
+    Both rungs share one persist path, so `source` was hardcoded to "detected"
+    for each — making a human-vetted, agent-authored recipe byte-identical in
+    provenance to an auto-derive. Self-heal's Guard A keys on exactly this
+    column to decide whether it may overwrite a recipe with a fresh derivation,
+    so without the distinction it would silently discard the anchors the bridge
+    round deliberately authored.
+    """
+    result = ImportService(db).apply_pdf_bridge_response(
+        _pdf_path(tmp_path), _bridge_response()
+    )
+
+    row = db.conn.execute(
+        f"SELECT source FROM {PDF_FORMATS.full_name} WHERE name = ?",  # noqa: S608  # TableRef constant, not user input
+        [result.format_name],
+    ).fetchone()
+    assert row is not None and row[0] == "bridge"
+
+
 def test_apply_save_format_false_skips_persist(
     db: Database, tmp_path: Path, stub_extract: list[PdfDocument]
 ) -> None:

@@ -2361,6 +2361,13 @@ class ImportService:
                         sign_convention=recipe.sign_convention,
                         evidence=decision.card_markers,
                         sample_rows=_sign_sample_rows(decision.rows),
+                        # Without this every surface renders the first-contact
+                        # card framing, which is backwards for an
+                        # income → expense repair: it would describe --confirm
+                        # as ratifying a card convention while --confirm
+                        # actually accepts the as-printed one, and offer no
+                        # command that keeps the convention already in force.
+                        prior_sign_convention=decision.rederived_from_sign,
                     ),
                     reason="sign_convention",
                     error_message=(
@@ -3179,7 +3186,13 @@ class ImportService:
                     sign_convention=decision.recipe.sign_convention,
                     date_format=None,  # per-field date_format lives in recipe
                     number_format=decision.recipe.number_format,
-                    source="detected",
+                    # The one thing the two rungs must NOT share. Everything else
+                    # on this path is deliberately identical, but self-heal's
+                    # Guard A keys on `source` to decide whether it may replace a
+                    # recipe with a fresh derivation — and a bridge recipe's
+                    # anchors were authored by an agent and vetted by a human, so
+                    # a machine guess must never silently overwrite them.
+                    source="bridge" if rung == "bridge" else "detected",
                     actor="system",  # auto-detected: system-driven (Invariant 10)
                 )
                 # Record the actually-persisted name so callers

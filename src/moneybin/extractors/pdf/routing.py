@@ -386,14 +386,7 @@ def route_pdf_import(doc: PdfDocument, db: Database) -> RouteDecision:
     if recipe is None:
         # Auto-derive: metadata not yet captured; derive_recipe accepts an
         # empty StatementMetadata (documented as forward-compatible unused).
-        empty_meta = StatementMetadata(
-            account_id=None,
-            period_start=None,
-            period_end=None,
-            opening_balance=None,
-            closing_balance=None,
-        )
-        recipe = derive_recipe(doc, empty_meta)
+        recipe = derive_recipe(doc, _EMPTY_METADATA)
         if recipe is None:
             # derive_recipe collapses every failure into None, and reporting them
             # all as "no_transaction_table" (excluded from bridge escalation)
@@ -458,7 +451,13 @@ def _attempt_self_heal(
 
     - **Only machine-derived formats** (``source == "detected"``). A bridge- or
       manually-authored recipe encodes human intent; replacing it with an
-      auto-derived guess would silently discard that work.
+      auto-derived guess would silently discard that work. This holds only
+      because the first-contact save stamps ``source="bridge"`` on the bridge
+      rung — the column's original vocabulary folded "bridge-proposed + vetted"
+      *into* ``"detected"``, which made this guard a no-op for the case it
+      names. Rows written before that split are indistinguishable from an
+      auto-derive and remain eligible; the ``bump_version`` audit trail is what
+      makes such a repair reversible.
     - **Never a silent sign-convention change.** ``bump_version`` mirrors the
       recipe's ``sign_convention`` into the column every reader trusts, so an
       unguarded heal could invert every amount with no human in the loop.

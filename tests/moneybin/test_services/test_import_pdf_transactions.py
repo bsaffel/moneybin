@@ -1422,6 +1422,16 @@ def test_a_repair_that_un_inverts_the_ledger_is_gated(
         svc.import_file(write_checking_statement_pdf(tmp_path), refresh=False)
 
     assert exc.value.outcome.reason == "sign_convention"
+    # The direction has to travel with the proposal. Every surface renders the
+    # first-contact credit-card framing when it's absent — which for THIS
+    # direction describes `--confirm` as ratifying a card convention when it
+    # actually accepts the as-printed one, and prints no command that keeps the
+    # convention already in force. Carrying the prior is what makes the guidance
+    # answerable rather than merely present.
+    proposed = exc.value.outcome.proposed
+    assert isinstance(proposed, SignConventionProposal)
+    assert proposed.sign_convention == "negative_is_expense"
+    assert proposed.prior_sign_convention == "negative_is_income"
     # Nothing from the checking statement landed while the flip is unratified.
     assert _amounts(db) == [Decimal("-150.00"), Decimal("50.00")]
 

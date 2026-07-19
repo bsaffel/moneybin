@@ -43,7 +43,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the evidence and printed-vs-recorded samples behind it). An unreadable file
   — common on macOS, where statements sit in a folder your terminal hasn't
   been granted access to — now explains itself and names the fix instead of
-  printing a stack trace.
+  printing a stack trace. On a machine with no database yet, it points at
+  `db init` rather than `db unlock` — the latter cannot work before a database
+  exists. Spreadsheet-only options (`--format`, `--sheet`, `--delimiter`,
+  `--encoding`, `--override`) now say they were ignored when passed with a PDF,
+  instead of silently doing nothing.
+- **When a repaired statement layout wants to reverse a direction you already
+  approved, the choices you're offered now match what the commands do.** The
+  prompt was written for the common case — "is this a credit card?" — where the
+  answer always points the same way. A self-repaired layout can also propose the
+  *opposite* flip, and there the card wording described `--confirm` as doing the
+  reverse of what it does, and offered no command at all for keeping the
+  direction you already had. Both choices are now named by what they do, in
+  whichever direction the repair actually goes, across the terminal, an AI
+  assistant, and the inbox's pending-file notes.
 - **A saved statement layout that stops reading correctly now repairs itself
   instead of failing forever.** MoneyBin remembers how to read each statement
   layout the first time it sees one. That saved recipe was a frozen copy, so

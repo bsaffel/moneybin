@@ -206,23 +206,44 @@ def test_preview_reports_an_unreadable_pdf_cleanly(
     assert "privacy" in caplog.text.lower()
 
 
-def test_preview_reports_a_missing_database_cleanly(
-    statement: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+def _patch_key_failure(mocker: MockerFixture, db_path: Path) -> None:
+    """Fail the database open the way a real fresh/locked profile fails.
+
+    `_preview_pdf` opens with `read_only=False`, and `DatabaseNotInitializedError`
+    is raised only on the `read_only=True` path (`database.py`). What a real
+    caller hits instead is `SecretStore.get_key()` → `SecretNotFoundError` →
+    `DatabaseKeyError` — regardless of whether the file exists. Which recovery
+    applies is decided from `db_path`, so the test supplies it rather than
+    asserting a hardcoded string.
+    """
+    from moneybin.database import DatabaseKeyError
+
+    mocker.patch(
+        "moneybin.database.get_database",
+        side_effect=DatabaseKeyError("no encryption key for profile"),
+    )
+    settings = MagicMock()
+    settings.database.path = db_path
+    mocker.patch("moneybin.database.get_settings", return_value=settings)
+
+
+def test_preview_on_a_fresh_install_points_at_db_init(
+    statement: Path,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """No database yet is a message, not a traceback.
+    """No database has ever existed → "db init", never "db unlock".
 
     The tabular branch degrades to built-in formats when the database is
     missing, so `import preview x.csv` works on a fresh install. A PDF can't
     degrade — the recipe rung reads app.pdf_formats — but it must still say so
-    instead of crashing, or the same command is robust for CSV and broken for
-    PDF.
+    instead of crashing, AND name the recovery that actually works: `db unlock`
+    re-derives a key from a stored salt a never-initialized profile doesn't
+    have, so pointing there strands the user on the one command that cannot
+    succeed.
     """
-    from moneybin.database import DatabaseNotInitializedError
-
-    mocker.patch(
-        "moneybin.database.get_database",
-        side_effect=DatabaseNotInitializedError("no database at ~/.moneybin"),
-    )
+    _patch_key_failure(mocker, tmp_path / "never-created.duckdb")
 
     with caplog.at_level("INFO"):
         result = runner.invoke(app, ["preview", str(statement)])
@@ -230,3 +251,69 @@ def test_preview_reports_a_missing_database_cleanly(
     assert "Traceback" not in result.output
     assert result.exit_code == 1
     assert "db init" in caplog.text
+    assert "db unlock" not in caplog.text
+
+
+def test_preview_on_a_locked_database_points_at_db_unlock(
+    statement: Path,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The database exists but its key is unavailable → "db unlock".
+
+    The twin of the fresh-install case: same exception, opposite recovery. Both
+    directions are asserted because one hardcoded hint satisfies either test
+    alone.
+    """
+    existing = tmp_path / "moneybin.duckdb"
+    existing.write_bytes(b"")
+    _patch_key_failure(mocker, existing)
+
+    with caplog.at_level("INFO"):
+        result = runner.invoke(app, ["preview", str(statement)])
+
+    assert result.exit_code == 1
+    assert "db unlock" in caplog.text
+    assert "db init" not in caplog.text
+
+
+def test_preview_says_when_tabular_flags_are_ignored_on_a_pdf(
+    statement: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A silently-dropped flag reads as an honoured one.
+
+    The PDF branch returns before any tabular option is consulted, so
+    `--format x` produced a clean, confident report that had nothing to do with
+    the flag. An agent has no way to tell that apart from success, and will
+    carry the same flag into the real import.
+    """
+    _patch_service(
+        mocker, pdf_preview=MagicMock(return_value=_preview_result(statement))
+    )
+
+    with caplog.at_level("WARNING"):
+        result = runner.invoke(
+            app, ["preview", str(statement), "--format", "chase_pdf", "--sheet", "S1"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "--format" in caplog.text
+    assert "--sheet" in caplog.text
+    # Flags that were NOT passed must not be named.
+    assert "--delimiter" not in caplog.text
+
+
+def test_preview_stays_quiet_when_no_tabular_flags_are_passed(
+    statement: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ordinary PDF preview must not carry a spurious warning."""
+    _patch_service(
+        mocker, pdf_preview=MagicMock(return_value=_preview_result(statement))
+    )
+
+    with caplog.at_level("WARNING"):
+        result = runner.invoke(app, ["preview", str(statement)])
+
+    assert result.exit_code == 0, result.output
+    assert "Ignored for a PDF" not in caplog.text

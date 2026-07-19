@@ -1235,13 +1235,61 @@ def test_replay_failure_re_derives_and_recovers_the_dropped_row(
     assert len(decision.rows) == 3
 
 
-def test_self_heal_refuses_a_manually_authored_recipe(db: Database) -> None:
+def test_self_heal_falls_back_to_seed_when_the_document_is_underivable(
+    db: Database,
+) -> None:
+    """The fail-safe half of "recover automatically, or fail safe".
+
+    Replay reads the text; derivation reads the tables — so the two halves are
+    failed independently. The text carries a well-formed row region whose
+    amounts don't add up to the balance delta (replay reconciles to 100.00
+    against a stated 200.00), while the table's amount column is unparseable
+    (`transaction_table_underivable`). The fingerprint still matches, so the
+    saved recipe is replayed and self-heal is entered — and must then hand back
+    None so the caller keeps its seed decision, rather than raising or returning
+    a half-built repair.
+    """
+    _save_chase_format(db)
+    doc = _make_doc(
+        text_lines=_standard_text_lines(opening="1000.00", closing="1200.00"),
+        tables=[
+            PdfTable(
+                page=1,
+                header=_HEADERS,
+                # One parseable negative keeps `recipe_polarity_fits` satisfied
+                # so the replay is actually attempted — an all-unparseable
+                # column would be refused by the polarity guard instead, and the
+                # test would pass without ever reaching self-heal.
+                rows=[
+                    ["01/15/2024", "Coffee Shop", "-50.00"],
+                    ["01/20/2024", "Paycheck", "n/a"],
+                ],
+            )
+        ],
+    )
+    before = PDF_SELF_HEAL_TOTAL.labels(outcome="underivable")._value.get()  # type: ignore[reportPrivateUsage]
+
+    decision = route_pdf_import(doc, db)
+
+    assert decision.outcome == "seed"
+    assert decision.rederived is False
+    after = PDF_SELF_HEAL_TOTAL.labels(outcome="underivable")._value.get()  # type: ignore[reportPrivateUsage]
+    assert after == before + 1
+
+
+@pytest.mark.parametrize("source", ["manual", "bridge"])
+def test_self_heal_refuses_a_human_authored_recipe(db: Database, source: str) -> None:
     """Guard A: only machine-derived recipes are repaired automatically.
 
-    A manual/bridge-authored recipe encodes human intent. Silently replacing it
-    with an auto-derived guess destroys that work, so it escalates as before.
+    A manual- or bridge-authored recipe encodes human intent. Silently replacing
+    it with an auto-derived guess destroys that work, so it escalates as before.
+
+    Both values are exercised because "bridge" is the one that nearly wasn't
+    reachable: the service persisted every first-contact recipe as "detected"
+    regardless of rung, so this guard's stated primary case — protecting an
+    agent-authored, human-vetted recipe — silently could not fire.
     """
-    _save_chase_format(db, recipe=_stale_recipe_dict(), source="manual")
+    _save_chase_format(db, recipe=_stale_recipe_dict(), source=source)
     doc = _subdollar_doc()
 
     decision = route_pdf_import(doc, db)

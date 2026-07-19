@@ -45,6 +45,7 @@ from moneybin.protocol.envelope import (
     build_envelope,
     build_error_envelope,
 )
+from moneybin.services.import_confirmation import sign_convention_effect
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +85,13 @@ def _confirmation_actions(
     """
     actions: list[str] = []
     if outcome.reason == "sign_convention":
+        proposed = outcome.proposed
         return _sign_confirm_actions(
-            file_path, outcome.error_message, channel=outcome.channel
+            file_path,
+            outcome.error_message,
+            channel=outcome.channel,
+            proposed_sign=getattr(proposed, "sign_convention", None),
+            prior_sign=getattr(proposed, "prior_sign_convention", None),
         )
     if outcome.error_message:
         # Surface validation_failure detail first so the agent / human
@@ -282,17 +288,29 @@ def _bridge_confirm_action(file_path: str, *, payload_ref: str) -> str:
 
 
 def _sign_confirm_actions(
-    file_path: str, error_message: str, *, channel: str
+    file_path: str,
+    error_message: str,
+    *,
+    channel: str,
+    proposed_sign: str | None = None,
+    prior_sign: str | None = None,
 ) -> list[str]:
     """The agent-facing hints for a sign-convention confirmation_required.
 
-    Ratifying an inferred card-style convention inverts every amount, and a wrong
-    flip corrupts the ledger on this import and on every future replay of the
-    format. An agent cannot ratify it — every channel routes the decision to a
-    human, in place via elicitation, with the terminal as the fallback.
+    Ratifying an inferred convention inverts every amount, and a wrong flip
+    corrupts the ledger on this import and on every future replay of the format.
+    An agent cannot ratify it — every channel routes the decision to a human, in
+    place via elicitation, with the terminal as the fallback.
+
+    ``prior_sign`` switches the framing for the same reason it does in the CLI's
+    ``_sign_recovery_commands`` (which this mirrors): a first-contact inference
+    always proposes ``negative_is_income``, so "is this a credit card?" is
+    accurate, but a self-healed recipe can re-derive to *either* polarity, and
+    the card framing would then name the wrong direction and offer no command
+    that keeps the convention already in force.
     """
     quoted = shlex.quote(file_path)
-    return [
+    head = [
         error_message,
         (
             "Call import_confirm(file_path=..., accept=True) so MoneyBin can "
@@ -303,6 +321,18 @@ def _sign_confirm_actions(
             "yourself — show them sign_sample_rows (what the statement printed vs "
             "what MoneyBin would record) so THEY decide."
         ),
+    ]
+    if prior_sign is not None:
+        accepted = proposed_sign or "the re-derived convention"
+        return [
+            *head,
+            f"Accept the change — {sign_convention_effect(accepted)}: "
+            f"moneybin import files {quoted} --confirm.",
+            f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
+            f"moneybin import files {quoted} --sign {prior_sign}.",
+        ]
+    return [
+        *head,
         (
             f"If it IS a credit card: moneybin import confirm {quoted} --accept "
             "--confirm-sign (records charges as expenses)."
@@ -545,11 +575,17 @@ def import_files(
         # "Validation failed" prefix (this is a proposal, not a validation error).
         if payload.get("reason") == "sign_convention":
             channel = payload.get("channel")
+            proposed_sign = payload.get("sign_convention")
+            prior_sign = payload.get("sign_prior_convention")
             actions.extend(
                 _sign_confirm_actions(
                     pending.path,
                     err_msg,
                     channel=channel if isinstance(channel, str) else "tabular",
+                    proposed_sign=proposed_sign
+                    if isinstance(proposed_sign, str)
+                    else None,
+                    prior_sign=prior_sign if isinstance(prior_sign, str) else None,
                 )
             )
             continue
@@ -676,11 +712,16 @@ def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
                     "reason": e.outcome.reason,
                     "error_message": e.outcome.error_message,
                     "sign_convention": payload["sign_convention"],
+                    "sign_prior_convention": payload["sign_prior_convention"],
                     "sign_evidence": payload["sign_evidence"],
                     "sign_sample_rows": payload["sign_sample_rows"],
                 },
                 actions=_sign_confirm_actions(
-                    str(path), e.outcome.error_message, channel=e.outcome.channel
+                    str(path),
+                    e.outcome.error_message,
+                    channel=e.outcome.channel,
+                    proposed_sign=proposed.sign_convention,
+                    prior_sign=proposed.prior_sign_convention,
                 ),
             )
         # Otherwise pdf_preview escalated via _raise_pdf_bridge_escalation, which
