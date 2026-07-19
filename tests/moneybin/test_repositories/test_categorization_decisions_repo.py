@@ -190,17 +190,21 @@ def test_sql_constraints_align_pending_and_accepted_targets(db: Database) -> Non
         db.execute(
             """
             INSERT INTO app.categorization_decisions (
-                decision_id, transaction_id, status, category_id
-            ) VALUES ('bad-pending', 'txn-bad-pending', 'pending', 'cat-food')
+                decision_id, transaction_id, attempt_number, status,
+                category_id, category_revision
+            ) VALUES (
+                'bad-pending', 'txn-bad-pending', 1, 'pending', 'cat-food', 0
+            )
             """
         )
     with pytest.raises(duckdb.ConstraintException):
         db.execute(
             """
             INSERT INTO app.categorization_decisions (
-                decision_id, transaction_id, status, decided_at, decided_by
+                decision_id, transaction_id, attempt_number, status,
+                category_revision, decided_at, decided_by
             ) VALUES (
-                'bad-accepted', 'txn-bad-accepted', 'accepted',
+                'bad-accepted', 'txn-bad-accepted', 1, 'accepted', 0,
                 CURRENT_TIMESTAMP, 'user'
             )
             """
