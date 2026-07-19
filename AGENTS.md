@@ -176,6 +176,7 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 | `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources |
 | `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs |
 | `documentation.md` | Diagram conventions (Mermaid over ASCII) |
+| `reports.md` | The `@report` contract, declared privacy classes + derivation/CI verification, the `reports.*`-means-user-facing boundary — loads when touching `reports/**` or SQLMesh `reports` models |
 | `shipping.md` | Post-implementation checklist (CHANGELOG, roadmap, features, README, INDEX) — loads when editing those |
 | `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli/services code or the moneybin-mcp/cli/capabilities + mcp-architecture specs |
 

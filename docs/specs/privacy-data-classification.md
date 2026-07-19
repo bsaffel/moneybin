@@ -74,22 +74,32 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 
 ### `_id`-suffixed columns
 
+> **Correction (2026-07-18).** Every `account_id` row below was originally
+> audited `ACCOUNT_IDENTIFIER` (masked). Canonical account identity
+> ([`account-identity-resolution.md`](account-identity-resolution.md)
+> Decisions 1 and 6) later reclassified `account_id` to `RECORD_ID`: it is a
+> deliberately opaque, minted `uuid4[:12]` surrogate, never the upstream
+> institution's account number, so passing it through unmasked is correct.
+> The PII that used to live in `account_id` now lives in
+> `app.account_links.ref_value` (masked per `ref_kind`). Rows below are
+> corrected to match the live registry in `src/moneybin/privacy/taxonomy.py`.
+
 | (schema, table) | column | class | justification |
 |---|---|---|---|
-| (app, account_settings) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID; PK that ties user settings to a real institution account. |
+| (app, account_settings) | account_id | RECORD_ID | opaque minted surrogate (not the account number); PK that ties user settings to a canonical `dim_accounts.account_id`. |
 | (app, audit_log) | audit_id | RECORD_ID | internal full UUID4 hex per `.claude/rules/identifiers.md`; not externally meaningful. |
 | (app, audit_log) | parent_audit_id | RECORD_ID | self-FK to `audit_id`; same class as the target. |
 | (app, audit_log) | target_id | RECORD_ID | references arbitrary internal IDs (transaction, rule, merchant); all are RECORD_ID-class in their home tables. |
-| (app, balance_assertions) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID; same value as `dim_accounts.account_id`. |
+| (app, balance_assertions) | account_id | RECORD_ID | opaque minted surrogate; same value as `dim_accounts.account_id`. |
 | (app, budgets) | budget_id | RECORD_ID | 12-char truncated UUID4 per identifiers.md; app-created entity with no natural key. |
 | (app, budgets) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write); same class as the referenced column when held by a mutation table. |
-| (app, categorization_rules) | account_id | ACCOUNT_IDENTIFIER | optional account-bound external ID restricting the rule. |
+| (app, categorization_rules) | account_id | RECORD_ID | opaque minted surrogate restricting the rule to one canonical account. |
 | (app, categorization_rules) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
 | (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
 | (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
-| (app, match_decisions) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID. |
-| (app, match_decisions) | account_id_b | ACCOUNT_IDENTIFIER | second account in a transfer pair; same class as account_id. |
+| (app, match_decisions) | account_id | RECORD_ID | opaque minted surrogate. |
+| (app, match_decisions) | account_id_b | RECORD_ID | second account in a transfer pair; same class as account_id. |
 | (app, match_decisions) | match_id | RECORD_ID | internal UUID PK for the decision row. |
 | (app, match_decisions) | source_transaction_id_a | RECORD_ID | transaction-level external ID (FITID, Plaid transaction_id, content hash); transaction-bound, not account-bound — rule 1 third bullet. |
 | (app, match_decisions) | source_transaction_id_b | RECORD_ID | same as `_a`. |
@@ -115,16 +125,16 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (core, bridge_transfers) | credit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |
 | (core, bridge_transfers) | debit_transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`; transaction-bound. |
 | (core, bridge_transfers) | transfer_id | RECORD_ID | UUID; also FK to `app.match_decisions.match_id`. |
-| (core, dim_accounts) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID issued by the upstream institution; ties to a real account. |
+| (core, dim_accounts) | account_id | RECORD_ID | opaque minted `uuid4[:12]` surrogate, not the upstream institution's account number. |
 | (core, dim_categories) | category_id | CATEGORY | UNIONs seed (semantic slug) and `user_categories` (UUID4) rows; classified as CATEGORY because the view's role is categorical reference regardless of the underlying generator and the dominant population is slug-keyed seeds. |
 | (core, dim_merchants) | merchant_id | RECORD_ID | UUID hex per identifiers.md; thin view over `app.user_merchants`. |
-| (core, fct_balances) | account_id | ACCOUNT_IDENTIFIER | account-bound external ID. |
-| (core, fct_balances_daily) | account_id | ACCOUNT_IDENTIFIER | FK to `dim_accounts.account_id`. |
-| (core, fct_transaction_lines) | account_id | ACCOUNT_IDENTIFIER | FK to `dim_accounts.account_id`. |
+| (core, fct_balances) | account_id | RECORD_ID | opaque minted surrogate; same class as `dim_accounts.account_id`. |
+| (core, fct_balances_daily) | account_id | RECORD_ID | FK to `dim_accounts.account_id`; same class as the referenced column. |
+| (core, fct_transaction_lines) | account_id | RECORD_ID | FK to `dim_accounts.account_id`; same class as the referenced column. |
 | (core, fct_transaction_lines) | line_id | RECORD_ID | `'whole'` sentinel or `split_id` (truncated UUID4); never account-bound. |
 | (core, fct_transaction_lines) | transaction_id | RECORD_ID | FK to `fct_transactions.transaction_id`. |
 | (core, fct_transaction_lines) | transfer_pair_id | RECORD_ID | FK to `bridge_transfers.transfer_id`. |
-| (core, fct_transactions) | account_id | ACCOUNT_IDENTIFIER | same value as `dim_accounts.account_id`; "one concept, one column name" — same class everywhere. |
+| (core, fct_transactions) | account_id | RECORD_ID | opaque minted surrogate; same value as `dim_accounts.account_id` — "one concept, one column name" — same class everywhere. |
 | (core, fct_transactions) | pending_transaction_id | RECORD_ID | source-provided ID of the pending transaction this row resolved; transaction-bound, not account-bound. |
 | (core, fct_transactions) | transaction_id | RECORD_ID | content-hash gold key per identifiers.md. |
 | (core, fct_transactions) | transfer_pair_id | RECORD_ID | FK to `bridge_transfers.transfer_id`. |

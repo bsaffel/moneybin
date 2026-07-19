@@ -1,9 +1,9 @@
 # Reports Foundation — One Contract, Coherent Surface
 
 > Child spec of [`reports-overview.md`](reports-overview.md) (milestone **M2P.1**).
-> Status: draft
+> Status: implemented
 > Type: Feature
-> Last updated: 2026-07-18 — initial spec.
+> Last updated: 2026-07-18 — implemented; R1–R6 shipped on `feat/reports-foundation`.
 > Companions: [ADR-013](../decisions/013-report-classification-declared.md)
 > (declared classification), [`privacy-data-classification.md`](privacy-data-classification.md),
 > [`queryable-internal-schemas.md`](queryable-internal-schemas.md),
@@ -23,28 +23,41 @@ Implements decisions **D3**, **D4**, and **D5** from the umbrella.
 ## Background: what actually went wrong in #330
 
 PR #330 widened `sql_query` to the whole `reports` schema. The declared-class
-map covered 6 of 8 deployed views, and `reports.uncategorized_queue.account_id`
-came back unmasked.
+map covered 6 of 8 deployed views — `net_worth` and `uncategorized_queue` were
+uncovered.
 
-The missing declaration was the symptom. The mechanism is that **two fallbacks
-disagree about what an undeclared column means**:
+The missing declaration was the symptom, but not on the column the original
+telling of this story named. `uncategorized_queue.account_id` returning
+unmasked was not itself wrong: `account_id` is a deliberately opaque minted
+surrogate classified `RECORD_ID` (LOW) everywhere in `CLASSIFICATION` (see
+[`account-identity-resolution.md`](account-identity-resolution.md) Decisions 1
+and 6), so passing it through unmasked is correct, not a leak. What the
+coverage gap actually let through was **tier**, on different columns: every
+column in the two uncovered views fell through to `AGGREGATE` (LOW), including
+`net_worth`/`total_assets`/`total_liabilities` (`BALANCE`, HIGH) on
+`net_worth` and `amount`/`priority_score` (`TXN_AMOUNT`, HIGH) on
+`uncategorized_queue` — five HIGH-tier financial columns served at LOW.
+
+The mechanism is that **two fallbacks disagreed about what an undeclared
+column means**:
 
 | Path | Undeclared column resolves to | Where |
 |---|---|---|
 | Report tool (`reports_*`) | `ACCOUNT_IDENTIFIER` → masked | `reports/_framework/classify.py` (`_FAIL_CLOSED`) |
-| `sql_query` | `AGGREGATE` (LOW) → **clear** | `privacy/sql_lineage.py` (`_fallback_class`) |
+| `sql_query` (pre-fix) | `AGGREGATE` (LOW) → **clear** | `privacy/sql_lineage.py`'s single fallback (R1 below splits it in two) |
 
-The report framework already reasons about this correctly and calls its
-fallback "defense in depth." `sql_query` does not. Until that asymmetry is
-fixed, every future coverage gap is a silent leak rather than a visible
+The report framework already reasoned about this correctly and called its
+fallback "defense in depth." `sql_query` did not. Until that asymmetry was
+fixed, every future coverage gap was a silent leak rather than a visible
 annoyance — and wiring `discover_reports()` for package reports (M2M) is
-exactly the event that re-arms it.
+exactly the event that would have re-armed it.
 
 ## Requirements
 
 ### R1 — Fail closed on coverage gaps, not on unresolved expressions
 
-`_fallback_class` must distinguish two cases that it currently conflates:
+`sql_lineage.py`'s undeclared-column fallback must distinguish two cases that
+it previously conflated:
 
 1. **An expression we could not resolve** — an alias we couldn't trace, a
    computed projection. Keep today's behaviour: take the max tier of the
@@ -52,12 +65,21 @@ exactly the event that re-arms it.
    must stay permissive, or the BI surface over-masks constantly.
 2. **A column that resolved to a real table in a schema owed complete
    declarations, which has no declaration.** This is a *coverage gap*: our
-   registry is wrong, not the query. Fail closed — classify as
-   `ACCOUNT_IDENTIFIER` (the `Tier.CRITICAL` class `redact_records` masks) and
-   log a warning naming the `(schema, table, column)`.
+   registry is wrong, not the query. Fail closed and log a warning naming the
+   `(schema, table, column)`.
 
 The distinction is the requirement. A blanket fail-closed would break case 1
 and is explicitly **not** what this asks for.
+
+**Shipped as:** case 1 stays `_scope_input_max`/`_conservative_floor`
+(unchanged); case 2 is the new `_coverage_gap_class`, both in
+`src/moneybin/privacy/sql_lineage.py`. Case 2 fails closed to
+`DataClass.UNRESOLVED` (`FAIL_CLOSED_CLASS`), not `ACCOUNT_IDENTIFIER` as
+first proposed here — `UNRESOLVED` masks the value WHOLE rather than
+partially, which is the right answer for a column lineage never positively
+classified (a partial `"****" + value[-4:]` mask would surface characters of a
+value we cannot name). See the `DataClass.UNRESOLVED` docstring in
+`taxonomy.py`.
 
 **Why this comes first:** it converts every subsequent derivation miss from a
 silent leak into visible over-masking. Everything after R1 is an ergonomics
@@ -222,13 +244,14 @@ in M2P.3.
 - Scenarios are not in the default gate — this changes data shape and schema
   membership, so `make test-scenarios` is required alongside `make check test`.
 
-## Open questions
+## Open questions (resolved)
 
-- **Where does the generated artifact for runner-less views live?** A generated
-  module under `reports/definitions/` mirrors the bridge it replaces, but if
-  M2P.3 resolves `net_worth` toward a runner, the file empties out and should be
-  deleted rather than kept as a permanent seam. Decide during implementation;
-  prefer whichever leaves less behind.
-- **Does the derived floor belong in the runner or beside it?** Inline in
-  `classes=` keeps one place to look; a separate generated baseline makes the
-  CI diff clearer. Lean inline — one place to look wins for authors.
+- **Where does the generated artifact for runner-less views live?** Shipped as
+  `src/moneybin/reports/definitions/_derived_classes.py`, mirroring the bridge
+  it replaces, regenerated via `make generate-report-classes`. If M2P.3
+  resolves `net_worth` toward a runner, the file empties out and should be
+  deleted rather than kept as a permanent seam.
+- **Does the derived floor belong in the runner or beside it?** Shipped
+  inline: `class_downgrades={...}` is a keyword on the same `@report`
+  decorator as `classes={...}` (`reports/_framework/contract.py`) — one place
+  to look, per the original lean.

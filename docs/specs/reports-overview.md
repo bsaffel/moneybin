@@ -200,12 +200,19 @@ should plausibly be higher than for a one-off query — resolve it in B.
 
 This umbrella exists because of a concrete failure. PR #330 opened `sql_query`
 to the whole `reports` schema while the declared-class safety net covered only
-6 of 8 deployed views; `reports.uncategorized_queue.account_id` came back
-unmasked. The root cause was not the missing declaration — it was that
-`reports.*` had **two producer patterns and only one of them declared privacy
-classes**, with no rule stating what a complete report requires. The review
-lesson generalizes: a coverage guard that enumerates the *declared* set can
-never reveal what you failed to declare — it must enumerate the *exposed* set.
+6 of 8 deployed views (`net_worth` and `uncategorized_queue` were uncovered).
+The uncovered columns fell through to `AGGREGATE` (LOW) — five genuinely
+HIGH-tier financial columns (`net_worth`/`total_assets`/`total_liabilities` on
+`net_worth`; `amount`/`priority_score` on `uncategorized_queue`) served at LOW.
+`uncategorized_queue.account_id` also came back unmasked, but that part was
+never the leak: `account_id` is a deliberately opaque minted surrogate
+classified `RECORD_ID` (LOW) everywhere in `CLASSIFICATION`, so passing it
+through unmasked is correct. The root cause was not the missing declaration —
+it was that `reports.*` had **two producer patterns and only one of them
+declared privacy classes**, with no rule stating what a complete report
+requires. The review lesson generalizes: a coverage guard that enumerates the
+*declared* set can never reveal what you failed to declare — it must
+enumerate the *exposed* set.
 
 ## Open questions
 

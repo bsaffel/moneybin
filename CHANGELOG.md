@@ -10,6 +10,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+- **Fixed several under-classification leaks that returned CRITICAL-tier
+  values (bank routing numbers) in the clear through `sql_query` /
+  `moneybin sql query`.** A CTE or derived table named after a real table,
+  CTE-nesting depth exhaustion, partial `UNION`-branch resolution,
+  `EXCEPT`/`INTERSECT` set operations, and opaque projection forms
+  (`COLUMNS(...)`, `PIVOT`, `UNPIVOT`, `SUMMARIZE`, the whole-row
+  pseudo-column, `UNNEST` of one) could each cause
+  `core.dim_accounts.routing_number` to resolve to `AGGREGATE` (LOW) instead
+  of its true `ROUTING_NUMBER` (CRITICAL) class, returning it unmasked. Most
+  of these were pre-existing defects in the SQL classifier already on
+  `main` — not introduced by this change — surfaced and fixed during an
+  audit prompted by the `reports.*` coverage-gap fix below. Any output
+  column an undeclared or unresolvable reference reaches now fails closed to
+  a new `DataClass.UNRESOLVED` (masked whole) instead of falling back to the
+  most-permissive class seen elsewhere in the query. (#330 follow-up)
+
+### Changed
+- **`reports.*` column privacy classes are now derived from each SQLMesh
+  model's source and verified in CI**, replacing a hand-maintained bridge
+  file. A report's declared `classes=` map is checked against an
+  independent, connectionless re-derivation of the same model on every
+  build; an undeclared or under-classified column now fails CI instead of
+  shipping quietly. (#330 follow-up)
+- **`core.uncategorized_queue` (the categorization curator queue) moved out
+  of the `reports` schema into `core`.** It was never a user-facing report —
+  its only reader is the categorization surface
+  (`transactions_categorize_pending`) — so it no longer appears under
+  `reports.*` in `sql_query` / `moneybin sql query` results. Query it as
+  `core.uncategorized_queue` instead.
+- **`sql_query` / `moneybin sql query` responses can now report `unresolved`
+  in `classes_returned`.** This is the fail-closed class for a column
+  reaching the caller without lineage having positively established what it
+  holds; seeing it always means the value was masked, not that something
+  broke.
+
 ### Changed
 - **`accounts_set`'s currency parameter is now `currency_code`, not
   `iso_currency_code`.** Aligns the account-currency parameter name with

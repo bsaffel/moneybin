@@ -49,8 +49,8 @@ declaration covers.
 (`_ALLOWED_QUERY_SCHEMAS` in `privacy/sql_query.py`). The reason is
 sound: CRITICAL columns (account/routing numbers) are masked by
 resolving each output column's `DataClass`, and only `core`/`app` are in
-the `CLASSIFICATION` registry. An unclassified-schema query hits the
-`_fallback_class` default of `AGGREGATE` (unmasked) and would return
+the `CLASSIFICATION` registry. An unclassified-schema query hits
+`_conservative_floor`'s `AGGREGATE` default (unmasked) and would return
 account numbers in the clear — the module docstring flags this.
 
 ### Two problems the fence creates
