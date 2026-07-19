@@ -67,11 +67,20 @@ def test_url_scheme_rejection_surfaces_as_user_error(populated_db: Database) -> 
     assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
-def _seed_account(db: Database) -> None:
-    """Insert one account row so masking tests have a CRITICAL value to mask."""
+def _seed_account(db: Database, last_four: str | None = None) -> None:
+    """Insert one account row so masking tests have a CRITICAL value to mask.
+
+    ``last_four`` defaults to NULL so existing callers are unaffected. The
+    CRITICAL-transform-substitution tests pass it, because they need a SECOND,
+    differently-transformed CRITICAL column (INSTITUTION_ACCOUNT_NUMBER, which
+    masks partially) alongside ``routing_number`` (which masks whole) — and they
+    assert on returned VALUES, so the row must survive an ``IS NOT NULL`` filter.
+    """
     db.execute(
-        "INSERT INTO core.dim_accounts (account_id, routing_number, account_type) "
-        "VALUES ('ACC000123456789', '021000021', 'checking')"
+        "INSERT INTO core.dim_accounts "
+        "(account_id, routing_number, last_four, account_type) "
+        "VALUES ('ACC000123456789', '021000021', ?, 'checking')",
+        [last_four],
     )
 
 
@@ -655,6 +664,239 @@ def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> N
     )
     assert result.output_classes["n"] is DataClass.AGGREGATE
     assert result.tier is Tier.LOW
+
+
+# --------------------------------------------------------------------------
+# CRITICAL transforms are not interchangeable
+#
+# The CRITICAL classes do NOT share a mask: ROUTING_NUMBER masks WHOLE
+# (``*****``) while INSTITUTION_ACCOUNT_NUMBER masks PARTIALLY (``"****" +
+# value[-4:]``). So wherever lineage merges several classes into ONE answer, a
+# plain ``max``-by-tier picks an arbitrary winner among equal-CRITICAL classes
+# — and if the winner is the partial-masking one, four characters of a
+# whole-mask value reach the user in the clear.
+#
+# Four merge points had this shape, all confirmed leaking the real routing
+# number's last four digits (``****0021``) before the fix:
+#   1. ``_conservative_floor``'s column-floor / table-floor tie-break
+#   2. ``_resolve_projection``'s max over a projection's referenced columns
+#   3. ``_class_at_index``'s merge across a nested set operation's branches
+#   4. ``resolve_output_classes``'s merge across top-level UNION branches
+#
+# The tests below pin each. They assert on the returned VALUE, not just the
+# class, because the value is what leaks.
+# --------------------------------------------------------------------------
+
+
+def test_co_referenced_critical_column_does_not_weaken_unresolved_mask(
+    populated_db: Database,
+) -> None:
+    """An unrelated WHERE reference must not downgrade a whole mask to a partial one.
+
+    THE REGRESSION: ``_conservative_floor`` combined a column floor
+    (``_scope_input_max``, which scans the WHOLE tree including WHERE/JOIN
+    predicates) with a table floor, and on an equal-CRITICAL tie returned the
+    column floor. The whole-row projection here is unresolvable, so the table
+    floor correctly collapsed to UNRESOLVED — but ``last_four``, named only in
+    a WHERE clause and describing a completely different value, tied at CRITICAL
+    and won, applying ITS partial mask to the routing number: ``****0021``.
+    """
+    _seed_account(populated_db, last_four="6789")
+    result = execute_sql_query(
+        populated_db,
+        "SELECT (dim_accounts).routing_number AS x FROM core.dim_accounts "
+        "WHERE dim_accounts.last_four IS NOT NULL",
+        max_rows=100,
+    )
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert result.output_classes["x"] is DataClass.UNRESOLVED
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["x"] == "*****"
+    assert _ROUTING_NUMBER[-4:] not in str(result.records)
+
+
+def test_unresolved_mask_is_whole_without_a_co_referenced_critical_column(
+    populated_db: Database,
+) -> None:
+    """The control for the test above: same projection, no co-referenced column.
+
+    Pins that the WHERE clause is the only difference between the two, so the
+    regression test above isolates the tie-break rather than the whole-row
+    projection handling it shares with the masking-bypass suite.
+    """
+    _seed_account(populated_db, last_four="6789")
+    result = execute_sql_query(
+        populated_db,
+        "SELECT (dim_accounts).routing_number AS x FROM core.dim_accounts",
+        max_rows=100,
+    )
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert result.output_classes["x"] is DataClass.UNRESOLVED
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["x"] == "*****"
+
+
+def test_critical_column_in_join_predicate_does_not_weaken_unresolved_mask(
+    populated_db: Database,
+) -> None:
+    """Same substitution via a JOIN predicate rather than a WHERE clause.
+
+    ``_scope_input_max`` collects columns from JOIN conditions too, so the
+    tie-break was reachable through this door as well. Separate test because a
+    fix scoped to ``exp.Where`` would close the WHERE case only.
+    """
+    _seed_account(populated_db, last_four="6789")
+    result = execute_sql_query(
+        populated_db,
+        "SELECT (a).routing_number AS x FROM core.dim_accounts a "
+        "JOIN core.dim_accounts b ON a.last_four = b.last_four",
+        max_rows=100,
+    )
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert result.output_classes["x"] is DataClass.UNRESOLVED
+    assert result.tier is Tier.CRITICAL
+    assert result.records[0]["x"] == "*****"
+    assert _ROUTING_NUMBER[-4:] not in str(result.records)
+
+
+@pytest.mark.parametrize(
+    ("case", "sql"),
+    [
+        # Both orders: pre-fix, `max` returned the FIRST maximal element, so the
+        # mask strength depended on which column was written first. Only the
+        # `last_four`-first form leaked — which is exactly why both are pinned.
+        (
+            "concat-partial-class-first",
+            "SELECT last_four || routing_number AS x FROM core.dim_accounts",
+        ),
+        (
+            "concat-whole-class-first",
+            "SELECT routing_number || last_four AS x FROM core.dim_accounts",
+        ),
+        (
+            "coalesce",
+            "SELECT COALESCE(last_four, routing_number) AS x FROM core.dim_accounts",
+        ),
+        (
+            "top-level-union",
+            "SELECT last_four AS x FROM core.dim_accounts "
+            "UNION ALL SELECT routing_number AS x FROM core.dim_accounts",
+        ),
+        (
+            "nested-union-in-derived-table",
+            "SELECT x FROM ("
+            "SELECT last_four AS x FROM core.dim_accounts "
+            "UNION ALL SELECT routing_number AS x FROM core.dim_accounts) z",
+        ),
+    ],
+)
+def test_disagreeing_critical_classes_collapse_to_a_whole_mask(
+    case: str, sql: str, populated_db: Database
+) -> None:
+    """A value fed by two DIFFERENT CRITICAL classes takes neither one's transform.
+
+    Each case merges INSTITUTION_ACCOUNT_NUMBER (partial mask) with
+    ROUTING_NUMBER (whole mask) into a single output position. No single class
+    describes the result, so it must collapse to UNRESOLVED and mask whole.
+    Pre-fix, the concat/coalesce/UNION forms that happened to list the
+    partial-masking class first returned ``****0021``.
+    """
+    _seed_account(populated_db, last_four="6789")
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert result.output_classes["x"] is DataClass.UNRESOLVED
+    assert result.tier is Tier.CRITICAL
+    assert all(r["x"] == "*****" for r in result.records)
+    assert _ROUTING_NUMBER[-4:] not in str(result.records)
+
+
+@pytest.mark.parametrize(
+    ("case", "sql", "expected"),
+    [
+        # A SINGLE CRITICAL class still describes its value exactly, so it keeps
+        # its own transform. Without these, collapsing "any CRITICAL" would pass
+        # the tests above while silently whole-masking every last_four in the
+        # product — the over-classification this module must not introduce.
+        (
+            "partial-masking-class-alone",
+            "SELECT last_four AS x FROM core.dim_accounts",
+            "****6789",
+        ),
+        (
+            "whole-masking-class-alone",
+            "SELECT routing_number AS x FROM core.dim_accounts",
+            "*****",
+        ),
+        (
+            "unanimous-critical-across-union",
+            "SELECT last_four AS x FROM core.dim_accounts "
+            "UNION ALL SELECT last_four AS x FROM core.dim_accounts",
+            "****6789",
+        ),
+    ],
+)
+def test_unanimous_critical_class_keeps_its_own_transform(
+    case: str, sql: str, expected: str, populated_db: Database
+) -> None:
+    """Agreement at CRITICAL is preserved — only DISAGREEMENT collapses."""
+    _seed_account(populated_db, last_four="6789")
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert result.tier is Tier.CRITICAL
+    assert all(r["x"] == expected for r in result.records)
+
+
+@pytest.mark.parametrize(
+    ("case", "sql", "expected_class", "expected_tier", "expected_value"),
+    [
+        # Below CRITICAL every transform is passthrough, so the class is pure
+        # reporting and the merge must still report the max — unchanged by this
+        # fix. A collapse that reached below CRITICAL would both mask these
+        # values and inflate their tier.
+        (
+            "low-low-tie-in-one-projection",
+            "SELECT institution_name || account_type AS x FROM core.dim_accounts",
+            DataClass.INSTITUTION,
+            Tier.LOW,
+            "Chasechecking",
+        ),
+        (
+            "low-low-tie-across-union",
+            "SELECT institution_name AS x FROM core.dim_accounts "
+            "UNION ALL SELECT institution_name AS x FROM core.dim_accounts",
+            DataClass.INSTITUTION,
+            Tier.LOW,
+            "Chase",
+        ),
+        (
+            "medium-over-low-is-still-max",
+            "SELECT display_name || institution_name AS x FROM core.dim_accounts",
+            DataClass.USER_NOTE,
+            Tier.MEDIUM,
+            "My CheckingChase",
+        ),
+    ],
+)
+def test_below_critical_merge_behaviour_is_unchanged(
+    case: str,
+    sql: str,
+    expected_class: DataClass,
+    expected_tier: Tier,
+    expected_value: str,
+    populated_db: Database,
+) -> None:
+    """Ties below CRITICAL keep the existing max-by-tier answer, unmasked."""
+    populated_db.execute(
+        "INSERT INTO core.dim_accounts (account_id, routing_number, last_four, "
+        "account_type, institution_name, display_name) "
+        "VALUES ('ACC000123456789', '021000021', '6789', 'checking', "
+        "'Chase', 'My Checking')"
+    )
+    result = execute_sql_query(populated_db, sql, max_rows=100)
+    assert result.records, "query returned no rows — the assertion would be vacuous"
+    assert result.output_classes["x"] is expected_class
+    assert result.tier is expected_tier
+    assert all(r["x"] == expected_value for r in result.records)
 
 
 def test_unresolvable_column_reference_classifies_by_scope_inputs(

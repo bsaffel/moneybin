@@ -398,6 +398,39 @@ def _coverage_gap_class(key: tuple[str, str, str], sql_for_log: str) -> DataClas
     return FAIL_CLOSED_CLASS
 
 
+def _combined_class(classes: list[DataClass]) -> DataClass:
+    """The single class describing a value drawn from ALL of ``classes``.
+
+    Max-by-tier, with one exception: **two DIFFERENT CRITICAL classes have no
+    representative.** Their transforms are not interchangeable — ROUTING_NUMBER
+    masks WHOLE while INSTITUTION_ACCOUNT_NUMBER masks PARTIALLY (``"****" +
+    value[-4:]``) — so standing one in for the other publishes the last four
+    characters of a value it does not describe. A bare ``max`` picks the first
+    maximal element, making mask STRENGTH depend on source order: ``last_four ||
+    routing_number`` returned ``****0021`` (the real routing number's last four)
+    while ``routing_number || last_four`` correctly returned ``*****``. The same
+    order-dependence appeared across a UNION, where one output position draws
+    values from every branch. Disagreement at CRITICAL therefore collapses to
+    the whole-masking ``FAIL_CLOSED_CLASS``.
+
+    A UNANIMOUS CRITICAL class is kept: it genuinely describes every value in
+    the position, so collapsing it would discard a correct, more specific answer
+    (and turn ``SELECT last_four`` into a whole mask).
+
+    Below CRITICAL every transform is passthrough, so the class is pure
+    reporting and the identified max is the more informative answer. Collapsing
+    there would also inflate a HIGH bound to CRITICAL — the over-classification
+    this module must not introduce.
+
+    ``classes`` must be non-empty; every caller already guards that.
+    """
+    best = max(classes, key=lambda c: c.tier)
+    if best.tier is not Tier.CRITICAL:
+        return best
+    at_top = {c for c in classes if c.tier is Tier.CRITICAL}
+    return best if len(at_top) == 1 else FAIL_CLOSED_CLASS
+
+
 def _scope_input_max(
     select: exp.Expr, snapshot: SchemaSnapshot, sql_for_log: str
 ) -> DataClass:
@@ -559,12 +592,29 @@ def _conservative_floor(
         dc = _scope_input_max(select, snapshot, sql_for_log)
         if dc.tier > best.tier:
             best = dc
-    # Applied second, and only when it RAISES the tier. The column floor names a
-    # class the query actually referenced, so it is the better answer whenever
-    # the two tie; the table floor is a backstop for the projections that name
-    # no column at all, not a replacement.
     table_dc = _table_scope_max(tree, snapshot, sql_for_log)
-    return table_dc if table_dc.tier > best.tier else best
+    floor = table_dc if table_dc.tier > best.tier else best
+    # A floor is a BOUND over what the query could touch — never a statement
+    # about the projection, which is by definition unresolved on this path. At
+    # CRITICAL that distinction leaks, so ANY critical floor collapses to the
+    # whole-masking FAIL_CLOSED_CLASS (the same rule, for the same reason, that
+    # `_table_scope_max` applies to its own bound):
+    #
+    #   * `best` is the max over every column the query NAMES ANYWHERE —
+    #     `_scope_input_max` deliberately scans WHERE and JOIN predicates too —
+    #     so it can name a class describing a completely different value than
+    #     the one projected. Adding an unrelated `WHERE last_four IS NOT NULL`
+    #     to a whole-row `(dim_accounts).routing_number` projection used to flip
+    #     it from `*****` to `****0021`: an equal-CRITICAL tie returned
+    #     INSTITUTION_ACCOUNT_NUMBER, whose PARTIAL mask published four digits
+    #     of the real routing number.
+    #   * Naming any specific CRITICAL class here claims a precision this path
+    #     does not have, and CRITICAL transforms are not interchangeable.
+    #
+    # Below CRITICAL every transform is passthrough, so the class is pure
+    # reporting: the more specific of the two floors is kept, and reporting
+    # UNRESOLVED there would inflate a HIGH bound to CRITICAL.
+    return FAIL_CLOSED_CLASS if floor.tier is Tier.CRITICAL else floor
 
 
 def _within_subquery(node: exp.Expr, stop: exp.Expr) -> bool:
@@ -707,7 +757,10 @@ def _class_at_index(source: Scope, index: int, ctx: _ResolveCtx) -> DataClass | 
             if dc is None:
                 return None
             found.append(dc)
-        return max(found, key=lambda c: c.tier) if found else None
+        # `_combined_class`, not `max`: this position draws values from EVERY
+        # branch, so two branches carrying different CRITICAL classes leave it
+        # with no representative — see that helper.
+        return _combined_class(found) if found else None
     select = source.expression
     if not isinstance(select, exp.Select) or index >= len(select.selects):
         return None
@@ -932,8 +985,11 @@ def _resolve_projection(
             return _coverage_gap_class(key, sql_for_log)
         classes.append(dc)
 
-    # Value-preserving agg or plain expression: highest-tier referenced class.
-    return max(classes, key=lambda c: c.tier)
+    # Value-preserving agg or plain expression: highest-tier referenced class —
+    # via `_combined_class`, because the projected value is derived from ALL of
+    # these columns, and two different CRITICAL classes cannot stand in for each
+    # other (`last_four || routing_number` must not take the partial mask).
+    return _combined_class(classes)
 
 
 def _classify_projection(
@@ -1067,9 +1123,10 @@ def resolve_output_classes(
         # fallback). The suffix preserves the projection's positional order.
         name = proj.alias_or_name or f"?_{i}"
         candidates = [b[i] for b in per_branch if i < len(b)]
-        out[name] = (
-            max(candidates, key=lambda c: c.tier) if candidates else DataClass.AGGREGATE
-        )
+        # `_combined_class`, not `max`: this output position receives rows from
+        # every branch, so branches carrying different CRITICAL classes leave it
+        # with no representative — see that helper.
+        out[name] = _combined_class(candidates) if candidates else DataClass.AGGREGATE
     return out
 
 

@@ -14,6 +14,7 @@ import yaml
 
 from moneybin.database import Database
 from moneybin.privacy.sql_lineage import (
+    _MAX_SCOPE_DEPTH,  # pyright: ignore[reportPrivateUsage]
     SqlParseError,
     _class_of_key,  # pyright: ignore[reportPrivateUsage]
     derive_query_tier,
@@ -588,6 +589,16 @@ def test_cte_named_after_catalog_table_never_resolves_to_it(
     ``core.dim_accounts`` self-registers under the bare key; and the bare-name
     catalog scan matches any CTE named like a real table). The decline became a
     confident TXN_TYPE/LOW and the routing number came back in the clear.
+
+    The expected class is UNRESOLVED, not ROUTING_NUMBER: the projection is
+    answered by ``_conservative_floor``, which reports a BOUND and so never
+    names a specific CRITICAL class (see that function). This assertion read
+    ROUTING_NUMBER until the equal-CRITICAL tie-break was fixed — the floor
+    returned its column-max, which happened to be the right class here but was
+    an unrelated one (and a WEAKER, partial mask) whenever the query merely
+    co-referenced a different CRITICAL column. UNRESOLVED discriminates the
+    guarded leak exactly as well: TXN_TYPE/LOW remains the failure mode, and
+    the value is still masked whole end-to-end.
     """
     ctes = _shadow_chain(depth)
     ctes.append(f"dim_accounts AS (SELECT account_type FROM c{depth})")  # noqa: S608  # test input string, not executing SQL
@@ -595,7 +606,7 @@ def test_cte_named_after_catalog_table_never_resolves_to_it(
 
     out = _classes(sql, populated_db)
 
-    assert out["account_type"] is DataClass.ROUTING_NUMBER
+    assert out["account_type"] is DataClass.UNRESOLVED
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
@@ -608,6 +619,15 @@ def test_cte_aliased_to_a_catalog_table_name_never_resolves_to_it(
     The same leak without the WITH-naming trick: the shadowing name arrives as a
     FROM-clause alias instead. Pins that the fix keys on "this reference names a
     Scope source", not on the syntax that bound the name.
+
+    The expected class differs by depth, and that split is the point: a chain
+    shallower than ``_MAX_SCOPE_DEPTH`` genuinely RESOLVES through the CTEs to
+    the true source class, while a deeper one exhausts the depth guard and is
+    answered by ``_conservative_floor`` — which reports a BOUND and so never
+    names a specific CRITICAL class. Asserting one class for both depths (as
+    this test did before the equal-CRITICAL tie-break fix) blurred exactly the
+    distinction ``_SHADOW_DEPTHS`` exists to draw. Either way the tier is
+    CRITICAL and the value masks whole; the guarded leak is TXN_TYPE/LOW.
     """
     sql = _with_query(
         _shadow_chain(depth),
@@ -616,21 +636,33 @@ def test_cte_aliased_to_a_catalog_table_name_never_resolves_to_it(
 
     out = _classes(sql, populated_db)
 
-    assert out["account_type"] is DataClass.ROUTING_NUMBER
+    expected = (
+        DataClass.ROUTING_NUMBER if depth < _MAX_SCOPE_DEPTH else DataClass.UNRESOLVED
+    )
+    assert out["account_type"] is expected
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
 def test_shadowing_cte_resolves_by_semantics_not_by_the_depth_guard(
     populated_db: Database,
 ) -> None:
-    """A shadowing CTE with NO depth exhaustion resolves to its own true source.
+    """A shadowing CTE with NO depth exhaustion still refuses the catalog.
 
-    Separates the two mechanisms. The parametrized tests above pass at depth 60
-    even if shadowing is handled only by the conservative floor; this one has one
-    level of nesting, so the floor is not what saves it — the column must resolve
-    THROUGH the CTE to ``routing_number``. If the catalog were consulted, the
-    answer would be TXN_TYPE (LOW), which is also what a broken floor would never
-    produce — so an exact-class assertion distinguishes all three outcomes.
+    CORRECTED EXPECTATION AND DOCSTRING. This test previously asserted
+    ROUTING_NUMBER and claimed that "the floor is not what saves it — the column
+    must resolve THROUGH the CTE". That claim was false: this query has ALWAYS
+    been answered by ``_conservative_floor`` (verified by the fallback WARNING
+    it emits), and it passed only because the floor's buggy equal-CRITICAL
+    tie-break returned the column-max, which here coincided with the right
+    answer. Fixing the tie-break — which stopped an unrelated co-referenced
+    CRITICAL column from substituting its WEAKER partial mask — surfaced the
+    discrepancy.
+
+    So this does NOT separate resolution from the floor, and naming it as if it
+    did was worse than not having it. What it genuinely pins is unchanged and
+    still worth pinning: a name shadowing a catalog table never borrows that
+    table's classes, at one level of nesting, with no depth exhaustion involved.
+    TXN_TYPE (LOW) remains the failure mode it guards against.
     """
     out = _classes(
         "WITH dim_accounts AS "
@@ -638,19 +670,25 @@ def test_shadowing_cte_resolves_by_semantics_not_by_the_depth_guard(
         "SELECT account_type FROM dim_accounts",
         populated_db,
     )
-    assert out == {"account_type": DataClass.ROUTING_NUMBER}
+    assert out == {"account_type": DataClass.UNRESOLVED}
+    assert derive_query_tier(out) is Tier.CRITICAL
 
 
 def test_derived_table_named_after_catalog_table_never_resolves_to_it(
     populated_db: Database,
 ) -> None:
-    """The non-CTE shadowing form: a derived table aliased to a catalog name."""
+    """The non-CTE shadowing form: a derived table aliased to a catalog name.
+
+    Answered by ``_conservative_floor`` (UNRESOLVED, a bound) rather than by
+    resolution — same correction as the test above; see its docstring.
+    """
     out = _classes(
         "SELECT dim_accounts.account_type FROM "
         "(SELECT routing_number AS account_type FROM core.dim_accounts) AS dim_accounts",
         populated_db,
     )
-    assert out == {"account_type": DataClass.ROUTING_NUMBER}
+    assert out == {"account_type": DataClass.UNRESOLVED}
+    assert derive_query_tier(out) is Tier.CRITICAL
 
 
 def test_shadowing_does_not_over_redact_the_unshadowed_table(
