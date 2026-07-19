@@ -3,12 +3,35 @@ MODEL (
   kind VIEW
 );
 
+/* account_type normalizes to the canonical vocabulary via seeds.account_type_map;
+   the source spelling is preserved as account_subtype when the registry has no
+   finer distinction for it.
+
+   The NULLIF(TRIM(...), '') on account_type and routing_number is not
+   defensive padding. The extractor now writes
+   NULL for an absent <ACCTTYPE>, but rows imported before that fix hold the ''
+   that ofxparse's Account constructor produced, and those rows are still on
+   disk. Without this, '' misses every registry alias and then falls through the
+   subtype COALESCE as LOWER('') — relocating the empty string into
+   account_subtype instead of removing it.
+
+   routing_number is the same story with a sharper edge: <CCACCTFROM> never
+   carries <BANKID>, so every pre-fix credit-card row holds ''. raw.ofx_accounts
+   keys on extracted_at, so re-importing ADDS a row rather than replacing the
+   stale one, and dim_accounts merges with FILTER(WHERE NOT routing_number IS
+   NULL) — which drops the fresh, correct NULL and lets the stale '' win
+   permanently. Observed on real Chase card rows. */
 SELECT
   COALESCE(links.account_id, a.account_id) AS account_id, /* canonical via the import-time resolver link; source-native only if unresolved */
   a.account_id AS source_account_key,
-  a.routing_number,
-  a.account_type,
-  a.institution_org,
+  NULLIF(TRIM(a.routing_number), '') AS routing_number,
+  m.account_type,
+  CASE
+    WHEN NOT m.alias IS NULL
+    THEN m.account_subtype
+    ELSE LOWER(NULLIF(TRIM(a.account_type), ''))
+  END AS account_subtype,
+  NULLIF(TRIM(a.institution_org), '') AS institution_org,
   a.institution_fid,
   a.source_file,
   a.source_type,
@@ -23,3 +46,5 @@ LEFT JOIN app.account_links AS links
   AND links.source_type = a.source_type
   AND links.source_origin = a.source_origin
   AND links.ref_value = a.account_id
+LEFT JOIN seeds.account_type_map AS m
+  ON m.alias = UPPER(NULLIF(TRIM(a.account_type), ''))

@@ -1,0 +1,20 @@
+alias,account_type,account_subtype
+CHECKING,depository,checking
+SAVINGS,depository,savings
+MONEYMRKT,depository,money market
+MONEY MARKET,depository,money market
+CD,depository,cd
+CMA,depository,cash management
+DEPOSITORY,depository,
+CREDITLINE,credit,line of credit
+LINE OF CREDIT,credit,line of credit
+CREDITCARD,credit,credit card
+CREDIT CARD,credit,credit card
+CREDIT_CARD,credit,credit card
+CREDIT,credit,
+LOAN,loan,
+MORTGAGE,loan,mortgage
+STUDENT,loan,student
+INVESTMENT,investment,
+BROKERAGE,investment,brokerage
+OTHER,other,

@@ -516,7 +516,7 @@ where doing so exercises real code paths. Columns not listed default to NULL.
 |---|---|
 | `account_id` | Synthetic source-system ID (`SYN100001`, etc.), seeded deterministically |
 | `routing_number` | NULL |
-| `account_type` | Mapped from persona YAML `type`: `checking`→`CHECKING`, `savings`→`SAVINGS`, `credit_card`→`CREDITLINE` |
+| `account_type` | Mapped from persona YAML `type`: `checking`→`CHECKING`, `savings`→`SAVINGS`, `credit_card`→`CREDITCARD`. These are raw OFX-side spellings; `prep` normalizes them to the canonical `depository`/`credit` via `seeds.account_type_map` |
 | `institution_org` | From persona YAML `institution` field |
 | `institution_fid` | NULL |
 | `source_file` | `synthetic://{persona}/{seed}/{account-slug}` |

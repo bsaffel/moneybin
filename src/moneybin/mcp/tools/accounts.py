@@ -70,7 +70,7 @@ def accounts(
 
     Args:
         include_archived: Include archived accounts (default: hide them)
-        type_filter: Match account_type or account_subtype (case-insensitive)
+        type_filter: Match account_type (canonical: depository, credit, loan, investment, other) or account_subtype (source detail: checking, savings, credit card, ...), case-insensitive
 
     Returns the resolved view from core.dim_accounts including display_name,
     institution_name, account_type, account_subtype, holder_category,

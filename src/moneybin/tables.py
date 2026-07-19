@@ -127,6 +127,8 @@ DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
 SEED_CATEGORIES = TableRef("seeds", "categories")
 SEED_CATEGORY_SOURCE_MAP = TableRef("seeds", "category_source_map")
 SEED_EXCHANGE_MIC_MAP = TableRef("seeds", "exchange_mic_map")
+SEED_ACCOUNT_TYPE_MAP = TableRef("seeds", "account_type_map")
+SEED_INSTITUTIONS = TableRef("seeds", "institutions")
 
 # -- Prep / staging views (built by SQLMesh transforms) --
 INT_TRANSACTIONS_UNIONED = TableRef("prep", "int_transactions__unioned")

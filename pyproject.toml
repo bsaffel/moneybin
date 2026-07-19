@@ -406,6 +406,12 @@ filterwarnings = [
     # Python 3.12+ warns about fork() in multi-threaded processes (from MCP test fixtures);
     # remove once the test infrastructure switches to spawn or forkserver
     "ignore:This process.*is multi-threaded.*use of fork:DeprecationWarning:multiprocessing",
+    # seeds.institutions declares `fid TEXT` (an OFX institution id is an opaque
+    # identifier, not a number), but the CSV column reads as int64 to pandas, so
+    # sqlmesh's string-column mask hits a dtype conflict. CsvSettings exposes no
+    # dtype hook, so this cannot be fixed from the model side; remove once
+    # sqlmesh reads seed columns using the declared types.
+    "ignore:Setting an item of incompatible dtype is deprecated:FutureWarning:sqlmesh",
 ]
 
 [tool.coverage.run]

@@ -65,7 +65,11 @@ def accounts_list(
     type_filter: str | None = typer.Option(
         None,
         "--type",
-        help="Filter by account_type or account_subtype (case-insensitive)",
+        help=(
+            "Filter by account_type (canonical: depository, credit, loan, "
+            "investment, other) or account_subtype (source detail: checking, "
+            "savings, credit card, ...); case-insensitive"
+        ),
     ),
 ) -> None:
     """List accounts. Hides archived accounts by default."""
@@ -87,7 +91,7 @@ def accounts_list(
     for acct in result.rows:
         display = acct.display_name or acct.account_id
         institution = acct.institution_name or ""
-        acct_type = acct.account_type
+        acct_type = acct.account_type or ""
         typer.echo(f"  {display}  [{institution}]  {acct_type}")
 
 
