@@ -39,7 +39,6 @@ from __future__ import annotations
 import functools
 import hashlib
 import logging
-import re
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -54,8 +53,6 @@ from moneybin.database import Database
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 
 logger = logging.getLogger(__name__)
-
-_WHITESPACE = re.compile(r"\s+")
 
 # Aggregate functions that destroy individual values → LOW tier. Every other
 # aggregate (SUM/AVG/MIN/MAX/STDDEV/VARIANCE) preserves the source class, which
@@ -90,11 +87,6 @@ class UnresolvedProjectionError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _normalize(sql: str) -> str:
-    """Collapse whitespace so parameterised re-runs share one cache entry."""
-    return _WHITESPACE.sub(" ", sql.strip())
-
-
 def _block_statements(tree: exp.Block) -> list[exp.Expr]:
     """The real statements in ``tree``, dropping parse artifacts.
 
@@ -109,9 +101,24 @@ def _block_statements(tree: exp.Block) -> list[exp.Expr]:
 
 
 @functools.lru_cache(maxsize=256)
-def _parse_normalized(normalized_sql: str) -> exp.Expr:
+def parse_cached(sql: str) -> exp.Expr:
+    """Parse ``sql`` (DuckDB dialect) with an LRU cache keyed on the exact text.
+
+    Keyed on the raw string deliberately. Callers classify this tree but hand
+    the *original* ``sql`` to DuckDB, so any rewrite on the way to the parser
+    lets the classified text and the executed text disagree. Collapsing
+    whitespace for a higher cache-hit rate did exactly that three ways: it
+    erased the newline ending a ``--`` comment (hiding a smuggled second
+    statement from the statement count), and rewrote the spacing inside quoted
+    identifiers and string literals (resolving a different column than DuckDB
+    reads). See #346 — cheaper cache keys are not worth reopening that gap.
+
+    The returned expression is shared across callers via the cache — do NOT
+    mutate it in place. ``expand_star`` / ``_qualified`` already ``.copy()``
+    before transforming; any new caller must do the same.
+    """
     try:
-        tree = sqlglot.parse_one(normalized_sql, dialect="duckdb")
+        tree = sqlglot.parse_one(sql, dialect="duckdb")
     except ParseError as e:
         raise SqlParseError(str(e)) from e
     # `SELECT 1; -- note` and `SELECT 1;;` parse to a Block wrapping one real
@@ -122,16 +129,6 @@ def _parse_normalized(normalized_sql: str) -> exp.Expr:
         if len(statements) == 1:
             return statements[0]
     return tree
-
-
-def parse_cached(sql: str) -> exp.Expr:
-    """Parse ``sql`` (DuckDB dialect) with an LRU cache keyed on normalized text.
-
-    The returned expression is shared across callers via the cache — do NOT
-    mutate it in place. ``expand_star`` / ``_qualified`` already ``.copy()``
-    before transforming; any new caller must do the same.
-    """
-    return _parse_normalized(_normalize(sql))
 
 
 # ---------------------------------------------------------------------------

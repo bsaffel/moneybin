@@ -305,6 +305,50 @@ def test_trailing_statement_cannot_smuggle_critical_columns(
     assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
+def test_multi_line_query_with_comments_still_executes(
+    populated_db: Database,
+) -> None:
+    """Ordinary formatted SQL — newlines, indentation, inline comments — runs.
+
+    The statement gate now reads the raw text, so newlines carry meaning they
+    did not before. Nothing about a query being *formatted* may make it look
+    like smuggling: this is the benign twin of the smuggling test below, and
+    the case a fail-closed fix would silently break without ever failing a
+    privacy assertion.
+    """
+    result = execute_sql_query(
+        populated_db,
+        "SELECT\n"
+        "    COUNT(*) AS n  -- how many accounts\n"
+        "FROM core.dim_accounts\n"
+        "WHERE account_id IS NOT NULL\n",
+        max_rows=100,
+    )
+    assert result.records[0]["n"] >= 0
+    assert result.is_metadata is False
+
+
+def test_comment_smuggled_statement_cannot_bypass_the_gate(
+    populated_db: Database,
+) -> None:
+    """A `--` comment must not hide a second statement from the classifier.
+
+    The gate read whitespace-collapsed text while DuckDB read the original. A
+    `--` comment ends at a newline, so collapsing it swallowed the statement
+    that followed: the classifier saw one benign ``SELECT 1 AS a`` and DuckDB
+    returned the smuggled statement's rows. Aliasing both to ``a`` matched the
+    classified column name, so the fail-closed name check never fired and
+    routing numbers returned at ``Tier.LOW`` (#346).
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT 1 AS a; -- note\nSELECT routing_number AS a FROM core.dim_accounts",
+            max_rows=100,
+        )
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
+
+
 def test_unknown_table_raises(populated_db: Database) -> None:
     """A nonexistent table raises UserError(sql_unknown_table)."""
     with pytest.raises(UserError) as ei:

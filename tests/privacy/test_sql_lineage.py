@@ -22,6 +22,7 @@ from moneybin.privacy.sql_lineage import (
     get_current_schema_snapshot,
     is_data_query,
     is_metadata_query,
+    is_multi_statement,
     parse_cached,
     reports_class_map,
     resolve_output_classes,
@@ -37,9 +38,29 @@ _CORPUS = yaml.safe_load(
 def test_parse_cached_returns_expression_and_caches() -> None:
     sql = "SELECT amount FROM core.fct_transactions"
     first = parse_cached(sql)
-    # Whitespace-normalized variant must hit the same cached object.
-    second = parse_cached("  SELECT   amount   FROM core.fct_transactions  ")
+    second = parse_cached("SELECT amount FROM core.fct_transactions")
     assert first is second
+
+
+def test_parse_cached_parses_the_text_the_database_executes() -> None:
+    """The cache must not rewrite the query on its way to the parser.
+
+    Callers classify ``parse_cached(sql)`` but execute ``sql`` itself, so any
+    normalization that changes how the text parses lets the two disagree.
+    Collapsing whitespace did exactly that in three ways, all of which let
+    unclassified SQL reach the caller (#346).
+    """
+    # A `--` comment ends at a newline. Collapse it and the smuggled second
+    # statement reads as comment text to the parser while DuckDB still runs it.
+    smuggled = "SELECT 1 AS a; -- note\nSELECT routing_number AS a FROM t"
+    assert is_multi_statement(parse_cached(smuggled))
+
+    # Whitespace inside a quoted identifier or a string literal is data, not
+    # formatting: rewriting it resolves a different column than DuckDB reads.
+    assert "routing  number" in parse_cached('SELECT "routing  number" FROM t').sql(
+        dialect="duckdb"
+    )
+    assert "a  b" in parse_cached("SELECT 'a  b' AS x").sql(dialect="duckdb")
 
 
 def test_parse_cached_raises_on_invalid_sql() -> None:
