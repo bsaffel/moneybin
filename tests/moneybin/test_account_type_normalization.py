@@ -281,3 +281,28 @@ def test_unknown_fid_falls_back_to_the_raw_org(db: Database) -> None:
     ).fetchone()
     assert row is not None
     assert row[0] == "SOME CREDIT UNION"
+
+
+@pytest.mark.slow
+def test_legacy_empty_string_account_type_normalizes_to_null(db: Database) -> None:
+    """Rows imported before the extractor fix hold '', not NULL.
+
+    The extractor now writes NULL for an absent <ACCTTYPE>, but raw rows
+    already on disk keep the empty string ofxparse produced. Staging must
+    treat those as absent too, or the subtype fallback (LOWER(account_type))
+    just relocates the empty string into account_subtype.
+    """
+    _ofx_account(db, native_key="ofx-legacy-empty", account_type="")
+    _link(
+        db,
+        link_id="lnk-legacy-1",
+        account_id="canon-legacy-em",
+        ref_value="ofx-legacy-empty",
+        source_type="ofx",
+        source_origin="vocab_ofx",
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    assert _dim_type(db, "canon-legacy-em") == (None, None)

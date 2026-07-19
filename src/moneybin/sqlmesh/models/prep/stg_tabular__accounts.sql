@@ -10,7 +10,7 @@ SELECT
   a.account_number,
   a.account_number_masked,
   m.account_type,
-  COALESCE(m.account_subtype, LOWER(a.account_type)) AS account_subtype,
+  COALESCE(m.account_subtype, LOWER(NULLIF(TRIM(a.account_type), ''))) AS account_subtype,
   a.institution_name,
   a.currency,
   NULL::TEXT AS routing_number,
@@ -29,4 +29,4 @@ LEFT JOIN app.account_links AS links
   AND links.source_origin = a.source_origin
   AND links.ref_value = a.account_id
 LEFT JOIN seeds.account_type_map AS m
-  ON m.alias = UPPER(a.account_type)
+  ON m.alias = UPPER(NULLIF(TRIM(a.account_type), ''))
