@@ -254,8 +254,11 @@ recorded, rather than silently valued.
 ### Extended model: `core.dim_holdings`
 
 Adds `market_value`, `unrealized_gain`, `price_date`, `price_source`,
-`days_since_observed`, and `valuation_status`. The header comment stating that
-"MoneyBin computes no market value until price feeds land" is removed.
+`days_since_observed`, and `valuation_status`. Two comments go stale and are
+rewritten: the header's "Cost basis only — unrealized gain/loss needs a current
+price, which Pillar C (price feeds) supplies", and the parenthetical on
+`provider_reported_value` reading "MoneyBin computes no market value until
+price feeds land".
 
 ### New model: `core.fct_holdings_daily`
 
