@@ -35,7 +35,7 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 6. **"Who this is for / not yet for" candor block exists.** A pre-Quick-Start section names today's fits (curator-engineers, MCP developers, self-hosters) and today's not-yet-fits (one-click bank sync, polished mobile, investment tracking, pure envelope budgeting).
 
-7. **Comparison table expands beyond the original four.** Era / BankSync, Lunch Money, Wealthfolio added as columns. Rows include encrypted-at-rest, AI/MCP integration, SQL access, license. Honest about what each competitor does and doesn't do; no "first" or "only" claims.
+7. **Comparison table expands beyond the original four.** Era / BankSync, Lunch Money, Wealthfolio added as columns. Rows include encrypted-at-rest, AI/MCP integration, SQL access, license. Describe each alternative accurately; no "first" or "only" claims.
 
 8. **Roadmap section adopts milestone terminology.** The ✅/📐/🗓️ icons stay. A `Milestone` column maps each row to M0–M1 (shipped/ingestion), M2 (analysis), M3 (productization), or post-launch.
 

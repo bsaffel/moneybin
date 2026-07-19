@@ -24,12 +24,10 @@ Five bugs, all confirmed against the current `main`:
 
 Bugs 1, 2, 5 are the same problem (field coverage). Bugs 3 and 4 are independent. Together they explain every "why didn't the snowball roll?" symptom from the live test.
 
-A cross-project survey of how Actual Budget, Firefly III, Maybe Finance, hledger, Beancount/smart_importer, and GnuCash handle matching at runtime informs the design choices below. Where this spec adopts a pattern verbatim from one of those projects, the source is cited.
-
 ## Design principles
 
-1. **Field coverage parity.** Whatever signal the LLM is allowed to see, the deterministic matcher also sees. Whatever the matcher operates on, the LLM also sees (subject to redaction). The two must never diverge — otherwise rules learned from LLM-categorized rows fail to fire on identical future rows.
-2. **Exemplars over patterns for system-created rules.** When the system (LLM-assist or import auto-rule) creates a merchant from a categorized row, store the exact normalized `match_text` as an exemplar in a `oneOf` set — never auto-generalize to a `contains` pattern. Generalization to `contains` / `regex` is a *user* action, deliberate and specific. (Adopted from Actual Budget's `imported_payee` rename pattern, which made the same trade-off after their auto-generalization caused over-matching.)
+1. **Field coverage parity.** Whatever signal the LLM is allowed to see, the deterministic matcher also sees. Whatever the matcher operates on, the LLM also sees (subject to redaction). The two must never diverge — otherwise a rule created from an LLM-categorized row can fail to fire on an identical future row.
+2. **Exemplars over patterns for system-created rules.** When the system (LLM-assist or import auto-rule) creates a merchant from a categorized row, store the exact normalized `match_text` as an exemplar in a `oneOf` set—never auto-generalize to a `contains` pattern. The live over-matching failure makes the reason concrete: generalization to `contains` / `regex` is a *user* action, deliberate and specific.
 3. **Source precedence is enforced on write, not on read.** Every categorization source has a numeric priority. Lower-priority sources cannot overwrite higher-priority assignments. The `transaction_categories.categorized_by` column is the lock; no separate lock table is required.
 4. **Apply runs after every commit, automatically.** When the LLM-assist tool commits a batch of categorizations (creating new merchants and rules along the way), `categorize_pending()` runs immediately to fan those new entries out to still-uncategorized rows. This is the snowball mechanism the cold-start spec promised but never implemented.
 5. **`is_transfer` is a signal, not a gate.** Per the matching subsystem's load-bearing principle in `matching-transfer-detection.md` ("`is_transfer` and categorization are independent metadata axes"), categorization runs on all transactions regardless of transfer status. The matcher and LLM see `is_transfer` as a feature; report layers filter on it.
@@ -108,7 +106,9 @@ Every merchant in `core.dim_merchants` is user-created or system-created on the 
 
 ### OP_SCORES specificity ranking
 
-Within a source, specificity is scored to break ties when multiple rules or merchants match the same row. Adopted verbatim from Actual Budget's `rules/rule-utils.ts`:
+Within a source, specificity is scored to break ties when multiple rules or
+merchants match the same row. Exact exemplars must outrank broad text matches
+so the system cannot turn a single correction into a broad, silent rule:
 
 | Match shape | Score |
 |---|---|
@@ -351,7 +351,9 @@ Per `.claude/rules/testing.md`, features that cross subsystem boundaries need co
 These came up during design and are explicitly out of scope. Each is tracked as follow-up work.
 
 1. **`transaction_type` canonicalization.** Today the column carries source-specific vocabulary (OFX `DEBIT`/`CREDIT`/`XFER`, Plaid `payment_channel` enum). When users start authoring rules like `transaction_type = 'check'`, source coupling becomes a problem. Defer until that workflow surfaces.
-2. **Field-prefix syntax** (`memo:youtube`, `payee:starbucks`). Firefly III and hledger support per-field rule patterns. This spec routes everything through concatenated `match_text`. Add prefix syntax only if a user reports false-positive matches caused by token bleed across fields.
+2. **Field-prefix syntax** (`memo:youtube`, `payee:starbucks`). This spec routes
+   everything through concatenated `match_text`. Add prefix syntax only if a
+   user reports false-positive matches caused by token bleed across fields.
 3. **Exemplar set graduation.** No cap in v1; the `merchant_exemplar_count` metric will surface any merchant approaching pathological size. Graduation to a generalized `contains` pattern (LLM-proposed or user-confirmed) is a follow-up spec.
 4. **Per-field locks.** v1 ships row-level precedence only. Per-field locks (lock `category` but allow `subcategory` automation) wait for a real workflow.
 5. **Convergence loop in `categorize_pending`.** v1 runs a single pass. Multi-pass with idempotence detection added if observability shows non-trivial cascades.

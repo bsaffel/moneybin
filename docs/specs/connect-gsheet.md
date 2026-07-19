@@ -30,9 +30,11 @@ Connect time chooses the adapter: high-confidence transactions detection → `tr
 - [`identifiers.md`](../../.claude/rules/identifiers.md) — `connection_id` uses truncated-UUID strategy (strategy 3, app-layer entity with no natural key).
 - [`surface-design.md`](../../.claude/rules/surface-design.md) — gsheet operations classified into the five-shape taxonomy; see "CLI / MCP Surface" below.
 
-### Competitive context
+### User context
 
-Tiller is the dominant Google-Sheets-as-personal-finance product (~$80/yr, 100k+ users). Tiller users have years of categorization work, custom report tabs, and shared family budgeting workflows pinned to their workbook. Asking them to abandon the sheet to migrate to MoneyBin is a non-starter.
+Some users have years of categorization work, custom reports, and household
+workflows embedded in a Google Sheets workbook. Requiring them to abandon that
+workbook would make live-sheet adoption impractical.
 
 What this enables:
 
@@ -46,7 +48,7 @@ What this enables:
 |---|---|
 | OAuth user-flow over service account | Better UX (one-click connect vs. 15 min of Google Cloud Console setup). Accept the verification path; pre-launch ship in "unverified" or "testing" mode. Aligns with the "Bias Toward UX/DX/AX" principle in AGENTS.md. |
 | PKCE with embedded public client ID, no client secret | Avoids the "secret in open source" awkwardness; Google explicitly supports this for installed apps. |
-| Live mirror + soft-delete + stable-key detection, no write-back v1 | Magic-by-default for sheets with stable ID columns (Tiller users get edit-preserves-identity for free); content-hash fallback still mirrors correctly via diff. Write-back (Tiller-style `_moneybin_id` injection) is opt-in v2 — keeps read-only OAuth scope and avoids mutating user data. |
+| Live mirror + soft-delete + stable-key detection, no write-back v1 | Magic-by-default for sheets with stable ID columns; content-hash fallback still mirrors correctly via diff. Injecting a `_moneybin_id` into the source sheet is opt-in v2—v1 keeps read-only OAuth scope and avoids mutating user data. |
 | Reuse `raw.tabular_transactions` with `source_type='gsheet'` | Coherence per `design-principles.md` — gsheet IS a tabular source. Downstream (matching, categorization, reports) automatically picks up gsheet data with zero changes. One new column (`deleted_from_source_at`) supports the soft-delete contract. |
 | Strict drift refusal per-connection | Containment: a drifted sheet skips its pull but doesn't block other connections or the rest of `refresh_run`. User decides explicitly via `gsheet reconnect`. Prevents bad data from silently flowing through. |
 | Soft-fail on transient failures (auth, rate-limit, network) | Refresh keeps working with stale gsheet data + visible warning, rather than blocking all of MoneyBin on a transient Google API issue. |

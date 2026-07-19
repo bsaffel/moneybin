@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-18 -->
 # MCP Server
 
 MoneyBin's MCP server is what lets you ask an AI assistant questions like *"Where did I overspend last month?"* and have it run the multi-step pipeline that answers them — import the latest file, refresh derived tables, fetch the right report, then summarize. The agent picks the tools, chains them via action hints embedded in every response, and discovers parameter schemas at runtime. The same surface is reachable from the CLI for parity; this guide is about the chat-driven path.
@@ -7,7 +7,7 @@ The server is built on [FastMCP](https://github.com/jlowin/fastmcp) and register
 
 ## Install
 
-`moneybin mcp install --client <name>` writes the snippet your client expects (`--print` to inspect first). Supported clients today: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). ChatGPT on the **web/mobile** is not supported — those reach MCP only through remote connectors, which arrive with M3D. See [`mcp-clients.md`](mcp-clients.md) for paths and per-client caveats.
+`moneybin mcp install --client <name>` writes the snippet your client expects (`--print` to inspect first). Supported clients today: Claude Desktop, Claude Code, Cursor, Windsurf, VS Code Copilot, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). ChatGPT on the **web/mobile** cannot reach a local stdio server. See [`mcp-clients.md`](mcp-clients.md) for paths and per-client caveats.
 
 There is no `mcp uninstall` command today. To turn the integration off, remove the `moneybin` entry from your MCP client's config file (Claude Desktop's `claude_desktop_config.json`, Cursor's `mcp.json`, etc.) and restart the client.
 
@@ -229,7 +229,7 @@ fails to register — the tier is never hand-set):
 
 What the tier does today: it tags the per-call event in the privacy log (`tool`, `sensitivity`, data classes, row count) for *every* invocation, read or write. Mutations additionally write an `app.audit_log` row visible through `system_audit` — but reads do not, so `system_audit` shows only writes, not every call. (The two records are distinct; see [What the AI Provider Sees](what-the-ai-sees.md) for the split.) The per-call events go to `privacy.log.jsonl` under the active profile directory — a dedicated file with daily rotation, not the `mcp serve` stderr log and not affected by the standard logging settings. MoneyBin does not prune it. Independently of the tier, CRITICAL fields (account/routing numbers) are always masked before a result leaves the process.
 
-What the tier does **not** do today: there is no consent-prompt gate that requires explicit user approval before a `high`-tier call, and the tier does not degrade the response. The privacy framework that introduces the gate is planned; `summary.degraded` is wired through the envelope but not yet exercised. When the gate lands, calls without consent will return aggregate-only `data` with `summary.degraded: true` — they will never fail outright. Full data-flow detail: [What the AI Provider Sees](what-the-ai-sees.md).
+What the tier does **not** do today: there is no consent-prompt gate that requires explicit user approval before a `high`-tier call, and the tier does not degrade the response. The privacy framework that introduces the gate is planned; `summary.degraded` is already wired through the envelope, waiting on it. When the gate lands, calls without consent will return aggregate-only `data` with `summary.degraded: true` — they will never fail outright. Full data-flow detail: [What the AI Provider Sees](what-the-ai-sees.md).
 
 Tier names will not change. The enforcement layer above them may.
 
@@ -339,7 +339,7 @@ CLI footnote: `moneybin db query` (the CLI raw-SQL command) wraps `sql_query` an
 
 Stdio today. The client launches `moneybin mcp serve` as a subprocess and talks over stdin/stdout — there is no listening port, no network surface, no auth handshake. The OS user owning the client process is the trust boundary.
 
-A Streamable HTTP transport is planned for the hosted tier but is not implemented yet. When it lands, the same tool surface will be reachable over HTTP with an explicit auth path.
+A Streamable HTTP transport is planned for the hosted tier. When it lands, the same tool surface becomes reachable over HTTP with an explicit auth path.
 
 ## Testing without a real dataset
 
