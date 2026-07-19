@@ -6,6 +6,7 @@ import pytest
 
 from moneybin import error_codes
 from moneybin.config import clear_settings_cache, set_current_profile
+from moneybin.errors import UserError
 from moneybin.mcp.tools.privacy import (
     privacy_consent_set_coarse,
     register_privacy_coarse_writes,
@@ -39,7 +40,7 @@ async def test_grant_consent_tool(
     _set_backend(monkeypatch)
     from moneybin.mcp.tools.privacy import privacy_consent_grant
 
-    env = await privacy_consent_grant(category="mcp-data-sharing")
+    env = privacy_consent_grant(category="mcp-data-sharing")
     assert env.error is None
     assert env.data.action in ("granted", "noop")
     assert env.data.backend == "anthropic"
@@ -54,9 +55,9 @@ async def test_grant_no_backend_returns_error_envelope(
     set_current_profile("test")
     from moneybin.mcp.tools.privacy import privacy_consent_grant
 
-    env = await privacy_consent_grant(category="mcp-data-sharing")
-    assert env.error is not None
-    assert env.error.code == error_codes.MUTATION_INVALID_INPUT
+    with pytest.raises(UserError) as exc_info:
+        privacy_consent_grant(category="mcp-data-sharing")
+    assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
 
 
 async def test_status_tool_reflects_grant(
@@ -65,8 +66,8 @@ async def test_status_tool_reflects_grant(
     _set_backend(monkeypatch)
     from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_status
 
-    await privacy_consent_grant(category="mcp-data-sharing")
-    env = await privacy_status()
+    privacy_consent_grant(category="mcp-data-sharing")
+    env = privacy_status()
     assert env.error is None
     cats = {g.feature_category for g in env.data.active_grants}
     assert "mcp-data-sharing" in cats
@@ -82,11 +83,11 @@ async def test_revoke_consent_tool(
         privacy_status,
     )
 
-    await privacy_consent_grant(category="mcp-data-sharing")
-    env = await privacy_consent_revoke(category="mcp-data-sharing")
+    privacy_consent_grant(category="mcp-data-sharing")
+    env = privacy_consent_revoke(category="mcp-data-sharing")
     assert env.error is None
     assert env.data.action == "revoked"
-    status = await privacy_status()
+    status = privacy_status()
     assert status.data.active_grants == []
 
 
@@ -99,8 +100,8 @@ async def test_consent_revoke_confirms_exact_categories(
         privacy_consent_set_coarse,
     )
 
-    await privacy_consent_grant(category="mcp-data-sharing")
-    await privacy_consent_grant(category="matching-overview")
+    privacy_consent_grant(category="mcp-data-sharing")
+    privacy_consent_grant(category="matching-overview")
 
     first = await privacy_consent_set_coarse(
         categories=["matching-overview", "mcp-data-sharing"],
@@ -164,14 +165,14 @@ async def test_consent_revoke_rejects_token_after_live_state_changes(
     _set_backend(monkeypatch)
     from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_consent_revoke
 
-    await privacy_consent_grant(category="mcp-data-sharing")
+    privacy_consent_grant(category="mcp-data-sharing")
     first = await privacy_consent_set_coarse(
         categories=["mcp-data-sharing"],
         state="revoked",
     )
     assert first.error is not None
 
-    await privacy_consent_revoke(category="mcp-data-sharing")
+    privacy_consent_revoke(category="mcp-data-sharing")
     stale = await privacy_consent_set_coarse(
         categories=["mcp-data-sharing"],
         state="revoked",
@@ -197,7 +198,7 @@ async def test_consent_revoke_rejects_one_time_mode(
     assert response.error.code == error_codes.MUTATION_INVALID_INPUT
 
 
-async def test_consent_dormant_registrar_advertises_closed_destructive_contract() -> (
+async def test_consent_standard_registrar_advertises_closed_destructive_contract() -> (
     None
 ):
     mcp = isolated_server(register_privacy_coarse_writes)
@@ -220,8 +221,8 @@ async def test_log_tool_returns_events(
     _set_backend(monkeypatch)
     from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_log
 
-    await privacy_consent_grant(category="mcp-data-sharing")
-    env = await privacy_log(last=20)
+    privacy_consent_grant(category="mcp-data-sharing")
+    env = privacy_log(last=20)
     assert env.error is None
     grants = [e for e in env.data.events if e.action == "consent.grant"]
     assert grants, "consent.grant event missing from privacy_log"
@@ -237,9 +238,9 @@ async def test_log_signals_truncation_on_full_page(
     from moneybin.mcp.tools.privacy import privacy_consent_grant, privacy_log
 
     # Two grants → at least two log events; request fewer than exist.
-    await privacy_consent_grant(category="mcp-data-sharing")
-    await privacy_consent_grant(category="ml-categorization")
-    env = await privacy_log(last=1)
+    privacy_consent_grant(category="mcp-data-sharing")
+    privacy_consent_grant(category="ml-categorization")
+    env = privacy_log(last=1)
     assert env.error is None
     assert len(env.data.events) == 1
     assert env.summary.has_more is True

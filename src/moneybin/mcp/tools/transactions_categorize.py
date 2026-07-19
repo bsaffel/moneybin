@@ -64,7 +64,6 @@ from moneybin.services.mutation_context import current_operation_id
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(domain="categorize")
 def transactions_categorize_rules() -> ResponseEnvelope[CategorizeRulesPayload]:
     """List all categorization rules.
 
@@ -76,8 +75,7 @@ def transactions_categorize_rules() -> ResponseEnvelope[CategorizeRulesPayload]:
     return build_envelope(
         data=payload,
         actions=[
-            "Use transactions_categorize_rules_create to add new rules",
-            "Use transactions_categorize_rules_delete to soft-delete a rule",
+            "Use transactions_categorize_rules_set to declare rule target states",
         ],
     )
 
@@ -243,7 +241,7 @@ def transactions_categorize_rules_coarse(
 
 
 def register_categorization_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 categorization-rule read projection."""
+    """Register the standard categorization-rule read projection."""
     register(
         mcp,
         transactions_categorize_rules_coarse,
@@ -256,7 +254,7 @@ def register_categorization_coarse_reads(mcp: FastMCP) -> None:
 
 
 def register_categorization_coarse_writes(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 declarative categorization-rule write."""
+    """Register the standard declarative categorization-rule write."""
     register(
         mcp,
         transactions_categorize_rules_set_coarse,
@@ -271,7 +269,6 @@ def register_categorization_coarse_writes(mcp: FastMCP) -> None:
     )
 
 
-@mcp_tool(domain="categorize")
 def transactions_categorize_stats(
     include_auto: bool = False,
 ) -> ResponseEnvelope[CategorizeStatsPayload | CategorizeStatsWithAutoPayload]:
@@ -305,7 +302,7 @@ def transactions_categorize_stats(
             return build_envelope(
                 data=overall.to_payload(),
                 actions=[
-                    "Use transactions_categorize_pending to see uncategorized transactions"
+                    "Use reviews(kind='categorization') for uncategorized transactions"
                 ],
             )
         auto_data = AutoRuleService(db).stats()
@@ -322,13 +319,12 @@ def transactions_categorize_stats(
             ),
         ),
         actions=[
-            "Use transactions_categorize_pending to see uncategorized transactions",
-            "Use transactions_categorize_auto_review to review pending proposals",
+            "Use reviews(kind='categorization') for uncategorized transactions",
+            "Use transactions_categorize_rules(view='inactive') for proposals",
         ],
     )
 
 
-@mcp_tool(domain="categorize")
 def transactions_categorize_pending(
     limit: int = 50,
     sort: Literal["date", "impact"] = "date",
@@ -388,14 +384,14 @@ def transactions_categorize_pending(
     )
     actions = [
         "Use transactions_categorize_commit to commit categorizations for these transactions",
-        "Use transactions_categorize_rules_create to set up automatic categorization",
+        "Use transactions_categorize_rules_set to set up automatic categorization",
     ]
     flagged = sum(1 for r in records if r.get("pending_transfer_match"))
     if flagged:
         actions.append(
             f"{flagged} of these have an unresolved transfer match. Categorizing "
             "a transfer leg double-counts it against the eventual pair — resolve "
-            "them first with transactions_matches_run / transactions_matches_set."
+            "them first with reviews(kind='matches') and reviews_decide."
         )
     return build_envelope(
         data=payload,
@@ -436,7 +432,7 @@ def transactions_categorize_commit(
             total_count=0,
             actions=[
                 "Use transactions_categorize_rules to review auto-created rules",
-                "Use transactions_categorize_pending to fetch the next batch",
+                "Use reviews(kind='categorization') to fetch the next batch",
             ],
         )
 
@@ -449,12 +445,11 @@ def transactions_categorize_commit(
         total_count=len(items),
         actions=[
             "Use transactions_categorize_rules to review auto-created rules",
-            "Use transactions_categorize_pending to fetch the next batch",
+            "Use reviews(kind='categorization') to fetch the next batch",
         ],
     )
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
     reapply: bool = False,
@@ -500,7 +495,6 @@ def transactions_categorize_rules_create(
     )
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_rules_delete(
     rule_id: str, reapply: bool = False
 ) -> ResponseEnvelope[RulesDeletePayload]:
@@ -527,7 +521,6 @@ def transactions_categorize_rules_delete(
     )
 
 
-@mcp_tool(domain="categorize")
 def transactions_categorize_auto_review(
     limit: int | None = None,
 ) -> ResponseEnvelope[AutoReviewPayload]:
@@ -547,7 +540,6 @@ def transactions_categorize_auto_review(
     return auto_review_envelope(result)
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_auto_accept(
     accept: list[str] | None = None,
     reject: list[str] | None = None,
@@ -608,13 +600,12 @@ def transactions_categorize_run(
     return build_envelope(
         data=payload,
         actions=[
-            "Use transactions_categorize_stats to check resulting coverage",
-            "Use transactions_categorize_pending to see remaining uncategorized rows",
+            "Use system_status(sections=['categorization']) to check coverage",
+            "Use reviews(kind='categorization') for remaining rows",
         ],
     )
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_improve_ai() -> ResponseEnvelope[ImproveAiPayload]:
     """Re-categorize AI-guessed transactions to confident provider-native categories.
 
@@ -633,7 +624,7 @@ def transactions_categorize_improve_ai() -> ResponseEnvelope[ImproveAiPayload]:
         data=ImproveAiPayload(upgraded_count=count),
         sensitivity="low",
         actions=[
-            "Use transactions_categorize_stats to check resulting coverage",
+            "Use system_status(sections=['categorization']) to check coverage",
         ],
     )
 

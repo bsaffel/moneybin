@@ -124,18 +124,18 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
         cid = row["connection_id"]
         if status == "drift_detected":
             hints.append(
-                f"Run gsheet_reconnect(connection_id='{cid}') to re-detect "
+                f"Run gsheet_connect(connection_id='{cid}') to re-detect "
                 "the sheet structure and re-pin the column mapping."
             )
         elif status == "auth_expired":
             hints.append(
-                "Re-authenticate: call gsheet_auth() (MCP) or run "
+                "Re-authenticate with gsheet_connect(force_reauth=True), or run "
                 "`moneybin gsheet auth` (CLI). Both drive the same "
                 "in-process OAuth flow."
             )
         else:
             hints.append(
-                f"Run gsheet_status(connection_id='{cid}') to inspect the "
+                f"Run gsheet(view='status', connection_id='{cid}') to inspect the "
                 f"failure detail (status={status})."
             )
     return hints
@@ -307,7 +307,6 @@ def _locked_status_envelope(
     )
 
 
-@mcp_tool()
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
 
@@ -350,8 +349,8 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
 
     schema_drift_payload: SystemStatusSchemaDrift | None = None
     actions = [
-        "Use `review` for per-queue review counts (matches + categorize + account-links + merchant-links)",
-        "Use reports_spending for a monthly spending trend snapshot",
+        "Use reviews for per-queue review counts",
+        "Use reports(report_id='core:spending') for a spending trend snapshot",
     ]
     if status.schema_drift:
         schema_drift_payload = SystemStatusSchemaDrift(
@@ -429,7 +428,6 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     )
 
 
-@mcp_tool(read_only=False)
 def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
@@ -528,7 +526,6 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     )
 
 
-@mcp_tool()
 def system_audit_history(
     domain: str | None = None,
     since: str | None = None,
@@ -587,14 +584,13 @@ def system_audit_history(
             ]
         ),
         actions=[
-            "Inspect before/after with system_audit_get(operation_id=...) "
-            "before undoing",
+            "Inspect before/after with system_audit(view='detail', "
+            "operation_id=...) before undoing",
             "Reverse an operation with system_audit_undo(operation_id=...)",
         ],
     )
 
 
-@mcp_tool()
 def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayload]:
     """Full before/after for every row of one operation — inspect before undoing.
 
@@ -961,7 +957,7 @@ async def system_audit_coarse(
 
 
 def register_system_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 replacement system reads."""
+    """Register the standard system reads."""
     register(
         mcp,
         system_status_coarse,
@@ -979,9 +975,6 @@ def register_system_coarse_reads(mcp: FastMCP) -> None:
         "or parent audit event in detail. Detail requires exactly one identifier.",
         privacy_actor="system_audit",
     )
-    # Plan 6 cutover removals: system_doctor, transactions_categorize_stats,
-    # system_audit_history, and system_audit_get. Their live registrations stay
-    # untouched until the complete standard registry activates atomically.
 
 
 def register_system_tools(mcp: FastMCP) -> None:

@@ -120,8 +120,8 @@ def _seed_archived_balance_data() -> None:
         )
 
 
-class TestDormantCoarseAccountReads:
-    """Contract tests for the Plan 6 account-read replacements."""
+class TestStandardCoarseAccountReads:
+    """Contract tests for the standard account-read replacements."""
 
     @pytest.mark.unit
     async def test_account_detail_uses_shared_reference_resolution(
@@ -433,7 +433,7 @@ class TestDormantCoarseAccountReads:
         assert response.error.code == code
 
     @pytest.mark.unit
-    async def test_dormant_registrar_only_registers_replacement_reads(self) -> None:
+    async def test_standard_registrar_only_registers_replacement_reads(self) -> None:
         srv = FastMCP("test")
         register_accounts_coarse_reads(srv)
 
@@ -456,8 +456,8 @@ class TestDormantCoarseAccountReads:
         }
 
 
-class TestDormantCoarseBalanceAssertionWrite:
-    """Target-state behavior for the dormant declarative assertion callback."""
+class TestStandardCoarseBalanceAssertionWrite:
+    """Target-state behavior for the standard declarative assertion callback."""
 
     @pytest.mark.unit
     async def test_present_requires_amount(self, mcp_db: Path) -> None:
@@ -704,7 +704,7 @@ class TestDormantCoarseBalanceAssertionWrite:
         assert required.error.details is not None
         token = required.error.details["confirmation_token"]
 
-        reasserted = await accounts_balance_assert(
+        reasserted = accounts_balance_assert(
             account_id="ACC001",
             assertion_date="2026-07-01",
             balance=1250.0,
@@ -748,7 +748,7 @@ class TestDormantCoarseBalanceAssertionWrite:
         assert delete_audits == []
 
     @pytest.mark.unit
-    async def test_dormant_write_registrar_only_registers_replacement(self) -> None:
+    async def test_standard_write_registrar_only_registers_replacement(self) -> None:
         srv = FastMCP("test")
         register_accounts_coarse_writes(srv)
 
@@ -786,33 +786,28 @@ class TestAccountsResolve:
     """Tests for the accounts_resolve MCP tool envelope and action hints."""
 
     @pytest.mark.unit
-    async def test_envelope_shape_returns_medium_sensitivity(
+    async def test_helper_envelope_defaults_to_low_sensitivity(
         self, mcp_db: Path
     ) -> None:
-        """accounts_resolve returns MEDIUM sensitivity (display_name is USER_NOTE).
-
-        account_id is RECORD_ID (spec D6) — no longer CRITICAL; the highest
-        class in AccountResolutionItem is USER_NOTE (display_name) → MEDIUM.
-        """
+        """The undecorated compatibility helper leaves privacy to its caller."""
         _seed_named_account(
             "a1",
             display_name="Chase Checking",
             account_subtype="checking",
             institution_name="Chase",
         )
-        result = await accounts_resolve(query="chase")
+        result = accounts_resolve(query="chase")
         parsed = result.to_dict()
-        # USER_NOTE (display_name) → Tier.MEDIUM per privacy taxonomy
-        assert parsed["summary"]["sensitivity"] == "medium"
+        assert parsed["summary"]["sensitivity"] == "low"
         # data is now {"matches": [...]} from AccountResolvePayload serialization
         assert isinstance(parsed["data"], dict)
-        matches = parsed["data"]["matches"]
+        matches = result.data.matches
         assert len(matches) >= 1
         # account_id is RECORD_ID (spec D6) — passes through unmasked.
-        assert matches[0]["account_id"] == "a1"
+        assert matches[0].account_id == "a1"
         # Data shape matches AccountResolutionItem fields
-        assert "confidence" in matches[0]
-        assert "display_name" in matches[0]
+        assert matches[0].confidence
+        assert matches[0].display_name
 
     @pytest.mark.unit
     async def test_no_matches_returns_action_hint(
@@ -848,7 +843,7 @@ class TestAccountsResolve:
         monkeypatch.setattr("moneybin.database.get_settings", lambda: mock_settings)
         monkeypatch.setattr("moneybin.database.SecretStore", lambda: store)
 
-        result = await accounts_resolve(query="anything")
+        result = accounts_resolve(query="anything")
         parsed = result.to_dict()
         # data is {"matches": []} — empty payload
         assert parsed["data"]["matches"] == []
@@ -864,7 +859,7 @@ class TestAccountsResolve:
             display_name="XYZ Account",
             institution_name="XYZ Bank",
         )
-        result = await accounts_resolve(query="qq")
+        result = accounts_resolve(query="qq")
         parsed = result.to_dict()
         matches = parsed["data"]["matches"]
         # Either the match exists with low confidence and we get a hint,
@@ -880,7 +875,7 @@ class TestAccountsResolve:
         """Limit parameter caps the number of returned candidates."""
         for i in range(4):
             _seed_named_account(f"acct_{i}", display_name=f"Account {i}")
-        result = await accounts_resolve(query="account", limit=2)
+        result = accounts_resolve(query="account", limit=2)
         parsed = result.to_dict()
         assert len(parsed["data"]["matches"]) == 2
 

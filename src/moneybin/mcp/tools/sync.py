@@ -84,7 +84,6 @@ def _build_sync_service() -> Generator[Any, None, None]:
         yield SyncService(client=client, db=db, loader=loader)
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_pull(
     institution: str | None = None, force: bool = False, refresh: bool = True
 ) -> ResponseEnvelope[SyncPullPayload]:
@@ -177,7 +176,7 @@ def _pull_actions(result: PullResult) -> list[str]:
     if awaiting:
         actions.append(
             f"{awaiting} security identity(ies) await review — use "
-            "investments_securities_links_pending to see them "
+            "reviews(kind='security_links') to see them "
             "(unresolved securities are dropped from cost basis)."
         )
     if result.investment_source_overlap_accounts:
@@ -185,13 +184,12 @@ def _pull_actions(result: PullResult) -> list[str]:
             f"{len(result.investment_source_overlap_accounts)} account(s) have "
             "both manual and Plaid investment history — lots and gains "
             "double-count until one source is chosen per account "
-            "(see system_doctor)."
+            "(see system_status(sections=['doctor']))."
         )
     actions.append("Use sync_status to see connection health going forward.")
     return actions
 
 
-@mcp_tool()
 def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     """Connected institutions, last-sync times, and error-state guidance."""
     with _build_sync_service() as service:
@@ -212,7 +210,6 @@ def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     return build_envelope(data=SyncStatusPayload(connections=rows), actions=[])
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_link(
     institution: str | None = None,
 ) -> ResponseEnvelope[SyncLinkPayload]:
@@ -260,14 +257,13 @@ def sync_link(
         ),
         actions=[
             "Present link_url to the user and ask them to complete the connection in their browser.",
-            "After they confirm completion, call sync_link_status with session_id to verify.",
+            "After confirmation, call sync_status with session_id to verify.",
             "Once verified, call sync_pull to fetch transactions.",
             "Session expires at the expiration timestamp — beyond that, start a new link flow.",
         ],
     )
 
 
-@mcp_tool()
 def sync_link_status(
     session_id: str,
 ) -> ResponseEnvelope[SyncLinkStatusPayload]:
@@ -309,13 +305,13 @@ def sync_status_coarse(
 ) -> ResponseEnvelope[SyncStatusCoarsePayload]:
     """Read global connection health or one link-session status."""
     if session_id is None:
-        response = sync_status.__wrapped__()  # type: ignore[attr-defined]
+        response = sync_status()
         data: SyncStatusCoarsePayload = SyncGlobalStatusView(
             connections=response.data.connections
         )
         actions = list(response.actions)
     else:
-        response = sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
+        response = sync_link_status(session_id=session_id)
         data = SyncSessionStatusView(
             session_id=response.data.session_id,
             status=response.data.status,
@@ -324,10 +320,7 @@ def sync_status_coarse(
             error=response.data.error,
             expiration=response.data.expiration,
         )
-        actions = [
-            action.replace("sync_link_status", "sync_status")
-            for action in response.actions
-        ]
+        actions = list(response.actions)
     classes = extract_data_classes(type(data))
     tier = max(data_class.tier for data_class in classes)
     return cast(
@@ -346,7 +339,7 @@ def sync_link_coarse(
     institution: str | None = None,
 ) -> ResponseEnvelope[SyncLinkPayload]:
     """Start a link session using only isolated workflow actions."""
-    response = sync_link.__wrapped__(institution=institution)  # type: ignore[attr-defined]
+    response = sync_link(institution=institution)
     if response.error is not None:
         return response
     return replace(
@@ -364,59 +357,12 @@ def sync_pull_coarse(
     institution: str | None = None,
 ) -> ResponseEnvelope[SyncPullPayload]:
     """Pull while keeping recovery actions inside the isolated cohort."""
-    response = sync_pull.__wrapped__(institution=institution)  # type: ignore[attr-defined]
+    response = sync_pull(institution=institution)
     return replace(
         response,
         actions=[
             "Use sync_status to inspect connection health and decide whether "
             "another pull is needed."
-        ],
-    )
-
-
-# Deprecated aliases — will be removed in the next minor release. The decorator
-# does not accept a `deprecated=` flag; the description string + warning log
-# carry the deprecation signal. Call sync_link.__wrapped__ (the raw undecorated
-# function) so the alias's own @mcp_tool wrapper handles audit/timeout once —
-# otherwise the canonical tool's decorator fires a second time per call.
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
-def sync_connect(
-    institution: str | None = None,
-) -> ResponseEnvelope[SyncLinkPayload]:
-    """Deprecated alias for `sync_link`. Will be removed in the next minor release."""
-    logger.warning(
-        "MCP tool `sync_connect` is deprecated; use `sync_link`. "
-        "The alias will be removed in the next minor release."
-    )
-    result = sync_link.__wrapped__(institution=institution)  # type: ignore[attr-defined]
-    # Surface the deprecation in the response too (logger.warning never reaches
-    # the agent; envelope is frozen → dataclasses.replace).
-    return replace(
-        result,
-        actions=[
-            "DEPRECATED: `sync_connect` is an alias for `sync_link`, removed "
-            "next minor release — switch to `sync_link`.",
-            *result.actions,
-        ],
-    )
-
-
-@mcp_tool()
-def sync_connect_status(
-    session_id: str,
-) -> ResponseEnvelope[SyncLinkStatusPayload]:
-    """Deprecated alias for `sync_link_status`. Will be removed in the next minor release."""
-    logger.warning(
-        "MCP tool `sync_connect_status` is deprecated; use `sync_link_status`. "
-        "The alias will be removed in the next minor release."
-    )
-    result = sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
-    return replace(
-        result,
-        actions=[
-            "DEPRECATED: `sync_connect_status` is an alias for "
-            "`sync_link_status`, removed next minor release — switch to it.",
-            *result.actions,
         ],
     )
 
@@ -472,7 +418,7 @@ def register_sync_prompts(mcp: FastMCP) -> None:
 
 
 def register_sync_workflow_tools(mcp: FastMCP) -> None:
-    """Register the dormant four-boundary sync workflow."""
+    """Register the standard four-boundary sync workflow."""
     for callback, name, description in (
         (sync_link_coarse, "sync_link", "Start a hosted bank-link session."),
         (

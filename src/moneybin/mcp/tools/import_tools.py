@@ -186,7 +186,6 @@ def _sign_confirm_actions(file_path: str, error_message: str) -> list[str]:
     ]
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def import_files(
     paths: list[str], refresh: bool = True, force: bool = False
 ) -> ResponseEnvelope[ImportFilesPayload]:
@@ -598,7 +597,6 @@ def _import_preview_pdf(
     )
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
     """Preview a file's structure without importing.
 
@@ -690,7 +688,7 @@ def _import_preview_tabular(
         sensitivity="medium",
         actions=[
             "Use import_files to import after reviewing the preview",
-            "Use import_formats for available named formats",
+            "Use import_status(sections=['formats']) for available named formats",
         ],
     )
 
@@ -867,7 +865,6 @@ def import_preview_coarse(
     )
 
 
-@mcp_tool()
 def import_status(
     limit: int = 20, import_id: str | None = None
 ) -> ResponseEnvelope[ImportStatusPayload]:
@@ -894,7 +891,6 @@ def import_status(
     )
 
 
-@mcp_tool(read_only=False, destructive=True, idempotent=False)
 def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     """Undo an import batch by deleting all rows it produced.
 
@@ -933,7 +929,6 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
     )
 
 
-@mcp_tool()
 def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     """List all available import formats (tabular + PDF, built-in and user-saved).
 
@@ -1394,7 +1389,6 @@ def _import_confirm_bridge(
     )
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def import_confirm(
     file_path: str,
     *,
@@ -1880,7 +1874,7 @@ def import_confirm_coarse(
 
 
 def register_import_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 replacement import status read."""
+    """Register the standard import status read."""
     register(
         mcp,
         import_status_coarse,
@@ -1890,8 +1884,6 @@ def register_import_coarse_reads(mcp: FastMCP) -> None:
         "valid only when imports is the sole section.",
         privacy_actor="import_status",
     )
-    # Plan 6 cutover removals: import_formats and import_inbox_pending. Their
-    # live registrations remain untouched until the atomic registry swap.
 
 
 @mcp_tool(read_only=False, idempotent=False)
@@ -1901,7 +1893,7 @@ def import_files_coarse(
     force: bool = False,
 ) -> ResponseEnvelope[ImportFilesPayload]:
     """Import files while keeping actions inside the staged-import cohort."""
-    response = import_files.__wrapped__(  # type: ignore[attr-defined]
+    response = import_files(
         paths=paths,
         refresh=refresh,
         force=force,
@@ -1926,7 +1918,7 @@ def import_revert_coarse(
     import_id: str,
 ) -> ResponseEnvelope[ImportRevertPayload]:
     """Revert one import with an isolated status recovery action."""
-    response = import_revert.__wrapped__(import_id=import_id)  # type: ignore[attr-defined]
+    response = import_revert(import_id=import_id)
     return replace(
         response,
         actions=[
@@ -1972,7 +1964,7 @@ def import_labels_set_coarse(
 
 
 def register_import_workflow_tools(mcp: FastMCP) -> None:
-    """Register the dormant seven-boundary staged-import workflow."""
+    """Register the standard seven-boundary staged-import workflow."""
     for callback, name, description in (
         (import_files_coarse, "import_files", "Import one or more files."),
         (

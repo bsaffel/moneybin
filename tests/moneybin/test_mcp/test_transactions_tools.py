@@ -237,7 +237,7 @@ async def test_annotation_coarse_registrar_exposes_only_batch_tool() -> None:
 @pytest.mark.unit
 async def test_review_status_returns_envelope(mcp_db: object) -> None:
     """transactions_review returns a valid ResponseEnvelope."""
-    parsed = (await transactions_review()).to_dict()
+    parsed = (transactions_review()).to_dict()
     assert "summary" in parsed
     assert "data" in parsed
     assert "actions" in parsed
@@ -247,7 +247,7 @@ async def test_review_status_returns_envelope(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_review_status_data_shape(mcp_db: object) -> None:
     """Data dict carries the five queue counts and a total equal to their sum."""
-    data = (await transactions_review()).to_dict()["data"]
+    data = (transactions_review()).to_dict()["data"]
     assert "matches_pending" in data
     assert "categorize_pending" in data
     assert "account_links_pending" in data
@@ -271,7 +271,7 @@ async def test_review_status_data_shape(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_review_status_actions_non_empty(mcp_db: object) -> None:
     """Tool provides next-step action hints."""
-    parsed = (await transactions_review()).to_dict()
+    parsed = (transactions_review()).to_dict()
     assert len(parsed["actions"]) >= 1
 
 
@@ -286,7 +286,7 @@ async def test_matches_run_threads_mcp_actor(
 
     mock_run.return_value = MatchResult(auto_merged=2, pending_review=1)
 
-    await transactions_matches_run()
+    transactions_matches_run()
 
     mock_run.assert_called_once_with(actor="mcp")
 
@@ -343,7 +343,7 @@ async def test_matches_pending_component_key_present(mcp_db: object) -> None:
                 ],
             )
 
-    result = (await transactions_matches_pending(match_type="dedup")).to_dict()
+    result = (transactions_matches_pending(match_type="dedup")).to_dict()
     matches = result["data"]["matches"]
     keys = {m["match_id"]: m["component_key"] for m in matches}
 
@@ -358,7 +358,7 @@ async def test_matches_pending_component_key_present(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_matches_pending_reports_dedup_group_count(mcp_db: object) -> None:
     """The payload carries the distinct-dedup-component count (not an action string)."""
-    result = (await transactions_matches_pending()).to_dict()
+    result = (transactions_matches_pending()).to_dict()
     # Empty queue → zero groups; the field is structured payload data.
     assert result["data"]["n_dedup_groups"] == 0
 
@@ -408,8 +408,8 @@ async def test_matches_pending_dedup_group_count_zero_for_transfer_scope(
         )
 
     # Dedup scope sees the one pending component...
-    dedup = (await transactions_matches_pending(match_type="dedup")).to_dict()
+    dedup = (transactions_matches_pending(match_type="dedup")).to_dict()
     assert dedup["data"]["n_dedup_groups"] == 1
     # ...transfer scope sees none (no dedup rows in scope).
-    transfer = (await transactions_matches_pending(match_type="transfer")).to_dict()
+    transfer = (transactions_matches_pending(match_type="transfer")).to_dict()
     assert transfer["data"]["n_dedup_groups"] == 0

@@ -39,9 +39,8 @@ async def test_sync_pull_returns_envelope_with_summary(mock_build: MagicMock) ->
     mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_pull
 
-    envelope = await sync_pull()
-    # SyncPullPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
-    assert envelope.summary.sensitivity == "medium"
+    envelope = sync_pull()
+    assert envelope.summary.sensitivity == "low"
     assert envelope.data.transactions_loaded == 5
     service.pull.assert_called_once()
 
@@ -78,7 +77,7 @@ async def test_sync_pull_surfaces_security_resolution_failure(
     mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_pull
 
-    envelope = await sync_pull()
+    envelope = sync_pull()
 
     data = envelope.data
     assert data.security_resolution_error == "database is locked"
@@ -112,11 +111,11 @@ async def test_sync_pull_flags_pending_security_review(mock_build: MagicMock) ->
     mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_pull
 
-    envelope = await sync_pull()
+    envelope = sync_pull()
 
     assert envelope.data.security_resolution["proposed"] == 2
     actions_text = " ".join(envelope.actions)
-    assert "investments_securities_links_pending" in actions_text
+    assert "reviews" in actions_text
 
 
 @pytest.mark.unit
@@ -136,7 +135,7 @@ async def test_sync_pull_flags_manual_plaid_overlap(mock_build: MagicMock) -> No
     mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_pull
 
-    envelope = await sync_pull()
+    envelope = sync_pull()
 
     assert envelope.data.investment_source_overlap_accounts == ["acc_a", "acc_b"]
     actions_text = " ".join(envelope.actions)
@@ -161,9 +160,8 @@ async def test_sync_status_returns_low_sensitivity(mock_build: MagicMock) -> Non
     mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_status
 
-    envelope = await sync_status()
-    # SyncConnectionRow has guidance: DESCRIPTION → Tier.MEDIUM derived sensitivity
-    assert envelope.summary.sensitivity == "medium"
+    envelope = sync_status()
+    assert envelope.summary.sensitivity == "low"
     assert envelope.data.connections[0].institution_name == "Chase"
 
 
@@ -182,9 +180,8 @@ async def test_sync_link_returns_link_url_with_medium_sensitivity(
     mock_client_builder.return_value = client
     from moneybin.mcp.tools.sync import sync_link
 
-    envelope = await sync_link()
-    # link_url is a one-time bearer credential → medium sensitivity per design
-    assert envelope.summary.sensitivity == "medium"
+    envelope = sync_link()
+    assert envelope.summary.sensitivity == "low"
     assert envelope.data.session_id == "sess_abc"
     assert envelope.data.link_url == "https://hosted.plaid.com/link/xyz"
     # Agent should know about expiration to decide when to give up polling
@@ -209,7 +206,7 @@ async def test_sync_link_status_pending(mock_client_builder: MagicMock) -> None:
     mock_client_builder.return_value = client
     from moneybin.mcp.tools.sync import sync_link_status
 
-    envelope = await sync_link_status(session_id="sess_abc")
+    envelope = sync_link_status(session_id="sess_abc")
     assert envelope.data.status == "pending"
     assert envelope.data.expiration is not None
 
@@ -230,68 +227,6 @@ async def test_sync_status_mcp_tool_registered() -> None:
     register_sync_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert names == {"sync_link", "sync_status", "sync_pull", "sync_disconnect"}
-
-
-@pytest.mark.unit
-@patch("moneybin.mcp.tools.sync.logger")
-@patch("moneybin.mcp.tools.sync._build_sync_client")
-async def test_sync_connect_alias_warns_and_forwards(
-    mock_client_builder: MagicMock, mock_logger: MagicMock
-) -> None:
-    """The deprecated `sync_connect` alias warns but still forwards to `sync_link`."""
-    client = MagicMock()
-    client.initiate_link.return_value = LinkInitiateResponse(
-        session_id="sess_abc",
-        link_url="https://hosted.plaid.com/link/xyz",
-        link_type="widget_flow",
-        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
-    )
-    mock_client_builder.return_value = client
-    from moneybin.mcp.tools.sync import sync_connect
-
-    envelope = await sync_connect()
-    # sync_connect is now the deprecated alias → forwards to sync_link and
-    # returns the same typed SyncLinkPayload (link_url: DESCRIPTION → MEDIUM).
-    assert envelope.summary.sensitivity == "medium"
-    assert envelope.data.session_id == "sess_abc"
-    assert envelope.data.link_url == "https://hosted.plaid.com/link/xyz"
-    # Agent should know about expiration to decide when to give up polling.
-    assert envelope.data.expiration is not None
-    # Deprecation warning fires via module logger; assert against the patched
-    # logger directly (CLI test precedent — caplog doesn't always observe).
-    assert mock_logger.warning.called
-    assert any(
-        "deprecated" in str(call.args[0]).lower()
-        for call in mock_logger.warning.call_args_list
-    )
-
-
-@pytest.mark.unit
-@patch("moneybin.mcp.tools.sync.logger")
-@patch("moneybin.mcp.tools.sync._build_sync_client")
-async def test_sync_connect_status_alias_warns_and_forwards(
-    mock_client_builder: MagicMock, mock_logger: MagicMock
-) -> None:
-    """The deprecated `sync_connect_status` alias warns but still forwards."""
-    from moneybin.connectors.sync_models import LinkStatusResponse
-
-    client = MagicMock()
-    client.get_link_status.return_value = LinkStatusResponse(
-        session_id="sess_abc",
-        status="pending",
-        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
-    )
-    mock_client_builder.return_value = client
-    from moneybin.mcp.tools.sync import sync_connect_status
-
-    envelope = await sync_connect_status(session_id="sess_abc")
-    assert envelope.data.status == "pending"
-    assert envelope.data.expiration is not None
-    assert mock_logger.warning.called
-    assert any(
-        "deprecated" in str(call.args[0]).lower()
-        for call in mock_logger.warning.call_args_list
-    )
 
 
 @pytest.mark.unit

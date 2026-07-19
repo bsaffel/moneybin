@@ -8,7 +8,6 @@ list[RecoveryAction]`.
 from __future__ import annotations
 
 from moneybin.audits.recipes import registry  # importing populates the registry
-from moneybin.errors import RecoveryAction
 
 
 def test_get_unknown_audit_returns_none() -> None:
@@ -31,10 +30,9 @@ def test_recipe_signature_returns_list_of_recovery_action() -> None:
     assert out == []
 
 
-def test_recipe_with_affected_ids_returns_actions() -> None:
+def test_orphan_recipe_with_affected_ids_withholds_unexecutable_actions() -> None:
     recipe = registry.get("orphan_app_state")
     assert recipe is not None
     ctx = registry.RecipeContext(db=None)
     out = recipe(["note:n1"], ctx)
-    assert len(out) == 1
-    assert isinstance(out[0], RecoveryAction)
+    assert out == []

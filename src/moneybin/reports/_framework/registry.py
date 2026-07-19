@@ -83,7 +83,7 @@ def register_reports_cli(
 
 
 def register_generic_reports_tool(mcp: FastMCP) -> None:
-    """Register only the dormant generic ``reports`` MCP contract."""
+    """Register the single standard ``reports`` MCP contract."""
     from moneybin.mcp._registration import register
     from moneybin.mcp.tools.reports import reports
 

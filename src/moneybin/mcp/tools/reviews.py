@@ -1,4 +1,4 @@
-"""Dormant normalized read across MoneyBin's five review queues."""
+"""Normalized boundaries across MoneyBin's five review queues."""
 
 from __future__ import annotations
 
@@ -571,13 +571,11 @@ def _review_actions(
             f"Open the active queue with reviews(kind={kind!r}, status='pending')"
         ]
     else:
-        decision_tool = {
-            "categorization": "transactions_categorize_commit",
-            "matches": "transactions_matches_set",
-            "account_links": "accounts_links_set",
-            "merchant_links": "merchants_links_set",
-            "security_links": "investments_securities_links_set",
-        }[kind]
+        decision_tool = (
+            "reviews_decide"
+            if kind in {"categorization", "matches"}
+            else "identity_links_decide"
+        )
         actions = [f"Use {decision_tool} to decide a row from this queue"]
     if next_cursor is not None:
         actions.append(
@@ -682,7 +680,7 @@ def reviews_coarse(
 
 
 def register_review_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 normalized review read."""
+    """Register the standard normalized review read."""
     register(
         mcp,
         reviews_coarse,
@@ -848,7 +846,7 @@ async def identity_links_decide_coarse(
 
 
 def register_review_coarse_writes(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 ordinary and identity decision batches."""
+    """Register the standard ordinary and identity decision batches."""
     register(
         mcp,
         reviews_decide_coarse,

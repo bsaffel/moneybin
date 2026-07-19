@@ -268,11 +268,7 @@ def mcp_tool(
     metadata.
 
     Args:
-        domain: Optional namespace tag stored as a FastMCP tag. Dormant
-            metadata today — client-driven progressive disclosure was retired
-            2026-05-17 (see docs/specs/mcp-architecture.md §3). Preserved for a
-            possible future first-party client that does its own schema
-            injection.
+        domain: Optional namespace tag stored as FastMCP grouping metadata.
         read_only: MCP readOnlyHint — default True (most MoneyBin tools are queries).
         destructive: MCP destructiveHint — irreversible state change.
         idempotent: MCP idempotentHint — safe to retry without side effects.

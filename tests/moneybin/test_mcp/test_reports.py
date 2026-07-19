@@ -1,4 +1,4 @@
-"""Contract tests for the dormant generic ``reports`` MCP tool."""
+"""Contract tests for the standard generic ``reports`` MCP tool."""
 
 from __future__ import annotations
 

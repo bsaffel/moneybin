@@ -120,7 +120,6 @@ def _transaction_payload(
     )
 
 
-@mcp_tool(read_only=True)
 def transactions_get(
     accounts: list[str] | None = None,
     date_from: str | None = None,
@@ -172,8 +171,8 @@ def transactions_get(
         data=payload,
         next_cursor=result.next_cursor,
         actions=[
-            "Use transactions_get with the next_cursor value to fetch the next page",
-            "Use reports_spending for category breakdowns",
+            "Use transactions with the next_cursor value to fetch the next page",
+            "Use reports(report_id='core:spending') for category breakdowns",
             "Use transactions_categorize_commit to categorize uncategorized transactions",
         ],
     )
@@ -445,7 +444,7 @@ def transactions_coarse(
 
 
 def register_transaction_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 replacement operational transaction read."""
+    """Register the standard operational transaction read."""
     register(
         mcp,
         transactions_coarse,
@@ -456,8 +455,6 @@ def register_transaction_coarse_reads(mcp: FastMCP) -> None:
         "transfers exempt. Currency is named by summary.display_currency.",
         privacy_actor="transactions",
     )
-    # Plan 6 removes transactions_get from the live registry. Largest and
-    # anomalous transaction analysis remains in the reports catalog.
 
 
 def _preview_annotations(requests: list[AnnotationRequest]) -> AnnotationPlan:
@@ -579,7 +576,7 @@ async def transactions_annotate_coarse(
 
 
 def register_transaction_coarse_writes(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 atomic transaction annotation batch."""
+    """Register the standard atomic transaction annotation batch."""
     register(
         mcp,
         transactions_annotate_coarse,
@@ -623,16 +620,15 @@ def _build_review_envelope() -> ResponseEnvelope[ReviewStatusPayload]:
             total=status.total,
         ),
         actions=[
-            "Use transactions_categorize_pending to fetch the categorize queue",
-            "Use transactions_matches_pending to fetch the matches queue",
-            "Use accounts_links_pending to fetch the account-links queue",
-            "Use merchants_links_pending to fetch the merchant-links queue",
-            "Use investments_securities_links_pending to fetch the security-links queue",
+            "Use reviews(kind='categorization') for the categorization queue",
+            "Use reviews(kind='matches') for the matches queue",
+            "Use reviews(kind='account_links') for the account-link queue",
+            "Use reviews(kind='merchant_links') for the merchant-link queue",
+            "Use reviews(kind='security_links') for the security-link queue",
         ],
     )
 
 
-@mcp_tool()
 def review() -> ResponseEnvelope[ReviewStatusPayload]:
     """Return counts of pending reviews across all five queues.
 
@@ -654,7 +650,6 @@ def review() -> ResponseEnvelope[ReviewStatusPayload]:
     return _build_review_envelope()
 
 
-@mcp_tool()
 def transactions_review() -> ResponseEnvelope[ReviewStatusPayload]:
     """DEPRECATED: use `review` — removed after one minor release.
 
@@ -665,7 +660,6 @@ def transactions_review() -> ResponseEnvelope[ReviewStatusPayload]:
     return _build_review_envelope()
 
 
-@mcp_tool(domain="matches", read_only=False)
 def transactions_matches_set(
     match_id: str,
     status: Literal["accepted", "rejected"],
@@ -689,14 +683,13 @@ def transactions_matches_set(
     return build_envelope(
         data=MatchSetPayload(match_id=match_id, match_status=status),
         actions=[
-            "Use transactions_matches_pending to review remaining pending matches",
+            "Use reviews(kind='matches') to review remaining pending matches",
             "Run `moneybin transactions matches undo <match_id>` (CLI) to reverse "
             "an accepted match — there is no MCP undo tool yet",
         ],
     )
 
 
-@mcp_tool(domain="matches")
 def transactions_matches_pending(
     match_type: Literal["dedup", "transfer"] | None = None,
     limit: int = 50,
@@ -744,7 +737,7 @@ def transactions_matches_pending(
         ),
         total_count=total,
         actions=[
-            "Use transactions_matches_set to accept or reject one match by match_id",
+            "Use reviews_decide with kind='match' to accept or reject a match",
             "Group rows by component_key to review all edges of one N-way dedup "
             "cluster together",
             "For full pair context (both transactions side by side), use the CLI "
@@ -753,7 +746,6 @@ def transactions_matches_pending(
     )
 
 
-@mcp_tool(domain="matches", read_only=True)
 def transactions_matches_history(
     limit: int = 20,
     match_type: Literal["dedup", "transfer"] | None = None,
@@ -780,11 +772,10 @@ def transactions_matches_history(
                 for r in rows
             ]
         ),
-        actions=["Use transactions_matches_pending for the active queue"],
+        actions=["Use reviews(kind='matches') for the active queue"],
     )
 
 
-@mcp_tool(domain="matches", read_only=False, idempotent=False)
 def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     """Run the matcher (dedup + transfer detection) over existing transactions.
 
@@ -801,7 +792,7 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
             pending_review=result.pending_review,
             pending_transfers=result.pending_transfers,
         ),
-        actions=["Use transactions_matches_pending to review proposed matches"],
+        actions=["Use reviews(kind='matches') to review proposed matches"],
     )
 
 

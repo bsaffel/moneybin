@@ -33,7 +33,7 @@ from .schema_assertions import (
 
 
 def register_strict_probe(mcp: FastMCP) -> None:
-    """Register a dormant probe through MoneyBin's normal adapter."""
+    """Register a standard probe through MoneyBin's normal adapter."""
 
     @mcp_tool(dynamic_classification=True)
     async def strict_probe(enabled: StrictBool) -> ResponseEnvelope[Any]:

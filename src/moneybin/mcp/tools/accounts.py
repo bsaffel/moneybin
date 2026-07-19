@@ -95,7 +95,6 @@ from moneybin.services.mutation_context import current_operation_id
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
 
-@mcp_tool()
 def accounts(
     include_archived: bool = False, type_filter: str | None = None
 ) -> ResponseEnvelope[AccountListPayload]:
@@ -119,12 +118,11 @@ def accounts(
         data=result,
         actions=[
             "Use accounts_balances for current balances",
-            "Use reports_spending with a category filter to drill in by account",
+            "Use reports(report_id='core:spending') to drill into spending",
         ],
     )
 
 
-@mcp_tool()
 def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     """Single account record with full settings + dim record.
 
@@ -147,7 +145,6 @@ def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     return build_envelope(data=record)
 
 
-@mcp_tool()
 def accounts_summary() -> ResponseEnvelope[AccountSummaryStats]:
     """Aggregate account snapshot: counts only, no per-account data, no PII.
 
@@ -278,7 +275,6 @@ def accounts_set(
 # ─── Read tools (balance) ──────────────────────────────────────────────────
 
 
-@mcp_tool()
 def accounts_balances(
     account_ids: list[str] | None = None, as_of_date: str | None = None
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
@@ -296,7 +292,6 @@ def accounts_balances(
     return build_envelope(data=result)
 
 
-@mcp_tool()
 def accounts_balance_history(
     account_id: str, from_date: str | None = None, to_date: str | None = None
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
@@ -316,7 +311,6 @@ def accounts_balance_history(
     return build_envelope(data=result)
 
 
-@mcp_tool()
 def accounts_balance_reconcile(
     account_ids: list[str] | None = None, threshold: float = 0.01
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
@@ -334,7 +328,6 @@ def accounts_balance_reconcile(
     return build_envelope(data=result)
 
 
-@mcp_tool()
 def accounts_balance_assertions(
     account_id: str | None = None,
 ) -> ResponseEnvelope[BalanceAssertionListPayload]:
@@ -351,7 +344,6 @@ def accounts_balance_assertions(
 # ─── Write tools (balance) ──────────────────────────────────────────────────
 
 
-@mcp_tool(read_only=False)
 def accounts_balance_assert(
     account_id: str, assertion_date: str, balance: float, notes: str | None = None
 ) -> ResponseEnvelope[BalanceAssertionPayload]:
@@ -376,7 +368,6 @@ def accounts_balance_assert(
     return build_envelope(data=result)
 
 
-@mcp_tool(read_only=False, destructive=True)
 def accounts_balance_assertion_delete(
     account_id: str, assertion_date: str
 ) -> ResponseEnvelope[BalanceAssertionDeletePayload]:
@@ -399,7 +390,6 @@ def accounts_balance_assertion_delete(
 # ─── Resolution (free-text → account_id) ───────────────────────────────────
 
 
-@mcp_tool()
 def accounts_resolve(
     query: str, limit: int = 5
 ) -> ResponseEnvelope[AccountResolvePayload]:
@@ -446,7 +436,6 @@ def _resolve_accounts(
 # ─── Review tools (links) ──────────────────────────────────────────────────
 
 
-@mcp_tool(domain="links")
 def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     """List pending account-link decisions, grouped by provisional account.
 
@@ -473,11 +462,10 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
         data=payload,
         total_count=n_pending,
         actions=[
-            "Use accounts_links_set(decision_id, action='accept', "
-            "target_account_id=<candidate_account_id>) to merge — the user is "
-            "prompted to confirm the merge before anything is written",
-            "Use accounts_links_set(decision_id, action='reject') to keep the "
-            "provisional account as its own canonical account",
+            "Use identity_links_decide with kind='account_link', decision='accept', "
+            "decision_id, and target_id to merge after confirmation",
+            "Use identity_links_decide with kind='account_link', decision='reject', "
+            "and decision_id to keep the provisional account standalone",
         ],
     )
 
@@ -521,7 +509,7 @@ def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
     raise UserError(
         f"No pending account-link decision '{decision_id}'.",
         code=error_codes.MUTATION_NOTHING_TO_DO,
-        hint="List open decisions with accounts_links_pending.",
+        hint="List open decisions with reviews(kind='account_links').",
     )
 
 
@@ -616,19 +604,6 @@ def _apply_account_reject(decision_id: str) -> None:
         )
 
 
-@mcp_tool(
-    domain="links",
-    read_only=False,
-    destructive=True,
-    idempotent=False,
-    # The accept path blocks on a human reading a merge confirmation (two
-    # accounts + the reason they're ambiguous). The 30s default would routinely
-    # fire first — and a cap that expires mid-decision means the user "accepts"
-    # into a coroutine that was already cancelled. Same headroom as
-    # investments_securities_links_set. Timing out is still safe (nothing is
-    # written), just confusing.
-    timeout_seconds=180.0,
-)
 async def accounts_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
@@ -694,8 +669,8 @@ async def accounts_links_set(
     else:
         if not target_account_id:
             raise UserError(
-                "action='accept' requires 'target_account_id' = the decision's "
-                "own candidate_account_id (see accounts_links_pending). An empty "
+                "action='accept' requires 'target_account_id' = the target_id "
+                "shown by reviews(kind='account_links'). An empty "
                 "'target_account_id' is not a reject — pass action='reject' for "
                 "that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
@@ -709,9 +684,9 @@ async def accounts_links_set(
                 # confirmation. The service re-checks this; this is the boundary copy.
                 raise UserError(
                     f"'target_account_id' does not match decision '{decision_id}' — "
-                    "it must be that decision's own candidate_account_id.",
+                    "it must be the target_id shown by reviews(kind='account_links').",
                     code=error_codes.MUTATION_INVALID_INPUT,
-                    hint="Re-read the decision with accounts_links_pending.",
+                    hint="Re-read the decision with reviews(kind='account_links').",
                 )
             binding = _account_link_binding(
                 decision_id=decision_id,
@@ -738,14 +713,13 @@ async def accounts_links_set(
     return build_envelope(
         data=AccountLinksSetPayload(decision_id=decision_id, status=status),
         actions=[
-            "Use accounts_links_pending to review remaining pending decisions",
+            "Use reviews(kind='account_links') for remaining pending decisions",
             "Reverse this decision with system_audit_undo(operation_id) — find "
             "the operation_id with system_audit",
         ],
     )
 
 
-@mcp_tool(domain="links")
 def accounts_links_history(
     limit: int = 50,
 ) -> ResponseEnvelope[AccountLinksHistoryPayload]:
@@ -759,11 +733,10 @@ def accounts_links_history(
     payload = AccountLinksHistoryPayload.from_rows(rows)
     return build_envelope(
         data=payload,
-        actions=["Use accounts_links_pending for the active review queue"],
+        actions=["Use reviews(kind='account_links') for the active review queue"],
     )
 
 
-@mcp_tool(domain="links", read_only=False)
 def accounts_links_run() -> ResponseEnvelope[AccountLinksRunPayload]:
     """Backfill account-link proposals for existing accounts in core.dim_accounts.
 
@@ -787,11 +760,11 @@ def accounts_links_run() -> ResponseEnvelope[AccountLinksRunPayload]:
         new_proposals = AccountLinksService(db, actor="mcp").run()
     return build_envelope(
         data=AccountLinksRunPayload(new_proposals=new_proposals),
-        actions=["Use accounts_links_pending to review the proposed merges"],
+        actions=["Use reviews(kind='account_links') to review proposed merges"],
     )
 
 
-# ─── Dormant coarse read replacements ─────────────────────────────────────
+# ─── Standard coarse reads ────────────────────────────────────────────────
 
 
 async def _run_account_read[T](
@@ -1232,6 +1205,7 @@ async def accounts_balances_coarse(
         )
         payload = AccountsBalancesLatestView(observations=page)
         contract_type = AccountsBalancesLatestView
+        total_count = len(response.data.observations)
     elif view == "history":
         response = await _run_account_read(
             accounts_balance_history,
@@ -1249,6 +1223,7 @@ async def accounts_balances_coarse(
         )
         payload = AccountsBalancesHistoryView(observations=page)
         contract_type = AccountsBalancesHistoryView
+        total_count = len(response.data.observations)
     else:
         response = await _run_account_read(
             accounts_balance_assertions,
@@ -1264,15 +1239,12 @@ async def accounts_balances_coarse(
         )
         payload = AccountsBalancesAssertionsView(assertions=page)
         contract_type = AccountsBalancesAssertionsView
+        total_count = len(response.data.assertions)
 
     return _coarse_envelope(
         payload,
         contract_type=contract_type,
-        total_count=(
-            len(response.data.observations)
-            if view in ("latest", "history")
-            else len(response.data.assertions)
-        ),
+        total_count=total_count,
         returned_count=len(page),
         next_cursor=next_cursor,
         period=_history_period(start, end) if view == "history" else None,
@@ -1290,7 +1262,7 @@ async def accounts_balances_coarse(
 
 
 def register_accounts_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 replacement account reads."""
+    """Register the standard account reads."""
     register(
         mcp,
         accounts_coarse,
@@ -1309,12 +1281,9 @@ def register_accounts_coarse_reads(mcp: FastMCP) -> None:
         "named by summary.display_currency.",
         privacy_actor="accounts_balances",
     )
-    # Plan 6 cutover removals: accounts_get, accounts_summary, accounts_resolve,
-    # accounts_balance_history, and accounts_balance_assertions. The live
-    # registrations stay untouched until the complete registry activates.
 
 
-# ─── Dormant coarse write replacements ────────────────────────────────────
+# ─── Standard coarse writes ───────────────────────────────────────────────
 
 
 _BALANCE_ASSERTION_MAX = Decimal("9999999999999999.99")
@@ -1508,7 +1477,7 @@ async def accounts_balance_assert_coarse(
 
 
 def register_accounts_coarse_writes(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 declarative balance assertion write."""
+    """Register the standard declarative balance assertion write."""
     register(
         mcp,
         accounts_balance_assert_coarse,

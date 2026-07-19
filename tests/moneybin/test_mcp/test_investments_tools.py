@@ -24,11 +24,7 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp.tools.investments import (
-    investments,
     investments_coarse,
-    investments_gains,
-    investments_holdings,
-    investments_lots,
     investments_lots_select,
     investments_record,
     investments_securities,
@@ -93,106 +89,6 @@ def _insert_event(
                 quantity,
                 amount,
             ],
-        )
-
-
-def _insert_lot(
-    *,
-    lot_id: str,
-    account_id: str = _ACCOUNT,
-    security_id: str,
-    acquisition_date: date = date(2024, 1, 15),
-    remaining_quantity: Decimal = Decimal("10"),
-    cost_basis_remaining: Decimal = Decimal("1500.00"),
-    is_open: bool = True,
-    basis_incomplete: bool = False,
-) -> None:
-    with get_database(read_only=False) as db:
-        db.execute(
-            """
-            INSERT INTO core.fct_investment_lots
-                (lot_id, account_id, security_id, acquisition_date, acquisition_type,
-                 original_quantity, remaining_quantity, cost_basis_total,
-                 cost_basis_remaining, cost_basis_method, currency_code, is_open,
-                 basis_incomplete)
-            VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?, ?)
-            """,  # noqa: S608  # test fixture insert, static SQL
-            [
-                lot_id,
-                account_id,
-                security_id,
-                acquisition_date,
-                remaining_quantity,
-                remaining_quantity,
-                cost_basis_remaining,
-                cost_basis_remaining,
-                is_open,
-                basis_incomplete,
-            ],
-        )
-
-
-def _insert_gain(
-    *,
-    realized_gain_id: str,
-    account_id: str = _ACCOUNT,
-    security_id: str,
-    disposal_txn_id: str = "sell_1",
-    lot_id: str = "lot_a",
-    disposal_date: date = date(2024, 6, 12),
-    proceeds: Decimal = Decimal("950.00"),
-    cost_basis: Decimal = Decimal("750.00"),
-    gain_loss: Decimal = Decimal("200.00"),
-    term: str = "long",
-    basis_incomplete: bool = False,
-) -> None:
-    with get_database(read_only=False) as db:
-        db.execute(
-            """
-            INSERT INTO core.fct_realized_gains
-                (realized_gain_id, account_id, security_id, disposal_txn_id, lot_id,
-                 quantity, acquisition_date, disposal_date, proceeds, cost_basis,
-                 gain_loss, term, cost_basis_method, basis_incomplete, currency_code)
-            VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, 'USD')
-            """,  # noqa: S608  # test fixture insert, static SQL
-            [
-                realized_gain_id,
-                account_id,
-                security_id,
-                disposal_txn_id,
-                lot_id,
-                disposal_date,
-                proceeds,
-                cost_basis,
-                gain_loss,
-                term,
-                basis_incomplete,
-            ],
-        )
-
-
-def _replace_holdings_view(
-    rows: list[tuple[str, str, str, str, str | None, str]],
-) -> None:
-    """Override the empty core.dim_holdings stub with literal test rows.
-
-    Mirrors ``test_investment_service.py``'s helper of the same name — values
-    are literal test data, not user input (security.md's test-fixture
-    exception).
-    """
-    parts: list[str] = []
-    for acct, sec, qty, basis, avg, ccy in rows:
-        avg_sql = "NULL" if avg is None else f"{avg}::DECIMAL(28,10)"
-        parts.append(
-            f"SELECT '{acct}' AS account_id, '{sec}' AS security_id, "
-            f"{qty}::DECIMAL(28,10) AS quantity, "
-            f"{basis}::DECIMAL(18,2) AS cost_basis, "
-            f"{avg_sql} AS average_cost, '{ccy}' AS currency_code"
-        )
-    select_sql = " UNION ALL ".join(parts)
-    with get_database(read_only=False) as db:
-        db.execute(  # noqa: S608  # test fixture view, literal test data only
-            f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
         )
 
 
@@ -395,176 +291,6 @@ async def test_investment_coarse_binds_resolved_security_id(
     assert [row.investment_transaction_id for row in response.data.rows] == ["evt_1"]
 
 
-class TestInvestmentsLedger:
-    """Tests for the investments (ledger) MCP tool."""
-
-    @pytest.mark.unit
-    async def test_returns_rows_with_high_sensitivity(self, mcp_db: Path) -> None:
-        """quantity/price/amount are TXN_AMOUNT (Tier.HIGH) -> derived 'high'."""
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_event(investment_transaction_id="evt_1", security_id=sec)
-        result = await investments()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        rows = parsed["data"]["rows"]
-        assert len(rows) == 1
-        assert rows[0]["investment_transaction_id"] == "evt_1"
-        assert rows[0]["account_id"] == _ACCOUNT
-        assert parsed["data"]["warnings"] == []
-
-    @pytest.mark.unit
-    async def test_filters_by_type(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_event(investment_transaction_id="evt_buy", security_id=sec, type_="buy")
-        _insert_event(
-            investment_transaction_id="evt_sell",
-            security_id=sec,
-            type_="sell",
-            quantity=Decimal("-5"),
-            amount=Decimal("750.00"),
-        )
-        result = await investments(type_filter="sell")
-        rows = result.to_dict()["data"]["rows"]
-        assert [r["investment_transaction_id"] for r in rows] == ["evt_sell"]
-
-    @pytest.mark.unit
-    async def test_unknown_account_ref_returns_standard_error_envelope(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        result = await investments(account="does-not-exist")
-        parsed = result.to_dict()
-        assert parsed["status"] == "error"
-
-
-class TestInvestmentsHoldings:
-    """Tests for the investments_holdings MCP tool."""
-
-    @pytest.mark.unit
-    async def test_always_carries_pillar_c_warning_and_high_sensitivity(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        result = await investments_holdings()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        assert any("price feed" in w for w in parsed["data"]["warnings"])
-
-    @pytest.mark.unit
-    async def test_returns_seeded_rows(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _replace_holdings_view([
-            (_ACCOUNT, sec, "15", "2475.00", "165.00", "USD"),
-        ])
-        result = await investments_holdings()
-        rows = result.to_dict()["data"]["rows"]
-        assert len(rows) == 1
-        assert rows[0]["quantity"] == 15.0
-        assert rows[0]["cost_basis"] == 2475.0
-
-
-class TestInvestmentsLots:
-    """Tests for the investments_lots MCP tool."""
-
-    @pytest.mark.unit
-    async def test_open_only_default_and_high_sensitivity(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_open", security_id=sec, is_open=True)
-        _insert_lot(
-            lot_id="lot_closed",
-            security_id=sec,
-            is_open=False,
-            remaining_quantity=Decimal("0"),
-            cost_basis_remaining=Decimal("0"),
-        )
-        result = await investments_lots()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        assert [r["lot_id"] for r in parsed["data"]["rows"]] == ["lot_open"]
-
-    @pytest.mark.unit
-    async def test_open_only_false_returns_all(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_open", security_id=sec, is_open=True)
-        _insert_lot(
-            lot_id="lot_closed",
-            security_id=sec,
-            is_open=False,
-            remaining_quantity=Decimal("0"),
-            cost_basis_remaining=Decimal("0"),
-        )
-        result = await investments_lots(open_only=False)
-        rows = result.to_dict()["data"]["rows"]
-        assert {r["lot_id"] for r in rows} == {"lot_open", "lot_closed"}
-
-    @pytest.mark.unit
-    async def test_no_warning_when_all_lots_complete(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_1", security_id=sec, basis_incomplete=False)
-        result = await investments_lots()
-        parsed = result.to_dict()
-        assert parsed["data"]["warnings"] == []
-
-    @pytest.mark.unit
-    async def test_basis_incomplete_field_and_warning_present(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_complete", security_id=sec, basis_incomplete=False)
-        _insert_lot(lot_id="lot_incomplete", security_id=sec, basis_incomplete=True)
-        result = await investments_lots()
-        parsed = result.to_dict()
-        by_id = {r["lot_id"]: r for r in parsed["data"]["rows"]}
-        assert by_id["lot_complete"]["basis_incomplete"] is False
-        assert by_id["lot_incomplete"]["basis_incomplete"] is True
-        assert parsed["data"]["warnings"]
-
-
-class TestInvestmentsGains:
-    """Tests for the investments_gains MCP tool."""
-
-    @pytest.mark.unit
-    async def test_no_warning_when_all_rows_complete(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_gain(realized_gain_id="gain_1", security_id=sec, basis_incomplete=False)
-        result = await investments_gains()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        assert parsed["data"]["warnings"] == []
-
-    @pytest.mark.unit
-    async def test_basis_incomplete_warning_present(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_gain(
-            realized_gain_id="gain_complete", security_id=sec, basis_incomplete=False
-        )
-        _insert_gain(
-            realized_gain_id="gain_incomplete", security_id=sec, basis_incomplete=True
-        )
-        result = await investments_gains()
-        warnings = result.to_dict()["data"]["warnings"]
-        assert len(warnings) == 1
-        assert "1" in warnings[0]
-        assert "incomplete" in warnings[0]
-
-    @pytest.mark.unit
-    async def test_invalid_term_returns_standard_error_envelope(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        result = await investments_gains(term="medium")
-        assert result.to_dict()["status"] == "error"
-
-
 class TestInvestmentsSecurities:
     """Tests for the investments_securities MCP tool."""
 
@@ -573,7 +299,7 @@ class TestInvestmentsSecurities:
         """No BALANCE/TXN_AMOUNT fields on the catalog -> derived 'low'."""
         _seed_investment_core()
         _add_security(name="Apple Inc.", ticker="AAPL", security_type="equity")
-        result = await investments_securities()
+        result = investments_securities()
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         assert len(parsed["data"]["rows"]) == 1
@@ -593,7 +319,7 @@ class TestInvestmentsSecurities:
             ticker="VTSAX",
             security_type="mutual_fund",
         )
-        result = await investments_securities(security_type="mutual_fund")
+        result = investments_securities(security_type="mutual_fund")
         rows = result.to_dict()["data"]["rows"]
         assert [r["ticker"] for r in rows] == ["VTSAX"]
 

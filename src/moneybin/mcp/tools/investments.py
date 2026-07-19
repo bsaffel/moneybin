@@ -102,7 +102,6 @@ def _parse_decimal(value: object) -> Decimal | None:
 # ─── Read tools ─────────────────────────────────────────────────────────────
 
 
-@mcp_tool()
 def investments(
     account: str | None = None,
     security: str | None = None,
@@ -141,13 +140,12 @@ def investments(
     return build_envelope(
         data=InvestmentEventsPayload.from_result(result),
         actions=[
-            "Use investments_holdings for current positions",
-            "Use investments_gains for realized gain/loss",
+            "Use investments(view='holdings') for current positions",
+            "Use investments(view='gains') for realized gain/loss",
         ],
     )
 
 
-@mcp_tool()
 def investments_holdings(
     account: str | None = None,
 ) -> ResponseEnvelope[InvestmentHoldingsPayload]:
@@ -165,13 +163,12 @@ def investments_holdings(
     return build_envelope(
         data=InvestmentHoldingsPayload.from_result(result),
         actions=[
-            "Use investments_lots for per-lot basis",
-            "Use investments_gains for realized gain/loss",
+            "Use investments(view='lots') for per-lot basis",
+            "Use investments(view='gains') for realized gain/loss",
         ],
     )
 
 
-@mcp_tool()
 def investments_lots(
     account: str | None = None,
     security: str | None = None,
@@ -200,12 +197,11 @@ def investments_lots(
         data=InvestmentLotsPayload.from_result(result),
         actions=[
             "Use investments_lots_select to override FIFO for a disposal",
-            "Use investments_gains for realized gain/loss",
+            "Use investments(view='gains') for realized gain/loss",
         ],
     )
 
 
-@mcp_tool()
 def investments_gains(
     account: str | None = None,
     security: str | None = None,
@@ -239,11 +235,10 @@ def investments_gains(
         )
     return build_envelope(
         data=InvestmentGainsPayload.from_result(result),
-        actions=["Use investments_lots for lot-level detail"],
+        actions=["Use investments(view='lots') for lot-level detail"],
     )
 
 
-@mcp_tool()
 def investments_securities(
     security_type: str | None = None,
 ) -> ResponseEnvelope[InvestmentSecuritiesPayload]:
@@ -384,7 +379,7 @@ def investments_record(
             "Use refresh_run to materialize them into "
             "core.fct_investment_transactions (and derive holdings, lots, gains)",
             "Use investments to view recorded events",
-            "Use investments_holdings to see updated positions",
+            "Use investments(view='holdings') to see updated positions",
         ],
     )
 
@@ -519,7 +514,7 @@ def investments_lots_select(
         actions=[
             "Use refresh_run to materialize the updated selection into "
             "core.fct_realized_gains",
-            "Use investments_gains to see the updated allocation",
+            "Use investments(view='gains') to see the updated allocation",
         ],
     )
 
@@ -527,7 +522,6 @@ def investments_lots_select(
 # ─── Review tools (security links) ─────────────────────────────────────────
 
 
-@mcp_tool(domain="links")
 def investments_securities_links_pending() -> ResponseEnvelope[
     SecurityLinksPendingPayload
 ]:
@@ -557,11 +551,10 @@ def investments_securities_links_pending() -> ResponseEnvelope[
         data=payload,
         total_count=n_pending,
         actions=[
-            "Use investments_securities_links_set(decision_id, action='accept', "
-            "into=<candidate_security_id>) to merge — the user is prompted to "
-            "confirm the merge before anything is written",
-            "Use investments_securities_links_set(decision_id, action='reject') "
-            "to keep the provider's security as its own distinct instrument",
+            "Use identity_links_decide with kind='security_link', "
+            "decision='accept', decision_id, and target_id to merge",
+            "Use identity_links_decide with kind='security_link', "
+            "decision='reject', and decision_id to keep it distinct",
         ],
     )
 
@@ -611,7 +604,7 @@ def _load_pending_proposal(decision_id: str) -> _MergeProposal:
     raise UserError(
         f"No pending security merge decision '{decision_id}'.",
         code=error_codes.MUTATION_NOTHING_TO_DO,
-        hint="List open decisions with investments_securities_links_pending.",
+        hint="List open decisions with reviews(kind='security_links').",
     )
 
 
@@ -705,19 +698,6 @@ def _apply_reject(decision_id: str) -> None:
         )
 
 
-@mcp_tool(
-    domain="links",
-    read_only=False,
-    destructive=True,
-    idempotent=False,
-    # The accept path blocks on a human reading a merge confirmation (two
-    # securities + the reason they're ambiguous). The 30s default would routinely
-    # fire first — and a cap that expires mid-decision means the user "accepts"
-    # into a coroutine that was already cancelled. Same headroom as gsheet_auth's
-    # interactive OAuth wait. Timing out is still safe (nothing is written), just
-    # confusing.
-    timeout_seconds=180.0,
-)
 async def investments_securities_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
@@ -789,8 +769,8 @@ async def investments_securities_links_set(
     else:
         if not into:
             raise UserError(
-                "action='accept' requires 'into' = the decision's own "
-                "candidate_security_id (see investments_securities_links_pending). "
+                "action='accept' requires 'into' = the target_id shown by "
+                "reviews(kind='security_links'). "
                 "An empty 'into' is not a reject — pass action='reject' for that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
@@ -803,10 +783,7 @@ async def investments_securities_links_set(
                     f"'into' does not match decision '{decision_id}' — it must be that "
                     "decision's own candidate_security_id.",
                     code=error_codes.MUTATION_INVALID_INPUT,
-                    hint=(
-                        "Re-read the decision with "
-                        "investments_securities_links_pending."
-                    ),
+                    hint=("Re-read the decision with reviews(kind='security_links')."),
                 )
             binding = _security_link_binding(
                 decision_id=decision_id,
@@ -833,15 +810,13 @@ async def investments_securities_links_set(
     return build_envelope(
         data=SecurityLinksSetPayload(decision_id=decision_id, status=status),
         actions=[
-            "Use investments_securities_links_pending to review remaining "
-            "pending decisions",
+            "Use reviews(kind='security_links') for remaining pending decisions",
             "Reverse this decision with system_audit_undo(operation_id) — find "
             "the operation_id with system_audit",
         ],
     )
 
 
-@mcp_tool(domain="links")
 def investments_securities_links_history(
     limit: int = 50,
 ) -> ResponseEnvelope[SecurityLinksHistoryPayload]:
@@ -855,13 +830,11 @@ def investments_securities_links_history(
     payload = SecurityLinksHistoryPayload.from_rows(rows)
     return build_envelope(
         data=payload,
-        actions=[
-            "Use investments_securities_links_pending for the active review queue"
-        ],
+        actions=["Use reviews(kind='security_links') for the active review queue"],
     )
 
 
-# ─── Dormant coarse read replacement ──────────────────────────────────────
+# ─── Standard coarse read ─────────────────────────────────────────────────
 
 
 def _resolve_coarse_reference(
@@ -1229,7 +1202,7 @@ def investments_coarse(
 
 
 def register_investment_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 replacement investment read."""
+    """Register the standard investment read."""
     register(
         mcp,
         investments_coarse,
@@ -1239,8 +1212,6 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         "ledger sign convention and the currency in summary.display_currency.",
         privacy_actor="investments",
     )
-    # Plan 6 removes investments_holdings, investments_lots,
-    # investments_gains, and investments_securities from the live registry.
 
 
 # ─── Registration ──────────────────────────────────────────────────────────

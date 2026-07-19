@@ -25,7 +25,6 @@ from moneybin.mcp.confirmation import (
     ConfirmationGrant,
     grant_confirmation_or_raise,
 )
-from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.categories import (
     MerchantsCreatePayload,
     MerchantsPayload,
@@ -46,7 +45,6 @@ from moneybin.services.merchant_links_service import (
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool()
 def merchants() -> ResponseEnvelope[MerchantsPayload]:
     """List all merchant name mappings.
 
@@ -59,12 +57,11 @@ def merchants() -> ResponseEnvelope[MerchantsPayload]:
     return build_envelope(
         data=payload,
         actions=[
-            "Use merchants_create to add new merchant mappings",
+            "Use taxonomy_set with kind='merchant' to add merchant mappings",
         ],
     )
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def merchants_create(
     merchants: list[dict[str, str | None]],
 ) -> ResponseEnvelope[MerchantsCreatePayload]:
@@ -146,7 +143,6 @@ def merchants_create(
 # ─── Review tools (links) ──────────────────────────────────────────────────
 
 
-@mcp_tool(domain="links")
 def merchants_links_pending() -> ResponseEnvelope[MerchantLinksPendingPayload]:
     """List pending merchant-link decisions, grouped by provider entity id.
 
@@ -172,11 +168,10 @@ def merchants_links_pending() -> ResponseEnvelope[MerchantLinksPendingPayload]:
         data=payload,
         total_count=n_pending,
         actions=[
-            "Use merchants_links_set(decision_id, action='accept', "
-            "target_merchant_id=<candidate_merchant_id>) to bind — the user is "
-            "prompted to confirm the binding before anything is written",
-            "Use merchants_links_set(decision_id, action='reject') to leave the "
-            "provider entity id unbound",
+            "Use identity_links_decide with kind='merchant_link', "
+            "decision='accept', decision_id, and target_id to bind",
+            "Use identity_links_decide with kind='merchant_link', "
+            "decision='reject', and decision_id to leave it unbound",
         ],
     )
 
@@ -220,7 +215,7 @@ def _load_pending_merchant_proposal(decision_id: str) -> _MerchantBindProposal:
     raise UserError(
         f"No pending merchant-link decision '{decision_id}'.",
         code=error_codes.MUTATION_NOTHING_TO_DO,
-        hint="List open decisions with merchants_links_pending.",
+        hint="List open decisions with reviews(kind='merchant_links').",
     )
 
 
@@ -308,19 +303,6 @@ def _apply_merchant_reject(decision_id: str) -> None:
         )
 
 
-@mcp_tool(
-    domain="links",
-    read_only=False,
-    destructive=True,
-    idempotent=False,
-    # The accept path blocks on a human reading a binding confirmation (the
-    # provider entity + the merchant + the reason they're ambiguous). The 30s
-    # default would routinely fire first — and a cap that expires mid-decision
-    # means the user "accepts" into a coroutine that was already cancelled. Same
-    # headroom as investments_securities_links_set. Timing out is still safe
-    # (nothing is written), just confusing.
-    timeout_seconds=180.0,
-)
 async def merchants_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
@@ -384,8 +366,8 @@ async def merchants_links_set(
     else:
         if not target_merchant_id:
             raise UserError(
-                "action='accept' requires 'target_merchant_id' = the decision's "
-                "own candidate_merchant_id (see merchants_links_pending). An "
+                "action='accept' requires 'target_merchant_id' = the target_id "
+                "shown by reviews(kind='merchant_links'). An "
                 "empty 'target_merchant_id' is not a reject — pass "
                 "action='reject' for that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
@@ -401,7 +383,7 @@ async def merchants_links_set(
                     f"'target_merchant_id' does not match decision '{decision_id}' — "
                     "it must be that decision's own candidate_merchant_id.",
                     code=error_codes.MUTATION_INVALID_INPUT,
-                    hint="Re-read the decision with merchants_links_pending.",
+                    hint="Re-read the decision with reviews(kind='merchant_links').",
                 )
             binding = _merchant_link_binding(
                 decision_id=decision_id,
@@ -427,14 +409,13 @@ async def merchants_links_set(
     return build_envelope(
         data=MerchantLinksSetPayload(decision_id=decision_id, status=status),
         actions=[
-            "Use merchants_links_pending to review remaining pending decisions",
+            "Use reviews(kind='merchant_links') for remaining pending decisions",
             "Reverse this decision with system_audit_undo(operation_id) — find "
             "the operation_id with system_audit",
         ],
     )
 
 
-@mcp_tool(domain="links")
 def merchants_links_history(
     limit: int = 50,
 ) -> ResponseEnvelope[MerchantLinksHistoryPayload]:
@@ -448,11 +429,10 @@ def merchants_links_history(
     payload = MerchantLinksHistoryPayload.from_rows(rows)
     return build_envelope(
         data=payload,
-        actions=["Use merchants_links_pending for the active review queue"],
+        actions=["Use reviews(kind='merchant_links') for the active review queue"],
     )
 
 
-@mcp_tool(domain="links", read_only=False)
 def merchants_links_run() -> ResponseEnvelope[MerchantLinksRunPayload]:
     """Harvest merchant-link proposals from existing categorization facts.
 
@@ -478,5 +458,5 @@ def merchants_links_run() -> ResponseEnvelope[MerchantLinksRunPayload]:
         result = MerchantLinksService(db, actor="mcp").run()
     return build_envelope(
         data=MerchantLinksRunPayload(bound=result.bound, conflicts=result.conflicts),
-        actions=["Use merchants_links_pending to review the queued conflicts"],
+        actions=["Use reviews(kind='merchant_links') to review queued conflicts"],
     )

@@ -176,8 +176,7 @@ def register_core_tools() -> None:
 
     Full registered surface is visible at connect — client-driven progressive
     disclosure was retired 2026-05-17 (see docs/specs/mcp-architecture.md §3).
-    The ``@mcp_tool(domain=...)`` tag is preserved as dormant metadata for a
-    possible future first-party client.
+    The ``@mcp_tool(domain=...)`` tag remains metadata for client grouping.
 
     Idempotent — safe to call multiple times within a process.
     """

@@ -14,13 +14,11 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.mcp._registration import register
-from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.budget import BudgetSetPayload
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.budget_service import BudgetService
 
 
-@mcp_tool(domain="budget", read_only=False)
 def budget_set(
     category: str, monthly_amount: str, start_month: str | None = None
 ) -> ResponseEnvelope[BudgetSetPayload]:
@@ -46,7 +44,7 @@ def budget_set(
         data=result.to_payload(),
         actions=[
             "Set targets for other categories with budget_set",
-            "Use reports_spending to review actual spending by category",
+            "Use reports(report_id='core:spending') to review actual spending",
         ],
     )
 

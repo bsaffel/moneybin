@@ -4,21 +4,29 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.database import get_database
+from moneybin.mcp.tools import reviews as reviews_module
 from moneybin.mcp.tools.reviews import (
+    _identity_binding,  # pyright: ignore[reportPrivateUsage]
+    identity_links_decide_coarse,
     register_review_coarse_reads,
     register_review_coarse_writes,
     reviews_coarse,
     reviews_decide_coarse,
 )
 from moneybin.mcp.write_contracts import (
+    AccountLinkDecisionRequest,
     CategorizationDecisionRequest,
     MatchDecisionRequest,
+    MerchantLinkDecisionRequest,
+    SecurityLinkDecisionRequest,
 )
 from moneybin.repositories.categorization_decisions_repo import (
     categorization_decision_id,
@@ -26,7 +34,11 @@ from moneybin.repositories.categorization_decisions_repo import (
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.categorization import CategorizationService
-from moneybin.services.review_decisions_service import ReviewDecisionsService
+from moneybin.services.review_decisions_service import (
+    IdentityDecisionPlan,
+    IdentityDecisionPlanItem,
+    ReviewDecisionsService,
+)
 from moneybin.services.undo_service import UndoService
 
 from .schema_assertions import (
@@ -37,6 +49,44 @@ from .schema_assertions import (
 )
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
+
+
+def _identity_plan(
+    decisions: Sequence[
+        AccountLinkDecisionRequest
+        | MerchantLinkDecisionRequest
+        | SecurityLinkDecisionRequest
+    ],
+    *,
+    state_version: str = "initial",
+) -> IdentityDecisionPlan:
+    """Build a complete deterministic identity batch plan for boundary tests."""
+    items = tuple(
+        IdentityDecisionPlanItem(
+            request=request,
+            changed=True,
+            status="accepted" if request.decision == "accept" else "rejected",
+            source_id=f"{request.kind}-source",
+            target_id=request.target_id or f"{request.kind}-candidate",
+            group_key=(request.kind, request.decision_id),
+            before_state={"version": state_version, "index": index},
+            affected_ids={
+                "accounts": (f"account-{index}",)
+                if request.kind == "account_link"
+                else (),
+                "merchants": (f"merchant-{index}",)
+                if request.kind == "merchant_link"
+                else (),
+                "securities": (f"security-{index}",)
+                if request.kind == "security_link"
+                else (),
+                "transactions": (f"transaction-{index}",),
+                "lots": (f"lot-{index}",) if request.kind == "security_link" else (),
+            },
+        )
+        for index, request in enumerate(decisions)
+    )
+    return IdentityDecisionPlan(items=items)
 
 
 @pytest.mark.parametrize(
@@ -211,7 +261,7 @@ async def test_review_pagination_is_stable_filter_bound_and_executable() -> None
         assert incompatible.error.code == "REVIEW_CURSOR_INVALID"
 
 
-async def test_review_dormant_registrar_renders_closed_contract() -> None:
+async def test_review_standard_registrar_renders_closed_contract() -> None:
     mcp = isolated_server(register_review_coarse_reads)
 
     tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -846,7 +896,258 @@ async def test_categorization_pending_uses_batch_attempt_projection() -> None:
     assert len(response.data.rows) == 1
 
 
-async def test_review_dormant_write_registrar_is_closed_and_max_risk() -> None:
+def test_identity_confirmation_binds_order_state_ids_and_blast_radius() -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-target",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="security-decision",
+            decision="accept",
+            target_id="security-target",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+
+    binding = _identity_binding(decisions, plan)
+
+    assert binding.arguments["decisions"] == [
+        decision.model_dump(mode="json") for decision in decisions
+    ]
+    assert binding.arguments["before_state"] == [
+        {"version": "initial", "index": 0},
+        {"version": "initial", "index": 1},
+        {"version": "initial", "index": 2},
+    ]
+    assert binding.resolved_ids == (
+        "account-decision",
+        "account_link-source",
+        "account-target",
+        "merchant-decision",
+        "merchant_link-source",
+        "merchant_link-candidate",
+        "security-decision",
+        "security_link-source",
+        "security-target",
+    )
+    assert binding.blast_radius == {
+        "accounts": 1,
+        "merchants": 1,
+        "securities": 1,
+        "transactions": 3,
+        "lots": 1,
+    }
+
+
+async def test_identity_confirmation_rechecks_live_state_and_consumes_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="accept",
+            target_id="account-target",
+        )
+    ]
+    initial = _identity_plan(decisions)
+    changed = _identity_plan(decisions, state_version="changed")
+    monkeypatch.setattr(
+        "moneybin.mcp.confirmation._active_context",
+        lambda: None,
+    )
+
+    with patch.object(
+        reviews_module, "_preview_identity_decisions", return_value=initial
+    ):
+        required = await identity_links_decide_coarse(decisions=decisions)
+
+    assert required.error is not None
+    assert required.error.code == error_codes.MUTATION_CONFIRMATION_REQUIRED
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+
+    def reject_changed_state(
+        requests: list[object],
+        *,
+        grant: object,
+        expected_binding: object,
+    ) -> IdentityDecisionPlan:
+        del expected_binding
+        assert grant is not None
+        grant.verify(_identity_binding(decisions, changed))  # type: ignore[attr-defined]
+        raise AssertionError("changed binding must be rejected")
+
+    with (
+        patch.object(
+            reviews_module,
+            "_preview_identity_decisions",
+            return_value=initial,
+        ),
+        patch.object(
+            reviews_module,
+            "_apply_identity_decisions",
+            side_effect=reject_changed_state,
+        ),
+    ):
+        mismatched = await identity_links_decide_coarse(
+            decisions=decisions,
+            confirmation_token=token,
+        )
+        replayed = await identity_links_decide_coarse(
+            decisions=decisions,
+            confirmation_token=token,
+        )
+
+    assert mismatched.error is not None
+    assert mismatched.error.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+    assert replayed.error is not None
+    assert replayed.error.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+
+
+async def test_identity_reject_batch_uses_public_privacy_actor() -> None:
+    decisions = [
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        )
+    ]
+    plan = _identity_plan(decisions)
+    captured: list[dict[str, Any]] = []
+    mcp = isolated_server(register_review_coarse_writes)
+
+    with (
+        patch.object(reviews_module, "_preview_identity_decisions", return_value=plan),
+        patch.object(reviews_module, "_apply_identity_decisions", return_value=plan),
+        patch("moneybin.mcp.decorator.write_privacy_event", captured.append),
+    ):
+        response = await call_tool_raw(
+            mcp,
+            "identity_links_decide",
+            {
+                "decisions": [
+                    decision.model_dump(mode="json", exclude_none=True)
+                    for decision in decisions
+                ]
+            },
+        )
+
+    assert response.structuredContent is not None
+    assert response.structuredContent["data"]["applied_count"] == 1
+    assert len(captured) == 1
+    assert captured[0]["actor"] == "mcp.identity_links_decide"
+
+
+def test_identity_batch_rolls_back_before_outcome_metrics_on_late_failure() -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="security-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch(
+            "moneybin.services.review_decisions_service.MerchantLinksService"
+        ) as merchant_class,
+        patch(
+            "moneybin.services.review_decisions_service.SecurityLinksService"
+        ) as security_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        account_service = account_class.return_value
+        merchant_service = merchant_class.return_value
+        security_service = security_class.return_value
+        merchant_service.set.side_effect = RuntimeError("late merchant failure")
+        with (
+            pytest.raises(RuntimeError, match="late merchant failure"),
+        ):
+            service.apply_identity(decisions, verify=lambda _: None)
+
+    db.begin.assert_called_once_with()
+    db.rollback.assert_called_once_with()
+    db.commit.assert_not_called()
+    account_service.record_committed_outer_decisions.assert_not_called()
+    merchant_service.record_committed_outer_outcomes.assert_not_called()
+    security_service.record_committed_outer_outcomes.assert_not_called()
+
+
+def test_identity_batch_emits_each_domain_metric_only_after_commit() -> None:
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="account-decision",
+            decision="reject",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="merchant-decision",
+            decision="reject",
+        ),
+        SecurityLinkDecisionRequest(
+            kind="security_link",
+            decision_id="security-decision",
+            decision="reject",
+        ),
+    ]
+    plan = _identity_plan(decisions)
+    db = MagicMock()
+    service = ReviewDecisionsService(db, actor="mcp")
+
+    with (
+        patch(
+            "moneybin.services.review_decisions_service.AccountLinksService"
+        ) as account_class,
+        patch(
+            "moneybin.services.review_decisions_service.MerchantLinksService"
+        ) as merchant_class,
+        patch(
+            "moneybin.services.review_decisions_service.SecurityLinksService"
+        ) as security_class,
+        patch.object(service, "plan_identity", return_value=plan),
+    ):
+        result = service.apply_identity(decisions, verify=lambda _: None)
+
+    assert result is plan
+    db.commit.assert_called_once_with()
+    db.rollback.assert_not_called()
+    account_class.return_value.record_committed_outer_decisions.assert_called_once_with()
+    merchant_class.return_value.record_committed_outer_outcomes.assert_called_once_with((
+        "rejected",
+    ))
+    security_class.return_value.record_committed_outer_outcomes.assert_called_once_with((
+        "rejected",
+    ))
+
+
+async def test_review_standard_write_registrar_is_closed_and_max_risk() -> None:
     mcp = isolated_server(register_review_coarse_writes)
 
     tools = {

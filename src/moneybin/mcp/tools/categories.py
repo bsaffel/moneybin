@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from moneybin.database import get_database
-from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.categories import (
     CategoriesPayload,
     CategoryCreatePayload,
@@ -14,7 +13,6 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization import CategorizationService
 
 
-@mcp_tool()
 def categories(include_inactive: bool = False) -> ResponseEnvelope[CategoriesPayload]:
     """List all categories in the taxonomy."""
     with get_database(read_only=True) as db:
@@ -24,14 +22,13 @@ def categories(include_inactive: bool = False) -> ResponseEnvelope[CategoriesPay
     return build_envelope(
         data=payload,
         actions=[
-            "Use categories_create to add a custom category",
+            "Use taxonomy_set with kind='category' and state='present' to add one",
             "Defaults are seeded automatically by `moneybin db init` and "
             "`moneybin refresh` (or `moneybin transform seed` to re-run).",
         ],
     )
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def categories_create(
     category: str, subcategory: str | None = None, description: str | None = None
 ) -> ResponseEnvelope[CategoryCreatePayload]:
@@ -55,7 +52,6 @@ def categories_create(
     )
 
 
-@mcp_tool(read_only=False)
 def categories_set(
     category_id: str, is_active: bool
 ) -> ResponseEnvelope[CategorySetPayload]:
@@ -85,7 +81,6 @@ def categories_set(
     )
 
 
-@mcp_tool(read_only=False, destructive=True)
 def categories_delete(
     category_id: str, force: bool = False
 ) -> ResponseEnvelope[CategoryDeletePayload]:

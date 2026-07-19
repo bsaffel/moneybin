@@ -18,7 +18,6 @@ from fastmcp import FastMCP
 from moneybin.database import get_database
 from moneybin.mcp.tools.categories import (
     categories,
-    categories_delete,
     categories_set,
 )
 from moneybin.mcp.tools.taxonomy import register_taxonomy_tools
@@ -79,7 +78,7 @@ class TestCategorizeToolRegistration:
 
     @pytest.mark.unit
     async def test_categorize_stats_returns_envelope(self, mcp_db: object) -> None:
-        parsed = (await transactions_categorize_stats()).to_dict()
+        parsed = (transactions_categorize_stats()).to_dict()
         assert "summary" in parsed
         assert "data" in parsed
         assert parsed["summary"]["sensitivity"] == "low"
@@ -87,7 +86,7 @@ class TestCategorizeToolRegistration:
     @pytest.mark.unit
     async def test_categorize_categories_returns_envelope(self, mcp_db: object) -> None:
         """List categories returns a valid envelope (empty when no data)."""
-        cat_result = (await categories()).to_dict()
+        cat_result = (categories()).to_dict()
         assert "summary" in cat_result
         assert "data" in cat_result
         # data is now a typed CategoriesPayload dict with a "categories" list field
@@ -102,7 +101,7 @@ class TestCategorySetWritePath:
         with get_database(read_only=False) as db:
             seed_categories_view(db)
 
-        await categories_set(category_id="FND", is_active=False)
+        categories_set(category_id="FND", is_active=False)
 
         with get_database(read_only=False) as db:
             rows = db.execute(
@@ -122,7 +121,7 @@ class TestCategorySetWritePath:
                 VALUES ('CUSTOM1', 'Childcare', 'Daycare', true)
             """)
 
-        await categories_set(category_id="CUSTOM1", is_active=False)
+        categories_set(category_id="CUSTOM1", is_active=False)
 
         with get_database(read_only=False) as db:
             rows = db.execute(
@@ -135,117 +134,6 @@ class TestCategorySetWritePath:
             ).fetchone()
         assert rows == [(False,)]
         assert override_count == (0,)
-
-
-class TestCategoriesDeleteTool:
-    """categories_delete envelopes, error mapping, and force semantics."""
-
-    @pytest.mark.unit
-    async def test_deletes_unreferenced_user_category(self, mcp_db: Path) -> None:
-        with get_database(read_only=False) as db:
-            db.execute(
-                "INSERT INTO app.user_categories "
-                "(category_id, category, subcategory, is_active) "
-                "VALUES ('USERCAT1', 'TestCat', NULL, true)"
-            )
-
-        envelope = (await categories_delete(category_id="USERCAT1")).to_dict()
-
-        assert envelope["data"]["action"] == "deleted"
-        assert envelope["data"]["category_id"] == "USERCAT1"
-        assert envelope["data"]["force"] is False
-        with get_database(read_only=True) as db:
-            rows = db.execute(
-                "SELECT 1 FROM app.user_categories WHERE category_id = ?",
-                ["USERCAT1"],
-            ).fetchall()
-        assert rows == []
-
-    @pytest.mark.unit
-    async def test_default_category_returns_error_envelope(self, mcp_db: Path) -> None:
-        with get_database(read_only=False) as db:
-            seed_categories_view(db)
-        envelope = (await categories_delete(category_id="FND")).to_dict()
-        assert envelope["status"] == "error"
-        assert envelope["error"]["code"] == "CATEGORY_IS_DEFAULT"
-
-    @pytest.mark.unit
-    async def test_force_cascade_clears_transaction_reference(
-        self, mcp_db: Path
-    ) -> None:
-        with get_database(read_only=False) as db:
-            db.execute(
-                "INSERT INTO app.user_categories "
-                "(category_id, category, subcategory, is_active) "
-                "VALUES ('USERCAT2', 'Linked', NULL, true)"
-            )
-            db.execute(
-                "INSERT INTO app.transaction_categories "
-                "(transaction_id, category, category_id, categorized_by) "
-                "VALUES ('txn-forced', 'Linked', 'USERCAT2', 'user')"
-            )
-
-        envelope = (
-            await categories_delete(category_id="USERCAT2", force=True)
-        ).to_dict()
-        assert envelope["data"]["force"] is True
-        with get_database(read_only=True) as db:
-            txn_rows = db.execute(
-                "SELECT 1 FROM app.transaction_categories WHERE transaction_id = ?",
-                ["txn-forced"],
-            ).fetchall()
-        assert txn_rows == []
-
-    @pytest.mark.unit
-    async def test_force_cascade_is_fully_audited_and_undoable(
-        self, mcp_db: Path
-    ) -> None:
-        with get_database(read_only=False) as db:
-            db.execute(
-                "INSERT INTO app.user_categories "
-                "(category_id, category, subcategory, is_active) "
-                "VALUES ('USERCAT3', 'Undo Linked', NULL, true)"
-            )
-            db.execute(
-                "INSERT INTO app.transaction_categories "
-                "(transaction_id, category, category_id, categorized_by) "
-                "VALUES ('txn-undo-forced', 'Undo Linked', 'USERCAT3', 'user')"
-            )
-
-        envelope = (
-            await categories_delete(category_id="USERCAT3", force=True)
-        ).to_dict()
-        assert envelope["data"] == {
-            "category_id": "USERCAT3",
-            "action": "deleted",
-            "force": True,
-        }
-        with get_database(read_only=True) as db:
-            audit_rows = db.execute(
-                "SELECT operation_id, action FROM app.audit_log "
-                "WHERE target_id IN ('USERCAT3', 'txn-undo-forced') "
-                "ORDER BY occurred_at, audit_id"
-            ).fetchall()
-        operation_ids = {row[0] for row in audit_rows}
-        assert len(operation_ids) == 1
-        assert {row[1] for row in audit_rows} == {
-            "category.clear",
-            "user_category.delete",
-        }
-
-        from moneybin.mcp.tools.system import system_audit_undo
-
-        undo = await system_audit_undo(operation_ids.pop())
-        assert undo.error is None
-        with get_database(read_only=True) as db:
-            assert db.execute(
-                "SELECT category_id FROM app.user_categories "
-                "WHERE category_id = 'USERCAT3'"
-            ).fetchall() == [("USERCAT3",)]
-            assert db.execute(
-                "SELECT transaction_id FROM app.transaction_categories "
-                "WHERE transaction_id = 'txn-undo-forced'"
-            ).fetchall() == [("txn-undo-forced",)]
 
 
 class TestTransactionsCategorizeRun:
@@ -330,7 +218,7 @@ class TestTransactionsCategorizeImproveAi:
                 "VALUES ('t1', 'Shopping', 'ai')"
             )
 
-        result = (await transactions_categorize_improve_ai()).to_dict()
+        result = (transactions_categorize_improve_ai()).to_dict()
         # ImproveAiPayload has only an AGGREGATE field → Tier.LOW derived sensitivity
         assert result["summary"]["sensitivity"] == "low"
         assert result["data"]["upgraded_count"] == 1
@@ -349,7 +237,7 @@ class TestTransactionsCategorizeImproveAi:
             transactions_categorize_improve_ai,
         )
 
-        result = (await transactions_categorize_improve_ai()).to_dict()
+        result = (transactions_categorize_improve_ai()).to_dict()
         assert result["data"]["upgraded_count"] == 0
 
 
@@ -401,13 +289,13 @@ class TestCategorizationStatsIncludeAuto:
     async def test_categorize_stats_include_auto_returns_both_scopes(
         self, mcp_db: object
     ) -> None:
-        result = (await transactions_categorize_stats(include_auto=True)).to_dict()
+        result = (transactions_categorize_stats(include_auto=True)).to_dict()
         assert "overall" in result["data"]
         assert "auto" in result["data"]
 
     @pytest.mark.unit
     async def test_categorize_stats_default_no_auto(self, mcp_db: object) -> None:
-        result = (await transactions_categorize_stats()).to_dict()
+        result = (transactions_categorize_stats()).to_dict()
         # Default (include_auto=False) returns flat stats, not nested overall/auto.
         assert "total_transactions" in result["data"]
         assert "auto" not in result["data"]
@@ -449,9 +337,7 @@ class TestCategorizePendingSortParam:
     @pytest.mark.unit
     async def test_categorize_pending_sort_impact(self, mcp_db: object) -> None:
         self._install_view_with_transactions()
-        result = (
-            await transactions_categorize_pending(sort="impact", limit=10)
-        ).to_dict()
+        result = (transactions_categorize_pending(sort="impact", limit=10)).to_dict()
         amounts = [r["amount"] for r in result["data"]["transactions"]]
         ages = [r["age_days"] for r in result["data"]["transactions"]]
         impacts = [abs(float(a)) * d for a, d in zip(amounts, ages, strict=True)]
@@ -460,9 +346,7 @@ class TestCategorizePendingSortParam:
     @pytest.mark.unit
     async def test_categorize_pending_sort_date_default(self, mcp_db: object) -> None:
         self._install_view_with_transactions()
-        result = (
-            await transactions_categorize_pending(sort="date", limit=10)
-        ).to_dict()
+        result = (transactions_categorize_pending(sort="date", limit=10)).to_dict()
         dates = [r["transaction_date"] for r in result["data"]["transactions"]]
         assert dates == sorted(dates, reverse=True)
 
@@ -499,7 +383,7 @@ def _rule_target(
 
 
 class TestCategorizationRulesTargetState:
-    """The dormant coarse write makes each rule's desired state explicit."""
+    """The standard coarse write makes each rule's desired state explicit."""
 
     @pytest.mark.unit
     async def test_present_creates_then_updates_a_rule(self, mcp_db: Path) -> None:
@@ -744,7 +628,7 @@ class TestCategorizationRulesTargetState:
 
 
 class TestCategorizationRulesCoarseReads:
-    """Dormant rule reads expose stable current views and real audit history."""
+    """Standard rule reads expose stable current views and real audit history."""
 
     @pytest.mark.unit
     async def test_active_inactive_and_history_include_deleted_states(
@@ -804,7 +688,7 @@ class TestCategorizationRulesCoarseReads:
         assert keys == expected
 
     @pytest.mark.unit
-    async def test_coarse_read_registrar_is_dormant_and_exact(self) -> None:
+    async def test_coarse_read_registrar_is_standard_and_exact(self) -> None:
         server = FastMCP("coarse-rule-reads")
         register_categorization_coarse_reads(server)
 
@@ -822,7 +706,7 @@ class TestAllowBroadWiring:
     — the CLI got these; the MCP tools did not.
     """
 
-    _RULE_DICT = {
+    _RULE_DICT: dict[str, str | float | int | None] = {
         "name": "Transfer TO",
         "merchant_pattern": "TO",
         "category": "Transfer",
@@ -853,9 +737,7 @@ class TestAllowBroadWiring:
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_create_rules.return_value = self._rule_result()
 
-        await transactions_categorize_rules_create(
-            rules=[self._RULE_DICT], allow_broad=True
-        )
+        transactions_categorize_rules_create(rules=[self._RULE_DICT], allow_broad=True)
 
         mock_create_rules.assert_called_once_with(
             [self._EXPECTED_ITEM], reapply=False, actor="mcp", allow_broad=True
@@ -871,7 +753,7 @@ class TestAllowBroadWiring:
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_create_rules.return_value = self._rule_result()
 
-        await transactions_categorize_rules_create(rules=[self._RULE_DICT])
+        transactions_categorize_rules_create(rules=[self._RULE_DICT])
 
         mock_create_rules.assert_called_once_with(
             [self._EXPECTED_ITEM], reapply=False, actor="mcp", allow_broad=False
@@ -889,7 +771,7 @@ class TestAllowBroadWiring:
             approved=1, rejected=0, skipped=0, newly_categorized=0, rule_ids=["r1"]
         )
 
-        await transactions_categorize_auto_accept(accept=["a1"], allow_broad=True)
+        transactions_categorize_auto_accept(accept=["a1"], allow_broad=True)
 
         mock_accept.assert_called_once_with(
             accept=["a1"], reject=[], actor="mcp", allow_broad=True
@@ -907,7 +789,7 @@ class TestAllowBroadWiring:
             approved=1, rejected=0, skipped=0, newly_categorized=0, rule_ids=["r1"]
         )
 
-        await transactions_categorize_auto_accept(accept=["a1"])
+        transactions_categorize_auto_accept(accept=["a1"])
 
         mock_accept.assert_called_once_with(
             accept=["a1"], reject=[], actor="mcp", allow_broad=False

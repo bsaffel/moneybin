@@ -917,11 +917,11 @@ async def test_import_status_coarse_normalizes_selected_section_order(
 async def test_import_status_coarse_preserves_legacy_section_data(
     mcp_db: object,
 ) -> None:
-    legacy_imports = await import_status(limit=100)
-    legacy_formats = await import_formats()
+    legacy_imports = import_status(limit=100)
+    legacy_formats = import_formats()
     from moneybin.mcp.tools.import_inbox import import_inbox_pending
 
-    legacy_inbox = await import_inbox_pending()
+    legacy_inbox = import_inbox_pending()
 
     response = await import_status_coarse()
     imports, formats, inbox = response.data.sections
@@ -1509,7 +1509,7 @@ class TestImportFilesConfirmationRequired:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(csv_file)])
+            result = import_files(paths=[str(csv_file)])
 
         # Uniform shape: single-file confirmation_required is one entry in
         # data.files[] (mirrors the multi-file path) — callers branch on
@@ -1553,7 +1553,7 @@ class TestImportFilesConfirmationRequired:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(csv_file)])
+            result = import_files(paths=[str(csv_file)])
 
         joined = " ".join(result.actions or [])
         assert "import_confirm" in joined
@@ -1591,7 +1591,7 @@ class TestImportFilesConfirmationRequired:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(csv_file)])
+            result = import_files(paths=[str(csv_file)])
 
         joined = " ".join(result.actions or [])
         assert "account_bindings={'bare-abc123': '<account_id|new>'}" in joined
@@ -1627,7 +1627,7 @@ class TestImportFilesConfirmationRequired:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(csv_file)])
+            result = import_files(paths=[str(csv_file)])
 
         from moneybin.privacy.payloads.imports import ImportFilesPayload
 
@@ -1666,7 +1666,7 @@ class TestImportFilesConfirmationRequired:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            await import_files(paths=[str(csv_file)])
+            import_files(paths=[str(csv_file)])
 
         mock_service.import_file.assert_called_once()
         _args, kwargs = mock_service.import_file.call_args
@@ -1707,7 +1707,7 @@ class TestImportFilesConfirmationRequired:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(pdf)])
+            result = import_files(paths=[str(pdf)])
 
         from moneybin.privacy.payloads.imports import ImportFilesPayload
 
@@ -1736,10 +1736,9 @@ class TestImportConfirmTool:
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # The @mcp_tool decorator converts UserError to an error envelope.
-        result = await import_confirm(file_path=str(csv_file))
-        assert result.error is not None
-        assert result.error.code == "confirm_requires_signal"
+        with pytest.raises(UserError) as exc_info:
+            import_confirm(file_path=str(csv_file))
+        assert exc_info.value.code == "confirm_requires_signal"
 
     async def test_accept_loads_data(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -1773,7 +1772,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                result = await import_confirm(file_path=str(csv_file), accept=True)
+                result = import_confirm(file_path=str(csv_file), accept=True)
 
         assert result.data.rows_loaded == 10
         assert result.data.import_id == "abc-123"
@@ -1811,7 +1810,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                await import_confirm(file_path=str(csv_file), mapping=override)
+                import_confirm(file_path=str(csv_file), mapping=override)
 
         _args, kwargs = mock_service.import_file.call_args
         assert kwargs.get("overrides") == override
@@ -1853,7 +1852,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                result = await import_confirm(file_path=str(csv_file), accept=True)
+                result = import_confirm(file_path=str(csv_file), accept=True)
 
         data = result.data
         assert isinstance(data, dict)
@@ -1901,7 +1900,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                await import_confirm(file_path=str(csv_file), accept=True)
+                import_confirm(file_path=str(csv_file), accept=True)
 
         _args, kwargs = mock_service.import_file.call_args
         assert kwargs.get("actor_kind") == "agent"
@@ -1939,7 +1938,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                await import_confirm(
+                import_confirm(
                     file_path=str(csv_file),
                     accept=True,
                     account_bindings=bindings,
@@ -1981,7 +1980,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                await import_confirm(
+                import_confirm(
                     file_path=str(csv_file),
                     accept=True,
                     account_bindings={"wf-checking": "new"},
@@ -2023,7 +2022,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                await import_confirm(file_path=str(csv_file), accept=True)
+                import_confirm(file_path=str(csv_file), accept=True)
 
         _args, kwargs = mock_service.import_file.call_args
         assert kwargs.get("save_format") is True
@@ -2060,7 +2059,7 @@ class TestImportConfirmTool:
                 "moneybin.extractors.tabular.format_detector.detect_format",
                 side_effect=ValueError("preview unavailable"),
             ):
-                result = await import_confirm(file_path=str(csv_file), accept=True)
+                result = import_confirm(file_path=str(csv_file), accept=True)
 
         joined = " ".join(result.actions)
         assert "import_revert" in joined
@@ -2138,7 +2137,7 @@ class TestImportFilesPdfBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(pdf)])
+            result = import_files(paths=[str(pdf)])
 
         from moneybin.privacy.payloads.imports import ImportFilesPayload
 
@@ -2171,7 +2170,7 @@ class TestImportFilesPdfBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(pdf)])
+            result = import_files(paths=[str(pdf)])
 
         assert any("bridge_response" in a for a in result.actions)
         # The tabular accept/mapping hint must NOT appear for a PDF bridge.
@@ -2206,7 +2205,7 @@ class TestImportFilesPdfSign:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_files(paths=[str(pdf)])
+            result = import_files(paths=[str(pdf)])
 
         from moneybin.privacy.payloads.imports import ImportFilesPayload
 
@@ -2249,7 +2248,7 @@ class TestImportPreviewTabular:
         csv_file.write_text("Date,Amount,Description\n2026-01-01,42.50,Coffee\n")
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        result = await import_preview(file_path=str(csv_file))
+        result = import_preview(file_path=str(csv_file))
 
         from moneybin.privacy.payloads.imports import ImportPreviewPayload
 
@@ -2271,7 +2270,7 @@ class TestImportPreviewTabular:
         )
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        result = await import_preview(file_path=str(csv_file))
+        result = import_preview(file_path=str(csv_file))
 
         from moneybin.privacy.payloads.imports import ImportPreviewPayload
 
@@ -2311,7 +2310,7 @@ class TestImportPreviewPdf:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_preview(file_path=str(pdf))
+            result = import_preview(file_path=str(pdf))
 
         data = result.data
         assert isinstance(data, dict)
@@ -2337,7 +2336,7 @@ class TestImportPreviewPdf:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_preview(file_path=str(pdf))
+            result = import_preview(file_path=str(pdf))
 
         data = result.data
         assert isinstance(data, dict)
@@ -2368,7 +2367,7 @@ class TestImportPreviewPdf:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_preview(file_path=str(pdf))
+            result = import_preview(file_path=str(pdf))
 
         data = result.data
         assert isinstance(data, dict)
@@ -2423,7 +2422,7 @@ class TestImportConfirmBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_confirm(
+            result = import_confirm(
                 file_path=str(pdf),
                 bridge_response={"recipe": {}, "rows": []},
             )
@@ -2468,7 +2467,7 @@ class TestImportConfirmBridge:
                 mock_inbox_cls,
             ),
         ):
-            await import_confirm(
+            import_confirm(
                 file_path=str(pdf),
                 bridge_response={"recipe": {}, "rows": []},
             )
@@ -2505,7 +2504,7 @@ class TestImportConfirmBridge:
                 mock_inbox_cls,
             ),
         ):
-            await import_confirm(
+            import_confirm(
                 file_path=str(pdf),
                 bridge_response={"recipe": {}, "rows": []},
             )
@@ -2534,7 +2533,7 @@ class TestImportConfirmBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_confirm(
+            result = import_confirm(
                 file_path=str(pdf),
                 bridge_response={"recipe": {}, "rows": []},
             )
@@ -2565,7 +2564,7 @@ class TestImportConfirmBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_confirm(
+            result = import_confirm(
                 file_path=str(pdf),
                 bridge_response={"recipe": {}, "rows": []},
             )
@@ -2575,16 +2574,14 @@ class TestImportConfirmBridge:
     async def test_conflict_with_accept_returns_error_envelope(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
     ) -> None:
-        # UserError raised inside the tool is caught by @mcp_tool and surfaced
-        # as result.error (the decorator never lets it propagate).
         pdf = self._patch(monkeypatch, tmp_path)
-        result = await import_confirm(
-            file_path=str(pdf),
-            accept=True,
-            bridge_response={"recipe": {}, "rows": []},
-        )
-        assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        with pytest.raises(UserError) as exc_info:
+            import_confirm(
+                file_path=str(pdf),
+                accept=True,
+                bridge_response={"recipe": {}, "rows": []},
+            )
+        assert exc_info.value.code == "confirm_channel_conflict"
 
     async def test_malformed_response_maps_to_user_error(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -2601,12 +2598,12 @@ class TestImportConfirmBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"rows": []},
-            )
-        assert result.error is not None
-        assert result.error.code == "bridge_response_invalid"
+            with pytest.raises(UserError) as exc_info:
+                import_confirm(
+                    file_path=str(pdf),
+                    bridge_response={"rows": []},
+                )
+        assert exc_info.value.code == "bridge_response_invalid"
 
     async def test_non_parse_value_error_not_labeled_bridge_invalid(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -2623,16 +2620,11 @@ class TestImportConfirmBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_confirm(
-                file_path=str(pdf),
-                bridge_response={"recipe": {}, "rows": []},
-            )
-        # classify_user_error maps every ValueError to a non-None error
-        # envelope, so an error IS surfaced — assert that (no unreachable
-        # is-None arm that would hide a classification regression). The one
-        # outcome we forbid is the misleading bridge_response_invalid.
-        assert result.error is not None
-        assert result.error.code != "bridge_response_invalid"
+            with pytest.raises(ValueError, match="could not extract text"):
+                import_confirm(
+                    file_path=str(pdf),
+                    bridge_response={"recipe": {}, "rows": []},
+                )
 
     async def test_account_name_with_bridge_raises(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -2641,13 +2633,13 @@ class TestImportConfirmBridge:
         # tabular-only signal. Passing it with bridge_response must error loudly
         # rather than being silently dropped (the bridge path takes account_id).
         pdf = self._patch(monkeypatch, tmp_path)
-        result = await import_confirm(
-            file_path=str(pdf),
-            bridge_response={"recipe": {}, "rows": []},
-            account_name="Chase Checking",
-        )
-        assert result.error is not None
-        assert result.error.code == "bridge_account_name_unsupported"
+        with pytest.raises(UserError) as exc_info:
+            import_confirm(
+                file_path=str(pdf),
+                bridge_response={"recipe": {}, "rows": []},
+                account_name="Chase Checking",
+            )
+        assert exc_info.value.code == "bridge_account_name_unsupported"
 
     async def test_invalid_path_precedes_account_name_guard(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -2656,13 +2648,13 @@ class TestImportConfirmBridge:
         # also (mis)used with bridge_response — path validation runs first, so
         # the path error isn't masked by the account_name guard.
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-        result = await import_confirm(
-            file_path="/etc/passwd",
-            bridge_response={"recipe": {}, "rows": []},
-            account_name="Chase Checking",
-        )
-        assert result.error is not None
-        assert result.error.code == "invalid_file_path"
+        with pytest.raises(UserError) as exc_info:
+            import_confirm(
+                file_path="/etc/passwd",
+                bridge_response={"recipe": {}, "rows": []},
+                account_name="Chase Checking",
+            )
+        assert exc_info.value.code == "invalid_file_path"
 
     async def test_pdf_with_accept_rejected_not_looped(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -2672,9 +2664,9 @@ class TestImportConfirmBridge:
         # through the tabular import path, which would re-raise the bridge
         # escalation that this tool's catch can't serialize, looping the agent.
         pdf = self._patch(monkeypatch, tmp_path)
-        result = await import_confirm(file_path=str(pdf), accept=True)
-        assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
+        with pytest.raises(UserError) as exc_info:
+            import_confirm(file_path=str(pdf), accept=True)
+        assert exc_info.value.code == "confirm_channel_conflict"
 
     async def test_card_sign_confirm_directs_to_cli_and_loads_nothing(
         self, tmp_path: Path, monkeypatch: MonkeyPatch
@@ -2698,12 +2690,11 @@ class TestImportConfirmBridge:
             "moneybin.services.import_service.ImportService",
             return_value=mock_service,
         ):
-            result = await import_confirm(file_path=str(pdf), accept=True)
+            with pytest.raises(UserError) as exc_info:
+                import_confirm(file_path=str(pdf), accept=True)
 
-        # A clean UserError envelope — not a crash / TypeError.
-        assert result.error is not None
-        assert result.error.code == "confirm_channel_conflict"
-        message = result.error.message
+        assert exc_info.value.code == "confirm_channel_conflict"
+        message = str(exc_info.value)
         # Honest terminal recovery, both branches named.
         assert "moneybin import files" in message
         assert "--confirm" in message

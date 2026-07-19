@@ -32,23 +32,17 @@ from moneybin.audits.recipes import (
     orphan_app_state,
     registry,
 )
-from moneybin.mcp.tools.curation import (
-    transactions_notes_delete,
-    transactions_tags_set,
-)
 from moneybin.mcp.tools.refresh import refresh_run
-from moneybin.mcp.tools.system import system_doctor
+from moneybin.mcp.tools.system import system_status_coarse
 from moneybin.mcp.tools.transactions_categorize import transactions_categorize_run
 
 # All MCP tool functions a PR4 recipe may name. New tools cited in future
 # recipes MUST be added here — that requirement is the whole point of this
 # fixture; the test fails fast if a recipe references an unregistered name.
 _TOOLS: dict[str, Callable[..., Any]] = {
-    "transactions_notes_delete": transactions_notes_delete,
-    "transactions_tags_set": transactions_tags_set,
     "transactions_categorize_run": transactions_categorize_run,
     "refresh_run": refresh_run,
-    "system_doctor": system_doctor,
+    "system_status": system_status_coarse,
 }
 
 

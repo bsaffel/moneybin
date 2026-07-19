@@ -63,7 +63,6 @@ from moneybin.services.mutation_context import current_operation_id
 from moneybin.vocabulary import ConsentFeatureCategory
 
 
-@mcp_tool(domain="privacy", read_only=False)
 def privacy_consent_grant(
     category: str,
     backend: str | None = None,
@@ -91,7 +90,7 @@ def privacy_consent_grant(
             feature_category=category,
             backend=backend,
             consent_mode=ConsentMode(mode),
-            actor="mcp.privacy_consent_grant",
+            actor="mcp.privacy_consent_set",
         )
     grant = result.grant
     return build_envelope(
@@ -101,11 +100,10 @@ def privacy_consent_grant(
             consent_mode=grant.consent_mode.value,
             action="granted" if result.created else "noop",
         ),
-        actions=["Use privacy_status to see all active grants"],
+        actions=["Use privacy(view='status') to see all active grants"],
     )
 
 
-@mcp_tool(domain="privacy", read_only=False)
 def privacy_consent_revoke(
     category: str, backend: str | None = None
 ) -> ResponseEnvelope[ConsentMutationPayload]:
@@ -119,7 +117,7 @@ def privacy_consent_revoke(
         result = ConsentService(db).revoke_consent(
             feature_category=category,
             backend=backend,
-            actor="mcp.privacy_consent_revoke",
+            actor="mcp.privacy_consent_set",
         )
     return build_envelope(
         data=ConsentMutationPayload(
@@ -128,11 +126,10 @@ def privacy_consent_revoke(
             consent_mode=None,
             action="revoked" if result.count else "noop",
         ),
-        actions=["Use privacy_status to confirm"],
+        actions=["Use privacy(view='status') to confirm"],
     )
 
 
-@mcp_tool(domain="privacy", read_only=True)
 def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
     """Show active AI consent grants, the configured backend, and consent policy."""
     with get_database(read_only=True) as db:
@@ -151,11 +148,10 @@ def privacy_status() -> ResponseEnvelope[PrivacyStatusPayload]:
                 for g in status.active_grants
             ],
         ),
-        actions=["Use privacy_consent_grant to add consent"],
+        actions=["Use privacy_consent_set(state='granted') to add consent"],
     )
 
 
-@mcp_tool(domain="privacy", read_only=True)
 def privacy_log(
     last: int = 50, actor: str | None = None
 ) -> ResponseEnvelope[PrivacyLogPayload]:
@@ -302,7 +298,7 @@ def privacy_coarse(
             data,
             total_count=len(data.active_grants),
             returned_count=len(data.active_grants),
-            actions=["Use privacy_consent_grant to add consent"],
+            actions=["Use privacy_consent_set(state='granted') to add consent"],
         )
 
     offset, snapshot_total = _privacy_page_state(cursor)
@@ -342,7 +338,7 @@ def privacy_coarse(
 
 
 def register_privacy_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 replacement privacy read."""
+    """Register the standard privacy read."""
     register(
         mcp,
         privacy_coarse,
@@ -351,8 +347,6 @@ def register_privacy_coarse_reads(mcp: FastMCP) -> None:
         "events. Privacy status does not accept pagination arguments.",
         privacy_actor="privacy",
     )
-    # Plan 6 cutover removals: privacy_status and privacy_log. The live
-    # registrations remain untouched until the atomic registry swap.
 
 
 def _consent_binding(plan: ConsentTargetPlan) -> ConfirmationBinding:
@@ -511,7 +505,7 @@ async def privacy_consent_set_coarse(
 
 
 def register_privacy_coarse_writes(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 declarative consent batch."""
+    """Register the standard declarative consent batch."""
     register(
         mcp,
         privacy_consent_set_coarse,

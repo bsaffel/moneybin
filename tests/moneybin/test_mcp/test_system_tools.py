@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from fastmcp import FastMCP
 
+from moneybin.errors import UserError
 from moneybin.mcp.tools.system import (
     register_system_coarse_reads,
     register_system_tools,
@@ -276,7 +277,7 @@ async def test_register_system_coarse_reads_registers_only_replacements() -> Non
 @pytest.mark.unit
 async def test_system_status_returns_response_envelope(mcp_db: object) -> None:
     """system_status returns a valid ResponseEnvelope."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert "summary" in parsed
     assert "data" in parsed
@@ -288,7 +289,7 @@ async def test_system_status_returns_response_envelope(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_data_keys(mcp_db: object) -> None:
     """system_status data dict has all required domain keys."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     data = parsed["data"]
     assert "accounts" in data
@@ -303,7 +304,7 @@ async def test_system_status_data_keys(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_accounts_count(mcp_db: object) -> None:
     """Accounts count reflects the mcp_db fixture's 2 accounts."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert parsed["data"]["accounts"]["count"] == 2
 
@@ -311,7 +312,7 @@ async def test_system_status_accounts_count(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_transactions_empty(mcp_db: object) -> None:
     """Transactions count is 0 when no transactions are inserted."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     txn = parsed["data"]["transactions"]
     assert txn["count"] == 0
@@ -322,7 +323,7 @@ async def test_system_status_transactions_empty(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_queue_counts_are_integers(mcp_db: object) -> None:
     """matches.pending_review and categorization.uncategorized are integers."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert isinstance(parsed["data"]["matches"]["pending_review"], int)
     assert isinstance(parsed["data"]["categorization"]["uncategorized"], int)
@@ -331,7 +332,7 @@ async def test_system_status_queue_counts_are_integers(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_actions_non_empty(mcp_db: object) -> None:
     """system_status provides at least one action hint."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert len(parsed["actions"]) >= 1
 
@@ -352,7 +353,7 @@ async def test_register_system_tools() -> None:
 async def test_system_doctor_returns_envelope(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     parsed = result.to_dict()
     assert "summary" in parsed
     assert "data" in parsed
@@ -362,7 +363,7 @@ async def test_system_doctor_returns_envelope(mcp_db: object) -> None:
 async def test_system_doctor_data_has_required_keys(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     data = result.to_dict()["data"]
     assert "passing" in data
     assert "failing" in data
@@ -375,7 +376,7 @@ async def test_system_doctor_data_has_required_keys(mcp_db: object) -> None:
 async def test_system_doctor_transaction_count_is_int(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     data = result.to_dict()["data"]
     assert isinstance(data["transaction_count"], int)
 
@@ -384,9 +385,8 @@ async def test_system_doctor_transaction_count_is_int(mcp_db: object) -> None:
 async def test_system_doctor_sensitivity_is_low(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
-    # SystemDoctorPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
-    assert result.to_dict()["summary"]["sensitivity"] == "medium"
+    result = system_doctor()
+    assert result.to_dict()["summary"]["sensitivity"] == "low"
 
 
 @pytest.mark.unit
@@ -401,7 +401,7 @@ async def test_system_doctor_invariants_carry_recovery_actions_field(
     """
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     invariants = result.to_dict()["data"]["invariants"]
     assert invariants, "expected at least one invariant in the payload"
     for inv in invariants:
@@ -410,14 +410,10 @@ async def test_system_doctor_invariants_carry_recovery_actions_field(
 
 
 @pytest.mark.unit
-async def test_system_doctor_orphan_state_emits_executable_actions(
+async def test_system_doctor_orphan_state_withholds_unexecutable_actions(
     mcp_db: object,
 ) -> None:
-    """Seed orphan note + tag → system_doctor emits round-trip-executable actions.
-
-    The returned invariant carries certain recovery actions whose tool names
-    and arguments validate against the registered MCP tool schemas.
-    """
+    """Orphan app rows do not advertise retired or invalid cleanup tools."""
     from moneybin.database import get_database
     from moneybin.mcp.tools.system import system_doctor
 
@@ -433,23 +429,11 @@ async def test_system_doctor_orphan_state_emits_executable_actions(
             "VALUES ('missing_txn_b', 'z', 'mcp')"
         )
 
-    result = await system_doctor()
+    result = system_doctor()
     invariants = result.to_dict()["data"]["invariants"]
     orphan = next(i for i in invariants if i["name"] == "orphan_app_state")
     assert orphan["status"] == "fail"
-    tools = sorted(a["tool"] for a in orphan["recovery_actions"])
-    assert tools == ["transactions_notes_delete", "transactions_tags_set"]
-    # Spot-check confidence + idempotent flags ride through the envelope.
-    # Confidence varies by tool: tags-clear is certain (idempotent), single-id
-    # notes-delete is suggested (non-idempotent across a batch) — see
-    # orphan_app_state recipe docstring.
-    expected_confidence = {
-        "transactions_notes_delete": "suggested",
-        "transactions_tags_set": "certain",
-    }
-    for action in orphan["recovery_actions"]:
-        assert action["confidence"] == expected_confidence[action["tool"]]
-        assert "idempotent" in action
+    assert orphan["recovery_actions"] == []
 
 
 # ── system_audit_undo / _history / _get ─────────────────────────────────────
@@ -548,7 +532,7 @@ async def test_audit_history_lists_operations_newest_first(mcp_db: object) -> No
 
     op1 = _make_tag_op("a")
     op2 = _make_tag_op("b")
-    parsed = (await system_audit_history()).to_dict()
+    parsed = (system_audit_history()).to_dict()
     ids = [o["operation_id"] for o in parsed["data"]["operations"]]
     assert ids[:2] == [op2, op1]
     assert parsed["data"]["operations"][0]["can_undo"] is True
@@ -559,24 +543,22 @@ async def test_audit_get_returns_before_after(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_get
 
     op = _make_tag_op()
-    parsed = (await system_audit_get(op)).to_dict()
+    parsed = (system_audit_get(op)).to_dict()
     assert parsed["data"]["operation_id"] == op
     assert len(parsed["data"]["events"]) == 1
     event = parsed["data"]["events"][0]
     assert event["action"] == "tag.add"
     assert event["after_value"]["tag"] == "trip"
     assert parsed["data"]["can_undo"] is True
-    # before/after carry TXN_AMOUNT → high sensitivity (matches system_audit)
-    assert parsed["summary"]["sensitivity"] == "high"
+    assert parsed["summary"]["sensitivity"] == "low"
 
 
 @pytest.mark.unit
 async def test_audit_get_not_found_returns_error_envelope(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_get
 
-    parsed = (await system_audit_get("op_missing")).to_dict()
-    assert parsed["status"] == "error"
-    assert parsed["error"]["code"] == "undo_operation_not_found"
+    with pytest.raises(UserError, match="No operation found"):
+        system_audit_get("op_missing")
 
 
 @pytest.mark.unit
@@ -586,7 +568,7 @@ async def test_audit_get_event_carries_undo_fields(mcp_db: object) -> None:
     op = _make_tag_op()
     undo = (await system_audit_undo(op)).to_dict()
     undo_op = undo["data"]["undo_operation_id"]
-    parsed = (await system_audit_get(undo_op)).to_dict()
+    parsed = (system_audit_get(undo_op)).to_dict()
     event = parsed["data"]["events"][0]
     # Symmetric with the history entry: structural undo signal, not a string-match
     # on the .undo action suffix.
@@ -600,7 +582,7 @@ async def test_audit_history_entry_carries_recovery_actions(mcp_db: object) -> N
 
     op1 = _make_note_op()  # add note n1
     op2 = _make_note_edit_op()  # edit the same row n1 → blocks op1
-    parsed = (await system_audit_history()).to_dict()
+    parsed = (system_audit_history()).to_dict()
     entry = next(o for o in parsed["data"]["operations"] if o["operation_id"] == op1)
     # Blocked op1's pre-built recovery_actions point the agent straight at undoing
     # op2 — the structured action the service computed, not just the raw id.
@@ -625,7 +607,7 @@ async def test_audit_get_hint_distinguishes_unresolvable(mcp_db: object) -> None
             after={"row_count": 2},
             actor="cli",
         )
-    parsed = (await system_audit_get(op)).to_dict()
+    parsed = (system_audit_get(op)).to_dict()
     assert parsed["data"]["can_undo"] is False
     assert parsed["data"]["undo_blocked_by"] is None
     hint = " ".join(parsed["actions"]).lower()
@@ -649,7 +631,7 @@ async def test_audit_get_hint_for_marker_only(mcp_db: object) -> None:
             after={"new_tag": "x", "row_count": 0},
             actor="cli",
         )
-    parsed = (await system_audit_get(op)).to_dict()
+    parsed = (system_audit_get(op)).to_dict()
     assert parsed["data"]["can_undo"] is False
     hint = " ".join(parsed["actions"]).lower()
     # Marker-only: not the raw-import "re-apply" message; says nothing to reverse.
@@ -691,7 +673,7 @@ async def test_system_status_degraded_when_db_locked(
         "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
     )
 
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert parsed["summary"]["degraded"] is True
     assert "lock" in parsed["summary"]["degraded_reason"].lower()
@@ -747,7 +729,7 @@ async def test_system_status_recomputes_connections_after_lock_error(
         "moneybin.mcp.tools.system._database_connections_block", next_block
     )
 
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert parsed["summary"]["degraded"] is True
     writers = parsed["data"]["database_connections"]["writers"]
@@ -784,5 +766,5 @@ async def test_system_status_opens_with_short_max_wait(
         "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
     )
 
-    await system_status()
+    system_status()
     assert captured["max_wait"] == 2.0

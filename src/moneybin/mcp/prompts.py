@@ -29,18 +29,18 @@ def monthly_review() -> str:
         that needs attention.
 
         **Relevant tools:**
-        - reports_spending — monthly spending trend with MoM/YoY deltas
-        - reports_cashflow — inflow/outflow/net per account x category
+        - reports(report_id='core:spending') — monthly spending trend
+        - reports(report_id='core:cashflow') — inflow/outflow/net
         - accounts_balances — current account balances
-        - reports_recurring — subscription/recurring charge review
+        - reports(report_id='core:recurring') — recurring charge review
 
         **Workflow:**
-        1. Start with reports_spending for the last 1-2 months
-        2. If spending is above average, drill into reports_spending with a
-           specific ``category`` filter, or use reports_cashflow for an
-           account-and-category breakdown
+        1. Start with reports(report_id='core:spending') for the last 1-2 months
+        2. If spending is above average, rerun reports with
+           report_id='core:spending' and a category parameter, or use
+           report_id='core:cashflow' for an account-and-category breakdown
         3. Review accounts_balances for current position
-        4. Optionally check reports_recurring for subscription review
+        4. Optionally run reports(report_id='core:recurring')
 
         **Guardrails:**
         - Present totals and trends, not individual transaction details unless asked
@@ -60,18 +60,20 @@ def categorization_organize() -> str:
         using a mix of rules and direct categorization.
 
         **Relevant tools:**
-        - transactions_categorize_stats — check current categorization coverage
-        - transactions_categorize_pending — fetch uncategorized transactions
-        - categories — see available categories
+        - system_status(sections=['categorization']) — check coverage
+        - reviews(kind='categorization', status='pending') — fetch the queue
+        - taxonomy(view='categories') — see available categories
         - transactions_categorize_commit — commit accepted categorizations
-        - transactions_categorize_rules_create — create rules for recurring patterns
-        - merchants_create — map merchant names to categories
+        - transactions_categorize_rules_set — create recurring rules
+        - taxonomy_set — create or update merchant mappings
 
         **Workflow:**
-        1. Check transactions_categorize_stats to see how many are uncategorized
-        2. Fetch a batch with transactions_categorize_pending (limit ~20)
+        1. Check system_status(sections=['categorization'])
+        2. Fetch a batch with reviews(kind='categorization',
+           status='pending', limit=20)
         3. Group similar transactions by description pattern
-        4. For repeating patterns, suggest a rule (transactions_categorize_rules_create)
+        4. For repeating patterns, suggest a rule and submit its full target
+           state with transactions_categorize_rules_set
         5. For one-offs, use transactions_categorize_commit directly
         6. Repeat until coverage is acceptable
 
@@ -95,17 +97,18 @@ def review_auto_rules() -> str:
         they can promote useful rules to active and reject noisy ones.
 
         **Relevant tools:**
-        - transactions_categorize_stats(include_auto=True) — pending proposal count and rule health
-        - transactions_categorize_auto_review — list pending proposals with samples
-        - transactions_categorize_auto_accept — batch approve/reject proposals by ID
-        - transactions_categorize_rules — review currently active rules
+        - system_status(sections=['categorization']) — coverage and rule health
+        - transactions_categorize_rules(view='inactive') — proposed rules
+        - transactions_categorize_rules_set — approve or remove rule state
+        - transactions_categorize_rules(view='active') — active rules
 
         **Workflow:**
-        1. Check transactions_categorize_stats(include_auto=True) for pending proposal count
-        2. Fetch proposals with transactions_categorize_auto_review
+        1. Check system_status(sections=['categorization'])
+        2. Fetch proposals with transactions_categorize_rules(view='inactive')
         3. For each proposal, show the merchant pattern, suggested
            category, sample matching transactions, and trigger count
-        4. Group user decisions and submit them with transactions_categorize_auto_accept
+        4. Group user decisions and submit full target states with
+           transactions_categorize_rules_set
 
         **Guardrails:**
         - Always show sample transactions before asking for approval
@@ -126,17 +129,18 @@ def onboarding() -> str:
 
         **Relevant tools:**
         - import_files — import one or more financial data files
-        - import_formats — see supported formats
+        - import_status(sections=['formats']) — see supported formats
         - accounts — verify imported accounts
-        - transactions_categorize_stats — check categorization coverage
-        - reports_spending — first look at their data
+        - system_status(sections=['categorization']) — check coverage
+        - reports(report_id='core:spending') — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV)
         2. Import the user's files in one call to import_files (pass a list of paths)
         3. Verify with accounts that accounts were created
-        4. Check transactions_categorize_stats — if many uncategorized, offer to help
-        5. Show reports_spending as their first financial snapshot
+        4. Check system_status(sections=['categorization']); if many are
+           uncategorized, offer to help
+        5. Show reports(report_id='core:spending') as the first snapshot
 
         Default categories are seeded automatically by `moneybin db init`
         and `moneybin transform apply`.
@@ -160,22 +164,21 @@ def curate_recent_transactions() -> str:
         next analysis pass has consistent metadata.
 
         **Relevant tools:**
-        - transactions_get — fetch recent rows; pair with system_audit to
+        - transactions — fetch recent rows; pair with system_audit to
           spot gaps (no note.add / tag.add events on a transaction_id).
-        - transactions_tags_set — declarative tag replacement (idempotent).
-        - transactions_notes_add — append a curator note.
+        - transactions_annotate — batch tag and note target states.
         - system_audit — sanity check what already happened.
 
         **Workflow:**
-        1. Call transactions_get with a recent date window (e.g., last 30 days,
+        1. Call transactions with a recent date window (e.g., last 30 days,
            limit 50). Preserve transaction_id, description, amount, account_id.
         2. For each row, propose a small set of slug-pattern tags
            (^[a-z0-9_-]+(:[a-z0-9_-]+)?$) and an optional note. Keep tags short
            and reusable; reuse existing tags when possible (a prior
            system_audit with action_pattern='tag.%' helps here).
         3. Confirm the batch with the user before mutating.
-        4. Apply: transactions_tags_set per row, transactions_notes_add for any
-           row where a note adds context the description does not.
+        4. Apply one transactions_annotate batch containing the confirmed tag
+           target states and notes.
 
         **Guardrails:**
         - Tags are slugs — ASCII alnum + `_`/`-`, optional single namespace.

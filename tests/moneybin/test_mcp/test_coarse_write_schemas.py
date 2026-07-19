@@ -1,4 +1,4 @@
-"""Strict contracts for dormant coarse MCP writes."""
+"""Strict contracts for standard coarse MCP writes."""
 
 import json
 from decimal import Decimal

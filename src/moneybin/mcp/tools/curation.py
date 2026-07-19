@@ -179,13 +179,12 @@ def transactions_create(
             ],
         ),
         actions=[
-            "Use transactions_get to confirm the rows landed",
+            "Use transactions to confirm the rows landed",
             "Use refresh_run to materialize them into core.fct_transactions",
         ],
     )
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def transactions_notes_add(
     transaction_id: str, text: str
 ) -> ResponseEnvelope[NotePayload]:
@@ -195,7 +194,6 @@ def transactions_notes_add(
     return build_envelope(data=_note_payload(note))
 
 
-@mcp_tool(read_only=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePayload]:
     """Update an existing note's text. Returns the updated row."""
     with get_database(read_only=False) as db:
@@ -203,7 +201,6 @@ def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePay
     return build_envelope(data=_note_payload(note))
 
 
-@mcp_tool(read_only=False, destructive=True, idempotent=False)
 def transactions_notes_delete(note_id: str) -> ResponseEnvelope[NoteDeletePayload]:
     """Delete a note by ID. Hard-delete; raises LookupError if the note is gone."""
     with get_database(read_only=False) as db:
@@ -211,7 +208,6 @@ def transactions_notes_delete(note_id: str) -> ResponseEnvelope[NoteDeletePayloa
     return build_envelope(data=NoteDeletePayload(note_id=note_id))
 
 
-@mcp_tool(read_only=False)
 def transactions_tags_set(
     transaction_id: str, tags: list[str]
 ) -> ResponseEnvelope[TagsPayload]:
@@ -227,7 +223,6 @@ def transactions_tags_set(
     return build_envelope(data=TagsPayload(transaction_id=transaction_id, tags=final))
 
 
-@mcp_tool(read_only=False)
 def transactions_tags_rename(
     old_tag: str, new_tag: str
 ) -> ResponseEnvelope[TagRenamePayload]:
@@ -244,7 +239,6 @@ def transactions_tags_rename(
     )
 
 
-@mcp_tool(read_only=False)
 def transactions_splits_set(
     transaction_id: str, splits: list[dict[str, Any]]
 ) -> ResponseEnvelope[SplitsPayload]:
@@ -259,7 +253,6 @@ def transactions_splits_set(
     return build_envelope(data=SplitsPayload(splits=[_split_row(s) for s in out]))
 
 
-@mcp_tool(read_only=False)
 def import_labels_set(
     import_id: str, labels: list[str]
 ) -> ResponseEnvelope[ImportLabelsSetPayload]:
@@ -275,7 +268,6 @@ def import_labels_set(
     )
 
 
-@mcp_tool()
 def system_audit(
     filters: dict[str, Any] | None = None, limit: int = 100
 ) -> ResponseEnvelope[SystemAuditPayload]:

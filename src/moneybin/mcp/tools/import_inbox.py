@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from moneybin.database import get_database
-from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.imports import (
     ImportInboxPendingPayload,
     ImportInboxSyncPayload,
@@ -48,7 +47,6 @@ def _tier_of(pending_entry: dict[str, object]) -> str:
     return tier if isinstance(tier, str) else "low"
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncPayload]:
     """Drain the active profile's import inbox.
 
@@ -138,7 +136,6 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     )
 
 
-@mcp_tool()
 def import_inbox_pending() -> ResponseEnvelope[ImportInboxPendingPayload]:
     """Preview pending items in the active profile's import inbox."""
     return build_envelope(

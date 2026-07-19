@@ -104,7 +104,7 @@ async def test_register_gsheet_tools_registers_expected_tools() -> None:
 
 
 @pytest.mark.unit
-async def test_register_gsheet_coarse_reads_is_dormant_and_isolated() -> None:
+async def test_register_gsheet_coarse_reads_is_standard_and_isolated() -> None:
     srv = FastMCP("test")
     register_gsheet_coarse_reads(srv)
 
@@ -249,7 +249,7 @@ async def test_gsheet_auth_short_circuits_when_already_authorized(
 
     from moneybin.mcp.tools.gsheet import gsheet_auth
 
-    envelope = await gsheet_auth()
+    envelope = gsheet_auth()
     assert envelope.summary.sensitivity == "low"
     assert envelope.data.status == "already_authorized"
     oauth.authorize.assert_not_called()
@@ -267,7 +267,7 @@ async def test_gsheet_auth_runs_authorize_when_not_authorized(
 
     from moneybin.mcp.tools.gsheet import gsheet_auth
 
-    envelope = await gsheet_auth()
+    envelope = gsheet_auth()
     assert envelope.summary.sensitivity == "low"
     assert envelope.data.status == "authorized"
     oauth.authorize.assert_called_once()
@@ -285,7 +285,7 @@ async def test_gsheet_auth_force_reauth_runs_authorize_even_when_authorized(
 
     from moneybin.mcp.tools.gsheet import gsheet_auth
 
-    envelope = await gsheet_auth(force_reauth=True)
+    envelope = gsheet_auth(force_reauth=True)
     assert envelope.data.status == "authorized"
     oauth.authorize.assert_called_once()
 
@@ -311,12 +311,10 @@ async def test_gsheet_connect_returns_envelope_with_connection(
 
     from moneybin.mcp.tools.gsheet import gsheet_connect
 
-    envelope = await gsheet_connect(
+    envelope = gsheet_connect(
         url="https://docs.google.com/spreadsheets/d/abc/edit#gid=0"
     )
-    # account_id is RECORD_ID (spec D6); last_status_reason / column_mapping are
-    # DESCRIPTION (MEDIUM) → tool derives medium tier.
-    assert envelope.summary.sensitivity == "medium"
+    assert envelope.summary.sensitivity == "low"
     assert envelope.data.connection.connection_id == "conn_abc"
     assert envelope.data.initial_pull is not None
     assert envelope.data.initial_pull.rows_inserted == 10
@@ -352,8 +350,8 @@ async def test_gsheet_pull_returns_status_per_connection(
 
     from moneybin.mcp.tools.gsheet import gsheet_pull
 
-    envelope = await gsheet_pull()
-    assert envelope.summary.sensitivity == "medium"
+    envelope = gsheet_pull()
+    assert envelope.summary.sensitivity == "low"
     pulls = envelope.data.pulls
     assert {p.connection_id for p in pulls} == {"conn_a", "conn_b"}
     by_id = {p.connection_id: p for p in pulls}
@@ -361,7 +359,7 @@ async def test_gsheet_pull_returns_status_per_connection(
     assert by_id["conn_a"].rows_inserted == 10
     assert by_id["conn_b"].status == "drift_detected"
     # Drift on conn_b must surface a reconnect hint to the agent.
-    assert any("gsheet_reconnect" in a and "conn_b" in a for a in envelope.actions)
+    assert any("gsheet_connect" in a and "conn_b" in a for a in envelope.actions)
 
 
 @pytest.mark.unit
@@ -378,7 +376,7 @@ async def test_gsheet_pull_single_connection(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_pull
 
-    envelope = await gsheet_pull(connection_id="conn_a")
+    envelope = gsheet_pull(connection_id="conn_a")
     service.pull_connection.assert_called_once_with("conn_a")
     service.pull_all_healthy.assert_not_called()
     pulls = envelope.data.pulls
@@ -409,13 +407,12 @@ async def test_gsheet_collection_returns_actions_on_drift(
 
     from moneybin.mcp.tools.gsheet import gsheet
 
-    envelope = await gsheet()
-    # account_id is RECORD_ID (spec D6); last_status_reason is DESCRIPTION → medium tier.
-    assert envelope.summary.sensitivity == "medium"
+    envelope = gsheet()
+    assert envelope.summary.sensitivity == "low"
     rows = envelope.data.connections
     assert len(rows) == 2
     # Only the drifted connection should have a reconnect hint.
-    assert any("gsheet_reconnect" in a and "conn_drift" in a for a in envelope.actions)
+    assert any("gsheet_connect" in a and "conn_drift" in a for a in envelope.actions)
     assert not any("conn_ok" in a for a in envelope.actions)
 
 
@@ -521,8 +518,8 @@ async def test_gsheet_status_single_connection(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_status
 
-    envelope = await gsheet_status(connection_id="conn_abc")
-    assert envelope.summary.sensitivity == "medium"
+    envelope = gsheet_status(connection_id="conn_abc")
+    assert envelope.summary.sensitivity == "low"
     rows = envelope.data.connections
     assert rows[0].connection_id == "conn_abc"
     service.get.assert_called_once_with("conn_abc")
@@ -540,7 +537,7 @@ async def test_gsheet_status_unknown_connection_returns_error(
 
     from moneybin.mcp.tools.gsheet import gsheet_status
 
-    envelope = await gsheet_status(connection_id="bogus")
+    envelope = gsheet_status(connection_id="bogus")
     parsed = envelope.to_dict()
     assert parsed["status"] == "error"
     assert parsed["error"]["code"] == "infra_not_found"
@@ -562,8 +559,8 @@ async def test_gsheet_status_surfaces_drift_hint(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_status
 
-    envelope = await gsheet_status(connection_id="conn_drift")
-    assert any("gsheet_reconnect" in a and "conn_drift" in a for a in envelope.actions)
+    envelope = gsheet_status(connection_id="conn_drift")
+    assert any("gsheet_connect" in a and "conn_drift" in a for a in envelope.actions)
 
 
 # ---------------------------------------------------------------------------
@@ -586,8 +583,8 @@ async def test_gsheet_reconnect_returns_envelope(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
-    envelope = await gsheet_reconnect(connection_id="conn_abc", yes=True)
-    assert envelope.summary.sensitivity == "medium"
+    envelope = gsheet_reconnect(connection_id="conn_abc", yes=True)
+    assert envelope.summary.sensitivity == "low"
     assert envelope.data.connection.status == "healthy"
     service.reconnect.assert_called_once_with(
         "conn_abc", yes=True, sign=None, actor="mcp"
@@ -610,7 +607,7 @@ async def test_gsheet_reconnect_passes_yes_flag_through(
 
     from moneybin.mcp.tools.gsheet import gsheet_reconnect
 
-    await gsheet_reconnect(connection_id="conn_abc")  # default yes=False
+    gsheet_reconnect(connection_id="conn_abc")  # default yes=False
     service.reconnect.assert_called_once_with(
         "conn_abc", yes=False, sign=None, actor="mcp"
     )
@@ -630,7 +627,7 @@ async def test_gsheet_disconnect_with_purge_param(mock_build: MagicMock) -> None
 
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
-    envelope = await gsheet_disconnect(connection_id="conn_abc", purge=True)
+    envelope = gsheet_disconnect(connection_id="conn_abc", purge=True)
     service.disconnect.assert_called_once_with("conn_abc", purge=True, actor="mcp")
     assert envelope.summary.sensitivity == "low"
     assert envelope.data.purged is True
@@ -646,7 +643,7 @@ async def test_gsheet_disconnect_soft_default(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
-    envelope = await gsheet_disconnect(connection_id="conn_abc")
+    envelope = gsheet_disconnect(connection_id="conn_abc")
     service.disconnect.assert_called_once_with("conn_abc", purge=False, actor="mcp")
     assert envelope.data.purged is False
     assert envelope.data.status == "disconnected"
@@ -664,8 +661,5 @@ async def test_gsheet_disconnect_unknown_connection_returns_error(
 
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
-    envelope = await gsheet_disconnect(connection_id="bogus", purge=True)
-    parsed = envelope.to_dict()
-    # ValueError → UserError(code='infra_invalid_input') via classify_user_error.
-    assert parsed["status"] == "error"
-    assert parsed["error"]["code"] == "infra_invalid_input"
+    with pytest.raises(ValueError, match="Unknown connection"):
+        gsheet_disconnect(connection_id="bogus", purge=True)

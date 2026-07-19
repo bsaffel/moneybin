@@ -203,7 +203,7 @@ def test_deduped_manual_note_is_known_limitation(db: Database) -> None:
     assert result.status == "pass"
 
 
-def test_run_all_populates_recovery_actions_for_orphan_app_state(
+def test_run_all_withholds_unexecutable_orphan_recovery_actions(
     db: Database,
 ) -> None:
     """End-to-end wiring check for the orphan_app_state recipe.
@@ -226,20 +226,4 @@ def test_run_all_populates_recovery_actions_for_orphan_app_state(
     assert len(orphan_results) == 1
     orphan = orphan_results[0]
     assert orphan.status == "fail"
-    assert orphan.recovery_actions is not None
-    tools = sorted(a.tool for a in orphan.recovery_actions)
-    assert tools == ["transactions_notes_delete", "transactions_tags_set"]
-    # Round-trip-executable spot-check: a notes-delete action carries
-    # exactly the note_id we seeded as an orphan. Confidence is "suggested"
-    # (not "certain") for notes because the single-id delete is not
-    # idempotent across a batch — see orphan_app_state recipe docstring.
-    notes_delete = next(
-        a for a in orphan.recovery_actions if a.tool == "transactions_notes_delete"
-    )
-    assert notes_delete.arguments == {"note_id": "orphan_n1"}
-    assert notes_delete.confidence == "suggested"
-    # The tag-clear action stays "certain" — setting tags to [] is idempotent.
-    tags_set = next(
-        a for a in orphan.recovery_actions if a.tool == "transactions_tags_set"
-    )
-    assert tags_set.confidence == "certain"
+    assert orphan.recovery_actions == []

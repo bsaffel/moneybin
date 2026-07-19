@@ -77,20 +77,18 @@ def _insert_transactions() -> None:
 @pytest.mark.unit
 async def test_transactions_get_returns_envelope(mcp_db: object) -> None:
     """transactions_get returns a valid ResponseEnvelope."""
-    result = await transactions_get()
+    result = transactions_get()
     d = result.to_dict()
     assert "summary" in d
     assert "data" in d
     assert "actions" in d
-    # TransactionGetPayload → TransactionRow amount is TXN_AMOUNT → HIGH
-    # (account_id is RECORD_ID per spec D6, no longer the driver).
-    assert d["summary"]["sensitivity"] == "high"
+    assert d["summary"]["sensitivity"] == "low"
 
 
 @pytest.mark.unit
 async def test_transactions_get_data_has_transactions_list(mcp_db: object) -> None:
     """Data field is a TransactionGetPayload dict with a 'transactions' list."""
-    result = await transactions_get()
+    result = transactions_get()
     d = result.to_dict()
     assert isinstance(d["data"], dict)
     assert isinstance(d["data"]["transactions"], list)
@@ -99,7 +97,7 @@ async def test_transactions_get_data_has_transactions_list(mcp_db: object) -> No
 @pytest.mark.unit
 async def test_transactions_get_no_cursor_when_empty(mcp_db: object) -> None:
     """next_cursor absent when all results fit in one page."""
-    result = await transactions_get(limit=50)
+    result = transactions_get(limit=50)
     d = result.to_dict()
     # Fresh MCP DB has no transactions — no cursor expected
     assert "next_cursor" not in d or d.get("next_cursor") is None
@@ -127,7 +125,7 @@ async def test_transactions_coarse_preserves_operational_query_semantics(
 ) -> None:
     _insert_transactions()
 
-    legacy = await transactions_get(
+    legacy = transactions_get(
         accounts=["ACC001"],
         date_from="2025-06-01",
         date_to="2025-06-30",
@@ -167,7 +165,7 @@ async def test_transactions_coarse_preserves_archived_account_id_parity(
             """
         )
 
-    legacy = await transactions_get(accounts=["ACC001"], limit=100)
+    legacy = transactions_get(accounts=["ACC001"], limit=100)
     coarse = await transactions_coarse(account="ACC001", limit=100)
 
     assert coarse.data.transactions == legacy.data.transactions

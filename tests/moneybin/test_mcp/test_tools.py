@@ -76,12 +76,11 @@ class TestToolRegistration:
     @pytest.mark.unit
     async def test_accounts_returns_envelope(self, mcp_db: object) -> None:
 
-        result = await accounts()
+        result = accounts()
         parsed = result.to_dict()
         assert "summary" in parsed
         assert "data" in parsed
-        # AccountSummary has account_id: ACCOUNT_IDENTIFIER → Tier.CRITICAL
-        assert parsed["summary"]["sensitivity"] == "critical"
+        assert parsed["summary"]["sensitivity"] == "low"
         # data is now a typed payload dict with a "rows" key
         assert len(parsed["data"]["rows"]) == 2  # 2 accounts from mcp_db fixture
 
@@ -90,7 +89,7 @@ class TestToolRegistration:
         self, mcp_db: object
     ) -> None:
         """Middleware handles CRITICAL masking; the service always returns full fields."""
-        result = await accounts()
+        result = accounts()
         parsed = result.to_dict()
         # All AccountSummary rows have last_four and credit_limit fields present
         for account in parsed["data"]["rows"]:

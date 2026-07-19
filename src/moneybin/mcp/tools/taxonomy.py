@@ -1,4 +1,4 @@
-"""Dormant normalized category and merchant taxonomy read."""
+"""Normalized category and merchant taxonomy boundaries."""
 
 from __future__ import annotations
 
@@ -220,11 +220,9 @@ def _taxonomy_actions(
     next_cursor: str | None,
 ) -> list[str]:
     """Return replacement-native navigation and continuation actions."""
-    actions = (
-        ["Use categories_create or categories_set to maintain the category taxonomy"]
-        if view == "categories"
-        else ["Use merchants_create to add merchant mappings"]
-    )
+    actions = [
+        f"Use taxonomy_set with kind={view.removesuffix('s')!r} to maintain this taxonomy"
+    ]
     if next_cursor is not None:
         actions.append(
             f"Continue with taxonomy(view={view!r}, "
@@ -294,7 +292,7 @@ def taxonomy_coarse(
 
 
 def register_taxonomy_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 normalized taxonomy read."""
+    """Register the standard normalized taxonomy read."""
     register(
         mcp,
         taxonomy_coarse,
@@ -492,7 +490,7 @@ async def taxonomy_set_coarse(
 
 
 def register_taxonomy_coarse_writes(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 taxonomy target-state batch."""
+    """Register the standard taxonomy target-state batch."""
     register(
         mcp,
         taxonomy_set_coarse,

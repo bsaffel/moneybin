@@ -123,7 +123,7 @@ def _connection_row(conn: GSheetConnection) -> GsheetConnectionRow:
 def _reconnect_hint(connection_id: str) -> str:
     """Build the actions[] hint that points an agent at the reconnect path."""
     return (
-        f"Run gsheet_reconnect(connection_id='{connection_id}') to re-detect "
+        f"Run gsheet_connect(connection_id='{connection_id}') to re-detect "
         "the sheet structure and re-pin the column mapping."
     )
 
@@ -137,15 +137,6 @@ def _drift_hints(connections: list[GsheetConnectionRow]) -> list[str]:
     ]
 
 
-@mcp_tool(
-    read_only=False,
-    idempotent=False,
-    open_world=True,
-    # Interactive OAuth: user has to click Allow in their browser. Give the
-    # full flow generous headroom — default 30s timeout would routinely
-    # fire before a human completes the consent screen.
-    timeout_seconds=180.0,
-)
 def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope[GsheetAuthPayload]:
     """Authenticate with Google Sheets via OAuth 2.0 PKCE (installed-app flow).
 
@@ -182,15 +173,6 @@ def gsheet_auth(force_reauth: bool = False) -> ResponseEnvelope[GsheetAuthPayloa
     )
 
 
-@mcp_tool(
-    read_only=False,
-    idempotent=False,
-    open_world=True,
-    # First-run before gsheet_auth() lands tokens, connect() will trigger
-    # the OAuth installed-app flow itself. Same 180s cap as gsheet_auth so
-    # the user has headroom to click Allow without the default 30s firing.
-    timeout_seconds=180.0,
-)
 def gsheet_connect(
     url: str,
     adapter: str | None = None,
@@ -261,18 +243,17 @@ def gsheet_connect(
     )
     actions = [
         f"Run gsheet_pull(connection_id='{result.connection.connection_id}') to refresh.",
-        "Use gsheet_status to check connection health going forward.",
+        "Use gsheet(view='status') to check connection health going forward.",
     ]
     if result.initial_pull_status not in (None, "complete"):
         actions.insert(
             0,
             f"Initial pull returned status={result.initial_pull_status!r}; "
-            "run gsheet_status for detail before assuming data is loaded.",
+            "run gsheet(view='status') before assuming data is loaded.",
         )
     return build_envelope(data=data, actions=actions)
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def gsheet_pull(
     connection_id: str | None = None,
 ) -> ResponseEnvelope[GsheetPullPayload]:
@@ -310,7 +291,7 @@ def gsheet_pull(
             actions.append(_reconnect_hint(r.connection_id))
         elif r.status == "auth_expired":
             actions.append(
-                "Re-authenticate: call gsheet_auth() (MCP) or run "
+                "Re-authenticate with gsheet_connect(force_reauth=True), or run "
                 "`moneybin gsheet auth` (CLI). Both drive the same "
                 "in-process OAuth flow."
             )
@@ -320,7 +301,6 @@ def gsheet_pull(
     )
 
 
-@mcp_tool()
 def gsheet() -> ResponseEnvelope[GsheetConnectionsPayload]:
     """List every Google Sheets connection.
 
@@ -336,7 +316,6 @@ def gsheet() -> ResponseEnvelope[GsheetConnectionsPayload]:
     )
 
 
-@mcp_tool()
 def gsheet_status(
     connection_id: str | None = None,
 ) -> ResponseEnvelope[GsheetConnectionsPayload]:
@@ -426,7 +405,6 @@ def gsheet_coarse(
     return _gsheet_coarse_envelope(GsheetStatusView(connections=rows))
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def gsheet_reconnect(
     connection_id: str, yes: bool = False, sign: str | None = None
 ) -> ResponseEnvelope[GsheetConnectPayload]:
@@ -475,16 +453,10 @@ def gsheet_reconnect(
     )
     return build_envelope(
         data=data,
-        actions=["Run gsheet_status to verify the connection is healthy."],
+        actions=["Run gsheet(view='status') to verify connection health."],
     )
 
 
-@mcp_tool(
-    read_only=False,
-    idempotent=False,
-    destructive=True,
-    open_world=True,
-)
 def gsheet_disconnect(
     connection_id: str, purge: bool = False
 ) -> ResponseEnvelope[GsheetDisconnectPayload]:
@@ -554,9 +526,7 @@ def gsheet_connect_coarse(
                 f"Authentication-only mode does not accept: {', '.join(supplied)}.",
                 code="GSHEET_AUTH_ARGUMENT_CONFLICT",
             )
-        response = gsheet_auth.__wrapped__(  # type: ignore[attr-defined]
-            force_reauth=bool(force_reauth)
-        )
+        response = gsheet_auth(force_reauth=bool(force_reauth))
         return _gsheet_connect_envelope(
             GsheetConnectAuthView(status=response.data.status),
             actions=[
@@ -567,7 +537,7 @@ def gsheet_connect_coarse(
         oauth = _build_oauth_client()
         oauth.authorize()
     if url is not None:
-        response = gsheet_connect.__wrapped__(  # type: ignore[attr-defined]
+        response = gsheet_connect(
             url=url,
             adapter=adapter,
             alias=alias,
@@ -606,7 +576,7 @@ def gsheet_connect_coarse(
             f"Reconnect mode does not accept: {', '.join(supplied)}.",
             code="GSHEET_RECONNECT_ARGUMENT_CONFLICT",
         )
-    response = gsheet_reconnect.__wrapped__(  # type: ignore[attr-defined]
+    response = gsheet_reconnect(
         connection_id=cast(str, connection_id),
         yes=bool(confirm_mapping),
         sign=sign,
@@ -763,7 +733,7 @@ def gsheet_pull_coarse(
     connection_id: str | None = None,
 ) -> ResponseEnvelope[GsheetPullPayload]:
     """Pull through the isolated workflow vocabulary."""
-    response = gsheet_pull.__wrapped__(connection_id=connection_id)  # type: ignore[attr-defined]
+    response = gsheet_pull(connection_id=connection_id)
     actions: list[str] = []
     for row in response.data.pulls:
         if row.status == "drift_detected":
@@ -777,7 +747,7 @@ def gsheet_pull_coarse(
 
 
 def register_gsheet_coarse_reads(mcp: FastMCP) -> None:
-    """Register the dormant Plan 6 replacement Google Sheets read."""
+    """Register the standard Google Sheets read."""
     register(
         mcp,
         gsheet_coarse,
@@ -786,12 +756,10 @@ def register_gsheet_coarse_reads(mcp: FastMCP) -> None:
         "The status view accepts one connection ID; without it status covers all.",
         privacy_actor="gsheet",
     )
-    # Plan 6 cutover removal: gsheet_status. The live registrations stay
-    # untouched until the complete standard registry activates atomically.
 
 
 def register_gsheet_workflow_tools(mcp: FastMCP) -> None:
-    """Register the dormant four-boundary Google Sheets workflow."""
+    """Register the standard four-boundary Google Sheets workflow."""
     for callback, name, description in (
         (gsheet_coarse, "gsheet", "Read connections or connection health."),
         (

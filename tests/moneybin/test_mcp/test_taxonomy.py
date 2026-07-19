@@ -1,4 +1,4 @@
-"""Tests for the dormant normalized taxonomy read."""
+"""Tests for the standard normalized taxonomy read."""
 
 from __future__ import annotations
 
@@ -811,7 +811,7 @@ async def test_taxonomy_rejects_category_only_argument_for_merchants() -> None:
     assert response.error.code == "TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED"
 
 
-async def test_taxonomy_dormant_registrar_renders_closed_contract() -> None:
+async def test_taxonomy_standard_registrar_renders_closed_contract() -> None:
     mcp = isolated_server(register_taxonomy_coarse_reads)
 
     tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]

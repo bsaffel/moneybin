@@ -11,25 +11,21 @@ from __future__ import annotations
 import pytest
 
 from moneybin.audits.recipes import orphan_app_state, registry
-from moneybin.errors import RecoveryAction
 
 
 def _ctx() -> registry.RecipeContext:
     return registry.RecipeContext(db=None)
 
 
-def test_note_prefix_emits_notes_delete_action() -> None:
-    actions = orphan_app_state.recipe(["note:n1"], _ctx())
-    assert len(actions) == 1
-    action = actions[0]
-    assert isinstance(action, RecoveryAction)
-    assert action.tool == "transactions_notes_delete"
-    assert action.arguments == {"note_id": "n1"}
-    # Suggested (not certain) because the single-id delete is non-idempotent
-    # across a multi-orphan batch — mid-stream retry would raise LookupError
-    # on the already-succeeded ids. PR 8's list form will upgrade to certain.
-    assert action.confidence == "suggested"
-    assert action.idempotent is False
+def test_note_prefix_withholds_unexecutable_action(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="moneybin.audits.recipes.orphan_app_state"):
+        actions = orphan_app_state.recipe(["note:n1"], _ctx())
+    assert actions == []
+    assert any(
+        "no standard cleanup action" in record.message for record in caplog.records
+    )
 
 
 def test_empty_note_id_is_skipped_with_warning(
@@ -62,23 +58,20 @@ def test_unknown_prefix_logs_warning(caplog: pytest.LogCaptureFixture) -> None:
     assert any("unknown id prefix" in r.message for r in caplog.records)
 
 
-def test_tag_prefix_emits_tags_set_clear_action() -> None:
-    actions = orphan_app_state.recipe(["tag:txn5"], _ctx())
-    assert len(actions) == 1
-    action = actions[0]
-    assert action.tool == "transactions_tags_set"
-    assert action.arguments == {"transaction_id": "txn5", "tags": []}
-    assert action.confidence == "certain"
-    assert action.idempotent is True  # setting tags to empty list is idempotent
+def test_tag_prefix_withholds_unexecutable_action(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING", logger="moneybin.audits.recipes.orphan_app_state"):
+        actions = orphan_app_state.recipe(["tag:txn5"], _ctx())
+    assert actions == []
+    assert any(
+        "no standard cleanup action" in record.message for record in caplog.records
+    )
 
 
-def test_mixed_prefixes_emit_one_action_each() -> None:
+def test_mixed_prefixes_emit_no_unexecutable_actions() -> None:
     actions = orphan_app_state.recipe(["note:n1", "tag:txn5", "note:n2"], _ctx())
-    assert [a.tool for a in actions] == [
-        "transactions_notes_delete",
-        "transactions_tags_set",
-        "transactions_notes_delete",
-    ]
+    assert actions == []
 
 
 def test_unprefixed_id_is_skipped_with_warning(
