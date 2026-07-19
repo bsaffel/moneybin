@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -28,12 +29,14 @@ from moneybin.mcp.tools.import_tools import (
     import_status,
     import_status_coarse,
 )
+from moneybin.metrics.observations import MetricObservations
 from moneybin.services.import_confirmation import (
     BridgePayload,
     ConfirmationRequired,
     ImportConfirmationRequiredError,
     ProposedMapping,
 )
+from moneybin.services.import_service import ReviewedTabularPlan
 from tests.moneybin.pdf_statement_fixtures import write_card_statement_pdf
 from tests.moneybin.test_mcp.schema_assertions import isolated_server
 
@@ -77,11 +80,268 @@ def _issue_coarse_preview(
             file_sha256=sha256,
             file_size_bytes=size,
             channel=channel,  # type: ignore[arg-type]
+            source_bytes=path.read_bytes(),
             snapshot={"data": data, "actions": [], "sensitivity": "medium"},
             issued_at=now,
             expires_at=now + timedelta(minutes=5),
             actor="mcp",
         )
+
+
+async def test_import_preview_binds_parse_hash_and_storage_to_one_byte_read(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    csv = tmp_path / "statement.csv"
+    original = b"Date,Description,Amount\n2026-07-01,Reviewed Coffee,-4.50\n"
+    replacement = b"Date,Description,Amount\n2026-07-01,Unreviewed Wire,-9000.00\n"
+    csv.write_bytes(original)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from moneybin.extractors.tabular import column_mapper
+
+    real_map = column_mapper.map_columns
+
+    def swap_after_parse(*args: object, **kwargs: object) -> object:
+        result = real_map(*args, **kwargs)  # type: ignore[arg-type]
+        csv.write_bytes(replacement)
+        return result
+
+    monkeypatch.setattr(column_mapper, "map_columns", swap_after_parse)
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    from moneybin.database import get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    preview_id = response.data.preview_id
+    with get_database(read_only=True) as db:
+        repo = ImportPreviewsRepo(db)
+        row = repo.get(preview_id)
+        assert row is not None
+        assert row["file_sha256"] == hashlib.sha256(original).hexdigest()
+        assert row["file_size_bytes"] == len(original)
+        assert repo.get_source_bytes(preview_id) == original
+
+
+async def test_import_confirm_loads_stored_bytes_after_post_hash_swap(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    csv = tmp_path / "statement.csv"
+    original = b"Date,Description,Amount\n2026-07-01,Reviewed Coffee,-4.50\n"
+    replacement = b"Date,Description,Amount\n2026-07-01,Unreviewed Wire,-9000.00\n"
+    csv.write_bytes(original)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+
+    real_identity = import_tools_module._file_identity  # pyright: ignore[reportPrivateUsage]
+
+    def swap_after_hash(path: Path) -> tuple[str, int]:
+        identity = real_identity(path)
+        path.write_bytes(replacement)
+        return identity
+
+    monkeypatch.setattr(import_tools_module, "_file_identity", swap_after_hash)
+    captured: dict[str, object] = {}
+
+    from moneybin.services.import_service import ImportResult
+
+    def capture_import(_service: object, path: Path, **kwargs: object) -> ImportResult:
+        captured["live_bytes"] = path.read_bytes()
+        captured.update(kwargs)
+        return ImportResult(
+            file_path=str(path),
+            file_type="tabular",
+            transactions=1,
+            import_id="imp_snapshot",
+            field_mapping={
+                "transaction_date": "Date",
+                "description": "Description",
+                "amount": "Amount",
+            },
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        capture_import,
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    assert response.data.import_id == "imp_snapshot"
+    assert captured["live_bytes"] == replacement
+    assert captured["source_bytes"] == original
+    plan = captured["reviewed_plan"]
+    assert isinstance(plan, ReviewedTabularPlan)
+    assert plan.field_mapping == {
+        "transaction_date": "Date",
+        "description": "Description",
+        "amount": "Amount",
+    }
+    assert plan.delimiter == ","
+    assert plan.encoding == "utf-8"
+    assert plan.date_format == "%Y-%m-%d"
+    assert plan.sign_convention == "negative_is_expense"
+    assert plan.skip_rows == 0
+    assert plan.has_header is True
+
+
+async def test_import_confirm_ignores_format_created_after_preview(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Reviewed Coffee,-4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+
+    from moneybin.database import get_database
+    from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+
+    conflicting = TabularFormat(
+        name="late_conflict",
+        institution_name="Wrong Bank",
+        file_type="csv",
+        delimiter=",",
+        encoding="utf-8",
+        header_signature=["Date", "Description", "Amount"],
+        field_mapping={
+            "transaction_date": "Date",
+            "description": "Amount",
+            "amount": "Description",
+        },
+        sign_convention="negative_is_income",
+        date_format="%m/%d/%Y",
+    )
+    with get_database(read_only=False) as db:
+        save_format_to_db(db, conflicting, actor="test")
+
+    confirmed = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+        save_format=False,
+    )
+
+    assert confirmed.data.status == "complete"
+    assert confirmed.data.merged_mapping == {
+        "transaction_date": "Date",
+        "description": "Description",
+        "amount": "Amount",
+    }
+
+
+async def test_import_preview_pdf_bridge_is_typed_critical_and_confirmable(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    service = MagicMock()
+    service.pdf_preview.side_effect = _bridge_error()
+
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=service,
+    ):
+        response = await import_preview_coarse(file_path=str(pdf))
+
+    from moneybin.privacy.payloads.imports import ImportPdfBridgePreviewPayload
+
+    assert isinstance(response.data, ImportPdfBridgePreviewPayload)
+    assert response.summary.sensitivity == "critical"
+    assert "account_identifier" in (response.classes_returned or [])
+    assert response.data.bridge_payload.document_text.startswith("****")
+    assert any(
+        f"preview_id='{response.data.preview_id}'" in action
+        for action in response.actions
+    )
+
+
+@pytest.mark.parametrize("deterministic", [True, False])
+async def test_import_preview_pdf_direct_modes_are_typed_and_route_to_import_files(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    deterministic: bool,
+) -> None:
+    from moneybin.services.import_service import PdfPreviewResult
+
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF direct fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    service = MagicMock()
+    service.pdf_preview.return_value = PdfPreviewResult(
+        file_path=str(pdf),
+        deterministic=deterministic,
+        decision_reason="passed" if deterministic else "no_transaction_table",
+        confidence=0.95 if deterministic else 0.2,
+        row_count=2 if deterministic else 0,
+        fingerprint={"issuer": "example"},
+    )
+
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=service,
+    ):
+        response = await import_preview_coarse(file_path=str(pdf))
+
+    assert response.data.kind in {"pdf_deterministic", "pdf_seed"}
+    assert any("import_files" in action for action in response.actions)
+    assert not any("import_confirm(" in action for action in response.actions)
+    assert response.classes_returned
+
+
+async def test_import_preview_pdf_sign_mode_keeps_cli_only_action(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF sign fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    service = MagicMock()
+    service.pdf_preview.side_effect = _sign_error()
+
+    with patch(
+        "moneybin.services.import_service.ImportService",
+        return_value=service,
+    ):
+        response = await import_preview_coarse(file_path=str(pdf))
+
+    assert response.data.kind == "pdf_sign"
+    assert any("moneybin import files" in action for action in response.actions)
+    assert not any("import_confirm(" in action for action in response.actions)
+    assert "txn_amount" in (response.classes_returned or [])
+
+
+def test_import_workflow_registrar_uses_public_privacy_actor_names() -> None:
+    registered: list[tuple[str, str | None]] = []
+
+    def capture(
+        _mcp: object,
+        _callback: object,
+        name: str,
+        _description: str,
+        *,
+        privacy_actor: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        registered.append((name, privacy_actor))
+
+    with patch.object(import_tools_module, "register", capture):
+        import_tools_module.register_import_workflow_tools(MagicMock())
+
+    assert registered
+    assert registered == [(name, name) for name, _ in registered]
 
 
 async def test_import_confirm_coarse_applies_pdf_bridge_by_preview_id(
@@ -123,7 +383,7 @@ async def test_import_confirm_coarse_applies_pdf_bridge_by_preview_id(
         bridge_response={"recipe": {"version": 1}, "rows": [{}, {}]},
     )
 
-    assert response.data["import_id"] == "imp_pdf"
+    assert response.data.import_id == "imp_pdf"
     apply.assert_called_once()
     assert apply.call_args.kwargs["in_outer_txn"] is True
     from moneybin.database import get_database
@@ -171,12 +431,170 @@ async def test_import_confirm_coarse_keeps_pdf_preview_live_when_bridge_is_inval
         bridge_response={"recipe": {"version": 1}, "rows": [{}]},
     )
 
-    assert response.data["status"] == "invalid"
+    assert response.data.status == "invalid"
     from moneybin.database import get_database
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
 
     with get_database(read_only=True) as db:
         assert ImportPreviewsRepo(db).get(preview_id)["consumed_at"] is None  # type: ignore[index]
+
+
+async def test_import_confirm_invalid_bridge_flushes_observation_once_after_rollback(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    pdf = tmp_path / "statement.pdf"
+    pdf.write_bytes(b"%PDF bridge fixture")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview_id = _issue_coarse_preview(
+        pdf,
+        channel="pdf",
+        data={
+            "status": "confirmation_required",
+            "channel": "pdf",
+            "reason": "low_confidence",
+            "bridge_payload": {},
+        },
+    )
+    metric = MagicMock()
+
+    def invalid_with_observation(
+        _service: object,
+        _path: Path,
+        _response: dict[str, object],
+        **kwargs: object,
+    ) -> object:
+        observations = kwargs["observations"]
+        assert isinstance(observations, MetricObservations)
+        observations.counter(metric, labels={"outcome": "invalid"})
+        return SimpleNamespace(
+            outcome="invalid",
+            import_id=None,
+            rows_loaded=0,
+            format_name=None,
+            expected_row_count=1,
+            actual_row_count=0,
+            rows_diverged=True,
+            reject_reason="reconciliation_failed",
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+        invalid_with_observation,
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview_id,
+        bridge_response={"recipe": {"version": 1}, "rows": [{}]},
+    )
+
+    assert response.data.status == "invalid"
+    metric.labels.assert_called_once_with(outcome="invalid")
+    metric.labels.return_value.inc.assert_called_once_with()
+
+
+async def test_import_confirm_late_failure_discards_success_observations(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Reviewed Coffee,-4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    metric = MagicMock()
+
+    from moneybin.services.import_service import ImportResult
+
+    def observed_import(
+        _service: object,
+        path: Path,
+        **kwargs: object,
+    ) -> ImportResult:
+        observations = kwargs["observations"]
+        assert isinstance(observations, MetricObservations)
+        observations.counter(metric, labels={"outcome": "accepted"})
+        return ImportResult(
+            file_path=str(path),
+            file_type="tabular",
+            transactions=1,
+            import_id="imp_late_failure",
+            field_mapping={
+                "transaction_date": "Date",
+                "description": "Description",
+                "amount": "Amount",
+            },
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        observed_import,
+    )
+    monkeypatch.setattr(
+        "moneybin.repositories.import_previews_repo.ImportPreviewsRepo.record_result",
+        MagicMock(side_effect=RuntimeError("late failure")),
+    )
+
+    with pytest.raises(RuntimeError, match="late failure"):
+        await import_confirm_coarse(
+            preview_id=preview.data.preview_id,
+            account_name="Checking",
+        )
+
+    metric.labels.assert_not_called()
+
+
+async def test_import_confirm_success_flushes_observations_exactly_once(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    csv = tmp_path / "statement.csv"
+    csv.write_text("Date,Description,Amount\n2026-07-01,Reviewed Coffee,-4.50\n")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    preview = await import_preview_coarse(file_path=str(csv))
+    counter = MagicMock()
+    histogram = MagicMock()
+
+    from moneybin.services.import_service import ImportResult
+
+    def observed_import(
+        _service: object,
+        path: Path,
+        **kwargs: object,
+    ) -> ImportResult:
+        observations = kwargs["observations"]
+        assert isinstance(observations, MetricObservations)
+        observations.counter(counter, labels={"outcome": "accepted"})
+        observations.observe(histogram, 0.25, labels={"source_type": "tabular"})
+        return ImportResult(
+            file_path=str(path),
+            file_type="tabular",
+            transactions=1,
+            import_id="imp_success",
+            field_mapping={
+                "transaction_date": "Date",
+                "description": "Description",
+                "amount": "Amount",
+            },
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.import_service.ImportService.import_file",
+        observed_import,
+    )
+
+    response = await import_confirm_coarse(
+        preview_id=preview.data.preview_id,
+        account_name="Checking",
+    )
+
+    assert response.data.status == "complete"
+    counter.labels.assert_called_once_with(outcome="accepted")
+    counter.labels.return_value.inc.assert_called_once_with()
+    histogram.labels.assert_called_once_with(source_type="tabular")
+    histogram.labels.return_value.observe.assert_called_once_with(0.25)
 
 
 @pytest.mark.parametrize(
@@ -244,16 +662,20 @@ async def test_import_preview_confirm_status_coarse_workflow(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     preview = await import_preview_coarse(file_path=str(csv))
+    assert any(
+        f"preview_id='{preview.data.preview_id}'" in action
+        for action in preview.actions
+    )
     confirmed = await import_confirm_coarse(
-        preview_id=preview.data["preview_id"],
+        preview_id=preview.data.preview_id,
         account_name="Checking",
     )
     status = await import_status_coarse(
         sections=["imports"],
-        import_id=confirmed.data["import_id"],
+        import_id=confirmed.data.import_id,
     )
 
-    assert confirmed.data["status"] == "complete"
+    assert confirmed.data.status == "complete"
     assert status.data.sections[0].records[0]["status"] == "complete"
 
 

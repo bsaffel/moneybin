@@ -32,7 +32,7 @@ The sheet's *contents* never appear here, only its metadata.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -160,6 +160,32 @@ class GsheetAuthPayload:
     status: Annotated[str, DataClass.TXN_TYPE]
 
 
+class GsheetConnectAuthView(BaseModel):
+    """Authentication-only consolidated connect outcome."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["auth"], DataClass.TXN_TYPE] = "auth"
+    status: Annotated[str, DataClass.TXN_TYPE]
+
+
+class GsheetConnectBindingView(BaseModel):
+    """New or reconnected binding outcome."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["new", "reconnect"], DataClass.TXN_TYPE]
+    connection: GsheetConnectionRow
+    detection: GsheetDetection
+    initial_pull: GsheetInitialPull | None
+
+
+GsheetConnectCoarsePayload = Annotated[
+    GsheetConnectAuthView | GsheetConnectBindingView,
+    Field(discriminator="kind"),
+]
+
+
 # ---------------------------------------------------------------------------
 # gsheet_pull — per-connection pull result
 # ---------------------------------------------------------------------------
@@ -197,3 +223,15 @@ class GsheetDisconnectPayload:
     connection_id: Annotated[str, DataClass.RECORD_ID]
     status: Annotated[str, DataClass.TXN_TYPE]
     purged: Annotated[bool, DataClass.TXN_TYPE]
+
+
+class GsheetDisconnectCoarsePayload(BaseModel):
+    """Soft or purged consolidated disconnect result."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["disconnected", "absent"], DataClass.TXN_TYPE]
+    connection_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    purged: Annotated[bool, DataClass.TXN_TYPE]
+    recovery: Annotated[dict[str, Any] | None, DataClass.DESCRIPTION] = None

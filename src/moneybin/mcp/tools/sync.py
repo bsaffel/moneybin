@@ -13,22 +13,28 @@ import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from fastmcp import FastMCP
 
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.sync import (
     SyncConnectionRow,
     SyncDisconnectPayload,
+    SyncGlobalStatusView,
     SyncLinkPayload,
     SyncLinkStatusPayload,
     SyncPullInstitutionRow,
     SyncPullPayload,
+    SyncSessionStatusView,
+    SyncStatusCoarsePayload,
     SyncStatusPayload,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -300,11 +306,72 @@ def sync_link_status(
 @mcp_tool(dynamic_classification=True)
 def sync_status_coarse(
     session_id: str | None = None,
-) -> ResponseEnvelope[SyncStatusPayload | SyncLinkStatusPayload]:
+) -> ResponseEnvelope[SyncStatusCoarsePayload]:
     """Read global connection health or one link-session status."""
     if session_id is None:
-        return sync_status.__wrapped__()  # type: ignore[attr-defined]
-    return sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
+        response = sync_status.__wrapped__()  # type: ignore[attr-defined]
+        data: SyncStatusCoarsePayload = SyncGlobalStatusView(
+            connections=response.data.connections
+        )
+        actions = list(response.actions)
+    else:
+        response = sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
+        data = SyncSessionStatusView(
+            session_id=response.data.session_id,
+            status=response.data.status,
+            provider_item_id=response.data.provider_item_id,
+            institution_name=response.data.institution_name,
+            error=response.data.error,
+            expiration=response.data.expiration,
+        )
+        actions = [
+            action.replace("sync_link_status", "sync_status")
+            for action in response.actions
+        ]
+    classes = extract_data_classes(type(data))
+    tier = max(data_class.tier for data_class in classes)
+    return cast(
+        ResponseEnvelope[SyncStatusCoarsePayload],
+        build_envelope(
+            data=redact_typed(data, None),
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+
+
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def sync_link_coarse(
+    institution: str | None = None,
+) -> ResponseEnvelope[SyncLinkPayload]:
+    """Start a link session using only isolated workflow actions."""
+    response = sync_link.__wrapped__(institution=institution)  # type: ignore[attr-defined]
+    if response.error is not None:
+        return response
+    return replace(
+        response,
+        actions=[
+            "Present link_url to the user and ask them to complete the browser flow.",
+            f"Then call sync_status(session_id='{response.data.session_id}') to "
+            "check completion.",
+        ],
+    )
+
+
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def sync_pull_coarse(
+    institution: str | None = None,
+) -> ResponseEnvelope[SyncPullPayload]:
+    """Pull while keeping recovery actions inside the isolated cohort."""
+    response = sync_pull.__wrapped__(institution=institution)  # type: ignore[attr-defined]
+    return replace(
+        response,
+        actions=[
+            "Use sync_status to inspect connection health and decide whether "
+            "another pull is needed."
+        ],
+    )
 
 
 # Deprecated aliases — will be removed in the next minor release. The decorator
@@ -407,16 +474,22 @@ def register_sync_prompts(mcp: FastMCP) -> None:
 def register_sync_workflow_tools(mcp: FastMCP) -> None:
     """Register the dormant four-boundary sync workflow."""
     for callback, name, description in (
-        (sync_link, "sync_link", "Start a hosted bank-link session."),
+        (sync_link_coarse, "sync_link", "Start a hosted bank-link session."),
         (
             sync_status_coarse,
             "sync_status",
             "Read global health or one link-session status.",
         ),
-        (sync_pull, "sync_pull", "Pull connected financial data."),
+        (sync_pull_coarse, "sync_pull", "Pull connected financial data."),
         (sync_disconnect, "sync_disconnect", "Disconnect one institution."),
     ):
-        register(mcp, callback, name, description)
+        register(
+            mcp,
+            callback,
+            name,
+            description,
+            privacy_actor=name,
+        )
 
 
 def register_sync_tools(mcp: FastMCP) -> None:

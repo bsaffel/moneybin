@@ -30,6 +30,11 @@ from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
 )
+from moneybin.metrics.observations import (
+    MetricObservations,
+    record_counter,
+    record_observation,
+)
 from moneybin.metrics.registry import (
     ACCOUNT_LINK_OUTCOMES_TOTAL,
     IMPORT_DURATION_SECONDS,
@@ -324,6 +329,39 @@ class ResolvedMapping:
     confidence: str
 
 
+@dataclass(frozen=True)
+class ReviewedTabularPlan:
+    """Complete normalized tabular parse and mapping reviewed at preview."""
+
+    file_type: str
+    delimiter: str | None
+    encoding: str
+    file_size: int
+    field_mapping: dict[str, str]
+    date_format: str
+    sign_convention: SignConventionType
+    number_format: NumberFormatType
+    is_multi_account: bool
+    confidence: str
+    skip_rows: int
+    has_header: bool
+    rows_in_file: int
+    rows_skipped_trailing: int
+    header_row_looks_like_data: bool
+    header_signature: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the canonical JSON-ready representation."""
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ReviewedTabularPlan":
+        """Validate and rebuild a persisted reviewed plan."""
+        from pydantic import TypeAdapter
+
+        return TypeAdapter(cls).validate_python(value)
+
+
 def _display_label(file_type: str, file_path: Path) -> str:
     """User-facing label for a detected file type.
 
@@ -336,7 +374,11 @@ def _display_label(file_type: str, file_path: Path) -> str:
     return file_type.upper()
 
 
-def _bare_account_key(file_path: Path) -> str:
+def _bare_account_key(
+    file_path: Path,
+    *,
+    source_bytes: bytes | None = None,
+) -> str:
     """Stable, content-unique source key for a single-account file with no caller-supplied identity.
 
     A filename stem alone is too incidental to be a source identity — two
@@ -349,7 +391,8 @@ def _bare_account_key(file_path: Path) -> str:
     """
     from moneybin.utils import slugify  # noqa: PLC0415 — matches _pdf_alias
 
-    digest = hashlib.sha256(file_path.read_bytes()).hexdigest()[:12]
+    content = file_path.read_bytes() if source_bytes is None else source_bytes
+    digest = hashlib.sha256(content).hexdigest()[:12]
     return f"{slugify(file_path.stem) or 'file'}-{digest}"
 
 
@@ -1072,6 +1115,8 @@ class ImportService:
         self,
         file_path: Path,
         *,
+        source_bytes: bytes | None = None,
+        reviewed_plan: ReviewedTabularPlan | None = None,
         account_name: str | None = None,
         account_id: str | None = None,
         format_name: str | None = None,
@@ -1092,11 +1137,14 @@ class ImportService:
         account_metadata: dict[str, dict[str, str]] | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> ImportResult:
         """Import a tabular file through the five-stage pipeline.
 
         Args:
             file_path: Path to the file.
+            source_bytes: Immutable source object to parse instead of reopening path.
+            reviewed_plan: Persisted parse and mapping decisions to replay exactly.
             account_name: Account name for single-account files.
             account_id: Explicit account ID (bypass matching).
             format_name: Explicit format name (bypass detection).
@@ -1122,6 +1170,7 @@ class ImportService:
                 app.account_settings for accounts minted this import.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
+            observations: Buffer observations for a caller-owned transaction.
 
         Returns:
             ImportResult with summary.
@@ -1149,12 +1198,12 @@ class ImportService:
         # mid-resolve would orphan account_links rows with no import batch.
         _validate_account_metadata(account_metadata)
 
-        # Load formats early so explicit --format can influence file reading
+        # Load formats for ordinary imports and optional post-load format saving.
         builtin_formats = load_builtin_formats()
         all_formats = merge_formats(builtin_formats, load_formats_from_db(self._db))
 
         matched_format: TabularFormat | None = None
-        if format_name:
+        if reviewed_plan is None and format_name:
             if format_name not in all_formats:
                 raise ValueError(
                     f"Unknown format {format_name!r}. Available: {sorted(all_formats)}"
@@ -1170,43 +1219,91 @@ class ImportService:
         )
         effective_sheet = sheet or (matched_format.sheet if matched_format else None)
 
-        format_info = detect_format(
-            file_path,
-            format_override=matched_format.file_type
-            if matched_format and matched_format.file_type != "auto"
-            else None,
-            delimiter_override=effective_delimiter,
-            encoding_override=effective_encoding,
-            no_size_limit=no_size_limit,
-        )
+        if reviewed_plan is None:
+            format_info = detect_format(
+                file_path,
+                source_bytes=source_bytes,
+                format_override=matched_format.file_type
+                if matched_format and matched_format.file_type != "auto"
+                else None,
+                delimiter_override=effective_delimiter,
+                encoding_override=effective_encoding,
+                no_size_limit=no_size_limit,
+            )
+            read_result = read_file(
+                file_path,
+                format_info,
+                sheet=effective_sheet,
+                skip_rows=matched_format.skip_rows
+                if matched_format and matched_format.skip_rows
+                else None,
+                skip_trailing_patterns=matched_format.skip_trailing_patterns
+                if matched_format
+                else None,
+                no_row_limit=no_row_limit,
+                source_bytes=source_bytes,
+            )
+        else:
+            from moneybin.extractors.tabular.format_detector import FormatInfo
 
-        # Stage 2: Read file
-        read_result = read_file(
-            file_path,
-            format_info,
-            sheet=effective_sheet,
-            skip_rows=matched_format.skip_rows
-            if matched_format and matched_format.skip_rows
-            else None,
-            skip_trailing_patterns=matched_format.skip_trailing_patterns
-            if matched_format
-            else None,
-            no_row_limit=no_row_limit,
-        )
+            format_info = FormatInfo(
+                file_type=reviewed_plan.file_type,
+                delimiter=reviewed_plan.delimiter,
+                encoding=reviewed_plan.encoding,
+                file_size=reviewed_plan.file_size,
+            )
+            read_result = read_file(
+                file_path,
+                format_info,
+                skip_rows=reviewed_plan.skip_rows,
+                no_row_limit=no_row_limit,
+                source_bytes=source_bytes,
+                has_header=reviewed_plan.has_header,
+            )
         df = read_result.df
 
         if len(df) == 0:
             raise ValueError(f"No data rows found in {file_path.name}")
 
         # Stage 3: Column mapping — match by headers if not already matched by name
-        if not matched_format:
+        if reviewed_plan is None and not matched_format:
             headers = list(df.columns)
             for fmt in all_formats.values():
                 if fmt.matches_headers(headers):
                     matched_format = fmt
                     break
 
-        if matched_format:
+        if reviewed_plan is not None:
+            if sorted(df.columns) != reviewed_plan.header_signature:
+                raise UserError(
+                    "The stored import snapshot no longer matches its reviewed "
+                    "header signature.",
+                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                )
+            if read_result.rows_in_file != reviewed_plan.rows_in_file:
+                raise UserError(
+                    "The stored import snapshot no longer matches its reviewed "
+                    "row accounting.",
+                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                )
+            missing_columns = sorted(
+                set(reviewed_plan.field_mapping.values()).difference(df.columns)
+            )
+            if missing_columns:
+                raise UserError(
+                    "The reviewed import mapping references unavailable columns.",
+                    code="IMPORT_PREVIEW_PLAN_MISMATCH",
+                )
+            resolved = ResolvedMapping(
+                field_mapping=dict(reviewed_plan.field_mapping),
+                date_format=reviewed_plan.date_format,
+                sign_convention=reviewed_plan.sign_convention,
+                number_format=reviewed_plan.number_format,
+                is_multi_account=reviewed_plan.is_multi_account,
+                confidence=reviewed_plan.confidence,
+            )
+            format_source = "reviewed"
+        elif matched_format:
             resolved = ResolvedMapping(
                 field_mapping=matched_format.field_mapping,
                 date_format=matched_format.date_format,
@@ -1290,31 +1387,62 @@ class ImportService:
                 actor_kind=actor_kind,
             )
 
-            IMPORT_DETECTION_SCORE.observe(confidence.score)
+            record_observation(
+                IMPORT_DETECTION_SCORE,
+                confidence.score,
+                labels={},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
 
             if isinstance(outcome, ConfirmationRequired):
-                IMPORT_CONFIRMATIONS_TOTAL.labels(
-                    channel="tabular",
-                    tier=confidence.tier,
-                    outcome="declined",
-                ).inc()
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": confidence.tier,
+                        "outcome": "declined",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                )
                 raise ImportConfirmationRequiredError(outcome)
 
             if outcome.self_accepted:
-                IMPORT_SELF_ACCEPT_TOTAL.labels(channel="tabular").inc()
+                record_counter(
+                    IMPORT_SELF_ACCEPT_TOTAL,
+                    labels={"channel": "tabular"},
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                )
             if isinstance(signal, Override):
-                IMPORT_OVERRIDE_TOTAL.labels(channel="tabular").inc()
-                IMPORT_CONFIRMATIONS_TOTAL.labels(
-                    channel="tabular",
-                    tier=confidence.tier,
-                    outcome="overridden",
-                ).inc()
+                record_counter(
+                    IMPORT_OVERRIDE_TOTAL,
+                    labels={"channel": "tabular"},
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                )
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": confidence.tier,
+                        "outcome": "overridden",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                )
             else:
-                IMPORT_CONFIRMATIONS_TOTAL.labels(
-                    channel="tabular",
-                    tier=confidence.tier,
-                    outcome="accepted",
-                ).inc()
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": confidence.tier,
+                        "outcome": "accepted",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                )
 
             # Coerce sign_convention based on the resolved amount shape so an
             # override that swaps single ⇄ split doesn't carry a stale
@@ -1358,11 +1486,27 @@ class ImportService:
         if matched_format:
             from moneybin.metrics.registry import IMPORT_KNOWN_FORMAT_REUSE_TOTAL
 
-            IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(channel="tabular").inc()
-            TABULAR_FORMAT_MATCHES.labels(
-                format_name=matched_format.name, format_source=format_source
-            ).inc()
-        TABULAR_DETECTION_CONFIDENCE.labels(confidence=resolved.confidence).inc()
+            record_counter(
+                IMPORT_KNOWN_FORMAT_REUSE_TOTAL,
+                labels={"channel": "tabular"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+            record_counter(
+                TABULAR_FORMAT_MATCHES,
+                labels={
+                    "format_name": matched_format.name,
+                    "format_source": format_source,
+                },
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+        record_counter(
+            TABULAR_DETECTION_CONFIDENCE,
+            labels={"confidence": resolved.confidence},
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
 
         # Apply CLI overrides — rebuild a new ResolvedMapping (frozen).
         # Validate at runtime: typing.cast has no runtime effect, so an
@@ -1433,6 +1577,7 @@ class ImportService:
             self._db,
             actor="system",
             emit_metrics=emit_metrics,
+            observations=observations,
         )
         bindings = account_bindings or {}
 
@@ -1557,7 +1702,7 @@ class ImportService:
             # is stable across the confirm round-trip, so an --account-binding
             # answer re-enumerates and applies in Phase 2; --account-name takes
             # the branch above instead.
-            native_key = _bare_account_key(file_path)
+            native_key = _bare_account_key(file_path, source_bytes=source_bytes)
             account_ids = native_key
             placeholder_name = file_path.stem or native_key
             acct_id_to_name[native_key] = placeholder_name
@@ -1651,10 +1796,12 @@ class ImportService:
         metadata = account_metadata or {}
         for src in source_accounts:
             resolved_account = resolver.resolve(src, in_outer_txn=in_outer_txn)
-            if emit_metrics:
-                ACCOUNT_LINK_OUTCOMES_TOTAL.labels(
-                    result=resolved_account.outcome
-                ).inc()
+            record_counter(
+                ACCOUNT_LINK_OUTCOMES_TOTAL,
+                labels={"result": resolved_account.outcome},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             meta = metadata.get(src.source_account_key)
             if not meta:
                 continue
@@ -1785,13 +1932,24 @@ class ImportService:
             sign_convention=resolved.sign_convention,
             balance_validated=transform_result.balance_validated,
             emit_metrics=emit_metrics,
+            observations=observations,
         )
 
         # Record import metrics
-        if emit_metrics:
-            IMPORT_RECORDS_TOTAL.labels(source_type=source_type).inc(rows_imported)
-            IMPORT_DURATION_SECONDS.labels(source_type=source_type).observe(
-                time.monotonic() - _t0
+        if observations is None:
+            record_counter(
+                IMPORT_RECORDS_TOTAL,
+                labels={"source_type": source_type},
+                amount=rows_imported,
+                emit_metrics=emit_metrics,
+                observations=None,
+            )
+            record_observation(
+                IMPORT_DURATION_SECONDS,
+                time.monotonic() - _t0,
+                labels={"source_type": source_type},
+                emit_metrics=emit_metrics,
+                observations=None,
             )
 
         result.accounts = len(unique_ids)
@@ -1814,7 +1972,7 @@ class ImportService:
         # detector tier, so a user calling import_confirm with a complete
         # override on a low-tier file got their import to succeed but the
         # --save-format flag was silently ignored.
-        user_ratified_via_override = bool(overrides)
+        user_ratified_via_override = bool(overrides) or reviewed_plan is not None
         if (
             save_format
             and not matched_format
@@ -1964,6 +2122,7 @@ class ImportService:
         *,
         confirm: bool = False,
         sign: str | None = None,
+        source_bytes: bytes | None = None,
     ) -> PdfPreviewResult:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
@@ -1982,6 +2141,12 @@ class ImportService:
           and increments ``PDF_BRIDGE_EGRESS_TOTAL{outcome="proposed"}``
           before raising — the egress is the audited event regardless of
           whether the agent ratifies.
+
+        Args:
+            file_path: Path used for provenance and file-type routing.
+            confirm: Ratify a proposed sign inversion.
+            sign: Explicit sign convention override.
+            source_bytes: Immutable PDF object to extract instead of reopening path.
         - Non-bridge-eligible failure (``no_transaction_table`` / ``no_rows``
           / ``unsupported_number_format``): returns
           ``PdfPreviewResult(deterministic=False, ...)``. The bridge would
@@ -2006,7 +2171,10 @@ class ImportService:
         from moneybin.extractors.pdf.routing import route_pdf_import
 
         canonical = file_path.resolve()
-        doc = PDFExtractor().extract(canonical)
+        if source_bytes is None:
+            doc = PDFExtractor().extract(canonical)
+        else:
+            doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
         decision = route_pdf_import(doc, self._db)
         decision = self._gate_pdf_sign_convention(decision, sign=sign, confirm=confirm)
 
@@ -2044,8 +2212,10 @@ class ImportService:
         *,
         save_format: bool = True,
         account_id: str | None = None,
+        source_bytes: bytes | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> BridgeApplyResult:
         """Apply a driving agent's bridge response: validate, reconcile, load.
 
@@ -2085,8 +2255,10 @@ class ImportService:
             account_id: Pin the rows to an existing ``dim_accounts`` row when
                 the statement carries no account anchor (mirrors the tabular
                 and deterministic-PDF ``account_id`` semantics).
+            source_bytes: Immutable PDF object captured by the preview.
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
+            observations: Buffer observations for a caller-owned transaction.
         """
         from moneybin.extractors.pdf.bridge import (
             BridgeResponseError,
@@ -2108,8 +2280,12 @@ class ImportService:
         try:
             response = parse_bridge_response(bridge_response)
         except BridgeResponseError:
-            if emit_metrics:
-                PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            record_counter(
+                PDF_BRIDGE_EGRESS_TOTAL,
+                labels={"outcome": "invalid"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             raise
         expected_row_count = len(response.rows)
 
@@ -2118,14 +2294,21 @@ class ImportService:
         #    load — so the persisted recipe is proven to reproduce them.
         canonical = file_path.resolve()
         try:
-            doc = PDFExtractor().extract(canonical)
+            if source_bytes is None:
+                doc = PDFExtractor().extract(canonical)
+            else:
+                doc = PDFExtractor().extract(canonical, source_bytes=source_bytes)
             decision = route_forced_recipe(doc, response.recipe)
         except Exception:
             # Mirror _import_pdf: a failed extraction/route is a failed PDF
             # import. Bump the metric (rung="bridge") before propagating so the
             # bridge path doesn't silently diverge from the deterministic one.
-            if emit_metrics:
-                PDF_IMPORT_TOTAL.labels(outcome="failed", rung="bridge").inc()
+            record_counter(
+                PDF_IMPORT_TOTAL,
+                labels={"outcome": "failed", "rung": "bridge"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             raise
         actual_row_count = len(decision.rows)
         rows_diverged = expected_row_count != actual_row_count
@@ -2133,8 +2316,12 @@ class ImportService:
         # 3. Reconciliation gate decides (Req 9). Anything other than a clean
         #    transactions route is an invalid proposal — nothing loads.
         if decision.outcome != "transactions":
-            if emit_metrics:
-                PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="invalid").inc()
+            record_counter(
+                PDF_BRIDGE_EGRESS_TOTAL,
+                labels={"outcome": "invalid"},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             logger.info(
                 f"PDF bridge apply rejected: reason={decision.reason} "
                 f"expected_rows={expected_row_count} "
@@ -2185,10 +2372,15 @@ class ImportService:
             rung="bridge",
             in_outer_txn=in_outer_txn,
             emit_metrics=emit_metrics,
+            observations=observations,
         )
 
-        if emit_metrics:
-            PDF_BRIDGE_EGRESS_TOTAL.labels(outcome="applied").inc()
+        record_counter(
+            PDF_BRIDGE_EGRESS_TOTAL,
+            labels={"outcome": "applied"},
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
         if rows_diverged:
             logger.warning(
                 f"PDF bridge apply divergence: agent returned "
@@ -2652,6 +2844,7 @@ class ImportService:
         sign_override: str | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> ImportResult:
         """Write PDF transaction rows to raw.tabular_transactions.
 
@@ -2937,8 +3130,12 @@ class ImportService:
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
                 )
-            if emit_metrics:
-                PDF_IMPORT_TOTAL.labels(outcome="failed", rung=rung).inc()
+            record_counter(
+                PDF_IMPORT_TOTAL,
+                labels={"outcome": "failed", "rung": rung},
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             raise
 
         # Format save + record_use happen AFTER the data-write try/except so a
@@ -3097,8 +3294,12 @@ class ImportService:
             rows_total=len(rows_list),
             rows_imported=rows_inserted,
         )
-        if emit_metrics:
-            PDF_IMPORT_TOTAL.labels(outcome="transactions", rung=rung).inc()
+        record_counter(
+            PDF_IMPORT_TOTAL,
+            labels={"outcome": "transactions", "rung": rung},
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
 
         result.transactions = rows_inserted
         result.accounts = 1
@@ -3117,6 +3318,8 @@ class ImportService:
         self,
         file_path: str | Path,
         *,
+        source_bytes: bytes | None = None,
+        reviewed_plan: ReviewedTabularPlan | None = None,
         refresh: bool = True,
         institution: str | None = None,
         force: bool = False,
@@ -3141,6 +3344,7 @@ class ImportService:
         account_metadata: dict[str, dict[str, str]] | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> ImportResult:
         """Import a financial data file into DuckDB.
 
@@ -3149,6 +3353,8 @@ class ImportService:
 
         Args:
             file_path: Path to the file to import.
+            source_bytes: Immutable source object to parse instead of reopening path.
+            reviewed_plan: Persisted parse and mapping decisions to replay exactly.
             refresh: Whether to run the post-load refresh pipeline (matching +
                 SQLMesh apply + categorization) after loading. Defaults to
                 True. PDFs that routed to ``raw.tabular_transactions``
@@ -3192,6 +3398,7 @@ class ImportService:
                 for accounts minted this import (tabular).
             in_outer_txn: Join a caller-owned transaction for every write.
             emit_metrics: Emit Prometheus observations during this call.
+            observations: Buffer observations for a caller-owned transaction.
 
         Returns:
             ImportResult with summary of what was imported.
@@ -3202,6 +3409,8 @@ class ImportService:
         """
         result = self._import_one(
             file_path,
+            source_bytes=source_bytes,
+            reviewed_plan=reviewed_plan,
             institution=institution,
             force=force,
             interactive=interactive,
@@ -3225,6 +3434,7 @@ class ImportService:
             account_metadata=account_metadata,
             in_outer_txn=in_outer_txn,
             emit_metrics=emit_metrics,
+            observations=observations,
         )
 
         # Include PDFs only when the deterministic path landed transactions —
@@ -3261,6 +3471,8 @@ class ImportService:
         self,
         file_path: str | Path,
         *,
+        source_bytes: bytes | None = None,
+        reviewed_plan: ReviewedTabularPlan | None = None,
         institution: str | None = None,
         force: bool = False,
         interactive: bool = False,
@@ -3284,6 +3496,7 @@ class ImportService:
         account_metadata: dict[str, dict[str, str]] | None = None,
         in_outer_txn: bool = False,
         emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> ImportResult:
         """Extract + load one file. Does NOT run the refresh pipeline.
 
@@ -3306,6 +3519,8 @@ class ImportService:
         if file_type == "tabular":
             return self._import_tabular(
                 path,
+                source_bytes=source_bytes,
+                reviewed_plan=reviewed_plan,
                 account_name=account_name,
                 account_id=account_id,
                 format_name=format_name,
@@ -3326,6 +3541,7 @@ class ImportService:
                 account_metadata=account_metadata,
                 in_outer_txn=in_outer_txn,
                 emit_metrics=emit_metrics,
+                observations=observations,
             )
         if file_type == "pdf":
             return self._import_pdf(

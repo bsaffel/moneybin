@@ -11,6 +11,8 @@ handling) and are intentionally absent from MCP.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastmcp import FastMCP
 
@@ -72,3 +74,23 @@ async def test_sync_workflow_status_accepts_optional_session_id() -> None:
         "default": None,
     }
     assert tool.output_schema is None
+
+
+def test_sync_workflow_registrar_uses_public_privacy_actor_names() -> None:
+    registered: list[tuple[str, str | None]] = []
+
+    def capture(
+        _mcp: object,
+        _callback: object,
+        name: str,
+        _description: str,
+        *,
+        privacy_actor: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        registered.append((name, privacy_actor))
+
+    with patch.object(sync_module, "register", capture):
+        sync_module.register_sync_workflow_tools(MagicMock())
+
+    assert registered == [(name, name) for name, _ in registered]

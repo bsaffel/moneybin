@@ -24,9 +24,18 @@ CREATE TABLE IF NOT EXISTS app.import_previews (
 )
 """
 
+_CREATE_SNAPSHOTS_SQL = """
+CREATE TABLE IF NOT EXISTS raw.import_preview_snapshots (
+    preview_id VARCHAR PRIMARY KEY,
+    source_bytes BLOB NOT NULL,
+    created_at TIMESTAMP NOT NULL
+)
+"""
+
 
 def migrate(conn: object) -> None:
-    """Create the additive import-preview trust-state table."""
+    """Create additive import-preview metadata and encrypted byte storage."""
     logger.debug("V037: CREATE TABLE IF NOT EXISTS app.import_previews")
     conn.execute(_CREATE_TABLE_SQL)  # type: ignore[union-attr]
-    logger.debug("V037: app.import_previews ready")
+    conn.execute(_CREATE_SNAPSHOTS_SQL)  # type: ignore[union-attr]
+    logger.debug("V037: import preview metadata and snapshots ready")

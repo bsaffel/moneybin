@@ -17,6 +17,7 @@ import duckdb
 
 from moneybin.database import Database
 from moneybin.extractors.tabular.account_matching import match_account
+from moneybin.metrics.observations import MetricObservations, record_observation
 from moneybin.metrics.registry import (
     ACCOUNT_LINK_CONFIDENCE,
     ACCOUNT_LINK_REVIEW_PENDING,
@@ -101,11 +102,13 @@ class AccountResolver:
         *,
         actor: str = "system",
         emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> None:
         """Bind the resolver to a database + audit actor for its link writes."""
         self._db = db
         self._actor = actor
         self._emit_metrics = emit_metrics
+        self._observations = observations
         self._links = AccountLinksRepo(db)
         self._decisions = AccountLinkDecisionsRepo(db)
 
@@ -198,10 +201,19 @@ class AccountResolver:
                 match_reason=cand.signal,
                 in_outer_txn=True,  # joins resolve()'s per-account transaction
             )
-            if self._emit_metrics:
-                ACCOUNT_LINK_CONFIDENCE.observe(cand.confidence)
+            record_observation(
+                ACCOUNT_LINK_CONFIDENCE,
+                cand.confidence,
+                labels={},
+                emit_metrics=self._emit_metrics,
+                observations=self._observations,
+            )
             pending_ids.append(decision_id)
-        if self._emit_metrics:
+        if self._observations is not None:
+            self._observations.callback(
+                lambda: refresh_account_link_pending_gauge(self._db)
+            )
+        elif self._emit_metrics:
             refresh_account_link_pending_gauge(self._db)
         return ResolvedAccount(
             account_id=account_id,

@@ -38,13 +38,22 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
+    ImportConfirmCoarsePayload,
     ImportConfirmPayload,
     ImportFilesPayload,
     ImportFormatInfoPayload,
     ImportFormatRow,
     ImportFormatsPayload,
+    ImportInboxSyncPayload,
+    ImportLabelsSetPayload,
+    ImportPdfBridgeAppliedPayload,
+    ImportPdfBridgeInvalidPayload,
+    ImportPdfBridgePreviewPayload,
+    ImportPdfDirectPreviewPayload,
     ImportPdfFormatRow,
+    ImportPdfSignPreviewPayload,
     ImportPerFileRow,
+    ImportPreviewCoarsePayload,
     ImportPreviewPayload,
     ImportRevertPayload,
     ImportStatusCoarsePayload,
@@ -52,6 +61,8 @@ from moneybin.privacy.payloads.imports import (
     ImportStatusImportsSection,
     ImportStatusInboxSection,
     ImportStatusPayload,
+    ImportTabularConfirmCoarsePayload,
+    ImportTabularPreviewCoarsePayload,
 )
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
@@ -491,7 +502,11 @@ def import_files(
     )
 
 
-def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
+def _import_preview_pdf(
+    path: Path,
+    *,
+    source_bytes: bytes | None = None,
+) -> ResponseEnvelope[dict[str, Any]]:
     """Preview a PDF via ImportService.pdf_preview (deterministic, bridge, or sign).
 
     Returns a deterministic preview dict, or a ``confirmation_required`` envelope
@@ -509,7 +524,7 @@ def _import_preview_pdf(path: Path) -> ResponseEnvelope[ImportPreviewPayload]:
 
     try:
         with get_database(read_only=False) as db:
-            preview = ImportService(db).pdf_preview(path)
+            preview = ImportService(db).pdf_preview(path, source_bytes=source_bytes)
     except ImportConfirmationRequiredError as e:
         proposed = e.outcome.proposed
         if isinstance(proposed, SignConventionProposal):
@@ -613,8 +628,20 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
     validated = _validate_file_path(file_path)
 
     if validated.suffix.lower() == ".pdf":
-        return _import_preview_pdf(validated)
+        return cast(
+            ResponseEnvelope[ImportPreviewPayload],
+            _import_preview_pdf(validated),
+        )
 
+    return _import_preview_tabular(validated)
+
+
+def _import_preview_tabular(
+    path: Path,
+    *,
+    source_bytes: bytes | None = None,
+) -> ResponseEnvelope[ImportPreviewPayload]:
+    """Build a tabular preview from one optional immutable byte object."""
     from moneybin.config import get_settings
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
@@ -622,8 +649,8 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
 
     bands = get_settings().import_.confidence
     try:
-        format_info = detect_format(validated)
-        read_result = read_file(validated, format_info)
+        format_info = detect_format(path, source_bytes=source_bytes)
+        read_result = read_file(path, format_info, source_bytes=source_bytes)
         mapping_result = map_columns(
             read_result.df,
             t_high=bands.t_high,
@@ -635,7 +662,7 @@ def import_preview(file_path: str) -> ResponseEnvelope[ImportPreviewPayload]:
 
     return build_envelope(
         data=ImportPreviewPayload(
-            file=validated.name,
+            file=path.name,
             format=ImportFormatInfoPayload(
                 file_type=format_info.file_type,
                 delimiter=format_info.delimiter,
@@ -677,10 +704,32 @@ def _file_identity(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), path.stat().st_size
 
 
+def _bytes_identity(source_bytes: bytes) -> tuple[str, int]:
+    """Return the exact identity of an already materialized source object."""
+    return hashlib.sha256(source_bytes).hexdigest(), len(source_bytes)
+
+
+def _import_dynamic_envelope[T](
+    data: T,
+    *,
+    actions: list[str],
+) -> ResponseEnvelope[T]:
+    """Build one typed, redacted, dynamically classified import envelope."""
+    classes = extract_data_classes(type(data))
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(T, redact_typed(data, None))
+    return build_envelope(
+        data=redacted,
+        sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+        actions=actions,
+        classes_returned=sorted(data_class.value for data_class in classes),
+    )
+
+
 @mcp_tool(read_only=False, idempotent=False, dynamic_classification=True)
 def import_preview_coarse(
     file_path: str,
-) -> ResponseEnvelope[ImportPreviewPayload]:
+) -> ResponseEnvelope[ImportPreviewCoarsePayload]:
     """Persist a complete staged-import preview for one exact file snapshot."""
     from moneybin.config import get_settings
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
@@ -692,46 +741,129 @@ def import_preview_coarse(
             "structured financial format has no column-mapping preview.",
             code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
         )
-    response = import_preview.__wrapped__(file_path=str(path))  # type: ignore[attr-defined]
-    response = replace(response, data=redact_typed(response.data, None))
-    sha256, size = _file_identity(path)
+    source_bytes = path.read_bytes()
+    response: ResponseEnvelope[ImportPreviewPayload] | ResponseEnvelope[dict[str, Any]]
+    if path.suffix.lower() == ".pdf":
+        response = _import_preview_pdf(path, source_bytes=source_bytes)
+    else:
+        response = _import_preview_tabular(path, source_bytes=source_bytes)
+    reviewed_plan: dict[str, Any] | None = None
+    if isinstance(response.data, ImportPreviewPayload):
+        from moneybin.services.import_service import ReviewedTabularPlan
+
+        data = response.data
+        reviewed_plan = ReviewedTabularPlan(
+            file_type=data.format.file_type,
+            delimiter=data.format.delimiter,
+            encoding=data.format.encoding or "utf-8",
+            file_size=data.format.file_size_bytes or len(source_bytes),
+            field_mapping=dict(data.mapping),
+            date_format=data.date_format or "%Y-%m-%d",
+            sign_convention=cast(Any, data.sign_convention or "negative_is_expense"),
+            number_format=cast(Any, data.number_format or "us"),
+            is_multi_account=bool(data.is_multi_account),
+            confidence=data.confidence or "low",
+            skip_rows=data.skip_rows,
+            has_header=data.has_header,
+            rows_in_file=data.rows_in_file,
+            rows_skipped_trailing=data.rows_skipped_trailing,
+            header_row_looks_like_data=data.header_row_looks_like_data,
+            header_signature=sorted({
+                *data.mapping.values(),
+                *data.unmapped_columns,
+            }),
+        ).to_dict()
+    sha256, size = _bytes_identity(source_bytes)
     issued_at = datetime.now(UTC)
     expires_at = issued_at + timedelta(
         seconds=get_settings().mcp.confirmation_ttl_seconds
     )
     wire = TypeAdapter(dict[str, Any]).validate_json(response.to_json())
-    data = TypeAdapter(dict[str, Any]).validate_python(
-        wire["data"],
+    data = TypeAdapter(dict[str, Any]).validate_python(wire["data"])
+    pending_id = "pending"
+    expires_wire = expires_at.isoformat()
+    if isinstance(response.data, ImportPreviewPayload):
+        payload: ImportPreviewCoarsePayload = ImportTabularPreviewCoarsePayload(
+            **data,
+            preview_id=pending_id,
+            expires_at=expires_wire,
+        )
+        actions = [
+            "Use import_confirm(preview_id=...) before the preview expires.",
+        ]
+    elif data.get("status") == "confirmation_required" and "bridge_payload" in data:
+        payload = ImportPdfBridgePreviewPayload(
+            **data,
+            preview_id=pending_id,
+            expires_at=expires_wire,
+        )
+        actions = [
+            "Use import_confirm(preview_id=..., bridge_response={...}) before "
+            "the preview expires.",
+        ]
+    elif data.get("reason") == "sign_convention":
+        payload = ImportPdfSignPreviewPayload(
+            **data,
+            preview_id=pending_id,
+            expires_at=expires_wire,
+        )
+        actions = list(response.actions)
+    else:
+        payload = ImportPdfDirectPreviewPayload(
+            **data,
+            kind=(
+                "pdf_deterministic" if bool(data.get("deterministic")) else "pdf_seed"
+            ),
+            preview_id=pending_id,
+            expires_at=expires_wire,
+        )
+        actions = list(response.actions)
+    redacted_payload = redact_typed(payload, None)
+    persisted_data = redacted_payload.model_dump(
+        mode="json",
+        exclude={"preview_id", "expires_at"},
     )
     snapshot: dict[str, Any] = {
-        "data": data,
-        "actions": list(response.actions),
-        "sensitivity": response.summary.sensitivity,
+        "data": persisted_data,
+        "actions": actions,
+        "sensitivity": tier_to_sensitivity(
+            max(data_class.tier for data_class in extract_data_classes(type(payload)))
+        ).value,
+        "plan": reviewed_plan,
     }
     channel: Literal["tabular", "pdf", "ofx"] = (
         "pdf" if path.suffix.lower() == ".pdf" else "tabular"
     )
     with get_database(read_only=False) as db:
-        preview_id = ImportPreviewsRepo(db).issue(
+        repo = ImportPreviewsRepo(db)
+        repo.purge_expired(now=issued_at, actor="system")
+        preview_id = repo.issue(
             file_path=str(path),
             file_sha256=sha256,
             file_size_bytes=size,
             channel=channel,
+            source_bytes=source_bytes,
             snapshot=snapshot,
             issued_at=issued_at,
             expires_at=expires_at,
             actor="mcp",
         )
-    return build_envelope(
-        sensitivity="medium",
-        data={
-            **data,
-            "preview_id": preview_id,
-            "expires_at": expires_at.isoformat(),
-        },
-        actions=[
-            f"Use import_confirm(preview_id='{preview_id}') before the preview expires.",
-        ],
+    final_payload = redacted_payload.model_copy(
+        update={"preview_id": preview_id},
+    )
+    if isinstance(final_payload, ImportTabularPreviewCoarsePayload):
+        actions = [
+            f"Use import_confirm(preview_id='{preview_id}') before the preview "
+            "expires.",
+        ]
+    elif isinstance(final_payload, ImportPdfBridgePreviewPayload):
+        actions = [
+            f"Use import_confirm(preview_id='{preview_id}', "
+            "bridge_response={...}) before the preview expires.",
+        ]
+    return cast(
+        ResponseEnvelope[ImportPreviewCoarsePayload],
+        _import_dynamic_envelope(final_payload, actions=actions),
     )
 
 
@@ -1537,13 +1669,15 @@ def import_confirm_coarse(
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
-) -> ResponseEnvelope[ImportConfirmPayload]:
+) -> ResponseEnvelope[ImportConfirmCoarsePayload]:
     """Atomically consume one unchanged tabular or PDF-bridge preview."""
+    from moneybin.metrics.observations import MetricObservations
     from moneybin.metrics.registry import IMPORT_DURATION_SECONDS, IMPORT_RECORDS_TOTAL
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
     from moneybin.services.import_service import ImportService
 
     started = time.monotonic()
+    observations = MetricObservations()
     bridge_result: Any | None = None
     result: Any | None = None
     with get_database(read_only=False) as db:
@@ -1555,6 +1689,12 @@ def import_confirm_coarse(
                 code="IMPORT_PREVIEW_NOT_FOUND",
             )
         path = _validate_file_path(preview["file_path"])
+        source_bytes = repo.get_source_bytes(preview_id)
+        if source_bytes is None:
+            raise UserError(
+                "The immutable import preview snapshot is unavailable.",
+                code="IMPORT_PREVIEW_SNAPSHOT_MISSING",
+            )
         snapshot_data = cast(
             dict[str, Any],
             preview["snapshot_json"]["data"],
@@ -1592,15 +1732,9 @@ def import_confirm_coarse(
                 "bridge_response is valid only for a PDF bridge preview.",
                 code="IMPORT_PREVIEW_CHANNEL_CONFLICT",
             )
-        before_identity = _file_identity(path)
+        live_identity = _file_identity(path)
         db.begin()
         try:
-            live_identity = _file_identity(path)
-            if live_identity != before_identity:
-                raise UserError(
-                    "The previewed file changed while confirmation was starting.",
-                    code="IMPORT_PREVIEW_CHANGED",
-                )
             consumed = repo.consume(
                 preview_id,
                 file_sha256=live_identity[0],
@@ -1616,36 +1750,49 @@ def import_confirm_coarse(
                     cast(dict[str, Any], bridge_response),
                     save_format=save_format,
                     account_id=account_id,
+                    source_bytes=source_bytes,
                     in_outer_txn=True,
                     emit_metrics=False,
+                    observations=observations,
                 )
                 if bridge_result.outcome == "invalid":
                     db.rollback()
-                    return build_envelope(
-                        sensitivity="medium",
-                        data={
-                            "preview_id": preview_id,
-                            "status": "invalid",
-                            "reject_reason": bridge_result.reject_reason,
-                            "expected_row_count": bridge_result.expected_row_count,
-                            "actual_row_count": bridge_result.actual_row_count,
-                            "rows_diverged": bridge_result.rows_diverged,
-                        },
-                        actions=[
-                            "Revise the bridge recipe or extracted rows and retry "
-                            "this same preview before it expires.",
-                        ],
+                    observations.flush()
+                    return cast(
+                        ResponseEnvelope[ImportConfirmCoarsePayload],
+                        _import_dynamic_envelope(
+                            ImportPdfBridgeInvalidPayload(
+                                kind="pdf_bridge_invalid",
+                                preview_id=preview_id,
+                                status="invalid",
+                                reject_reason=bridge_result.reject_reason,
+                                expected_row_count=bridge_result.expected_row_count,
+                                actual_row_count=bridge_result.actual_row_count,
+                                rows_diverged=bridge_result.rows_diverged,
+                            ),
+                            actions=[
+                                "Revise the bridge recipe or extracted rows and "
+                                "retry this same preview before it expires.",
+                            ],
+                        ),
                     )
                 import_id = bridge_result.import_id
             else:
-                proposed_mapping = cast(
-                    dict[str, str] | None,
-                    consumed["snapshot_json"]["data"].get("mapping"),
+                from moneybin.services.import_service import ReviewedTabularPlan
+
+                plan_value = consumed["snapshot_json"].get("plan")
+                if not isinstance(plan_value, dict):
+                    raise UserError(
+                        "The persisted preview lacks its normalized import plan.",
+                        code="IMPORT_PREVIEW_PLAN_MISSING",
+                    )
+                reviewed_plan = ReviewedTabularPlan.from_dict(
+                    cast(dict[str, Any], plan_value)
                 )
                 result = service.import_file(
                     path,
-                    confirm=proposed_mapping is None,
-                    overrides=proposed_mapping,
+                    source_bytes=source_bytes,
+                    reviewed_plan=reviewed_plan,
                     save_format=save_format,
                     account_id=account_id,
                     account_name=account_name,
@@ -1655,6 +1802,7 @@ def import_confirm_coarse(
                     refresh=False,
                     in_outer_txn=True,
                     emit_metrics=False,
+                    observations=observations,
                 )
                 import_id = result.import_id
             if import_id is None:
@@ -1666,6 +1814,24 @@ def import_confirm_coarse(
                 in_outer_txn=True,
             )
             db.commit()
+            source_type = "pdf" if channel == "pdf" else "tabular"
+            if bridge_result is not None:
+                committed_rows = bridge_result.rows_loaded
+            elif result is not None:
+                committed_rows = result.transactions
+            else:
+                raise RuntimeError("confirmed import produced no channel result")
+            observations.counter(
+                IMPORT_RECORDS_TOTAL,
+                labels={"source_type": source_type},
+                amount=committed_rows,
+            )
+            observations.observe(
+                IMPORT_DURATION_SECONDS,
+                time.monotonic() - started,
+                labels={"source_type": source_type},
+            )
+            observations.flush()
         except BaseException:
             db.rollback()
             raise
@@ -1681,29 +1847,34 @@ def import_confirm_coarse(
             raise RuntimeError("tabular import produced no result")
         rows_loaded = result.transactions
         merged_mapping = dict(result.field_mapping or {})
-    IMPORT_RECORDS_TOTAL.labels(source_type=source_type).inc(rows_loaded)
-    IMPORT_DURATION_SECONDS.labels(source_type=source_type).observe(
-        time.monotonic() - started
-    )
     from moneybin.services.inbox_service import InboxService
 
     InboxService.for_active_profile_no_db().archive_confirmed_file(path)
-    return build_envelope(
-        sensitivity="medium",
-        data={
-            "preview_id": preview_id,
-            "import_id": import_id,
-            "rows_loaded": rows_loaded,
-            "merged_mapping": merged_mapping,
-            "status": "applied" if bridge_result is not None else "complete",
-            "format_name": (
-                bridge_result.format_name if bridge_result is not None else None
-            ),
-        },
-        actions=[
-            f"Use import_revert(import_id='{import_id}') to undo this import.",
-            "Use refresh_run() to rebuild derived tables.",
-        ],
+    if bridge_result is not None:
+        payload: Any = ImportPdfBridgeAppliedPayload(
+            preview_id=preview_id,
+            import_id=import_id,
+            rows_loaded=rows_loaded,
+            merged_mapping=merged_mapping,
+            format_name=bridge_result.format_name,
+        )
+    else:
+        payload = ImportTabularConfirmCoarsePayload(
+            preview_id=preview_id,
+            import_id=import_id,
+            rows_loaded=rows_loaded,
+            merged_mapping=merged_mapping,
+        )
+    return cast(
+        ResponseEnvelope[ImportConfirmCoarsePayload],
+        _import_dynamic_envelope(
+            payload,
+            actions=[
+                f"Use import_revert(import_id='{import_id}') to undo this import.",
+                "Use import_status(sections=['imports'], "
+                f"import_id='{import_id}') to verify it.",
+            ],
+        ),
     )
 
 
@@ -1722,13 +1893,87 @@ def register_import_coarse_reads(mcp: FastMCP) -> None:
     # live registrations remain untouched until the atomic registry swap.
 
 
-def register_import_workflow_tools(mcp: FastMCP) -> None:
-    """Register the dormant seven-boundary staged-import workflow."""
-    from moneybin.mcp.tools.curation import import_labels_set
+@mcp_tool(read_only=False, idempotent=False)
+def import_files_coarse(
+    paths: list[str],
+    refresh: bool = True,
+    force: bool = False,
+) -> ResponseEnvelope[ImportFilesPayload]:
+    """Import files while keeping actions inside the staged-import cohort."""
+    response = import_files.__wrapped__(  # type: ignore[attr-defined]
+        paths=paths,
+        refresh=refresh,
+        force=force,
+    )
+    actions: list[str] = []
+    for row in response.data.files:
+        if row.status == "confirmation_required":
+            actions.append(
+                f"Use import_preview(file_path={row.path!r}) to begin the "
+                "reviewed confirmation workflow."
+            )
+        elif row.import_id is not None:
+            actions.append(
+                "Use import_status(sections=['imports'], "
+                f"import_id='{row.import_id}') to verify the result."
+            )
+    return replace(response, actions=list(dict.fromkeys(actions)))
+
+
+@mcp_tool(read_only=False, destructive=True, idempotent=False)
+def import_revert_coarse(
+    import_id: str,
+) -> ResponseEnvelope[ImportRevertPayload]:
+    """Revert one import with an isolated status recovery action."""
+    response = import_revert.__wrapped__(import_id=import_id)  # type: ignore[attr-defined]
+    return replace(
+        response,
+        actions=[
+            "Use import_status(sections=['imports'], "
+            f"import_id='{import_id}') to verify the reverted state."
+        ],
+    )
+
+
+@mcp_tool(read_only=False, idempotent=False)
+def import_inbox_sync_coarse(
+    refresh: bool = True,
+) -> ResponseEnvelope[ImportInboxSyncPayload]:
+    """Drain the inbox with staged-import-only next actions."""
     from moneybin.mcp.tools.import_inbox import import_inbox_sync
 
+    response = inspect.unwrap(import_inbox_sync)(refresh=refresh)
+    return replace(
+        response,
+        actions=[
+            "Use import_status(sections=['inbox', 'imports']) to inspect the "
+            "result and any remaining pending files."
+        ],
+    )
+
+
+@mcp_tool(read_only=False)
+def import_labels_set_coarse(
+    import_id: str,
+    labels: list[str],
+) -> ResponseEnvelope[ImportLabelsSetPayload]:
+    """Set labels with an isolated status follow-up."""
+    from moneybin.mcp.tools.curation import import_labels_set
+
+    response = inspect.unwrap(import_labels_set)(import_id=import_id, labels=labels)
+    return replace(
+        response,
+        actions=[
+            "Use import_status(sections=['imports'], "
+            f"import_id='{import_id}') to inspect the import."
+        ],
+    )
+
+
+def register_import_workflow_tools(mcp: FastMCP) -> None:
+    """Register the dormant seven-boundary staged-import workflow."""
     for callback, name, description in (
-        (import_files, "import_files", "Import one or more files."),
+        (import_files_coarse, "import_files", "Import one or more files."),
         (
             import_preview_coarse,
             "import_preview",
@@ -1744,15 +1989,25 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "import_status",
             "Read import history, formats, and inbox state.",
         ),
-        (import_revert, "import_revert", "Revert one completed import."),
+        (import_revert_coarse, "import_revert", "Revert one completed import."),
         (
-            import_inbox_sync,
+            import_inbox_sync_coarse,
             "import_inbox_sync",
             "Synchronize the import inbox.",
         ),
-        (import_labels_set, "import_labels_set", "Set labels on one import."),
+        (
+            import_labels_set_coarse,
+            "import_labels_set",
+            "Set labels on one import.",
+        ),
     ):
-        register(mcp, callback, name, description)
+        register(
+            mcp,
+            callback,
+            name,
+            description,
+            privacy_actor=name,
+        )
 
 
 def register_import_tools(mcp: FastMCP) -> None:

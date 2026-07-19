@@ -9,6 +9,7 @@ from tests.moneybin.migration_helpers import run_migration
 
 
 def test_v037_creates_import_preview_trust_state_table(db: Database) -> None:
+    db.execute("DROP TABLE IF EXISTS raw.import_preview_snapshots")
     db.execute("DROP TABLE IF EXISTS app.import_previews")
     migration = importlib.import_module(
         "moneybin.sql.migrations.V037__create_import_previews"
@@ -39,6 +40,22 @@ def test_v037_creates_import_preview_trust_state_table(db: Database) -> None:
         "import_id",
         "updated_at",
     }
+    raw_columns = {
+        row[0]
+        for row in db.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'raw'
+              AND table_name = 'import_preview_snapshots'
+            """
+        ).fetchall()
+    }
+    assert raw_columns == {
+        "preview_id",
+        "source_bytes",
+        "created_at",
+    }
 
 
 def test_v037_is_idempotent(db: Database) -> None:
@@ -54,5 +71,13 @@ def test_v037_is_idempotent(db: Database) -> None:
         SELECT COUNT(*)
         FROM information_schema.tables
         WHERE table_schema = 'app' AND table_name = 'import_previews'
+        """
+    ).fetchone() == (1,)
+    assert db.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = 'raw'
+          AND table_name = 'import_preview_snapshots'
         """
     ).fetchone() == (1,)

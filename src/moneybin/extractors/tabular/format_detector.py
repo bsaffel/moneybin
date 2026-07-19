@@ -59,6 +59,7 @@ class FormatInfo:
 def detect_format(
     path: Path,
     *,
+    source_bytes: bytes | None = None,
     format_override: str | None = None,
     delimiter_override: str | None = None,
     encoding_override: str | None = None,
@@ -68,6 +69,7 @@ def detect_format(
 
     Args:
         path: Path to the file to detect.
+        source_bytes: Already materialized source object to inspect.
         format_override: Explicit file type (skips detection).
         delimiter_override: Explicit delimiter (text formats only).
         encoding_override: Explicit encoding (text formats only).
@@ -80,10 +82,10 @@ def detect_format(
         ValueError: If file type is unsupported or size limit exceeded.
         FileNotFoundError: If the file does not exist.
     """
-    if not path.exists():
+    if source_bytes is None and not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
-    file_size = path.stat().st_size
+    file_size = len(source_bytes) if source_bytes is not None else path.stat().st_size
 
     if format_override:
         file_type = format_override
@@ -91,24 +93,28 @@ def detect_format(
         file_type = _detect_type_from_extension(path)
 
     if file_type in _MAGIC_BYTES and file_size >= 4:
-        _verify_magic_bytes(path, file_type)
+        _verify_magic_bytes(path, file_type, source_bytes=source_bytes)
 
     if not no_size_limit:
         _check_size_limit(path, file_type, file_size)
 
     if file_type in _TEXT_TYPES:
-        encoding = encoding_override or detect_encoding(path)
+        encoding = encoding_override or detect_encoding(path, source_bytes=source_bytes)
         if delimiter_override:
             delimiter = delimiter_override
             file_type = _DELIMITER_TYPE.get(delimiter, "csv")
         elif file_type == "csv":
-            sample_lines = _read_sample_lines(path, encoding, n=20)
+            sample_lines = _read_sample_lines(
+                path, encoding, n=20, source_bytes=source_bytes
+            )
             delimiter = detect_delimiter(sample_lines)
             file_type = _DELIMITER_TYPE.get(delimiter, "csv")
         elif file_type == "tsv":
             delimiter = "\t"
         else:
-            sample_lines = _read_sample_lines(path, encoding, n=20)
+            sample_lines = _read_sample_lines(
+                path, encoding, n=20, source_bytes=source_bytes
+            )
             delimiter = detect_delimiter(sample_lines)
             file_type = _DELIMITER_TYPE.get(delimiter, "csv")
 
@@ -135,9 +141,17 @@ def _detect_type_from_extension(path: Path) -> str:
     )
 
 
-def _verify_magic_bytes(path: Path, expected_type: str) -> None:
-    with open(path, "rb") as f:
-        header = f.read(8)
+def _verify_magic_bytes(
+    path: Path,
+    expected_type: str,
+    *,
+    source_bytes: bytes | None = None,
+) -> None:
+    if source_bytes is None:
+        with open(path, "rb") as f:
+            header = f.read(8)
+    else:
+        header = source_bytes[:8]
     for magic in _MAGIC_BYTES.get(expected_type, ()):
         if header.startswith(magic):
             return
@@ -197,17 +211,22 @@ def detect_delimiter(lines: list[str]) -> str:
     return best_delimiter
 
 
-def detect_encoding(path: Path) -> str:
+def detect_encoding(path: Path, *, source_bytes: bytes | None = None) -> str:
     """Detect file encoding using charset-normalizer.
 
     Args:
         path: Path to the text file.
+        source_bytes: Already materialized source object to inspect.
 
     Returns:
         Detected encoding string.
     """
-    with open(path, "rb") as f:
-        bom = f.read(4)
+    if source_bytes is None:
+        with open(path, "rb") as f:
+            raw = f.read()
+    else:
+        raw = source_bytes
+    bom = raw[:4]
     if bom.startswith(b"\xef\xbb\xbf"):
         return "utf-8-sig"
     if bom.startswith(b"\xff\xfe"):
@@ -216,15 +235,14 @@ def detect_encoding(path: Path) -> str:
         return "utf-16-be"
 
     try:
-        with open(path, encoding="utf-8") as f:
-            f.read(8192)
+        raw[:8192].decode("utf-8")
         return "utf-8"
     except UnicodeDecodeError:
         pass
 
-    from charset_normalizer import from_path
+    from charset_normalizer import from_bytes
 
-    result = from_path(path)
+    result = from_bytes(raw)
     best = result.best()
     if best and best.encoding:
         return best.encoding
@@ -232,14 +250,20 @@ def detect_encoding(path: Path) -> str:
     return "utf-8"
 
 
-def _read_sample_lines(path: Path, encoding: str, n: int = 20) -> list[str]:
+def _read_sample_lines(
+    path: Path,
+    encoding: str,
+    n: int = 20,
+    *,
+    source_bytes: bytes | None = None,
+) -> list[str]:
     lines: list[str] = []
     try:
-        with open(path, encoding=encoding, errors="replace") as f:
-            for i, line in enumerate(f):
-                if i >= n:
-                    break
-                lines.append(line.rstrip("\n\r"))
+        if source_bytes is None:
+            text = path.read_text(encoding=encoding, errors="replace")
+        else:
+            text = source_bytes.decode(encoding, errors="replace")
+        lines.extend(line.rstrip("\n\r") for line in text.splitlines()[:n])
     except Exception:  # noqa: BLE001 — broad catch intentional: best-effort sampling, failure handled by caller
         logger.debug(f"Could not read sample lines from {path}", exc_info=True)
     return lines

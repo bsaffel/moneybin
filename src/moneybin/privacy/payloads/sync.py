@@ -20,7 +20,9 @@ Tier derivation summary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.taxonomy import DataClass
 
@@ -145,6 +147,35 @@ class SyncLinkStatusPayload:
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
     error: Annotated[str | None, DataClass.DESCRIPTION]
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+class SyncGlobalStatusView(BaseModel):
+    """Global consolidated sync status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["global"], DataClass.TXN_TYPE] = "global"
+    connections: list[SyncConnectionRow]
+
+
+class SyncSessionStatusView(BaseModel):
+    """One consolidated link-session status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["session"], DataClass.TXN_TYPE] = "session"
+    session_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    provider_item_id: Annotated[str | None, DataClass.RECORD_ID]
+    institution_name: Annotated[str | None, DataClass.INSTITUTION]
+    error: Annotated[str | None, DataClass.DESCRIPTION]
+    expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+SyncStatusCoarsePayload = Annotated[
+    SyncGlobalStatusView | SyncSessionStatusView,
+    Field(discriminator="kind"),
+]
 
 
 # ---------------------------------------------------------------------------

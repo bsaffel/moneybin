@@ -23,12 +23,14 @@ def _issue(
     *,
     issued_at: datetime = NOW,
     expires_at: datetime | None = None,
+    source_bytes: bytes = b"reviewed statement bytes",
 ) -> str:
     return repo.issue(  # type: ignore[attr-defined]
         file_path="/Users/example/statement.csv",
         file_sha256="a" * 64,
         file_size_bytes=128,
         channel="tabular",
+        source_bytes=source_bytes,
         snapshot={
             "mapping": {
                 "transaction_date": "Date",
@@ -55,6 +57,7 @@ def test_issue_persists_complete_snapshot_and_audit(db: Database) -> None:
     assert row["file_sha256"] == "a" * 64
     assert row["file_size_bytes"] == 128
     assert row["snapshot_json"]["confidence"] == "high"
+    assert repo.get_source_bytes(preview_id) == b"reviewed statement bytes"  # type: ignore[attr-defined]
     audit = db.execute(
         """
         SELECT before_value, after_value
@@ -66,6 +69,7 @@ def test_issue_persists_complete_snapshot_and_audit(db: Database) -> None:
     assert audit is not None
     assert audit[0] is None
     assert audit[1] is not None
+    assert "reviewed statement bytes" not in audit[1]
 
 
 def test_consume_binds_exact_file_and_records_result(db: Database) -> None:
@@ -97,6 +101,7 @@ def test_consume_binds_exact_file_and_records_result(db: Database) -> None:
     row = repo.get(preview_id)  # type: ignore[attr-defined]
     assert row["consumed_at"] is not None
     assert row["import_id"] == "imp_123"
+    assert repo.get_source_bytes(preview_id) is None  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(
@@ -185,3 +190,23 @@ def test_outer_transaction_rollback_restores_unconsumed_preview(db: Database) ->
         db.rollback()
 
     assert repo.get(preview_id)["consumed_at"] is None  # type: ignore[attr-defined,index]
+    assert repo.get_source_bytes(preview_id) == b"reviewed statement bytes"  # type: ignore[attr-defined]
+
+
+def test_purge_expired_removes_orphaned_app_and_raw_rows(db: Database) -> None:
+    repo = _repo(db)
+    expired = _issue(
+        repo,
+        issued_at=NOW - timedelta(minutes=10),
+        expires_at=NOW - timedelta(minutes=5),
+        source_bytes=b"expired bytes",
+    )
+    live = _issue(repo, source_bytes=b"live bytes")
+
+    purged = repo.purge_expired(now=NOW, actor="system")  # type: ignore[attr-defined]
+
+    assert purged == 1
+    assert repo.get(expired) is None  # type: ignore[attr-defined]
+    assert repo.get_source_bytes(expired) is None  # type: ignore[attr-defined]
+    assert repo.get(live) is not None  # type: ignore[attr-defined]
+    assert repo.get_source_bytes(live) == b"live bytes"  # type: ignore[attr-defined]

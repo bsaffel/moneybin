@@ -17,6 +17,7 @@ status sees the recovery path without a second tool call.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
@@ -47,11 +48,15 @@ from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.gsheet import (
     GsheetAuthPayload,
     GsheetCoarsePayload,
+    GsheetConnectAuthView,
+    GsheetConnectBindingView,
+    GsheetConnectCoarsePayload,
     GsheetConnectionRow,
     GsheetConnectionsPayload,
     GsheetConnectionsView,
     GsheetConnectPayload,
     GsheetDetection,
+    GsheetDisconnectCoarsePayload,
     GsheetDisconnectPayload,
     GsheetInitialPull,
     GsheetPullPayload,
@@ -380,7 +385,12 @@ def _gsheet_coarse_envelope(
             sensitivity=cast(Any, tier_to_sensitivity(tier).value),
             total_count=len(redacted.connections),
             returned_count=len(redacted.connections),
-            actions=_drift_hints(redacted.connections),
+            actions=[
+                f"Use gsheet_connect(connection_id='{row.connection_id}') to "
+                "re-detect and reconnect this binding."
+                for row in redacted.connections
+                if row.status == "drift_detected"
+            ],
             classes_returned=sorted(data_class.value for data_class in classes),
         ),
     )
@@ -519,7 +529,7 @@ def gsheet_connect_coarse(
     confirm_mapping: StrictBool = False,
     accept_seed_fallback: StrictBool = False,
     no_initial_pull: StrictBool = False,
-) -> ResponseEnvelope[GsheetAuthPayload | GsheetConnectPayload]:
+) -> ResponseEnvelope[GsheetConnectCoarsePayload]:
     """Authenticate, connect, or reconnect through one mode-aware workflow."""
     if url is not None and connection_id is not None:
         raise UserError(
@@ -527,14 +537,37 @@ def gsheet_connect_coarse(
             code="GSHEET_CONNECT_MODE_CONFLICT",
         )
     if url is None and connection_id is None:
-        return gsheet_auth.__wrapped__(  # type: ignore[attr-defined]
+        auth_only = {
+            "adapter": adapter,
+            "alias": alias,
+            "account_name": account_name,
+            "account_id": account_id,
+            "column_mapping": column_mapping,
+            "sign": sign,
+            "confirm_mapping": bool(confirm_mapping),
+            "accept_seed_fallback": bool(accept_seed_fallback),
+            "no_initial_pull": bool(no_initial_pull),
+        }
+        supplied = sorted(key for key, value in auth_only.items() if value)
+        if supplied:
+            raise UserError(
+                f"Authentication-only mode does not accept: {', '.join(supplied)}.",
+                code="GSHEET_AUTH_ARGUMENT_CONFLICT",
+            )
+        response = gsheet_auth.__wrapped__(  # type: ignore[attr-defined]
             force_reauth=bool(force_reauth)
+        )
+        return _gsheet_connect_envelope(
+            GsheetConnectAuthView(status=response.data.status),
+            actions=[
+                "Use gsheet_connect(url=...) to create a connection when ready.",
+            ],
         )
     if force_reauth:
         oauth = _build_oauth_client()
         oauth.authorize()
     if url is not None:
-        return gsheet_connect.__wrapped__(  # type: ignore[attr-defined]
+        response = gsheet_connect.__wrapped__(  # type: ignore[attr-defined]
             url=url,
             adapter=adapter,
             alias=alias,
@@ -545,6 +578,18 @@ def gsheet_connect_coarse(
             yes=bool(confirm_mapping),
             accept_seed_fallback=bool(accept_seed_fallback),
             no_initial_pull=bool(no_initial_pull),
+        )
+        return _gsheet_connect_envelope(
+            GsheetConnectBindingView(
+                kind="new",
+                connection=response.data.connection,
+                detection=response.data.detection,
+                initial_pull=response.data.initial_pull,
+            ),
+            actions=[
+                "Use gsheet(view='status', connection_id=...) to verify the "
+                "connection.",
+            ],
         )
     unsupported = {
         "adapter": adapter,
@@ -561,10 +606,41 @@ def gsheet_connect_coarse(
             f"Reconnect mode does not accept: {', '.join(supplied)}.",
             code="GSHEET_RECONNECT_ARGUMENT_CONFLICT",
         )
-    return gsheet_reconnect.__wrapped__(  # type: ignore[attr-defined]
+    response = gsheet_reconnect.__wrapped__(  # type: ignore[attr-defined]
         connection_id=cast(str, connection_id),
         yes=bool(confirm_mapping),
         sign=sign,
+    )
+    return _gsheet_connect_envelope(
+        GsheetConnectBindingView(
+            kind="reconnect",
+            connection=response.data.connection,
+            detection=response.data.detection,
+            initial_pull=response.data.initial_pull,
+        ),
+        actions=[
+            "Use gsheet(view='status', connection_id=...) to verify the connection.",
+        ],
+    )
+
+
+def _gsheet_connect_envelope(
+    data: GsheetConnectAuthView | GsheetConnectBindingView,
+    *,
+    actions: list[str],
+) -> ResponseEnvelope[GsheetConnectCoarsePayload]:
+    """Build a typed, redacted, mode-specific consolidated connect result."""
+    classes = extract_data_classes(type(data))
+    tier = max(data_class.tier for data_class in classes)
+    redacted = redact_typed(data, None)
+    return cast(
+        ResponseEnvelope[GsheetConnectCoarsePayload],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
     )
 
 
@@ -604,7 +680,7 @@ async def gsheet_disconnect_coarse(
     connection_id: str,
     state: Literal["disconnected", "absent"] = "disconnected",
     confirmation_token: str | None = None,
-) -> ResponseEnvelope[GsheetDisconnectPayload]:
+) -> ResponseEnvelope[GsheetDisconnectCoarsePayload]:
     """Set a reversible disconnected state or exactly confirmed absence."""
     if state == "disconnected":
         if confirmation_token is not None:
@@ -614,12 +690,13 @@ async def gsheet_disconnect_coarse(
             )
         with _build_connection_service() as service:
             service.disconnect(connection_id, purge=False, actor="mcp")
-        return build_envelope(
-            data={
-                "connection_id": connection_id,
-                "status": "disconnected",
-                "purged": False,
-            },
+        return _gsheet_disconnect_envelope(
+            GsheetDisconnectCoarsePayload(
+                kind="disconnected",
+                connection_id=connection_id,
+                status="disconnected",
+                purged=False,
+            ),
             actions=[
                 "Use gsheet_connect(connection_id=...) to reconnect this binding.",
             ],
@@ -643,12 +720,13 @@ async def gsheet_disconnect_coarse(
             actor="mcp",
         )
     before = plan.connection_before_state
-    return build_envelope(
-        data={
-            "connection_id": connection_id,
-            "status": "purged",
-            "purged": True,
-            "recovery": {
+    return _gsheet_disconnect_envelope(
+        GsheetDisconnectCoarsePayload(
+            kind="absent",
+            connection_id=connection_id,
+            status="purged",
+            purged=True,
+            recovery={
                 "reversible": False,
                 "spreadsheet_id": before["spreadsheet_id"],
                 "sheet_gid": before["sheet_gid"],
@@ -656,12 +734,46 @@ async def gsheet_disconnect_coarse(
                 "alias": before.get("alias"),
                 "account_id": before.get("account_id"),
             },
-        },
+        ),
         actions=[
             "This purge is permanent. Recreate the connection from its Google "
             "Sheets URL to resume future pulls.",
         ],
     )
+
+
+def _gsheet_disconnect_envelope(
+    data: GsheetDisconnectCoarsePayload,
+    *,
+    actions: list[str],
+) -> ResponseEnvelope[GsheetDisconnectCoarsePayload]:
+    """Build one typed consolidated disconnect result."""
+    classes = extract_data_classes(type(data))
+    tier = max(data_class.tier for data_class in classes)
+    return build_envelope(
+        data=cast(GsheetDisconnectCoarsePayload, redact_typed(data, None)),
+        sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+        actions=actions,
+        classes_returned=sorted(data_class.value for data_class in classes),
+    )
+
+
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def gsheet_pull_coarse(
+    connection_id: str | None = None,
+) -> ResponseEnvelope[GsheetPullPayload]:
+    """Pull through the isolated workflow vocabulary."""
+    response = gsheet_pull.__wrapped__(connection_id=connection_id)  # type: ignore[attr-defined]
+    actions: list[str] = []
+    for row in response.data.pulls:
+        if row.status == "drift_detected":
+            actions.append(
+                f"Use gsheet_connect(connection_id='{row.connection_id}') to "
+                "re-detect and reconnect this binding."
+            )
+        elif row.status == "auth_expired":
+            actions.append("Use gsheet_connect(force_reauth=True) to authenticate.")
+    return replace(response, actions=actions)
 
 
 def register_gsheet_coarse_reads(mcp: FastMCP) -> None:
@@ -687,14 +799,20 @@ def register_gsheet_workflow_tools(mcp: FastMCP) -> None:
             "gsheet_connect",
             "Authenticate, connect, or reconnect in one mode-aware workflow.",
         ),
-        (gsheet_pull, "gsheet_pull", "Pull one or all connections."),
+        (gsheet_pull_coarse, "gsheet_pull", "Pull one or all connections."),
         (
             gsheet_disconnect_coarse,
             "gsheet_disconnect",
             "Soft-disconnect or exactly confirm a permanent purge.",
         ),
     ):
-        register(mcp, callback, name, description)
+        register(
+            mcp,
+            callback,
+            name,
+            description,
+            privacy_actor=name,
+        )
 
 
 def register_gsheet_tools(mcp: FastMCP) -> None:

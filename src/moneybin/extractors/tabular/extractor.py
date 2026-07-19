@@ -24,6 +24,7 @@ from moneybin.extractors._types import (
 )
 from moneybin.extractors.tabular.config import TabularProviderConfig
 from moneybin.loaders import import_log
+from moneybin.metrics.observations import MetricObservations, record_counter
 from moneybin.metrics.registry import TABULAR_IMPORT_BATCHES
 from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
 
@@ -145,6 +146,7 @@ class TabularExtractor:
         sign_convention: str | None = None,
         balance_validated: bool | None = None,
         emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
     ) -> None:
         """Finalize an import batch. Delegates to import_log module + records metric."""
         # Zero-row imports (whether all-rejected, all-trailing-skipped, or
@@ -157,8 +159,12 @@ class TabularExtractor:
             status = "complete"
         else:
             status = "partial"
-        if emit_metrics:
-            TABULAR_IMPORT_BATCHES.labels(status=status).inc()
+        record_counter(
+            TABULAR_IMPORT_BATCHES,
+            labels={"status": status},
+            emit_metrics=emit_metrics,
+            observations=observations,
+        )
         import_log.finalize_import(
             self.db,
             import_id,

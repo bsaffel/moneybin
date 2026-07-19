@@ -24,6 +24,7 @@ from moneybin.connectors.gsheet.connection_service import ConnectResult
 from moneybin.connectors.gsheet.pull_service import PullResult
 from moneybin.mcp.tools.gsheet import (
     gsheet_coarse,
+    gsheet_connect_coarse,
     register_gsheet_coarse_reads,
     register_gsheet_tools,
 )
@@ -166,6 +167,72 @@ async def test_gsheet_workflow_schemas_are_strict_and_target_state_based() -> No
     assert "confirmation_token" in disconnect.parameters["properties"]
     assert connect.output_schema is None
     assert disconnect.output_schema is None
+
+
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [
+        ("adapter", "transactions"),
+        ("alias", "budget"),
+        ("account_name", "Checking"),
+        ("account_id", "acct_1"),
+        ("column_mapping", {"Date": "transaction_date"}),
+        ("sign", "negative_is_expense"),
+        ("confirm_mapping", True),
+        ("accept_seed_fallback", True),
+        ("no_initial_pull", True),
+    ],
+)
+async def test_gsheet_connect_auth_only_rejects_connection_arguments(
+    argument: str,
+    value: object,
+) -> None:
+    response = await gsheet_connect_coarse(**{argument: value})  # type: ignore[arg-type]
+
+    assert response.error is not None
+    assert response.error.code == "GSHEET_AUTH_ARGUMENT_CONFLICT"
+
+
+def test_gsheet_workflow_registrar_uses_public_privacy_actor_names() -> None:
+    registered: list[tuple[str, str | None]] = []
+
+    def capture(
+        _mcp: object,
+        _callback: object,
+        name: str,
+        _description: str,
+        *,
+        privacy_actor: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        registered.append((name, privacy_actor))
+
+    with patch.object(gsheet_module, "register", capture):
+        gsheet_module.register_gsheet_workflow_tools(MagicMock())
+
+    assert registered == [(name, name) for name, _ in registered]
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_replacement_actions_are_closed_over_isolated_cohort(
+    mock_build: MagicMock,
+) -> None:
+    drifted = _make_connection(
+        connection_id="conn_drift",
+        status="drift_detected",
+        last_status_reason="Header reworded",
+    )
+    service = MagicMock()
+    service.list_connections.return_value = [drifted]
+    mock_build.return_value.__enter__.return_value = service
+
+    response = await gsheet_coarse(view="status")
+    actions = " ".join(response.actions)
+
+    assert "gsheet_reconnect" not in actions
+    assert "gsheet_status" not in actions
+    assert "gsheet_connect(connection_id=" in actions
 
 
 # ---------------------------------------------------------------------------

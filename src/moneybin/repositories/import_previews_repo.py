@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
-from moneybin.tables import IMPORT_PREVIEWS
+from moneybin.tables import IMPORT_PREVIEW_SNAPSHOTS, IMPORT_PREVIEWS
 
 _COLUMNS = (
     "preview_id",
@@ -68,6 +68,7 @@ class ImportPreviewsRepo(BaseRepo):
         file_sha256: str,
         file_size_bytes: int,
         channel: Literal["tabular", "pdf", "ofx"],
+        source_bytes: bytes,
         snapshot: dict[str, Any],
         issued_at: datetime,
         expires_at: datetime,
@@ -95,6 +96,14 @@ class ImportPreviewsRepo(BaseRepo):
                     _db_time(expires_at),
                 ],
             )
+            self._db.execute(
+                f"""
+                INSERT INTO {IMPORT_PREVIEW_SNAPSHOTS.full_name} (
+                    preview_id, source_bytes, created_at
+                ) VALUES (?, ?, ?)
+                """,  # noqa: S608  # TableRef + parameterized values
+                [preview_id, source_bytes, _db_time(issued_at)],
+            )
             after = self._fetch_row(preview_id)
             self._emit_audit(
                 action="import_preview.issue",
@@ -104,6 +113,18 @@ class ImportPreviewsRepo(BaseRepo):
                 actor=actor,
             )
         return preview_id
+
+    def get_source_bytes(self, preview_id: str) -> bytes | None:
+        """Return the exact encrypted-at-rest byte object for one preview."""
+        row = self._db.execute(
+            f"""
+            SELECT source_bytes
+            FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+            WHERE preview_id = ?
+            """,  # noqa: S608  # TableRef + parameterized value
+            [preview_id],
+        ).fetchone()
+        return None if row is None else bytes(row[0])
 
     def consume(
         self,
@@ -149,6 +170,13 @@ class ImportPreviewsRepo(BaseRepo):
                 """,  # noqa: S608  # TableRef + parameterized values
                 [_db_time(now), _db_time(now), preview_id],
             )
+            self._db.execute(
+                f"""
+                DELETE FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                WHERE preview_id = ?
+                """,  # noqa: S608  # TableRef + parameterized value
+                [preview_id],
+            )
             after = self._fetch_row(preview_id)
             self._emit_audit(
                 action="import_preview.consume",
@@ -158,6 +186,67 @@ class ImportPreviewsRepo(BaseRepo):
                 actor=actor,
             )
             return self._require(after, "preview_id", preview_id)
+
+    def purge_expired(
+        self,
+        *,
+        now: datetime,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> int:
+        """Delete expired previews and either side's unusable orphan rows."""
+        cutoff = _db_time(now)
+        with self._transaction(in_outer_txn=in_outer_txn):
+            rows = self._db.execute(
+                f"""
+                SELECT preview_id
+                FROM {IMPORT_PREVIEWS.full_name}
+                WHERE expires_at <= ?
+                   OR preview_id NOT IN (
+                       SELECT preview_id
+                       FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                   )
+                ORDER BY preview_id
+                """,  # noqa: S608  # TableRefs + parameterized cutoff
+                [cutoff],
+            ).fetchall()
+            preview_ids = [str(row[0]) for row in rows]
+            for preview_id in preview_ids:
+                before = self._require(
+                    self._fetch_row(preview_id),
+                    "preview_id",
+                    preview_id,
+                )
+                self._db.execute(
+                    f"""
+                    DELETE FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                    WHERE preview_id = ?
+                    """,  # noqa: S608  # TableRef + parameterized value
+                    [preview_id],
+                )
+                self._db.execute(
+                    f"""
+                    DELETE FROM {IMPORT_PREVIEWS.full_name}
+                    WHERE preview_id = ?
+                    """,  # noqa: S608  # TableRef + parameterized value
+                    [preview_id],
+                )
+                self._emit_audit(
+                    action="import_preview.expire",
+                    target=(*self._audit_target, preview_id),
+                    before=self._serialize_for_audit(before),
+                    after=None,
+                    actor=actor,
+                )
+            self._db.execute(
+                f"""
+                DELETE FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                WHERE preview_id NOT IN (
+                    SELECT preview_id FROM {IMPORT_PREVIEWS.full_name}
+                )
+                """,  # noqa: S608  # TableRefs are code constants
+            )
+            return len(preview_ids)
 
     def record_result(
         self,
