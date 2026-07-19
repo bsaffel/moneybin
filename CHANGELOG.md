@@ -62,8 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   disconnects require payload-bound confirmation; human import decisions keep
   their 180-second window; PDF sign inversions can be approved over MCP against
   immutable preview bytes; partial import/sync failures retain actionable
-  guidance; and orphan annotations and accepted matches again expose
-  executable recovery through the standard 45-tool registry. (#344)
+  guidance; auto-rule proposals retain blast-radius review and proposal-scoped
+  approval; and orphan annotations and accepted matches again expose executable
+  recovery through the standard 45-tool registry. (#344)
 - **Import preview parsing no longer drops rows or provenance at edge cases.**
   Header detection counts physical CSV lines, UTF-8 probing tolerates a
   multibyte character at the sample boundary, path-based detection stays
@@ -256,7 +257,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   defer schemas from that identical registry without reconnect, packs, or
   profiles. Reports extend the `reports` catalog rather than consuming tool
   slots, and future tools require the published admission record. The
-  deterministic comparison reduced metadata from 90,734 to 45,154 bytes;
+  deterministic comparison reduced metadata from 90,734 to 45,752 bytes;
   promotion remains pending observed context-budget and host-deferral evidence.
 - **Executable CLI/MCP capability parity.** A checked outcome map now covers all
   45 standard MCP tools and every implemented Typer path by service ownership

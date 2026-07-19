@@ -220,9 +220,11 @@ def _taxonomy_actions(
     next_cursor: str | None,
 ) -> list[str]:
     """Return replacement-native navigation and continuation actions."""
-    actions = [
-        f"Use taxonomy_set with kind={view.removesuffix('s')!r} to maintain this taxonomy"
-    ]
+    kind = {
+        "categories": "category",
+        "merchants": "merchant",
+    }[view]
+    actions = [f"Use taxonomy_set with kind={kind!r} to maintain this taxonomy"]
     if next_cursor is not None:
         actions.append(
             f"Continue with taxonomy(view={view!r}, "

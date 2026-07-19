@@ -2,7 +2,12 @@
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, render_or_json
+from moneybin.cli.output import (
+    OutputFormat,
+    output_option,
+    quiet_option,
+    render_or_json,
+)
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
@@ -17,7 +22,10 @@ app.add_typer(links.app, name="links")
 
 
 @app.command("list")
-def merchants_list(output: OutputFormat = output_option) -> None:
+def merchants_list(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # noqa: ARG001 — list emits result rows only
+) -> None:
     """List all merchant mappings."""
     from moneybin.services.categorization import CategorizationService
 

@@ -22,6 +22,11 @@ envelope. The investments_securities_links_* review tools delegate to
 SecurityLinksService instead — the agent-facing peer to the
 `investments securities links` CLI (mirrors merchants_links_* /
 accounts_links_*).
+
+The granular callbacks named in ``_LEGACY_INTERNAL_CALLBACKS`` are internal
+helpers retained for standard-boundary composition and parity. They are never
+individually registered, remain undecorated, and are pinned by the
+surface-budget tests.
 """
 
 from __future__ import annotations
@@ -1227,6 +1232,17 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
 
 
 # ─── Registration ──────────────────────────────────────────────────────────
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    investments,
+    investments_holdings,
+    investments_lots,
+    investments_gains,
+    investments_securities,
+    investments_securities_links_pending,
+    investments_securities_links_set,
+    investments_securities_links_history,
+)
 
 
 def register_investments_tools(mcp: FastMCP) -> None:

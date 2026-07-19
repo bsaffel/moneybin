@@ -651,6 +651,17 @@ def transactions_categorize_improve_ai() -> ResponseEnvelope[ImproveAiPayload]:
     )
 
 
+_LEGACY_INTERNAL_CALLBACKS = (
+    transactions_categorize_rules,
+    transactions_categorize_stats,
+    transactions_categorize_pending,
+    transactions_categorize_auto_review,
+    transactions_categorize_rules_create,
+    transactions_categorize_rules_delete,
+    transactions_categorize_auto_accept,
+)
+
+
 def register_transactions_categorize_tools(mcp: FastMCP) -> None:
     """Register the standard categorization read and write boundaries."""
     register_categorization_coarse_reads(mcp)

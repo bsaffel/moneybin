@@ -27,6 +27,7 @@ from moneybin.mcp.write_contracts import (
     CategorizationDecisionRequest,
     MatchDecisionRequest,
     MerchantLinkDecisionRequest,
+    OrdinaryReviewDecisionRequest,
     SecurityLinkDecisionRequest,
 )
 from moneybin.repositories.categorization_decisions_repo import (
@@ -39,6 +40,12 @@ from moneybin.repositories.security_link_decisions_repo import (
 )
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.auto_rule_service import (
+    AutoConfirmResult,
+    AutoReviewResult,
+    AutoRuleDecisionResult,
+    AutoRuleService,
+)
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.review_decisions_service import (
@@ -288,7 +295,14 @@ def _seed_identity_merchant_transaction(
 
 @pytest.mark.parametrize(
     "kind",
-    ["categorization", "matches", "account_links", "merchant_links", "security_links"],
+    [
+        "categorization",
+        "auto_rules",
+        "matches",
+        "account_links",
+        "merchant_links",
+        "security_links",
+    ],
 )
 async def test_review_queue_uses_one_envelope(kind: str) -> None:
     response = await reviews_coarse(kind=kind, status="pending")  # type: ignore[arg-type]
@@ -306,6 +320,7 @@ async def test_review_summary_returns_exact_kind_status_matrix() -> None:
         (kind, status)
         for kind in (
             "categorization",
+            "auto_rules",
             "matches",
             "account_links",
             "merchant_links",
@@ -315,6 +330,32 @@ async def test_review_summary_returns_exact_kind_status_matrix() -> None:
     }
     assert set(observed) == expected
     assert response.data.total == sum(observed.values())
+
+
+async def test_review_summary_counts_auto_rules_without_blast_radius_scan() -> None:
+    with (
+        patch.object(AutoRuleService, "count_pending_proposals", return_value=2),
+        patch.object(
+            AutoRuleService,
+            "count_proposal_history",
+            return_value=1,
+        ),
+        patch.object(
+            AutoRuleService,
+            "list_proposal_history",
+            side_effect=AssertionError("summary materialized proposal history"),
+        ),
+        patch.object(
+            AutoRuleService,
+            "review",
+            side_effect=AssertionError("summary ran transaction-wide blast scan"),
+        ),
+    ):
+        response = await reviews_coarse()
+
+    counts = {(item.kind, item.status): item.count for item in response.data.counts}
+    assert counts[("auto_rules", "pending")] == 2
+    assert counts[("auto_rules", "history")] == 1
 
 
 @pytest.mark.parametrize(
@@ -405,6 +446,39 @@ async def test_review_history_calls_history_not_pending() -> None:
     assert response.data.rows == []
 
 
+async def test_auto_rule_review_preserves_proposal_blast_radius() -> None:
+    proposal = {
+        "proposed_rule_id": "proposal-1",
+        "merchant_pattern": "DEMO MARKET",
+        "match_type": "contains",
+        "category": "Groceries",
+        "subcategory": None,
+        "trigger_count": 3,
+        "sample_txn_ids": ["txn-1", "txn-2"],
+        "estimated_match_count": 27,
+        "is_broad": True,
+    }
+    with (
+        patch(
+            "moneybin.mcp.tools.reviews.AutoRuleService.count_pending_proposals",
+            return_value=1,
+        ),
+        patch(
+            "moneybin.mcp.tools.reviews.AutoRuleService.review",
+            return_value=AutoReviewResult(proposals=[proposal], total_count=1),
+        ) as review,
+    ):
+        response = await reviews_coarse(kind="auto_rules", status="pending")
+
+    review.assert_called_once_with(limit=1)
+    row = response.data.rows[0]
+    assert row.decision_id == "proposal-1"
+    assert row.kind == "auto_rules"
+    assert row.details.proposal.estimated_match_count == 27
+    assert row.details.proposal.is_broad is True
+    assert "reviews_decide" in " ".join(response.actions)
+
+
 def _pending_match(match_id: str) -> dict[str, Any]:
     return {
         "match_id": match_id,
@@ -471,6 +545,7 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
         {
             "summary",
             "categorization",
+            "auto_rules",
             "matches",
             "account_links",
             "merchant_links",
@@ -488,6 +563,18 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
     ("kind", "expected_sensitivity", "expected_classes"),
     [
         ("summary", "low", ["aggregate", "txn_type"]),
+        (
+            "auto_rules",
+            "medium",
+            [
+                "aggregate",
+                "category",
+                "merchant_name",
+                "record_id",
+                "timestamp_observability",
+                "txn_type",
+            ],
+        ),
         (
             "categorization",
             "high",
@@ -707,6 +794,203 @@ async def test_ordinary_decisions_route_by_kind_and_share_operation() -> None:
     )
 
 
+async def test_auto_rule_decisions_route_through_existing_decision_tool() -> None:
+    request_type = reviews_module.AutoRuleDecisionRequest
+    decisions = [
+        request_type(
+            kind="auto_rule",
+            decision_id="proposal-accept",
+            decision="accept",
+            allow_broad=True,
+        ),
+        request_type(
+            kind="auto_rule",
+            decision_id="proposal-reject",
+            decision="reject",
+        ),
+    ]
+    with (
+        patch.object(
+            reviews_module.AutoRuleService,
+            "decide",
+            return_value=AutoRuleDecisionResult(
+                statuses={
+                    "proposal-accept": "pending",
+                    "proposal-reject": "rejected",
+                },
+                impact=AutoConfirmResult(
+                    approved=0,
+                    rejected=1,
+                    skipped=1,
+                    newly_categorized=4,
+                    rule_ids=[],
+                ),
+            ),
+        ) as decide,
+    ):
+        response = await reviews_decide_coarse(
+            decisions=decisions,
+        )
+
+    decide.assert_called_once_with(
+        expected_pending_ids=["proposal-accept", "proposal-reject"],
+        accept=["proposal-accept"],
+        reject=["proposal-reject"],
+        actor="mcp",
+        allow_broad_ids={"proposal-accept"},
+    )
+    assert [row.status for row in response.data.results] == [
+        "pending",
+        "rejected",
+    ]
+    assert response.data.applied_count == 1
+    assert response.data.auto_rule_impact is not None
+    assert response.data.auto_rule_impact.approved == 0
+    assert response.data.auto_rule_impact.rejected == 1
+    assert response.data.auto_rule_impact.skipped == 1
+    assert response.data.auto_rule_impact.newly_categorized == 4
+    assert response.data.auto_rule_impact.rule_ids == []
+
+
+def _seed_real_auto_rule_decisions() -> tuple[str, str, str]:
+    category = "Real Auto Rule Review"
+    with get_database(read_only=False) as db:
+        categorization = CategorizationService(db)
+        categorization.create_category(category, actor="test")
+        for transaction_id, description in (
+            ("auto-trigger-accept", "REAL ACCEPT SHOP"),
+            ("auto-trigger-reject", "REAL REJECT SHOP"),
+            ("auto-backfill-accept", "REAL ACCEPT SHOP"),
+            ("auto-backfill-reject", "REAL REJECT SHOP"),
+        ):
+            db.execute(
+                """
+                INSERT INTO core.fct_transactions (
+                    transaction_id, account_id, transaction_date, amount,
+                    description, source_type
+                ) VALUES (?, 'ACC001', DATE '2026-07-18', -7.00, ?, 'ofx')
+                """,
+                [transaction_id, description],
+            )
+        for transaction_id in ("auto-trigger-accept", "auto-trigger-reject"):
+            categorization.write_categorization(
+                transaction_id=transaction_id,
+                category=category,
+                subcategory=None,
+                categorized_by="user",
+            )
+        auto_rules = AutoRuleService(db)
+        accept_id = auto_rules.record_categorization(
+            "auto-trigger-accept",
+            category,
+        )
+        reject_id = auto_rules.record_categorization(
+            "auto-trigger-reject",
+            category,
+        )
+        assert accept_id is not None
+        assert reject_id is not None
+    return accept_id, reject_id, category
+
+
+async def test_real_auto_rule_success_reports_rows_and_aggregate_impact() -> None:
+    accept_id, reject_id, category = _seed_real_auto_rule_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule",
+                decision_id=accept_id,
+                decision="accept",
+            ),
+            reviews_module.AutoRuleDecisionRequest(
+                kind="auto_rule",
+                decision_id=reject_id,
+                decision="reject",
+            ),
+        ]
+    )
+
+    assert response.error is None
+    assert [
+        (row.decision_id, row.status, row.changed) for row in response.data.results
+    ] == [
+        (accept_id, "approved", True),
+        (reject_id, "rejected", True),
+    ]
+    assert response.data.applied_count == 2
+    assert response.data.auto_rule_impact is not None
+    assert response.data.auto_rule_impact.approved == 1
+    assert response.data.auto_rule_impact.rejected == 1
+    assert response.data.auto_rule_impact.skipped == 0
+    assert response.data.auto_rule_impact.newly_categorized == 1
+    assert len(response.data.auto_rule_impact.rule_ids) == 1
+
+    with get_database(read_only=True) as db:
+        proposal_rows = db.execute(
+            """
+            SELECT proposed_rule_id, status, rule_id
+            FROM app.proposed_rules
+            WHERE proposed_rule_id IN (?, ?)
+            """,
+            [accept_id, reject_id],
+        ).fetchall()
+        assert {str(row[0]): (row[1], row[2]) for row in proposal_rows} == {
+            accept_id: (
+                "approved",
+                response.data.auto_rule_impact.rule_ids[0],
+            ),
+            reject_id: ("rejected", None),
+        }
+        accepted_backfill = db.execute(
+            """
+            SELECT category, categorized_by, rule_id
+            FROM app.transaction_categories
+            WHERE transaction_id = 'auto-backfill-accept'
+            """
+        ).fetchone()
+        rejected_backfill = db.execute(
+            """
+            SELECT category
+            FROM app.transaction_categories
+            WHERE transaction_id = 'auto-backfill-reject'
+            """
+        ).fetchone()
+    assert accepted_backfill == (
+        category,
+        "auto_rule",
+        response.data.auto_rule_impact.rule_ids[0],
+    )
+    assert rejected_backfill is None
+
+
+def test_auto_rule_reject_forbids_allow_broad() -> None:
+    with pytest.raises(ValueError, match="Reject forbids allow_broad"):
+        reviews_module.AutoRuleDecisionRequest(
+            kind="auto_rule",
+            decision_id="proposal-reject",
+            decision="reject",
+            allow_broad=True,
+        )
+
+
+async def test_ordinary_decisions_have_no_auto_rule_impact() -> None:
+    _transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
+
+    response = await reviews_decide_coarse(
+        decisions=[
+            CategorizationDecisionRequest(
+                kind="categorization",
+                decision_id=categorization_id,
+                decision="accept",
+                category=category,
+            )
+        ]
+    )
+
+    assert response.data.auto_rule_impact is None
+
+
 async def test_ordinary_batch_preflights_before_first_write() -> None:
     transaction_id, categorization_id, _match_id, category = _seed_ordinary_decisions()
 
@@ -845,7 +1129,7 @@ def test_ordinary_late_failure_rolls_back_state_audit_and_observability(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     transaction_id, categorization_id, match_id, category = _seed_ordinary_decisions()
-    requests = [
+    requests: list[OrdinaryReviewDecisionRequest] = [
         CategorizationDecisionRequest(
             kind="categorization",
             decision_id=categorization_id,

@@ -9,6 +9,11 @@ Tools:
     - transactions_matches_set — Accept or reject one pending match (low)
     - transactions_matches_history — Recent match decisions, newest first (low)
     - transactions_matches_run — Run the matcher over existing transactions (low)
+
+The granular callbacks named in ``_LEGACY_INTERNAL_CALLBACKS`` are internal
+helpers retained for standard-boundary composition and parity. They are never
+individually registered, remain undecorated, and are pinned by the
+surface-budget tests.
 """
 
 from __future__ import annotations
@@ -794,6 +799,15 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
         ),
         actions=["Use reviews(kind='matches') to review proposed matches"],
     )
+
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    transactions_get,
+    review,
+    transactions_matches_set,
+    transactions_matches_pending,
+    transactions_matches_history,
+)
 
 
 def register_transactions_tools(mcp: FastMCP) -> None:

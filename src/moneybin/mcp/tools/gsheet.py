@@ -648,7 +648,7 @@ async def gsheet_connect_coarse(
         )
     if force_reauth:
         oauth = _build_oauth_client()
-        oauth.authorize()
+        await asyncio.to_thread(oauth.authorize)
     if url is not None:
         response = await gsheet_connect(
             url=url,
@@ -903,3 +903,9 @@ def register_gsheet_workflow_tools(mcp: FastMCP) -> None:
 def register_gsheet_tools(mcp: FastMCP) -> None:
     """Register the standard Google Sheets workflow."""
     register_gsheet_workflow_tools(mcp)
+
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    gsheet,
+    gsheet_status,
+)

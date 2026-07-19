@@ -152,3 +152,6 @@ def read_import_inbox_pending() -> ImportInboxPendingPayload:
         would_process=list_result.would_process,
         ignored=list_result.ignored,
     )
+
+
+_LEGACY_INTERNAL_CALLBACKS = (import_inbox_pending,)

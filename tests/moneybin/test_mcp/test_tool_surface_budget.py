@@ -10,9 +10,12 @@ in a diff, not something a user discovers when their tools silently stop working
 """
 
 import asyncio
+import importlib
 import inspect
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fastmcp.tools import FunctionTool
@@ -131,7 +134,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "investments": (1_076, 4_908),
     "transactions": (1_287, 2_383),
     "transactions_categorize_rules": (564, 318),
-    "reviews": (690, 8_687),
+    "reviews": (703, 8_687),
     "taxonomy": (669, 620),
     "import_status": (642, 1_236),
     "gsheet": (441, 1_016),
@@ -139,7 +142,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "accounts_balance_assert": (1_416, 1_679),
     "transactions_annotate": (2_641, 3_653),
     "transactions_categorize_rules_set": (2_965, 2_670),
-    "reviews_decide": (1_802, 2_566),
+    "reviews_decide": (2_387, 2_566),
     "identity_links_decide": (2_758, 5_762),
     "taxonomy_set": (3_337, 3_223),
     "privacy_consent_set": (1_217, 2_188),
@@ -192,6 +195,21 @@ _STANDARD_CALLBACK_NAMES = {
     "sql_query": "sql_query",
     "sql_schema": "sql_schema",
 }
+
+_DEREGISTERED_CALLBACK_MODULES = (
+    "moneybin.mcp.tools.accounts",
+    "moneybin.mcp.tools.categories",
+    "moneybin.mcp.tools.curation",
+    "moneybin.mcp.tools.gsheet",
+    "moneybin.mcp.tools.import_inbox",
+    "moneybin.mcp.tools.import_tools",
+    "moneybin.mcp.tools.investments",
+    "moneybin.mcp.tools.merchants",
+    "moneybin.mcp.tools.privacy",
+    "moneybin.mcp.tools.system",
+    "moneybin.mcp.tools.transactions",
+    "moneybin.mcp.tools.transactions_categorize",
+)
 
 # The declared counts live in `moneybin.mcp.surface` because `mcp install` cites them
 # in its Windsurf warning and cannot afford to boot the server to compute them. This
@@ -325,6 +343,42 @@ def test_surface_contract_enforces_description_budget_when_enabled() -> None:
             enforce_hard_limit=False,
             enforce_description_budget=True,
         )
+
+
+@pytest.mark.integration
+async def test_every_replaced_callback_is_explicitly_internal_and_unregistered() -> (
+    None
+):
+    """Every replaced cohort callback is inventoried and cannot be republished."""
+    callbacks: list[Callable[..., object]] = []
+    for module_name in _DEREGISTERED_CALLBACK_MODULES:
+        module = importlib.import_module(module_name)
+        module_callbacks = cast(
+            tuple[Callable[..., object], ...],
+            module._LEGACY_INTERNAL_CALLBACKS,  # noqa: SLF001
+        )
+        callbacks.extend(module_callbacks)
+
+        for callback in module_callbacks:
+            assert not any(name.startswith("_mcp_") for name in vars(callback))
+
+    expected_names = {
+        name for cohort in _REPLACED_TOOL_NAME_COHORTS.values() for name in cohort
+    }
+    assert {callback.__name__ for callback in callbacks} == expected_names
+    assert len(callbacks) == len(expected_names)
+
+    from moneybin.mcp.server import init_db, mcp
+
+    init_db()
+    live_callbacks: list[object] = []
+    for name in STANDARD_TOOL_NAMES:
+        tool = await mcp.get_tool(name)
+        assert isinstance(tool, FunctionTool)
+        live_callbacks.append(inspect.getclosurevars(tool.fn).nonlocals["fn"])
+    assert {id(callback) for callback in callbacks}.isdisjoint({
+        id(callback) for callback in live_callbacks
+    })
 
 
 @pytest.mark.integration

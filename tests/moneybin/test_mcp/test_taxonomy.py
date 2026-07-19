@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import patch
 
 import pytest
@@ -802,6 +802,24 @@ async def test_taxonomy_merchants_filter_is_deterministic() -> None:
         "merchant-b",
     ]
     assert response.summary.total_count == 2
+
+
+@pytest.mark.parametrize(
+    ("view", "expected_kind"),
+    [
+        ("categories", "category"),
+        ("merchants", "merchant"),
+    ],
+)
+async def test_taxonomy_actions_name_valid_set_kinds(
+    view: Literal["categories", "merchants"],
+    expected_kind: str,
+) -> None:
+    response = await taxonomy_coarse(view=view)
+
+    assert response.actions[0] == (
+        f"Use taxonomy_set with kind='{expected_kind}' to maintain this taxonomy"
+    )
 
 
 async def test_taxonomy_rejects_category_only_argument_for_merchants() -> None:

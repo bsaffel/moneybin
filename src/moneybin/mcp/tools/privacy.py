@@ -549,3 +549,11 @@ def register_privacy_tools(mcp: FastMCP) -> None:
     """Register the standard privacy read and consent boundaries."""
     register_privacy_coarse_reads(mcp)
     register_privacy_coarse_writes(mcp)
+
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    privacy_status,
+    privacy_log,
+    privacy_consent_grant,
+    privacy_consent_revoke,
+)

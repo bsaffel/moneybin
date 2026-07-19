@@ -107,6 +107,48 @@ def _passthrough(value: Any, _consent: ConsentSet | None) -> Any:
     return value
 
 
+def _literal_values(declared_type: Any) -> tuple[Any, ...] | None:
+    """Return a field's literal values after unwrapping ``Annotated``."""
+    if get_origin(declared_type) is Annotated:
+        declared_type = get_args(declared_type)[0]
+    if get_origin(declared_type) is typing.Literal:
+        return get_args(declared_type)
+    return None
+
+
+def _typed_dict_matches(value: dict[object, object], declared_type: type) -> bool:
+    """Match required keys and literal discriminators for one TypedDict arm."""
+    try:
+        hints = _cached_type_hints(declared_type)
+    except (NameError, TypeError):
+        return False
+    required_keys = set(getattr(declared_type, "__required_keys__", ()))
+    if not required_keys.issubset(value):
+        return False
+    for key, field_type in hints.items():
+        literals = _literal_values(field_type)
+        if literals is not None and key in value and value[key] not in literals:
+            return False
+    return True
+
+
+def _mask_unknown_shape(value: Any, consent: ConsentSet | None) -> Any:
+    """Fail closed while preserving an ambiguous union's container shape."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {key: _mask_unknown_shape(item, consent) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_unknown_shape(item, consent) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_unknown_shape(item, consent) for item in value)
+    if isinstance(value, set):
+        return {_mask_unknown_shape(item, consent) for item in value}
+    if isinstance(value, frozenset):
+        return frozenset(_mask_unknown_shape(item, consent) for item in value)
+    return _mask_unresolved(value, consent)
+
+
 _TRANSFORMS: dict[DataClass, Any] = {
     DataClass.ACCOUNT_IDENTIFIER: _mask_account_identifier,
     DataClass.INSTITUTION_ACCOUNT_NUMBER: _mask_account_identifier,
@@ -284,10 +326,29 @@ def _redact(value: Any, consent: ConsentSet | None, declared_type: Any) -> Any:
     # Union / Optional — pick the arm matching the runtime type.
     # PEP 604 unions (X | None) use types.UnionType; typing.Union uses typing.Union.
     if origin is typing.Union or isinstance(declared_type, types.UnionType):
-        for arm in get_args(declared_type):
+        arms = get_args(declared_type)
+        typed_dict_arms = [
+            arm for arm in arms if isinstance(arm, type) and typing.is_typeddict(arm)
+        ]
+        if typed_dict_arms and isinstance(value, dict):
+            matches = [
+                arm
+                for arm in typed_dict_arms
+                if _typed_dict_matches(cast(dict[object, object], value), arm)
+            ]
+            if len(matches) == 1:
+                return _redact(value, consent, matches[0])
+            logger.warning(
+                "redact_typed: TypedDict union did not resolve to exactly one "
+                "runtime shape; masking all values"
+            )
+            return _mask_unknown_shape(value, consent)
+        for arm in arms:
             if arm is type(None):
                 if value is None:
                     return None
+                continue
+            if isinstance(arm, type) and typing.is_typeddict(arm):
                 continue
             # Outer-Optional Annotated arm, e.g. Optional[Annotated[str,
             # DataClass.ROUTING_NUMBER]]. get_origin(arm) is typing.Annotated,

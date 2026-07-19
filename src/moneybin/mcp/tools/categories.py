@@ -1,4 +1,11 @@
-"""Categories namespace tools — taxonomy reference data."""
+"""Categories namespace tools — taxonomy reference data.
+
+These granular callbacks are internal helpers retained for standard-boundary
+composition and parity; they are never individually registered. The standard
+surface routes their outcomes through ``taxonomy`` and ``taxonomy_set``.
+``_LEGACY_INTERNAL_CALLBACKS`` and the surface-budget guard prevent accidental
+publication.
+"""
 
 from __future__ import annotations
 
@@ -99,3 +106,11 @@ def categories_delete(
             category_id=category_id, action="deleted", force=force
         )
     )
+
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    categories,
+    categories_create,
+    categories_set,
+    categories_delete,
+)

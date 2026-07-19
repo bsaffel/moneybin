@@ -61,12 +61,12 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / maximum low |
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / maximum high |
 | `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state | Confirmed write / maximum low |
-| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending decision queue | Read / dynamic / maximum high / queue-derived |
-| `reviews_decide` | `decisions` | Resolve a review item | Confirmed write / maximum low |
+| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows | Read / dynamic / maximum high / queue-derived |
+| `reviews_decide` | `decisions` | Resolve ordinary or auto-rule review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` | Confirmed write / maximum low |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / maximum low |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / maximum medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
-| `import_files` | `force`, `paths`, `refresh` | Import files | Audited workflow / maximum medium |
+| `import_files` | `force`, `paths`, `refresh` | Import files | Audited workflow / maximum critical / file-derived |
 | `import_preview` | `file_path` | Inspect an import before mutation | Read / dynamic / maximum critical / file-derived |
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum medium / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / maximum medium / import-derived |

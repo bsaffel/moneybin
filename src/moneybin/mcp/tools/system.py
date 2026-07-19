@@ -992,3 +992,14 @@ def register_system_tools(mcp: FastMCP) -> None:
         "mutation is itself audited and undoable; dependency conflicts return "
         "the blocking operation IDs.",
     )
+
+
+# Internal granular helpers retained for standard-boundary composition and
+# parity. They are never individually registered; the surface-budget guard
+# derives the complete required inventory from the replaced public cohorts.
+_LEGACY_INTERNAL_CALLBACKS = (
+    system_status,
+    system_doctor,
+    system_audit_history,
+    system_audit_get,
+)

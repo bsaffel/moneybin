@@ -1,5 +1,5 @@
 {
-  "sha256": "df85b3b750fc80acdea8bee56f896fec90bb44bd68e75eb7b945ba8da9c6ed1b",
+  "sha256": "ed29b3d659fff626ba87917916aea4c27d50dd1cc5aba4117b4507678353d592",
   "tool_count": 45,
   "tools": [
     {
@@ -2277,6 +2277,7 @@
               "enum": [
                 "summary",
                 "categorization",
+                "auto_rules",
                 "matches",
                 "account_links",
                 "merchant_links",
@@ -2308,11 +2309,11 @@
         "name": "reviews"
       },
       "description_bytes": 104,
-      "input_schema_bytes": 401,
+      "input_schema_bytes": 414,
       "name": "reviews",
       "other_bytes": 49,
       "output_schema_bytes": 0,
-      "total_bytes": 690
+      "total_bytes": 703
     },
     {
       "annotation_bytes": 90,
@@ -2323,7 +2324,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically accept or reject categorization and transaction-match review decisions. Every target is resolved before any write; results retain input order and share one auditable operation_id.",
+        "description": "Accept or reject an atomic batch of transaction, match, or auto-rule review decisions. Auto-rule decisions use kind='auto_rule' and may set allow_broad after inspecting estimated_match_count; keep auto-rule and ordinary decisions in separate calls.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2478,6 +2479,58 @@
                       "decision"
                     ],
                     "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "decision": {
+                              "const": "reject"
+                            }
+                          },
+                          "required": [
+                            "decision"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "allow_broad": {
+                              "const": false
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "description": "Accept or reject one auto-generated categorization-rule proposal.",
+                    "properties": {
+                      "allow_broad": {
+                        "default": false,
+                        "type": "boolean"
+                      },
+                      "decision": {
+                        "enum": [
+                          "accept",
+                          "reject"
+                        ],
+                        "type": "string"
+                      },
+                      "decision_id": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "kind": {
+                        "const": "auto_rule",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "decision_id",
+                      "decision"
+                    ],
+                    "type": "object"
                   }
                 ]
               },
@@ -2496,12 +2549,12 @@
         },
         "name": "reviews_decide"
       },
-      "description_bytes": 190,
-      "input_schema_bytes": 1419,
+      "description_bytes": 248,
+      "input_schema_bytes": 1946,
       "name": "reviews_decide",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 1802
+      "total_bytes": 2387
     },
     {
       "annotation_bytes": 89,
@@ -4427,5 +4480,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 45154
+  "total_bytes": 45752
 }

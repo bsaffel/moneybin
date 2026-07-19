@@ -1,4 +1,4 @@
-"""Normalized boundaries across MoneyBin's five review queues."""
+"""Normalized boundaries across MoneyBin's six review queues."""
 
 from __future__ import annotations
 
@@ -26,12 +26,18 @@ from moneybin.mcp.confirmation import (
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import (
+    AutoRuleDecisionRequest,
     IdentityDecisionRequest,
+    OrdinaryReviewDecisionRequest,
     ReviewDecisionRequest,
 )
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.accounts import LinkHistoryRow, LinkPendingGroup
-from moneybin.privacy.payloads.categorize import PendingTxnRow
+from moneybin.privacy.payloads.categorize import (
+    AutoAcceptPayload,
+    AutoReviewProposalRow,
+    PendingTxnRow,
+)
 from moneybin.privacy.payloads.investments import (
     SecurityLinkHistoryRow,
     SecurityLinkPendingGroup,
@@ -44,6 +50,9 @@ from moneybin.privacy.payloads.reviews import (
     AccountLinkHistoryDetails,
     AccountLinkPendingDetails,
     AccountLinkReviewRow,
+    AutoRuleHistoryDetails,
+    AutoRulePendingDetails,
+    AutoRuleReviewRow,
     CategorizationHistoryDetails,
     CategorizationPendingDetails,
     CategorizationReviewRow,
@@ -59,6 +68,7 @@ from moneybin.privacy.payloads.reviews import (
     ReviewDecisionOutcome,
     ReviewQueueKind,
     ReviewsAccountLinksView,
+    ReviewsAutoRulesView,
     ReviewsCategorizationView,
     ReviewsCoarsePayload,
     ReviewsDecidePayload,
@@ -75,6 +85,7 @@ from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPending
 from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
@@ -87,6 +98,7 @@ from moneybin.services.security_links_service import SecurityLinksService
 
 _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
     "categorization",
+    "auto_rules",
     "matches",
     "account_links",
     "merchant_links",
@@ -293,6 +305,88 @@ def _categorization_history_rows(
             )
         )
     return result
+
+
+def _pending_auto_rule_rows(service: AutoRuleService) -> list[AutoRuleReviewRow]:
+    """Project the complete auto-rule proposal queue with blast-radius fields."""
+    result = service.review(limit=service.count_pending_proposals())
+    return [
+        AutoRuleReviewRow(
+            decision_id=str(proposal["proposed_rule_id"]),
+            status="pending",
+            created_at=None,
+            summary=(
+                f"{proposal.get('merchant_pattern') or 'Unnamed pattern'} → "
+                f"{proposal.get('category') or 'Uncategorized'}"
+            ),
+            details=AutoRulePendingDetails(
+                proposal=AutoReviewProposalRow(
+                    proposed_rule_id=str(proposal["proposed_rule_id"]),
+                    merchant_pattern=cast(
+                        str | None,
+                        proposal.get("merchant_pattern"),
+                    ),
+                    match_type=cast(str | None, proposal.get("match_type")),
+                    category=cast(str | None, proposal.get("category")),
+                    subcategory=cast(str | None, proposal.get("subcategory")),
+                    trigger_count=int(cast(int, proposal.get("trigger_count") or 0)),
+                    sample_txn_ids=[
+                        str(value)
+                        for value in cast(
+                            list[object],
+                            proposal.get("sample_txn_ids") or [],
+                        )
+                    ],
+                    estimated_match_count=int(
+                        proposal.get("estimated_match_count") or 0
+                    ),
+                    is_broad=bool(proposal.get("is_broad", False)),
+                )
+            ),
+        )
+        for proposal in result.proposals
+    ]
+
+
+def _auto_rule_history_rows(service: AutoRuleService) -> list[AutoRuleReviewRow]:
+    """Project terminal auto-rule proposal decisions."""
+    rows: list[AutoRuleReviewRow] = []
+    for proposal in service.list_proposal_history():
+        status = cast(
+            Literal["approved", "rejected", "superseded"],
+            proposal["status"],
+        )
+        rows.append(
+            AutoRuleReviewRow(
+                decision_id=str(proposal["proposed_rule_id"]),
+                status=status,
+                created_at=_text(
+                    proposal.get("decided_at") or proposal.get("proposed_at")
+                ),
+                summary=(
+                    f"{proposal.get('merchant_pattern') or 'Unnamed pattern'} → "
+                    f"{proposal.get('category') or 'Uncategorized'}"
+                ),
+                details=AutoRuleHistoryDetails(
+                    merchant_pattern=str(proposal["merchant_pattern"]),
+                    match_type=str(proposal["match_type"]),
+                    category=str(proposal["category"]),
+                    subcategory=cast(str | None, proposal.get("subcategory")),
+                    trigger_count=int(cast(int, proposal.get("trigger_count") or 0)),
+                    sample_txn_ids=[
+                        str(value)
+                        for value in cast(
+                            list[object],
+                            proposal.get("sample_txn_ids") or [],
+                        )
+                    ],
+                    decision_status=status,
+                    rule_id=cast(str | None, proposal.get("rule_id")),
+                    decided_by=cast(str | None, proposal.get("decided_by")),
+                ),
+            )
+        )
+    return rows
 
 
 def _pending_match_rows(service: MatchingService) -> list[MatchReviewRow]:
@@ -516,6 +610,14 @@ def _load_review_view(
             else _categorization_history_rows(service)
         )
         return ReviewsCategorizationView(status=status, rows=rows)
+    if kind == "auto_rules":
+        auto_rule_service = AutoRuleService(db)
+        rows = (
+            _pending_auto_rule_rows(auto_rule_service)
+            if status == "pending"
+            else _auto_rule_history_rows(auto_rule_service)
+        )
+        return ReviewsAutoRulesView(status=status, rows=rows)
     if kind == "matches":
         match_service = MatchingService(db)
         rows = (
@@ -558,6 +660,23 @@ def _view_rows(
     return list(view.rows)
 
 
+def _review_count(
+    db: Database,
+    *,
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+) -> int:
+    """Count one queue without materializing expensive row enrichments."""
+    if kind == "auto_rules":
+        service = AutoRuleService(db)
+        return (
+            service.count_pending_proposals()
+            if status == "pending"
+            else service.count_proposal_history()
+        )
+    return len(_view_rows(_load_review_view(db, kind=kind, status=status)))
+
+
 def _review_actions(
     *,
     kind: ReviewQueueKind,
@@ -573,7 +692,7 @@ def _review_actions(
     else:
         decision_tool = (
             "reviews_decide"
-            if kind in {"categorization", "matches"}
+            if kind in {"categorization", "auto_rules", "matches"}
             else "identity_links_decide"
         )
         actions = [f"Use {decision_tool} to decide a row from this queue"]
@@ -599,6 +718,7 @@ def reviews_coarse(
     kind: Literal[
         "summary",
         "categorization",
+        "auto_rules",
         "matches",
         "account_links",
         "merchant_links",
@@ -625,14 +745,10 @@ def reviews_coarse(
                 ReviewCount(
                     kind=queue_kind,
                     status=queue_status,
-                    count=len(
-                        _view_rows(
-                            _load_review_view(
-                                db,
-                                kind=queue_kind,
-                                status=queue_status,
-                            )
-                        )
+                    count=_review_count(
+                        db,
+                        kind=queue_kind,
+                        status=queue_status,
                     ),
                 )
                 for queue_kind in _QUEUE_KINDS
@@ -695,13 +811,70 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
 def reviews_decide_coarse(
     decisions: list[ReviewDecisionRequest],
 ) -> ResponseEnvelope[ReviewsDecidePayload]:
-    """Atomically accept or reject categorization and match review decisions."""
+    """Accept or reject one atomic ordinary or auto-rule decision batch."""
     operation_id = current_operation_id()
+    auto_rule_impact: AutoAcceptPayload | None = None
     with get_database(read_only=False) as db:
-        results = ReviewDecisionsService(db, actor="mcp").apply_ordinary(decisions)
-    return build_envelope(
-        data=ReviewsDecidePayload(
-            results=[
+        auto_rule_decisions = [
+            decision
+            for decision in decisions
+            if isinstance(decision, AutoRuleDecisionRequest)
+        ]
+        if auto_rule_decisions:
+            if len(auto_rule_decisions) != len(decisions):
+                raise UserError(
+                    "Auto-rule and ordinary decisions require separate atomic batches.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            service = AutoRuleService(db)
+            ids = [decision.decision_id for decision in auto_rule_decisions]
+            result = service.decide(
+                expected_pending_ids=ids,
+                accept=[
+                    decision.decision_id
+                    for decision in auto_rule_decisions
+                    if decision.decision == "accept"
+                ],
+                reject=[
+                    decision.decision_id
+                    for decision in auto_rule_decisions
+                    if decision.decision == "reject"
+                ],
+                actor="mcp",
+                allow_broad_ids={
+                    decision.decision_id
+                    for decision in auto_rule_decisions
+                    if decision.decision == "accept" and decision.allow_broad
+                },
+            )
+            after = result.statuses
+            auto_rule_impact = AutoAcceptPayload(
+                approved=result.impact.approved,
+                rejected=result.impact.rejected,
+                skipped=result.impact.skipped,
+                newly_categorized=result.impact.newly_categorized,
+                rule_ids=result.impact.rule_ids,
+            )
+            outcomes = [
+                ReviewDecisionOutcome(
+                    kind=decision.kind,
+                    decision_id=decision.decision_id,
+                    decision=decision.decision,
+                    status=after.get(decision.decision_id, "pending"),
+                    changed=after.get(decision.decision_id) in {"approved", "rejected"},
+                    operation_id=operation_id,
+                )
+                for decision in auto_rule_decisions
+            ]
+        else:
+            ordinary_decisions = cast(
+                list[OrdinaryReviewDecisionRequest],
+                decisions,
+            )
+            results = ReviewDecisionsService(db, actor="mcp").apply_ordinary(
+                ordinary_decisions
+            )
+            outcomes = [
                 ReviewDecisionOutcome(
                     kind=item.request.kind,
                     decision_id=item.request.decision_id,
@@ -711,9 +884,13 @@ def reviews_decide_coarse(
                     operation_id=operation_id,
                 )
                 for item in results
-            ],
-            applied_count=sum(item.changed for item in results),
+            ]
+    return build_envelope(
+        data=ReviewsDecidePayload(
+            results=outcomes,
+            applied_count=sum(item.changed for item in outcomes),
             operation_id=operation_id,
+            auto_rule_impact=auto_rule_impact,
         ),
         actions=[
             "Use reviews(status='pending') to continue review",
@@ -851,9 +1028,10 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         mcp,
         reviews_decide_coarse,
         "reviews_decide",
-        "Atomically accept or reject categorization and transaction-match review "
-        "decisions. Every target is resolved before any write; results retain "
-        "input order and share one auditable operation_id.",
+        "Accept or reject an atomic batch of transaction, match, or auto-rule "
+        "review decisions. Auto-rule decisions use kind='auto_rule' and may set "
+        "allow_broad after inspecting estimated_match_count; keep auto-rule and "
+        "ordinary decisions in separate calls.",
         privacy_actor="reviews_decide",
     )
     register(

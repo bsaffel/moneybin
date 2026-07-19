@@ -240,8 +240,38 @@ class MatchDecisionRequest(_StrictRequest):
     decision: Literal["accept", "reject"]
 
 
+class AutoRuleDecisionRequest(_StrictRequest):
+    """Accept or reject one auto-generated categorization-rule proposal."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        json_schema_extra=_conditional_schema_extra(
+            _conditional_schema_branch(
+                "decision",
+                "reject",
+                properties={"allow_broad": {"const": False}},
+            )
+        ),
+    )
+
+    kind: Literal["auto_rule"]
+    decision_id: NonBlankString
+    decision: Literal["accept", "reject"]
+    allow_broad: StrictBool = False
+
+    @model_validator(mode="after")
+    def _validate_decision(self) -> Self:
+        if self.decision == "reject" and self.allow_broad:
+            raise ValueError("Reject forbids allow_broad")
+        return self
+
+
+OrdinaryReviewDecisionRequest = CategorizationDecisionRequest | MatchDecisionRequest
+
+
 ReviewDecisionRequest = Annotated[
-    CategorizationDecisionRequest | MatchDecisionRequest,
+    OrdinaryReviewDecisionRequest | AutoRuleDecisionRequest,
     Field(discriminator="kind"),
 ]
 

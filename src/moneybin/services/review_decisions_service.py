@@ -21,7 +21,7 @@ from moneybin.mcp.write_contracts import (
     IdentityDecisionRequest,
     MatchDecisionRequest,
     MerchantLinkDecisionRequest,
-    ReviewDecisionRequest,
+    OrdinaryReviewDecisionRequest,
     SecurityLinkDecisionRequest,
 )
 from moneybin.repositories.categorization_decisions_repo import (
@@ -342,7 +342,7 @@ class ReviewDecisionsService:
 
     def plan_ordinary(
         self,
-        decisions: list[ReviewDecisionRequest],
+        decisions: list[OrdinaryReviewDecisionRequest],
     ) -> tuple[OrdinaryDecisionPlanItem, ...]:
         """Resolve an entire ordered ordinary batch and report every invalid id."""
         if not decisions:
@@ -393,7 +393,7 @@ class ReviewDecisionsService:
 
     def apply_ordinary(
         self,
-        decisions: list[ReviewDecisionRequest],
+        decisions: list[OrdinaryReviewDecisionRequest],
     ) -> tuple[OrdinaryDecisionPlanItem, ...]:
         """Revalidate and atomically apply an ordinary decision batch."""
         initial = self.plan_ordinary(decisions)

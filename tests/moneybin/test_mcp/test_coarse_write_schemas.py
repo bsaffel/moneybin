@@ -288,7 +288,7 @@ def test_annotation_schema_requires_variant_fields() -> None:
 @pytest.mark.parametrize(
     ("contract", "tags"),
     [
-        (ReviewDecisionRequest, {"categorization", "match"}),
+        (ReviewDecisionRequest, {"auto_rule", "categorization", "match"}),
         (
             IdentityDecisionRequest,
             {"account_link", "merchant_link", "security_link"},

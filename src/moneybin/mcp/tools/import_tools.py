@@ -2,7 +2,7 @@
 """Import namespace tools — file import, preview, status, revert, format listing.
 
 Tools:
-    - import_files — Import one or more financial data files (medium sensitivity)
+    - import_files — Import files (critical when a PDF bridge proposal is returned)
     - import_preview — Preview a file's structure without importing (medium sensitivity)
     - import_status — List past import batches (low sensitivity)
     - import_revert — Undo an import batch by import_id (low sensitivity)
@@ -48,6 +48,7 @@ from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
+    ImportConfirmationPayload,
     ImportConfirmCoarsePayload,
     ImportConfirmPayload,
     ImportFilesPayload,
@@ -627,7 +628,9 @@ def import_files(
             error=r.error,
             sign_correction_suggested=r.sign_correction_suggested,
             sign_override_replayed=r.sign_override_replayed,
-            confirmation_payload=r.confirmation_payload,
+            confirmation_payload=cast(
+                ImportConfirmationPayload | None, r.confirmation_payload
+            ),
         )
         for r in batch.per_file
     ]
@@ -3087,3 +3090,9 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
 def register_import_tools(mcp: FastMCP) -> None:
     """Register the standard staged-import workflow."""
     register_import_workflow_tools(mcp)
+
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    import_status,
+    import_formats,
+)

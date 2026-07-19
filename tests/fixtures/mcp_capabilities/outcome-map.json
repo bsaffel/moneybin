@@ -163,16 +163,16 @@
     "capability_id": "reviews.read",
     "mcp_tools": ["reviews"],
     "cli_commands": ["review", "transactions review", "transactions matches pending", "transactions matches history", "transactions categorize pending", "transactions categorize auto review", "accounts links pending", "accounts links history", "merchants links pending", "merchants links history", "investments securities links pending", "investments securities links history"],
-    "service_methods": ["moneybin.services.review_service.ReviewService.status", "moneybin.services.matching_service.MatchingService.get_log", "moneybin.services.categorization.CategorizationService.list_uncategorized_transactions"],
-    "observable_outcomes": ["identical pending/history queue IDs, statuses, counts, confidence, and blast-radius fields"],
+    "service_methods": ["moneybin.services.review_service.ReviewService.status", "moneybin.services.matching_service.MatchingService.get_log", "moneybin.services.categorization.CategorizationService.list_uncategorized_transactions", "moneybin.services.auto_rule_service.AutoRuleService.review", "moneybin.services.auto_rule_service.AutoRuleService.list_proposal_history"],
+    "observable_outcomes": ["pending queues preserve current IDs, statuses, counts, confidence, and auto-rule blast-radius fields", "auto-rule history preserves terminal proposal IDs, statuses, and promoted rule IDs"],
     "exemption": null
   },
   {
     "capability_id": "reviews.decide",
     "mcp_tools": ["reviews_decide"],
     "cli_commands": ["transactions matches set", "transactions categorize auto accept"],
-    "service_methods": ["moneybin.services.review_decisions_service.ReviewDecisionsService.apply_ordinary"],
-    "observable_outcomes": ["ordinary match or auto-rule decisions reach the same accepted/rejected state and audit operation"],
+    "service_methods": ["moneybin.services.review_decisions_service.ReviewDecisionsService.apply_ordinary", "moneybin.services.auto_rule_service.AutoRuleService.accept", "moneybin.services.auto_rule_service.AutoRuleService.decide"],
+    "observable_outcomes": ["ordinary match or auto-rule decisions reach the same accepted/rejected state and audit operation", "auto-rule decisions preserve approved, rejected, skipped, newly-categorized, and rule-ID aggregate impact"],
     "exemption": null
   },
   {

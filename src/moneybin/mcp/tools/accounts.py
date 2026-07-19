@@ -17,6 +17,11 @@ Write tools (links):       accounts_links_set, accounts_links_run
 All tools delegate to AccountService / BalanceService / AccountLinksService — no
 business logic here. accounts links undo is deliberately NOT YET registered:
 deferred to the M1L audit-undo consumer.
+
+The granular callbacks named in ``_LEGACY_INTERNAL_CALLBACKS`` are internal
+helpers retained for standard-boundary composition and parity. They are never
+individually registered and remain undecorated; ``test_tool_surface_budget``
+guards against accidental publication.
 """
 
 from __future__ import annotations
@@ -1568,6 +1573,22 @@ def register_accounts_coarse_writes(mcp: FastMCP) -> None:
 
 
 # ─── Registration ──────────────────────────────────────────────────────────
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    accounts,
+    accounts_get,
+    accounts_summary,
+    accounts_balances,
+    accounts_balance_history,
+    accounts_balance_reconcile,
+    accounts_balance_assertions,
+    accounts_balance_assert,
+    accounts_balance_assertion_delete,
+    accounts_resolve,
+    accounts_links_pending,
+    accounts_links_set,
+    accounts_links_history,
+)
 
 
 def register_accounts_tools(mcp: FastMCP) -> None:

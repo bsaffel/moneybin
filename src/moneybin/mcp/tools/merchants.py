@@ -7,6 +7,12 @@ Tools:
     - merchants_links_set — Accept or reject one pending decision (low sensitivity)
     - merchants_links_history — Recent merchant-link decisions (medium sensitivity)
     - merchants_links_run — Harvest pending proposals from existing data (low sensitivity)
+
+These granular callbacks are internal helpers retained for standard-boundary
+composition and parity; they are never individually registered. The standard
+surface routes merchant reads/writes through ``taxonomy`` and link decisions
+through ``reviews``. ``_LEGACY_INTERNAL_CALLBACKS`` and the surface-budget
+guard prevent accidental publication.
 """
 
 from __future__ import annotations
@@ -460,3 +466,12 @@ def merchants_links_run() -> ResponseEnvelope[MerchantLinksRunPayload]:
         data=MerchantLinksRunPayload(bound=result.bound, conflicts=result.conflicts),
         actions=["Use reviews(kind='merchant_links') to review queued conflicts"],
     )
+
+
+_LEGACY_INTERNAL_CALLBACKS = (
+    merchants,
+    merchants_create,
+    merchants_links_pending,
+    merchants_links_set,
+    merchants_links_history,
+)

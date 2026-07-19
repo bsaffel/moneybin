@@ -319,6 +319,16 @@ def system_audit(
 
 # ---------- registration ----------
 
+_LEGACY_INTERNAL_CALLBACKS = (
+    system_audit,
+    transactions_notes_add,
+    transactions_notes_edit,
+    transactions_notes_delete,
+    transactions_tags_set,
+    transactions_tags_rename,
+    transactions_splits_set,
+)
+
 
 def register_curation_tools(mcp: FastMCP) -> None:
     """Register the standard manual transaction creation boundary."""

@@ -2553,8 +2553,8 @@ class TestImportFilesConfirmationRequired:
         assert row.status == "confirmation_required"
         payload = row.confirmation_payload
         assert payload is not None
-        assert payload["channel"] == "tabular"
-        assert payload["tier"] == "medium"
+        assert payload.get("channel") == "tabular"
+        assert payload.get("tier") == "medium"
         assert "score" in payload
         # Envelope summary.sensitivity must reflect that the response carries
         # sample rows + proposed mapping (per moneybin-mcp.md). Pure-success
@@ -3395,10 +3395,10 @@ class TestImportFilesPdfBridge:
         assert row.status == "confirmation_required"
         payload = row.confirmation_payload
         assert payload is not None
-        assert payload["channel"] == "pdf"
-        bridge = payload["bridge_payload"]
+        assert payload.get("channel") == "pdf"
+        bridge = payload.get("bridge_payload")
         assert isinstance(bridge, dict)
-        assert bridge["request_kind"] == "propose_recipe"
+        assert bridge.get("request_kind") == "propose_recipe"
         assert "transparency_notice" in bridge
 
     async def test_pdf_escalation_action_points_at_bridge_response(
@@ -3463,8 +3463,8 @@ class TestImportFilesPdfSign:
         assert row.status == "confirmation_required"
         payload = row.confirmation_payload
         assert payload is not None
-        assert payload["reason"] == "sign_convention"
-        assert payload["sign_convention"] == "negative_is_income"
+        assert payload.get("reason") == "sign_convention"
+        assert payload.get("sign_convention") == "negative_is_income"
 
         actions = " ".join(result.actions)
         # The in-MCP human gate leads; the terminal CLI stays as the fallback,

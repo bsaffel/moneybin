@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from collections.abc import Callable
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -191,6 +192,39 @@ async def test_gsheet_connect_auth_only_rejects_connection_arguments(
 
     assert response.error is not None
     assert response.error.code == "GSHEET_AUTH_ARGUMENT_CONFLICT"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_oauth_client")
+@patch("moneybin.mcp.tools.gsheet.gsheet_reconnect", new_callable=AsyncMock)
+async def test_gsheet_connect_force_reauth_offloads_oauth(
+    mock_reconnect: AsyncMock,
+    mock_build: MagicMock,
+) -> None:
+    oauth = MagicMock()
+    mock_build.return_value = oauth
+    mock_reconnect.return_value = gsheet_module.build_error_envelope(
+        error=UserError("Reconnect unavailable.", code="GSHEET_RECONNECT_UNAVAILABLE")
+    )
+
+    async def run_sync(
+        callback: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        return callback(*args, **kwargs)
+
+    offload = AsyncMock(side_effect=run_sync)
+    with patch.object(gsheet_module.asyncio, "to_thread", offload):
+        response = await gsheet_connect_coarse(
+            connection_id="conn_1",
+            force_reauth=True,
+        )
+
+    assert response.error is not None
+    assert response.error.code == "GSHEET_RECONNECT_UNAVAILABLE"
+    assert offload.await_args_list[0].args == (oauth.authorize,)
+    mock_reconnect.assert_awaited_once_with(connection_id="conn_1", yes=False)
 
 
 def test_gsheet_workflow_registrar_uses_public_privacy_actor_names() -> None:

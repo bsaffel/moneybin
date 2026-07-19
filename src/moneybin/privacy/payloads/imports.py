@@ -10,9 +10,9 @@ middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
 Tier derivation summary:
-  - ``ImportPerFileRow``           → Tier.MEDIUM (error = DESCRIPTION)
-  - ``ImportFilesPayload``         → Tier.MEDIUM (transforms_error = DESCRIPTION;
-                                     contains ImportPerFileRow list)
+  - ``ImportPerFileRow``           → Tier.CRITICAL (a PDF bridge confirmation can
+                                     contain raw statement account identifiers)
+  - ``ImportFilesPayload``         → Tier.CRITICAL (contains ImportPerFileRow list)
   - ``ImportFormatInfoPayload``    → Tier.LOW (file metadata only)
   - ``ImportPreviewPayload``       → Tier.MEDIUM (sample_values = DESCRIPTION —
                                      raw file content may contain PII)
@@ -31,7 +31,7 @@ Tier derivation summary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,6 +40,78 @@ from moneybin.privacy.taxonomy import DataClass
 # ---------------------------------------------------------------------------
 # import_files — per-file result row
 # ---------------------------------------------------------------------------
+
+
+class ImportConfirmationBridgeTable(TypedDict, total=False):
+    """One raw bridge table inside an import-files confirmation proposal."""
+
+    page: Annotated[int, DataClass.AGGREGATE]
+    header: Annotated[list[str], DataClass.TXN_TYPE]
+    rows: list[list[Annotated[str, DataClass.ACCOUNT_IDENTIFIER]]]
+
+
+class ImportConfirmationBridgePayload(TypedDict, total=False):
+    """Typed PDF bridge content shared with the import-preview classification."""
+
+    transparency_notice: Annotated[str, DataClass.DESCRIPTION]
+    source_file: Annotated[str, DataClass.RECORD_ID]
+    document_text: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    tables_preview: list[ImportConfirmationBridgeTable]
+    fingerprint: Annotated[dict[str, Any], DataClass.DESCRIPTION]
+    request_kind: Annotated[str, DataClass.TXN_TYPE]
+    saved_recipe_for_re_derive: Annotated[
+        dict[str, Any] | None,
+        DataClass.DESCRIPTION,
+    ]
+
+
+class ImportConfirmationSignSample(TypedDict, total=False):
+    """One printed-versus-recorded row inside a sign proposal."""
+
+    description: Annotated[str, DataClass.DESCRIPTION]
+    as_printed: Annotated[str, DataClass.TXN_AMOUNT]
+    as_recorded: Annotated[str, DataClass.TXN_AMOUNT]
+
+
+class ImportConfirmationAccountCandidate(TypedDict, total=False):
+    """One existing-account candidate inside an import proposal."""
+
+    account_id: Annotated[str, DataClass.RECORD_ID]
+    display_name: Annotated[str, DataClass.USER_NOTE]
+    confidence: Annotated[float, DataClass.AGGREGATE]
+    signal: Annotated[str, DataClass.TXN_TYPE]
+
+
+class ImportConfirmationAccountProposal(TypedDict, total=False):
+    """One source-account resolution proposal."""
+
+    source_account_key: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    proposed_account_id: Annotated[str | None, DataClass.RECORD_ID]
+    is_new: Annotated[bool, DataClass.TXN_TYPE]
+    adopted_via: Annotated[str | None, DataClass.TXN_TYPE]
+    requires_confirm: Annotated[bool, DataClass.TXN_TYPE]
+    candidates: list[ImportConfirmationAccountCandidate]
+
+
+class ImportConfirmationPayload(TypedDict, total=False):
+    """Typed detector proposal carried by an ``import_files`` result row."""
+
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    error_message: Annotated[str, DataClass.DESCRIPTION]
+    proposed_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
+    samples: Annotated[dict[str, list[str]], DataClass.DESCRIPTION]
+    flagged: Annotated[list[str], DataClass.TXN_TYPE]
+    missing_required: Annotated[list[str], DataClass.TXN_TYPE]
+    unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
+    bridge_payload: ImportConfirmationBridgePayload | None
+    sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
+    sign_sample_rows: list[ImportConfirmationSignSample]
+    account_proposals: list[ImportConfirmationAccountProposal]
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,13 +128,10 @@ class ImportPerFileRow:
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.
     sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE] = False
-    # Populated only when status == "confirmation_required": detector
-    # proposal + samples + flagged + missing_required so the agent can
-    # call `import_confirm` per file. Sample values are row-shaped
-    # (DESCRIPTION / MEDIUM).
-    confirmation_payload: Annotated[dict[str, object] | None, DataClass.DESCRIPTION] = (
-        None
-    )
+    # Populated only when status == "confirmation_required": typed detector
+    # proposal + samples + flagged + missing_required so nested CRITICAL PDF
+    # bridge values receive the same redaction as import_preview.
+    confirmation_payload: ImportConfirmationPayload | None = None
 
 
 # ---------------------------------------------------------------------------

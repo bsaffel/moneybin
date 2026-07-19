@@ -336,7 +336,7 @@ observed-evidence gates below close.
 | Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` | Collection/detail/resolve; settings; latest/history; assertion set/remove |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | Read views; ledger events; security catalog; specific-lot overrides |
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate`, `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules`, `transactions_categorize_rules_set` | Query; manual entries; notes/tags/splits; assisted and deterministic categorization; rule lifecycle |
-| Reviews | `reviews`, `reviews_decide`, `identity_links_decide` | Normalized queue/history; ordinary decisions; destructive identity merges |
+| Reviews | `reviews`, `reviews_decide`, `identity_links_decide` | Normalized queue/history, including auto-rule proposals; ordinary and auto-rule decisions; destructive identity merges |
 | Taxonomy | `taxonomy`, `taxonomy_set` | Category and merchant reads; category target-state and merchant mappings |
 | Import | `import_files`, `import_preview`, `import_confirm`, `import_status`, `import_revert`, `import_inbox_sync`, `import_labels_set` | Batch/staged ingest, status/formats/inbox, recovery, labels |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect`, `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | Mediated bank sync and user-controlled Google Sheets flows |
@@ -363,6 +363,21 @@ reopened. Undo marks the terminal attempt reversed without erasing its outcome,
 so its audit history remains intact and the next attempt becomes reviewable.
 Pending projection batches category state and audit revisions rather than
 performing a per-transaction decision lookup.
+
+Auto-generated categorization-rule proposals remain a distinct
+`reviews(kind='auto_rules')` queue backed by `app.proposed_rules`; they are not
+the uncategorized-transaction queue above. Pending rows preserve
+the current `estimated_match_count` and `is_broad`; terminal history preserves
+the proposal ID, terminal status, and promoted `rule_id`. Decision-time
+blast-radius evidence was not persisted by the prior granular surface and this
+consolidation does not invent historical evidence. `reviews_decide` accepts
+pending proposals through the `kind='auto_rule'` decision variant and returns
+the prior aggregate approval/rejection/skipped/backfill impact alongside
+ordered per-proposal outcomes. Its `allow_broad` flag lives on that exact
+proposal decision rather than at batch scope, so approving one known broad
+proposal cannot waive the safety gate for its neighbors. Auto-rule decisions
+and transaction/match decisions use separate atomic batches because they have
+different canonical proposal stores.
 
 Existing transaction categorizations backfill once as system-decided accepted
 attempts with immutable snapshots and paired migration audit events. Legacy
@@ -443,12 +458,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic Plan 6
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 45,154 bytes of serialized metadata, zero advertised output schemas,
+contains 45 tools, 45,752 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`df85b3b750fc80acdea8bee56f896fec90bb44bd68e75eb7b945ba8da9c6ed1b`.
+`ed29b3d659fff626ba87917916aea4c27d50dd1cc5aba4117b4507678353d592`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -45,580 bytes (-50.2%). The deterministic estimate is 11,289
+The delta is -44,982 bytes (-49.6%). The deterministic estimate is 11,438
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -523,6 +538,15 @@ The exact historical replaced-name cohorts are:
 - `taxonomy_set` ← `categories_create`, `categories_set`, `categories_delete`,
   `merchants_create`
 - `privacy_consent_set` ← `privacy_consent_grant`, `privacy_consent_revoke`
+
+The replaced granular callbacks across the accounts, categories, curation,
+Google Sheets, import inbox, import workflow, investments, merchants, privacy,
+system, transactions, and transaction-categorization modules are internal
+helpers retained for standard-boundary composition and parity. Each module
+declares an explicit `_LEGACY_INTERNAL_CALLBACKS` inventory; those functions
+are undecorated, never individually registered, and covered by a surface-budget
+guard. They are not aliases, an alternate MCP mode, or candidates for future
+publication.
 
 Four operations are individually larger in total metadata:
 `transactions_categorize_rules` (+246), `taxonomy` (+49),

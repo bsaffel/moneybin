@@ -304,6 +304,18 @@ def test_flagged_routes_map_their_actual_owners() -> None:
         "moneybin.services.import_service.ImportService.delete_saved_format"
         in rows["import.revert"].service_methods
     )
+    assert (
+        "moneybin.services.auto_rule_service.AutoRuleService.review"
+        in rows["reviews.read"].service_methods
+    )
+    assert (
+        "moneybin.services.auto_rule_service.AutoRuleService.accept"
+        in rows["reviews.decide"].service_methods
+    )
+    assert (
+        "moneybin.services.auto_rule_service.AutoRuleService.decide"
+        in rows["reviews.decide"].service_methods
+    )
 
 
 def test_flagged_cli_routes_execute_the_mapped_owner(

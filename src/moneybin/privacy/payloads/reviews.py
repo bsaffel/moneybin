@@ -1,4 +1,4 @@
-"""Typed payloads for the dormant normalized review read."""
+"""Typed payloads for the normalized review read and decision boundaries."""
 
 from __future__ import annotations
 
@@ -11,7 +11,11 @@ from moneybin.privacy.payloads.accounts import (
     LinkHistoryRow,
     LinkPendingGroup,
 )
-from moneybin.privacy.payloads.categorize import PendingTxnRow
+from moneybin.privacy.payloads.categorize import (
+    AutoAcceptPayload,
+    AutoReviewProposalRow,
+    PendingTxnRow,
+)
 from moneybin.privacy.payloads.investments import (
     SecurityLinkHistoryRow,
     SecurityLinkPendingGroup,
@@ -25,13 +29,14 @@ from moneybin.privacy.taxonomy import DataClass
 
 ReviewQueueKind = Literal[
     "categorization",
+    "auto_rules",
     "matches",
     "account_links",
     "merchant_links",
     "security_links",
 ]
 ReviewStatus = Literal["pending", "history"]
-ReviewDecisionKind = Literal["categorization", "match"]
+ReviewDecisionKind = Literal["categorization", "auto_rule", "match"]
 IdentityDecisionKind = Literal["account_link", "merchant_link", "security_link"]
 
 
@@ -114,6 +119,64 @@ class ReviewsCategorizationView(BaseModel):
     kind: Annotated[Literal["categorization"], DataClass.TXN_TYPE] = "categorization"
     status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
     rows: list[CategorizationReviewRow]
+
+
+class AutoRulePendingDetails(BaseModel):
+    """One auto-generated categorization rule awaiting review."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Annotated[Literal["pending"], DataClass.TXN_TYPE] = "pending"
+    proposal: AutoReviewProposalRow
+
+
+class AutoRuleHistoryDetails(BaseModel):
+    """One terminal auto-rule proposal decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Annotated[Literal["history"], DataClass.TXN_TYPE] = "history"
+    merchant_pattern: Annotated[str, DataClass.MERCHANT_NAME]
+    match_type: Annotated[str, DataClass.TXN_TYPE]
+    category: Annotated[str, DataClass.CATEGORY]
+    subcategory: Annotated[str | None, DataClass.CATEGORY]
+    trigger_count: Annotated[int, DataClass.AGGREGATE]
+    sample_txn_ids: Annotated[list[str], DataClass.RECORD_ID]
+    decision_status: Annotated[
+        Literal["approved", "rejected", "superseded"],
+        DataClass.TXN_TYPE,
+    ]
+    rule_id: Annotated[str | None, DataClass.RECORD_ID]
+    decided_by: Annotated[str | None, DataClass.TXN_TYPE]
+
+
+AutoRuleDetails = Annotated[
+    AutoRulePendingDetails | AutoRuleHistoryDetails,
+    Field(discriminator="state"),
+]
+
+
+class AutoRuleReviewRow(BaseModel):
+    """Normalized auto-rule proposal row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    kind: Annotated[Literal["auto_rules"], DataClass.TXN_TYPE] = "auto_rules"
+    status: Annotated[str, DataClass.TXN_TYPE]
+    created_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    summary: Annotated[str, DataClass.MERCHANT_NAME]
+    details: AutoRuleDetails
+
+
+class ReviewsAutoRulesView(BaseModel):
+    """Auto-rule pending or history collection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["auto_rules"], DataClass.TXN_TYPE] = "auto_rules"
+    status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
+    rows: list[AutoRuleReviewRow]
 
 
 class MatchPendingDetails(BaseModel):
@@ -312,6 +375,7 @@ class ReviewsSecurityLinksView(BaseModel):
 ReviewsCoarsePayload = (
     ReviewsSummaryView
     | ReviewsCategorizationView
+    | ReviewsAutoRulesView
     | ReviewsMatchesView
     | ReviewsAccountLinksView
     | ReviewsMerchantLinksView
@@ -340,6 +404,7 @@ class ReviewsDecidePayload(BaseModel):
     results: list[ReviewDecisionOutcome]
     applied_count: Annotated[int, DataClass.AGGREGATE]
     operation_id: Annotated[str, DataClass.RECORD_ID]
+    auto_rule_impact: AutoAcceptPayload | None = None
 
 
 class IdentityDecisionOutcome(BaseModel):
