@@ -317,6 +317,7 @@ class CategorizeRunPayload:
 
     applied_by_method: Annotated[dict[str, int], DataClass.AGGREGATE]
     total_applied: Annotated[int, DataClass.AGGREGATE]
+    kind: Annotated[Literal["categorize"], DataClass.TXN_TYPE] = "categorize"
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +330,7 @@ class ImproveAiPayload:
     """Payload for transactions_categorize_improve_ai — AI-to-provider upgrade count."""
 
     upgraded_count: Annotated[int, DataClass.AGGREGATE]
+    kind: Annotated[Literal["improve_ai"], DataClass.TXN_TYPE] = "improve_ai"
 
 
 # ---------------------------------------------------------------------------

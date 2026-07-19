@@ -132,6 +132,38 @@ class SyncLinkPayload:
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+class SyncInstitutionLinkView(BaseModel):
+    """One mediated institution-link session."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
+    session_id: Annotated[str, DataClass.RECORD_ID]
+    link_url: Annotated[str, DataClass.DESCRIPTION]
+    expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+class SyncAuthView(BaseModel):
+    """One safe nonblocking device-auth session result."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["auth"], DataClass.TXN_TYPE] = "auth"
+    auth_session_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    user_code: Annotated[str | None, DataClass.DESCRIPTION]
+    verification_url: Annotated[str | None, DataClass.DESCRIPTION]
+    expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    replayed: Annotated[bool, DataClass.TXN_TYPE] = False
+    error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
+
+
+SyncLinkCoarsePayload = Annotated[
+    SyncInstitutionLinkView | SyncAuthView,
+    Field(discriminator="kind"),
+]
+
+
 # ---------------------------------------------------------------------------
 # sync_link_status — link session status payload
 # ---------------------------------------------------------------------------
@@ -173,7 +205,7 @@ class SyncSessionStatusView(BaseModel):
 
 
 SyncStatusCoarsePayload = Annotated[
-    SyncGlobalStatusView | SyncSessionStatusView,
+    SyncGlobalStatusView | SyncSessionStatusView | SyncAuthView,
     Field(discriminator="kind"),
 ]
 
@@ -193,6 +225,32 @@ class SyncDisconnectPayload:
 
     status: Annotated[str, DataClass.TXN_TYPE]
     institution: Annotated[str, DataClass.INSTITUTION]
+
+
+class SyncInstitutionDisconnectView(BaseModel):
+    """Confirmation that one institution was disconnected."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
+    status: Annotated[Literal["disconnected"], DataClass.TXN_TYPE]
+    institution: Annotated[str, DataClass.INSTITUTION]
+
+
+class SyncLogoutView(BaseModel):
+    """Confirmation that scoped broker credentials were cleared."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["auth"], DataClass.TXN_TYPE] = "auth"
+    status: Annotated[Literal["logged_out"], DataClass.TXN_TYPE]
+    cleared_auth_sessions: Annotated[int, DataClass.AGGREGATE]
+
+
+SyncDisconnectCoarsePayload = Annotated[
+    SyncInstitutionDisconnectView | SyncLogoutView,
+    Field(discriminator="kind"),
+]
 
 
 # ---------------------------------------------------------------------------

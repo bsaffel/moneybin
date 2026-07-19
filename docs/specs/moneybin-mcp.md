@@ -1153,23 +1153,19 @@ Return uncategorized transactions as PII-scrubbed rows for LLM-assisted categori
 
 ### `transactions_categorize_run`
 
-Run the categorization engine cascade over uncategorized transactions.
+Run the categorization engine cascade or upgrade confident AI guesses.
 
-- **Sensitivity:** `medium` — writes categorizations to `app.transaction_categories`.
-- **Unique parameters:** `methods: list[Literal["rules", "merchants"]] | None` (optional, default `["rules", "merchants"]`) — engines to run in order. A rule write blocks a merchant write at the same priority.
-- **Behavior:** Returns `{applied_by_method: {rules: int, merchants: int}, total_applied: int}`. The canonical order `["rules", "merchants"]` takes an optimized shared-scan path; other orders run engines individually in the requested order. The `"ml"` literal will be added when ML categorization implementation lands.
-- **Service:** `CategorizationService.categorize_run(methods=...) -> dict`
-- **CLI:** `moneybin transactions categorize run [--methods rules,merchants] [--output json]`
+- **Sensitivity:** `medium` for the engine cascade; `low` for the aggregate-only AI-upgrade result.
+- **Unique parameters:** `operation: Literal["categorize", "improve_ai"] = "categorize"` and `methods: list[Literal["rules", "merchants"]] | None`. `methods` is valid only for `categorize`.
+- **Behavior:** `categorize` returns `{kind: "categorize", applied_by_method, total_applied}`. The canonical `["rules", "merchants"]` order takes an optimized shared-scan path; other orders run in request order. `improve_ai` revisits only `categorized_by='ai'` rows and upgrades confident Plaid category-bridge matches to `provider_native`, returning `{kind: "improve_ai", upgraded_count}`. It never overwrites user, rule, or merchant decisions.
+- **Service:** `CategorizationService.categorize_run(methods=...)` or `CategorizationService.improve_ai_categories()`.
+- **CLI:** `moneybin transactions categorize run [--methods rules,merchants]` or `moneybin transactions categorize improve-ai`.
 
-### `transactions_categorize_improve_ai`
+### `transactions_categorize_improve_ai` (retired)
 
-Re-categorize AI-guessed transactions to confident provider-native categories.
-
-- **Sensitivity:** `low` — returns only an aggregate count.
-- **Unique parameters:** None.
-- **Behavior:** Reverse-looks-up every transaction currently `categorized_by='ai'` against the Plaid category bridge (`core.bridge_category_source_map`); upgrades it to `provider_native` only when the bridge match is at MEDIUM confidence or higher. Only rewrites rows currently `categorized_by='ai'` — user, rule, and merchant categorizations are never overwritten. Writes `app.transaction_categories`; revert by re-categorizing the transaction (a user edit wins at priority 1). Returns `{upgraded_count: int}`.
-- **Service:** `CategorizationService.improve_ai_categories() -> int`
-- **CLI:** `moneybin transactions categorize improve-ai [--output json]`
+The standard surface remains exactly 45 tools. Use
+`transactions_categorize_run(operation="improve_ai")`; the CLI command remains
+`moneybin transactions categorize improve-ai`.
 
 ### `transactions_categorize_rules`
 
@@ -1680,17 +1676,22 @@ Core and app table schemas with column names, types, and descriptions. Lets the 
 
 ## 16. `sync_*` — Provider sync (Plaid)
 
-Per the MCP exposure principle, sync is fully MCP-exposed except for credential-handling commands. OAuth flows return redirect URLs; the client opens them.
+Per the MCP exposure principle, sync is fully exposed through four standard
+boundaries. Secret device codes and tokens stay in the profile-scoped
+`SecretStore`; MCP receives only a verification URL, user code, opaque session
+ID, expiry, and safe terminal status.
 
 | Tool | Sensitivity | Behavior |
 |---|---|---|
-| `sync_link [institution]` | medium | Initiates Plaid Hosted Link flow. Returns `{session_id, link_url, expiration}`. `link_url` is a one-time bearer credential — treat as medium sensitivity. Pass `institution` to re-authenticate (Plaid update mode). |
-| `sync_link_status <session_id>` | low | Single-shot check of a link session. Returns `{session_id, status, provider_item_id, institution_name, error, expiration}`. Does NOT poll internally — the agent invokes this when the user signals completion. |
-| `sync_disconnect <institution>` | medium | Removes institution by name. No revert path. |
-| `sync_pull [institution] [force] [refresh=true]` | medium | Triggers sync for one or all institutions; loads `raw.plaid_*` and propagates through SQLMesh. Amounts follow MoneyBin convention (negative = expense). When `refresh` (default true) and the sync changes raw state, the post-load refresh pipeline (matching + SQLMesh apply + categorization) runs once at end-of-pull so `core.dim_accounts` reflects new data before returning. Result envelope adds `transforms_applied`, `transforms_duration_seconds`, `transforms_error` (SQLMesh-step outcome — matching and categorization are log-only on failure) **and the investment outcome the CLI reports**: `securities_loaded`, `investment_transactions_loaded`, `holdings_loaded`, `holding_lots_loaded`, `opening_bootstrap_rows`, `investment_source_overlap_accounts`, `security_resolution` (per-outcome counts: adopted / auto_bound / minted / proposed / pending) and `security_resolution_error`. A pull that soft-failed resolution MUST NOT be reported as a clean success — there is no source-native fallback for `security_id` and `cost_basis.py` skips every NULL-security event, so those buys/sells silently vanish from lots and realized gains. The CLI warns and exits non-zero; MCP has no exit code, so the same signal leads the envelope's `actions[]`. |
-| `sync_status` | low | Read-only: connected institutions, last-sync times, guidance for error states. |
+| `sync_link` | medium | `mode="institution"` initiates Plaid Hosted Link and returns `{kind: "institution", session_id, link_url, expiration}`. `mode="login"` begins nonblocking device authorization and returns `{kind: "auth", auth_session_id, status, user_code, verification_url, expiration}` without exposing the device code. |
+| `sync_status` | medium (maximum) | With neither ID, reads connection health. `session_id` checks one Hosted Link session. `auth_session_id` advances one device login exactly once, returning pending/authenticated/denied/expired/provider-error state; terminal replay is idempotent and expiry is enforced locally. The write annotation is required because successful polling persists credentials. |
+| `sync_disconnect` | medium | `mode="institution"` permanently disconnects the named institution while retaining local rows. `mode="logout"` clears profile credentials and all persisted auth sessions; login restores access. |
+| `sync_pull` | medium | Pulls connected financial data and lands the same raw/refresh outcomes as the CLI. |
 
-**CLI-only (security-justified):** `sync_login`, `sync_logout` (browser interaction + credential handling routed through LLM context is a security-model violation); `sync_rotate_key` — passphrase material through LLM context is a security-model violation.
+The CLI `sync login` remains a blocking wrapper over the same begin/poll client
+primitives. `sync logout` uses the same session-aware logout service. Only sync
+key rotation remains a secret-material operator concern (and its CLI path is
+currently an explicit unimplemented stub).
 
 **Prompts:**
 

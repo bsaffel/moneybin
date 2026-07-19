@@ -1,5 +1,5 @@
 {
-  "sha256": "de108d3906ad0cddc6b5cd65c79064980bfd96e524df03817eea2efa1c4d9260",
+  "sha256": "1c7df7cf819b29563247aa9343d000ea0ea98d9dc9266de215f27ed5004ec050",
   "tool_count": 45,
   "tools": [
     {
@@ -2439,43 +2439,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Disconnect one institution.",
-        "inputSchema": {
-          "additionalProperties": false,
-          "properties": {
-            "institution": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "institution"
-          ],
-          "type": "object"
-        },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "sync_disconnect"
-      },
-      "description_bytes": 27,
-      "input_schema_bytes": 120,
-      "name": "sync_disconnect",
-      "other_bytes": 57,
-      "output_schema_bytes": 0,
-      "total_bytes": 340
-    },
-    {
-      "annotation_bytes": 90,
-      "definition": {
-        "annotations": {
-          "destructiveHint": false,
-          "idempotentHint": false,
-          "openWorldHint": true,
-          "readOnlyHint": false
-        },
-        "description": "Start a hosted bank-link session.",
+        "description": "Disconnect one institution or clear profile-scoped sync credentials.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2489,6 +2453,63 @@
                 }
               ],
               "default": null
+            },
+            "mode": {
+              "default": "institution",
+              "enum": [
+                "institution",
+                "logout"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_disconnect"
+      },
+      "description_bytes": 68,
+      "input_schema_bytes": 217,
+      "name": "sync_disconnect",
+      "other_bytes": 57,
+      "output_schema_bytes": 0,
+      "total_bytes": 478
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Start a hosted institution-link or nonblocking device-login session.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "institution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "mode": {
+              "default": "institution",
+              "enum": [
+                "institution",
+                "login"
+              ],
+              "type": "string"
             }
           },
           "type": "object"
@@ -2500,12 +2521,12 @@
         },
         "name": "sync_link"
       },
-      "description_bytes": 33,
-      "input_schema_bytes": 136,
+      "description_bytes": 68,
+      "input_schema_bytes": 216,
       "name": "sync_link",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 357
+      "total_bytes": 472
     },
     {
       "annotation_bytes": 90,
@@ -2554,13 +2575,24 @@
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
-          "openWorldHint": false,
-          "readOnlyHint": true
+          "openWorldHint": true,
+          "readOnlyHint": false
         },
-        "description": "Read global health or one link-session status.",
+        "description": "Read global health, one link session, or advance one device-login session.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "auth_session_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "session_id": {
               "anyOf": [
                 {
@@ -2582,12 +2614,12 @@
         },
         "name": "sync_status"
       },
-      "description_bytes": 46,
-      "input_schema_bytes": 135,
+      "description_bytes": 74,
+      "input_schema_bytes": 214,
       "name": "sync_status",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 370
+      "total_bytes": 477
     },
     {
       "annotation_bytes": 89,
@@ -4140,7 +4172,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the selected deterministic categorization engines over uncategorized transactions. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt.",
+        "description": "Run deterministic categorization engines or upgrade confident AI guesses to provider-native categories. operation='categorize' accepts methods; operation='improve_ai' forbids it. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -4161,7 +4193,16 @@
                 }
               ],
               "default": null,
-              "description": "Engines to run in the listed order. Defaults to\n[\"rules\", \"merchants\"]."
+              "description": "Engines to run in the listed order. Defaults to\n[\"rules\", \"merchants\"]. Valid only for ``categorize``."
+            },
+            "operation": {
+              "default": "categorize",
+              "description": "``categorize`` (default) or ``improve_ai``.",
+              "enum": [
+                "categorize",
+                "improve_ai"
+              ],
+              "type": "string"
             }
           },
           "type": "object"
@@ -4175,12 +4216,12 @@
         },
         "name": "transactions_categorize_run"
       },
-      "description_bytes": 182,
-      "input_schema_bytes": 279,
+      "description_bytes": 274,
+      "input_schema_bytes": 458,
       "name": "transactions_categorize_run",
       "other_bytes": 81,
       "output_schema_bytes": 0,
-      "total_bytes": 679
+      "total_bytes": 950
     },
     {
       "annotation_bytes": 91,
@@ -4223,5 +4264,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 42472
+  "total_bytes": 43103
 }

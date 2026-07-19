@@ -2,9 +2,9 @@
 
 Per docs/specs/2026-05-13-plaid-sync-design.md Section 11.
 
-Excluded from MCP (CLI-only): sync_login, sync_logout (browser interaction +
-credential handling). sync_key_rotate (Phase 3 stub; passphrase material is
-CLI-only by convention).
+Device authentication is a nonblocking variant of sync_link + sync_status;
+logout is the credential-state variant of sync_disconnect. sync_key_rotate
+remains CLI-only because it handles passphrase material.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import logging
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
 
@@ -23,11 +23,16 @@ from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.privacy import tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.sync import (
+    SyncAuthView,
     SyncConnectionRow,
-    SyncDisconnectPayload,
+    SyncDisconnectCoarsePayload,
     SyncGlobalStatusView,
+    SyncInstitutionDisconnectView,
+    SyncInstitutionLinkView,
+    SyncLinkCoarsePayload,
     SyncLinkPayload,
     SyncLinkStatusPayload,
+    SyncLogoutView,
     SyncPullInstitutionRow,
     SyncPullPayload,
     SyncSessionStatusView,
@@ -69,6 +74,13 @@ def _build_sync_client() -> Any:
     # authenticates as a distinct user.
     profile_id = get_or_create_profile_id(settings.profile_dir)
     return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
+
+
+def _build_sync_auth_service() -> Any:
+    """Construct profile-scoped nonblocking authentication orchestration."""
+    from moneybin.connectors.sync_auth import SyncAuthService  # noqa: PLC0415
+
+    return SyncAuthService(client=_build_sync_client())
 
 
 @contextmanager
@@ -299,16 +311,50 @@ def sync_link_status(
     )
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(
+    read_only=False,
+    idempotent=True,
+    open_world=True,
+    dynamic_classification=True,
+)
 def sync_status_coarse(
     session_id: str | None = None,
+    auth_session_id: str | None = None,
 ) -> ResponseEnvelope[SyncStatusCoarsePayload]:
-    """Read global connection health or one link-session status."""
-    if session_id is None:
-        response = sync_status()
-        data: SyncStatusCoarsePayload = SyncGlobalStatusView(
-            connections=response.data.connections
+    """Read connection health, a link session, or advance one auth session."""
+    if session_id is not None and auth_session_id is not None:
+        raise UserError(
+            "session_id and auth_session_id select different status modes.",
+            code="SYNC_STATUS_MODE_CONFLICT",
         )
+    if auth_session_id is not None:
+        result = _build_sync_auth_service().status(auth_session_id)
+        data: SyncStatusCoarsePayload = SyncAuthView(
+            auth_session_id=result.auth_session_id,
+            status=result.status,
+            user_code=result.user_code,
+            verification_url=result.verification_url,
+            expiration=result.expiration,
+            replayed=result.replayed,
+            error_code=result.error_code,
+        )
+        if result.status == "pending":
+            actions = [
+                "Ask the user to complete the verification URL, then call "
+                f"sync_status(auth_session_id='{result.auth_session_id}') again."
+            ]
+        elif result.status == "authenticated":
+            actions = ["Use sync_link to connect an institution."]
+        elif result.status in {"denied", "expired"}:
+            actions = ["Use sync_link(mode='login') to start a new auth session."]
+        else:
+            actions = [
+                "The sync provider could not be reached. Retry this exact "
+                "auth_session_id; terminal states are idempotent."
+            ]
+    elif session_id is None:
+        response = sync_status()
+        data = SyncGlobalStatusView(connections=response.data.connections)
         actions = list(response.actions)
     else:
         response = sync_link_status(session_id=session_id)
@@ -337,13 +383,42 @@ def sync_status_coarse(
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_link_coarse(
     institution: str | None = None,
-) -> ResponseEnvelope[SyncLinkPayload]:
-    """Start a link session using only isolated workflow actions."""
+    mode: Literal["institution", "login"] = "institution",
+) -> ResponseEnvelope[SyncLinkCoarsePayload]:
+    """Start an institution-link or nonblocking device-login session."""
+    if mode == "login":
+        if institution is not None:
+            raise UserError(
+                "institution is valid only when mode='institution'.",
+                code="SYNC_LINK_MODE_CONFLICT",
+            )
+        result = _build_sync_auth_service().begin()
+        data: SyncLinkCoarsePayload = SyncAuthView(
+            auth_session_id=result.auth_session_id,
+            status=result.status,
+            user_code=result.user_code,
+            verification_url=result.verification_url,
+            expiration=result.expiration,
+            replayed=result.replayed,
+            error_code=result.error_code,
+        )
+        return build_envelope(
+            data=data,
+            actions=[
+                "Present verification_url and user_code to the user.",
+                f"Then call sync_status(auth_session_id='{result.auth_session_id}') "
+                "after the user completes authorization.",
+            ],
+        )
     response = sync_link(institution=institution)
     if response.error is not None:
-        return response
-    return replace(
-        response,
+        return cast(ResponseEnvelope[SyncLinkCoarsePayload], response)
+    return build_envelope(
+        data=SyncInstitutionLinkView(
+            session_id=response.data.session_id,
+            link_url=response.data.link_url,
+            expiration=response.data.expiration,
+        ),
         actions=[
             "Present link_url to the user and ask them to complete the browser flow.",
             f"Then call sync_status(session_id='{response.data.session_id}') to "
@@ -373,18 +448,44 @@ def sync_pull_coarse(
     idempotent=False,
     open_world=True,
 )
-def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]:
-    """Remove a bank connection on moneybin-sync. Permanent — no revert path.
+def sync_disconnect(
+    institution: str | None = None,
+    mode: Literal["institution", "logout"] = "institution",
+) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
+    """Disconnect an institution or clear scoped sync credentials.
 
-    Local pulled transactions are preserved in raw.plaid_* and core.fct_transactions;
-    the institution simply stops appearing in sync_status and can no longer be
-    sync_pull'd. No local app.* state is mutated — connection state lives on the
-    server per design Section 4.
+    Institution disconnect is permanent on moneybin-sync; local pulled rows
+    remain. Logout clears profile-scoped credentials and pending auth sessions
+    but is recoverable through ``sync_link(mode="login")``.
     """
+    if mode == "logout":
+        if institution is not None:
+            raise UserError(
+                "institution is valid only when mode='institution'.",
+                code="SYNC_DISCONNECT_MODE_CONFLICT",
+            )
+        result = _build_sync_auth_service().logout()
+        return build_envelope(
+            data=SyncLogoutView(
+                status=result.status,
+                cleared_auth_sessions=result.cleared_auth_sessions,
+            ),
+            actions=[
+                "Use sync_link(mode='login') to authenticate this profile again.",
+            ],
+        )
+    if institution is None:
+        raise UserError(
+            "institution is required when mode='institution'.",
+            code="SYNC_INSTITUTION_REQUIRED",
+        )
     with _build_sync_service() as service:
         service.disconnect(institution=institution)
     return build_envelope(
-        data=SyncDisconnectPayload(status="disconnected", institution=institution),
+        data=SyncInstitutionDisconnectView(
+            status="disconnected",
+            institution=institution,
+        ),
         actions=[],
     )
 
@@ -420,14 +521,22 @@ def register_sync_prompts(mcp: FastMCP) -> None:
 def register_sync_workflow_tools(mcp: FastMCP) -> None:
     """Register the standard four-boundary sync workflow."""
     for callback, name, description in (
-        (sync_link_coarse, "sync_link", "Start a hosted bank-link session."),
+        (
+            sync_link_coarse,
+            "sync_link",
+            "Start a hosted institution-link or nonblocking device-login session.",
+        ),
         (
             sync_status_coarse,
             "sync_status",
-            "Read global health or one link-session status.",
+            "Read global health, one link session, or advance one device-login session.",
         ),
         (sync_pull_coarse, "sync_pull", "Pull connected financial data."),
-        (sync_disconnect, "sync_disconnect", "Disconnect one institution."),
+        (
+            sync_disconnect,
+            "sync_disconnect",
+            "Disconnect one institution or clear profile-scoped sync credentials.",
+        ),
     ):
         register(
             mcp,

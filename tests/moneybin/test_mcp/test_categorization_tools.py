@@ -167,6 +167,50 @@ class TestTransactionsCategorizeRun:
         assert "rules" in result["data"]["applied_by_method"]
         assert "merchants" not in result["data"]["applied_by_method"]
 
+    @pytest.mark.unit
+    async def test_improve_ai_operation_reuses_provider_native_upgrade(
+        self, mcp_db: Path
+    ) -> None:
+        """The consolidated tool exposes the provider-native upgrade explicitly."""
+        from moneybin.mcp.tools.transactions_categorize import (
+            transactions_categorize_run,
+        )
+
+        with patch(
+            "moneybin.mcp.tools.transactions_categorize.CategorizationService"
+        ) as service_cls:
+            service_cls.return_value.improve_ai_categories.return_value = 4
+            result = (
+                await transactions_categorize_run(operation="improve_ai")
+            ).to_dict()
+
+        assert result["data"] == {
+            "kind": "improve_ai",
+            "upgraded_count": 4,
+        }
+        service_cls.return_value.improve_ai_categories.assert_called_once_with()
+        service_cls.return_value.categorize_run.assert_not_called()
+
+    @pytest.mark.unit
+    async def test_improve_ai_operation_rejects_cascade_methods(
+        self, mcp_db: Path
+    ) -> None:
+        """Methods cannot silently change meaning on the improve-AI branch."""
+        from moneybin.mcp.tools.transactions_categorize import (
+            transactions_categorize_run,
+        )
+
+        result = (
+            await transactions_categorize_run(
+                operation="improve_ai",
+                methods=["rules"],
+            )
+        ).to_dict()
+
+        assert result["status"] == "error"
+        assert result["error"]["code"] == "mutation_invalid_input"
+        assert "methods" in result["error"]["message"]
+
 
 class TestTransactionsCategorizeImproveAi:
     """transactions_categorize_improve_ai tool wiring and response envelope."""

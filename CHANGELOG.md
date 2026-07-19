@@ -67,6 +67,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Executable CLI/MCP capability parity.** A checked outcome map now covers all
+  45 standard MCP tools and every implemented Typer path by service ownership
+  and durable result, replacing the old canonical-name drift test. It includes
+  isolated-state parity tests for refresh, reports, annotations, taxonomy,
+  consent, import, sync, and SQL. `accounts summary` is now available on the
+  CLI, and the formerly-placeholder category and merchant taxonomy commands
+  execute through the shared categorization service.
+- **Nonblocking MCP sync authentication within the existing four-tool
+  surface.** `sync_link(mode="login")` begins device authorization,
+  `sync_status(auth_session_id=...)` advances it with idempotent terminal
+  replay and local expiry enforcement, and `sync_disconnect(mode="logout")`
+  clears credentials plus pending profile-scoped sessions. Secret device codes
+  and tokens remain in `SecretStore`; MCP sees only safe user-facing fields.
+  `transactions_categorize_run(operation="improve_ai")` similarly absorbs the
+  provider-native AI-upgrade outcome without increasing the 45-tool surface.
 - **`moneybin --version`** prints the installed MoneyBin version. (#316)
 - **PyPI release pipeline with Trusted Publishing.** A tagged release builds the
   wheel and publishes it to PyPI over OIDC Trusted Publishing (no stored token),

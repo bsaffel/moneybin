@@ -578,21 +578,42 @@ def transactions_categorize_auto_accept(
 @mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_run(
     methods: list[Literal["rules", "merchants"]] | None = None,
-) -> ResponseEnvelope[CategorizeRunPayload]:
-    """Run the categorization engine cascade over uncategorized transactions.
+    operation: Literal["categorize", "improve_ai"] = "categorize",
+) -> ResponseEnvelope[CategorizeRunPayload | ImproveAiPayload]:
+    """Run categorization or upgrade AI guesses to provider-native categories.
 
-    Each method runs a deterministic engine: ``rules`` applies active
-    user-authored pattern rules; ``merchants`` applies the stored merchant
-    catalog. Engines run in the order given — an earlier engine's write
-    blocks a later engine's write on the same row via source-precedence.
-    The canonical order ``["rules", "merchants"]`` takes an optimized
-    shared-scan path. Amounts use the accounting convention: negative =
-    expense, positive = income; transfers exempt.
+    ``operation="categorize"`` runs deterministic engines over uncategorized
+    transactions. ``rules`` applies active user-authored pattern rules and
+    ``merchants`` applies the stored merchant catalog. Engines run in the
+    order given; the canonical order takes an optimized shared-scan path.
+
+    ``operation="improve_ai"`` revisits only transactions currently labeled
+    by AI and upgrades those with a confident provider-native category. It
+    forbids ``methods`` because rules/merchant engines target a different
+    transaction population. Amounts use the accounting convention: negative
+    = expense, positive = income; transfers exempt.
 
     Args:
+        operation: ``categorize`` (default) or ``improve_ai``.
         methods: Engines to run in the listed order. Defaults to
-            ["rules", "merchants"].
+            ["rules", "merchants"]. Valid only for ``categorize``.
     """
+    if operation == "improve_ai":
+        if methods is not None:
+            raise UserError(
+                "methods is valid only when operation='categorize'.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        with get_database(read_only=False) as db:
+            count = CategorizationService(db).improve_ai_categories()
+        return build_envelope(
+            data=ImproveAiPayload(upgraded_count=count),
+            sensitivity="low",
+            actions=[
+                "Use system_status(sections=['categorization']) to check coverage",
+            ],
+        )
+
     with get_database(read_only=False) as db:
         data = CategorizationService(db).categorize_run(methods=methods)
     payload = CategorizeRunPayload(
@@ -645,8 +666,9 @@ def register_transactions_categorize_tools(mcp: FastMCP) -> None:
         mcp,
         transactions_categorize_run,
         "transactions_categorize_run",
-        "Run the selected deterministic categorization engines over "
-        "uncategorized transactions. Amounts use the accounting convention: "
-        "negative = expense, positive = income; transfers exempt.",
+        "Run deterministic categorization engines or upgrade confident AI "
+        "guesses to provider-native categories. operation='categorize' accepts "
+        "methods; operation='improve_ai' forbids it. Amounts use the accounting "
+        "convention: negative = expense, positive = income; transfers exempt.",
     )
     register_categorization_coarse_writes(mcp)
