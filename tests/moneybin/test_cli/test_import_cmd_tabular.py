@@ -226,10 +226,10 @@ class TestDeleteFormat:
     def test_unknown_format_exits_with_error(self, mocker: Any) -> None:
         """Attempting to delete an unknown user format exits 1."""
         mocker.patch("moneybin.database.get_database", return_value=MagicMock())
-        mocker.patch(
-            "moneybin.extractors.tabular.formats.delete_format_from_db",
-            return_value=False,
-        )
+        service = mocker.patch(
+            "moneybin.services.import_service.ImportService"
+        ).return_value
+        service.delete_saved_format.return_value = "not_found"
         result = runner.invoke(app, ["formats", "delete", "my_custom_format", "--yes"])
         assert result.exit_code == 1
 

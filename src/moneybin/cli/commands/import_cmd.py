@@ -1627,14 +1627,10 @@ def formats_delete(
     """
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
-    from moneybin.extractors.tabular.formats import (
-        delete_format_from_db,
-        load_builtin_formats,
-    )
+    from moneybin.extractors.tabular.formats import load_builtin_formats
+    from moneybin.services.import_service import ImportService
 
-    # Check if it's a built-in format
-    builtin = load_builtin_formats()
-    if name in builtin:
+    if name in load_builtin_formats():
         logger.error(f"❌ {name!r} is a built-in format and cannot be deleted")
         raise typer.Exit(1)
 
@@ -1646,9 +1642,12 @@ def formats_delete(
 
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            deleted = delete_format_from_db(db, name, actor="cli")
+            status = ImportService(db).delete_saved_format(name, actor="cli")
 
-    if not deleted:
+    if status == "builtin":
+        logger.error(f"❌ {name!r} is a built-in format and cannot be deleted")
+        raise typer.Exit(1)
+    if status == "not_found":
         logger.error(f"❌ Format {name!r} not found")
         raise typer.Exit(1)
     logger.info(f"✅ Deleted format {name!r}")

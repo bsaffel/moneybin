@@ -291,6 +291,14 @@ class ImportRevertPayload:
     rows_deleted: Annotated[int | None, DataClass.AGGREGATE]
 
 
+@dataclass(frozen=True, slots=True)
+class ImportSavedFormatDeletePayload:
+    """Payload for audited user-saved format deletion via ``import_revert``."""
+
+    format_name: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[Literal["deleted"], DataClass.TXN_TYPE]
+
+
 # ---------------------------------------------------------------------------
 # import_formats — per-format row + top-level payload
 # ---------------------------------------------------------------------------

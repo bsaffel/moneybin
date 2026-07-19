@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import inspect
 import json
 import shutil
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import click
+import keyring.errors
 import pytest
 from pydantic import SecretStr
 from typer.main import get_command
@@ -21,7 +21,7 @@ from moneybin.connectors.sync_auth import SyncAuthService
 from moneybin.connectors.sync_models import DeviceAuthorizationChallenge
 from moneybin.database import get_database
 from moneybin.mcp.surface import STANDARD_TOOL_NAMES
-from moneybin.mcp.tools.import_tools import import_files_coarse
+from moneybin.mcp.tools.import_tools import import_files_coarse, import_revert_coarse
 from moneybin.mcp.tools.privacy import privacy_consent_set_coarse
 from moneybin.mcp.tools.refresh import refresh_run
 from moneybin.mcp.tools.reports import reports
@@ -34,22 +34,26 @@ from moneybin.mcp.write_contracts import (
     MerchantStateRequest,
     TagsSet,
 )
-from moneybin.secrets import SecretNotFoundError, SecretStore
 
 OUTCOME_MAP_PATH = (
     Path(__file__).parents[2] / "fixtures" / "mcp_capabilities" / "outcome-map.json"
 )
-UNIMPLEMENTED_CLI_PATHS = {
-    "budget delete",
-    "budget set",
-    "export run",
-    "sync key rotate",
-    "sync schedule remove",
-    "sync schedule set",
-    "sync schedule show",
-    "transactions categorize ml apply",
-    "transactions categorize ml status",
-    "transactions categorize ml train",
+UNIMPLEMENTED_CLI_INVOCATIONS = {
+    "budget delete": ("Food",),
+    "budget set": ("Food", "100"),
+    "export run": (),
+    "sync key rotate": (),
+    "sync schedule remove": (),
+    "sync schedule set": (),
+    "sync schedule show": (),
+    "transactions categorize ml apply": (),
+    "transactions categorize ml status": (),
+    "transactions categorize ml train": (),
+}
+UNIMPLEMENTED_CLI_PATHS = set(UNIMPLEMENTED_CLI_INVOCATIONS)
+HIDDEN_COMPATIBILITY_ALIASES = {
+    "sync connect": "sync link",
+    "sync connect-status": "sync link-status",
 }
 
 
@@ -112,7 +116,7 @@ def load_outcome_map(path: Path = OUTCOME_MAP_PATH) -> tuple[OutcomeMapRow, ...]
 
 
 def registered_cli_commands() -> dict[str, click.Command]:
-    """Return every executable non-hidden path from the live Typer tree."""
+    """Return every executable path, including hidden compatibility aliases."""
     commands: dict[str, click.Command] = {}
 
     def walk(command: click.Command, prefix: tuple[str, ...]) -> None:
@@ -120,8 +124,7 @@ def registered_cli_commands() -> dict[str, click.Command]:
             if command.invoke_without_command and prefix:
                 commands[" ".join(prefix)] = command
             for name, child in command.commands.items():
-                if not child.hidden:
-                    walk(child, (*prefix, name))
+                walk(child, (*prefix, name))
             return
         commands[" ".join(prefix)] = command
 
@@ -184,27 +187,202 @@ def test_every_implemented_cli_path_is_mapped() -> None:
     assert set(commands) - UNIMPLEMENTED_CLI_PATHS == mapped
 
 
-def test_unimplemented_cli_exclusions_remain_explicit_stubs() -> None:
-    commands = registered_cli_commands()
-    for path in UNIMPLEMENTED_CLI_PATHS:
-        callback = commands[path].callback
-        assert callback is not None
-        assert "_not_implemented" in inspect.getsource(callback), path
+@pytest.mark.parametrize(
+    ("path", "arguments"),
+    sorted(UNIMPLEMENTED_CLI_INVOCATIONS.items()),
+)
+def test_unimplemented_cli_exclusions_execute_as_explicit_stubs(
+    path: str,
+    arguments: tuple[str, ...],
+) -> None:
+    result = CliRunner().invoke(app, [*path.split(), *arguments])
+
+    assert result.exit_code == 0, result.output
+    assert "This command is not yet implemented." in result.stderr
+    assert "docs/specs/" in result.stderr
 
 
-def test_mapped_cli_paths_are_not_explicit_stubs() -> None:
+def test_hidden_cli_paths_are_explicit_mapped_compatibility_aliases() -> None:
     commands = registered_cli_commands()
+    hidden = {path for path, command in commands.items() if command.hidden}
     mapped = {path for row in load_outcome_map() for path in row.cli_commands}
-    for path in mapped:
-        callback = commands[path].callback
-        assert callback is not None
-        assert "_not_implemented" not in inspect.getsource(callback), path
+
+    assert hidden == set(HIDDEN_COMPATIBILITY_ALIASES)
+    assert hidden <= mapped
+    for alias, canonical in HIDDEN_COMPATIBILITY_ALIASES.items():
+        assert commands[alias].hidden
+        assert canonical in commands
+
+
+def test_hidden_sync_aliases_execute_the_canonical_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.cli.commands import sync as sync_cli
+
+    link_calls: list[dict[str, object]] = []
+    status_calls: list[dict[str, object]] = []
+
+    def record_link(**kwargs: object) -> None:
+        link_calls.append(kwargs)
+
+    def record_status(**kwargs: object) -> None:
+        status_calls.append(kwargs)
+
+    monkeypatch.setattr(sync_cli, "sync_link", record_link)
+    monkeypatch.setattr(
+        sync_cli,
+        "sync_link_status",
+        record_status,
+    )
+
+    connect = CliRunner().invoke(
+        app,
+        ["sync", "connect", "--institution", "Parity Bank", "--no-browser"],
+    )
+    connect_status = CliRunner().invoke(
+        app,
+        ["sync", "connect-status", "--session-id", "link_session_1"],
+    )
+
+    assert connect.exit_code == connect_status.exit_code == 0
+    assert link_calls == [
+        {
+            "institution": "Parity Bank",
+            "no_pull": False,
+            "no_browser": True,
+            "yes": False,
+            "output": "text",
+        }
+    ]
+    assert status_calls == [{"session_id": "link_session_1", "output": "text"}]
 
 
 def test_mapped_service_symbols_exist_and_are_callable() -> None:
     for row in load_outcome_map():
         for path in row.service_methods:
             assert callable(_resolve_symbol(path)), f"{row.capability_id}: {path}"
+
+
+def test_flagged_routes_map_their_actual_owners() -> None:
+    rows = {row.capability_id: row for row in load_outcome_map()}
+
+    assert (
+        "transactions categorize stats" in rows["system.status"].cli_commands
+        and "moneybin.services.categorization.CategorizationService.categorization_stats"
+        in rows["system.status"].service_methods
+    )
+    assert (
+        "transactions categorize rules apply"
+        in rows["transactions.categorize.run"].cli_commands
+        and "moneybin.services.categorization.CategorizationService.categorize_run"
+        in rows["transactions.categorize.run"].service_methods
+    )
+    assert (
+        "categories delete" in rows["taxonomy.set"].cli_commands
+        and "moneybin.services.categorization.CategorizationService.delete_category"
+        in rows["taxonomy.set"].service_methods
+    )
+    assert {"import formats list", "import formats show"} <= set(
+        rows["import.status"].cli_commands
+    )
+    assert {
+        "moneybin.extractors.tabular.formats.load_builtin_formats",
+        "moneybin.extractors.tabular.formats.load_formats_from_db",
+        "moneybin.repositories.pdf_formats_repo.PdfFormatsRepo.list_all",
+    } <= set(rows["import.status"].service_methods)
+    assert (
+        "moneybin.services.import_service.ImportService.delete_saved_format"
+        in rows["import.revert"].service_methods
+    )
+
+
+def test_flagged_cli_routes_execute_the_mapped_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from moneybin.cli.commands import categories as categories_cli
+    from moneybin.cli.commands import import_cmd
+    from moneybin.cli.commands.transactions import categorize as categorize_cli
+    from moneybin.extractors.tabular.formats import load_builtin_formats
+
+    db = MagicMock()
+    db_context = MagicMock()
+    db_context.__enter__.return_value = db
+    categorization_service = MagicMock()
+    categorization_service.categorization_stats.return_value = {
+        "total": 3,
+        "categorized": 2,
+        "uncategorized": 1,
+        "coverage_pct": 66.7,
+    }
+
+    def db_factory(**_: Any) -> MagicMock:
+        return db_context
+
+    def categorization_factory(_: Any) -> MagicMock:
+        return categorization_service
+
+    monkeypatch.setattr(categorize_cli, "get_database", db_factory)
+    monkeypatch.setattr(
+        "moneybin.services.categorization.CategorizationService",
+        categorization_factory,
+    )
+
+    stats = CliRunner().invoke(
+        app,
+        ["transactions", "categorize", "stats", "--output", "json"],
+    )
+    assert stats.exit_code == 0, stats.output
+    categorization_service.categorization_stats.assert_called_once_with()
+
+    delete_service = MagicMock()
+
+    def deletion_factory(_: Any) -> MagicMock:
+        return delete_service
+
+    monkeypatch.setattr(categories_cli, "get_database", db_factory)
+    monkeypatch.setattr(
+        "moneybin.services.categorization.CategorizationService",
+        deletion_factory,
+    )
+    deleted = CliRunner().invoke(
+        app,
+        ["categories", "delete", "category_parity", "--output", "json"],
+    )
+    assert deleted.exit_code == 0, deleted.output
+    delete_service.delete_category.assert_called_once_with(
+        "category_parity",
+        force=False,
+        actor="cli",
+    )
+
+    builtin = load_builtin_formats()
+
+    def load_all_formats(_: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        return builtin, builtin
+
+    def load_pdf_formats(_: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(
+        import_cmd,
+        "_load_all_formats",
+        load_all_formats,
+    )
+    monkeypatch.setattr(import_cmd, "_load_pdf_formats", load_pdf_formats)
+    monkeypatch.setattr("moneybin.database.get_database", db_factory)
+    listed = CliRunner().invoke(
+        app,
+        ["import", "formats", "list", "--output", "json"],
+    )
+    shown = CliRunner().invoke(
+        app,
+        ["import", "formats", "show", next(iter(builtin)), "--output", "json"],
+    )
+    assert listed.exit_code == shown.exit_code == 0
+    assert json.loads(listed.stdout)["formats"]
+    assert json.loads(shown.stdout)["format"]["name"] == next(iter(builtin))
 
 
 def _database_pair(seed: Path, tmp_path: Path) -> tuple[Path, Path]:
@@ -251,12 +429,81 @@ def _seed_transaction(path: Path, transaction_id: str) -> None:
         )
 
 
+def _seed_review_proposals(path: Path) -> None:
+    """Seed audited, nonzero match and account-identity review state."""
+    from moneybin.repositories.account_link_decisions_repo import (
+        AccountLinkDecisionsRepo,
+    )
+    from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+
+    _select_database(path)
+    with get_database(read_only=False) as db:
+        MatchDecisionsRepo(db).insert(
+            match_id="parity_match",
+            source_transaction_id_a="parity_a",
+            source_type_a="csv",
+            source_origin_a="parity",
+            source_transaction_id_b="parity_b",
+            source_type_b="ofx",
+            source_origin_b="parity",
+            account_id="ACC001",
+            confidence_score=0.9,
+            match_signals={"date_distance": 0},
+            match_tier="3",
+            match_status="pending",
+            decided_by="auto",
+            actor="test",
+        )
+        AccountLinkDecisionsRepo(db).insert(
+            decision_id="parity_identity",
+            provisional_account_id="ACC001",
+            candidate_account_id="ACC002",
+            confidence_score=0.8,
+            match_signals={"signal": "name", "value": "parity"},
+            decided_by="auto",
+            actor="test",
+        )
+
+
+def _seed_nonzero_networth(path: Path) -> None:
+    """Materialize a meaningful report source instead of the empty schema stub."""
+    _select_database(path)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_balances_daily (
+                account_id, balance_date, balance, is_observed,
+                observation_source, reconciliation_delta
+            ) VALUES
+                ('ACC001', '2026-07-01', 5000.00, TRUE, 'ofx', NULL),
+                ('ACC002', '2026-07-01', 15000.00, TRUE, 'ofx', NULL)
+            """
+        )
+        db.execute(
+            """
+            CREATE OR REPLACE VIEW reports.net_worth AS
+            SELECT
+                d.balance_date,
+                SUM(d.balance) AS net_worth,
+                COUNT(DISTINCT d.account_id) AS account_count,
+                SUM(CASE WHEN d.balance > 0 THEN d.balance ELSE 0 END) AS total_assets,
+                SUM(CASE WHEN d.balance < 0 THEN d.balance ELSE 0 END) AS total_liabilities
+            FROM core.fct_balances_daily AS d
+            INNER JOIN core.dim_accounts AS a ON d.account_id = a.account_id
+            WHERE a.include_in_net_worth AND NOT a.archived
+            GROUP BY d.balance_date
+            """
+        )
+
+
 @pytest.mark.unit
 async def test_refresh_match_identity_has_same_observable_outcome(
     mcp_db: Path,
     tmp_path: Path,
 ) -> None:
     cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
+    _seed_review_proposals(cli_path)
+    _seed_review_proposals(mcp_path)
     _select_database(cli_path)
     cli = CliRunner().invoke(
         app,
@@ -279,16 +526,20 @@ async def test_refresh_match_identity_has_same_observable_outcome(
     assert cli_data["identity_errors"] == mcp["data"]["identity_errors"]
     table_queries = {
         "match_decisions": "SELECT COUNT(*) FROM app.match_decisions",
-        "account_links": "SELECT COUNT(*) FROM app.account_links",
-        "merchant_links": "SELECT COUNT(*) FROM app.merchant_links",
+        "account_link_decisions": "SELECT COUNT(*) FROM app.account_link_decisions",
+        "merchant_link_decisions": "SELECT COUNT(*) FROM app.merchant_link_decisions",
     }
-    assert {
+    cli_counts = {
         table: _query_rows(cli_path, query)[0][0]
         for table, query in table_queries.items()
-    } == {
+    }
+    mcp_counts = {
         table: _query_rows(mcp_path, query)[0][0]
         for table, query in table_queries.items()
     }
+    assert cli_counts == mcp_counts
+    assert cli_counts["match_decisions"] >= 1
+    assert cli_counts["account_link_decisions"] >= 1
 
 
 @pytest.mark.unit
@@ -297,6 +548,8 @@ async def test_report_execution_returns_same_rows(
     tmp_path: Path,
 ) -> None:
     cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
+    _seed_nonzero_networth(cli_path)
+    _seed_nonzero_networth(mcp_path)
     _select_database(cli_path)
     cli = CliRunner().invoke(
         app,
@@ -305,13 +558,29 @@ async def test_report_execution_returns_same_rows(
     assert cli.exit_code == 0, cli.output
 
     _select_database(mcp_path)
-    mcp = (
-        await reports(
-            report_id="core:networth",
-            parameters={"as_of": None, "account_ids": None},
-        )
-    ).to_dict()
-    assert json.loads(cli.stdout)["data"] == mcp["data"]["rows"]
+    mcp_envelope = await reports(
+        report_id="core:networth",
+        parameters={"as_of": None, "account_ids": None},
+    )
+    mcp = json.loads(mcp_envelope.to_json())
+    cli_payload = json.loads(cli.stdout)
+    mcp_data = mcp["data"]
+    assert cli_payload["data"] == mcp_data["rows"]
+    assert mcp_data["rows"]
+    assert any(
+        float(value) != 0
+        for row in mcp_data["rows"]
+        for key, value in row.items()
+        if key in {"balance", "net_worth"} and value is not None
+    )
+    assert [column["name"] for column in mcp_data["columns"]] == list(
+        mcp_data["rows"][0]
+    )
+    assert mcp_data["count"] == len(mcp_data["rows"])
+    assert mcp_data["truncated"] is False
+    assert mcp_data["semantics"]["provenance"]
+    assert mcp["summary"]["returned_count"] == mcp_data["count"]
+    assert mcp["summary"]["has_more"] is mcp_data["truncated"]
 
 
 @pytest.mark.unit
@@ -532,26 +801,60 @@ async def test_import_writes_same_log_and_raw_row_counts(
     )
 
 
-class _MemorySecrets:
-    """Minimal real state store for auth-session outcome parity."""
+@pytest.mark.unit
+async def test_saved_format_deletion_has_same_audited_outcome(
+    mcp_db: Path,
+    tmp_path: Path,
+) -> None:
+    from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
 
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
+    cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
+    saved = TabularFormat(
+        name="parity_saved",
+        institution_name="Parity Bank",
+        header_signature=["Date", "Amount"],
+        field_mapping={"transaction_date": "Date", "amount": "Amount"},
+        sign_convention="negative_is_expense",
+        date_format="%m/%d/%Y",
+    )
+    for path in (cli_path, mcp_path):
+        _select_database(path)
+        with get_database(read_only=False) as db:
+            save_format_to_db(db, saved, actor="test")
 
-    def get_key(self, name: str) -> str:
-        try:
-            return self.values[name]
-        except KeyError:
-            raise SecretNotFoundError(name) from None
+    _select_database(cli_path)
+    cli = CliRunner().invoke(
+        app,
+        ["import", "formats", "delete", "parity_saved", "--yes"],
+    )
+    assert cli.exit_code == 0, cli.output
 
-    def set_key(self, name: str, value: str) -> None:
-        self.values[name] = value
+    _select_database(mcp_path)
+    mcp = (
+        await import_revert_coarse(
+            operation="delete_saved_format",
+            format_name="parity_saved",
+        )
+    ).to_dict()
+    assert mcp["data"]["status"] == "deleted"
 
-    def delete_key(self, name: str) -> None:
-        try:
-            del self.values[name]
-        except KeyError:
-            raise SecretNotFoundError(name) from None
+    state_query = """
+        SELECT COUNT(*)
+        FROM app.tabular_formats
+        WHERE name = 'parity_saved'
+    """
+    audit_query = """
+        SELECT action, target_id
+        FROM app.audit_log
+        WHERE action = 'tabular_format.delete'
+        ORDER BY occurred_at
+    """
+    assert (
+        _query_rows(cli_path, state_query)
+        == _query_rows(mcp_path, state_query)
+        == [(0,)]
+    )
+    assert _query_rows(cli_path, audit_query) == _query_rows(mcp_path, audit_query)
 
 
 class _LogoutClient:
@@ -577,41 +880,51 @@ class _LogoutClient:
 @pytest.mark.unit
 async def test_sync_logout_clears_same_persisted_session_outcome(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     from moneybin.cli.commands import sync as sync_cli
-    from moneybin.connectors import sync_auth as sync_auth_module
+    from moneybin.config import set_current_profile
     from moneybin.mcp.tools import sync as sync_mcp
 
-    cli_store = _MemorySecrets()
-    mcp_store = _MemorySecrets()
+    keyring_values: dict[tuple[str, str], str] = {}
+
+    def get_password(service: str, name: str) -> str | None:
+        return keyring_values.get((service, name))
+
+    def set_password(service: str, name: str, value: str) -> None:
+        keyring_values[(service, name)] = value
+
+    def delete_password(service: str, name: str) -> None:
+        try:
+            del keyring_values[(service, name)]
+        except KeyError:
+            raise keyring.errors.PasswordDeleteError from None
+
+    monkeypatch.setattr("keyring.get_password", get_password)
+    monkeypatch.setattr("keyring.set_password", set_password)
+    monkeypatch.setattr("keyring.delete_password", delete_password)
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+
     cli_client = _LogoutClient()
     mcp_client = _LogoutClient()
-    SyncAuthService(
-        client=cast(Any, cli_client),
-        secrets=cast(SecretStore, cli_store),
-    ).begin()
-    SyncAuthService(
-        client=cast(Any, mcp_client),
-        secrets=cast(SecretStore, mcp_store),
-    ).begin()
 
+    set_current_profile("cli-parity")
+    SyncAuthService(client=cast(Any, cli_client)).begin()
     monkeypatch.setattr(sync_cli, "_build_sync_client", lambda: cli_client)
-    monkeypatch.setattr(sync_auth_module, "SecretStore", lambda: cli_store)
     cli = CliRunner().invoke(app, ["sync", "logout"])
     assert cli.exit_code == 0, cli.output
 
+    set_current_profile("mcp-parity")
+    SyncAuthService(client=cast(Any, mcp_client)).begin()
     monkeypatch.setattr(
         sync_mcp,
         "_build_sync_auth_service",
-        lambda: SyncAuthService(
-            client=cast(Any, mcp_client),
-            secrets=cast(SecretStore, mcp_store),
-        ),
+        lambda: SyncAuthService(client=cast(Any, mcp_client)),
     )
     mcp = (await sync_disconnect(mode="logout")).to_dict()
     assert mcp["data"]["status"] == "logged_out"
     assert cli_client.logged_out and mcp_client.logged_out
-    assert cli_store.values == mcp_store.values == {}
+    assert keyring_values == {}
 
 
 @pytest.mark.unit

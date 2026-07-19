@@ -2,9 +2,9 @@
   {
     "capability_id": "system.status",
     "mcp_tools": ["system_status"],
-    "cli_commands": ["system status", "system doctor"],
-    "service_methods": ["moneybin.services.system_service.SystemService.status", "moneybin.services.doctor_service.DoctorService.run_all"],
-    "observable_outcomes": ["typed system section status and health-check result counts"],
+    "cli_commands": ["system status", "system doctor", "transactions categorize stats"],
+    "service_methods": ["moneybin.services.system_service.SystemService.status", "moneybin.services.doctor_service.DoctorService.run_all", "moneybin.services.categorization.CategorizationService.categorization_stats"],
+    "observable_outcomes": ["typed system section status, categorization coverage, and health-check result counts"],
     "exemption": null
   },
   {
@@ -122,7 +122,7 @@
   {
     "capability_id": "transactions.categorize.assist",
     "mcp_tools": ["transactions_categorize_assist"],
-    "cli_commands": ["transactions categorize assist", "transactions categorize export-uncategorized", "transactions categorize stats"],
+    "cli_commands": ["transactions categorize assist", "transactions categorize export-uncategorized"],
     "service_methods": ["moneybin.services.categorization.CategorizationService.categorize_assist"],
     "observable_outcomes": ["the same PII-scrubbed uncategorized batch and structural matcher signals"],
     "exemption": null
@@ -195,7 +195,7 @@
     "capability_id": "taxonomy.set",
     "mcp_tools": ["taxonomy_set"],
     "cli_commands": ["categories create", "categories set", "categories delete", "merchants create"],
-    "service_methods": ["moneybin.services.categorization.CategorizationService.plan_taxonomy_targets", "moneybin.services.categorization.CategorizationService.apply_taxonomy_targets", "moneybin.services.categorization.CategorizationService.create_category", "moneybin.services.categorization.CategorizationService.toggle_category", "moneybin.services.categorization.CategorizationService.create_merchant"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.plan_taxonomy_targets", "moneybin.services.categorization.CategorizationService.apply_taxonomy_targets", "moneybin.services.categorization.CategorizationService.create_category", "moneybin.services.categorization.CategorizationService.toggle_category", "moneybin.services.categorization.CategorizationService.delete_category", "moneybin.services.categorization.CategorizationService.create_merchant"],
     "observable_outcomes": ["category and merchant target states are applied atomically with audited hard-delete recovery"],
     "exemption": null
   },
@@ -210,7 +210,7 @@
   {
     "capability_id": "import.preview",
     "mcp_tools": ["import_preview"],
-    "cli_commands": ["import preview", "import formats list", "import formats show"],
+    "cli_commands": ["import preview"],
     "service_methods": ["moneybin.services.import_service.ImportService.pdf_preview"],
     "observable_outcomes": ["preview samples, detected mapping/sign evidence, and known format metadata are equivalent"],
     "exemption": null
@@ -226,17 +226,17 @@
   {
     "capability_id": "import.status",
     "mcp_tools": ["import_status"],
-    "cli_commands": ["import status", "import history", "import inbox list"],
-    "service_methods": ["moneybin.loaders.import_log.get_import_history", "moneybin.loaders.import_log.get_import_history_page"],
-    "observable_outcomes": ["identical import IDs, terminal states, source types, row counts, labels, and errors"],
+    "cli_commands": ["import status", "import history", "import inbox list", "import formats list", "import formats show"],
+    "service_methods": ["moneybin.loaders.import_log.get_import_history", "moneybin.loaders.import_log.get_import_history_page", "moneybin.extractors.tabular.formats.load_builtin_formats", "moneybin.extractors.tabular.formats.load_formats_from_db", "moneybin.repositories.pdf_formats_repo.PdfFormatsRepo.list_all"],
+    "observable_outcomes": ["identical import IDs, terminal states, source types, row counts, labels, errors, and saved-format metadata"],
     "exemption": null
   },
   {
     "capability_id": "import.revert",
     "mcp_tools": ["import_revert"],
-    "cli_commands": ["import revert"],
-    "service_methods": ["moneybin.services.import_service.ImportService.revert"],
-    "observable_outcomes": ["the selected import's raw rows are removed and its status becomes reverted"],
+    "cli_commands": ["import revert", "import formats delete"],
+    "service_methods": ["moneybin.services.import_service.ImportService.revert", "moneybin.services.import_service.ImportService.delete_saved_format"],
+    "observable_outcomes": ["the selected import's raw rows are removed and its status becomes reverted", "the selected user-saved format is audit-deleted while built-ins remain immutable"],
     "exemption": null
   },
   {
@@ -258,7 +258,7 @@
   {
     "capability_id": "sync.link",
     "mcp_tools": ["sync_link"],
-    "cli_commands": ["sync login", "sync link"],
+    "cli_commands": ["sync login", "sync link", "sync connect"],
     "service_methods": ["moneybin.connectors.sync_auth.SyncAuthService.begin", "moneybin.connectors.sync_client.SyncClient.login", "moneybin.services.sync_service.SyncService.initiate_link"],
     "observable_outcomes": ["login yields a scoped authenticated session without exposing tokens", "institution link yields the same hosted session ID, URL, and expiry"],
     "exemption": null
@@ -266,7 +266,7 @@
   {
     "capability_id": "sync.status",
     "mcp_tools": ["sync_status"],
-    "cli_commands": ["sync status", "sync link-status"],
+    "cli_commands": ["sync status", "sync link-status", "sync connect-status"],
     "service_methods": ["moneybin.connectors.sync_auth.SyncAuthService.status", "moneybin.services.sync_service.SyncService.list_connections", "moneybin.connectors.sync_client.SyncClient.get_link_status"],
     "observable_outcomes": ["auth polling reports pending/authenticated/denied/expired/provider_error idempotently", "connection and link-session status fields match"],
     "exemption": null
@@ -410,13 +410,13 @@
   {
     "capability_id": "operator.import-local-layout",
     "mcp_tools": [],
-    "cli_commands": ["import formats delete", "import inbox path"],
-    "service_methods": ["moneybin.extractors.tabular.formats.delete_format_from_db", "moneybin.services.inbox_service.InboxService.ensure_layout"],
-    "observable_outcomes": ["a local operator can remove a saved parser format or materialize and locate the profile inbox directory"],
+    "cli_commands": ["import inbox path"],
+    "service_methods": ["moneybin.services.inbox_service.InboxService.ensure_layout"],
+    "observable_outcomes": ["a local operator can materialize and locate the profile inbox directory"],
     "exemption": {
       "surface": "mcp",
       "category": "operator-territory",
-      "reason": "Saved parser deletion and local filesystem path discovery operate on physical profile layout rather than financial or protocol state."
+      "reason": "Local filesystem path discovery operates on physical profile layout rather than financial or protocol state."
     }
   },
   {

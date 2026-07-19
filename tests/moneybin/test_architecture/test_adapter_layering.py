@@ -201,15 +201,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.formats",
         "merge_formats",
     ),
-    # TODO followup: route `import formats delete` through a future
-    # FormatsService. delete_format_from_db writes to app.tabular_formats —
-    # this is a layering bypass the guardrail surfaced after the audit
-    # closed. Tracked as a follow-up; allowlisted temporarily.
-    (
-        "cli/commands/import_cmd.py",
-        "moneybin.extractors.tabular.formats",
-        "delete_format_from_db",
-    ),
 })
 
 

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal, cast
 
 from moneybin.connectors.sync_client import SyncClient
@@ -14,8 +17,8 @@ from moneybin.connectors.sync_errors import SyncAPIError, SyncAuthError
 from moneybin.errors import UserError
 from moneybin.secrets import SecretNotFoundError, SecretStore
 
-_AUTH_SESSION_INDEX_KEY = "SYNC__AUTH_SESSION_INDEX"
-_AUTH_SESSION_KEY_PREFIX = "SYNC__AUTH_SESSION__"
+_AUTH_SESSIONS_KEY = "SYNC__AUTH_SESSIONS"
+_LOCK_FILE_MODE = 0o600
 
 AuthStatus = Literal[
     "pending",
@@ -79,11 +82,17 @@ class SyncAuthService:
         *,
         client: SyncClient,
         secrets: SecretStore | None = None,
+        lock_path: Path | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         """Bind one sync client to its profile-scoped secret store."""
         self._client = client
         self._secrets = secrets or SecretStore()
+        if lock_path is None:
+            from moneybin.config import get_settings
+
+            lock_path = get_settings().profile_dir / ".sync-auth.lock"
+        self._lock_path = lock_path
         self._now = now or (lambda: datetime.now(UTC))
 
     def begin(self) -> SyncAuthResult:
@@ -102,113 +111,122 @@ class SyncAuthService:
             expiration=expiration.isoformat(),
             device_code=challenge.device_code.get_secret_value(),
         )
-        self._save(session)
-        self._add_to_index(auth_session_id)
+        with self._acquire_lock():
+            sessions = self._load_collection()
+            sessions[auth_session_id] = session
+            self._save_collection(sessions)
         return session.safe_result()
 
     def status(self, auth_session_id: str) -> SyncAuthResult:
         """Poll once, returning stable terminal state on subsequent calls."""
-        session = self._load(auth_session_id)
-        if session.status != "pending":
-            return session.safe_result(replayed=True)
-        if self._now() >= datetime.fromisoformat(session.expiration):
-            expired = replace(
+        with self._acquire_lock():
+            sessions = self._load_collection()
+            session = self._get_session(sessions, auth_session_id)
+            if session.status != "pending":
+                return session.safe_result(replayed=True)
+            if self._now() >= datetime.fromisoformat(session.expiration):
+                expired = replace(
+                    session,
+                    status="expired",
+                    device_code=None,
+                    error_code="device_code_expired",
+                )
+                sessions[auth_session_id] = expired
+                self._save_collection(sessions)
+                return expired.safe_result()
+            if session.device_code is None:
+                raise UserError(
+                    "Authentication session cannot be resumed.",
+                    code="SYNC_AUTH_SESSION_INVALID",
+                )
+            try:
+                polled = self._client.poll_login(session.device_code)
+            except SyncAuthError as exc:
+                status: Literal["denied", "expired"] = (
+                    "denied" if "denied" in str(exc).lower() else "expired"
+                )
+                terminal = replace(
+                    session,
+                    status=status,
+                    device_code=None,
+                    error_code=(
+                        "authorization_denied"
+                        if status == "denied"
+                        else "device_code_expired"
+                    ),
+                )
+                sessions[auth_session_id] = terminal
+                self._save_collection(sessions)
+                return terminal.safe_result()
+            except SyncAPIError:
+                return replace(
+                    session.safe_result(),
+                    status="provider_error",
+                    error_code="sync_provider_error",
+                )
+            if polled.status != "authenticated":
+                return session.safe_result()
+            authenticated = replace(
                 session,
-                status="expired",
+                status="authenticated",
                 device_code=None,
-                error_code="device_code_expired",
+                error_code=None,
             )
-            self._save(expired)
-            return expired.safe_result()
-        if session.device_code is None:
-            raise UserError(
-                "Authentication session cannot be resumed.",
-                code="SYNC_AUTH_SESSION_INVALID",
-            )
-        try:
-            polled = self._client.poll_login(session.device_code)
-        except SyncAuthError as exc:
-            status: Literal["denied", "expired"] = (
-                "denied" if "denied" in str(exc).lower() else "expired"
-            )
-            terminal = replace(
-                session,
-                status=status,
-                device_code=None,
-                error_code=(
-                    "authorization_denied"
-                    if status == "denied"
-                    else "device_code_expired"
-                ),
-            )
-            self._save(terminal)
-            return terminal.safe_result()
-        except SyncAPIError:
-            return replace(
-                session.safe_result(),
-                status="provider_error",
-                error_code="sync_provider_error",
-            )
-        if polled.status != "authenticated":
-            return session.safe_result()
-        authenticated = replace(
-            session,
-            status="authenticated",
-            device_code=None,
-            error_code=None,
-        )
-        self._save(authenticated)
-        return authenticated.safe_result()
+            sessions[auth_session_id] = authenticated
+            self._save_collection(sessions)
+            return authenticated.safe_result()
 
     def logout(self) -> SyncLogoutResult:
         """Clear scoped broker tokens and every persisted device-auth session."""
-        self._client.logout()
-        session_ids = self._load_index()
-        for auth_session_id in session_ids:
-            self._delete_if_present(self._session_key(auth_session_id))
-        self._delete_if_present(_AUTH_SESSION_INDEX_KEY)
+        with self._acquire_lock():
+            sessions = self._load_collection()
+            self._client.logout()
+            self._delete_if_present(_AUTH_SESSIONS_KEY)
         return SyncLogoutResult(
             status="logged_out",
-            cleared_auth_sessions=len(session_ids),
+            cleared_auth_sessions=len(sessions),
         )
 
-    def _load(self, auth_session_id: str) -> _StoredAuthSession:
+    def _get_session(
+        self,
+        sessions: dict[str, _StoredAuthSession],
+        auth_session_id: str,
+    ) -> _StoredAuthSession:
         if not auth_session_id.startswith("syncauth_"):
             raise UserError(
                 "Unknown authentication session.",
                 code="SYNC_AUTH_SESSION_NOT_FOUND",
             )
         try:
-            raw = self._secrets.get_key(self._session_key(auth_session_id))
-        except SecretNotFoundError:
+            return sessions[auth_session_id]
+        except KeyError:
             raise UserError(
                 "Authentication session was not found or was already cleared.",
                 code="SYNC_AUTH_SESSION_NOT_FOUND",
             ) from None
-        payload = json.loads(raw)
-        return _StoredAuthSession(**payload)
 
-    def _save(self, session: _StoredAuthSession) -> None:
-        self._secrets.set_key(
-            self._session_key(session.auth_session_id),
-            json.dumps(asdict(session), sort_keys=True, separators=(",", ":")),
-        )
-
-    def _load_index(self) -> list[str]:
+    def _load_collection(self) -> dict[str, _StoredAuthSession]:
         try:
-            raw = self._secrets.get_key(_AUTH_SESSION_INDEX_KEY)
+            raw = self._secrets.get_key(_AUTH_SESSIONS_KEY)
         except SecretNotFoundError:
-            return []
-        payload = json.loads(raw)
-        return [str(value) for value in payload]
+            return {}
+        payload = cast(dict[str, dict[str, object]], json.loads(raw))
+        return {
+            auth_session_id: _StoredAuthSession(**session)  # type: ignore[arg-type]
+            for auth_session_id, session in payload.items()
+        }
 
-    def _add_to_index(self, auth_session_id: str) -> None:
-        session_ids = self._load_index()
-        if auth_session_id not in session_ids:
-            session_ids.append(auth_session_id)
+    def _save_collection(
+        self,
+        sessions: dict[str, _StoredAuthSession],
+    ) -> None:
+        payload = {
+            auth_session_id: asdict(session)
+            for auth_session_id, session in sessions.items()
+        }
         self._secrets.set_key(
-            _AUTH_SESSION_INDEX_KEY,
-            json.dumps(session_ids, sort_keys=True, separators=(",", ":")),
+            _AUTH_SESSIONS_KEY,
+            json.dumps(payload, sort_keys=True, separators=(",", ":")),
         )
 
     def _delete_if_present(self, key: str) -> None:
@@ -217,6 +235,22 @@ class SyncAuthService:
         except SecretNotFoundError:
             pass
 
-    @staticmethod
-    def _session_key(auth_session_id: str) -> str:
-        return f"{_AUTH_SESSION_KEY_PREFIX}{auth_session_id}"
+    @contextmanager
+    def _acquire_lock(self) -> Generator[None, None, None]:
+        """Serialize profile-scoped collection updates across processes."""
+        import fcntl
+
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(
+            self._lock_path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            _LOCK_FILE_MODE,
+        )
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)

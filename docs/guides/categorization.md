@@ -74,7 +74,7 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 | `rules list` | Lists active rules in priority order. |
 | `rules create` | Single rule: `NAME --pattern X --category Y [--match-type contains\|exact\|regex] [--priority N] [--min-amount/--max-amount] [--account-id ID]`. Batch: `--from-file rules.json`. `--reapply` re-evaluates uncategorized rows. |
 | `rules delete <rule_id>` | Soft-deletes a rule (`is_active=false`). `--reapply` strips categorizations the rule wrote and re-evaluates those rows against remaining matchers. |
-| `rules apply` | Runs the same `categorize_pending` cascade as `run` with default methods. |
+| `rules apply` | Runs only active rules, equivalent to `run --methods rules`. Merchant and provider-native passes are not invoked. |
 | `auto review` | Lists pending auto-rule proposals with sample transactions and trigger counts. |
 | `auto accept` | Batch-accept/reject proposals: `--accept <id>...`, `--reject <id>...`, `--accept-all`, `--reject-all`. Explicit rejects override `--accept-all`. |
 | `auto stats` | Counts: active auto-rules, pending proposals, transactions auto-ruled. |
@@ -209,7 +209,7 @@ A top-level JSON array. Each item:
 - **`commit-from-file` re-runs.** Re-running the same `proposals.json` is safe: each row attempts a write at `ai`-priority. The first run lands; the second run finds an existing row already at `ai`-priority and the SQL precedence guard (`<=`) lets it overwrite with identical values — no new exemplars accrue because the merchant accumulator only creates a new merchant or appends a new exemplar when the row's `match_text` isn't already covered (`list_distinct(list_append(...))`). Net effect: idempotent.
 - **Re-running after a higher-source write has happened.** If a rule or `user` write covered a row between two `commit-from-file` runs, the second `ai` write is rejected and surfaces as a per-row `lower_priority_source` skip — no overwrite, no error. See [Error taxonomy](#error-taxonomy).
 - **`rules create` dedup.** Active rules are deduped by `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`; `name` and `priority` are metadata. Retrying the same payload returns the existing `rule_id` and creates no new rows. The result envelope reports `created`, `existing`, and `skipped` separately.
-- **`run` / `rules apply` re-invocation.** Both call `categorize_pending`. Idempotent against a stable database: a second run with no new uncategorized rows writes nothing.
+- **`run` / `rules apply` re-invocation.** `run` executes its selected deterministic engines; `rules apply` executes only rules. Both are idempotent against a stable database: a second run with no new uncategorized rows writes nothing.
 
 ## Error taxonomy
 

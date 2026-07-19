@@ -26,6 +26,7 @@ from moneybin.mcp.tools.import_tools import (
     import_formats,
     import_preview,
     import_preview_coarse,
+    import_revert_coarse,
     import_status,
     import_status_coarse,
 )
@@ -58,6 +59,89 @@ async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> N
     }
     assert "import_formats" not in names
     assert "import_inbox_pending" not in names
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"operation": "revert_import"},
+        {
+            "operation": "revert_import",
+            "import_id": "import_1",
+            "format_name": "saved_format",
+        },
+        {"operation": "delete_saved_format"},
+        {
+            "operation": "delete_saved_format",
+            "import_id": "import_1",
+            "format_name": "saved_format",
+        },
+    ],
+)
+async def test_import_revert_strictly_discriminates_destructive_targets(
+    kwargs: dict[str, str],
+) -> None:
+    result = (await import_revert_coarse(**kwargs)).to_dict()  # type: ignore[arg-type]
+
+    assert result["error"]["code"] == "import_revert_invalid_target"
+    assert "exactly" in result["error"]["message"]
+
+
+async def test_import_revert_deletes_a_saved_format_with_audit(
+    mcp_db: Path,
+) -> None:
+    from moneybin.database import get_database
+    from moneybin.extractors.tabular.formats import (
+        TabularFormat,
+        load_formats_from_db,
+        save_format_to_db,
+    )
+
+    saved = TabularFormat(
+        name="parity_saved",
+        institution_name="Parity Bank",
+        header_signature=["Date", "Amount"],
+        field_mapping={"transaction_date": "Date", "amount": "Amount"},
+        sign_convention="negative_is_expense",
+        date_format="%m/%d/%Y",
+    )
+    with get_database(read_only=False) as db:
+        save_format_to_db(db, saved, actor="test")
+
+    result = (
+        await import_revert_coarse(
+            operation="delete_saved_format",
+            format_name="parity_saved",
+        )
+    ).to_dict()
+
+    assert result["data"] == {
+        "format_name": "parity_saved",
+        "status": "deleted",
+    }
+    with get_database(read_only=True) as db:
+        assert "parity_saved" not in load_formats_from_db(db)
+        audit = db.execute(
+            """
+            SELECT action, actor
+            FROM app.audit_log
+            WHERE action = 'tabular_format.delete'
+            ORDER BY occurred_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    assert audit == ("tabular_format.delete", "mcp")
+
+
+async def test_import_revert_refuses_builtin_format_deletion(mcp_db: Path) -> None:
+    result = (
+        await import_revert_coarse(
+            operation="delete_saved_format",
+            format_name="tiller",
+        )
+    ).to_dict()
+
+    assert result["error"]["code"] == "saved_format_builtin_immutable"
 
 
 def _issue_coarse_preview(

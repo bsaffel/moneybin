@@ -296,7 +296,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | `transactions categorize stats` | Categorization coverage summary (total / categorized / pct / by-source breakdown). | — |
 | `transactions categorize rules list` | List active categorization rules. | — |
 | `transactions categorize rules create <name>` | Create a rule (single or `--from-file <path>` for batch). | `--pattern`, `--match-type {exact,contains,regex}`, `--category`, `--subcategory`, `--priority`, `--reapply` |
-| `transactions categorize rules apply` | Re-apply active rules to existing transactions. | `--reapply` |
+| `transactions categorize rules apply` | Apply only active rules to uncategorized transactions. | — |
 | `transactions categorize rules delete <rule-id>` | Delete a rule. | `--reapply` |
 | `transactions categorize auto review` | List pending auto-rule proposals with sample transactions. | `--limit` |
 | `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |

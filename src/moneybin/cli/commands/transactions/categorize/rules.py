@@ -91,22 +91,17 @@ def rules_list(
 
 @app.command("apply")
 def rules_apply() -> None:
-    """Run all active rules and merchant mappings against uncategorized transactions."""
+    """Run all active rules against uncategorized transactions."""
     from moneybin.services.categorization import CategorizationService
 
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            stats = CategorizationService(db).categorize_pending()
-            if stats["total"] > 0:
-                logger.info(
-                    f"✅ Categorized {stats['total']} transactions "
-                    f"({stats['merchant']} merchant, {stats['rule']} rule, "
-                    f"{stats['plaid']} plaid)"
-                )
+            result = CategorizationService(db).categorize_run(methods=["rules"])
+            applied = result["total_applied"]
+            if applied > 0:
+                logger.info(f"✅ Categorized {applied} transactions by rule")
             else:
-                logger.info(
-                    "✅ No uncategorized transactions matched rules or merchants"
-                )
+                logger.info("✅ No uncategorized transactions matched active rules")
 
 
 @app.command("create")

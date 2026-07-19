@@ -40,14 +40,16 @@ coverage catalog.
 As implemented in July 2026, the map contains:
 
 - 45 non-exempt capability rows covering all 45 standard MCP tools.
-- 170 implemented Typer paths, with exact equality against the live command
-  tree after explicit unimplemented stubs are removed.
+- 172 implemented Typer paths, including hidden compatibility aliases, with
+  exact equality against the live command tree after explicit unimplemented
+  stubs are removed.
 - 7 policy-exempt rows.
 - 10 reserved Typer paths that are still explicit `_not_implemented` stubs.
 
-The stub list is executable, not documentary: every excluded callback must
-still call `_not_implemented`, and no mapped callback may do so. Implementing a
-reserved command therefore fails parity until its outcome row is added.
+The stub list is executable, not documentary: every excluded path is invoked
+with valid minimal arguments and must return the not-implemented outcome.
+Implementing a reserved command therefore fails parity until its outcome row
+is added.
 
 ## Consolidated families
 
@@ -60,7 +62,7 @@ reserved command therefore fails parity until its outcome row is added.
 | Transactions | `transactions`, `transactions_create`, `transactions_annotate` | `transactions list/create`, notes, tags, and splits | Same transaction rows and complete annotation target state |
 | Categorization | `transactions_categorize_*`, `reviews*`, `identity_links_decide` | `transactions categorize *`, match and identity review commands | Same engine results, rules, queue state, and decisions |
 | Taxonomy | `taxonomy`, `taxonomy_set` | `categories *`, `merchants *` | Same category and merchant target state through `CategorizationService` |
-| Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels` | Same import log, raw rows, confirmation state, and labels |
+| Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect` | `sync login/link/status/pull/disconnect/logout` | Same authenticated, linked, pulled, disconnected, or logged-out state |
 | Google Sheets | `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` | `gsheet *` | Same connection and pulled source state |
 | Privacy | `privacy`, `privacy_consent_set` | `privacy status/log/grant/revoke/revoke-all` | Same effective grants and privacy log |
@@ -79,6 +81,14 @@ the implementation:
    polls, and `sync_disconnect(mode="logout")` clears credentials and pending
    profile-scoped sessions. The CLI login remains a blocking wrapper over the
    same begin/poll client primitives.
+4. `transactions categorize rules apply` now invokes only the rules engine,
+   matching its command intent and
+   `transactions_categorize_run(methods=["rules"])`; it no longer applies
+   merchant or provider-native categorizations.
+5. The existing destructive `import_revert` boundary now uses a strict
+   discriminated operation for either import rollback or audited user-saved
+   format deletion. Built-in formats remain immutable, and no read tool
+   mutates format state.
 
 The audit also found that category and merchant CLI names were placeholders.
 `categories list/create/set` and `merchants list/create` now execute the same
@@ -108,7 +118,8 @@ enforces:
 - unique, well-formed rows;
 - exact coverage of `STANDARD_TOOL_NAMES`;
 - exact coverage of every implemented Typer path;
-- continued stub status for reserved paths;
+- executable not-implemented outcomes for reserved paths;
+- explicit coverage and delegation guards for hidden compatibility aliases;
 - importable callable service methods;
 - executable outcome parity on isolated copies of the same initialized
   database for refresh match/identity, reports, annotations, taxonomy,

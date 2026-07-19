@@ -3679,6 +3679,24 @@ class ImportService:
             transforms_error=error,
         )
 
+    def delete_saved_format(
+        self,
+        format_name: str,
+        *,
+        actor: str,
+    ) -> Literal["deleted", "builtin", "not_found"]:
+        """Audit-delete one user-saved tabular format."""
+        from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+            delete_format_from_db,
+            load_builtin_formats,
+        )
+
+        if format_name in load_builtin_formats():
+            return "builtin"
+        if not delete_format_from_db(self._db, format_name, actor=actor):
+            return "not_found"
+        return "deleted"
+
     def revert(self, import_id: str) -> dict[str, str | int]:
         """Revert an import batch by deleting its raw rows and flipping status.
 

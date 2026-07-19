@@ -233,7 +233,7 @@ A fair question. The bounded-harm picture:
 - **No writes to `core.*` or DDL of any kind.** SQLMesh owns those tables; agents cannot reach them directly. `sql_query` rejects writes and DDL at the middleware.
 - **App-state mutations *do* go through MCP tools.** Categorizations, notes, tags, splits, manual transactions, category renames, merchant mappings, and assertion deletions are all reachable. The audit log captures every mutation (use `system_audit` to read it back).
 - **`destructiveHint` flags the irreversible ones.** `categories_delete`, `accounts_balance_assertion_delete`, `import_revert`. Claude Desktop renders a confirmation modal for these. Cursor surfaces the annotation but does not gate the call. Codex CLI does not prompt at all — driving Codex means trusting the agent's planning, since there is no client-side gate.
-- **`import_revert` is the escape hatch.** Any unwanted batch can be undone by passing its `import_id` (visible in `import_status`) to `import_revert`.
+- **`import_revert` is the destructive import cleanup boundary.** Undo a batch with `operation="revert_import"` plus its `import_id`, or audit-delete a user-saved tabular format with `operation="delete_saved_format"` plus `format_name`. Built-ins are protected.
 - **Until the consent gate ships, the strongest practical safeguard is `moneybin db lock`** when you're not actively using the agent. A locked database prevents the MCP server from starting at all — the trust boundary becomes the OS user, exactly as the transport section describes.
 
 ## Tool annotations

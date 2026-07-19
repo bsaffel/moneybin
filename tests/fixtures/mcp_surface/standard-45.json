@@ -1,5 +1,5 @@
 {
-  "sha256": "1c7df7cf819b29563247aa9343d000ea0ea98d9dc9266de215f27ed5004ec050",
+  "sha256": "d1a3568d31ff4fd746f05eccc0d2db0b69c77884698a111ffae614f54f9fcc4f",
   "tool_count": 45,
   "tools": [
     {
@@ -1337,13 +1337,37 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "format_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "import_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "operation": {
+              "default": "revert_import",
+              "enum": [
+                "revert_import",
+                "delete_saved_format"
+              ],
               "type": "string"
             }
           },
-          "required": [
-            "import_id"
-          ],
           "type": "object"
         },
         "meta": {
@@ -1354,11 +1378,11 @@
         "name": "import_revert"
       },
       "description_bytes": 28,
-      "input_schema_bytes": 116,
+      "input_schema_bytes": 312,
       "name": "import_revert",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 336
+      "total_bytes": 532
     },
     {
       "annotation_bytes": 89,
@@ -4264,5 +4288,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 43103
+  "total_bytes": 43299
 }

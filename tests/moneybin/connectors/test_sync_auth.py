@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import keyring.errors
+import pytest
 from pydantic import SecretStr
 
 from moneybin.connectors.sync_auth import SyncAuthService
@@ -12,29 +18,57 @@ from moneybin.connectors.sync_models import (
     DeviceAuthorizationChallenge,
     LoginPollResult,
 )
-from moneybin.secrets import SecretNotFoundError
+from moneybin.secrets import SecretStore
 
 
-class _MemorySecrets:
-    """Minimal SecretStore-compatible profile-scoped test double."""
+class _PatchedKeyring:
+    """Thread-safe keyring backend state; SecretStore itself remains real."""
 
     def __init__(self) -> None:
-        self.values: dict[str, str] = {}
+        self.values: dict[tuple[str, str], str] = {}
+        self.lock = threading.Lock()
+        self.fail_next_write = False
 
-    def get_key(self, name: str) -> str:
-        try:
-            return self.values[name]
-        except KeyError:
-            raise SecretNotFoundError(name) from None
+    def get_password(self, service: str, name: str) -> str | None:
+        with self.lock:
+            return self.values.get((service, name))
 
-    def set_key(self, name: str, value: str) -> None:
-        self.values[name] = value
+    def set_password(self, service: str, name: str, value: str) -> None:
+        with self.lock:
+            if self.fail_next_write:
+                self.fail_next_write = False
+                raise keyring.errors.NoKeyringError
+            self.values[(service, name)] = value
 
-    def delete_key(self, name: str) -> None:
-        try:
-            del self.values[name]
-        except KeyError:
-            raise SecretNotFoundError(name) from None
+    def delete_password(self, service: str, name: str) -> None:
+        with self.lock:
+            try:
+                del self.values[(service, name)]
+            except KeyError:
+                raise keyring.errors.PasswordDeleteError from None
+
+
+@pytest.fixture
+def patched_keyring(monkeypatch: pytest.MonkeyPatch) -> _PatchedKeyring:
+    backend = _PatchedKeyring()
+    monkeypatch.setattr("keyring.get_password", backend.get_password)
+    monkeypatch.setattr("keyring.set_password", backend.set_password)
+    monkeypatch.setattr("keyring.delete_password", backend.delete_password)
+    return backend
+
+
+def _service(
+    *,
+    client: object,
+    store: SecretStore,
+    lock_path: Path,
+) -> SyncAuthService:
+    return SyncAuthService(
+        client=client,  # type: ignore[arg-type]
+        secrets=store,
+        lock_path=lock_path,
+        now=lambda: datetime(2026, 7, 19, tzinfo=UTC),
+    )
 
 
 def _challenge() -> DeviceAuthorizationChallenge:
@@ -48,14 +82,16 @@ def _challenge() -> DeviceAuthorizationChallenge:
     )
 
 
-def test_begin_persists_secret_session_and_returns_only_safe_fields() -> None:
+def test_begin_persists_one_atomic_collection_and_returns_only_safe_fields(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
     client = MagicMock()
     client.begin_login.return_value = _challenge()
-    secrets = _MemorySecrets()
-    service = SyncAuthService(
+    service = _service(
         client=client,
-        secrets=secrets,  # type: ignore[arg-type]
-        now=lambda: datetime(2026, 7, 19, tzinfo=UTC),
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
     )
 
     result = service.begin()
@@ -66,21 +102,26 @@ def test_begin_persists_secret_session_and_returns_only_safe_fields() -> None:
     assert result.verification_url.endswith("ABCD-EFGH")
     assert result.auth_session_id.startswith("syncauth_")
     assert "secret-device-code" not in repr(result)
-    assert any("secret-device-code" in value for value in secrets.values.values())
+    assert set(patched_keyring.values) == {("moneybin-alice", "SYNC__AUTH_SESSIONS")}
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    assert list(collection) == [result.auth_session_id]
+    assert collection[result.auth_session_id]["device_code"] == "secret-device-code"
 
 
-def test_status_completion_stores_terminal_state_and_is_idempotent() -> None:
+def test_status_completion_stores_terminal_state_and_is_idempotent(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
     client = MagicMock()
     client.begin_login.return_value = _challenge()
     client.poll_login.side_effect = [
         LoginPollResult(status="pending"),
         LoginPollResult(status="authenticated"),
     ]
-    secrets = _MemorySecrets()
-    service = SyncAuthService(
+    service = _service(
         client=client,
-        secrets=secrets,  # type: ignore[arg-type]
-        now=lambda: datetime(2026, 7, 19, tzinfo=UTC),
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
     )
     auth_session_id = service.begin().auth_session_id
 
@@ -94,20 +135,23 @@ def test_status_completion_stores_terminal_state_and_is_idempotent() -> None:
     assert replay.status == "authenticated"
     assert replay.replayed is True
     assert client.poll_login.call_count == 2
-    assert "secret-device-code" not in " ".join(secrets.values.values())
+    assert "secret-device-code" not in " ".join(patched_keyring.values.values())
 
 
-def test_expired_session_never_calls_provider() -> None:
+def test_expired_session_never_calls_provider(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
     client = MagicMock()
     client.begin_login.return_value = _challenge()
-    secrets = _MemorySecrets()
     times = iter([
         datetime(2026, 7, 19, tzinfo=UTC),
         datetime(2026, 7, 19, 0, 16, tzinfo=UTC),
     ])
     service = SyncAuthService(
         client=client,
-        secrets=secrets,  # type: ignore[arg-type]
+        secrets=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
         now=lambda: next(times),
     )
     auth_session_id = service.begin().auth_session_id
@@ -119,14 +163,16 @@ def test_expired_session_never_calls_provider() -> None:
     client.poll_login.assert_not_called()
 
 
-def test_logout_clears_tokens_and_every_pending_auth_session() -> None:
+def test_logout_clears_tokens_and_every_pending_auth_session(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
     client = MagicMock()
     client.begin_login.return_value = _challenge()
-    secrets = _MemorySecrets()
-    service = SyncAuthService(
+    service = _service(
         client=client,
-        secrets=secrets,  # type: ignore[arg-type]
-        now=lambda: datetime(2026, 7, 19, tzinfo=UTC),
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
     )
     service.begin()
     service.begin()
@@ -136,4 +182,173 @@ def test_logout_clears_tokens_and_every_pending_auth_session() -> None:
     assert result.status == "logged_out"
     assert result.cleared_auth_sessions == 2
     client.logout.assert_called_once_with()
-    assert secrets.values == {}
+    assert patched_keyring.values == {}
+
+    replay = service.logout()
+    assert replay.cleared_auth_sessions == 0
+    assert client.logout.call_count == 2
+
+
+def test_failed_atomic_write_preserves_prior_collection(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    client = MagicMock()
+    client.begin_login.return_value = _challenge()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+    first = service.begin()
+    before = dict(patched_keyring.values)
+    patched_keyring.fail_next_write = True
+
+    with pytest.raises(Exception, match="No OS keyring backend"):
+        service.begin()
+
+    assert patched_keyring.values == before
+    assert first.auth_session_id in json.loads(next(iter(before.values())))
+
+
+def test_concurrent_begin_preserves_every_session(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    client = MagicMock()
+    client.begin_login.return_value = _challenge()
+    lock_path = tmp_path / "alice.sync-auth"
+
+    def begin() -> str:
+        return (
+            _service(
+                client=client,
+                store=SecretStore(profile="alice"),
+                lock_path=lock_path,
+            )
+            .begin()
+            .auth_session_id
+        )
+
+    def begin_one(_: int) -> str:
+        return begin()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        session_ids = list(executor.map(begin_one, range(8)))
+
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    assert set(collection) == set(session_ids)
+    assert len(collection) == 8
+
+
+def test_concurrent_status_polls_once_and_replays_terminal_state(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    entered_poll = threading.Event()
+    release_poll = threading.Event()
+    client = MagicMock()
+    client.begin_login.return_value = _challenge()
+
+    def poll(_: str) -> LoginPollResult:
+        entered_poll.set()
+        assert release_poll.wait(timeout=2)
+        return LoginPollResult(status="authenticated")
+
+    client.poll_login.side_effect = poll
+    lock_path = tmp_path / "alice.sync-auth"
+    first_service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=lock_path,
+    )
+    second_service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=lock_path,
+    )
+    auth_session_id = first_service.begin().auth_session_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_service.status, auth_session_id)
+        assert entered_poll.wait(timeout=2)
+        second = executor.submit(second_service.status, auth_session_id)
+        release_poll.set()
+        outcomes = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert client.poll_login.call_count == 1
+    assert [outcome.status for outcome in outcomes] == [
+        "authenticated",
+        "authenticated",
+    ]
+    assert sorted(outcome.replayed for outcome in outcomes) == [False, True]
+
+
+def test_concurrent_logout_clears_tokens_after_inflight_status(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    entered_poll = threading.Event()
+    release_poll = threading.Event()
+
+    class _ConcurrentClient:
+        def __init__(self) -> None:
+            self.authenticated = False
+
+        def begin_login(self) -> DeviceAuthorizationChallenge:
+            return _challenge()
+
+        def poll_login(self, _: str) -> LoginPollResult:
+            entered_poll.set()
+            assert release_poll.wait(timeout=2)
+            self.authenticated = True
+            return LoginPollResult(status="authenticated")
+
+        def logout(self) -> None:
+            self.authenticated = False
+
+    client = _ConcurrentClient()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+    auth_session_id = service.begin().auth_session_id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        status = executor.submit(service.status, auth_session_id)
+        assert entered_poll.wait(timeout=2)
+        logout = executor.submit(service.logout)
+        release_poll.set()
+        assert status.result(timeout=2).status == "authenticated"
+        assert logout.result(timeout=2).status == "logged_out"
+
+    assert client.authenticated is False
+    assert patched_keyring.values == {}
+
+
+def test_profile_namespaces_do_not_share_sessions(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    alice_client = MagicMock()
+    bob_client = MagicMock()
+    alice_client.begin_login.return_value = _challenge()
+    bob_client.begin_login.return_value = _challenge()
+    alice = _service(
+        client=alice_client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+    bob = _service(
+        client=bob_client,
+        store=SecretStore(profile="bob"),
+        lock_path=tmp_path / "bob.sync-auth",
+    )
+    alice.begin()
+    bob_session = bob.begin()
+
+    alice.logout()
+
+    assert set(patched_keyring.values) == {("moneybin-bob", "SYNC__AUTH_SESSIONS")}
+    assert bob.status(bob_session.auth_session_id).status == "pending"

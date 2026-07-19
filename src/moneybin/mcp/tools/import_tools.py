@@ -56,6 +56,7 @@ from moneybin.privacy.payloads.imports import (
     ImportPreviewCoarsePayload,
     ImportPreviewPayload,
     ImportRevertPayload,
+    ImportSavedFormatDeletePayload,
     ImportStatusCoarsePayload,
     ImportStatusFormatsSection,
     ImportStatusImportsSection,
@@ -926,6 +927,37 @@ def import_revert(import_id: str) -> ResponseEnvelope[ImportRevertPayload]:
             str(result.get("reason") or f"Cannot revert (status={status})"),
             code=f"revert_{status}",
         )
+    )
+
+
+def _delete_saved_format(
+    format_name: str,
+) -> ResponseEnvelope[ImportSavedFormatDeletePayload]:
+    """Audit-delete one user-saved tabular format; built-ins are immutable."""
+    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+
+    with get_database(read_only=False) as db:
+        status = ImportService(db).delete_saved_format(format_name, actor="mcp")
+    if status == "builtin":
+        return build_error_envelope(
+            error=UserError(
+                f"Built-in format {format_name!r} cannot be deleted.",
+                code="saved_format_builtin_immutable",
+            )
+        )
+    if status == "not_found":
+        return build_error_envelope(
+            error=UserError(
+                f"Saved format {format_name!r} was not found.",
+                code="saved_format_not_found",
+            )
+        )
+    return build_envelope(
+        data=ImportSavedFormatDeletePayload(
+            format_name=format_name,
+            status="deleted",
+        ),
+        actions=["Use import_status(sections=['formats']) to verify the format list."],
     )
 
 
@@ -1915,16 +1947,39 @@ def import_files_coarse(
 
 @mcp_tool(read_only=False, destructive=True, idempotent=False)
 def import_revert_coarse(
-    import_id: str,
-) -> ResponseEnvelope[ImportRevertPayload]:
-    """Revert one import with an isolated status recovery action."""
-    response = import_revert(import_id=import_id)
-    return replace(
-        response,
-        actions=[
-            "Use import_status(sections=['imports'], "
-            f"import_id='{import_id}') to verify the reverted state."
-        ],
+    import_id: str | None = None,
+    operation: Literal["revert_import", "delete_saved_format"] = "revert_import",
+    format_name: str | None = None,
+) -> ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload]:
+    """Revert one import or audit-delete one user-saved format."""
+    if operation == "revert_import":
+        if not import_id or format_name is not None:
+            raise UserError(
+                "operation='revert_import' requires exactly import_id.",
+                code="import_revert_invalid_target",
+            )
+    elif import_id is not None or not format_name:
+        raise UserError(
+            "operation='delete_saved_format' requires exactly format_name.",
+            code="import_revert_invalid_target",
+        )
+
+    if operation == "delete_saved_format":
+        return cast(
+            ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload],
+            _delete_saved_format(cast(str, format_name)),
+        )
+
+    response = import_revert(import_id=cast(str, import_id))
+    return cast(
+        ResponseEnvelope[ImportRevertPayload | ImportSavedFormatDeletePayload],
+        replace(
+            response,
+            actions=[
+                "Use import_status(sections=['imports'], "
+                f"import_id='{import_id}') to verify the reverted state."
+            ],
+        ),
     )
 
 

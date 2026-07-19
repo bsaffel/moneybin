@@ -1041,14 +1041,16 @@ Batch import a directory of mixed file types. `import_files` now subsumes the va
 
 ### `import_revert`
 
-Revert a previous import batch by `import_id`. Removes the imported rows from `raw.*` and triggers downstream re-materialization on the next refresh.
+Run one strictly selected destructive import cleanup: revert a previous import
+batch, or audit-delete a user-saved tabular format. The two target shapes
+cannot be mixed.
 
 - **Sensitivity:** `low` — counts only in the response.
 - **Annotations:** `read_only=False`, `destructive=True`, `idempotent=False`.
-- **Unique parameters:** `import_id: str` (required) — the batch identifier returned by `import_files` or `transactions_create`.
-- **Mutation surface:** deletes rows from the relevant `raw.*` table tagged with `import_id`. No revert — re-run the original import to restore.
-- **Service:** `ImportService.revert()`
-- **CLI:** `moneybin import revert IMPORT_ID`
+- **Unique parameters:** `operation: "revert_import" | "delete_saved_format" = "revert_import"`; exactly one matching target is required: `import_id` for batch rollback or `format_name` for saved-format deletion.
+- **Mutation surface:** batch rollback deletes rows from the relevant `raw.*` table tagged with `import_id`; saved-format deletion removes one `app.tabular_formats` row through the audited repository. Built-in formats cannot be deleted.
+- **Service:** `ImportService.revert()` or `ImportService.delete_saved_format()` → `TabularFormatsRepo.delete()`.
+- **CLI:** `moneybin import revert IMPORT_ID`; `moneybin import formats delete NAME`.
 
 ### `import_inbox_sync`
 
