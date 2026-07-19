@@ -199,6 +199,22 @@ Two verified properties of step 5, both required for it to work:
   binding (`SELECT amount * $f` describes as `INTEGER`, not `DECIMAL`), so
   nothing may read it. Only the name column is used.
 
+#### Every SQL or parameter change re-runs this pipeline
+
+The pipeline is not the *save* path; it is the path any mutation of `query_sql`
+or `params` takes. `reports_set` is a partial update (R5), so a call that
+touches either field must re-run steps 1–5 and persist the new SQL, class map,
+and fingerprint in a **single** repo write. Skipping it re-creates the exact bug
+this spec exists to prevent: re-aliasing an `AGGREGATE` projection `x` to
+`routing_number AS x` would serve a routing number under the stale LOW class,
+because `run_report` treats the stored map as authoritative. A `set` that
+touches neither field (`description`, `is_active`) skips derivation entirely.
+
+`class_downgrades` does not survive a `query_sql` change. A downgrade is a human
+judgment about one column of one query (D5), and carrying it onto rewritten SQL
+is the same stale-authority failure one level down. The mutation clears the map
+and its response names the cleared columns; re-apply with `reports_reclassify`.
+
 #### Not every savable report is graduation-eligible
 
 `sql_query` permits reading `reports.*` and permits `SELECT *`; the M2P.3
@@ -258,9 +274,25 @@ On each run the fingerprint is recomputed and compared:
 
 - **Match** → `classify_columns` against the stored map, byte-identical to how a
   built-in runs. No lineage work; the comparison is dictionary lookups, no DB.
-- **Mismatch** → re-resolve. An equal map refreshes the fingerprint silently. A
-  changed map fails closed for the affected columns and marks the response
-  degraded (see below).
+- **Mismatch** → re-resolve. An equal map serves the run normally. A changed map
+  fails closed for the affected columns and marks the response degraded (see
+  below).
+
+The fingerprint is a cache key, not authority: re-resolution is what decides the
+run, so a stale fingerprint costs work, never correctness. That matters because
+the read path has no writable connection — both generated adapters call
+`run_report` inside `get_database(read_only=True)`
+(`_framework/mcp_register.py`, `_framework/cli_register.py`), and R1 routes every
+`app.user_reports` mutation through the audited repo, which would emit an audit
+row per *read*. So a run never persists a refreshed fingerprint. The refreshed
+value lands on the report's next write through `UserReportsRepo` — a `set`, a
+`reclassify`, or an archive.
+
+The cost is honest and bounded: between the upstream class change and that next
+write, every run of the affected report re-resolves — one live schema snapshot
+plus one sqlglot parse, the same work the save did, on a single-user embedded
+database. Buying that back with a write-during-read would put an unaudited
+mutation on the read path, which Invariant 10 does not permit.
 
 A newly *added* upstream column needs no coverage here: `classify_columns`
 already fails closed on any result column absent from the stored map.
@@ -337,9 +369,22 @@ architecture does not deliver.
   (R2).
 
 It accepts `params` because R9's executed form needs values to render. Omitted
-params fall back to declared defaults; a required parameter with no default
-renders as its placeholder, and the response says which columns are unresolved
-for that reason.
+params fall back to declared defaults; what happens when a required parameter
+has no default depends on where the SQL comes from, and the two tiers cannot be
+made uniform here:
+
+- **User-created** — the SQL is a stored template. A missing required value
+  renders as its `$name` placeholder in `sql_template`, the executed `sql` form
+  is omitted, and the response names the parameters that suppressed it.
+- **Built-in and extension** — there is no template. The only way to obtain the
+  query is `spec.runner(db, **params)` (`_framework/execute.py`), which raises on
+  a missing keyword argument before a query exists, and a placeholder sentinel
+  would fail the runner's own validation or ID resolution instead. So
+  `reports_explain` requires every `required` parameter for these tiers and
+  returns a validation error naming the missing ones.
+
+Everything else `reports_explain` returns — class map, lineage, freshness,
+graduation eligibility — is parameter-independent and available in both cases.
 
 This is the *verify* half of "create and verify", and R5's dispatcher makes it
 uniform across tiers.
@@ -425,7 +470,7 @@ R5, per mcp.md's surface-change discipline.
 | `moneybin_user_report_saves_total` | Counter | `outcome` (`saved`, `rejected`) |
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
-| `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`refreshed`, `failed_closed`) |
+| `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users
