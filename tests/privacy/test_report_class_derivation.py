@@ -30,7 +30,6 @@ def test_derives_every_deployed_reports_view() -> None:
         "net_worth",
         "recurring_subscriptions",
         "spending_trend",
-        "uncategorized_queue",
     }
 
 
@@ -38,22 +37,22 @@ def test_account_id_derives_from_classification_not_the_gap_fallback() -> None:
     """The exact column #330 leaked — but not to the class the bridge guessed.
 
     #330 left uncategorized_queue.account_id with no declared class at all, so
-    it fell through to the unmasked AGGREGATE fallback. The hand-written bridge
-    (reports/definitions/_bridged_classes.py) plugged that hole by declaring it
-    ACCOUNT_IDENTIFIER — but core.fct_transactions.account_id (and every other
-    account_id column) was deliberately reclassified to RECORD_ID in spec D6
-    (commit c465f181, "account_id is now opaque by construction, which makes
-    the RECORD_ID privacy unmask safe"): it's a minted surrogate key, not
-    PII — see taxonomy.py's CLASSIFICATION and
-    docs/specs/privacy-data-classification.md. The bridge's ACCOUNT_IDENTIFIER
-    entry now disagrees with the authoritative registry; this pins the
-    CORRECT derived answer, which is exactly the drift Task 3/4 exist to
-    surface and Task 4 to resolve by deleting the stale bridge entry.
+    it fell through to the unmasked AGGREGATE fallback. uncategorized_queue
+    itself has since moved to core.* (reports-foundation.md R5, Task 5) and no
+    longer appears in this map at all — but every reports.* view that still
+    selects account_id unchanged derives the identical answer, because
+    core.fct_transactions.account_id (and every other account_id column) was
+    deliberately reclassified to RECORD_ID in spec D6 (commit c465f181,
+    "account_id is now opaque by construction, which makes the RECORD_ID
+    privacy unmask safe"): it's a minted surrogate key, not PII — see
+    taxonomy.py's CLASSIFICATION and
+    docs/specs/privacy-data-classification.md. cash_flow's runner over-declares
+    it ACCOUNT_IDENTIFIER anyway (safe — over-declaring never leaks), but this
+    pins derivation's own answer, which is exactly the drift Task 3/4 exist to
+    surface.
     """
     derived = derive_report_classes()
-    assert (
-        derived[("reports", "uncategorized_queue")]["account_id"] is DataClass.RECORD_ID
-    )
+    assert derived[("reports", "cash_flow")]["account_id"] is DataClass.RECORD_ID
 
 
 def test_counting_aggregate_is_not_over_classified() -> None:

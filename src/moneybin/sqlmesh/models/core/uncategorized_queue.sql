@@ -2,7 +2,7 @@
    Consumers re-rank as needed; the priority_score column is exposed for
    default-sort convenience. */
 MODEL (
-  name reports.uncategorized_queue,
+  name core.uncategorized_queue,
   kind VIEW
 );
 

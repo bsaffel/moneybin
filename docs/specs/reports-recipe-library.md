@@ -6,6 +6,18 @@
 - **Status:** implemented
 - **Milestone:** M2A ("brand surface" cluster — recipe library + `moneybin doctor`)
 
+> **Migration note (2026-07-18):** `reports.uncategorized_queue` moved to
+> `core.uncategorized_queue` as part of
+> [`reports-foundation.md`](reports-foundation.md) R5: membership in
+> `reports.*` is the definition of "user-facing report," and this view's only
+> runtime reader is `services/categorization/queries.py` (backing
+> `transactions_categorize_pending`), never a `reports *` CLI command or
+> `reports_*` MCP tool. The live model is
+> `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`; the `TableRef`
+> is `CORE_UNCATEGORIZED_QUEUE`. Original section text below still describes
+> the other seven `reports.*` views accurately and is preserved for
+> historical context.
+
 ## Goal
 
 Ship the first wave of `reports.*` SQLMesh views — eight curated, named, queryable presentation models that back the `moneybin reports *` CLI surface and the `reports_*` MCP tools. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)), and make MoneyBin's "show me the SQL" demo land: every number a user or AI sees has a named SQLMesh model file behind it that can be inspected, modified, and re-queried.

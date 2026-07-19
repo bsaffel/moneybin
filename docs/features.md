@@ -40,6 +40,7 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 - **Provider categorization (Plaid)** — Transactions synced from Plaid are auto-categorized from Plaid's Personal Finance Category, mapped to your canonical categories through the category-source bridge and confidence-gated (assigns only when Plaid is confident). It runs after your rules and merchants — so it never overrides a deliberate choice, it just clears the long tail before the LLM is ever asked. -> [Categorization guide](guides/categorization.md)
 - **Smart matcher** — Matches against description plus memo text, and uses structural signals (check number, transfer flag, payment channel, amount sign), so PayPal / Venmo / Zelle / generic-ACH wrappers categorize on the merchant identity that lives in memo. -> [Categorization guide](guides/categorization.md)
 - **Auto-rule learning** — User edits propose rules; review and promote them through a queue. -> [Categorization guide](guides/categorization.md)
+- **Curator-impact queue** — What still needs categorizing, ranked by `ABS(amount) × age_days` so the highest-impact gaps surface first. CLI: `moneybin transactions categorize pending`; MCP: `transactions_categorize_pending`. -> [Categorization guide](guides/categorization.md)
 - **LLM-assist (opt-in)** — Propose → review → commit workflow. The redactor strips amounts, dates, and account identifiers before any prompt leaves the machine; structural fields are exposed as signals. Auto-created merchants accumulate `oneOf` exemplars instead of inventing over-general patterns. CLI: `moneybin transactions categorize assist`. -> [Categorization guide](guides/categorization.md)
 - **Auto-apply on commit** — Newly created rules and merchants apply across the rest of the dataset automatically, so the LLM is meaningfully less involved by the third or fourth import. -> [Categorization guide](guides/categorization.md)
 - **Merchant catalog** — User- and system-created (no seeded catalog). Plaid pass-through, migration imports, LLM-assist, and the auto-apply pass all populate it. -> [Categorization guide](guides/categorization.md)
@@ -79,7 +80,6 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 - **`reports.spending_trend`** — Category spending over time.
 - **`reports.recurring_subscriptions`** — Recurring transactions with confidence scores, cadence, and annualized cost. (No "mark as cancelled" workflow yet — see [roadmap](roadmap.md).)
 - **`reports.merchant_activity`** — Per-merchant spend rollup.
-- **`reports.uncategorized_queue`** — What still needs categorizing.
 - **`reports.large_transactions`** — Outlier filter for human review.
 - **`reports.balance_drift`** — Drift between asserted and computed balances.
 

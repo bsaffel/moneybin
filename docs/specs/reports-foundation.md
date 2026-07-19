@@ -154,9 +154,14 @@ It moves to `core`.
 
 `core` rather than `prep`, because `prep` is not in `_ALLOWED_QUERY_SCHEMAS`;
 moving there would silently remove a view users can query today. `core` keeps
-it queryable and shifts its coverage to the `CLASSIFICATION` registry, where
-`account_id` must be declared `ACCOUNT_IDENTIFIER` — verified by a test, since
-this is the exact column that leaked.
+it queryable and shifts its coverage to the `CLASSIFICATION` registry.
+`account_id` is declared `RECORD_ID` there, matching all 15 other `account_id`
+columns in `CLASSIFICATION` (spec D6): it is a deliberately opaque minted
+surrogate, not PII, so it is correct for it to pass through unmasked — the
+bridge's `ACCOUNT_IDENTIFIER` declaration for this column was a mistaken
+premise, not the thing #330 actually needed fixed. What #330's coverage gap
+genuinely broke was never having a declaration to compare against AT ALL,
+which R2/R3's derivation-and-verification now forecloses structurally.
 
 Known touch points (the move is mechanical but wide):
 
@@ -211,8 +216,9 @@ in M2P.3.
   is what makes the guard capable of catching an *undeclared* view.
 - **R3:** a deliberately downgraded column passes CI; an undeclared mismatch
   fails.
-- **R5:** `core.uncategorized_queue.account_id` masks through `sql_query`; the
-  categorization surface still works end-to-end.
+- **R5:** `core.uncategorized_queue.account_id` passes through unmasked via
+  `sql_query`, same as every other `account_id` column (`RECORD_ID`, spec D6)
+  — it does NOT mask; the categorization surface still works end-to-end.
 - Scenarios are not in the default gate — this changes data shape and schema
   membership, so `make test-scenarios` is required alongside `make check test`.
 
