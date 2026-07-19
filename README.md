@@ -28,6 +28,9 @@ the CLI, raw SQL, or an MCP server exposing more than 100 tools to Claude,
 Cursor, VS Code, Gemini CLI, Codex, and other clients. Every surface reads the
 same tables, so an answer from the AI is a query you can rerun yourself.
 
+![Downloaded Files, Linked Accounts, and Connected Sheets flow into an
+Encrypted Local DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
+
 Local only. No telemetry. No vendor account. Account and routing numbers leave
 the machine only as masked placeholders (`****1234`) — no consent tier unlocks
 the real value. AGPL-3.0, so it stays that way.
