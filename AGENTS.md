@@ -85,7 +85,7 @@ Update flow: prototype and spec visually in the claude.ai **Design Kit** project
 - **Linting/formatting**: `make format && make lint` (Ruff, line length 88).
 - **Type checking**: `uv run pyright` on modified files (not mypy).
 - **Tests**: Dev `uv run pytest <path> -v`; pre-commit `make test`. Always `uv run pytest`; wrong interpreter → `uv sync --reinstall`.
-- **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing.
+- **Pre-commit checklist**: `make check test` — format, lint, type-check, tests. Run once before committing. **Scope the gate to what the diff touches, and never to less:** a diff containing no `.py` files runs its own layer's gate instead (e.g. `uv run pytest tests/design_system` for `design-system/`), and relies on CI for the rest — the 5,800-test Python suite returns no signal on a markdown-only change. Any diff touching `src/` or `tests/` runs the full checklist. This selects the covering gate; it is not licence to skip one.
 - **SQL formatting**: `make format-sql` (sets `MAX_FORK_WORKERS=1`; the bare `uv run sqlmesh -p src/moneybin/sqlmesh format` forks a worker pool the encrypted-DB design disallows and the sandbox blocks).
 - **Check library docs first**: Before implementing patterns with SQLMesh, DuckDB, Pydantic, etc., verify the correct API in official docs. Training knowledge may be outdated.
 
