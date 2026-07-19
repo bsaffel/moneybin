@@ -52,12 +52,8 @@ inputs one modeled home and keeps the reasoning inspectable.
 
 ## The workflow
 
-```mermaid
-flowchart LR
-    sources["Files or connected accounts"] --> data["Encrypted local database"]
-    data --> answers["CLI, SQL, and MCP"]
-    answers --> review["Inspectable answers and corrections"]
-```
+![Files, Linked Accounts, and Connected Sheets flow into an Encrypted Local
+DuckDB database. The database serves CLI, SQL, and MCP.](docs/assets/moneybin-workflow.svg)
 
 Start with files you already have, such as CSV, OFX/QFX/QBO, Excel, Parquet,
 or a bank-statement PDF with selectable text. MoneyBin can also pull connected
