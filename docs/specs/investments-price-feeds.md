@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-ready
+in-progress
 
 ## Goal
 
@@ -136,10 +136,31 @@ The provider cache. Immutable, append-only, one row per observation.
 | `source_origin` | VARCHAR | which connection produced it; `''` for single-tenant feeds |
 | `close` | DECIMAL(28,10) | price of one unit |
 | `price_basis` | VARCHAR | `raw`, `split_adjusted`, `split_and_dividend_adjusted` |
-| `fetched_at` | TIMESTAMP | when the row was observed |
+| `extracted_at` | TIMESTAMP | when the provider served the observation |
+| `loaded_at` | TIMESTAMP | when the row was written locally |
 
 Primary key
 `(source, source_origin, provider_security_key, price_date, quote_currency)`.
+
+**Append-only is enforced by the conflict mode, not by convention.**
+`Database.ingest_dataframe` offers four modes and only one preserves
+immutability. The default `insert` raises on a primary-key conflict, so
+re-running a sync that re-reports a stored close fails the pull outright.
+`upsert` — what every other Plaid `_load_*` uses — overwrites in place, which is
+exactly the mutation this table exists to prevent. Prices therefore write with
+`on_conflict="ignore"`: the first observation for a key is kept and later
+re-reports of the same key are dropped. The seed store
+(`extractors/pdf/seed_store.py`) already uses this mode for the same reason.
+
+**The timestamp pair matches every other raw table.** `extracted_at` is the
+provider's own serve instant (for Plaid, `sync_data.metadata.synced_at`) and
+`loaded_at` is the local insert instant. This is the same pair
+`raw.plaid_securities` and every sibling carries, so it is named the same here
+rather than introducing a third term for a concept the schema already has.
+Both columns are `pl.Datetime(time_zone="UTC")` on the Polars side; any DATE
+derived from them must go through the extractor's `_utc_date` helper, because
+DuckDB rebases a tz-aware value into the session zone on insert and a naive
+`::DATE` cast would record the local calendar date.
 
 **`raw` stores the provider's key, not the canonical one.** Canonical
 `security_id` is minted by `SecurityResolver`, which `sync_service.pull()` runs
@@ -813,7 +834,12 @@ two sources), and the CLI and MCP surface.
   to match the migration, so a fresh database and a migrated one agree
 - `src/moneybin/extractors/plaid/extractor.py` — append `close_price` keyed by
   Plaid's own security key to `raw.security_prices` during ingestion, before the
-  upsert overwrites it and before the resolver has minted a canonical id
+  upsert overwrites it and before the resolver has minted a canonical id. Adds a
+  `security_prices_loaded` field to the `LoadResult` dataclass and a call in
+  `load()`, matching every other per-table count. `SyncSecurity.close_price` is
+  nullable and its currency arrives as the mutually exclusive
+  `iso_currency_code` / `unofficial_currency_code` pair, so a security missing
+  either a price or its date yields no row rather than a NULL-keyed one
 - `src/moneybin/metrics/registry.py` — the five price metrics
 - `src/moneybin/schema.py` — add both new DDL files to
   `_NON_PROVIDER_SCHEMA_FILES`. `_all_schema_files()` enumerates that explicit
@@ -823,10 +849,24 @@ two sources), and the CLI and MCP surface.
 - `src/moneybin/services/doctor_service.py` — `investment_price_disagreement`
   (C.2) and `investment_price_discontinuity` (C.3), registered alongside the nine
   existing investment checks
-- `src/moneybin/config.py` — staleness defaults, backfill bound,
-  `price_disagreement_tolerance_pct`
-- `src/moneybin/tables.py` — new table constants
+- `src/moneybin/config.py` (C.2) — staleness defaults, backfill bound,
+  `price_disagreement_tolerance_pct`. No `InvestmentsSettings` class exists
+  today, so this creates the section and registers it on `MoneyBinSettings`
+  alongside `matching`, `doctor`, and the rest. It lands in C.2 rather than
+  C.1 because nothing in C.1 reads a threshold: `days_since_observed` is a
+  raw day count and `valuation_status` turns on whether a price exists, not on
+  whether it is old enough to warn about. The first consumers are
+  `investment_price_disagreement` and the CLI's staleness column.
+  `asset-tracking.md` proposes a sibling `asset_staleness_default_days` at the
+  settings root; the two land under one vocabulary rather than diverging
+- `src/moneybin/tables.py` — new table constants. `core.fct_security_prices`
+  takes `audience="interface"` to match the five shipped investment core models;
+  the raw and app tables stay internal
 - `src/moneybin/cli/commands/investments/__init__.py` — register `prices`
+- `tests/moneybin/db_helpers.py` — `CORE_DIM_HOLDINGS_STUB_DDL` hardcodes
+  `dim_holdings`' column list for tests that INSERT fixture rows, so it drifts
+  silently the moment the model gains a column. Any core-model column addition
+  has to update the stub in the same change
 - `docs/specs/INDEX.md`, `docs/specs/investments-overview.md`,
   `docs/roadmap.md`, `CHANGELOG.md`
 
