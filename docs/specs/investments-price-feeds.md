@@ -712,7 +712,17 @@ publish no number. `carried_forward` is excluded from it because markets close
 about 114 days a year, so counting it would raise the caveat on most days for
 most users and teach the reader to skip it; the age discloses the same risk as
 a number, with no threshold to pick. An agent reading a total learns from the
-same response how much of it rests on stale or missing prices. `investments_gains` does not carry these columns: it reports realized
+same response how much of it rests on stale or missing prices.
+
+The response also carries `total_market_value`, and it is published only when
+every priced position shares one currency. `fct_security_prices` converts
+nothing and `dim_holdings` joins each price on the position's own
+`currency_code`, so a portfolio holding a EUR-quoted ETF beside USD positions
+has no single market value. In that case the total is NULL and
+`market_value_by_currency` carries the per-currency split, which stops the
+wrong sum structurally rather than by a caveat the reader has to notice — the
+same rule `market_value` follows when a price is missing. M1K.2 supplies the
+conversion that makes one total meaningful across currencies. `investments_gains` does not carry these columns: it reports realized
 disposals for 1099-B reconciliation, where the sale price is the recorded one
 and a current market close has no bearing.
 

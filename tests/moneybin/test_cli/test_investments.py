@@ -542,6 +542,67 @@ class TestHoldingsAndGains:
         assert "max_days_since_observed=-" in result.output
 
     @pytest.mark.unit
+    def test_holdings_text_totals_a_single_currency_portfolio(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """One currency across the priced rows — the total prints."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            UNION ALL
+            SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
+                   500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'USD',
+                   800.00::DECIMAL(18,2), 300.00::DECIMAL(18,2),
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "market_value=2000.00 USD" in result.output
+        assert "mixed currencies" not in result.output
+
+    @pytest.mark.unit
+    def test_holdings_text_refuses_a_mixed_currency_total(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """EUR beside USD — print the split, never one added-up figure."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
+                   0::INT AS days_since_observed, 'valued' AS valuation_status
+            UNION ALL
+            SELECT 'acct_brokerage', 'sec_2', 5::DECIMAL(28,10),
+                   500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'EUR',
+                   900.00::DECIMAL(18,2), 400.00::DECIMAL(18,2),
+                   DATE '2026-07-15', 'plaid', 0::INT, 'valued'
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "market_value=- (mixed currencies)" in result.output
+        assert "USD=1200.00" in result.output
+        assert "EUR=900.00" in result.output
+        # The wrong sum must appear nowhere in the output.
+        assert "2100.00" not in result.output
+
+    @pytest.mark.unit
     def test_gains_json_reports_basis_incomplete_warning(
         self, runner: CliRunner, db: Database
     ) -> None:

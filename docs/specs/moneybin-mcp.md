@@ -660,7 +660,7 @@ Current positions: quantity, cost basis, average cost per (account, security).
 
 - **Sensitivity:** `high`.
 - **Unique parameters:** `account` (optional).
-- **Behavior:** Sum of open lots from `core.dim_holdings`, valued against the most recent close at or before today. Each row carries `market_value`, `unrealized_gain` (signed), `price_date`, `price_source`, `days_since_observed`, and `valuation_status` (`valued` | `carried_forward` | `unpriced` | `withheld`). The last two statuses report `market_value`/`unrealized_gain` as null, never zero; `data.warnings` names how many rows those are.
+- **Behavior:** Sum of open lots from `core.dim_holdings`, valued against the most recent close at or before today. Each row carries `market_value`, `unrealized_gain` (signed), `price_date`, `price_source`, `days_since_observed`, and `valuation_status` (`valued` | `carried_forward` | `unpriced` | `withheld`). The last two statuses report `market_value`/`unrealized_gain` as null, never zero; `data.warnings` names how many rows those are. Three portfolio-level fields sit beside the rows: `max_days_since_observed` (the age in days of the stalest close behind any published figure, null when no position priced), `total_market_value` (published only when every priced position shares one currency, null when they differ), and `market_value_by_currency` (the per-currency split). Row amounts are in each row's own `currency_code`; `core.fct_security_prices` converts nothing, so `summary.display_currency` does not describe them.
 - **Service:** `InvestmentService.holdings()`
 - **CLI:** `moneybin investments holdings`
 - **read_only:** true

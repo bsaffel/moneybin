@@ -46,7 +46,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -313,11 +313,21 @@ class HoldingsResult:
     a boolean staleness flag would fire on most days for most users and train
     the reader to ignore it. NULL when no position priced, because a 0 there
     would read as "every close is today's".
+
+    ``total_market_value`` is published only when every priced position shares
+    one currency. ``core.fct_security_prices`` converts nothing, so a mixed
+    portfolio's ``market_value`` column holds figures in two units; summing it
+    would add euros to dollars and report one number. When the currencies
+    differ the total is NULL and ``market_value_by_currency`` carries the
+    split — the wrong sum is prevented structurally, not by a caveat the
+    reader has to notice.
     """
 
     rows: list[HoldingRow]
     warnings: list[str]
     max_days_since_observed: int | None = None
+    total_market_value: Decimal | None = None
+    market_value_by_currency: dict[str, Decimal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1626,6 +1636,9 @@ class InvestmentService:
 
         ``max_days_since_observed`` carries the age of the stalest close behind
         any published figure — always present, never a warning.
+        ``total_market_value`` is published only when every priced position
+        shares one currency; otherwise it is NULL and
+        ``market_value_by_currency`` carries the per-currency split.
         """
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
@@ -1684,10 +1697,22 @@ class InvestmentService:
             for row in holding_rows
             if row.market_value is not None and row.days_since_observed is not None
         ]
+        by_currency: dict[str, Decimal] = {}
+        for row in holding_rows:
+            if row.market_value is None:
+                continue
+            # Fold case before grouping: 'usd' and 'USD' name one currency, and
+            # treating them as two would suppress a total that is safe to publish.
+            code = row.currency_code.upper()
+            by_currency[code] = by_currency.get(code, Decimal("0")) + row.market_value
         return HoldingsResult(
             rows=holding_rows,
             warnings=warnings,
             max_days_since_observed=max(observed_ages) if observed_ages else None,
+            total_market_value=(
+                next(iter(by_currency.values())) if len(by_currency) == 1 else None
+            ),
+            market_value_by_currency=by_currency,
         )
 
     def lots(

@@ -232,7 +232,9 @@ def investments_holdings(
 
     The closing portfolio line reports ``max_days_since_observed``: the age in
     days of the stalest close behind any figure above, or ``-`` when no
-    position priced.
+    position priced. It totals market value only when every priced position
+    shares one currency; otherwise it shows the per-currency split, because no
+    single total exists across currencies.
     """
     with handle_cli_errors(
         cli_actor="investments_holdings", payload_type=InvestmentHoldingsPayload
@@ -276,7 +278,18 @@ def investments_holdings(
             if result.max_days_since_observed is not None
             else "-"
         )
-        typer.echo(f"portfolio max_days_since_observed={stalest}")
+        by_ccy = result.market_value_by_currency
+        if result.total_market_value is not None:
+            currency = next(iter(by_ccy))
+            total = f"market_value={result.total_market_value} {currency}"
+        elif by_ccy:
+            # No single figure exists across currencies: print the split so no
+            # reader can mistake one number for the portfolio's value.
+            split = " ".join(f"{code}={amount}" for code, amount in by_ccy.items())
+            total = f"market_value=- (mixed currencies) {split}"
+        else:
+            total = "market_value=- (no position is priced)"
+        typer.echo(f"portfolio {total} max_days_since_observed={stalest}")
     if not quiet:
         for w in result.warnings:
             typer.echo(f"⚠️  {w}", err=True)

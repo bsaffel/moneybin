@@ -141,7 +141,13 @@ def investments_holdings(
     published figure rests on — the largest `days_since_observed` across the
     priced rows, null when no position priced. Read it before reporting a
     portfolio value: a large number means the figures come from an old close.
-    Amounts are in the currency named by `summary.display_currency`.
+
+    Amounts are in each row's own `currency_code`, not converted to
+    `summary.display_currency`. Do not sum `market_value` across rows: read
+    `data.total_market_value`, which is populated only when every priced
+    position shares one currency and null when they do not. When it is null,
+    `data.market_value_by_currency` carries the per-currency split and no
+    single portfolio figure exists.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).holdings(account_ref=account)
@@ -819,8 +825,12 @@ def register_investments_tools(mcp: FastMCP) -> None:
         "data.max_days_since_observed is the age in days of the stalest close "
         "behind any published figure (the largest days_since_observed across "
         "the priced rows, null when none priced); read it before reporting a "
-        "portfolio value. Amounts are in the currency named by "
-        "`summary.display_currency`.",
+        "portfolio value. Amounts are in each row's own currency_code, not "
+        "converted to `summary.display_currency`. Do not sum market_value "
+        "across rows: read data.total_market_value, populated only when every "
+        "priced position shares one currency and null when they do not — then "
+        "data.market_value_by_currency carries the per-currency split and no "
+        "single portfolio figure exists.",
     )
     register(
         mcp,

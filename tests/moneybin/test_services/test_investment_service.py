@@ -1695,6 +1695,144 @@ class TestHoldings:
         )
         assert db_service(db).holdings().max_days_since_observed == 3
 
+    def test_single_currency_portfolio_totals_its_market_value(
+        self, db: Database
+    ) -> None:
+        """One currency across every priced position — the total is safe to sum."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    market_value="800.50",
+                    unrealized_gain="-199.50",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("2000.50")
+        assert result.market_value_by_currency == {"USD": Decimal("2000.50")}
+
+    def test_mixed_currency_portfolio_refuses_a_total(self, db: Database) -> None:
+        """Summing EUR into USD would invent a figure; publish the split instead."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    currency_code="USD",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    currency_code="EUR",
+                    market_value="900.00",
+                    unrealized_gain="100.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value is None
+        assert result.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "EUR": Decimal("900.00"),
+        }
+
+    def test_currency_casing_does_not_read_as_a_second_currency(
+        self, db: Database
+    ) -> None:
+        """'usd' and 'USD' are one currency — a total must still publish."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    currency_code="USD",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    currency_code="usd",
+                    market_value="800.00",
+                    unrealized_gain="-200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("2000.00")
+        assert result.market_value_by_currency == {"USD": Decimal("2000.00")}
+
+    def test_unpriced_positions_are_excluded_from_the_total(self, db: Database) -> None:
+        """A NULL market value contributes nothing — and no zero-currency key."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    currency_code="EUR",
+                    valuation_status="unpriced",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value == Decimal("1200.00")
+        assert result.market_value_by_currency == {"USD": Decimal("1200.00")}
+
+    def test_nothing_priced_publishes_no_total_and_an_empty_breakdown(
+        self, db: Database
+    ) -> None:
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db, [_Holding(security_id="sec_1", valuation_status="unpriced")]
+        )
+        result = db_service(db).holdings()
+        assert result.total_market_value is None
+        assert result.market_value_by_currency == {}
+
     def test_account_ref_resolves_and_filters(self, db: Database) -> None:
         _seed_read_fixtures(db)
         _replace_holdings_view(

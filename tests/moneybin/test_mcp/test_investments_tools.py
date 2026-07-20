@@ -287,6 +287,28 @@ class TestRegistration:
         assert tool.description is not None
         assert "max_days_since_observed" in tool.description
 
+    @pytest.mark.unit
+    async def test_holdings_description_does_not_claim_display_currency(self) -> None:
+        """market_value is per-row, so the repo-wide currency line must not apply."""
+        srv = FastMCP("test")
+        register_investments_tools(srv)
+        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        holdings = next(t for t in tools if t.name == "investments_holdings")
+        assert holdings.description is not None
+        assert (
+            "Amounts are in the currency named by `summary.display_currency`"
+            not in holdings.description
+        )
+        assert "each row's own currency_code" in holdings.description
+        # Paired positive: the sibling tools still carry the repo-wide line, so
+        # this asserts a holdings-specific correction, not a global removal.
+        gains = next(t for t in tools if t.name == "investments_gains")
+        assert gains.description is not None
+        assert (
+            "Amounts are in the currency named by `summary.display_currency`"
+            in gains.description
+        )
+
 
 # ---------------------------------------------------------------------------
 # Read tools
@@ -433,6 +455,80 @@ class TestInvestmentsHoldings:
         ])
         result = await investments_holdings()
         assert result.to_dict()["data"]["max_days_since_observed"] is None
+
+    @pytest.mark.unit
+    async def test_single_currency_portfolio_publishes_a_total(
+        self, mcp_db: Path
+    ) -> None:
+        """The common case: one currency, one summable total."""
+        _seed_investment_core()
+        sec_a = _add_security(security_id="sec_usd_a", ticker="AAA")
+        sec_b = _add_security(security_id="sec_usd_b", ticker="BBB")
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec_a,
+                currency_code="USD",
+                market_value="1200.00",
+                unrealized_gain="200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+            _Holding(
+                _ACCOUNT,
+                sec_b,
+                currency_code="USD",
+                market_value="800.00",
+                unrealized_gain="-200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_holdings()
+        data = result.to_dict()["data"]
+        assert data["total_market_value"] == 2000.0
+        assert data["market_value_by_currency"] == {"USD": 2000.0}
+
+    @pytest.mark.unit
+    async def test_mixed_currency_portfolio_publishes_no_total(
+        self, mcp_db: Path
+    ) -> None:
+        """No single figure an agent could report as "the portfolio value"."""
+        _seed_investment_core()
+        sec_a = _add_security(security_id="sec_usd", ticker="AAA")
+        sec_b = _add_security(security_id="sec_eur", ticker="BBB")
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec_a,
+                currency_code="USD",
+                market_value="1200.00",
+                unrealized_gain="200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+            _Holding(
+                _ACCOUNT,
+                sec_b,
+                currency_code="EUR",
+                market_value="900.00",
+                unrealized_gain="100.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_holdings()
+        data = result.to_dict()["data"]
+        assert data["total_market_value"] is None
+        assert data["market_value_by_currency"] == {"USD": 1200.0, "EUR": 900.0}
 
 
 class TestInvestmentsLots:

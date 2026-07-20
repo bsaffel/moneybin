@@ -192,6 +192,9 @@ class InvestmentHoldingsPayload:
     ``max_days_since_observed`` mirrors the row field's
     TIMESTAMP_OBSERVABILITY classification — it is the maximum of that column
     across the priced rows, so it carries no more than the rows already do.
+    ``total_market_value`` and ``market_value_by_currency`` are BALANCE for the
+    same reason: they are sums of the rows' BALANCE ``market_value``, and
+    classifying a portfolio total AGGREGATE would under-classify real money.
     """
 
     rows: list[InvestmentHoldingRow]
@@ -200,6 +203,10 @@ class InvestmentHoldingsPayload:
     max_days_since_observed: Annotated[
         int | None, DataClass.TIMESTAMP_OBSERVABILITY
     ] = None
+    total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = field(
+        default_factory=dict
+    )
 
     @classmethod
     def from_result(cls, result: HoldingsResult) -> InvestmentHoldingsPayload:
@@ -208,6 +215,8 @@ class InvestmentHoldingsPayload:
             rows=[InvestmentHoldingRow.from_row(r) for r in result.rows],
             warnings=result.warnings,
             max_days_since_observed=result.max_days_since_observed,
+            total_market_value=result.total_market_value,
+            market_value_by_currency=result.market_value_by_currency,
         )
 
 
