@@ -5,13 +5,22 @@
    average cost the pooled remaining basis is the meaningful figure and can
    exceed a lot's own total.
 
-   Market value is WITHHELD (status 'withheld', both figures NULL) whenever the share
-   COUNT is known wrong — a broker snapshot contradicting the ledger, an unreconciled
-   split, or a fresh snapshot omitting a position the ledger still carries. The
-   predicate is quantity-specific by design: market value is quantity x price and does
-   not touch cost basis, so the broader investment_holdings_divergence and
-   investment_staging_rejects doctor checks would each withhold a correct number for
-   reasons that cannot affect it.
+   Market value is WITHHELD (status 'withheld') whenever the share COUNT is known wrong
+   — a broker snapshot contradicting the ledger, an unreconciled split, or a fresh
+   snapshot omitting a position the ledger still carries. A withheld row publishes NO
+   pricing at all: market_value, unrealized_gain, price_date, price_source, and
+   days_since_observed are ALL NULL, even when a fresh close did resolve. Leaving the
+   three price columns populated let a withheld row advertise a zero-day-old price
+   beside blanked figures, which reads as "the pricing is current and something
+   unrelated is missing" rather than "the share count is disputed". The resolved close
+   is not destroyed by this — it stays queryable in core.fct_security_prices, so the
+   diagnostic survives one model over while this row stops making a claim it cannot
+   stand behind.
+
+   The withhold predicate is quantity-specific by design: market value is quantity x
+   price and does not touch cost basis, so the broader investment_holdings_divergence
+   and investment_staging_rejects doctor checks would each withhold a correct number
+   for reasons that cannot affect it.
 
    The provider_reported_* columns are STORE-DON'T-TRUST: the broker's CLAIM
    about the same position, joined from its newest holdings snapshot and never
@@ -274,9 +283,13 @@ SELECT
       )::DECIMAL(18, 2) - p.cost_basis
     )::DECIMAL(18, 2)
   END AS unrealized_gain, /* market_value less cost basis; NULL whenever market_value is NULL. Realized gain is ledger-derived and lives in core.fct_realized_gains */
-  lp.price_date, /* The date of the close used, which may be earlier than today; NULL when unpriced */
-  lp.source AS price_source, /* Which source supplied the close (see core.fct_security_prices); NULL when unpriced */
-  CAST(CURRENT_DATE - lp.price_date AS INT) AS days_since_observed, /* Calendar days between the price used and today (uncategorized_queue.age_days precedent for this CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault */
+  CASE WHEN wh.is_withheld THEN NULL ELSE lp.price_date END AS price_date, /* The date of the close used, which may be earlier than today. NULL whenever market_value is NULL — both when no close resolved ('unpriced') and when one did but the quantity is known wrong ('withheld'): a withheld row publishing today's date beside blanked figures reads as "pricing is current, something else is missing", which is the opposite of the truth. The close itself is not lost — it stays queryable in core.fct_security_prices, which is where a support path should look */
+  CASE WHEN wh.is_withheld THEN NULL ELSE lp.source END AS price_source, /* Which source supplied the close (see core.fct_security_prices); NULL exactly when price_date is NULL, on both 'unpriced' and 'withheld' */
+  CASE
+    WHEN wh.is_withheld
+    THEN NULL
+    ELSE CAST(CURRENT_DATE - lp.price_date AS INT)
+  END AS days_since_observed, /* Calendar days between the price used and today (uncategorized_queue.age_days precedent for this CAST-subtraction form). DATE_DIFF('day', ...) here fails every one of this model's valuation tests with a SQLMesh PlanError — measured to come from SQLMesh's render path losing the duckdb dialect for this node, not from sqlglot mishandling DATE_DIFF outright. 0 on a same-day close; a Monday reading 3 on an equity is an ordinary weekend, not a fault. NULL exactly when price_date is NULL, on both 'unpriced' and 'withheld' */
   CASE
     WHEN wh.is_withheld
     THEN 'withheld'

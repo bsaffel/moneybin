@@ -269,6 +269,44 @@ def _holding(db: Database) -> tuple[object, ...]:
     return rows[0]
 
 
+def _assert_withheld_publishes_nothing(row: tuple[object, ...]) -> None:
+    """A withheld row carries no figure AND no pricing metadata.
+
+    Blanking market_value while still reporting ``price_date``/``price_source``/
+    ``days_since_observed`` let the CLI print ``market_value=- status=withheld
+    as_of=<today> (0d)`` — a zero-day-old price beside blank money, which reads as
+    "pricing is current, something unrelated is missing" rather than "the share count
+    is disputed". All five are NULL together.
+    """
+    market_value, gain, price_date, source, days, status = row
+    assert status == "withheld"
+    assert market_value is None
+    assert gain is None
+    assert price_date is None, "a withheld row must not advertise a price date"
+    assert source is None, "a withheld row must not advertise a price source"
+    assert days is None, "a withheld row must not advertise price freshness"
+
+
+def _resolved_close(db: Database, price_date: date) -> object:
+    """The close ``core.fct_security_prices`` holds for the default security.
+
+    The withhold assertions above need to prove a close actually RESOLVED — otherwise
+    they would pass identically against a model that priced nothing at all. Since
+    ``core.dim_holdings`` deliberately no longer republishes it on a withheld row, the
+    proof moves one model over. That relocation is the point: the diagnostic still
+    exists for a support path, just not on the row that must not make a claim.
+    """
+    rows = db.execute(
+        """
+        SELECT close FROM core.fct_security_prices
+        WHERE security_id = ? AND price_date = ? AND quote_currency = 'USD'
+        """,
+        [_DEFAULT_SECURITY_ID, price_date],
+    ).fetchall()
+    assert len(rows) == 1, f"expected exactly one resolved close: {rows}"
+    return rows[0][0]
+
+
 def _acc_1_quantities(db: Database) -> tuple[object, object]:
     """(ledger quantity, provider claim) for acc_1 — the pair a withhold rests on."""
     rows = db.execute(
@@ -446,15 +484,11 @@ def test_split_reject_withholds_the_value(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    market_value, gain, price_date, source, _days, status = _holding(db)
-    assert status == "withheld"
-    assert market_value is None
-    assert gain is None
-    # A same-day close DID resolve; the NULL above is the withhold, not an absent
-    # price. Without this pair the test would pass identically against a model that
-    # priced nothing at all.
-    assert price_date == anchor
-    assert source == "plaid"
+    _assert_withheld_publishes_nothing(_holding(db))
+    # A same-day close DID resolve; the NULLs above are the withhold, not an absent
+    # price. Without this the test would pass identically against a model that priced
+    # nothing at all.
+    assert _resolved_close(db, anchor) == Decimal("120.0000000000")
 
 
 @pytest.mark.slow
@@ -592,11 +626,10 @@ def test_quantity_divergence_withholds(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    market_value, gain, price_date, _src, _days, status = _holding(db)
-    assert status == "withheld"
-    assert market_value is None
-    assert gain is None
-    assert price_date == anchor, "a close resolved; the NULL above is the withhold"
+    _assert_withheld_publishes_nothing(_holding(db))
+    assert _resolved_close(db, anchor) == Decimal("120.0000000000"), (
+        "a close resolved; the NULLs above are the withhold"
+    )
 
     quantity, claimed = _acc_1_quantities(db)
     assert claimed == Decimal("40.0000000000"), "the provider claim must have joined"
@@ -623,11 +656,10 @@ def test_phantom_position_withholds(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    market_value, gain, price_date, _src, _days, status = _holding(db)
-    assert status == "withheld"
-    assert market_value is None
-    assert gain is None
-    assert price_date == anchor, "a close resolved; the NULL above is the withhold"
+    _assert_withheld_publishes_nothing(_holding(db))
+    assert _resolved_close(db, anchor) == Decimal("120.0000000000"), (
+        "a close resolved; the NULLs above are the withhold"
+    )
 
     _quantity, claimed = _acc_1_quantities(db)
     assert claimed is None, "the snapshot omits this position — that NULL is the signal"
@@ -656,11 +688,10 @@ def test_liquidated_account_absent_from_holdings_still_withholds(db: Database) -
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
-    market_value, gain, price_date, _src, _days, status = _holding(db)
-    assert status == "withheld"
-    assert market_value is None
-    assert gain is None
-    assert price_date == anchor, "a close resolved; the NULL above is the withhold"
+    _assert_withheld_publishes_nothing(_holding(db))
+    assert _resolved_close(db, anchor) == Decimal("120.0000000000"), (
+        "a close resolved; the NULLs above are the withhold"
+    )
 
     quantity, claimed = _acc_1_quantities(db)
     assert quantity == Decimal("11.0000000000"), (
