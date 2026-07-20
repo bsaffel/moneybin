@@ -11,11 +11,56 @@ from moneybin.database import Database, sqlmesh_context
 
 pytestmark = pytest.mark.integration
 
+_DEFAULT_SECURITY_ID = "canonvti0000001"
+
+
+def _provider_key(security_id: str) -> str:
+    """The provider's own id for a canonical security — derived, never hardcoded.
+
+    ``_seed_price`` writes both the raw price row and the ``app.security_links``
+    binding that resolves it. A hardcoded key/link_id pair collides on the link
+    primary key the second time a test seeds a *different* security:
+    ``ON CONFLICT DO NOTHING`` discards the second binding, the second security's
+    price is dropped by ``prep.stg_security_prices``' INNER JOIN, and its position
+    reads ``unpriced`` for a reason having nothing to do with the model under test.
+    Deriving the key from the security_id makes the helper honor its own signature.
+    """
+    return f"prov_{security_id}"
+
+
+_DEFAULT_PROVIDER_KEY = _provider_key(_DEFAULT_SECURITY_ID)
+
+
+def _db_today(db: Database) -> date:
+    """The database's own CURRENT_DATE — the clock ``core.dim_holdings`` reads.
+
+    Python's ``date.today()`` is evaluated before ``ctx.plan()``, a multi-second
+    operation, while the model re-evaluates SQL ``CURRENT_DATE`` *during* the plan.
+    A shard seeding at 23:59:58 and materializing at 00:00:03 sees the two disagree,
+    flipping ``days_since_observed`` from 0 to 1 and ``valuation_status`` from
+    ``valued`` to ``carried_forward``. Every date-sensitive assertion in this module
+    is therefore anchored to this function's value read before seeding, and compared
+    against it re-read after the plan — never against the wall clock.
+    """
+    row = db.execute("SELECT CURRENT_DATE").fetchone()
+    assert row is not None
+    return row[0]
+
+
+def _expected_status(elapsed_days: int) -> str:
+    """The status a priced, non-withheld position carries ``elapsed_days`` on.
+
+    ``valued`` iff the close is today's. Expressing it as a function of the elapsed
+    days — rather than pinning the literal ``valued`` — keeps the assertion exact in
+    the ordinary case and correct rather than flaky across a midnight boundary.
+    """
+    return "valued" if elapsed_days == 0 else "carried_forward"
+
 
 def _seed_position(
     db: Database,
     *,
-    security_id: str = "canonvti0000001",
+    security_id: str = _DEFAULT_SECURITY_ID,
     currency_code: str = "USD",
 ) -> None:
     """10 units at 100.00, cost basis 1000.00, in account acc_1."""
@@ -44,29 +89,36 @@ def _seed_price(
     *,
     price_date: date,
     close: str,
-    security_id: str = "canonvti0000001",
+    security_id: str = _DEFAULT_SECURITY_ID,
     quote_currency: str = "USD",
 ) -> None:
+    """One raw close plus the accepted binding that resolves it to ``security_id``.
+
+    Both the provider key and the link id are derived from ``security_id`` (see
+    ``_provider_key``), so seeding two securities produces two distinct, both-accepted
+    bindings rather than one accepted and one silently swallowed by ON CONFLICT.
+    """
+    provider_key = _provider_key(security_id)
     db.execute(
         """
         INSERT INTO raw.security_prices
             (provider_security_key, price_date, quote_currency, source,
              source_origin, close, price_basis, extracted_at, loaded_at)
-        VALUES ('sec_vti', ?, ?, 'plaid', 'item_1', ?, 'raw',
+        VALUES (?, ?, ?, 'plaid', 'item_1', ?, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [price_date, quote_currency, close],
+        [provider_key, price_date, quote_currency, close],
     )
     db.execute(
         """
         INSERT INTO app.security_links
             (link_id, security_id, ref_kind, ref_value, source_type,
              status, decided_by, decided_at)
-        VALUES ('link_vti', ?, 'plaid_security_id', 'sec_vti', 'plaid',
+        VALUES (?, ?, 'plaid_security_id', ?, 'plaid',
                 'accepted', 'auto', CURRENT_TIMESTAMP)
         ON CONFLICT DO NOTHING
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [security_id],
+        [f"link_{provider_key}", security_id, provider_key],
     )
 
 
@@ -75,7 +127,7 @@ def _seed_broker_snapshot(
     *,
     account_id: str,
     quantity: str,
-    security_id: str = "sec_vti",
+    security_id: str = _DEFAULT_PROVIDER_KEY,
     source_file: str = "sync_job_1",
 ) -> None:
     """One broker snapshot: the receipt plus the holding row it accounts for.
@@ -89,7 +141,7 @@ def _seed_broker_snapshot(
     ``account_id`` is written as the canonical id directly:
     prep.stg_plaid__investment_holdings COALESCEs to the source-native id when no
     account_link resolves, so this needs no account binding. ``security_id`` is the
-    PROVIDER id; 'sec_vti' resolves to canonvti0000001 through the
+    PROVIDER id; the default resolves to canonvti0000001 through the
     'plaid_security_id' link ``_seed_price`` writes, and any other value stays
     unresolved (canonical NULL) — which is what a phantom-position fixture wants: the
     account is broker-covered, but the position under test is absent from the claim.
@@ -154,15 +206,17 @@ def _seed_plaid_buy(db: Database, *, account_id: str) -> None:
             investment_transaction_type, investment_transaction_subtype,
             transaction_date, quantity, price, amount, fees, iso_currency_code,
             source_file, source_type, source_origin, extracted_at, loaded_at
-        ) VALUES (?, ?, 'sec_vti', 'buy', 'buy', DATE '2026-01-10',
+        ) VALUES (?, ?, ?, 'buy', 'buy', DATE '2026-01-10',
                   1, 100.00, -100.00, 0.00, 'USD', 'sync_job_liquidated', 'plaid',
                   'item_1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [f"itx_buy_{account_id}", account_id],
+        [f"itx_buy_{account_id}", account_id, _DEFAULT_PROVIDER_KEY],
     )
 
 
-def _seed_split_reject(db: Database, *, account_id: str) -> None:
+def _seed_split_reject(
+    db: Database, *, account_id: str, trade_date: date = date(2026, 6, 1)
+) -> None:
     """A Plaid split routed to review: held out of the ledger, quantity not restated.
 
     Every Plaid split is routed to review as ``split_underivable``
@@ -178,11 +232,16 @@ def _seed_split_reject(db: Database, *, account_id: str) -> None:
             investment_transaction_type, investment_transaction_subtype,
             transaction_date, quantity, price, amount, fees, iso_currency_code,
             source_file, source_type, source_origin, extracted_at, loaded_at
-        ) VALUES (?, ?, 'sec_vti', 'transfer', 'split', DATE '2026-06-01',
+        ) VALUES (?, ?, ?, 'transfer', 'split', ?,
                   4, NULL, 0.00, NULL, 'USD', 'sync_test', 'plaid', 'item_1',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [f"itx_split_{account_id}", account_id],
+        [
+            f"itx_split_{account_id}",
+            account_id,
+            _DEFAULT_PROVIDER_KEY,
+            trade_date,
+        ],
     )
 
 
@@ -225,32 +284,36 @@ def _acc_1_quantities(db: Database) -> tuple[object, object]:
 
 @pytest.mark.slow
 def test_same_day_price_values_the_position(db: Database) -> None:
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=anchor, close="120.00")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
+    elapsed = (_db_today(db) - anchor).days
     market_value, gain, _pd, source, days, status = _holding(db)
     assert market_value == Decimal("1200.00")
     assert gain == Decimal("200.00"), "market value less cost basis"
     assert source == "plaid"
-    assert days == 0
-    assert status == "valued"
+    assert days == elapsed
+    assert status == _expected_status(elapsed)
 
 
 @pytest.mark.slow
 def test_older_price_carries_forward_with_rising_staleness(db: Database) -> None:
     """Markets close ~114 days a year; as-of resolution is what makes a series possible."""
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today() - timedelta(days=3), close="120.00")
+    _seed_price(db, price_date=anchor - timedelta(days=3), close="120.00")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
+    elapsed = (_db_today(db) - anchor).days
     market_value, _gain, _pd, _source, days, status = _holding(db)
     assert market_value == Decimal("1200.00")
-    assert days == 3
+    assert days == elapsed + 3
     assert status == "carried_forward"
 
 
@@ -267,24 +330,27 @@ def test_most_recent_of_two_past_prices_wins(db: Database) -> None:
     correct one (120.00) — inserting the winner first would let that exact bug
     pass by coincidence.
     """
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today() - timedelta(days=10), close="50.00")
-    _seed_price(db, price_date=date.today() - timedelta(days=2), close="120.00")
+    _seed_price(db, price_date=anchor - timedelta(days=10), close="50.00")
+    _seed_price(db, price_date=anchor - timedelta(days=2), close="120.00")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
+    elapsed = (_db_today(db) - anchor).days
     market_value, _gain, price_date, _source, days, status = _holding(db)
     assert market_value == Decimal("1200.00"), "the newer close (120.00) must win"
-    assert price_date == date.today() - timedelta(days=2)
-    assert days == 2
+    assert price_date == anchor - timedelta(days=2)
+    assert days == elapsed + 2
     assert status == "carried_forward"
 
 
 @pytest.mark.slow
 def test_future_price_never_values_an_earlier_date(db: Database) -> None:
     _seed_position(db)
-    _seed_price(db, price_date=date.today() + timedelta(days=5), close="500.00")
+    # +5 days, so the row stays in the future even if the plan crosses midnight.
+    _seed_price(db, price_date=_db_today(db) + timedelta(days=5), close="500.00")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
@@ -314,23 +380,25 @@ def test_unpriced_holding_is_null_never_zero(db: Database) -> None:
 @pytest.mark.slow
 def test_price_in_another_currency_does_not_value_the_position(db: Database) -> None:
     """Valuing a USD position at a GBP close would be silently wrong; M1K.2 converts."""
+    anchor = _db_today(db)
     _seed_position(db)
     db.execute(
         """
         INSERT INTO raw.security_prices
             (provider_security_key, price_date, quote_currency, source,
              source_origin, close, price_basis, extracted_at, loaded_at)
-        VALUES ('sec_vti', CURRENT_DATE, 'GBP', 'plaid', 'item_1', 95.00, 'raw',
+        VALUES (?, CURRENT_DATE, 'GBP', 'plaid', 'item_1', 95.00, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
+        [_DEFAULT_PROVIDER_KEY],
     )
-    _seed_price(db, price_date=date.today() - timedelta(days=400), close="1.00")
+    _seed_price(db, price_date=anchor - timedelta(days=400), close="1.00")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
     _mv, _gain, price_date, _source, _days, _status = _holding(db)
-    assert price_date == date.today() - timedelta(days=400), (
+    assert price_date == anchor - timedelta(days=400), (
         "the GBP close must not win over an older USD one"
     )
 
@@ -350,14 +418,18 @@ def test_currency_casing_mismatch_still_values_the_position(db: Database) -> Non
     position ``unpriced`` while the close that values it sits in
     ``core.fct_security_prices``: the system has the price and denies it.
     """
+    anchor = _db_today(db)
     _seed_position(db, currency_code="usd")
-    _seed_price(db, price_date=date.today(), close="120.00", quote_currency="usd")
+    _seed_price(db, price_date=anchor, close="120.00", quote_currency="usd")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
+    elapsed = (_db_today(db) - anchor).days
     market_value, gain, _pd, source, _days, status = _holding(db)
-    assert status == "valued", "a casing difference must not unvalue a priced position"
+    assert status == _expected_status(elapsed), (
+        "a casing difference must not unvalue a priced position"
+    )
     assert market_value == Decimal("1200.00")
     assert gain == Decimal("200.00")
     assert source == "plaid"
@@ -366,8 +438,9 @@ def test_currency_casing_mismatch_still_values_the_position(db: Database) -> Non
 @pytest.mark.slow
 def test_split_reject_withholds_the_value(db: Database) -> None:
     """Publishing quantity × price here yields a number wrong by the split factor."""
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=anchor, close="120.00")
     _seed_split_reject(db, account_id="acc_1")
 
     with sqlmesh_context(db) as ctx:
@@ -380,7 +453,7 @@ def test_split_reject_withholds_the_value(db: Database) -> None:
     # A same-day close DID resolve; the NULL above is the withhold, not an absent
     # price. Without this pair the test would pass identically against a model that
     # priced nothing at all.
-    assert price_date == date.today()
+    assert price_date == anchor
     assert source == "plaid"
 
 
@@ -404,7 +477,7 @@ def test_withhold_reaches_a_sibling_position_in_another_account(db: Database) ->
                   DATE '2026-01-05', 5, 100.00, -500.00, 0.00, 'test', 'buy_2')
         """  # noqa: S608  # test fixture, not executing user SQL
     )
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=_db_today(db), close="120.00")
     _seed_split_reject(db, account_id="acc_1")
 
     with sqlmesh_context(db) as ctx:
@@ -433,8 +506,9 @@ def test_position_that_recorded_the_split_still_values(db: Database) -> None:
     number — not merely `status != 'withheld'` — is what proves the model published a
     figure rather than merely declining to withhold one.
     """
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=anchor, close="120.00")
     _seed_split_reject(db, account_id="acc_1")
     db.execute(
         """
@@ -450,8 +524,9 @@ def test_position_that_recorded_the_split_still_values(db: Database) -> None:
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
+    elapsed = (_db_today(db) - anchor).days
     market_value, _gain, _pd, _src, _days, status = _holding(db)
-    assert status == "valued", (
+    assert status == _expected_status(elapsed), (
         "the split reached this position's ledger; withholding would suppress a right answer"
     )
     assert market_value == Decimal("4800.00"), "40 restated units × the 120.00 close"
@@ -466,8 +541,9 @@ def test_quantity_divergence_withholds(db: Database) -> None:
     ledger at 50 against a claim of 40. The exact figures are incidental; what the
     test pins is that the two disagree and no value is published.
     """
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=anchor, close="120.00")
     _seed_broker_snapshot(db, account_id="acc_1", quantity="40")
 
     with sqlmesh_context(db) as ctx:
@@ -477,9 +553,7 @@ def test_quantity_divergence_withholds(db: Database) -> None:
     assert status == "withheld"
     assert market_value is None
     assert gain is None
-    assert price_date == date.today(), (
-        "a close resolved; the NULL above is the withhold"
-    )
+    assert price_date == anchor, "a close resolved; the NULL above is the withhold"
 
     quantity, claimed = _acc_1_quantities(db)
     assert claimed == Decimal("40.0000000000"), "the provider claim must have joined"
@@ -496,8 +570,9 @@ def test_phantom_position_withholds(db: Database) -> None:
     gone. The snapshot covers acc_1 (so the account is broker-covered) but reports a
     different, unbound security, leaving the VTI position absent from the claim.
     """
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=anchor, close="120.00")
     _seed_broker_snapshot(
         db, account_id="acc_1", quantity="7", security_id="sec_unbound"
     )
@@ -509,9 +584,7 @@ def test_phantom_position_withholds(db: Database) -> None:
     assert status == "withheld"
     assert market_value is None
     assert gain is None
-    assert price_date == date.today(), (
-        "a close resolved; the NULL above is the withhold"
-    )
+    assert price_date == anchor, "a close resolved; the NULL above is the withhold"
 
     _quantity, claimed = _acc_1_quantities(db)
     assert claimed is None, "the snapshot omits this position — that NULL is the signal"
@@ -531,8 +604,9 @@ def test_liquidated_account_absent_from_holdings_still_withholds(db: Database) -
     Ledger quantity is 11 (10 manual + 1 Plaid buy) against a close of 120.00, so a
     regression publishes $1,320.00 of shares the broker says are gone.
     """
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=anchor, close="120.00")
     _seed_liquidated_snapshot(db)
     _seed_plaid_buy(db, account_id="acc_1")
 
@@ -543,9 +617,7 @@ def test_liquidated_account_absent_from_holdings_still_withholds(db: Database) -
     assert status == "withheld"
     assert market_value is None
     assert gain is None
-    assert price_date == date.today(), (
-        "a close resolved; the NULL above is the withhold"
-    )
+    assert price_date == anchor, "a close resolved; the NULL above is the withhold"
 
     quantity, claimed = _acc_1_quantities(db)
     assert quantity == Decimal("11.0000000000"), (
@@ -564,12 +636,14 @@ def test_manual_account_without_a_snapshot_still_values(db: Database) -> None:
     read a missing claim as an omitted position — dropping the broker_covered_accounts
     scope silently unvalues every manually-tracked position in the database.
     """
+    anchor = _db_today(db)
     _seed_position(db)
-    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_price(db, price_date=anchor, close="120.00")
 
     with sqlmesh_context(db) as ctx:
         ctx.plan(auto_apply=True, no_prompts=True)
 
+    elapsed = (_db_today(db) - anchor).days
     market_value, _gain, _pd, _src, _days, status = _holding(db)
-    assert status == "valued"
+    assert status == _expected_status(elapsed)
     assert market_value == Decimal("1200.00")
