@@ -464,16 +464,25 @@ The generic MCP consent ladder does not cover this — it gates what leaves the
 machine on one request, not a durable change to what is masked on all future
 ones.
 
-**A downgrade must weaken, never strengthen.** `reports_reclassify` validates
-`mask_strength(to) < mask_strength(from)` (`privacy/redaction.py`) before
-persisting, and refuses otherwise. Materialized reports get this free at CI time
-— `reports-foundation.md` R3 compares declared against derived on
-`(tier, mask strength)` — but a dynamic report has no repo artifact and no CI
-step, so the tool is the only place the check can run. Without it a call could
-"downgrade" `ROUTING_NUMBER` to a class that masks less predictably or not at
-all, recreating #330 through an explicit tool instead of a missing declaration.
-The comparison is on the same `(tier, mask strength)` pair M2P.1 settled on,
-because tier alone does not order two classes whose transforms differ.
+**A downgrade must weaken, never strengthen.** `reports_reclassify` compares the
+**`(tier, mask_strength)` pair** — the same pair M2P.1 settled on
+(`reports-foundation.md` R3, `privacy/redaction.py`) — and persists only when
+neither component rises and at least one falls. Materialized reports get this
+free at CI time; a dynamic report has no repo artifact and no CI step, so the
+tool is the only place the check can run. Without it a call could "downgrade"
+`ROUTING_NUMBER` to a class that masks less, recreating #330 through an explicit
+tool instead of a missing declaration.
+
+Both components are load-bearing, and either one alone fails in a different
+direction. `mask_strength` alone rejects this spec's own worked example: the
+z-score column downgraded `TXN_AMOUNT → AGGREGATE` moves HIGH → LOW while both
+classes share the passthrough transform, so their strengths are equal and a
+strength-only test refuses a legitimate correction — as it would for every
+HIGH/MEDIUM → LOW reclassification, which is most of what this tool is for.
+Tier alone is the failure M2P.1 already found: two classes at one tier whose
+transforms differ are not interchangeable, so tier equality is not class
+equivalence. Requiring that neither component rise keeps a "downgrade" from
+strengthening one axis while weakening the other.
 
 **Renames go through the same collision check as creation.** `reports_set` is
 how a report is renamed (R1), so a rename into a name already held by a built-in
