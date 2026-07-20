@@ -89,9 +89,9 @@ New protected `app.*` table, paired per convention across
 | `name` | `VARCHAR NOT NULL UNIQUE` | Slug; resolved to `report_id` at the service boundary |
 | `description` | `VARCHAR` | Agent-visible summary |
 | `query_sql` | `VARCHAR NOT NULL` | Stored SQL with `$name` placeholders (R8) |
-| `params` | `JSON NOT NULL DEFAULT '[]'` | Declared `ParamSpec` list, bound by name |
+| `params` | `JSON NOT NULL DEFAULT '[]'` | Declared `ParamSpec` list, bound by name; each carries a `DataClass` (R9) |
 | `classes` | `JSON NOT NULL` | Derived map, keyed by DuckDB result column name |
-| `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: reason}` |
+| `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: {from, to, reason}}` — `from` is the derived class the downgrade was approved against (R4) |
 | `class_fingerprint` | `VARCHAR NOT NULL` | Drift key over the derivation inputs (R4) |
 | `is_active` | `BOOLEAN NOT NULL DEFAULT true` | False = archived; hidden from the default catalog |
 | `created_at` / `updated_at` | `TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` | House convention |
@@ -163,7 +163,17 @@ stored; the user never sees it unless they ask.
 
 Save pipeline:
 
-1. `validate_read_only_query` — existing gate, unchanged.
+1. `validate_read_only_query` — existing gate, unchanged. It refuses
+   multi-statement input as of #346, which this pipeline depends on: each
+   statement in `SELECT 1; SELECT routing_number FROM core.dim_accounts` is
+   individually a legal read, but DuckDB returns the *last* statement's rows
+   while steps 3–6 classify the first. Step 6 would then bridge
+   `routing_number` onto statement 1's `AGGREGATE` class positionally and
+   persist that pairing — baking the mismatch into a durable artifact rather
+   than one response. The same PR removed the whitespace normalization that let
+   a `--` comment hide a second statement from the parser, so the statement
+   count is taken from the text DuckDB executes. A saved report inherits both
+   properties by calling the gate; it adds no statement check of its own.
 2. `is_data_query` — reject anything that is not a row-returning SELECT.
    `validate_read_only_query` also admits `DESCRIBE`, `SHOW`, `PRAGMA`, and
    `EXPLAIN` (`privacy/sql_query.py`), but step 5 below raises
@@ -295,9 +305,27 @@ On each run the fingerprint is recomputed and compared:
 
 - **Match** → `classify_columns` against the stored map, byte-identical to how a
   built-in runs. No lineage work; the comparison is dictionary lookups, no DB.
-- **Mismatch** → re-resolve. An equal map serves the run normally. A changed map
-  fails closed for the affected columns and marks the response degraded (see
-  below).
+- **Mismatch** → re-resolve, reapply the report's approved `class_downgrades` to
+  the freshly derived map, then compare. An equal map serves the run normally. A
+  changed map fails closed for the affected columns and marks the response
+  degraded (see below).
+
+Reapplying downgrades before the comparison is what keeps a legitimately
+downgraded report from degrading forever. A z-score column downgraded
+`TXN_AMOUNT` → `AGGREGATE` differs from the derived map *by design*, so
+comparing raw derivation against the stored map reports a change on every run —
+and since reads never refresh the fingerprint, the report stays degraded from
+the first unrelated classification change onward. The downgrade is part of the
+approved map; the comparison has to be against the same thing that was approved.
+
+**A downgrade is reapplied only where the derived class still matches the one it
+was approved against.** A downgrade approved for `TXN_AMOUNT → AGGREGATE` on
+column `z` is an assertion about `TXN_AMOUNT` on that column, not a standing
+exemption for `z`. If re-derivation now yields `ROUTING_NUMBER` there, the
+premise is gone: the stored entry is dropped, the column reports as changed, and
+it fails closed. Reapplying by column name alone would let an approval collected
+against a weak class silently suppress a stronger one — the inverse of what the
+downgrade was reviewed for.
 
 The fingerprint is a cache key, not authority: re-resolution is what decides the
 run, so a stale fingerprint costs work, never correctness. That matters because
@@ -479,12 +507,38 @@ opens the query in the SQL console for direct editing, where a template with
 unbound `$month` would fail:
 
 - `sql` — the executed form with parameters rendered as literals via sqlglot
-  literal construction, per `security.md`, so DATE, DECIMAL, BOOLEAN, and NULL
-  render correctly rather than as naive quoted strings. **Display only.**
-  MoneyBin never executes this string; it exists so a user can paste it into the
-  console, where it re-enters through `validate_read_only_query` and normal
+  literal construction, so DATE, DECIMAL, BOOLEAN, and NULL render with their
+  types intact rather than as naive quoted strings. **Display only.** MoneyBin
+  never executes this string; it exists so a user can paste it into the console,
+  where it re-enters through `validate_read_only_query` and normal
   parameterization.
 - `sql_template` — the stored form with named placeholders intact.
+
+**A parameter classed above LOW keeps its placeholder in `sql`.** Rendering is
+not execution, so it never passes through `run_report`'s `classify_columns` /
+`redact_records` — a report filtered by account or routing number would return
+that value verbatim from `reports_explain` while the same value is masked in
+every row of the result it explains. `ParamSpec` therefore carries a
+`DataClass`; the renderer emits a literal only for LOW-classed parameters and
+leaves the rest as `$name`.
+
+Masking the value instead (`'****1234'`) would be worse on both counts: it is
+not valid SQL for the column it filters, and it invites the reader to believe
+the string is the query that ran. A retained placeholder is honest about what
+was withheld and stays pasteable — the user re-supplies the sensitive value in
+the console, which is where a CRITICAL literal belongs anyway. This keeps the
+provenance surface inside the same classification pipeline as the data surface
+rather than beside it; a value that is *rendered* rather than *bound* is outside
+every guard that reads the bound form.
+
+The class reaches `ParamSpec` the same way each tier's parameters already
+arrive. Built-in and extension runners are introspected from the signature, so
+the class rides the annotation `redact_typed` already reads —
+`Annotated[str, DataClass.ACCOUNT_IDENTIFIER]` — rather than a second
+convention beside it. Dynamic reports declare it in the stored `params` JSON.
+Either way the default is `AGGREGATE`: a month, a limit, or a category name is
+LOW, which is what nearly every report parameter is, and the annotation is the
+exception a durable classification decision deserves to be.
 
 ### R10 — Surfaces this change falsifies
 
