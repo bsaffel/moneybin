@@ -951,7 +951,7 @@ def _investment_position(
             raise ValueError("invalid investment key")
         snapshot = cast(tuple[str, ...], position.snapshot)
         after = cast(tuple[str, ...], position.after)
-        if snapshot > after:
+        if after > snapshot:
             raise ValueError("invalid investment key order")
         return position
     except ValueError as exc:
@@ -985,16 +985,18 @@ def _investment_page[T](
     limit: int,
     position: KeysetPosition | None,
 ) -> tuple[list[T], str | None, int]:
-    """Page immutable identities behind the first-page prepend boundary."""
+    """Page immutable identities within the initial high-water boundary."""
     ordered = sorted(rows, key=lambda row: _investment_row_key(view, row))
     if position is None:
         eligible = ordered
         total_count = len(ordered)
-        snapshot = _investment_row_key(view, ordered[0]) if ordered else None
+        snapshot = _investment_row_key(view, ordered[-1]) if ordered else None
     else:
         snapshot = cast(tuple[str, ...], position.snapshot)
         after = cast(tuple[str, ...], position.after)
-        eligible = [row for row in ordered if _investment_row_key(view, row) > after]
+        eligible = [
+            row for row in ordered if after < _investment_row_key(view, row) <= snapshot
+        ]
         total_count = position.total
     page = eligible[:limit]
     if len(eligible) <= limit or not page or snapshot is None:

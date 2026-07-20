@@ -456,6 +456,36 @@ async def test_investment_continuation_excludes_prepended_row(
     "view",
     ["events", "holdings", "lots", "gains", "securities"],
 )
+async def test_investment_continuation_excludes_appended_row(
+    view: InvestmentView,
+) -> None:
+    with patch.object(
+        InvestmentService,
+        _investment_method(view),
+        side_effect=[
+            _investment_result(view, ["item-b", "item-c"]),
+            _investment_result(view, ["item-b", "item-c", "item-z"]),
+        ],
+    ):
+        first = await investments_coarse(view=view, limit=1)
+        second = await investments_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [
+        _investment_row_id(view, first.data.rows[0]),
+        _investment_row_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
+
+
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
 async def test_investment_rejects_typed_key_shape_before_reading_live_rows(
     view: InvestmentView,
 ) -> None:
@@ -477,6 +507,30 @@ async def test_investment_rejects_typed_key_shape_before_reading_live_rows(
 
     with patch.object(InvestmentService, _investment_method(view)) as read:
         response = await investments_coarse(view=view, cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    read.assert_not_called()
+
+
+async def test_investment_rejects_cursor_after_beyond_high_water() -> None:
+    cursor = encode_keyset_cursor(
+        namespace="investments",
+        scope={
+            "account": None,
+            "end": None,
+            "open_only": None,
+            "security": None,
+            "start": None,
+            "view": "events",
+        },
+        snapshot=("item-b",),
+        after=("item-c",),
+        total=2,
+    )
+
+    with patch.object(InvestmentService, _investment_method("events")) as read:
+        response = await investments_coarse(view="events", cursor=cursor)
 
     assert response.error is not None
     assert response.error.code == "INVESTMENT_CURSOR_INVALID"

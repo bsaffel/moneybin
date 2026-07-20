@@ -63,7 +63,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   their 180-second window; PDF sign inversions can be approved over MCP against
   immutable preview bytes; partial import/sync failures retain actionable
   guidance; auto-rule proposals retain blast-radius review and proposal-scoped
-  approval; bounded account resolution remains confidence-ranked; multi-note
+  approval; bounded account resolution remains confidence-ranked; investment
+  continuations stay within their initial high-water boundary; multi-note
   threads retain stable note identities; and orphan annotations and accepted
   matches again expose executable recovery through the standard 45-tool
   registry. (#344)
