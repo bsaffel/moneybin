@@ -142,7 +142,16 @@ class InvestmentEventsPayload:
 
 @dataclass(frozen=True, slots=True)
 class InvestmentHoldingRow:
-    """One current position — cost basis only (Pillar C adds market value)."""
+    """One current position — cost basis plus the Pillar-C valuation.
+
+    The six valuation fields mirror the ``core.dim_holdings`` classifications in
+    ``privacy/taxonomy.py``: ``market_value``/``unrealized_gain`` are BALANCE
+    (a held "stock" figure, like ``cost_basis``); ``price_date``/
+    ``days_since_observed`` are TIMESTAMP_OBSERVABILITY (a public close's date,
+    and a value bijective with it); ``price_source``/``valuation_status`` are
+    TXN_TYPE (routing tags). None of them raises the payload's derived tier —
+    ``cost_basis`` already carries BALANCE.
+    """
 
     account_id: Annotated[str, DataClass.RECORD_ID]
     security_id: Annotated[str, DataClass.RECORD_ID]
@@ -150,6 +159,12 @@ class InvestmentHoldingRow:
     cost_basis: Annotated[Decimal, DataClass.BALANCE]
     average_cost: Annotated[Decimal | None, DataClass.BALANCE]
     currency_code: Annotated[str, DataClass.CURRENCY]
+    market_value: Annotated[Decimal | None, DataClass.BALANCE]
+    unrealized_gain: Annotated[Decimal | None, DataClass.BALANCE]
+    price_date: Annotated[date | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    price_source: Annotated[str | None, DataClass.TXN_TYPE]
+    days_since_observed: Annotated[int | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    valuation_status: Annotated[str, DataClass.TXN_TYPE]
 
     @classmethod
     def from_row(cls, row: HoldingRow) -> InvestmentHoldingRow:
@@ -161,6 +176,12 @@ class InvestmentHoldingRow:
             cost_basis=row.cost_basis,
             average_cost=row.average_cost,
             currency_code=row.currency_code,
+            market_value=row.market_value,
+            unrealized_gain=row.unrealized_gain,
+            price_date=row.price_date,
+            price_source=row.price_source,
+            days_since_observed=row.days_since_observed,
+            valuation_status=row.valuation_status,
         )
 
 

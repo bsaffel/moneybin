@@ -281,7 +281,13 @@ class RecordEventsResult:
 
 @dataclass(frozen=True, slots=True)
 class HoldingRow:
-    """One current position — cost basis only (Pillar C adds market value)."""
+    """One current position — cost basis plus the Pillar-C valuation.
+
+    ``market_value``/``unrealized_gain`` are NULL — never zero — whenever
+    ``valuation_status`` is ``unpriced`` or ``withheld``; a zero is
+    indistinguishable from a worthless position. ``unrealized_gain`` is
+    signed (negative below cost); ``market_value`` is not.
+    """
 
     account_id: str
     security_id: str
@@ -289,6 +295,12 @@ class HoldingRow:
     cost_basis: Decimal
     average_cost: Decimal | None
     currency_code: str
+    market_value: Decimal | None
+    unrealized_gain: Decimal | None
+    price_date: date | None
+    price_source: str | None
+    days_since_observed: int | None
+    valuation_status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1486,10 +1498,9 @@ class InvestmentService:
     # Read path — list_events, holdings, lots, gains
     # ------------------------------------------------------------------
 
-    _HOLDINGS_WARNING = (
-        "Market value and unrealized gain/loss are unavailable until price "
-        "feeds ship (holdings show cost basis only)."
-    )
+    # Statuses that publish no market value. Mirrors dim_holdings.sql's
+    # valuation_status vocabulary; 'valued'/'carried_forward' both carry a number.
+    _UNVALUED_STATUSES: frozenset[str] = frozenset({"unpriced", "withheld"})
     _VALID_TERMS: frozenset[str] = frozenset({"short", "long"})
 
     def _resolve_filters(
@@ -1596,10 +1607,13 @@ class InvestmentService:
         account_ref: str | None = None,
         security_ref: str | None = None,
     ) -> HoldingsResult:
-        """Current positions (cost basis only) from ``core.dim_holdings``.
+        """Current positions from ``core.dim_holdings``, valued where possible.
 
-        Always carries the Pillar-C market-value caveat: no price feed exists
-        yet, so quantity/cost-basis/average-cost is the full picture.
+        Each row carries cost basis and — when a close resolved — market value,
+        unrealized gain, the date of the close used, and how many days old it
+        is. A position whose value is ``unpriced`` or ``withheld`` reports NULL
+        rather than zero; the count of those rows is named in a warning, the
+        same shape ``lots()`` uses for ``basis_incomplete``.
         """
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
@@ -1616,27 +1630,42 @@ class InvestmentService:
         rows = self._db.execute(
             f"""
             SELECT account_id, security_id, quantity, cost_basis, average_cost,
-                   currency_code
+                   currency_code, market_value, unrealized_gain, price_date,
+                   price_source, days_since_observed, valuation_status
               FROM {DIM_HOLDINGS.full_name}
               {where_sql}
              ORDER BY account_id, security_id
             """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
-        return HoldingsResult(
-            rows=[
-                HoldingRow(
-                    account_id=str(r[0]),
-                    security_id=str(r[1]),
-                    quantity=r[2],
-                    cost_basis=r[3],
-                    average_cost=r[4],
-                    currency_code=str(r[5]),
-                )
-                for r in rows
-            ],
-            warnings=[self._HOLDINGS_WARNING],
+        holding_rows = [
+            HoldingRow(
+                account_id=str(r[0]),
+                security_id=str(r[1]),
+                quantity=r[2],
+                cost_basis=r[3],
+                average_cost=r[4],
+                currency_code=str(r[5]),
+                market_value=r[6],
+                unrealized_gain=r[7],
+                price_date=r[8],
+                price_source=None if r[9] is None else str(r[9]),
+                days_since_observed=None if r[10] is None else int(r[10]),
+                valuation_status=str(r[11]),
+            )
+            for r in rows
+        ]
+        warnings: list[str] = []
+        unvalued = sum(
+            1 for row in holding_rows if row.valuation_status in self._UNVALUED_STATUSES
         )
+        if unvalued:
+            warnings.append(
+                f"{unvalued} position(s) report no market value — see each row's "
+                "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
+                "(the share count is known wrong)."
+            )
+        return HoldingsResult(rows=holding_rows, warnings=warnings)
 
     def lots(
         self,

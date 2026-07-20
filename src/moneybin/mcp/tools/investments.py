@@ -123,14 +123,20 @@ def investments(
 def investments_holdings(
     account: str | None = None,
 ) -> ResponseEnvelope[InvestmentHoldingsPayload]:
-    """Current positions: quantity, cost basis, average cost per (account, security).
+    """Current positions with market value per (account, security).
 
     Args:
         account: Account ID or free-text reference (resolved to an id).
 
-    Market value and unrealized gain/loss require price feeds (Pillar C, not
-    yet shipped) — this always carries a warning that only cost basis is
-    available. Amounts are in the currency named by `summary.display_currency`.
+    Each row carries quantity, cost basis, average cost, and — when a close
+    resolved — `market_value`, `unrealized_gain` (signed: negative below
+    cost), the `price_date` of the close used, and `days_since_observed`.
+    `valuation_status` is one of `valued` (close is today's),
+    `carried_forward` (the most recent close is older), `unpriced` (no close
+    resolved), or `withheld` (the share count is known wrong). The last two
+    report `market_value`/`unrealized_gain` as null, never zero, and
+    `data.warnings` names how many rows those are. Amounts are in the
+    currency named by `summary.display_currency`.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).holdings(account_ref=account)

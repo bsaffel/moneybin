@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 from fastmcp import FastMCP
@@ -169,9 +170,24 @@ def _insert_gain(
         )
 
 
-def _replace_holdings_view(
-    rows: list[tuple[str, str, str, str, str | None, str]],
-) -> None:
+class _Holding(NamedTuple):
+    """One ``core.dim_holdings`` fixture row (valuation defaults to unpriced)."""
+
+    account_id: str
+    security_id: str
+    quantity: str = "10"
+    cost_basis: str = "1000.00"
+    average_cost: str | None = "100.00"
+    currency_code: str = "USD"
+    market_value: str | None = None
+    unrealized_gain: str | None = None
+    price_date: str | None = None
+    price_source: str | None = None
+    days_since_observed: str | None = None
+    valuation_status: str = "unpriced"
+
+
+def _replace_holdings_view(rows: list[_Holding]) -> None:
     """Override the empty core.dim_holdings stub with literal test rows.
 
     Mirrors ``test_investment_service.py``'s helper of the same name — values
@@ -179,13 +195,43 @@ def _replace_holdings_view(
     exception).
     """
     parts: list[str] = []
-    for acct, sec, qty, basis, avg, ccy in rows:
-        avg_sql = "NULL" if avg is None else f"{avg}::DECIMAL(28,10)"
+    for h in rows:
+        avg_sql = (
+            "CAST(NULL AS DECIMAL(28,10))"
+            if h.average_cost is None
+            else f"{h.average_cost}::DECIMAL(28,10)"
+        )
+        mv_sql = (
+            "CAST(NULL AS DECIMAL(18,2))"
+            if h.market_value is None
+            else f"{h.market_value}::DECIMAL(18,2)"
+        )
+        ug_sql = (
+            "CAST(NULL AS DECIMAL(18,2))"
+            if h.unrealized_gain is None
+            else f"{h.unrealized_gain}::DECIMAL(18,2)"
+        )
+        pd_sql = (
+            "CAST(NULL AS DATE)" if h.price_date is None else f"DATE '{h.price_date}'"
+        )
+        ps_sql = (
+            "CAST(NULL AS VARCHAR)" if h.price_source is None else f"'{h.price_source}'"
+        )
+        dso_sql = (
+            "CAST(NULL AS INT)"
+            if h.days_since_observed is None
+            else f"{h.days_since_observed}::INT"
+        )
         parts.append(
-            f"SELECT '{acct}' AS account_id, '{sec}' AS security_id, "
-            f"{qty}::DECIMAL(28,10) AS quantity, "
-            f"{basis}::DECIMAL(18,2) AS cost_basis, "
-            f"{avg_sql} AS average_cost, '{ccy}' AS currency_code"
+            f"SELECT '{h.account_id}' AS account_id, "
+            f"'{h.security_id}' AS security_id, "
+            f"{h.quantity}::DECIMAL(28,10) AS quantity, "
+            f"{h.cost_basis}::DECIMAL(18,2) AS cost_basis, "
+            f"{avg_sql} AS average_cost, '{h.currency_code}' AS currency_code, "
+            f"{mv_sql} AS market_value, {ug_sql} AS unrealized_gain, "
+            f"{pd_sql} AS price_date, {ps_sql} AS price_source, "
+            f"{dso_sql} AS days_since_observed, "
+            f"'{h.valuation_status}' AS valuation_status"
         )
     select_sql = " UNION ALL ".join(parts)
     with get_database(read_only=False) as db:
@@ -285,27 +331,61 @@ class TestInvestmentsHoldings:
     """Tests for the investments_holdings MCP tool."""
 
     @pytest.mark.unit
-    async def test_always_carries_pillar_c_warning_and_high_sensitivity(
+    async def test_empty_result_is_high_sensitivity_and_unwarned(
         self, mcp_db: Path
     ) -> None:
         _seed_investment_core()
         result = await investments_holdings()
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "high"
-        assert any("price feed" in w for w in parsed["data"]["warnings"])
+        assert parsed["data"]["warnings"] == []
 
     @pytest.mark.unit
-    async def test_returns_seeded_rows(self, mcp_db: Path) -> None:
+    async def test_returns_seeded_rows_with_valuation(self, mcp_db: Path) -> None:
         _seed_investment_core()
         sec = _add_security()
         _replace_holdings_view([
-            (_ACCOUNT, sec, "15", "2475.00", "165.00", "USD"),
+            _Holding(
+                _ACCOUNT,
+                sec,
+                quantity="15",
+                cost_basis="2475.00",
+                average_cost="165.00",
+                market_value="2700.00",
+                unrealized_gain="225.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
         ])
         result = await investments_holdings()
-        rows = result.to_dict()["data"]["rows"]
+        parsed = result.to_dict()
+        rows = parsed["data"]["rows"]
         assert len(rows) == 1
         assert rows[0]["quantity"] == 15.0
         assert rows[0]["cost_basis"] == 2475.0
+        # Pillar C: the agent sees the value, not a "no price feed" caveat.
+        assert rows[0]["market_value"] == 2700.0
+        assert rows[0]["unrealized_gain"] == 225.0
+        assert rows[0]["valuation_status"] == "valued"
+        assert parsed["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    async def test_withheld_row_reports_null_value_and_a_counted_warning(
+        self, mcp_db: Path
+    ) -> None:
+        """A withheld position must not surface as zero — null plus a count."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(_ACCOUNT, sec, valuation_status="withheld"),
+        ])
+        result = await investments_holdings()
+        parsed = result.to_dict()
+        assert parsed["data"]["rows"][0]["market_value"] is None
+        assert parsed["data"]["rows"][0]["unrealized_gain"] is None
+        assert "1" in parsed["data"]["warnings"][0]
 
 
 class TestInvestmentsLots:

@@ -660,7 +660,7 @@ Current positions: quantity, cost basis, average cost per (account, security).
 
 - **Sensitivity:** `high`.
 - **Unique parameters:** `account` (optional).
-- **Behavior:** Sum of open lots from `core.dim_holdings`. Market value and unrealized gain/loss require price feeds (Pillar C, not yet shipped) — response always carries a warning that only cost basis is available.
+- **Behavior:** Sum of open lots from `core.dim_holdings`, valued against the most recent close at or before today. Each row carries `market_value`, `unrealized_gain` (signed), `price_date`, `price_source`, `days_since_observed`, and `valuation_status` (`valued` | `carried_forward` | `unpriced` | `withheld`). The last two statuses report `market_value`/`unrealized_gain` as null, never zero; `data.warnings` names how many rows those are.
 - **Service:** `InvestmentService.holdings()`
 - **CLI:** `moneybin investments holdings`
 - **read_only:** true

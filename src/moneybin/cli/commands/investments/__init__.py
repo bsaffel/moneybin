@@ -224,10 +224,11 @@ def investments_holdings(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
-    """Current positions: quantity, cost basis, average cost.
+    """Current positions: quantity, cost basis, average cost, market value.
 
-    Market value / unrealized gain require price feeds (Pillar C) — v1 shows
-    cost basis only and says so via a warning.
+    Market value and unrealized gain come from the most recent close at or
+    before today. A position with no usable price, or one whose share count is
+    known wrong, shows ``-`` rather than a zero — its ``status`` says which.
     """
     with handle_cli_errors(
         cli_actor="investments_holdings", payload_type=InvestmentHoldingsPayload
@@ -245,10 +246,23 @@ def investments_holdings(
         )
         return
     for row in result.rows:
+        # "-" for an absent figure, matching avg_cost's existing NULL rendering:
+        # a blank column reads as zero, and NULL here means "no number", not
+        # "worth nothing". Signs come through as the Decimal carries them —
+        # unrealized_gain is negative below cost (same as `gains`' gain_loss).
         avg = row.average_cost if row.average_cost is not None else "-"
+        value = row.market_value if row.market_value is not None else "-"
+        gain = row.unrealized_gain if row.unrealized_gain is not None else "-"
+        as_of = (
+            f" as_of={row.price_date} ({row.days_since_observed}d)"
+            if row.price_date is not None
+            else ""
+        )
         typer.echo(
             f"{row.security_id:<10} qty={row.quantity} "
-            f"cost_basis={row.cost_basis} avg_cost={avg}"
+            f"cost_basis={row.cost_basis} avg_cost={avg} "
+            f"market_value={value} unrealized_gain={gain} "
+            f"status={row.valuation_status}{as_of}"
         )
     if not quiet:
         for w in result.warnings:
