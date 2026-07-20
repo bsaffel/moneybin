@@ -26,16 +26,14 @@ def _masking_assertions(db: Database) -> list[AssertionResult]:
     from moneybin.privacy.sql_lineage import reports_class_map
 
     results: list[AssertionResult] = []
-    raw_account_ids = [
-        row[0]
-        for row in db.execute(
-            "SELECT account_id FROM reports.cash_flow "
-            "WHERE account_id IS NOT NULL LIMIT 5"
-        ).fetchall()
-    ]
+    account_query = (
+        "SELECT DISTINCT account_id FROM reports.cash_flow "
+        "WHERE account_id IS NOT NULL ORDER BY account_id LIMIT 5"
+    )
+    raw_account_ids = [row[0] for row in db.execute(account_query).fetchall()]
     account_result = execute_sql_query(
         db,
-        "SELECT account_id FROM reports.cash_flow WHERE account_id IS NOT NULL LIMIT 5",
+        account_query,
         max_rows=5,
     )
     returned_account_ids = [
@@ -61,7 +59,13 @@ def _masking_assertions(db: Database) -> list[AssertionResult]:
             error=(
                 None
                 if account_id_ok
-                else "reports.cash_flow.account_id did not round-trip as RECORD_ID"
+                else (
+                    "reports.cash_flow.account_id did not round-trip as RECORD_ID: "
+                    f"raw_count={len(raw_account_ids)}, "
+                    f"returned_count={len(returned_account_ids)}, "
+                    f"values_equal={returned_account_ids == raw_account_ids}, "
+                    f"class={account_class}, tier={account_result.tier}"
+                )
             ),
         )
     )
