@@ -230,11 +230,11 @@ enumerate the *exposed* set.
   addressing reconciliation.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
-- ~~**Dynamic reports over floored columns**~~ — **resolved in B.** Report
-  creation is restricted to fully-classified schemas (`core`, `app`,
-  `reports`). `raw`/`prep` are not reachable through `sql_query` today, so the
-  question is not yet live; when M2O.2 opens them behind a content-net floor,
-  whether a *durable* artifact may be built over floored columns is decided
-  there. See [`reports-dynamic.md`](reports-dynamic.md) R2.
+- ~~**Dynamic reports over floored columns**~~ — **scoped out in B, decided in
+  M2O.2.** Report creation is restricted to fully-classified schemas (`core`,
+  `app`, `reports`). `raw`/`prep` are not reachable through `sql_query` today,
+  so the question is not yet live; when M2O.2 opens them behind a content-net
+  floor, whether a *durable* artifact may be built over floored columns is
+  decided there. See [`reports-dynamic.md`](reports-dynamic.md) R2.
 - **Milestone reconciliation.** This umbrella claims **M2P**; `extension-contracts.md`
   milestones contributor UX at M3I. Reconcile at `draft → ready`.

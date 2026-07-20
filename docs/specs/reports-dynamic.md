@@ -359,6 +359,23 @@ it fails closed. Reapplying by column name alone would let an approval collected
 against a weak class silently suppress a stronger one — the inverse of what the
 downgrade was reviewed for.
 
+**Re-resolution covers the stored parameter classes, not just the output
+columns.** A dynamic report's parameter classes are derived at save (R2 step 5)
+from the columns its filters compare against, so they go stale by exactly the
+mechanism this section exists to catch — and one level deeper than the rows do.
+If `dim_accounts.external_ref` is reclassified upward, the *result columns*
+correctly fail closed on the next run, while `reports_explain` would keep
+rendering `WHERE external_ref = $ref` with the value inline under the class
+stored months earlier. The rows would be masked and the filter that selected
+them printed in the clear. So the Mismatch branch re-derives parameter classes
+in the same pass, compares them the same way, and a parameter whose class
+changed reverts to its placeholder and marks the response degraded.
+
+This is the same fingerprint and the same pass — parameters are classified from
+the columns the fingerprint already covers, so a class that can move moves the
+fingerprint with it. Leaving them out would reopen, for the provenance surface,
+precisely the stale-authority hole R4 closes for the data surface.
+
 The fingerprint is a cache key, not authority: re-resolution is what decides the
 run, so a stale fingerprint costs work, never correctness. That matters because
 the read path has no writable connection — both generated adapters call
@@ -550,8 +567,8 @@ unbound `$month` would fail:
 not execution, so it never passes through `run_report`'s `classify_columns` /
 `redact_records` — a report filtered by account or routing number would return
 that value verbatim from `reports_explain` while the same value is masked in
-every row of the result it explains. `ParamSpec` therefore carries a
-`DataClass`; the renderer emits a literal only for LOW-classed parameters and
+every row of the result it explains. Every bound parameter therefore carries a
+`DataClass`; the renderer emits a literal only for LOW-classed bindings and
 leaves the rest as `$name`.
 
 Masking the value instead (`'****1234'`) would be worse on both counts: it is
@@ -572,13 +589,33 @@ same question asked of an input, so it fails closed the same way. Defaulting to
 the weakest class in the enum would build the placeholder-retention mechanism
 above and then hand every author a way to switch it off by omission.
 
-- **Built-in and extension runners** are introspected from the signature, so the
-  class rides the annotation `redact_typed` already reads —
-  `Annotated[str, DataClass.ACCOUNT_IDENTIFIER]` — rather than a second
-  convention beside it. There is no default: a completeness test requires every
-  `ParamSpec` to carry a class, the same shape as the `CLASSIFICATION`
-  completeness test that already requires one for every `core`/`app` column. CI
-  is the right place to catch a missing annotation on code we ship.
+**The class attaches to the binding, not to the signature.** A runner's
+signature describes what the *user* passes; the bound value can be something
+else entirely. `balance_drift` binds
+`AccountService(db).resolve_strict(account)` — the parameter is declared
+`account: str` (free text a user typed), and the value that reaches the query is
+a resolved `account_id`, CRITICAL. An annotation on the signature classifies the
+input and would render the transformed value under it.
+
+Positional inference fails for the same reason one step earlier. R8 keeps
+`ReportQuery.params` a positional `Sequence[object]`, and `balance_drift`
+appends conditionally (`if account:`, `if status != "all":`), so binding *N* is
+not a fixed offset into the signature — the correspondence between the two lists
+is data-dependent. Recovering a class by counting positions is the same failure
+this spec keeps finding elsewhere: two structures whose alignment is assumed
+rather than carried, silently desyncing when one of them changes.
+
+So a binding carries its own class:
+
+- **Built-in and extension runners** classify at the append site, which is the
+  only place that knows what the value became. A bare value binds as
+  `UNRESOLVED` — existing runners keep working and fail closed rather than
+  breaking — and a completeness test requires every binding site to declare one,
+  the same shape as the `CLASSIFICATION` test that already requires a class for
+  every `core`/`app` column. The fail-closed default keeps the migration safe;
+  the test is what finishes it. Named binding stays optional (R8): with the class
+  on the binding, nothing downstream needs to map a value back to a parameter
+  name.
 - **Dynamic reports derive it**, because R2's premise is that classification is
   never something the user does — asking a report author to declare a parameter
   class would contradict the invariant this spec exists to establish. The save
@@ -588,6 +625,10 @@ above and then hand every author a way to switch it off by omission.
   cannot be resolved to exactly one classified column — a bare `LIMIT $n`, a
   comparison against an expression, a placeholder used in two places with
   different classes — resolves to `UNRESOLVED` and keeps its placeholder.
+
+One mechanism serves all three tiers, which is the parity R5 asks for:
+`reports_explain` reads the class off the binding it is about to render and
+never reconstructs it from anything else.
 
 `UNRESOLVED` is derived, never stored: `taxonomy.py` notes that *declaring* a
 column unresolved defeats the completeness tests that exist to find gaps, and
