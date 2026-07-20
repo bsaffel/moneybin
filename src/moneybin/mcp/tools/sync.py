@@ -134,6 +134,7 @@ def sync_pull(
             investment_transactions_loaded=result.investment_transactions_loaded,
             holdings_loaded=result.holdings_loaded,
             holding_lots_loaded=result.holding_lots_loaded,
+            security_prices_loaded=result.security_prices_loaded,
             opening_bootstrap_rows=result.opening_bootstrap_rows,
             investment_source_overlap_accounts=list(
                 result.investment_source_overlap_accounts

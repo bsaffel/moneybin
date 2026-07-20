@@ -72,6 +72,9 @@ class SyncPullPayload:
     investment_transactions_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     holdings_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     holding_lots_loaded: Annotated[int, DataClass.AGGREGATE] = 0
+    # Closes newly appended to raw.security_prices — 0 on a pull that re-reports
+    # observations already stored, which is the steady state between close dates.
+    security_prices_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     opening_bootstrap_rows: Annotated[int, DataClass.AGGREGATE] = 0
     # Canonical account ids carrying BOTH manual and Plaid investment history —
     # lots and gains double-count until one source is chosen per account.

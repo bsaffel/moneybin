@@ -826,6 +826,90 @@ class TestPullAutoRefreshes:
         assert calls == 1
         assert result.transforms_applied is True
 
+    def test_pull_refreshes_when_only_price_observations_landed(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        sync_data: SyncDataResponse,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A price-only write is a durable raw write and must gate the refresh.
+
+        raw.security_prices is append-only, and its rows only reach
+        core.fct_security_prices — and from there dim_holdings' market_value —
+        through the post-pull SQLMesh refresh. Today closes ride along with a
+        securities upsert, so the securities term happens to cover them; a
+        price source that does not ride along would write rows that never
+        propagate. The gate counts every durable raw write, so this term is
+        not optional.
+        """
+        from moneybin.extractors.plaid.extractor import LoadResult
+        from moneybin.services import sync_service as mod
+        from moneybin.services.refresh import RefreshResult
+
+        calls = 0
+
+        def fake_refresh(_db: object) -> RefreshResult:
+            nonlocal calls
+            calls += 1
+            return RefreshResult(applied=True, duration_seconds=0.0)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+
+        # A price-only LoadResult is not reachable through today's loader (see
+        # the docstring), so the collaborator is stubbed to produce the shape
+        # the gate must survive.
+        def fake_load(*_args: object, **_kwargs: object) -> LoadResult:
+            return LoadResult(
+                accounts_loaded=0,
+                transactions_loaded=0,
+                balances_loaded=0,
+                security_prices_loaded=3,
+            )
+
+        monkeypatch.setattr(loader, "load", fake_load)
+
+        price_only = sync_data.model_copy(
+            update={
+                "accounts": [],
+                "transactions": [],
+                "balances": [],
+                "removed_transactions": [],
+            }
+        )
+        client = MagicMock()
+        client.trigger_sync.return_value = SyncTriggerResponse(
+            job_id="job_prices", status="completed", transaction_count=0
+        )
+        client.get_data.return_value = price_only
+
+        service = SyncService(client=client, db=db, loader=loader)
+        result = service.pull()
+
+        assert calls == 1, "a price-only pull must still refresh"
+        assert result.transforms_applied is True
+        assert result.security_prices_loaded == 3, (
+            "the count must reach the pull receipt, or the user cannot tell "
+            "from the sync output whether the price feed captured anything"
+        )
+
+    def test_pull_reports_price_observations_on_the_receipt(
+        self,
+        db: Database,
+        loader: PlaidExtractor,
+        mock_client: MagicMock,
+    ) -> None:
+        """security_prices_loaded rides the ordinary pull receipt beside its siblings."""
+        service = SyncService(client=mock_client, db=db, loader=loader)
+        result = service.pull(refresh=False)
+
+        assert result.security_prices_loaded == 0, (
+            "the base fixture carries no priced securities"
+        )
+        assert "security_prices_loaded" in result.model_dump(), (
+            "the field must be part of the serialized envelope agents read"
+        )
+
     def test_pull_refreshes_when_only_security_resolution_wrote(
         self,
         db: Database,

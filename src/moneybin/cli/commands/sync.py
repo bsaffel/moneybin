@@ -370,12 +370,17 @@ def sync_pull(
             result.securities_loaded
             + result.investment_transactions_loaded
             + result.holdings_loaded
+            + result.security_prices_loaded
         )
         if investments_total:
+            # Prices are reported even at 0: raw.security_prices is append-only,
+            # so a pull that re-reports closes it already stored writes nothing,
+            # and "0 new closes" is the signal that the feed has not advanced.
             typer.echo(
                 f"   Investments: {result.securities_loaded} securities, "
                 f"{result.investment_transactions_loaded} transactions, "
-                f"{result.holdings_loaded} holdings."
+                f"{result.holdings_loaded} holdings, "
+                f"{result.security_prices_loaded} new closes."
             )
         if result.opening_bootstrap_rows:
             # opening_bootstrap_rows is a cumulative, standing count (every
