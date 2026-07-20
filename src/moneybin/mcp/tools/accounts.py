@@ -798,6 +798,7 @@ def _coarse_envelope[T](
     period: str | None = None,
     display_currency: str = "USD",
     actions: list[str] | None = None,
+    has_more: bool | None = None,
 ) -> ResponseEnvelope[T]:
     """Build and redact a dynamically classified account-read envelope."""
     classes = extract_data_classes(contract_type)
@@ -819,7 +820,10 @@ def _coarse_envelope[T](
     )
     return replace(
         envelope,
-        summary=replace(envelope.summary, has_more=next_cursor is not None),
+        summary=replace(
+            envelope.summary,
+            has_more=next_cursor is not None if has_more is None else has_more,
+        ),
     )
 
 
@@ -978,26 +982,18 @@ async def _resolve_account_reference(
 def _account_actions(
     actions: list[str],
     *,
-    view: Literal["list", "resolve"],
     limit: int,
     next_cursor: str | None,
     include_closed: bool = False,
-    query: str | None = None,
 ) -> list[str]:
-    """Preserve legacy hints and add a continuation on the replacement surface."""
+    """Preserve legacy hints and add an account-list continuation."""
     selected = list(actions)
     if next_cursor is not None:
-        if view == "list":
-            selected.append(
-                f"Continue with accounts(view='list', "
-                f"include_closed={include_closed!r}, limit={limit}, "
-                f"cursor='{next_cursor}')"
-            )
-        else:
-            selected.append(
-                f"Continue with accounts(view='resolve', query={query!r}, "
-                f"limit={limit}, cursor='{next_cursor}')"
-            )
+        selected.append(
+            f"Continue with accounts(view='list', "
+            f"include_closed={include_closed!r}, limit={limit}, "
+            f"cursor='{next_cursor}')"
+        )
     return list(dict.fromkeys(selected))
 
 
@@ -1045,7 +1041,7 @@ async def accounts_coarse(
                 code="ACCOUNT_REFERENCE_NOT_ALLOWED",
             )
 
-    if view in ("detail", "summary") and cursor is not None:
+    if view in ("detail", "summary", "resolve") and cursor is not None:
         raise UserError(
             "This account view does not accept a pagination cursor.",
             code="ACCOUNT_CURSOR_NOT_ALLOWED",
@@ -1095,7 +1091,6 @@ async def accounts_coarse(
             display_currency=response.summary.display_currency,
             actions=_account_actions(
                 response.actions,
-                view="list",
                 limit=limit,
                 next_cursor=next_cursor,
                 include_closed=bool(include_closed),
@@ -1130,45 +1125,28 @@ async def accounts_coarse(
             actions=response.actions,
         )
 
-    canonical_query = cast(str, query).lower().strip()
-    filters = {"query": canonical_query}
-    position = _coarse_position(
-        cursor,
-        tool="accounts",
-        view="resolve",
-        filters=filters,
-        key_size=1,
-    )
     response = await _run_account_read(
         _resolve_accounts,
         query=cast(str, query),
         limit=None,
     )
-    page, next_cursor, total_count = _keyset_page(
-        response.data.matches,
-        tool="accounts",
-        view="resolve",
-        limit=limit,
-        position=position,
-        filters=filters,
-        key=lambda row: (row.account_id,),
-        directions=("asc",),
-    )
+    total_count = len(response.data.matches)
+    page = response.data.matches[:limit]
+    has_more = total_count > len(page)
+    actions = list(response.actions)
+    if has_more:
+        actions.append(
+            "Refine the account query or increase limit to inspect more candidates."
+        )
     payload = AccountsResolveView(matches=page)
     return _coarse_envelope(
         payload,
         contract_type=AccountsResolveView,
         total_count=total_count,
         returned_count=len(page),
-        next_cursor=next_cursor,
+        has_more=has_more,
         display_currency=response.summary.display_currency,
-        actions=_account_actions(
-            response.actions,
-            view="resolve",
-            limit=limit,
-            next_cursor=next_cursor,
-            query=cast(str, query),
-        ),
+        actions=actions,
     )
 
 

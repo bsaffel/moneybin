@@ -4,9 +4,9 @@
   "model": "deterministic",
   "run_date": "2026-07-19",
   "evidence_kind": "contract_fixture",
-  "registry_sha256": "4c0ec7d2f7255b10cd692a4ae9e38d2081532cd867e8fa9a8bbec7324e64de19",
-  "metadata_bytes": 46454,
-  "metadata_tokens": 11614,
+  "registry_sha256": "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
+  "metadata_bytes": 47111,
+  "metadata_tokens": 11778,
   "metadata_token_method": "deterministic_estimate:ceil(canonical_registry_utf8_bytes/4)",
   "context_window_tokens": null,
   "responses": [

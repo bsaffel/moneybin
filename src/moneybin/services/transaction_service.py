@@ -24,7 +24,9 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.mcp.write_contracts import (
     AnnotationRequest,
-    NoteSet,
+    NoteAdd,
+    NoteDelete,
+    NoteEdit,
     SplitsSet,
     TagRename,
     TagsSet,
@@ -44,6 +46,7 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
+    TRANSACTION_NOTES,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,7 +183,14 @@ class TagRenameResult:
 class AnnotationOutcome:
     """One annotation request's material outcome."""
 
-    kind: Literal["note_set", "tags_set", "splits_set", "tag_rename"]
+    kind: Literal[
+        "note_add",
+        "note_edit",
+        "note_delete",
+        "tags_set",
+        "splits_set",
+        "tag_rename",
+    ]
     target_ids: tuple[str, ...]
     changed: bool
 
@@ -300,7 +310,7 @@ class AnnotationPlan:
 
     @property
     def changed_count(self) -> int:
-        """Return the number of material target-state changes."""
+        """Return the number of material annotation changes."""
         return sum(item.changed for item in self.items)
 
     @property
@@ -374,7 +384,7 @@ class TransactionService:
         operation_id: str,
         verify: Callable[[AnnotationPlan], None] | None = None,
     ) -> AnnotationBatchResult:
-        """Apply complete annotation target states atomically after full preflight."""
+        """Apply one atomic annotation batch after full preflight."""
         with operation(operation_id):
             self._db.begin()
             try:
@@ -395,7 +405,7 @@ class TransactionService:
         self,
         requests: Sequence[AnnotationRequest],
     ) -> AnnotationPlan:
-        """Resolve an exact batch diff without mutating state."""
+        """Resolve an exact annotation plan without mutating state."""
         prepared = tuple(self._prepare_annotation(request) for request in requests)
         self._reject_composed_annotations(prepared)
         plan = AnnotationPlan(items=prepared)
@@ -408,19 +418,29 @@ class TransactionService:
 
     def _prepare_annotation(self, request: AnnotationRequest) -> _PreparedAnnotation:
         """Resolve every batch target before writes begin."""
-        if isinstance(request, NoteSet):
-            if request.note is not None:
-                validate_note_text(request.note)
-            desired = [] if request.note is None else [request.note]
-            current = self.list_notes(request.transaction_id)
-            if request.note is not None or not current:
-                self._annotation_transaction_amount(request.transaction_id)
+        if isinstance(request, NoteAdd):
+            validate_note_text(request.text)
+            self._annotation_transaction_amount(request.transaction_id)
             return _PreparedAnnotation(
                 request=request,
                 target_ids=(request.transaction_id,),
-                changed=[note.text for note in current] != desired,
-                destructive=bool(current),
-                state_digest=_state_digest([note.text for note in current]),
+                changed=True,
+                state_digest=_state_digest({"transaction_id": request.transaction_id}),
+            )
+
+        if isinstance(request, (NoteEdit, NoteDelete)):
+            if isinstance(request, NoteEdit):
+                validate_note_text(request.text)
+            current = self._annotation_note(request.note_id)
+            changed = (
+                current.text != request.text if isinstance(request, NoteEdit) else True
+            )
+            return _PreparedAnnotation(
+                request=request,
+                target_ids=(request.note_id,),
+                changed=changed,
+                destructive=isinstance(request, NoteDelete),
+                state_digest=_state_digest(current),
             )
 
         if isinstance(request, TagsSet):
@@ -485,14 +505,19 @@ class TransactionService:
             mutation = item.mutation
             if isinstance(request, TagRename):
                 key = (request.kind, f"{request.old_name}:{request.new_name}")
+            elif isinstance(request, NoteAdd):
+                key = None
+            elif isinstance(request, (NoteEdit, NoteDelete)):
+                key = ("note", request.note_id)
             else:
                 key = (request.kind, request.transaction_id)
-            if key in seen:
+            if key is not None and key in seen:
                 raise UserError(
                     "Annotation requests overlap the same target state.",
                     code=error_codes.MUTATION_INVALID_INPUT,
                 )
-            seen.add(key)
+            if key is not None:
+                seen.add(key)
 
             if isinstance(mutation, _PreparedTagRename):
                 targets = set(mutation.target_ids)
@@ -542,35 +567,70 @@ class TransactionService:
         amount = row[0]
         return amount if isinstance(amount, Decimal) else Decimal(str(amount))
 
+    def _annotation_note(self, note_id: str) -> Note:
+        """Resolve one note for a coarse lifecycle mutation."""
+        row = self._db.conn.execute(
+            f"""
+            SELECT note_id, transaction_id, text, author, created_at
+              FROM {TRANSACTION_NOTES.full_name}
+             WHERE note_id = ?
+            """,  # noqa: S608  # TableRef constant
+            [note_id],
+        ).fetchone()
+        if row is None:
+            raise UserError(
+                "The note reference did not match a note.",
+                code="NOTE_REFERENCE_NOT_FOUND",
+            )
+        return _row_to_note(row)
+
     def _apply_prepared_annotation(
         self,
         prepared: _PreparedAnnotation,
         *,
         actor: str,
     ) -> AnnotationOutcome:
-        """Apply one preflighted target state inside the caller's transaction."""
+        """Apply one preflighted annotation inside the caller's transaction."""
         request = prepared.request
-        if isinstance(request, NoteSet):
+        if isinstance(request, NoteAdd):
+            note_id = uuid.uuid4().hex[:12]
+            self._notes_repo.add(
+                transaction_id=request.transaction_id,
+                note_id=note_id,
+                text=request.text,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=(note_id,),
+                changed=True,
+            )
+
+        if isinstance(request, NoteEdit):
             if prepared.changed:
-                notes = self.list_notes(request.transaction_id)
-                for note in notes:
-                    self._notes_repo.delete(
-                        note_id=note.note_id,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
-                if request.note is not None:
-                    self._notes_repo.add(
-                        transaction_id=request.transaction_id,
-                        note_id=uuid.uuid4().hex[:12],
-                        text=request.note,
-                        actor=actor,
-                        in_outer_txn=True,
-                    )
+                self._notes_repo.edit(
+                    note_id=request.note_id,
+                    text=request.text,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
             return AnnotationOutcome(
                 kind=request.kind,
                 target_ids=prepared.target_ids,
                 changed=prepared.changed,
+            )
+
+        if isinstance(request, NoteDelete):
+            self._notes_repo.delete(
+                note_id=request.note_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            return AnnotationOutcome(
+                kind=request.kind,
+                target_ids=prepared.target_ids,
+                changed=True,
             )
 
         if isinstance(request, TagsSet):

@@ -562,12 +562,12 @@ def _apply_annotations(
         )
 
 
-@mcp_tool(read_only=False, destructive=True, idempotent=True)
+@mcp_tool(read_only=False, destructive=True, idempotent=False)
 async def transactions_annotate_coarse(
     requests: list[AnnotationRequest],
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[TransactionAnnotationBatchPayload]:
-    """Atomically declare complete note, tag, split, and tag-rename states."""
+    """Atomically mutate notes or declare complete tag and split states."""
     operation_id = current_operation_id()
     grant: ConfirmationGrant | None = None
     expected_binding: ConfirmationBinding | None = None
@@ -623,10 +623,12 @@ def register_transaction_coarse_writes(mcp: FastMCP) -> None:
         mcp,
         transactions_annotate_coarse,
         "transactions_annotate",
-        "Atomically declare complete note, tag, and split states or rename one tag "
-        "globally. Every request is preflighted before any write; failure leaves "
-        "the whole batch unchanged. Results retain request order and share one "
-        "operation_id for audit inspection or system_audit_undo recovery.",
+        "Atomically add, edit, or delete stable-ID notes; declare complete tag "
+        "and split states; or rename one tag globally. Every request is "
+        "preflighted before any write; failure leaves the whole batch unchanged. "
+        "Deleting notes or existing target state requires confirmation. Results "
+        "retain request order and share one operation_id for audit inspection or "
+        "system_audit_undo recovery.",
         privacy_actor="transactions_annotate",
     )
 

@@ -267,15 +267,26 @@ def test_annotation_schema_requires_variant_fields() -> None:
     schema = TypeAdapter(AnnotationRequest).json_schema()
     assert schema["discriminator"]["propertyName"] == "kind"
     assert set(schema["discriminator"]["mapping"]) == {
-        "note_set",
+        "note_add",
+        "note_edit",
+        "note_delete",
         "tags_set",
         "splits_set",
         "tag_rename",
     }
-    assert set(_variant_schema(schema, "note_set")["required"]) == {
+    assert set(_variant_schema(schema, "note_add")["required"]) == {
         "kind",
         "transaction_id",
-        "note",
+        "text",
+    }
+    assert set(_variant_schema(schema, "note_edit")["required"]) == {
+        "kind",
+        "note_id",
+        "text",
+    }
+    assert set(_variant_schema(schema, "note_delete")["required"]) == {
+        "kind",
+        "note_id",
     }
     assert set(_variant_schema(schema, "tags_set")["required"]) == {
         "kind",
@@ -339,17 +350,17 @@ def test_annotation_requests_reject_stringified_or_empty_values(
         (
             AnnotationRequest,
             {
-                "kind": "note_set",
+                "kind": "note_add",
                 "transaction_id": "x" * (IDENTIFIER_MAX_LEN + 1),
-                "note": None,
+                "text": "note",
             },
         ),
         (
             AnnotationRequest,
             {
-                "kind": "note_set",
+                "kind": "note_add",
                 "transaction_id": "tx_1",
-                "note": "x" * (NOTE_MAX_LEN + 1),
+                "text": "x" * (NOTE_MAX_LEN + 1),
             },
         ),
         (
@@ -417,7 +428,7 @@ def test_write_contracts_bound_user_supplied_strings(
 @pytest.mark.parametrize(
     "payload",
     [
-        {"kind": "note_set", "transaction_id": " ", "note": None},
+        {"kind": "note_add", "transaction_id": " ", "text": "note"},
         {"kind": "tags_set", "transaction_id": "tx_1", "tags": [" "]},
         {
             "kind": "splits_set",
@@ -437,9 +448,9 @@ def test_annotation_requests_reject_whitespace_only_identifiers_and_names(
 def test_annotation_models_forbid_extra_fields() -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         TypeAdapter(AnnotationRequest).validate_python({
-            "kind": "note_set",
+            "kind": "note_add",
             "transaction_id": "tx_1",
-            "note": None,
+            "text": "note",
             "unexpected": True,
         })
 
@@ -634,14 +645,16 @@ async def test_transaction_annotation_coarse_schema_and_annotations() -> None:
     assert tool.annotations is not None
     assert tool.annotations.readOnlyHint is False
     assert tool.annotations.destructiveHint is True
-    assert tool.annotations.idempotentHint is True
+    assert tool.annotations.idempotentHint is False
     assert "confirmation_token" in tool.inputSchema["properties"]
     variants = {
         branch["properties"]["kind"]["const"]: set(branch["required"])
         for branch in tool.inputSchema["properties"]["requests"]["items"]["oneOf"]
     }
     assert variants == {
-        "note_set": {"kind", "transaction_id", "note"},
+        "note_add": {"kind", "transaction_id", "text"},
+        "note_edit": {"kind", "note_id", "text"},
+        "note_delete": {"kind", "note_id"},
         "tags_set": {"kind", "transaction_id", "tags"},
         "splits_set": {"kind", "transaction_id", "splits"},
         "tag_rename": {"kind", "old_name", "new_name"},
@@ -799,7 +812,9 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
         annotations.inputSchema,
         collection="requests",
     ) == {
-        "note_set": {"kind", "transaction_id", "note"},
+        "note_add": {"kind", "transaction_id", "text"},
+        "note_edit": {"kind", "note_id", "text"},
+        "note_delete": {"kind", "note_id"},
         "tags_set": {"kind", "transaction_id", "tags"},
         "splits_set": {"kind", "transaction_id", "splits"},
         "tag_rename": {"kind", "old_name", "new_name"},

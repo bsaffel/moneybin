@@ -71,7 +71,7 @@ class TransactionGetPayload:
 
 @dataclass(frozen=True, slots=True)
 class TransactionAnnotationOutcome:
-    """One requested annotation target state, retained in request order."""
+    """One requested annotation mutation, retained in request order."""
 
     kind: Annotated[str, DataClass.TXN_TYPE]
     target_ids: Annotated[list[str], DataClass.RECORD_ID]

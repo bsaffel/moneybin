@@ -10,7 +10,10 @@ import pytest
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.mcp.write_contracts import (
-    NoteSet,
+    AnnotationRequest,
+    NoteAdd,
+    NoteDelete,
+    NoteEdit,
     SplitsSet,
     SplitTarget,
     TagRename,
@@ -107,7 +110,7 @@ class TestAnnotationBatches:
         with pytest.raises(UserError, match="transaction reference"):
             service.apply_annotations(
                 [
-                    NoteSet(kind="note_set", transaction_id="T1", note="trip"),
+                    NoteAdd(kind="note_add", transaction_id="T1", text="trip"),
                     TagsSet(kind="tags_set", transaction_id="UNKNOWN", tags=["x"]),
                 ],
                 actor="mcp",
@@ -160,7 +163,7 @@ class TestAnnotationBatches:
 
         result = service.apply_annotations(
             [
-                NoteSet(kind="note_set", transaction_id="MISSING", note=None),
+                NoteDelete(kind="note_delete", note_id="orphan_note"),
                 TagsSet(kind="tags_set", transaction_id="MISSING", tags=[]),
             ],
             actor="mcp",
@@ -175,14 +178,14 @@ class TestAnnotationBatches:
     @pytest.mark.parametrize(
         "annotation_request",
         [
-            NoteSet(kind="note_set", transaction_id="MISSING", note="new"),
+            NoteAdd(kind="note_add", transaction_id="MISSING", text="new"),
             TagsSet(kind="tags_set", transaction_id="MISSING", tags=["new"]),
         ],
     )
     def test_apply_annotations_rejects_creating_orphan_state(
         self,
         transaction_db: Database,
-        annotation_request: NoteSet | TagsSet,
+        annotation_request: AnnotationRequest,
     ) -> None:
         with pytest.raises(UserError) as exc:
             TransactionService(transaction_db).apply_annotations(
@@ -194,26 +197,118 @@ class TestAnnotationBatches:
         assert exc.value.code == "TRANSACTION_REFERENCE_NOT_FOUND"
 
     @pytest.mark.unit
-    @pytest.mark.parametrize(
-        "annotation_request",
-        [
-            NoteSet(kind="note_set", transaction_id="MISSING", note=None),
-            TagsSet(kind="tags_set", transaction_id="MISSING", tags=[]),
-        ],
-    )
-    def test_apply_annotations_rejects_empty_unknown_orphan_cleanup(
-        self,
-        transaction_db: Database,
-        annotation_request: NoteSet | TagsSet,
+    def test_apply_annotations_rejects_unknown_note_delete(
+        self, transaction_db: Database
     ) -> None:
         with pytest.raises(UserError) as exc:
             TransactionService(transaction_db).apply_annotations(
-                [annotation_request],
+                [NoteDelete(kind="note_delete", note_id="MISSING")],
                 actor="mcp",
                 operation_id="op_orphan_missing",
             )
 
-        assert exc.value.code == "TRANSACTION_REFERENCE_NOT_FOUND"
+        assert exc.value.code == "NOTE_REFERENCE_NOT_FOUND"
+
+    @pytest.mark.unit
+    def test_note_add_preserves_thread_and_returns_created_note_id(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        first = service.add_note("T1", "first", actor="test")
+        second = service.add_note("T1", "second", actor="test")
+
+        result = service.apply_annotations(
+            [NoteAdd(kind="note_add", transaction_id="T1", text="third")],
+            actor="mcp",
+            operation_id="op_note_add",
+        )
+
+        notes = service.list_notes("T1")
+        assert [note.text for note in notes] == ["first", "second", "third"]
+        assert [note.note_id for note in notes[:2]] == [first.note_id, second.note_id]
+        assert result.outcomes[0].target_ids == (notes[2].note_id,)
+
+    @pytest.mark.unit
+    def test_note_edit_preserves_sibling_and_note_identity(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        first = service.add_note("T1", "first", actor="test")
+        sibling = service.add_note("T1", "sibling", actor="test")
+
+        result = service.apply_annotations(
+            [NoteEdit(kind="note_edit", note_id=first.note_id, text="edited")],
+            actor="mcp",
+            operation_id="op_note_edit",
+        )
+
+        notes = service.list_notes("T1")
+        assert [(note.note_id, note.text) for note in notes] == [
+            (first.note_id, "edited"),
+            (sibling.note_id, "sibling"),
+        ]
+        assert result.outcomes[0].target_ids == (first.note_id,)
+
+    @pytest.mark.unit
+    def test_note_delete_removes_only_addressed_note(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        deleted = service.add_note("T1", "delete me", actor="test")
+        sibling = service.add_note("T1", "keep me", actor="test")
+
+        service.apply_annotations(
+            [NoteDelete(kind="note_delete", note_id=deleted.note_id)],
+            actor="mcp",
+            operation_id="op_note_delete",
+        )
+
+        assert [(note.note_id, note.text) for note in service.list_notes("T1")] == [
+            (sibling.note_id, "keep me")
+        ]
+
+    @pytest.mark.unit
+    def test_multiple_note_adds_to_one_transaction_are_composable(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                NoteAdd(kind="note_add", transaction_id="T1", text="first"),
+                NoteAdd(kind="note_add", transaction_id="T1", text="second"),
+            ],
+            actor="mcp",
+            operation_id="op_note_adds",
+        )
+
+        notes_by_id = {note.note_id: note.text for note in service.list_notes("T1")}
+        outcome_ids = [outcome.target_ids[0] for outcome in result.outcomes]
+        assert [notes_by_id[note_id] for note_id in outcome_ids] == [
+            "first",
+            "second",
+        ]
+        assert len(set(outcome_ids)) == 2
+
+    @pytest.mark.unit
+    def test_overlapping_note_mutations_are_rejected_before_write(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        note = service.add_note("T1", "original", actor="test")
+
+        with pytest.raises(UserError) as exc:
+            service.apply_annotations(
+                [
+                    NoteEdit(kind="note_edit", note_id=note.note_id, text="edited"),
+                    NoteDelete(kind="note_delete", note_id=note.note_id),
+                ],
+                actor="mcp",
+                operation_id="op_note_overlap",
+            )
+
+        assert exc.value.code == "mutation_invalid_input"
+        assert service.list_notes("T1")[0].text == "original"
 
     @pytest.mark.unit
     def test_apply_annotations_rejects_empty_and_all_noop_batches(
@@ -397,7 +492,7 @@ class TestAnnotationBatches:
         with pytest.raises(KeyboardInterrupt):
             service.apply_annotations(
                 [
-                    NoteSet(kind="note_set", transaction_id="T1", note="trip"),
+                    NoteAdd(kind="note_add", transaction_id="T1", text="trip"),
                     TagsSet(kind="tags_set", transaction_id="T2", tags=["travel"]),
                 ],
                 actor="mcp",

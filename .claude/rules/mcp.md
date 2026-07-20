@@ -119,6 +119,12 @@ with a higher limit. Bounded summary, detail, catalog, and status views also do
 not acquire cursors merely because they accept a limit elsewhere in the same
 coarse tool.
 
+Ranked entity resolution is likewise a bounded search, not a resumable
+collection. Relevance or confidence depends on mutable names and metadata, so
+it cannot be a stateless keyset key without skip/duplicate behavior. Return the
+best `limit` candidates in rank order, report truncation without a cursor, and
+tell callers to refine the query or rerun with a larger limit.
+
 ## Sensitivity Tiers
 
 | Tier | Data | Consent |

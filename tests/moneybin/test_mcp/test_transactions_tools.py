@@ -18,7 +18,9 @@ from moneybin.mcp.tools.transactions import (
     transactions_review,
 )
 from moneybin.mcp.write_contracts import (
-    NoteSet,
+    NoteAdd,
+    NoteDelete,
+    NoteEdit,
     SplitsSet,
     SplitTarget,
     TagRename,
@@ -65,7 +67,7 @@ async def test_annotation_batch_applies_all_variants(mcp_db: object) -> None:
     _seed_annotation_transactions()
 
     requests = [
-        NoteSet(kind="note_set", transaction_id="TX_1", note="trip"),
+        NoteAdd(kind="note_add", transaction_id="TX_1", text="trip"),
         TagsSet(kind="tags_set", transaction_id="TX_1", tags=["travel"]),
         SplitsSet(
             kind="splits_set",
@@ -90,7 +92,7 @@ async def test_annotation_batch_applies_all_variants(mcp_db: object) -> None:
     assert response.data.applied_count == 4
     assert response.data.operation_id
     assert [outcome.kind for outcome in response.data.outcomes] == [
-        "note_set",
+        "note_add",
         "tags_set",
         "splits_set",
         "tag_rename",
@@ -100,10 +102,12 @@ async def test_annotation_batch_applies_all_variants(mcp_db: object) -> None:
         outcome.operation_id == response.data.operation_id
         for outcome in response.data.outcomes
     )
+    created_note_id = response.data.outcomes[0].target_ids[0]
 
     with get_database(read_only=True) as db:
         service = TransactionService(db)
         assert [note.text for note in service.list_notes("TX_1")] == ["trip"]
+        assert service.list_notes("TX_1")[0].note_id == created_note_id
         assert service.list_tags("TX_1") == ["travel"]
         assert [split.amount for split in service.list_splits("TX_2")] == [
             Decimal("-20"),
@@ -135,6 +139,48 @@ async def test_annotation_batch_non_destructive_change_needs_no_confirmation(
 
     assert response.error is None
     assert response.data.applied_count == 1
+
+
+@pytest.mark.unit
+async def test_note_add_and_edit_need_no_confirmation(mcp_db: object) -> None:
+    _seed_annotation_transactions()
+
+    added = await transactions_annotate_coarse(
+        requests=[NoteAdd(kind="note_add", transaction_id="TX_1", text="first")]
+    )
+    assert added.error is None
+    note_id = added.data.outcomes[0].target_ids[0]
+
+    edited = await transactions_annotate_coarse(
+        requests=[NoteEdit(kind="note_edit", note_id=note_id, text="edited")]
+    )
+
+    assert edited.error is None
+    with get_database(read_only=True) as db:
+        assert TransactionService(db).list_notes("TX_1")[0].text == "edited"
+
+
+@pytest.mark.unit
+async def test_note_delete_requires_confirmation(mcp_db: object) -> None:
+    _seed_annotation_transactions()
+    added = await transactions_annotate_coarse(
+        requests=[NoteAdd(kind="note_add", transaction_id="TX_1", text="delete me")]
+    )
+    note_id = added.data.outcomes[0].target_ids[0]
+
+    required = await transactions_annotate_coarse(
+        requests=[NoteDelete(kind="note_delete", note_id=note_id)]
+    )
+
+    assert required.error is not None
+    assert required.error.code == "mutation_confirmation_required"
+    token = str(required.error.details["confirmation_token"])
+    deleted = await transactions_annotate_coarse(
+        requests=[NoteDelete(kind="note_delete", note_id=note_id)],
+        confirmation_token=token,
+    )
+    assert deleted.error is None
+    assert deleted.data.outcomes[0].target_ids == [note_id]
 
 
 @pytest.mark.unit
@@ -212,8 +258,8 @@ async def test_annotation_confirmation_rejects_state_added_before_live_preflight
     """A stale token cannot delete state added immediately before live preflight."""
     _seed_annotation_transactions()
     with get_database(read_only=False) as db:
-        TransactionService(db).add_note("TX_1", "approved-old", actor="test")
-    request = [NoteSet(kind="note_set", transaction_id="TX_1", note=None)]
+        note = TransactionService(db).add_note("TX_1", "approved-old", actor="test")
+    request = [NoteDelete(kind="note_delete", note_id=note.note_id)]
     required = await transactions_annotate_coarse(requests=request)
     token = str(required.error.details["confirmation_token"])
     original_begin = Database.begin
@@ -221,11 +267,11 @@ async def test_annotation_confirmation_rejects_state_added_before_live_preflight
     def begin_after_concurrent_write(db: Database) -> None:
         db.execute(
             """
-            INSERT INTO app.transaction_notes
-                (note_id, transaction_id, text, author)
-            VALUES (?, ?, ?, ?)
+            UPDATE app.transaction_notes
+               SET text = ?
+             WHERE note_id = ?
             """,
-            ["note_concurrent", "TX_1", "concurrent", "other-session"],
+            ["concurrent edit", note.note_id],
         )
         original_begin(db)
 
@@ -239,9 +285,9 @@ async def test_annotation_confirmation_rejects_state_added_before_live_preflight
     assert stale.error is not None
     assert stale.error.code == "mutation_confirmation_mismatch"
     with get_database(read_only=True) as db:
-        assert sorted(
-            note.text for note in TransactionService(db).list_notes("TX_1")
-        ) == ["approved-old", "concurrent"]
+        assert [note.text for note in TransactionService(db).list_notes("TX_1")] == [
+            "concurrent edit"
+        ]
 
 
 @pytest.mark.unit
@@ -252,8 +298,8 @@ async def test_annotation_batch_rolls_back_when_last_request_is_invalid(
 
     response = await transactions_annotate_coarse(
         requests=[
-            NoteSet(kind="note_set", transaction_id="TX_1", note="trip"),
-            NoteSet(kind="note_set", transaction_id="UNKNOWN", note="bad"),
+            NoteAdd(kind="note_add", transaction_id="TX_1", text="trip"),
+            NoteAdd(kind="note_add", transaction_id="UNKNOWN", text="bad"),
         ]
     )
 

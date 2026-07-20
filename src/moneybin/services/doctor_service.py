@@ -617,8 +617,7 @@ class DoctorService:
         ``affected_ids`` are emitted with prefixes so the doctor recipe can
         dispatch to the right MCP tool without re-querying:
 
-        - ``note:<transaction_id>`` → one row per orphan transaction (all notes
-          are cleared together through the declarative annotation boundary)
+        - ``note:<note_id>`` → one row per orphan note, deleted by stable id
         - ``tag:<transaction_id>`` → one row per orphan transaction (tags are
           cleared wholesale per transaction; multiple tag rows on the same
           orphan transaction collapse to one affected_id)
@@ -637,7 +636,7 @@ class DoctorService:
                     UNION
                     SELECT transaction_id FROM {MANUAL_TRANSACTIONS.full_name}
                 )
-                SELECT 'note:' || n.transaction_id AS aid
+                SELECT 'note:' || n.note_id AS aid
                 FROM {TRANSACTION_NOTES.full_name} n
                 LEFT JOIN valid_txn v ON v.transaction_id = n.transaction_id
                 WHERE v.transaction_id IS NULL

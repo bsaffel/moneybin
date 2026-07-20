@@ -165,7 +165,7 @@ def curate_recent_transactions() -> str:
         **Relevant tools:**
         - transactions — fetch recent rows; pair with system_audit to
           spot gaps (no note.add / tag.add events on a transaction_id).
-        - transactions_annotate — batch tag and note target states.
+        - transactions_annotate — batch stable-ID note lifecycle and tag states.
         - system_audit — sanity check what already happened.
 
         **Workflow:**

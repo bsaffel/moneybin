@@ -309,68 +309,72 @@ class TestStandardCoarseAccountReads:
         assert reused.error.code == "ACCOUNT_CURSOR_INVALID"
 
     @pytest.mark.unit
-    async def test_account_resolve_paginates_exact_stable_ties_and_binds_query(
+    async def test_account_resolve_ranks_exact_stable_ties(self, mcp_db: Path) -> None:
+        for account_id in ("tie_c", "tie_a", "tie_b"):
+            _seed_named_account(account_id, display_name="zzzz")
+
+        response = await accounts_coarse(
+            view="resolve",
+            query="zzzz",
+            limit=3,
+        )
+
+        assert response.summary.total_count == 3
+        assert response.summary.returned_count == 3
+        assert [match.account_id for match in response.data.matches] == [
+            "tie_a",
+            "tie_b",
+            "tie_c",
+        ]
+        assert response.next_cursor is None
+
+    @pytest.mark.unit
+    async def test_account_resolve_ranks_by_confidence_then_account_id(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_named_account("zzz_exact", display_name="alpha")
+        _seed_named_account("aaa_partial", display_name="alpha!")
+        _seed_named_account("bbb_partial", display_name="alpha!!")
+
+        response = await accounts_coarse(
+            view="resolve",
+            query="alpha",
+            limit=3,
+        )
+        seen = [(match.account_id, match.confidence) for match in response.data.matches]
+
+        assert [account_id for account_id, _confidence in seen] == [
+            "zzz_exact",
+            "aaa_partial",
+            "bbb_partial",
+        ]
+        assert [confidence for _account_id, confidence in seen] == sorted(
+            (confidence for _account_id, confidence in seen),
+            reverse=True,
+        )
+
+    @pytest.mark.unit
+    async def test_account_resolve_reports_truncation_without_cursor(
         self, mcp_db: Path
     ) -> None:
         for account_id in ("tie_c", "tie_a", "tie_b"):
             _seed_named_account(account_id, display_name="zzzz")
 
-        seen: list[str] = []
-        cursor: str | None = None
-        for _ in range(3):
-            response = await accounts_coarse(
-                view="resolve",
-                query="zzzz",
-                limit=1,
-                cursor=cursor,
-            )
-            assert response.summary.total_count == 3
-            assert response.summary.returned_count == 1
-            seen.append(response.data.matches[0].account_id)
-            if response.next_cursor is not None:
-                assert (
-                    f"Continue with accounts(view='resolve', query='zzzz', "
-                    f"limit=1, cursor='{response.next_cursor}')"
-                ) in response.actions
-            cursor = response.next_cursor
-
-        assert seen == ["tie_a", "tie_b", "tie_c"]
-        assert len(set(seen)) == 3
-        assert cursor is None
-
-        first = await accounts_coarse(view="resolve", query="zzzz", limit=1)
-        assert first.next_cursor is not None
-        reused = await accounts_coarse(
+        response = await accounts_coarse(
             view="resolve",
-            query="different",
+            query="zzzz",
             limit=1,
-            cursor=first.next_cursor,
-        )
-        assert reused.error is not None
-        assert reused.error.code == "ACCOUNT_CURSOR_INVALID"
-
-    @pytest.mark.unit
-    async def test_account_resolve_cursor_survives_prepended_candidate(
-        self, mcp_db: Path
-    ) -> None:
-        for account_id in ("stable_b", "stable_c"):
-            _seed_named_account(account_id, display_name="stable")
-        initial = await accounts_coarse(view="resolve", query="stable")
-        initial_ids = sorted(row.account_id for row in initial.data.matches)
-        assert len(initial_ids) > 1
-        first = await accounts_coarse(view="resolve", query="stable", limit=1)
-        assert first.next_cursor is not None
-
-        _seed_named_account("000_PREPENDED", display_name="stable")
-        second = await accounts_coarse(
-            view="resolve",
-            query="stable",
-            limit=1,
-            cursor=first.next_cursor,
         )
 
-        assert [row.account_id for row in second.data.matches] == [initial_ids[1]]
-        assert second.summary.total_count == len(initial_ids)
+        assert [row.account_id for row in response.data.matches] == ["tie_a"]
+        assert response.summary.total_count == 3
+        assert response.summary.returned_count == 1
+        assert response.summary.has_more is True
+        assert response.next_cursor is None
+        assert (
+            "Refine the account query or increase limit to inspect more candidates."
+            in response.actions
+        )
 
     @pytest.mark.unit
     async def test_account_list_include_closed_is_strict_and_effective(
@@ -419,6 +423,10 @@ class TestStandardCoarseAccountReads:
             ),
             (
                 {"view": "summary", "cursor": "opaque"},
+                "ACCOUNT_CURSOR_NOT_ALLOWED",
+            ),
+            (
+                {"view": "resolve", "query": "checking", "cursor": "opaque"},
                 "ACCOUNT_CURSOR_NOT_ALLOWED",
             ),
             (
@@ -585,27 +593,17 @@ class TestStandardCoarseAccountReads:
         assert reused.error.code == "BALANCE_CURSOR_INVALID"
 
     @pytest.mark.unit
-    @pytest.mark.parametrize(
-        ("view", "kwargs"),
-        [
-            ("list", {}),
-            ("resolve", {"query": "acc"}),
-        ],
-    )
-    async def test_accounts_paginated_views_reject_wrong_typed_keys(
+    async def test_account_list_rejects_wrong_typed_cursor_keys(
         self,
-        view: Literal["list", "resolve"],
-        kwargs: dict[str, object],
         mcp_db: Path,
     ) -> None:
-        first = await accounts_coarse(view=view, limit=1, **kwargs)  # type: ignore[arg-type]
+        first = await accounts_coarse(view="list", limit=1)
         assert first.next_cursor is not None
 
         response = await accounts_coarse(
-            view=view,
+            view="list",
             limit=1,
             cursor=_replace_cursor_keys_with_numbers(first.next_cursor),
-            **kwargs,  # type: ignore[arg-type]
         )
 
         assert response.error is not None

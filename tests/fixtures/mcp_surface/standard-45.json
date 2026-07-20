@@ -1,5 +1,5 @@
 {
-  "sha256": "4c0ec7d2f7255b10cd692a4ae9e38d2081532cd867e8fa9a8bbec7324e64de19",
+  "sha256": "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
   "tool_count": 45,
   "tools": [
     {
@@ -3666,15 +3666,15 @@
       "total_bytes": 1287
     },
     {
-      "annotation_bytes": 89,
+      "annotation_bytes": 90,
       "definition": {
         "annotations": {
           "destructiveHint": true,
-          "idempotentHint": true,
+          "idempotentHint": false,
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically declare complete note, tag, and split states or rename one tag globally. Every request is preflighted before any write; failure leaves the whole batch unchanged. Results retain request order and share one operation_id for audit inspection or system_audit_undo recovery.",
+        "description": "Atomically add, edit, or delete stable-ID notes; declare complete tag and split states; or rename one tag globally. Every request is preflighted before any write; failure leaves the whole batch unchanged. Deleting notes or existing target state requires confirmation. Results retain request order and share one operation_id for audit inspection or system_audit_undo recovery.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3694,22 +3694,15 @@
                 "oneOf": [
                   {
                     "additionalProperties": false,
-                    "description": "Set or clear the note on one transaction.",
+                    "description": "Append one independently addressable note to a transaction.",
                     "properties": {
                       "kind": {
-                        "const": "note_set",
+                        "const": "note_add",
                         "type": "string"
                       },
-                      "note": {
-                        "anyOf": [
-                          {
-                            "maxLength": 2000,
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
+                      "text": {
+                        "maxLength": 2000,
+                        "type": "string"
                       },
                       "transaction_id": {
                         "maxLength": 64,
@@ -3720,7 +3713,52 @@
                     "required": [
                       "kind",
                       "transaction_id",
-                      "note"
+                      "text"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "Replace the text of one note without changing its identity.",
+                    "properties": {
+                      "kind": {
+                        "const": "note_edit",
+                        "type": "string"
+                      },
+                      "note_id": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "text": {
+                        "maxLength": 2000,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "note_id",
+                      "text"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "Delete one note by its stable identity.",
+                    "properties": {
+                      "kind": {
+                        "const": "note_delete",
+                        "type": "string"
+                      },
+                      "note_id": {
+                        "maxLength": 64,
+                        "minLength": 1,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "note_id"
                     ],
                     "type": "object"
                   },
@@ -3910,12 +3948,12 @@
         },
         "name": "transactions_annotate"
       },
-      "description_bytes": 280,
-      "input_schema_bytes": 2321,
+      "description_bytes": 375,
+      "input_schema_bytes": 2882,
       "name": "transactions_annotate",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 2800
+      "total_bytes": 3457
     },
     {
       "annotation_bytes": 89,
@@ -4516,5 +4554,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 46454
+  "total_bytes": 47111
 }

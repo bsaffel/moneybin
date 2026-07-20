@@ -393,7 +393,9 @@ Tools return a configurable number of results (default varies by tool, respects 
   do not expose a cursor. `has_more` means the bounded result was truncated and
   `total_count` is a lower bound; callers refine the query or rerun with a
   higher limit. Bounded summary, detail, catalog, and status views likewise do
-  not become resumable collections.
+  not become resumable collections. Ranked entity resolution is also bounded:
+  mutable relevance/confidence ordering returns its exact total and truncation
+  state without a cursor, and callers refine the query or increase the limit.
 - **`summary.has_more: true`** signals more data is available.
 - **Prefer filtering over paging.** Tools expose rich filter parameters (date ranges, amount thresholds, categories, accounts) so the AI narrows the query rather than paging through everything. A well-filtered query should rarely need page 2.
 

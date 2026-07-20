@@ -517,30 +517,33 @@ Per `feedback_cli_function_naming.md` and `.claude/rules/cli.md`: Typer subgroup
 
 ## MCP Interface
 
-Per `mcp-architecture.md` and `moneybin-mcp.md` v2: path-prefix-verb-suffix names, sensitivity tiers, response envelopes, write-tool confirmation conventions.
-
-Nine new tools, two prompts, one new resource and two extended. Catalog grows from ~33 to ~42 — comfortably under the 50-tool friction line.
+Per `mcp-architecture.md` and `moneybin-mcp.md`: portable names, sensitivity
+tiers, response envelopes, and payload-bound write confirmation. The current
+standard registry consolidates compatible curation writes behind
+`transactions_annotate`; granular service and CLI operations do not each
+consume an MCP tool slot.
 
 ### Tools
 
 | Tool | Sensitivity | Shape |
 |---|---|---|
 | `transactions_create` | write | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
-| `transactions_notes_add` | write | `(transaction_id, text) → Note` |
-| `transactions_notes_edit` | write | `(note_id, text) → Note` |
-| `transactions_notes_delete` | write | `(note_id) → {note_id}` |
-| `transactions_tags_set` | write | `(transaction_id, tags: list[str]) → list[Tag]` — declarative; service computes diff |
-| `transactions_tags_rename` | write | `(old_tag, new_tag) → {row_count, parent_audit_id}` — bulk rename |
-| `transactions_splits_set` | write | `(transaction_id, splits: list[SplitInput]) → list[Split]` — declarative |
+| `transactions_annotate` | write | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename` |
 | `import_labels_set` | write | `(import_id, labels: list[str]) → list[str]` — declarative |
 | `system_audit` | medium | `(filters, limit) → list[AuditEvent]` — supports `audit_id` filter for show-equivalent (returns single-element list with full payload) |
 | (read tools) | — | Dropped — curation data is on `core.fct_transactions` LIST/STRUCT columns; LLM uses SQL via `moneybin://schema` |
 
 **Why the read tools were cut:** after this spec ships, `notes`, `tags`, and `splits` are columns on `core.fct_transactions`. The LLM writes `SELECT notes, tags, splits FROM core.fct_transactions WHERE transaction_id = ?` via the schema catalog. Adding dedicated read tools would duplicate token surface without adding capability.
 
-**Why declarative-set:** tools that take "the new state" instead of "add this / remove that" are easier for LLMs to use correctly and reduce the tool count by half. The CLI keeps imperative add/remove because humans think procedurally.
+**Why declarative-set:** closed collections such as tags and splits take "the
+new state" instead of "add this / remove that." The CLI keeps imperative
+add/remove because humans think procedurally.
 
-**Why notes stay imperative in MCP:** add/edit/delete on `note_id` have distinct semantics that don't collapse into "set all notes" — you can't replace one note with another by passing a list, because the audit chain depends on which note_id is which.
+**Why notes stay imperative inside one MCP umbrella:** add/edit/delete on
+`note_id` have distinct semantics that do not collapse into "set all notes."
+Replacing a list would delete siblings by omission and recreate stable
+identities, breaking the audit chain. Discriminated request variants preserve
+those lifecycle semantics without spending three registered tool slots.
 
 ### `transactions_create` — bulk shape and constraints
 
@@ -564,7 +567,7 @@ Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. C
 
 | Prompt | Purpose |
 |---|---|
-| `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions list` → `transactions_tags_set` / `transactions_notes_add` in a loop. |
+| `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions` then one or more `transactions_annotate` batches. |
 | `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit`. |
 
 Pure prompt content; no schema work. These two prompts wrap the curation-specific tools and remain in scope on their own merit (curator-segment ritual surfaces); the broader "monthly-ritual prompt set" idea was retired 2026-05-16 in favor of a tool-first `reports-anomaly-detection.md` (internal roadmap review).
@@ -673,7 +676,7 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 | Tag table shape | Flat M:N with slug-pattern VARCHAR (`namespace:value` optional) |
 | Import labels shape | Single consolidated `app.imports` row with `LIST(VARCHAR)` labels column |
 | MCP bulk vs single | Bulk `transactions_create` (1–100); CLI stays single-txn |
-| MCP declarative-set | Tags, splits, import labels use `*_set`; notes stay imperative |
+| MCP declarative-set | Tags, splits, import labels use `*_set`; notes stay stable-ID imperative inside `transactions_annotate` |
 | Service organization | Extend existing `TransactionService` and `ImportService`; new cross-cutting `AuditService` |
 
 ## Synthetic Data Requirements

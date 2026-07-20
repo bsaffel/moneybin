@@ -642,6 +642,8 @@ async def test_accounts_coarse_raw_cursors_reject_cross_filter_reuse(
         {"view": "resolve", "query": "bank", "limit": 1},
         "resolve",
     )
+    assert "next_cursor" not in resolve_page
+    assert resolve_page["summary"]["has_more"] is True
     await _assert_canonical_error(
         mcp,
         "accounts",
@@ -649,9 +651,9 @@ async def test_accounts_coarse_raw_cursors_reject_cross_filter_reuse(
             "view": "resolve",
             "query": "checking",
             "limit": 1,
-            "cursor": resolve_page["next_cursor"],
+            "cursor": "opaque",
         },
-        "ACCOUNT_CURSOR_INVALID",
+        "ACCOUNT_CURSOR_NOT_ALLOWED",
     )
 
     balance_page = await _assert_canonical_variant(

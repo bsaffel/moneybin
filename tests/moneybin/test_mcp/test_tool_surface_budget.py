@@ -140,7 +140,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "gsheet": (441, 1_016),
     "privacy": (590, 1_007),
     "accounts_balance_assert": (1_416, 1_679),
-    "transactions_annotate": (2_800, 3_653),
+    "transactions_annotate": (3_457, 3_653),
     "transactions_categorize_rules_set": (3_043, 2_670),
     "reviews_decide": (2_480, 2_566),
     "identity_links_decide": (2_848, 5_762),

@@ -73,6 +73,15 @@ Two sub-forms determined by the cardinality of the call's input.
 
 Shape 2 uses `_set(id, fields)` for partial update — the same verb as 1b. The operational difference: shape 2 has a strict `_create` that errors on existing entity; shape 1b's `_set` upserts directly.
 
+Compatible lifecycle operations may share one coarse workflow umbrella as
+discriminated request variants when authorization, sensitivity, audit,
+recovery, and output contracts remain aligned. The stable entity identity and
+imperative semantics still survive inside that umbrella. Never replace an
+identity-bearing thread with a collection `_set` merely to reduce tool count:
+omission must not silently delete sibling entities or recreate them under new
+IDs. `transactions_annotate` follows this rule with `note_add`, `note_edit`,
+and `note_delete` variants inside one registered tool.
+
 ### Shape 3 — Discrete-verb
 
 - **Test:** the operation is an event, not a state change. Has timing and side effects. Reversibility lives in an audit log, not in a paired "undo" tool.

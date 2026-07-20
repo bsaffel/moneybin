@@ -413,7 +413,7 @@ events already represented in core are counted once.
 | Balance latest/history/drift reads | `accounts_balances(view=..., ...)` or a registered report where analytical |
 | Net-worth snapshot/history and all other report outputs | Registered report entries |
 | Investment events/holdings/lots/gains/securities reads | `investments(view=..., ...)` |
-| Notes/tags/splits/tag rename | `transactions_annotate(...)` |
+| Note add/edit/delete, tags/splits, tag rename | `transactions_annotate(requests=[...])`; note lifecycle remains stable-ID imperative inside the coarse umbrella |
 | Largest/anomalous transaction analysis | Registered reports, not transaction-domain tools |
 | Categorization pending and all match/link pending/history tools | `reviews(kind=..., status=..., ...)` |
 | Account/merchant/security merge decisions | `identity_links_decide(...)` |
@@ -458,12 +458,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic Plan 6
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 46,454 bytes of serialized metadata, zero advertised output schemas,
+contains 45 tools, 47,111 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`4c0ec7d2f7255b10cd692a4ae9e38d2081532cd867e8fa9a8bbec7324e64de19`.
+`0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -44,280 bytes (-48.8%). The deterministic estimate is 11,614
+The delta is -43,623 bytes (-48.1%). The deterministic estimate is 11,778
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -492,7 +492,7 @@ narrower definitions did not express.
 | `gsheet` | 441 / 1,016 (-575) | 219 / 200 (+19) |
 | `privacy` | 590 / 1,007 (-417) | 267 / 393 (-126) |
 | `accounts_balance_assert` | 1,416 / 1,679 (-263) | 775 / 674 (+101) |
-| `transactions_annotate` | 2,800 / 3,653 (-853) | 2,321 / 962 (+1,359) |
+| `transactions_annotate` | 3,457 / 3,653 (-196) | 2,882 / 962 (+1,920) |
 | `transactions_categorize_rules_set` | 3,043 / 2,670 (+373) | 2,428 / 1,260 (+1,168) |
 | `reviews_decide` | 2,480 / 2,566 (-86) | 2,039 / 1,220 (+819) |
 | `identity_links_decide` | 2,848 / 5,762 (-2,914) | 2,438 / 2,003 (+435) |

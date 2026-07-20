@@ -55,7 +55,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `investments_lots_select` | `disposal_txn_id`, `selections` | Full lot-selection target state | Audited write / maximum high |
 | `transactions` | `account`, `category`, `cursor`, `end`, `limit`, `max_amount`, `merchant`, `min_amount`, `start`, `text` | Transaction projection | Read / maximum high |
 | `transactions_create` | `transactions` | Create a manual transaction | Audited write / maximum low |
-| `transactions_annotate` | `confirmation_token`, `requests` | Batch notes, tags, and related curation | Audited write / maximum low |
+| `transactions_annotate` | `confirmation_token`, `requests` | Batch stable-ID note lifecycle, tag/split target states, and tag rename | Audited write / non-idempotent / dynamically destructive / maximum low |
 | `transactions_categorize_assist` | `account_filter`, `date_range`, `limit` | Scrubbed categorization candidates | Read / scrubbed / maximum medium |
 | `transactions_categorize_commit` | `items` | Commit reviewed categorizations | Confirmed write / maximum low |
 | `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / maximum low |
@@ -86,6 +86,36 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `refresh_run` | `steps` | Refresh derived state | Audited workflow / maximum medium |
 | `sql_query` | `query` | Operator SQL escape hatch | Read / dynamic / maximum critical / query-derived |
 | `sql_schema` | `table` | Curated SQL schema | Read / dynamic / maximum critical / schema-derived |
+
+### Transaction annotation requests
+
+`transactions_annotate` is one atomic workflow umbrella, not a collection
+replacement for every annotation type. Its discriminated `requests` union is:
+
+- `note_add(transaction_id, text)` — append a note and return the generated
+  `note_id` in that outcome's `target_ids`;
+- `note_edit(note_id, text)` — change only the addressed note while retaining
+  its identity and audit chain;
+- `note_delete(note_id)` — delete only the addressed note;
+- `tags_set(transaction_id, tags)` and
+  `splits_set(transaction_id, splits)` — declare complete collection state;
+- `tag_rename(old_name, new_name)` — rename one tag globally.
+
+Every request is preflighted before the first write and the batch shares one
+`operation_id`. Note add and edit do not dynamically request confirmation;
+note delete and other changed removals do. Because note append is an event, the
+umbrella honestly advertises `idempotentHint=false` even though its target-state
+variants remain individually idempotent.
+
+### Ranked account resolution
+
+`accounts(view="resolve", query=..., limit=...)` is a bounded ranked search.
+It returns candidates in confidence-descending, stable-account-ID order and
+reports an exact total plus `has_more` when `limit` truncates the result. It
+does not issue or accept a cursor for this view: confidence is derived from
+mutable account names and metadata, so it is not a safe stateless keyset.
+Callers refine the query or rerun with a larger limit. The `list` view and
+resumable `accounts_balances` views retain immutable-key cursors.
 
 ## Response contract
 

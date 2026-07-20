@@ -1,6 +1,6 @@
 """Recipe contract for the `orphan_app_state` audit.
 
-The audit emits ``affected_ids`` with prefixes (``note:<transaction_id>``,
+The audit emits ``affected_ids`` with prefixes (``note:<note_id>``,
 ``tag:<transaction_id>``) so the recipe can dispatch to the right MCP tool
 without re-querying the DB. The recipe is therefore a pure function over the
 prefixed ids — no database access needed.
@@ -18,27 +18,27 @@ def _ctx() -> registry.RecipeContext:
     return registry.RecipeContext(db=None)
 
 
-def test_note_prefix_emits_note_clear_action() -> None:
-    actions = orphan_app_state.recipe(["note:txn1"], _ctx())
+def test_note_prefix_emits_note_delete_action() -> None:
+    actions = orphan_app_state.recipe(["note:note1"], _ctx())
     assert len(actions) == 1
     action = actions[0]
     assert isinstance(action, RecoveryAction)
     assert action.tool == "transactions_annotate"
     assert action.arguments == {
-        "requests": [{"kind": "note_set", "transaction_id": "txn1", "note": None}]
+        "requests": [{"kind": "note_delete", "note_id": "note1"}]
     }
     assert action.confidence == "certain"
-    assert action.idempotent is True
+    assert action.idempotent is False
 
 
-def test_empty_note_transaction_id_is_skipped_with_warning(
+def test_empty_note_id_is_skipped_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # A bare prefix must not produce an action the agent cannot run.
     with caplog.at_level("WARNING", logger="moneybin.audits.recipes.orphan_app_state"):
         actions = orphan_app_state.recipe(["note:"], _ctx())
     assert actions == []
-    assert any("empty transaction_id" in r.message for r in caplog.records)
+    assert any("empty note_id" in r.message for r in caplog.records)
 
 
 def test_empty_transaction_id_is_skipped_with_warning(

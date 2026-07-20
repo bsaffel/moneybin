@@ -182,12 +182,27 @@ class SplitTarget(_StrictRequest):
         return self
 
 
-class NoteSet(_StrictRequest):
-    """Set or clear the note on one transaction."""
+class NoteAdd(_StrictRequest):
+    """Append one independently addressable note to a transaction."""
 
-    kind: Literal["note_set"]
+    kind: Literal["note_add"]
     transaction_id: IdentifierString
-    note: NoteText | None
+    text: NoteText
+
+
+class NoteEdit(_StrictRequest):
+    """Replace the text of one note without changing its identity."""
+
+    kind: Literal["note_edit"]
+    note_id: IdentifierString
+    text: NoteText
+
+
+class NoteDelete(_StrictRequest):
+    """Delete one note by its stable identity."""
+
+    kind: Literal["note_delete"]
+    note_id: IdentifierString
 
 
 class TagsSet(_StrictRequest):
@@ -215,7 +230,7 @@ class TagRename(_StrictRequest):
 
 
 AnnotationRequest = Annotated[
-    NoteSet | TagsSet | SplitsSet | TagRename,
+    NoteAdd | NoteEdit | NoteDelete | TagsSet | SplitsSet | TagRename,
     Field(discriminator="kind"),
 ]
 

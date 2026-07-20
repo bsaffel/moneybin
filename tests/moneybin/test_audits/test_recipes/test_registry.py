@@ -34,16 +34,15 @@ def test_orphan_recipe_with_affected_ids_emits_coarse_cleanup_action() -> None:
     recipe = registry.get("orphan_app_state")
     assert recipe is not None
     ctx = registry.RecipeContext(db=None)
-    out = recipe(["note:txn1"], ctx)
+    out = recipe(["note:note1"], ctx)
     assert [(action.tool, action.arguments) for action in out] == [
         (
             "transactions_annotate",
             {
                 "requests": [
                     {
-                        "kind": "note_set",
-                        "transaction_id": "txn1",
-                        "note": None,
+                        "kind": "note_delete",
+                        "note_id": "note1",
                     }
                 ]
             },

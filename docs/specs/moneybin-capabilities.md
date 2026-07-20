@@ -61,7 +61,7 @@ is added.
 | Reports | `reports` | `reports networth`, `reports spending`, and other registered reports | Same catalog runner, rows, period, provenance, and truncation |
 | Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert` | `accounts list/get/summary/set`, `accounts balance *` | Same account projections, settings, observations, and assertions |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | `investments *` | Same ledger, holdings, lots, securities, and gains |
-| Transactions | `transactions`, `transactions_create`, `transactions_annotate` | `transactions list/create`, notes, tags, and splits | Same transaction rows and complete annotation target state |
+| Transactions | `transactions`, `transactions_create`, `transactions_annotate` | `transactions list/create`, notes, tags, and splits | Same transaction rows, stable-ID note lifecycle, and complete tag/split target state |
 | Categorization | `transactions_categorize_*`, `reviews*`, `identity_links_decide` | `transactions categorize *`, match and identity review commands | Same engine results, rules, queue state, and decisions |
 | Taxonomy | `taxonomy`, `taxonomy_set` | `categories *`, `merchants *` | Same category and merchant target state through `CategorizationService` |
 | Import | `import_*` | `import files/preview/confirm/status/revert/inbox/labels`, `import formats *` | Same import log, raw rows, confirmation state, labels, and audited saved-format lifecycle |
