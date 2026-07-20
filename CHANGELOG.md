@@ -63,8 +63,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   their 180-second window; PDF sign inversions can be approved over MCP against
   immutable preview bytes; partial import/sync failures retain actionable
   guidance; auto-rule proposals retain blast-radius review and proposal-scoped
-  approval; bounded account resolution remains confidence-ranked; investment
-  and taxonomy continuations stay within their initial high-water boundary;
+  approval; abandoned confirmation tokens are evicted after their TTL; bounded
+  account resolution remains confidence-ranked; investment and taxonomy
+  continuations stay within their initial high-water boundary;
   transaction continuations retain their initial eligible-row count; multi-note
   threads retain stable note identities; and orphan annotations and accepted
   matches again expose executable recovery through the standard 45-tool
@@ -277,6 +278,10 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   replay and local expiry enforcement, and `sync_disconnect(mode="logout")`
   clears credentials plus pending profile-scoped sessions. Secret device codes
   and tokens remain in `SecretStore`; MCP sees only safe user-facing fields.
+  Expired flows now shed device codes during any collection update, while the
+  newly created or currently addressed flow is preserved within a per-profile
+  ceiling of 16 pending and 16 terminal sessions so abandoned or bursty flows
+  cannot grow keychain state indefinitely.
   `transactions_categorize_run(operation="improve_ai")` similarly absorbs the
   provider-native AI-upgrade outcome without increasing the 45-tool surface.
 - **"What the AI Provider Sees" guide.** A precise, code-verified statement of

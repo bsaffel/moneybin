@@ -19,6 +19,8 @@ from moneybin.secrets import SecretNotFoundError, SecretStore
 
 _AUTH_SESSIONS_KEY = "SYNC__AUTH_SESSIONS"
 _LOCK_FILE_MODE = 0o600
+_MAX_PENDING_AUTH_SESSIONS = 16
+_MAX_TERMINAL_AUTH_SESSIONS = 16
 
 AuthStatus = Literal[
     "pending",
@@ -119,7 +121,11 @@ class SyncAuthService:
         with self._acquire_lock():
             sessions = self._load_collection()
             sessions[auth_session_id] = session
-            self._save_collection(sessions)
+            self._persist_collection(
+                sessions,
+                now=now,
+                preserve_session=auth_session_id,
+            )
         return session.safe_result()
 
     def status(self, auth_session_id: str) -> SyncAuthResult:
@@ -128,9 +134,9 @@ class SyncAuthService:
             sessions = self._load_collection()
             session = self._get_session(sessions, auth_session_id)
             now = self._now()
-            if session.status != "pending":
-                return session.safe_result(replayed=True)
-            if now >= datetime.fromisoformat(session.expiration):
+            if session.status == "pending" and now >= datetime.fromisoformat(
+                session.expiration
+            ):
                 expired = replace(
                     session,
                     status="expired",
@@ -138,13 +144,31 @@ class SyncAuthService:
                     error_code="device_code_expired",
                 )
                 sessions[auth_session_id] = expired
-                self._save_collection(sessions)
+                self._persist_collection(
+                    sessions,
+                    now=now,
+                    preserve_session=auth_session_id,
+                )
                 return expired.safe_result()
+            pruned = self._prune_collection(
+                sessions,
+                now=now,
+                preserve_session=auth_session_id,
+            )
+            session = self._get_session(sessions, auth_session_id)
+            if session.status != "pending":
+                if pruned:
+                    self._save_collection(sessions)
+                return session.safe_result(replayed=True)
             if session.next_poll_at is not None and now < datetime.fromisoformat(
                 session.next_poll_at
             ):
+                if pruned:
+                    self._save_collection(sessions)
                 return session.safe_result()
             if session.device_code is None:
+                if pruned:
+                    self._save_collection(sessions)
                 raise UserError(
                     "Authentication session cannot be resumed.",
                     code="SYNC_AUTH_SESSION_INVALID",
@@ -166,12 +190,20 @@ class SyncAuthService:
                     ),
                 )
                 sessions[auth_session_id] = terminal
-                self._save_collection(sessions)
+                self._persist_collection(
+                    sessions,
+                    now=now,
+                    preserve_session=auth_session_id,
+                )
                 return terminal.safe_result()
             except SyncAPIError:
                 pending = self._schedule_next_poll(session, now=now)
                 sessions[auth_session_id] = pending
-                self._save_collection(sessions)
+                self._persist_collection(
+                    sessions,
+                    now=now,
+                    preserve_session=auth_session_id,
+                )
                 return replace(
                     pending.safe_result(),
                     status="provider_error",
@@ -187,7 +219,11 @@ class SyncAuthService:
                     interval=interval,
                 )
                 sessions[auth_session_id] = pending
-                self._save_collection(sessions)
+                self._persist_collection(
+                    sessions,
+                    now=now,
+                    preserve_session=auth_session_id,
+                )
                 return pending.safe_result()
             authenticated = replace(
                 session,
@@ -196,7 +232,11 @@ class SyncAuthService:
                 error_code=None,
             )
             sessions[auth_session_id] = authenticated
-            self._save_collection(sessions)
+            self._persist_collection(
+                sessions,
+                now=now,
+                preserve_session=auth_session_id,
+            )
             return authenticated.safe_result()
 
     @staticmethod
@@ -266,6 +306,89 @@ class SyncAuthService:
             _AUTH_SESSIONS_KEY,
             json.dumps(payload, sort_keys=True, separators=(",", ":")),
         )
+
+    def _persist_collection(
+        self,
+        sessions: dict[str, _StoredAuthSession],
+        *,
+        now: datetime,
+        preserve_session: str | None = None,
+    ) -> None:
+        """Compact one collection before every persistence write."""
+        self._prune_collection(
+            sessions,
+            now=now,
+            preserve_session=preserve_session,
+        )
+        self._save_collection(sessions)
+
+    @staticmethod
+    def _prune_collection(
+        sessions: dict[str, _StoredAuthSession],
+        *,
+        now: datetime,
+        preserve_session: str | None = None,
+    ) -> bool:
+        """Expire stale flows, scrub terminal secrets, and bound replay history."""
+        changed = False
+        for auth_session_id, session in tuple(sessions.items()):
+            normalized = session
+            if session.status == "pending" and now >= datetime.fromisoformat(
+                session.expiration
+            ):
+                normalized = replace(
+                    session,
+                    status="expired",
+                    device_code=None,
+                    error_code="device_code_expired",
+                )
+            elif session.status != "pending" and session.device_code is not None:
+                normalized = replace(session, device_code=None)
+            if normalized != session:
+                sessions[auth_session_id] = normalized
+                changed = True
+
+        pending_ids = [
+            auth_session_id
+            for auth_session_id, session in sessions.items()
+            if session.status == "pending"
+        ]
+        terminal_ids = [
+            auth_session_id
+            for auth_session_id, session in sessions.items()
+            if session.status != "pending"
+        ]
+
+        def retained_ids(session_ids: list[str], *, limit: int) -> set[str]:
+            session_ids.sort(
+                key=lambda auth_session_id: (
+                    datetime.fromisoformat(sessions[auth_session_id].expiration),
+                    auth_session_id,
+                ),
+                reverse=True,
+            )
+            retained: list[str] = []
+            if preserve_session in session_ids:
+                retained.append(preserve_session)
+            retained.extend(
+                auth_session_id
+                for auth_session_id in session_ids
+                if auth_session_id != preserve_session
+            )
+            return set(retained[:limit])
+
+        keep = retained_ids(
+            pending_ids,
+            limit=_MAX_PENDING_AUTH_SESSIONS,
+        ) | retained_ids(
+            terminal_ids,
+            limit=_MAX_TERMINAL_AUTH_SESSIONS,
+        )
+        for auth_session_id in tuple(sessions):
+            if auth_session_id not in keep:
+                del sessions[auth_session_id]
+                changed = True
+        return changed
 
     def _delete_if_present(self, key: str) -> None:
         try:

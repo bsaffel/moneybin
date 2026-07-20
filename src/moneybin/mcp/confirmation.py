@@ -27,6 +27,8 @@ from moneybin.mcp.elicitation import supports_elicitation
 if TYPE_CHECKING:
     from fastmcp.server.context import Context
 
+_MAX_EXPIRED_TOKENS = 1024
+
 
 class ConfirmationBinding(BaseModel):
     """Canonical description of the exact mutation a user approves."""
@@ -119,6 +121,7 @@ class ConfirmationBroker:
         self._ttl_seconds = ttl_seconds
         self._lock = threading.Lock()
         self._entries: dict[str, _Entry] = {}
+        self._expired_tokens: dict[str, None] = {}
 
     @property
     def ttl_seconds(self) -> int:
@@ -138,8 +141,9 @@ class ConfirmationBroker:
             expires_at=now + timedelta(seconds=ttl_seconds),
         )
         with self._lock:
+            self._evict_expired_locked(now)
             token = secrets.token_urlsafe(32)
-            while token in self._entries:
+            while token in self._entries or token in self._expired_tokens:
                 token = secrets.token_urlsafe(32)
             self._entries[token] = entry
         return token
@@ -153,11 +157,29 @@ class ConfirmationBroker:
         """Consume ``token`` once and return its live immutable digest grant."""
         with self._lock:
             entry = self._entries.pop(token, None)
+            was_evicted = token in self._expired_tokens
+            if was_evicted:
+                del self._expired_tokens[token]
+            self._evict_expired_locked(now)
         if entry is None:
+            if was_evicted:
+                raise _expired()
             raise _replayed_or_unknown()
         if now >= entry.expires_at:
             raise _expired()
         return ConfirmationGrant(entry.digest)
+
+    def _evict_expired_locked(self, now: datetime) -> None:
+        """Remove abandoned expired entries while the broker lock is held."""
+        expired_tokens = [
+            token for token, entry in self._entries.items() if now >= entry.expires_at
+        ]
+        for token in expired_tokens:
+            del self._entries[token]
+            self._expired_tokens[token] = None
+        while len(self._expired_tokens) > _MAX_EXPIRED_TOKENS:
+            oldest_token = next(iter(self._expired_tokens))
+            del self._expired_tokens[oldest_token]
 
 
 def _utcnow() -> datetime:

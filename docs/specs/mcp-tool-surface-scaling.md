@@ -198,7 +198,11 @@ which can render a non-functional form in supported clients. The boolean is
 elicitation response data, not a bare `confirm` tool argument. Degraded clients
 use an opaque confirmation token carrying the same binding. Confirmation
 prevents the wrong mutation; `system_audit_undo` remains the recovery path when
-intent later changes.
+intent later changes. Issuance and consumption evict abandoned expired tokens
+from the active registry under the broker lock. A hard-capped tombstone
+registry preserves `expired` classification for recent evictions without
+allowing process-local confirmation state to grow indefinitely; tokens
+displaced from that bounded history report `unknown or already used`.
 
 ### 6. Entity references fail loud
 

@@ -146,6 +146,42 @@ def test_issuing_another_token_preserves_expired_classification() -> None:
     assert raised.value.code == error_codes.MUTATION_CONFIRMATION_EXPIRED
 
 
+def test_expired_classification_tombstones_are_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("moneybin.mcp.confirmation._MAX_EXPIRED_TOKENS", 3)
+    broker = ConfirmationBroker(ttl_seconds=300)
+    tokens = [
+        broker.issue(BINDING, now=NOW + timedelta(seconds=301 * offset))
+        for offset in range(6)
+    ]
+    later = NOW + timedelta(seconds=301 * 5)
+
+    with pytest.raises(UserError) as oldest:
+        broker.consume(tokens[0], now=later)
+    with pytest.raises(UserError) as recent:
+        broker.consume(tokens[-2], now=later)
+
+    assert oldest.value.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+    assert recent.value.code == error_codes.MUTATION_CONFIRMATION_EXPIRED
+
+
+def test_consuming_live_token_evicts_other_expired_abandoned_token() -> None:
+    broker = ConfirmationBroker(ttl_seconds=300)
+    expired_token = broker.issue(BINDING, now=NOW)
+    live_token = broker.issue(BINDING, now=NOW + timedelta(seconds=299))
+    later = NOW + timedelta(seconds=301)
+
+    broker.consume(live_token, now=later).verify(BINDING)
+    with pytest.raises(UserError) as raised:
+        broker.consume(expired_token, now=later)
+    with pytest.raises(UserError) as replayed:
+        broker.consume(expired_token, now=later)
+
+    assert raised.value.code == error_codes.MUTATION_CONFIRMATION_EXPIRED
+    assert replayed.value.code == error_codes.MUTATION_CONFIRMATION_REPLAYED
+
+
 @pytest.mark.parametrize("ttl_seconds", [29, 901])
 def test_broker_rejects_ttl_outside_configured_range(ttl_seconds: int) -> None:
     with pytest.raises(ValueError, match="30 and 900"):

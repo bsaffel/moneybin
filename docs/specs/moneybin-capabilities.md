@@ -112,7 +112,10 @@ Only these categories are allowed:
 Every exempt row still names its owning service callable and observable
 outcome. OAuth or browser interaction alone is not an exemption: an MCP agent
 can safely present a verification URL and user code while secret device codes
-remain in the profile-scoped `SecretStore`.
+remain in the profile-scoped `SecretStore`. The newly created or currently
+addressed flow is always retained; beyond it, the newest sessions are kept up
+to 16 pending flows and 16 terminal results per profile. Expired flows lose
+their device codes before the bounded collection is persisted.
 
 ## Enforcement
 

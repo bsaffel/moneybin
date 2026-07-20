@@ -82,6 +82,28 @@ def _challenge(*, interval: float = 0.0) -> DeviceAuthorizationChallenge:
     )
 
 
+def _stored_session(
+    auth_session_id: str,
+    *,
+    status: str,
+    expiration: datetime,
+    device_code: str | None,
+    next_poll_at: datetime | None = None,
+) -> dict[str, object]:
+    """Build one persisted auth session for lifecycle-retention tests."""
+    return {
+        "auth_session_id": auth_session_id,
+        "status": status,
+        "user_code": "ABCD-EFGH",
+        "verification_url": "https://auth.example/activate",
+        "expiration": expiration.isoformat(),
+        "device_code": device_code,
+        "poll_interval_seconds": 5.0,
+        "next_poll_at": next_poll_at.isoformat() if next_poll_at is not None else None,
+        "error_code": None,
+    }
+
+
 def test_begin_persists_one_atomic_collection_and_returns_only_safe_fields(
     patched_keyring: _PatchedKeyring,
     tmp_path: Path,
@@ -106,6 +128,217 @@ def test_begin_persists_one_atomic_collection_and_returns_only_safe_fields(
     collection = json.loads(next(iter(patched_keyring.values.values())))
     assert list(collection) == [result.auth_session_id]
     assert collection[result.auth_session_id]["device_code"] == "secret-device-code"
+
+
+def test_begin_expires_abandoned_sessions_and_scrubs_terminal_device_codes(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 19, tzinfo=UTC)
+    active_id = "syncauth_active"
+    expired_id = "syncauth_expired"
+    terminal_id = "syncauth_terminal"
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps({
+        active_id: _stored_session(
+            active_id,
+            status="pending",
+            expiration=now + timedelta(minutes=10),
+            device_code="active-device-code",
+        ),
+        expired_id: _stored_session(
+            expired_id,
+            status="pending",
+            expiration=now - timedelta(minutes=1),
+            device_code="expired-device-code",
+        ),
+        terminal_id: _stored_session(
+            terminal_id,
+            status="authenticated",
+            expiration=now - timedelta(minutes=2),
+            device_code="legacy-terminal-device-code",
+        ),
+    })
+    client = MagicMock()
+    client.begin_login.return_value = _challenge()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    created = service.begin()
+
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    assert set(collection) == {
+        active_id,
+        expired_id,
+        terminal_id,
+        created.auth_session_id,
+    }
+    assert collection[active_id]["device_code"] == "active-device-code"
+    assert collection[expired_id]["status"] == "expired"
+    assert collection[expired_id]["error_code"] == "device_code_expired"
+    assert collection[expired_id]["device_code"] is None
+    assert collection[terminal_id]["device_code"] is None
+
+
+def test_begin_retains_only_sixteen_newest_terminal_sessions(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 19, tzinfo=UTC)
+    active_id = "syncauth_active"
+    sessions = {
+        f"syncauth_terminal_{index:02d}": _stored_session(
+            f"syncauth_terminal_{index:02d}",
+            status="authenticated",
+            expiration=now + timedelta(minutes=index),
+            device_code="legacy-terminal-device-code",
+        )
+        for index in range(20)
+    }
+    sessions[active_id] = _stored_session(
+        active_id,
+        status="pending",
+        expiration=now + timedelta(minutes=30),
+        device_code="active-device-code",
+    )
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps(
+        sessions
+    )
+    client = MagicMock()
+    client.begin_login.return_value = _challenge()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    created = service.begin()
+
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    terminal_ids = {
+        session_id
+        for session_id, session in collection.items()
+        if session["status"] != "pending"
+    }
+    assert terminal_ids == {f"syncauth_terminal_{index:02d}" for index in range(4, 20)}
+    assert active_id in collection
+    assert created.auth_session_id in collection
+    assert collection[active_id]["device_code"] == "active-device-code"
+    assert all(
+        collection[session_id]["device_code"] is None for session_id in terminal_ids
+    )
+
+
+def test_begin_retains_new_session_and_only_fifteen_other_pending_sessions(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 19, tzinfo=UTC)
+    sessions = {
+        f"syncauth_pending_{index:02d}": _stored_session(
+            f"syncauth_pending_{index:02d}",
+            status="pending",
+            expiration=now + timedelta(minutes=index + 1),
+            device_code=f"pending-device-code-{index:02d}",
+        )
+        for index in range(20)
+    }
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps(
+        sessions
+    )
+    client = MagicMock()
+    client.begin_login.return_value = _challenge()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    created = service.begin()
+
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    assert set(collection) == {
+        created.auth_session_id,
+        *(f"syncauth_pending_{index:02d}" for index in range(5, 20)),
+    }
+    assert collection[created.auth_session_id]["device_code"] == "secret-device-code"
+
+
+def test_status_retains_addressed_session_when_bounding_pending_collection(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 19, tzinfo=UTC)
+    target_id = "syncauth_pending_00"
+    sessions = {
+        f"syncauth_pending_{index:02d}": _stored_session(
+            f"syncauth_pending_{index:02d}",
+            status="pending",
+            expiration=now + timedelta(minutes=index + 1),
+            device_code=f"pending-device-code-{index:02d}",
+            next_poll_at=now + timedelta(seconds=5),
+        )
+        for index in range(20)
+    }
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps(
+        sessions
+    )
+    client = MagicMock()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    result = service.status(target_id)
+
+    assert result.status == "pending"
+    client.poll_login.assert_not_called()
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    assert set(collection) == {
+        target_id,
+        *(f"syncauth_pending_{index:02d}" for index in range(5, 20)),
+    }
+
+
+def test_status_prunes_unrelated_expired_session_before_throttled_return(
+    patched_keyring: _PatchedKeyring,
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 19, tzinfo=UTC)
+    active_id = "syncauth_active"
+    expired_id = "syncauth_expired"
+    patched_keyring.values[("moneybin-alice", "SYNC__AUTH_SESSIONS")] = json.dumps({
+        active_id: _stored_session(
+            active_id,
+            status="pending",
+            expiration=now + timedelta(minutes=10),
+            device_code="active-device-code",
+            next_poll_at=now + timedelta(seconds=5),
+        ),
+        expired_id: _stored_session(
+            expired_id,
+            status="pending",
+            expiration=now - timedelta(minutes=1),
+            device_code="expired-device-code",
+        ),
+    })
+    client = MagicMock()
+    service = _service(
+        client=client,
+        store=SecretStore(profile="alice"),
+        lock_path=tmp_path / "alice.sync-auth",
+    )
+
+    result = service.status(active_id)
+
+    assert result.status == "pending"
+    client.poll_login.assert_not_called()
+    collection = json.loads(next(iter(patched_keyring.values.values())))
+    assert collection[expired_id]["status"] == "expired"
+    assert collection[expired_id]["device_code"] is None
 
 
 def test_status_completion_stores_terminal_state_and_is_idempotent(
