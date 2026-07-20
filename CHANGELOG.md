@@ -64,15 +64,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   immutable preview bytes; partial import/sync failures retain actionable
   guidance; auto-rule proposals retain blast-radius review and proposal-scoped
   approval; bounded account resolution remains confidence-ranked; investment
-  continuations stay within their initial high-water boundary; multi-note
+  and taxonomy continuations stay within their initial high-water boundary;
+  transaction continuations retain their initial eligible-row count; multi-note
   threads retain stable note identities; and orphan annotations and accepted
   matches again expose executable recovery through the standard 45-tool
   registry. (#344)
 - **Import preview parsing no longer drops rows or provenance at edge cases.**
   Header detection counts physical CSV lines, UTF-8 probing tolerates a
   multibyte character at the sample boundary, path-based detection stays
-  bounded instead of loading the whole file, and completed preview-to-import
-  records survive snapshot cleanup. (#344)
+  bounded instead of loading the whole file, oversized PDFs are rejected before
+  they can exhaust memory or inflate the encrypted snapshot store, and
+  completed preview-to-import records survive snapshot cleanup. (#344)
 - **Coarse reads no longer return plausible but incomplete results.** Balance
   drift distinguishes interpolated days from first observations, transaction
   account filters reject unresolved partial matches, archived accounts resolve

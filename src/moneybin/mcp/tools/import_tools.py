@@ -990,6 +990,30 @@ def _read_tabular_preview_bytes(path: Path) -> bytes:
     return source_bytes
 
 
+def _read_pdf_preview_bytes(path: Path) -> bytes:
+    """Enforce the PDF snapshot limit before materializing one exact object."""
+    from moneybin.config import get_settings
+
+    file_size = path.stat().st_size
+    limit_mb = get_settings().import_.pdf_preview_size_limit_mb
+    if file_size > limit_mb * 1024 * 1024:
+        size_mb = file_size / (1024 * 1024)
+        raise UserError(
+            f"PDF is {size_mb:.1f} MB, exceeding the configured "
+            f"{limit_mb} MB preview limit.",
+            code="preview_error",
+        )
+
+    with path.open("rb") as handle:
+        source_bytes = handle.read(file_size + 1)
+    if len(source_bytes) != file_size:
+        raise UserError(
+            "The file changed while MoneyBin was preparing its preview. Retry.",
+            code="IMPORT_PREVIEW_CHANGED",
+        )
+    return source_bytes
+
+
 def _import_dynamic_envelope[T](
     data: T,
     *,
@@ -1029,7 +1053,7 @@ def import_preview_coarse(
         )
     response: ResponseEnvelope[ImportPreviewPayload] | ResponseEnvelope[dict[str, Any]]
     if path.suffix.lower() == ".pdf":
-        source_bytes = path.read_bytes()
+        source_bytes = _read_pdf_preview_bytes(path)
         response = _import_preview_pdf(path, source_bytes=source_bytes)
     else:
         source_bytes = _read_tabular_preview_bytes(path)

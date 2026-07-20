@@ -542,6 +542,66 @@ async def test_import_preview_rejects_oversized_tabular_before_full_read(
     full_open.assert_not_called()
 
 
+async def test_import_preview_rejects_oversized_pdf_before_full_read(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The configured PDF snapshot limit runs before any file materialization."""
+    source = tmp_path / "oversized.pdf"
+    source.write_bytes(b"x")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from moneybin.config import get_settings
+
+    settings = get_settings()
+    limited_import = settings.import_.model_copy(
+        update={"pdf_preview_size_limit_mb": 0}
+    )
+    limited_settings = settings.model_copy(update={"import_": limited_import})
+    monkeypatch.setattr(
+        "moneybin.config.get_settings",
+        lambda: limited_settings,
+    )
+    with patch.object(Path, "open", autospec=True) as full_open:
+        response = await import_preview_coarse(file_path=str(source))
+
+    assert response.error is not None
+    assert response.error.code == "preview_error"
+    full_open.assert_not_called()
+
+
+async def test_import_preview_rejects_pdf_growth_during_bounded_capture(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A PDF growing after stat is read only through expected size plus one."""
+    source = tmp_path / "growing.pdf"
+    expected = b"%PDF"
+    source.write_bytes(expected)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    read_sizes: list[int | None] = []
+
+    class TrackedBytesIO(BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            read_sizes.append(size)
+            return super().read(size)
+
+    with patch.object(
+        Path,
+        "open",
+        autospec=True,
+        return_value=TrackedBytesIO(expected + b"x"),
+    ) as bounded_open:
+        response = await import_preview_coarse(file_path=str(source))
+
+    assert response.error is not None
+    assert response.error.code == "IMPORT_PREVIEW_CHANGED"
+    bounded_open.assert_called_once()
+    assert read_sizes == [len(expected) + 1]
+
+
 async def test_import_preview_rejects_file_growth_during_bounded_capture(
     mcp_db: object,
     tmp_path: Path,

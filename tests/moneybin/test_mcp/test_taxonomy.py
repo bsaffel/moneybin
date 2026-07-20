@@ -890,6 +890,34 @@ async def test_taxonomy_continuation_excludes_prepended_row(
 
 
 @pytest.mark.parametrize("view", ["categories", "merchants"])
+async def test_taxonomy_continuation_excludes_appended_row(
+    view: Literal["categories", "merchants"],
+) -> None:
+    with patch.object(
+        CategorizationService,
+        _taxonomy_method(view),
+        side_effect=[
+            _taxonomy_payload(view, ["item-b", "item-c"]),
+            _taxonomy_payload(view, ["item-b", "item-c", "item-z"]),
+        ],
+    ):
+        first = await taxonomy_coarse(view=view, limit=1)
+        second = await taxonomy_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [
+        _taxonomy_result_id(view, first.data.rows[0]),
+        _taxonomy_result_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
+
+
+@pytest.mark.parametrize("view", ["categories", "merchants"])
 async def test_taxonomy_rejects_typed_key_shape_before_reading_live_rows(
     view: Literal["categories", "merchants"],
 ) -> None:
@@ -902,6 +930,29 @@ async def test_taxonomy_rejects_typed_key_shape_before_reading_live_rows(
         },
         snapshot=(1,),
         after=(2,),
+        total=2,
+    )
+    with patch.object(CategorizationService, _taxonomy_method(view)) as read:
+        response = await taxonomy_coarse(view=view, cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "TAXONOMY_CURSOR_INVALID"
+    read.assert_not_called()
+
+
+@pytest.mark.parametrize("view", ["categories", "merchants"])
+async def test_taxonomy_rejects_after_beyond_snapshot_before_reading_live_rows(
+    view: Literal["categories", "merchants"],
+) -> None:
+    cursor = encode_keyset_cursor(
+        namespace="taxonomy",
+        scope={
+            "include_inactive": False,
+            "query": None,
+            "view": view,
+        },
+        snapshot=("item-b",),
+        after=("item-c",),
         total=2,
     )
     with patch.object(CategorizationService, _taxonomy_method(view)) as read:

@@ -433,6 +433,16 @@ class ImportSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    pdf_preview_size_limit_mb: int = Field(
+        default=100,
+        ge=1,
+        description=(
+            "Maximum PDF size in MB that import_preview may materialize and "
+            "persist as an immutable confirmation snapshot. Override with "
+            "MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB."
+        ),
+    )
+
     inbox_root: Path = Field(
         default_factory=lambda: Path.home() / "Documents" / "MoneyBin",
         description=(

@@ -278,6 +278,51 @@ async def test_transaction_continuation_ignores_newer_matching_insert() -> None:
 
 
 @pytest.mark.unit
+async def test_transaction_continuation_keeps_initial_total_after_tail_insert() -> None:
+    from moneybin.mcp.pagination import decode_keyset_cursor
+
+    _insert_transactions()
+    first = await transactions_coarse(account="ACC001", limit=1)
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                description, source_type, category, categorized_by
+            ) VALUES (
+                'txn_new_tail', 'ACC001', DATE '2025-05-31', -10.00,
+                'Older transaction', 'ofx', 'Food & Drink', 'user'
+            )
+            """
+        )
+    second = await transactions_coarse(
+        account="ACC001",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert [row.transaction_id for row in second.data.transactions] == ["txn_2"]
+    assert second.summary.total_count == 2
+    assert second.next_cursor is not None
+    continuation = decode_keyset_cursor(
+        second.next_cursor,
+        namespace="transactions",
+        scope={
+            "account": "acc001",
+            "category": None,
+            "end": None,
+            "max_amount": None,
+            "merchant": None,
+            "min_amount": None,
+            "start": None,
+            "text": None,
+        },
+    )
+    assert continuation.total == 2
+
+
+@pytest.mark.unit
 async def test_transactions_coarse_cursor_is_bound_to_filters(
     mcp_db: object,
 ) -> None:

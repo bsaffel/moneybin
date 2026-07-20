@@ -87,7 +87,7 @@ def _taxonomy_position(
             raise ValueError("invalid taxonomy key")
         snapshot = cast(tuple[str], position.snapshot)
         after = cast(tuple[str], position.after)
-        if snapshot > after:
+        if after > snapshot:
             raise ValueError("invalid taxonomy key order")
         return position
     except ValueError as exc:
@@ -197,15 +197,17 @@ def _taxonomy_page[T: CategoryRow | MerchantRow](
     limit: int,
     position: KeysetPosition | None,
 ) -> tuple[list[T], str | None, int]:
-    """Page stable IDs behind the first-page prepend boundary."""
+    """Page stable IDs within the initial high-water boundary."""
     if position is None:
         eligible = rows
         total_count = len(rows)
-        snapshot = (_taxonomy_row_id(rows[0]),) if rows else None
+        snapshot = (_taxonomy_row_id(rows[-1]),) if rows else None
     else:
-        snapshot = position.snapshot
+        snapshot = cast(tuple[str], position.snapshot)
         after = cast(tuple[str], position.after)
-        eligible = [row for row in rows if _taxonomy_row_id(row) > after[0]]
+        eligible = [
+            row for row in rows if after[0] < _taxonomy_row_id(row) <= snapshot[0]
+        ]
         total_count = position.total
     page = eligible[:limit]
     if len(eligible) <= limit or not page or snapshot is None:
@@ -216,7 +218,7 @@ def _taxonomy_page[T: CategoryRow | MerchantRow](
         encode_keyset_cursor(
             namespace=_TAXONOMY_TOOL,
             scope=_taxonomy_scope(view, filters),
-            snapshot=cast(tuple[str], snapshot),
+            snapshot=snapshot,
             after=(after_id,),
             total=total_count,
         ),

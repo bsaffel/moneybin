@@ -433,6 +433,7 @@ def transactions_coarse(
             after=after,
         )
 
+    stable_total = position.total if position is not None else result.total_count
     page_transactions = result.transactions[:limit]
     if len(result.transactions) > limit and page_transactions:
         snapshot_key = (
@@ -451,18 +452,18 @@ def transactions_coarse(
                 page_transactions[-1].transaction_date,
                 page_transactions[-1].transaction_id,
             ),
-            total=result.total_count,
+            total=stable_total,
         )
     else:
         next_cursor = None
     page_result = OperationalTransactionResult(
         transactions=page_transactions,
-        total_count=result.total_count,
+        total_count=stable_total,
     )
     payload = _transaction_payload(page_result, next_cursor=next_cursor)
     envelope = build_envelope(
         data=payload,
-        total_count=result.total_count,
+        total_count=stable_total,
         returned_count=len(page_transactions),
         next_cursor=next_cursor,
         period=_transaction_period(start, end),
