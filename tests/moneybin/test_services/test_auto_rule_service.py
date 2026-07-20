@@ -7,11 +7,13 @@ invariants — silencing ``reportPrivateUsage`` for this file is deliberate.
 # pyright: reportPrivateUsage=false
 
 import json
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin import config as config_module
+from moneybin import error_codes
 from moneybin.config import clear_settings_cache, set_current_profile
 from moneybin.database import Database
 from moneybin.mcp.adapters.categorize_adapters import auto_review_envelope
@@ -47,6 +49,65 @@ def test_extract_pattern_uses_merchant_raw_pattern_when_present() -> None:
     db = _mock_db_with_merchant()
     extracted = AutoRuleService(db)._extract_pattern("t_1")
     assert extracted == ("STARBUCKS", "contains")
+
+
+def test_strict_decision_preflight_runs_inside_write_transaction() -> None:
+    db = MagicMock()
+    service = AutoRuleService(db)
+
+    def changed_status(_ids: list[str]) -> dict[str, str]:
+        assert db.begin.called
+        return {"proposal-1": "approved"}
+
+    service.proposal_statuses = changed_status  # type: ignore[method-assign]
+
+    with pytest.raises(Exception) as exc_info:
+        service.decide(
+            expected_pending_ids=["proposal-1"],
+            accept=["proposal-1"],
+            reject=[],
+            actor="mcp",
+        )
+
+    assert getattr(exc_info.value, "code", None) == error_codes.MUTATION_INVALID_INPUT
+    db.rollback.assert_called_once_with()
+    db.commit.assert_not_called()
+
+
+def test_strict_decision_rolls_back_late_external_state_change() -> None:
+    db = MagicMock()
+    service = AutoRuleService(db)
+    service.proposal_statuses = MagicMock(  # type: ignore[method-assign]
+        side_effect=[
+            {"proposal-1": "pending"},
+            {"proposal-1": "rejected"},
+        ]
+    )
+    service.approve = MagicMock(  # type: ignore[method-assign]
+        return_value=MagicMock(
+            approved=0,
+            skipped=1,
+            newly_categorized=0,
+            rule_ids=[],
+        )
+    )
+    service.reject = MagicMock(  # type: ignore[method-assign]
+        return_value=MagicMock(rejected=0, skipped=0)
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        service.decide(
+            expected_pending_ids=["proposal-1"],
+            accept=["proposal-1"],
+            reject=[],
+            actor="mcp",
+        )
+
+    assert getattr(exc_info.value, "code", None) == (
+        error_codes.MUTATION_CONSTRAINT_VIOLATION
+    )
+    db.rollback.assert_called_once_with()
+    db.commit.assert_not_called()
 
 
 def test_extract_pattern_falls_back_to_normalized_description() -> None:
@@ -145,6 +206,100 @@ def _seed_transaction(
         "VALUES (?, 'Food & Drink', CURRENT_TIMESTAMP, 'user', ?)",
         [txn_id, merchant_id],
     )
+
+
+def _seed_uncategorized_transaction(
+    db: Database,
+    txn_id: str,
+    description: str,
+) -> None:
+    db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES (?, 'a1', DATE '2026-01-02', -6.00, ?, 'csv')",
+        [txn_id, description],
+    )
+
+
+def test_strict_decision_rolls_back_all_real_db_state_after_late_failure(
+    real_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later proposal failure rolls back the complete strict batch."""
+    _seed_transaction(real_db, "trigger-alpha", description="ALPHA SHOP")
+    _seed_transaction(real_db, "trigger-beta", description="BETA SHOP")
+    _seed_uncategorized_transaction(real_db, "backfill-alpha", description="ALPHA SHOP")
+    _seed_uncategorized_transaction(real_db, "backfill-beta", description="BETA SHOP")
+    service = AutoRuleService(real_db)
+    alpha_id = service.record_categorization("trigger-alpha", "Food & Drink")
+    beta_id = service.record_categorization("trigger-beta", "Food & Drink")
+    assert alpha_id is not None
+    assert beta_id is not None
+    audit_count_before = real_db.execute(
+        "SELECT COUNT(*) FROM app.audit_log"
+    ).fetchone()
+    assert audit_count_before is not None
+
+    original_mark_approved = service._proposed.mark_approved
+    approval_calls = 0
+    saw_partial_state = False
+
+    def fail_second_approval(*args: Any, **kwargs: Any) -> Any:
+        nonlocal approval_calls, saw_partial_state
+        approval_calls += 1
+        if approval_calls == 2:
+            approved_count = real_db.execute(
+                "SELECT COUNT(*) FROM app.proposed_rules WHERE status = 'approved'"
+            ).fetchone()
+            rule_count = real_db.execute(
+                "SELECT COUNT(*) FROM app.categorization_rules "
+                "WHERE created_by = 'auto_rule'"
+            ).fetchone()
+            backfill_count = real_db.execute(
+                "SELECT COUNT(*) FROM app.transaction_categories "
+                "WHERE transaction_id LIKE 'backfill-%'"
+            ).fetchone()
+            assert approved_count is not None and approved_count[0] == 1
+            assert rule_count is not None and rule_count[0] == 2
+            assert backfill_count is not None and backfill_count[0] == 1
+            saw_partial_state = True
+            raise RuntimeError("injected second proposal failure")
+        return original_mark_approved(*args, **kwargs)
+
+    monkeypatch.setattr(service._proposed, "mark_approved", fail_second_approval)
+
+    with pytest.raises(RuntimeError, match="injected second proposal failure"):
+        service.decide(
+            expected_pending_ids=[alpha_id, beta_id],
+            accept=[alpha_id, beta_id],
+            reject=[],
+            actor="mcp",
+        )
+
+    assert approval_calls == 2
+    assert saw_partial_state is True
+    proposal_rows = real_db.execute(
+        """
+        SELECT proposed_rule_id, status, rule_id, decided_by
+        FROM app.proposed_rules
+        WHERE proposed_rule_id IN (?, ?)
+        """,
+        [alpha_id, beta_id],
+    ).fetchall()
+    assert {str(row[0]): (row[1], row[2], row[3]) for row in proposal_rows} == {
+        alpha_id: ("pending", None, None),
+        beta_id: ("pending", None, None),
+    }
+    rule_count_after = real_db.execute(
+        "SELECT COUNT(*) FROM app.categorization_rules WHERE created_by = 'auto_rule'"
+    ).fetchone()
+    backfill_count_after = real_db.execute(
+        "SELECT COUNT(*) FROM app.transaction_categories "
+        "WHERE transaction_id LIKE 'backfill-%'"
+    ).fetchone()
+    audit_count_after = real_db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+    assert rule_count_after is not None and rule_count_after[0] == 0
+    assert backfill_count_after is not None and backfill_count_after[0] == 0
+    assert audit_count_after == audit_count_before
 
 
 def test_record_creates_proposal_on_first_categorization(real_db: Database) -> None:

@@ -1,5 +1,7 @@
 """Tests for MCP privacy controls and query validation."""
 
+from pathlib import Path
+
 import pytest
 
 from moneybin.mcp.privacy import (
@@ -8,6 +10,184 @@ from moneybin.mcp.privacy import (
     validate_managed_write,
     validate_read_only_query,
 )
+from moneybin.privacy.log import write_privacy_event
+
+
+async def test_privacy_coarse_status_is_default(mcp_db: object) -> None:
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    response = await privacy_coarse()
+
+    assert response.data.kind == "status"
+    assert response.summary.sensitivity == "low"
+
+
+@pytest.mark.parametrize(
+    ("limit", "cursor"),
+    [
+        (99, None),
+        (100, "opaque"),
+    ],
+)
+async def test_privacy_coarse_status_rejects_pagination_overrides(
+    limit: int,
+    cursor: str | None,
+) -> None:
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    response = await privacy_coarse(view="status", limit=limit, cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "PRIVACY_PAGINATION_NOT_ALLOWED"
+
+
+async def test_privacy_coarse_log_paginates_exactly_and_preserves_rows(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: tmp_path,
+    )
+    for index in range(3):
+        write_privacy_event({
+            "ts": f"2099-01-01T00:00:0{index}+00:00",
+            "actor": f"mcp.tool_{index}",
+            "action": "tool_call",
+            "sensitivity": "medium",
+            "classes_returned": ["description", "record_id"],
+            "row_count": index + 1,
+        })
+
+    first = await privacy_coarse(view="log", limit=2)
+
+    assert [event.actor for event in first.data.events] == [
+        "mcp.tool_2",
+        "mcp.tool_1",
+    ]
+    assert first.data.kind == "log"
+    assert first.summary.total_count == 3
+    assert first.summary.returned_count == 2
+    assert first.next_cursor is not None
+    assert first.data.events[0].sensitivity == "medium"
+    assert first.data.events[0].classes_returned == [
+        "description",
+        "record_id",
+    ]
+    assert any(
+        "view='log'" in action and "limit=2" in action and first.next_cursor in action
+        for action in first.actions
+    )
+
+    second = await privacy_coarse(
+        view="log",
+        limit=2,
+        cursor=first.next_cursor,
+    )
+    assert [event.actor for event in second.data.events] == ["mcp.tool_0"]
+    assert second.summary.total_count == 3
+    assert second.summary.returned_count == 1
+    assert second.next_cursor is None
+
+
+async def test_privacy_coarse_log_survives_prepend_and_removal_without_skips(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: tmp_path,
+    )
+    for index in range(4):
+        write_privacy_event({
+            "ts": f"2099-01-01T00:00:0{index}+00:00",
+            "actor": f"mcp.tool_{index}",
+            "action": "tool_call",
+            "sensitivity": "low",
+            "classes_returned": [],
+            "row_count": index,
+        })
+
+    first = await privacy_coarse(view="log", limit=1)
+    assert [event.actor for event in first.data.events] == ["mcp.tool_3"]
+    assert first.next_cursor is not None
+
+    path = tmp_path / "privacy.log.jsonl"
+    events = [
+        line for line in path.read_text().splitlines() if "mcp.tool_2" not in line
+    ]
+    path.write_text("\n".join(events) + "\n")
+    write_privacy_event({
+        "ts": "2100-01-01T00:00:00+00:00",
+        "actor": "mcp.prepended",
+        "action": "tool_call",
+        "sensitivity": "low",
+        "classes_returned": [],
+        "row_count": 1,
+    })
+
+    second = await privacy_coarse(
+        view="log",
+        limit=2,
+        cursor=first.next_cursor,
+    )
+
+    assert [event.actor for event in second.data.events] == [
+        "mcp.tool_1",
+        "mcp.tool_0",
+    ]
+    assert second.summary.total_count == 4
+    assert second.next_cursor is None
+
+
+async def test_privacy_coarse_rejects_wrong_key_type_before_log_read(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    cursor = encode_keyset_cursor(
+        namespace="privacy.log",
+        scope={"filters": {}, "view": "log"},
+        snapshot=(1,),
+        after=(1,),
+        total=1,
+    )
+    accessed = False
+
+    def fail_if_accessed(*args: object, **kwargs: object) -> object:
+        nonlocal accessed
+        accessed = True
+        raise AssertionError("log read must follow cursor validation")
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.privacy.read_privacy_events_page",
+        fail_if_accessed,
+    )
+
+    response = await privacy_coarse(view="log", cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "PRIVACY_CURSOR_INVALID"
+    assert accessed is False
+
+
+async def test_privacy_coarse_log_rejects_malformed_cursor_without_echo() -> None:
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    cursor_value = "private-cursor-value"
+    response = await privacy_coarse(view="log", cursor=cursor_value)
+
+    assert response.error is not None
+    assert response.error.code == "PRIVACY_CURSOR_INVALID"
+    assert cursor_value not in response.error.message
 
 
 class TestValidateReadOnlyQuery:

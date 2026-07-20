@@ -711,21 +711,17 @@ def mcp_list_prompts(
 ) -> None:
     """List all registered MCP prompts.
 
-    Imports prompt modules to trigger decorator registration, then
-    enumerates the FastMCP prompt registry.
+    Initializes the central MCP registry, then enumerates its prompts.
 
     Examples:
         moneybin mcp list-prompts
     """
     from moneybin.mcp.server import (
+        init_db,
         mcp,  # noqa: PLC0415 — defer fastmcp import to subcommand body
     )
 
-    for module in (
-        "moneybin.mcp.prompts",
-        "moneybin.mcp.resources",
-    ):
-        importlib.import_module(module)
+    init_db()
 
     prompts = asyncio.run(mcp.list_prompts(run_middleware=False))
 
@@ -874,7 +870,13 @@ def serve(
     validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
 
     from moneybin.cli.utils import get_verbose_flag, handle_cli_errors
-    from moneybin.mcp.server import check_schema_at_boot, close_db, init_db, mcp
+    from moneybin.mcp.server import (
+        check_schema_at_boot,
+        close_db,
+        init_db,
+        mcp,
+        purge_expired_import_previews_at_boot,
+    )
     from moneybin.observability import setup_observability
 
     # Import resources/prompts to register their decorators with the server.
@@ -941,6 +943,7 @@ def serve(
         with handle_cli_errors():
             init_db()
             check_schema_at_boot()
+            purge_expired_import_previews_at_boot()
         logger.info(f"MCP server starting (transport={transport}, db={db_path})")
         mcp.run(transport=validated_transport)
     except FileNotFoundError as e:

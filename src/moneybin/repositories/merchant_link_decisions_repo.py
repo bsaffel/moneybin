@@ -245,7 +245,7 @@ class MerchantLinkDecisionsRepo(BaseRepo):
             return []
         return [_decode_row(r) for r in rows]
 
-    def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.
 
         Returns an empty list when the table does not yet exist
@@ -254,12 +254,15 @@ class MerchantLinkDecisionsRepo(BaseRepo):
         ``decision_id`` tie-break makes the LIMIT boundary deterministic when
         rows share a ``decided_at`` (mirrors ``list_pending``). No audit emitted.
         """
-        limit = max(limit, 0)
+        if limit is not None:
+            limit = max(limit, 0)
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        params = [limit] if limit is not None else []
         try:
             rows = self._db.execute(
                 f"SELECT {_COLS} FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
-                "ORDER BY decided_at DESC NULLS LAST, decision_id DESC LIMIT ?",
-                [limit],
+                f"ORDER BY decided_at DESC NULLS LAST, decision_id DESC {limit_clause}",
+                params,
             ).fetchall()
         except duckdb.CatalogException:
             return []

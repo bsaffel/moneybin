@@ -1,6 +1,6 @@
 ---
 description: "Cross-surface operation-shape taxonomy, verb vocabulary, audience layering (MCP / CLI / REST). Consult before adding, renaming, or restructuring a tool, command, or endpoint."
-paths: ["src/moneybin/mcp/**", "src/moneybin/cli/**", "src/moneybin/services/**", "docs/specs/moneybin-mcp.md", "docs/specs/moneybin-cli.md", "docs/specs/moneybin-capabilities.md", "docs/specs/mcp-architecture.md"]
+paths: ["src/moneybin/mcp/**", "src/moneybin/cli/**", "src/moneybin/services/**", "docs/specs/moneybin-mcp.md", "docs/specs/moneybin-cli.md", "docs/specs/moneybin-capabilities.md", "docs/specs/mcp-architecture.md", "docs/specs/mcp-tool-surface-scaling.md", "docs/specs/extension-contracts.md"]
 ---
 
 # Surface Design: Tools, Commands, and APIs
@@ -9,11 +9,19 @@ Cross-surface pattern for MoneyBin's three agent/user surfaces — MCP tools, CL
 
 Companion to `.claude/rules/design-principles.md` (durable-path selection) and the surface-specific specs in `docs/specs/moneybin-mcp.md` and `docs/specs/moneybin-cli.md`. Per-item application of this rule lives in `private/plans/2026-05-16-mcp-surface-consolidation-decisions.md`.
 
-## Primary principle: match the operation's natural shape
+## Primary principle: capability first, then natural shape
 
-Tool count is an outcome, not a target. Every operation has a natural shape — a way it maps to user/agent intent. The taxonomy below names the five shapes MoneyBin uses; identify the shape and the surface form follows.
+Begin with the stable capability ID and user intent, not an existing CLI
+command, service method, or CRUD verb. First try to cover the capability with an
+existing projection, method, batch input, declarative target state, report
+entry, or complete workflow umbrella. Add an MCP tool only when a material
+intent or contract boundary remains.
 
-When two shapes seem to fit equally, prefer the one with the smaller surface footprint AND the better agent-ergonomics. One tool the agent picks confidently beats two tools the agent disambiguates between.
+Tool count is both an outcome and a constrained public-surface budget. Every
+operation still has a natural shape, but compatible shapes should share one
+coherent contract when that reduces serialized metadata and does not degrade
+evaluation results. One tool the agent picks confidently beats two it must
+disambiguate; two crisp tools beat one ambiguous union.
 
 ## The five operation shapes
 
@@ -27,18 +35,25 @@ Two sub-forms determined by the cardinality of the call's input.
 - **Form:** `<entity>_set(scope, full_state)` — typically a list or map.
 - **Delete handling:** by omission. NO paired `_delete` tool.
 - **Examples:**
-  - `transactions_tags_set(transaction_id, tags=[...])` — all tags on one transaction.
-  - `transactions_splits_set(transaction_id, splits=[...])`.
+  - `investments_lots_select(disposal_txn_id, selections=[...])` — the full
+    specific-identification lot selection for one disposal.
+  - `transactions_categorize_rules_set(targets=[...])` — confirmed rule target
+    state as one auditable batch.
   - `import_labels_set(import_id, labels=[...])`.
 
 **1b. Entity upsert / partial update.**
 
 - **Test:** the input names one entity (by id or natural key) and creates-or-updates it.
 - **Form:** `<entity>_set(id, fields)` or `<entity>_set(natural_key, fields)`.
-- **Delete handling:** REQUIRES paired `_delete` — there's nothing to omit from.
+- **Delete handling:** prefer an explicit target state such as
+  `state="absent"` when create/update/remove share intent, authorization,
+  sensitivity, audit, and recovery contracts. The tool advertises maximum
+  static risk and confirms only the destructive validated branch. Use a paired
+  `_delete` when those contracts materially differ.
 - **Examples:**
-  - `budget_set(category, monthly_amount, start_month)` — upsert one (category, period) entry.
   - `accounts_set(account_id, ...)` — partial update of one account's settings.
+  - `investments_securities_set(security_id, ...)` — create or update one
+    securities-catalog entry.
 
 **Distinguishing 1a vs 1b at design time:**
 
@@ -47,12 +62,25 @@ Two sub-forms determined by the cardinality of the call's input.
 ### Shape 2 — Lifecycle-with-id
 
 - **Test:** the entity has its own identity referenced after creation; create, update, and delete are distinct operations the caller composes.
-- **Form:** `<entity>_create` / `<entity>_set(id, fields)` (partial update) / `<entity>_delete(id)`.
+- **Form:** `<entity>_create` / `<entity>_set(id, fields)` (partial update) /
+  `<entity>_delete(id)` only when strict-create, update, and removal are
+  materially different intents or contracts. Otherwise use one typed
+  target-state mutation.
 - **Examples:**
-  - `transactions_notes_add` / `_edit` / `_delete` — each note has `note_id`.
-  - `categories_create` / `categories_set` / `categories_delete`.
+  - `transactions_create(...)` — a durable manual transaction event.
+  - The current registry has no generic lifecycle trio: removal and recovery
+    retain their material contracts in `import_revert` and `gsheet_disconnect`.
 
 Shape 2 uses `_set(id, fields)` for partial update — the same verb as 1b. The operational difference: shape 2 has a strict `_create` that errors on existing entity; shape 1b's `_set` upserts directly.
+
+Compatible lifecycle operations may share one coarse workflow umbrella as
+discriminated request variants when authorization, sensitivity, audit,
+recovery, and output contracts remain aligned. The stable entity identity and
+imperative semantics still survive inside that umbrella. Never replace an
+identity-bearing thread with a collection `_set` merely to reduce tool count:
+omission must not silently delete sibling entities or recreate them under new
+IDs. `transactions_annotate` follows this rule with `note_add`, `note_edit`,
+and `note_delete` variants inside one registered tool.
 
 ### Shape 3 — Discrete-verb
 
@@ -61,10 +89,12 @@ Shape 2 uses `_set(id, fields)` for partial update — the same verb as 1b. The 
 - **Examples:**
   - `import_files(paths, refresh, force)` — batch import event.
   - `sync_pull(institution, force, refresh)` — pull from a connector.
-  - `transactions_tags_rename(old_tag, new_tag)` — global rename event (mutates N rows).
   - `refresh_run()` — execute the refresh pipeline.
 
-Batch tools with per-item error handling (`transactions_create`, `merchants_create`, `transactions_categorize_run`) are shape 3 — each call is one batch event; per-item failures don't abort the batch.
+Batch tools with per-item error handling (`transactions_create`,
+`transactions_categorize_run`) are shape 3 — each call is one batch event;
+per-item failures do not abort the batch. Global annotation changes such as a
+tag rename belong in `transactions_annotate`, not a new one-verb tool.
 
 ### Shape 4 — Agent-reasoning-choice
 
@@ -79,30 +109,45 @@ Shape 4 is narrower than it first appears. Many "different strategies" cases are
 ### Shape 5 — Read-projection
 
 - **Test:** returns data in a specific shape — one entity, collection, summary/aggregate, cross-entity, time-series.
-- **Form:** one tool per projection shape. Collapse only when two projections have genuinely identical shape AND consumers; most reads stay distinct.
+- **Form:** one domain query with a typed `view`/projection when related reads
+  share intent, authorization, sensitivity, pagination, and an intelligible
+  tagged output. Keep a separate tool when the result or trust contract is
+  materially different.
+- **Reports:** analytical and cross-entity projections register as `ReportSpec`
+  entries behind `reports(report_id=..., parameters=...)`; adding a report
+  never adds an MCP tool.
 - **Verb conventions:**
-  - **Collection / summary / aggregate / time-series:** noun-only. `reports_networth`, `accounts_summary`, `transactions_review`, `accounts_balance_history`.
-  - **Single entity by id:** `_get` suffix. `transactions_get`, `accounts_get`.
-  - **Status snapshot of a recent operation:** `_status` suffix. `transform_status`, `transactions_categorize_status`.
+  - **Collection / summary / aggregate / time-series:** noun-oriented coarse
+    reads. `reports`, `accounts`, `accounts_balances`, `transactions`,
+    `reviews`.
+  - **Single entity by id:** use the owning coarse read with an explicit stable
+    selector rather than minting a dedicated identity.
+  - **Status snapshot of a recent operation:** use its domain read or
+    `system_status`; do not add a status-only identity reflexively.
 
 ## Decision flowchart
 
 ```mermaid
 flowchart TD
-    A[New operation] --> B{Read or write?}
-    B -->|Read| C{Single entity by id?}
-    B -->|Write| D{Discrete event or state assertion?}
-    C -->|Yes| C1["Shape 5: _get suffix"]
-    C -->|No| C2["Shape 5: noun-only<br/>(or _status / _summary / _history)"]
-    D -->|Event| E{Multiple strategies?}
-    D -->|State| F{Caller expresses full collection state?}
-    E -->|No| E1["Shape 3: <entity>_<verb>"]
-    E -->|"Yes, same I/O"| E2["Shape 3 with methods param"]
-    E -->|"Yes, different I/O"| E3["Shape 4: separate tools"]
-    F -->|Yes| G["Shape 1a: _set, no _delete"]
-    F -->|No| H{Entity has own id with independent lifecycle?}
-    H -->|Yes| I["Shape 2: _create / _set / _delete"]
-    H -->|No| J["Shape 1b: _set + paired _delete"]
+    A[New capability or behavior] --> B{Existing tool can express it?}
+    B -->|"Yes: projection, method,<br/>batch, target state, umbrella"| C[Extend existing contract]
+    B -->|No| D{Registered read-only report?}
+    D -->|Yes| E["Add ReportSpec entry<br/>behind reports()"]
+    D -->|No| F{Material intent or contract boundary?}
+    F -->|"No"| G[Keep service or CLI-only operator control]
+    F -->|"Yes"| H{Read or write?}
+    H -->|Read| I["Shape 5 domain query"]
+    H -->|Write| J{Event or target state?}
+    J -->|Event| K["Shape 3 / 4"]
+    J -->|State| L["Shape 1 / 2"]
+    C --> M[Measure bytes and run evals]
+    E --> M
+    I --> M
+    K --> M
+    L --> M
+    M --> N{Within budget and no worse?}
+    N -->|Yes| O[Admit surface change]
+    N -->|No| P[Redesign or spend a justified slot]
 ```
 
 ## Verb vocabulary
@@ -111,9 +156,9 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 
 | Verb | Meaning | Example |
 |---|---|---|
-| `_set` | Idempotent state assertion (1a collection-set OR 1b entity upsert / partial update) | `budget_set`, `tags_set`, `accounts_set` |
-| `_create` | Strict create — errors if entity exists | `categories_create`, `transactions_create` |
-| `_delete` | Remove one entity by id or natural key | `budget_delete`, `categories_delete` |
+| `_set` | Idempotent state assertion (1a collection-set OR 1b entity upsert / partial update) | `accounts_set`, `taxonomy_set`, `investments_securities_set` |
+| `_create` | Strict create — errors if entity exists | `transactions_create` |
+| `_delete` | Remove one entity by id or natural key when that boundary is admitted | No bare `_delete` identity is in the current registry |
 | `_run` | Execute a discrete batch/pipeline operation | `refresh_run`, `transactions_categorize_run` |
 | `_commit` | Finalize externally-decided proposals (terminal step of propose→review→commit workflows) | `transactions_categorize_commit` |
 | `_confirm` | Accept or override an interactively-presented proposal (terminal step of a propose→review→confirm workflow) | `import_confirm` |
@@ -121,12 +166,14 @@ Coherence requires that when a verb appears, it means the same thing everywhere.
 | `_pull` | Fetch new data from an established external connection (already-authenticated) | `sync_pull`, `gsheet_pull` |
 | `_link` | Establish an authenticated session with a **mediated third-party provider** (Plaid-style OAuth → server-held tokens → server-mediated API access) | `sync_link` (Plaid, future SimpleFIN/MX) |
 | `_connect` | Establish a binding to **user-controlled storage** (direct OAuth or URL identification → client speaks the provider's API directly, no server mediation) | `gsheet_connect` (future `airtable_connect`, `smartsheet_connect`, `notion_connect`) |
-| `_get` | Fetch one entity by id | `transactions_get`, `accounts_get` |
-| `_status` | Status snapshot of a recent operation | `transform_status`, `transactions_categorize_status` |
-| `_history` | Time-series projection | `accounts_balance_history` |
-| `_summary` | Cross-entity aggregate snapshot | `accounts_summary` |
+| `_get` | Not admitted as a separate identity; use a coarse read with a stable reference | `accounts(...)`, `transactions(...)` |
+| `_status` | Retained when operation or lifecycle status is a material contract | `system_status`, `import_status`, `sync_status` |
+| `_history` | Not admitted as a separate identity; use a view selector, filter, audit read, or report entry | `system_audit`, `reports(...)` |
+| `_summary` | Not admitted as a separate identity; use a coarse read or registered report | `accounts_balances`, `reports(...)` |
 
-Plus domain-specific discrete verbs (`_rename`, `_archive`, `_revert`) — use these when the verb carries domain meaning the generic verbs would erase.
+Plus domain-specific discrete verbs (`_revert`, `_disconnect`, `_decide`,
+`_annotate`) — use these when the verb carries domain meaning the generic verbs
+would erase.
 
 **`_confirm` vs `_commit`.** These verbs are not interchangeable.
 - `_commit` — the human (or LLM agent acting as the human) has already made a decision in an external workflow (e.g., annotated a batch offline); the tool finalizes those *externally-decided* results. Example: `transactions_categorize_commit` accepts a pre-reviewed batch.
@@ -145,13 +192,16 @@ This is the canonical shape for any new system-proposed-then-ratified flow: the 
 **Verbs to avoid:**
 
 - `_apply` — use `_run` / `_refresh` (refresh domain) or `transactions_categorize_run(methods=["rules"])` (strategy execution). Do not reintroduce.
-- `_toggle` — too narrow (binary flip). Use `_set` with a typed field: `categories_set(category_id, is_active=...)`.
+- `_toggle` — too narrow (binary flip). Use `_set` with a typed field, such as
+  `privacy_consent_set(...)` or `taxonomy_set(...)`.
 - `_update` — synonym of `_set` in this codebase; use `_set`.
 - `_list` suffix on read tools — drop it (noun-only).
-- `manage_*` with action-polymorphism — rejected absolutely (see Polymorphism below).
+- broad `manage_*` with unrelated action polymorphism — reject by default (see Polymorphism below).
 - `_connect` for mediated financial providers — use `_link` (see verb table). Do not reintroduce.
 
-**Pluralization:** match the noun. Collection writes use plural even when operating on one element (`_rules_create`, `_rules_delete`). Singular `_rule_delete` is wrong even when deleting one rule.
+**Pluralization:** match the owned domain noun. The current registry keeps
+collection state under `transactions_categorize_rules_set`; do not create a
+singular alias merely because one target appears in a batch.
 
 ## Polymorphism
 
@@ -170,7 +220,26 @@ Polymorphism is **rejected** when:
 - Strategies differ in output shape (then they're shape 4).
 - The choice is a routing decision the agent makes based on input data (then it's not really a choice — collapse around the routing logic, not the surface).
 
-**`manage_X(action="...")` polymorphism is rejected absolutely.** It dispatches structurally different operations through a polymorphic argument — moving complexity from the tool list (visible at selection time) to the input schema (visible only after the tool is selected). Pure relocation, no reduction.
+**Broad `manage_X(action="...")` polymorphism is rejected by default.** It
+usually dispatches structurally different operations through one argument,
+moving complexity from the tool list to the input schema. A coarse operation
+is acceptable only when its branches share intent, authorization, sensitivity,
+input/output family, audit, and recovery contracts; it must reduce serialized
+metadata and pass selection, argument, workflow, safety, and client-schema
+evaluations.
+
+The `reports` tool is a deliberate bounded exception, not a generic action
+gateway. Every member is registered, read-only, parameter-validated,
+privacy-classified, provenance-bearing, and returns the same catalog/result
+union. It cannot execute arbitrary tools or accept SQL.
+
+## Reference resolution
+
+Coarse operations make reference handling more important. Resolve entity
+references through one shared service contract: explicit stable ID, then exact
+alias/name, then unambiguous normalized match. Otherwise return structured
+`not_found` or `ambiguous` data with candidate IDs. Never silently choose the
+first fuzzy match for a write.
 
 ## Audience layering
 
@@ -178,31 +247,53 @@ MoneyBin's surface mixes three audiences:
 
 | Audience | Examples | Positioning |
 |---|---|---|
-| **User-intent** | `reports_spending`, `accounts_summary`, `transactions_search` | Surfaced prominently in the `instructions` field, in user-facing tools' `actions[]` hints, and in docs |
-| **Mid-CRUD** | `transactions_tags_set`, `budget_set`, `categories_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
-| **Operator territory** | `sql_query`, `system_doctor`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
+| **User-intent** | `reports`, `accounts`, `transactions` | Surfaced prominently in the `instructions` field, in user-facing tools' `actions[]` hints, and in docs |
+| **Mid-CRUD** | `transactions_annotate`, `taxonomy_set`, `privacy_consent_set` | Surfaced as the agent's hands — referenced by user-intent tools' `actions[]` and in workflow examples |
+| **Operator territory** | `sql_query`, `sql_schema`, `system_audit` | Visible but deprioritized: description prose calls out the operator audience; not promoted in `instructions` enumeration; reached via specific `actions[]` hints when relevant |
 
-**Per `docs/specs/mcp-architecture.md` §3 ("Tool disclosure: full surface, taxonomy-led"):** the full registered tool surface is visible at connect — client-driven progressive disclosure was retired. Audience positioning happens through three levers MoneyBin controls end-to-end: the FastMCP `instructions` field, prefix-grouped tool names with sharp descriptions, and surface discipline (tools register only when their backing spec reaches `in-progress`/`implemented`, per `mcp.md` "Surface change discipline"). The `@mcp_tool(domain=...)` markers stay as dormant metadata for a future first-party client that can implement schema injection in the style of Claude Code's `tool_search`.
+**Per `docs/specs/mcp-tool-surface-scaling.md`:** MoneyBin exposes one bounded
+standard registry. Generic clients receive it in full. Capable hosts may defer
+schemas from that same registry, but availability, names, annotations,
+allowlists, approvals, and audit identity do not change. Audience positioning
+uses the FastMCP `instructions` field, distinct description openings,
+prefix-grouped names, and `actions[]` hints—not packs, profiles, or reconnect
+modes.
 
 **Test:** if a tool's primary caller is a human operator (or a power-user agent explicitly inspecting internals), the tool's description should say so, it should NOT be cited in user-facing tools' `actions[]` hints, and it should NOT appear in the `instructions` field's top-level enumeration. If the primary caller is an agent helping a user with their finances, the opposite — surface it prominently across those three levers.
 
-**Umbrella pattern:** when an operator-territory operation also serves a user-relevant capability, an umbrella tool exposes the capability at the user-intent layer. Example: `refresh_run` is the always-visible umbrella over the refresh pipeline (match + transform + categorize); the constituent operator operations (e.g. the CLI-only `moneybin transform apply`) are positioned for operators, not promoted in user-facing `actions[]` or in `instructions`. Both layers stay visible — the difference is positioning, not gating.
+**Umbrella pattern:** when granular pipeline stages produce the same observable
+outcome with the same audit and recovery contract, MCP exposes the complete
+workflow umbrella while the CLI may retain surgical operator controls.
+`refresh_run` covers match, transform, categorize, and identity stages; CLI
+stage commands remain useful for testing and debugging without consuming MCP
+slots.
 
 ## Surface implications
 
 ### MCP
 
-The five shapes and verb vocabulary above are MCP-native. The full registered tool surface is always visible per `mcp-architecture.md` §3; audience positioning happens via the `instructions` field, description prose, `actions[]` hint placement, and the surface-discipline rule that gates registration on backing-spec maturity (see "Audience layering" above).
+The five shapes and verb vocabulary above are MCP-native. One bounded standard
+registry is capability-complete for generic clients; capable hosts may defer
+schema injection from the same registry. Audience positioning happens through
+the `instructions` field, description prose, `actions[]` hints, and
+backing-spec maturity.
 
 ### CLI
 
-The CLI has subgroup nesting MCP doesn't (`moneybin transactions tags set` vs flat `transactions_tags_set`). That changes one thing: **discoverability is cheaper in CLI** because subgroups give `--help` navigation without context-window cost. Audience layering is less load-bearing — operator-only commands already live in operator-territory subgroups (`moneybin db init`, `moneybin profile *`).
+The CLI has subgroup nesting MCP does not (`moneybin transactions ...` versus
+the flat `transactions_annotate` workflow tool). That changes one thing:
+**discoverability is cheaper in CLI** because subgroups give `--help` navigation
+without context-window cost. Audience layering is less load-bearing —
+operator-only commands already live in operator-territory subgroups (`moneybin
+db init`, `moneybin profile *`).
 
 Everything else transfers directly:
 
 - Operation shapes — same five.
 - Verb vocabulary — same table, expressed as subcommands (`<group> set`, `<group> create`, `<group> delete`, `<group> run`).
-- CLI symmetry — every MCP tool has a CLI command via the same service layer (`mcp.md`, CLI symmetry principle). The same shape choice surfaces in both.
+- Capability symmetry — CLI and MCP map to the same capability IDs, service
+  operations, and observable outcomes. Granular CLI commands need not map 1:1
+  to MCP tools.
 
 ### REST API (future, M3D+)
 
@@ -227,14 +318,16 @@ Defended exceptions are legitimate but must be **documented in the tool's MCP de
 
 ## Anti-patterns
 
-- `manage_X(action="...")` polymorphism — rejected absolutely.
+- Broad `manage_X(action="...")` polymorphism that mixes intents or contracts.
 - `_set` semantics where the tool actually performs a discrete event.
 - `_apply` for refresh-domain operations — use `_refresh` / `_run`.
 - Method-parameter polymorphism when methods have structurally different I/O.
 - `_get` / `_list` suffix on collection or summary reads — drop them (noun-only).
-- Pluralization drift (`_rule_delete` vs `_rules_create`).
-- Duplicate tools where one is strictly richer (`transactions_recurring_list` vs `reports_recurring`).
-- Operator-territory tools promoted in `instructions` or in user-intent tools' `actions[]` hints alongside user-intent tools (full surface stays visible, but positioning matters — see Audience layering).
+- Singular aliases for an admitted batch or target-state contract.
+- Duplicate tools where one coarse read, selector, or registered report already
+  covers the outcome.
+- Operator-territory tools promoted in `instructions` or user-intent
+  `actions[]` hints when an umbrella already covers the user outcome.
 - New entity-mutation tools when `<entity>_set` already covers the field.
 - `_many` / `_batch` suffix variants — the canonical mutation tool accepts a list/scope from the start.
 
@@ -242,11 +335,40 @@ Defended exceptions are legitimate but must be **documented in the tool's MCP de
 
 When adding or modifying a tool / command / endpoint:
 
-1. Identify the operation shape using the flowchart.
-2. Apply the verb vocabulary for that shape.
-3. Place it in the correct audience layer; if operator territory, position via description prose and keep it out of user-facing `actions[]` hints and the `instructions` enumeration (full surface stays visible per `mcp-architecture.md` §3).
-4. Verify CLI and (future) REST symmetry inherits the shape.
-5. If proposing a defended exception, document the "why" inline in the tool description.
+1. Name the capability ID and user intent.
+2. Try an existing projection, method, batch, target state, report entry, or
+   workflow umbrella.
+3. If a separate tool remains, identify the material intent, safety,
+   authorization, sensitivity, confirmation, output, audit, or recovery
+   boundary.
+4. Identify the operation shape and apply the verb vocabulary.
+5. Place it in the correct audience layer.
+6. Verify CLI capability parity through the shared service outcome; do not
+   require method equality.
+7. Measure the serialized metadata delta and run the required selection,
+   argument, workflow, safety, and schema-compatibility evaluations.
+8. If proposing a defended exception, document the why in the tool description
+   and tool-admission record.
+9. Do not advertise `outputSchema` reflexively. Name the consuming client,
+   prove why structured content is insufficient, measure the byte/context
+   delta, and provide compatibility plus persisted benefit evidence.
+
+## Registry budget
+
+The operating contract is one 45-tool standard registry. Generic clients and
+supported deferred-loading hosts use the same registry, without reconnect,
+packs, or profiles; reports never consume tool slots. The deterministic
+comparison passed, but promotion remains unready until context-budget and
+host-native-deferral evidence is observed.
+
+- Target 30–40 standard tools across core and installed extensions.
+- Above 40 requires a carrying-weight review of every tool.
+- 50 is a hard maximum unless ADR-016 is superseded.
+- Advertised deprecated aliases: zero. A hidden compatibility alias must have a
+  bounded removal release.
+- New reports consume report-registry entries, not tool slots.
+- A consolidation must reduce actual `tools/list` metadata bytes and perform no
+  worse in persisted evaluations. Count reduction alone is insufficient.
 
 Per-tool triage of the existing surface against this rule:
 `private/plans/2026-05-16-mcp-surface-consolidation-decisions.md`.

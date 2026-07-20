@@ -15,7 +15,7 @@ from moneybin.privacy.payloads.balances import (
     BalanceAssertionPayload,
     BalanceObservationListPayload,
 )
-from moneybin.services.balance_service import BalanceService
+from moneybin.services.balance_service import BalanceAssertionSnapshot, BalanceService
 from tests.moneybin.db_helpers import create_core_tables
 
 
@@ -111,6 +111,55 @@ class TestAssertionsCRUD:
     def test_delete_silent_on_missing(self, assertion_db: Database) -> None:
         svc = BalanceService(assertion_db)
         svc.delete_assertion("acct_a", date(2099, 1, 1), actor="cli")  # no error
+
+    @pytest.mark.unit
+    def test_delete_verifies_live_assertion_inside_atomic_write(
+        self, assertion_db: Database
+    ) -> None:
+        svc = BalanceService(assertion_db)
+        assertion_date = date(2026, 1, 31)
+        svc.assert_balance(
+            "acct_a",
+            assertion_date,
+            Decimal("100.00"),
+            actor="cli",
+        )
+        assertion_db.execute(
+            """
+            UPDATE app.balance_assertions
+            SET updated_at = ?
+            WHERE account_id = ? AND assertion_date = ?
+            """,
+            ["2026-02-01 12:34:56", "acct_a", assertion_date],
+        )
+        seen: list[tuple[Decimal, str]] = []
+
+        def refuse(assertion: BalanceAssertionSnapshot) -> None:
+            seen.append((assertion.balance, assertion.updated_at))
+            raise UserError(
+                "Confirmation no longer matches the assertion.",
+                code="mutation_confirmation_mismatch",
+            )
+
+        with pytest.raises(UserError, match="no longer matches"):
+            svc.delete_assertion(
+                "acct_a",
+                assertion_date,
+                actor="cli",
+                verify=refuse,
+            )
+
+        assert seen == [(Decimal("100.00"), "2026-02-01 12:34:56")]
+        assert svc.list_assertions("acct_a").assertions[0].balance == Decimal("100.00")
+        delete_audits = assertion_db.execute(
+            """
+            SELECT 1
+            FROM app.audit_log
+            WHERE target_id = ? AND action = 'balance_assertion.delete'
+            """,
+            ["acct_a|2026-01-31"],
+        ).fetchall()
+        assert delete_audits == []
 
     @pytest.mark.unit
     def test_list_filters_by_account(self, assertion_db: Database) -> None:

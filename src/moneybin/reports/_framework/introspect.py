@@ -15,7 +15,9 @@ from typing import cast
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    OutputColumn,
     ParamSpec,
+    ReportSemantics,
     ReportSpec,
     Runner,
     TableRef,
@@ -59,9 +61,13 @@ def _section_tag(stripped: str) -> str | None:
 def build_spec(
     fn: Runner,
     *,
+    report_id: str,
     name: str,
     view: TableRef,
     classes: Mapping[str, DataClass],
+    parameter_classes: Mapping[str, DataClass],
+    columns: tuple[OutputColumn, ...],
+    semantics: ReportSemantics,
     domain: str | None = None,
     class_downgrades: Mapping[str, str] | None = None,
 ) -> ReportSpec:
@@ -115,7 +121,6 @@ def build_spec(
 
     summary, arg_help, examples = _parse_docstring(doc)
 
-    param_specs: list[ParamSpec] = []
     for p in params[1:]:
         if p.kind is not inspect.Parameter.KEYWORD_ONLY:
             raise ValueError(
@@ -128,6 +133,15 @@ def build_spec(
                 "with a shared CLI option; rename it (reserved: "
                 f"{', '.join(sorted(_RESERVED_CLI_PARAMS))})."
             )
+
+    parameter_names = {parameter.name for parameter in params[1:]}
+    if set(parameter_classes) != parameter_names:
+        raise ValueError(
+            f"Report {name!r} `parameter_classes` must exactly cover runner parameters."
+        )
+
+    param_specs: list[ParamSpec] = []
+    for p in params[1:]:
         required = p.default is inspect.Parameter.empty
         param_specs.append(
             ParamSpec(
@@ -138,15 +152,19 @@ def build_spec(
                 default=None if required else p.default,
                 required=required,
                 help=arg_help.get(p.name, ""),
+                data_class=parameter_classes[p.name],
             )
         )
 
     return ReportSpec(
+        report_id=report_id,
         name=name,
         description=summary,
         view=view,
         runner=fn,
         classes=dict(classes),
+        columns=columns,
+        semantics=semantics,
         params=tuple(param_specs),
         examples=examples,
         domain=domain,

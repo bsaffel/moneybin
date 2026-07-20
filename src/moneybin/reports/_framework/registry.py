@@ -1,13 +1,12 @@
-"""Discover ``@report`` runners and register them on the MCP and CLI surfaces.
+"""Discover ``@report`` runners and register them on the CLI and catalog.
 
 In-tree reports are collected from an explicit list (the ``definitions``
 package's exports); ``discover_reports`` scans a module's members for the same
-``_report_spec`` marker so a package (Plan 4) can contribute reports the same
-way.
+``_report_spec`` marker. Extensions join the process-local catalog and their
+own Typer app through ``register_extension_reports`` without touching MCP. The
+MCP surface has one generic catalog/runner independent of report count.
 
-Cold-start: the per-surface registrars are imported lazily inside each function
-so importing this module from the CLI path never pulls ``fastmcp`` (via
-``mcp_register``); ``cli_register`` in turn defers ``execute``/``sqlglot``.
+Cold-start: ``cli_register`` defers ``execute``/``sqlglot``.
 """
 
 from __future__ import annotations
@@ -22,6 +21,46 @@ if TYPE_CHECKING:
     import typer
     from fastmcp import FastMCP
 
+_extension_reports: dict[str, ReportSpec] = {}
+
+
+def register_extension_report(spec: ReportSpec) -> None:
+    """Add one discovered SQL-backed extension report by stable full ID."""
+    if spec.report_id in _extension_reports:
+        raise ValueError(f"duplicate extension report_id: {spec.report_id}")
+    _extension_reports[spec.report_id] = spec
+
+
+def register_extension_reports(
+    runners: Iterable[Runner], app: typer.Typer
+) -> list[ReportSpec]:
+    """Register extension runners in the process catalog and their own CLI app."""
+    from moneybin.reports._framework.catalog import get_report_catalog
+    from moneybin.reports._framework.cli_register import register_report_cli
+
+    specs = [spec_of(runner) for runner in runners]
+    batch_ids = [spec.report_id for spec in specs]
+    duplicate_ids = {
+        report_id for report_id in batch_ids if batch_ids.count(report_id) > 1
+    }
+    current_ids = {report.report_id for report in get_report_catalog().list()}
+    duplicate_ids.update(current_ids.intersection(batch_ids))
+    if duplicate_ids:
+        raise ValueError(
+            f"duplicate extension report_id: {', '.join(sorted(duplicate_ids))}"
+        )
+
+    for spec in specs:
+        register_extension_report(spec)
+    for spec in specs:
+        register_report_cli(spec, app)
+    return specs
+
+
+def extension_report_specs() -> tuple[ReportSpec, ...]:
+    """Return explicitly registered extension reports in deterministic ID order."""
+    return tuple(_extension_reports[key] for key in sorted(_extension_reports))
+
 
 def spec_of(runner: Runner) -> ReportSpec:
     spec = getattr(runner, "_report_spec", None)
@@ -29,34 +68,6 @@ def spec_of(runner: Runner) -> ReportSpec:
         name = getattr(runner, "__name__", repr(runner))
         raise ValueError(f"{name} is not a @report runner (missing _report_spec).")
     return spec
-
-
-def register_report(runner: Runner, mcp: FastMCP, app: typer.Typer) -> ReportSpec:
-    """Register one ``@report`` runner on both the MCP and CLI surfaces."""
-    from moneybin.reports._framework.cli_register import register_report_cli
-    from moneybin.reports._framework.mcp_register import register_report_mcp
-
-    spec = spec_of(runner)
-    register_report_mcp(spec, mcp)
-    register_report_cli(spec, app)
-    return spec
-
-
-def register_reports(
-    runners: Iterable[Runner], mcp: FastMCP, app: typer.Typer
-) -> list[ReportSpec]:
-    """Register every runner in ``runners`` on both surfaces; return their specs."""
-    return [register_report(runner, mcp, app) for runner in runners]
-
-
-def register_reports_mcp(runners: Iterable[Runner], mcp: FastMCP) -> list[ReportSpec]:
-    """Register ``runners`` on the MCP surface only (the server wires MCP alone)."""
-    from moneybin.reports._framework.mcp_register import register_report_mcp
-
-    specs = [spec_of(r) for r in runners]
-    for spec in specs:
-        register_report_mcp(spec, mcp)
-    return specs
 
 
 def register_reports_cli(
@@ -69,6 +80,22 @@ def register_reports_cli(
     for spec in specs:
         register_report_cli(spec, app)
     return specs
+
+
+def register_generic_reports_tool(mcp: FastMCP) -> None:
+    """Register the single standard ``reports`` MCP contract."""
+    from moneybin.mcp._registration import register
+    from moneybin.mcp.tools.reports import reports
+
+    register(
+        mcp,
+        reports,
+        "reports",
+        "Browse registered financial reports or run one by stable report ID. "
+        "Omit `report_id` to return catalog metadata; supply it to execute a "
+        "registered read-only report. This tool never accepts SQL; use "
+        "`sql_query` separately for arbitrary read-only SQL.",
+    )
 
 
 def discover_reports(module: ModuleType) -> list[Runner]:

@@ -437,6 +437,15 @@ class InvestmentService:
                 hint="💡 Pass a ticker, CUSIP, ISIN, or catalog name.",
             )
 
+        # Rung 0 — canonical stable id. Coarse surfaces resolve a user-facing
+        # reference through the shared entity resolver before binding filters.
+        row = self._db.execute(
+            f"SELECT security_id FROM {SECURITIES.full_name} WHERE security_id = ?",  # noqa: S608  # TableRef constant
+            [ref_clean],
+        ).fetchone()
+        if row is not None:
+            return self._record_resolution("security_id", str(row[0]))
+
         # Rung 1a — CUSIP exact.
         sid = self._resolve_by_identifier("cusip", ref_clean)
         if sid is not None:

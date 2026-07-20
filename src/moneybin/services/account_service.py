@@ -733,19 +733,18 @@ class AccountService:
         )
         return updated, warnings
 
-    def resolve(self, query: str, limit: int = 5) -> AccountResolvePayload:
+    def resolve(self, query: str, limit: int | None = 5) -> AccountResolvePayload:
         """Fuzzy-match a free-text query against core.dim_accounts.
 
         Scores each account against display_name, account_subtype, and
         institution_name using difflib.SequenceMatcher. Returns the top-`limit`
-        matches sorted by confidence descending. ``limit < 1`` returns an empty
-        payload — slicing with a negative value would silently return "all but the
-        last N" matches, which violates the documented max-candidates semantics.
+        matches sorted by confidence descending, then stable account ID.
+        ``limit=None`` returns every match; ``limit < 1`` returns an empty payload.
 
         See docs/specs/moneybin-mcp.md §accounts_resolve.
         """
         query_clean = query.lower().strip()
-        if not query_clean or limit < 1:
+        if not query_clean or (limit is not None and limit < 1):
             return AccountResolvePayload(matches=[])
 
         rows = self._db.execute(
@@ -776,8 +775,8 @@ class AccountService:
                     )
                 )
 
-        scored.sort(key=lambda r: r.confidence, reverse=True)
-        top = scored[:limit]
+        scored.sort(key=lambda row: (-row.confidence, row.account_id))
+        top = scored if limit is None else scored[:limit]
         logger.info(
             f"Resolved query (len={len(query_clean)}): "
             f"{len(scored)} candidates, returning {len(top)}"

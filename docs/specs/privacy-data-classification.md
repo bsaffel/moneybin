@@ -98,6 +98,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
 | (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
 | (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
+| (app, import_previews) | import_id | RECORD_ID | Resulting `raw.import_log.import_id`; same class as the referenced import row. |
+| (app, import_previews) | preview_id | RECORD_ID | Opaque 12-char UUID4 handle for one expiring preview. |
 | (app, match_decisions) | account_id | RECORD_ID | opaque minted surrogate. |
 | (app, match_decisions) | account_id_b | RECORD_ID | second account in a transfer pair; same class as account_id. |
 | (app, match_decisions) | match_id | RECORD_ID | internal UUID PK for the decision row. |
@@ -157,6 +159,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | merchant_pattern | MERCHANT_NAME | pattern matched against transaction description; reveals which merchants the user tracks. Same on `proposed_rules` and `user_merchants.raw_pattern`. |
 | (app, categorization_rules) | name | USER_NOTE | human-readable rule label; user-authored free text. |
 | (app, imports) | labels | USER_NOTE | LIST of user-applied slug labels; user-authored, treat as USER_NOTE for parity with `transaction_tags.tag`. |
+| (app, import_previews) | file_path | RECORD_ID | Local source provenance, matching the existing `source_file` classification; never exposed as account identity. |
+| (app, import_previews) | snapshot_json | TXN_AMOUNT | Complete preview payload can contain exact sample amounts and descriptions; classify by its highest-sensitivity possible content. |
 | (app, match_decisions) | match_reason | USER_NOTE | human-readable explanation; may contain merchant or description hints. |
 | (app, metrics) | * | AGGREGATE / TXN_TYPE / TIMESTAMP_OBSERVABILITY | operational telemetry — Prometheus snapshots; numeric/label fields are AGGREGATE, type discriminator is TXN_TYPE, recorded_at is observability. |
 | (app, tabular_formats) | field_mapping, header_signature, skip_trailing_patterns | DESCRIPTION | JSON parse-configuration text; not transaction descriptions but free-text-shaped — MEDIUM tier is conservative. |

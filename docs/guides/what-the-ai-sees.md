@@ -63,8 +63,8 @@ envelope contains once it reaches the model.
 
 | Tool kind | Goes to the provider | Always masked first | Recorded locally |
 |---|---|---|---|
-| Transaction reads (`transactions_get`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
-| Report views (`reports_networth`, `reports_spending`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
+| Transaction reads (`transactions`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
+| Report views (`reports(report_id="core:networth")`, `reports(report_id="core:spending")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app` (amounts, descriptions, merchants, dates, locations) | Account/routing numbers (by column classification) | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |
@@ -105,7 +105,7 @@ caught.** Three real cases, disclosed rather than hidden:
 - **Import samples** — `import_preview` / `import_files` return a `sample_values`
   preview of the file being imported, classified as description text; a raw
   account-number column in that file shows up in the sample.
-- **Audit snapshots** — `system_audit` / `system_audit_get` return the before/after
+- **Audit snapshots** — `system_audit` list and detail views return the before/after
   row of a change; if that change set an account's `last_four`, the snapshot
   carries the raw digits.
 
@@ -217,8 +217,8 @@ stays masked regardless of backend.)*
 
 ## Consent: what the ledger does, and doesn't
 
-MoneyBin has a consent ledger (`privacy_consent_grant` / `_revoke` /
-`privacy_status`). Today it is a **record**, not a **gate**:
+MoneyBin has a consent ledger (`privacy_consent_set` and
+`privacy(view="status")`). Today it is a **record**, not a **gate**:
 
 - Grants and revocations are stored and audited.
 - **Nothing is currently gated on them.** Granting or revoking `mcp-data-sharing`
@@ -238,14 +238,14 @@ provider, because it was.
 ## What MoneyBin records locally
 
 Two independent local records. Both are stored locally and neither is transmitted
-anywhere on its own — but note that both are exposed through their *own* MCP tools
-(`privacy_log`, `system_audit`), so an agent that calls those tools pulls the
+anywhere on its own — but note that both are exposed through MCP tools
+(`privacy(view="log")`, `system_audit`), so an agent that calls those tools pulls the
 records into a tool result, which then reaches the provider like any other. That
 matters most for `system_audit`, whose payload deliberately includes
 high-sensitivity before/after values. "Stored locally, not transmitted on their
 own" — not "the model can never see them."
 
-- **Per-call privacy log** (`privacy.log.jsonl`, `privacy_log` tool / `moneybin
+- **Per-call privacy log** (`privacy.log.jsonl`, `privacy(view="log")` / `moneybin
   privacy log`). One line per tool call — the tool name, its sensitivity tier,
   the data classes returned, and the row **count**. It records **no row content,
   no row identifiers, no filters, and no SQL text**. So it tells you *how many*

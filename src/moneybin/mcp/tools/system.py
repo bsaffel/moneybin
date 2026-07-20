@@ -2,22 +2,42 @@
 
 from __future__ import annotations
 
+import asyncio
 import fcntl  # POSIX-only: project targets macOS/Linux
+import inspect
 import json
 import os
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal, cast
 
 import duckdb
 from fastmcp import FastMCP
+from pydantic import Field
 
 from moneybin.db_lock import lock_path_for
+from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.system import (
+    AuditDetail,
+    AuditEvents,
+    AuditHistory,
+    CategorizationStatus,
+    DoctorStatus,
     InvariantResultPayload,
+    OverviewStatus,
     RecoveryActionPayload,
     SchemaDriftTable,
+    SystemAuditCoarsePayload,
     SystemAuditEventPayload,
     SystemAuditGetPayload,
     SystemAuditHistoryEntryPayload,
@@ -27,6 +47,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusAccountLinksInfo,
     SystemStatusAccountsInfo,
     SystemStatusCategorizationInfo,
+    SystemStatusCoarsePayload,
     SystemStatusDatabaseConnectionsInfo,
     SystemStatusGsheetInfo,
     SystemStatusGsheetRow,
@@ -40,6 +61,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusTransformsInfo,
     SystemStatusWriter,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
@@ -106,18 +128,18 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
         cid = row["connection_id"]
         if status == "drift_detected":
             hints.append(
-                f"Run gsheet_reconnect(connection_id='{cid}') to re-detect "
+                f"Run gsheet_connect(connection_id='{cid}') to re-detect "
                 "the sheet structure and re-pin the column mapping."
             )
         elif status == "auth_expired":
             hints.append(
-                "Re-authenticate: call gsheet_auth() (MCP) or run "
+                "Re-authenticate with gsheet_connect(force_reauth=True), or run "
                 "`moneybin gsheet auth` (CLI). Both drive the same "
                 "in-process OAuth flow."
             )
         else:
             hints.append(
-                f"Run gsheet_status(connection_id='{cid}') to inspect the "
+                f"Run gsheet(view='status', connection_id='{cid}') to inspect the "
                 f"failure detail (status={status})."
             )
     return hints
@@ -289,7 +311,6 @@ def _locked_status_envelope(
     )
 
 
-@mcp_tool()
 def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     """Return data inventory, pending review queue counts, and transforms freshness.
 
@@ -332,8 +353,8 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
 
     schema_drift_payload: SystemStatusSchemaDrift | None = None
     actions = [
-        "Use `review` for per-queue review counts (matches + categorize + account-links + merchant-links)",
-        "Use reports_spending for a monthly spending trend snapshot",
+        "Use reviews for per-queue review counts",
+        "Use reports(report_id='core:spending') for a spending trend snapshot",
     ]
     if status.schema_drift:
         schema_drift_payload = SystemStatusSchemaDrift(
@@ -411,7 +432,6 @@ def system_status() -> ResponseEnvelope[SystemStatusPayload]:
     )
 
 
-@mcp_tool(read_only=False)
 def system_doctor(full: bool = False) -> ResponseEnvelope[SystemDoctorPayload]:
     """Run pipeline integrity checks across all SQLMesh named audits.
 
@@ -510,13 +530,14 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     )
 
 
-@mcp_tool()
 def system_audit_history(
     domain: str | None = None,
     since: str | None = None,
     actor: str | None = None,
     limit: int = 50,
     include_undone: bool = False,
+    snapshot: tuple[str, str] | None = None,
+    after: tuple[str, str] | None = None,
 ) -> ResponseEnvelope[SystemAuditHistoryPayload]:
     """List recent audited operations, newest first — the "I changed my mind" surface.
 
@@ -539,6 +560,8 @@ def system_audit_history(
             actor=actor,
             limit=limit,
             include_undone=include_undone,
+            snapshot=snapshot,
+            after=after,
         )
     return build_envelope(
         data=SystemAuditHistoryPayload(
@@ -569,14 +592,13 @@ def system_audit_history(
             ]
         ),
         actions=[
-            "Inspect before/after with system_audit_get(operation_id=...) "
-            "before undoing",
+            "Inspect before/after with system_audit(view='detail', "
+            "operation_id=...) before undoing",
             "Reverse an operation with system_audit_undo(operation_id=...)",
         ],
     )
 
 
-@mcp_tool()
 def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayload]:
     """Full before/after for every row of one operation — inspect before undoing.
 
@@ -635,50 +657,414 @@ def system_audit_get(operation_id: str) -> ResponseEnvelope[SystemAuditGetPayloa
     )
 
 
-def register_system_tools(mcp: FastMCP) -> None:
-    """Register all system namespace tools with the FastMCP server."""
+def _dynamic_coarse_envelope[T](
+    data: T,
+    *,
+    contract_types: list[type[Any]],
+    total_count: int,
+    returned_count: int,
+    next_cursor: str | None = None,
+    actions: list[str] | None = None,
+    degraded: bool = False,
+    degraded_reason: str | None = None,
+) -> ResponseEnvelope[T]:
+    """Build a runtime-classified coarse envelope from its selected variants."""
+    classes = {
+        data_class
+        for contract_type in contract_types
+        for data_class in extract_data_classes(contract_type)
+    }
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(T, redact_typed(data, None))
+    return cast(
+        ResponseEnvelope[T],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=returned_count,
+            next_cursor=next_cursor,
+            actions=actions,
+            degraded=degraded,
+            degraded_reason=degraded_reason,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+
+
+async def _run_tool_body[T](
+    callback: Callable[..., T],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """Delegate without emitting a second public-tool privacy audit."""
+    body = cast(Callable[..., T], inspect.unwrap(callback))
+    return await asyncio.to_thread(body, *args, **kwargs)
+
+
+def _audit_event_payload(event: Any) -> SystemAuditEventPayload:
+    """Project one existing AuditService row into the classified wire row."""
+    return SystemAuditEventPayload(
+        audit_id=event.audit_id,
+        occurred_at=event.occurred_at,
+        actor=event.actor,
+        action=event.action,
+        target_schema=event.target_schema,
+        target_table=event.target_table,
+        target_id=event.target_id,
+        before_value=event.before_value,
+        after_value=event.after_value,
+        parent_audit_id=event.parent_audit_id,
+        operation_id=event.operation_id,
+        context_json=event.context_json,
+        is_undo=event.is_undo,
+        undoes_operation_id=event.undoes_operation_id,
+    )
+
+
+def _audit_position(
+    cursor: str | None,
+    view: Literal["events", "history"],
+) -> KeysetPosition | None:
+    """Decode an audit keyset cursor and reject malformed or cross-view reuse."""
+    if cursor is None:
+        return None
+    try:
+        return decode_keyset_cursor(
+            cursor,
+            namespace="system_audit",
+            scope={"view": view},
+        )
+    except ValueError as exc:
+        raise ValueError("invalid audit cursor") from exc
+
+
+def _audit_bounds(
+    position: KeysetPosition | None,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+    """Validate and narrow decoded audit keys to timestamp/id string pairs."""
+    if position is None:
+        return None, None
+    if (
+        len(position.snapshot) != 2
+        or len(position.after) != 2
+        or not all(
+            isinstance(value, str) for value in (*position.snapshot, *position.after)
+        )
+    ):
+        raise ValueError("invalid audit cursor")
+    snapshot = cast(tuple[str, str], position.snapshot)
+    after = cast(tuple[str, str], position.after)
+    try:
+        datetime.fromisoformat(snapshot[0])
+        datetime.fromisoformat(after[0])
+    except ValueError as exc:
+        raise ValueError("invalid audit cursor") from exc
+    if not snapshot[1] or not after[1]:
+        raise ValueError("invalid audit cursor")
+    return (
+        snapshot,
+        after,
+    )
+
+
+def _audit_list_actions(
+    view: Literal["events", "history"],
+    *,
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Return hints that remain valid on the consolidated public surface."""
+    actions = [
+        "Inspect an operation with system_audit(view='detail', operation_id=...)"
+    ]
+    if view == "history":
+        actions.append("Reverse an operation with system_audit_undo(operation_id=...)")
+    if next_cursor is not None:
+        actions.append(
+            f"Continue with system_audit(view='{view}', limit={limit}, "
+            f"cursor='{next_cursor}')"
+        )
+    return actions
+
+
+@mcp_tool(
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.MEDIUM,
+    read_only=False,
+)
+async def system_status_coarse(
+    sections: list[Literal["overview", "doctor", "categorization"]] | None = None,
+    detail: Literal["summary", "full"] = "summary",
+) -> ResponseEnvelope[SystemStatusCoarsePayload]:
+    """Return selected system overview, integrity, and categorization sections."""
+    from moneybin.mcp.tools.transactions_categorize import (
+        transactions_categorize_stats,
+    )
+
+    requested = (
+        ["overview", "doctor", "categorization"] if sections is None else sections
+    )
+    if not requested:
+        raise ValueError("At least one system status section is required.")
+    if len(set(requested)) != len(requested):
+        raise ValueError("System status sections must not contain duplicates.")
+
+    selected: list[OverviewStatus | DoctorStatus | CategorizationStatus] = []
+    actions: list[str] = []
+    degraded_reasons: list[str] = []
+    for section in requested:
+        if section == "overview":
+            response = await _run_tool_body(system_status)
+            if response.error is not None:
+                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
+            selected.append(OverviewStatus(overview=response.data))
+        elif section == "doctor":
+            response = await _run_tool_body(system_doctor, full=detail == "full")
+            if response.error is not None:
+                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
+            selected.append(DoctorStatus(doctor=response.data))
+        else:
+            response = await _run_tool_body(
+                transactions_categorize_stats, include_auto=detail == "full"
+            )
+            if response.error is not None:
+                return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
+            selected.append(CategorizationStatus(statistics=response.data))
+        actions.extend(response.actions)
+        if response.summary.degraded:
+            reason = response.summary.degraded_reason
+            if reason is not None:
+                degraded_reasons.append(reason)
+
+    payload = SystemStatusCoarsePayload(sections=selected)
+    return _dynamic_coarse_envelope(
+        payload,
+        contract_types=[type(section) for section in selected],
+        total_count=len(selected),
+        returned_count=len(selected),
+        actions=list(dict.fromkeys(actions)),
+        degraded=bool(degraded_reasons),
+        degraded_reason=" ".join(dict.fromkeys(degraded_reasons)) or None,
+    )
+
+
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+async def system_audit_coarse(
+    view: Literal["events", "history", "detail"] = "events",
+    operation_id: str | None = None,
+    audit_id: str | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 50,
+    cursor: str | None = None,
+) -> ResponseEnvelope[SystemAuditCoarsePayload]:
+    """List audit events or operations, or inspect one operation/event chain."""
+    if view == "detail":
+        if (operation_id is None) == (audit_id is None):
+            raise UserError(
+                "Audit detail requires exactly one of operation_id or audit_id.",
+                code="AUDIT_IDENTIFIER_REQUIRED",
+            )
+        if cursor is not None:
+            raise UserError(
+                "Audit detail does not accept a cursor.",
+                code="AUDIT_CURSOR_NOT_ALLOWED",
+            )
+    elif operation_id is not None or audit_id is not None:
+        raise UserError(
+            "operation_id and audit_id are only valid for audit detail.",
+            code="AUDIT_IDENTIFIER_NOT_ALLOWED",
+        )
+
+    if view == "events":
+        from moneybin.database import get_database
+        from moneybin.services.audit_service import AuditService
+
+        position = _audit_position(cursor, "events")
+        snapshot, after = _audit_bounds(position)
+        with get_database(read_only=True) as db:
+            service = AuditService(db)
+            events = service.list_events(
+                limit=limit + 1,
+                snapshot=snapshot,
+                after=after,
+            )
+            page = [_audit_event_payload(event) for event in events[:limit]]
+            has_more = len(events) > limit
+            snapshot_key = (
+                snapshot
+                if snapshot is not None
+                else ((str(page[0].occurred_at), page[0].audit_id) if page else None)
+            )
+            total_count = (
+                position.total
+                if position is not None
+                else service.count_events(snapshot=snapshot_key)
+            )
+        if has_more and page and snapshot_key is not None:
+            next_cursor = encode_keyset_cursor(
+                namespace="system_audit",
+                scope={"view": "events"},
+                snapshot=snapshot_key,
+                after=(str(page[-1].occurred_at), page[-1].audit_id),
+                total=total_count,
+            )
+        else:
+            next_cursor = None
+        payload = AuditEvents(events=page)
+        return _dynamic_coarse_envelope(
+            payload,
+            contract_types=[AuditEvents],
+            total_count=total_count,
+            returned_count=len(page),
+            next_cursor=next_cursor,
+            actions=_audit_list_actions(
+                "events",
+                limit=limit,
+                next_cursor=next_cursor,
+            ),
+        )
+
+    if view == "history":
+        position = _audit_position(cursor, "history")
+        snapshot, after = _audit_bounds(position)
+        response = await _run_tool_body(
+            system_audit_history,
+            limit=limit + 1,
+            snapshot=snapshot,
+            after=after,
+        )
+        if response.error is not None:
+            return cast(ResponseEnvelope[SystemAuditCoarsePayload], response)
+        rows = response.data.operations
+        page = rows[:limit]
+        has_more = len(rows) > limit
+        snapshot_key = (
+            snapshot
+            if snapshot is not None
+            else ((str(page[0].occurred_at), page[0].operation_id) if page else None)
+        )
+        if position is not None:
+            total_count = position.total
+        else:
+            from moneybin.database import get_database
+            from moneybin.services.undo_service import UndoService
+
+            with get_database(read_only=True) as db:
+                total_count = UndoService(db).history_count(snapshot=snapshot_key)
+        if has_more and page and snapshot_key is not None:
+            next_cursor = encode_keyset_cursor(
+                namespace="system_audit",
+                scope={"view": "history"},
+                snapshot=snapshot_key,
+                after=(str(page[-1].occurred_at), page[-1].operation_id),
+                total=total_count,
+            )
+        else:
+            next_cursor = None
+        payload = AuditHistory(operations=page)
+        return _dynamic_coarse_envelope(
+            payload,
+            contract_types=[AuditHistory],
+            total_count=total_count,
+            returned_count=len(page),
+            next_cursor=next_cursor,
+            actions=_audit_list_actions(
+                "history",
+                limit=limit,
+                next_cursor=next_cursor,
+            ),
+        )
+
+    if operation_id is not None:
+        response = await _run_tool_body(system_audit_get, operation_id)
+        if response.error is not None:
+            return cast(ResponseEnvelope[SystemAuditCoarsePayload], response)
+        payload = AuditDetail(
+            operation_id=operation_id,
+            audit_id=None,
+            events=response.data.events,
+            can_undo=response.data.can_undo,
+            undo_blocked_by=response.data.undo_blocked_by,
+        )
+        return _dynamic_coarse_envelope(
+            payload,
+            contract_types=[AuditDetail],
+            total_count=len(payload.events),
+            returned_count=len(payload.events),
+            actions=response.actions,
+        )
+
+    from moneybin.database import get_database
+    from moneybin.services.audit_service import AuditService
+
+    audit_id_value = cast(str, audit_id)
+    with get_database(read_only=True) as db:
+        events = AuditService(db).chain_for(audit_id_value)
+    if not events:
+        raise UserError(
+            "No audit event found for the supplied audit_id.",
+            code="AUDIT_IDENTIFIER_NOT_FOUND",
+        )
+    payload = AuditDetail(
+        operation_id=None,
+        audit_id=audit_id_value,
+        events=[_audit_event_payload(event) for event in events],
+        can_undo=None,
+        undo_blocked_by=None,
+    )
+    return _dynamic_coarse_envelope(
+        payload,
+        contract_types=[AuditDetail],
+        total_count=len(payload.events),
+        returned_count=len(payload.events),
+        actions=[
+            "Use the event operation_id with system_audit(view='detail', "
+            "operation_id=...) to inspect undoability."
+        ],
+    )
+
+
+def register_system_coarse_reads(mcp: FastMCP) -> None:
+    """Register the standard system reads."""
     register(
         mcp,
-        system_status,
+        system_status_coarse,
         "system_status",
-        "Return data inventory (accounts, transactions, freshness), pending review queue counts, "
-        "and a transforms-pending signal indicating whether derived tables need a refresh. "
-        "Call this first to orient before suggesting analytical queries.",
+        "Return selected operator status sections: overview inventory, integrity "
+        "doctor checks, and categorization coverage. detail='full' deepens the "
+        "doctor scan and includes auto-categorization health.",
+        privacy_actor="system_status",
     )
     register(
         mcp,
-        system_doctor,
-        "system_doctor",
-        "Run pipeline integrity checks across all SQLMesh named audits. "
-        "Returns pass/fail/warn per invariant plus transaction count. "
-        "Failing and warning invariants include a `recovery_actions` list of "
-        "pre-built, directly-executable tool calls (tool, arguments, rationale, "
-        "confidence, idempotent) the agent can dispatch to remediate the issue "
-        "without further reasoning. "
-        "May write SQLMesh state tables on first call. Call before relying on analytical results to confirm the pipeline is self-consistent.",
+        system_audit_coarse,
+        "system_audit",
+        "List recent audit events or operation history, or inspect one operation "
+        "or parent audit event in detail. Detail requires exactly one identifier.",
+        privacy_actor="system_audit",
     )
+
+
+def register_system_tools(mcp: FastMCP) -> None:
+    """Register the standard system orientation and recovery boundaries."""
+    register_system_coarse_reads(mcp)
     register(
         mcp,
         system_audit_undo,
         "system_audit_undo",
-        "Reverse every app.* mutation in one operation as a unit, keyed on operation_id. "
-        "Synthesizes each row's inverse from its audit before/after image; writes new audit rows under a fresh operation_id, so the undo is itself undoable (returned as undo_operation_id). "
-        "Block-don't-cascade: if a later operation modified the same rows it refuses with undo_cascade_blocked and lists the blockers (newest first) in recovery_actions — undo those first. "
-        "Other refusals: undo_operation_not_found, undo_already_undone, recovery_no_path (op touched a table outside the undoable app.* surface). "
-        "Writes app.audit_log + the reversed app.* rows; revert by calling system_audit_undo on the returned undo_operation_id.",
+        "Undo one complete audited operation by operation_id. The inverse "
+        "mutation is itself audited and undoable; dependency conflicts return "
+        "the blocking operation IDs.",
     )
-    register(
-        mcp,
-        system_audit_history,
-        "system_audit_history",
-        "List recent audited operations, newest first — the pull surface for reversing a change when no error preceded the regret. "
-        "Each entry carries can_undo and, when blocked, undo_blocked_by (operation ids to undo first). Operator territory. "
-        "domain filters to an action family (e.g. 'tag'); include_undone adds the undo operations themselves (hidden by default).",
-    )
-    register(
-        mcp,
-        system_audit_get,
-        "system_audit_get",
-        "Full before/after for every row of one operation — inspect exactly what system_audit_undo would change before running it. "
-        "before_value/after_value can carry financial amounts (high sensitivity). Raises undo_operation_not_found for a bad operation_id.",
-    )
+
+
+# Internal granular helpers retained for standard-boundary composition and
+# parity. They are never individually registered; the surface-budget guard
+# derives the complete required inventory from the replaced public cohorts.
+_LEGACY_INTERNAL_CALLBACKS = (
+    system_status,
+    system_doctor,
+    system_audit_history,
+    system_audit_get,
+)

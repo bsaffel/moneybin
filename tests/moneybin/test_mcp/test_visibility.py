@@ -14,6 +14,9 @@ import re
 import pytest
 from fastmcp import Client
 
+from moneybin.mcp.surface import STANDARD_TOOL_NAMES, assert_surface_contract
+from moneybin.mcp.surface_inventory import SurfaceInventory
+
 
 @pytest.fixture(scope="module", autouse=True)
 def _register_tools() -> None:  # pyright: ignore[reportUnusedFunction]
@@ -36,7 +39,8 @@ async def test_full_surface_visible_at_connect() -> None:
     from moneybin.mcp.server import mcp
 
     async with Client(mcp) as client:
-        visible = {t.name for t in await client.list_tools()}
+        visible_tools = await client.list_tools()
+    visible = {tool.name for tool in visible_tools}
 
     all_registered = {
         t.name
@@ -48,6 +52,13 @@ async def test_full_surface_visible_at_connect() -> None:
         f"transform may have been reintroduced. "
         f"Missing from visible: {all_registered - visible}; "
         f"unexpected in visible: {visible - all_registered}"
+    )
+
+    assert_surface_contract(
+        SurfaceInventory.from_tools(visible_tools),
+        expected_names=STANDARD_TOOL_NAMES,
+        enforce_hard_limit=True,
+        enforce_description_budget=True,
     )
 
 

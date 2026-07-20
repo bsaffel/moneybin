@@ -100,6 +100,60 @@ class UserMerchantsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def delete(
+        self,
+        merchant_id: str,
+        *,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Hard-delete one merchant mapping with its full audit before-image."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._require(
+                self._fetch_row(merchant_id),
+                "merchant_id",
+                merchant_id,
+            )
+            self._db.execute(
+                f"DELETE FROM {USER_MERCHANTS.full_name} WHERE merchant_id = ?",  # noqa: S608  # TableRef + parameterized value
+                [merchant_id],
+            )
+            return self._emit_audit(
+                action="user_merchant.delete",
+                target=(*self._audit_target, merchant_id),
+                before=self._serialize_for_audit(before),
+                after=None,
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
+    def delete_by_category(
+        self,
+        category_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> list[AuditEvent]:
+        """Delete every merchant referencing one category, with per-row audit."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            merchant_ids = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    "WHERE category_id = ? ORDER BY merchant_id",
+                    [category_id],
+                ).fetchall()
+            ]
+            return [
+                self.delete(
+                    merchant_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+                for merchant_id in merchant_ids
+            ]
+
     def append_exemplar(
         self,
         merchant_id: str,
@@ -123,14 +177,17 @@ class UserMerchantsRepo(BaseRepo):
             self._db.execute(
                 f"""
                 UPDATE {USER_MERCHANTS.full_name}
-                SET exemplars = list_distinct(list_append(exemplars, ?)),
+                SET exemplars = CASE
+                        WHEN list_contains(exemplars, ?) THEN exemplars
+                        ELSE list_append(exemplars, ?)
+                    END,
                     updated_at = CASE
                         WHEN list_contains(exemplars, ?) THEN updated_at
                         ELSE CURRENT_TIMESTAMP
                     END
                 WHERE merchant_id = ?
                 """,  # noqa: S608  # TableRef + parameterized values
-                [match_text, match_text, merchant_id],
+                [match_text, match_text, match_text, merchant_id],
             )
             after = self._fetch_row(merchant_id)
             return self._emit_audit(

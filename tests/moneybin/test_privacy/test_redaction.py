@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Literal, TypedDict
 
 import pytest
 from pydantic import BaseModel
@@ -30,6 +30,21 @@ class _AccountRow:
 class _AccountList:
     rows: list[_AccountRow]
     total_balance: Annotated[Decimal, DataClass.AGGREGATE]
+
+
+class _PublicUnionArm(TypedDict):
+    kind: Literal["public"]
+    label: Annotated[str, DataClass.DESCRIPTION]
+
+
+class _SecretUnionArm(TypedDict):
+    kind: Literal["secret"]
+    account_id: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+
+
+@dataclass(frozen=True)
+class _TypedDictUnionPayload:
+    details: _PublicUnionArm | _SecretUnionArm
 
 
 def _sample_row() -> _AccountRow:
@@ -141,6 +156,93 @@ def test_redacts_pydantic_nested_list() -> None:
     out = redact_typed(payload, consent=None)
     assert out.rows[0].account_id == "****7890"
     assert out.total_balance == Decimal("100.00")
+
+
+def test_import_files_preserves_bridge_input_but_masks_explicit_account_keys() -> None:
+    """Bridge prose stays usable while semantically typed account keys mask."""
+    from moneybin.privacy.introspection import derive_tier  # noqa: PLC0415
+    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415
+        ImportFilesPayload,
+        ImportPerFileRow,
+    )
+    from moneybin.privacy.taxonomy import Tier  # noqa: PLC0415
+
+    payload = ImportFilesPayload(
+        imported_count=0,
+        failed_count=0,
+        total_count=1,
+        transforms_applied=False,
+        transforms_duration_seconds=None,
+        transforms_error=None,
+        files=[
+            ImportPerFileRow(
+                path="statement.pdf",
+                status="confirmation_required",
+                source_type=None,
+                rows_loaded=0,
+                import_id=None,
+                error=None,
+                confirmation_payload={
+                    "channel": "pdf",
+                    "bridge_payload": {
+                        "transparency_notice": "Review this statement.",
+                        "source_file": "statement.pdf",
+                        "document_text": (
+                            "Account ending 5678\n"
+                            "05/01 COFFEE SHOP -12.34\n"
+                            "05/02 PAYROLL 2500.00"
+                        ),
+                        "tables_preview": [
+                            {
+                                "page": 1,
+                                "header": ["Date", "Description", "Amount"],
+                                "rows": [
+                                    ["05/01", "COFFEE SHOP", "-12.34"],
+                                    ["05/02", "PAYROLL", "2500.00"],
+                                ],
+                            }
+                        ],
+                        "fingerprint": {"issuer": "example"},
+                        "request_kind": "propose_recipe",
+                        "saved_recipe_for_re_derive": None,
+                    },
+                    "account_proposals": [
+                        {
+                            "source_account_key": "12345678",
+                            "requires_confirm": True,
+                        }
+                    ],
+                },
+            )
+        ],
+    )
+
+    out = redact_typed(payload, consent=None)
+
+    assert derive_tier(ImportFilesPayload) is Tier.CRITICAL
+    confirmation = out.files[0].confirmation_payload
+    assert confirmation is not None
+    bridge = confirmation["bridge_payload"]
+    assert bridge is not None
+    assert bridge["document_text"] == (
+        "Account ending 5678\n05/01 COFFEE SHOP -12.34\n05/02 PAYROLL 2500.00"
+    )
+    assert bridge["tables_preview"][0]["rows"] == [
+        ["05/01", "COFFEE SHOP", "-12.34"],
+        ["05/02", "PAYROLL", "2500.00"],
+    ]
+    assert confirmation["account_proposals"][0]["source_account_key"] == "****5678"
+
+
+def test_typed_dict_union_selects_the_matching_discriminator_arm() -> None:
+    """A later TypedDict arm cannot leak a CRITICAL-only field."""
+    payload = _TypedDictUnionPayload(
+        details={"kind": "secret", "account_id": "12345678"}
+    )
+
+    out = redact_typed(payload, consent=None)
+
+    assert out.details == {"kind": "secret", "account_id": "****5678"}
 
 
 @dataclass(frozen=True)

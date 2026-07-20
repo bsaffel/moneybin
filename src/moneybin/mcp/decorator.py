@@ -28,7 +28,9 @@ import inspect
 import logging
 import time
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, cast
 
 from moneybin import error_codes
@@ -49,6 +51,21 @@ from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 from moneybin.services.mutation_context import operation
 
 logger = logging.getLogger(__name__)
+
+_public_privacy_actor: ContextVar[str | None] = ContextVar(
+    "mcp_public_privacy_actor",
+    default=None,
+)
+
+
+@contextmanager
+def privacy_actor_scope(actor: str | None) -> Generator[None]:
+    """Attribute one registered invocation to an explicit public tool name."""
+    token = _public_privacy_actor.set(actor)
+    try:
+        yield
+    finally:
+        _public_privacy_actor.reset(token)
 
 
 class _UnsetType:
@@ -231,6 +248,56 @@ def _envelope_row_count(envelope: ResponseEnvelope[Any]) -> int:
     return envelope.summary.returned_count
 
 
+def _stamp_envelope_sensitivity(
+    envelope: ResponseEnvelope[Any], sensitivity: Sensitivity
+) -> ResponseEnvelope[Any]:
+    """Return an envelope stamped with the operation's static sensitivity."""
+    if sensitivity.value == envelope.summary.sensitivity:
+        return envelope
+    updated = dataclasses.replace(
+        envelope.summary,
+        sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
+    )
+    return dataclasses.replace(envelope, summary=updated)  # pyright: ignore[reportUnknownArgumentType]
+
+
+def internal_envelope_adapter(
+    *, sensitivity: Sensitivity
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Normalize an internal helper without publishing MCP tool metadata.
+
+    Coarse registered tools own timeout, privacy, redaction, and audit behavior.
+    This adapter only preserves the awaitable/error-envelope contract of helpers
+    composed beneath that public boundary.
+    """
+
+    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        is_coro = inspect.iscoroutinefunction(fn)
+        if inspect.isasyncgenfunction(fn) or inspect.isgeneratorfunction(fn):
+            raise TypeError(
+                f"{fn.__name__} is a generator — envelope helpers must return directly"
+            )
+
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
+            try:
+                if is_coro:
+                    result = await fn(*args, **kwargs)
+                else:
+                    result = await asyncio.to_thread(fn, *args, **kwargs)
+            except Exception as exc:
+                envelope = _classify_or_raise(fn.__name__, exc)
+            else:
+                envelope = _check_envelope(fn.__name__, result)
+            if envelope.error is None:
+                return _stamp_envelope_sensitivity(envelope, sensitivity)
+            return envelope
+
+        return wrapper
+
+    return decorator
+
+
 def mcp_tool(
     *,
     domain: str | None = None,
@@ -240,6 +307,7 @@ def mcp_tool(
     open_world: bool = False,
     max_items: int | None | _UnsetType = _UNSET,
     dynamic_classification: bool = False,
+    maximum_sensitivity: Sensitivity | None = None,
     timeout_seconds: float | _UnsetType = _UNSET,
 ) -> Callable[..., Any]:
     """Mark a function as an MCP tool. Sensitivity is derived from the return type.
@@ -251,11 +319,7 @@ def mcp_tool(
     metadata.
 
     Args:
-        domain: Optional namespace tag stored as a FastMCP tag. Dormant
-            metadata today — client-driven progressive disclosure was retired
-            2026-05-17 (see docs/specs/mcp-architecture.md §3). Preserved for a
-            possible future first-party client that does its own schema
-            injection.
+        domain: Optional namespace tag stored as FastMCP grouping metadata.
         read_only: MCP readOnlyHint — default True (most MoneyBin tools are queries).
         destructive: MCP destructiveHint — irreversible state change.
         idempotent: MCP idempotentHint — safe to retry without side effects.
@@ -278,6 +342,10 @@ def mcp_tool(
             success path) returns unmasked CRITICAL data with no safety net.
             Prefer routing through ``moneybin.privacy.sql_query.execute_sql_query``,
             which redacts before returning. Static tools must NOT use this flag.
+        maximum_sensitivity: Required ceiling for a dynamic-classification tool.
+            This is a declared contract for documentation and admission review;
+            it does not replace the tool's per-call classification. Static tools
+            derive their maximum from their typed response and must not set it.
         timeout_seconds: Per-tool override for ``MCPConfig.tool_timeout_seconds``.
             Sentinel ``_UNSET`` inherits from settings. Use this for tools whose
             natural runtime exceeds the default cap (e.g. interactive OAuth
@@ -288,55 +356,50 @@ def mcp_tool(
     2. Privacy redaction via ``redact_typed`` (PR 2: CRITICAL masks, unless dynamic_classification)
     3. ``privacy.log.jsonl`` event write per call
     """
+    if dynamic_classification and maximum_sensitivity is None:
+        raise ValueError("dynamic_classification=True requires maximum_sensitivity=")
+    if not dynamic_classification and maximum_sensitivity is not None:
+        raise ValueError(
+            "maximum_sensitivity is only valid with dynamic_classification=True"
+        )
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+        try:
+            return_hint = typing.get_type_hints(fn).get("return")
+        except (NameError, TypeError) as exc:
+            raise PrivacyContractError(
+                f"{fn.__name__}: could not resolve return annotation ({exc}); "
+                "ensure the payload type is imported at decoration time"
+            ) from exc
+        if return_hint is None:
+            raise PrivacyContractError(
+                f"{fn.__name__} has no return annotation; "
+                "every @mcp_tool must declare -> ResponseEnvelope[T]"
+            )
+        if typing.get_origin(return_hint) is not ResponseEnvelope:
+            raise PrivacyContractError(
+                f"{fn.__name__} return type must be ResponseEnvelope[T], "
+                f"got {return_hint!r}"
+            )
+        payload_type_args = typing.get_args(return_hint)
+        if not payload_type_args:
+            raise PrivacyContractError(
+                f"{fn.__name__} return type ResponseEnvelope must be parameterized "
+                "(e.g. ResponseEnvelope[AccountListPayload])"
+            )
+        payload_type_arg = payload_type_args[0]
+
         # Derive sensitivity at registration time from the return type annotation.
         # Raises PrivacyContractError if the return type isn't ResponseEnvelope[T]
         # with classified T — unless dynamic_classification=True is set.
         if dynamic_classification:
-            # Per-call classification: can't classify statically. Use HIGH as a
-            # placeholder; the actual per-call sensitivity is set by the tool
-            # itself and preserved by the decorator (not stamped over).
-            sensitivity = Sensitivity.HIGH
+            # The exact per-call sensitivity is set by the tool itself and
+            # preserved by the decorator (not stamped over). The explicit
+            # ceiling is metadata for admission and documentation only.
+            sensitivity = typing.cast(Sensitivity, maximum_sensitivity)
             classes_for_log: list[str] = ["unclassified"]
-            payload_type_arg: Any = None
             has_critical = False
         else:
-            # get_type_hints resolves string annotations (from __future__ import
-            # annotations). A payload class defined below the @mcp_tool fn in the
-            # same module, or imported lazily/conditionally, raises NameError at
-            # decoration time. Re-raise as PrivacyContractError so the failure
-            # names the contract instead of surfacing a bare NameError — the same
-            # guarding _find_list_params applies to this call.
-            try:
-                return_hint = typing.get_type_hints(fn).get("return")
-            except (NameError, TypeError) as exc:
-                raise PrivacyContractError(
-                    f"{fn.__name__}: could not resolve return annotation ({exc}); "
-                    "ensure the payload type is imported at decoration time"
-                ) from exc
-            if return_hint is None:
-                raise PrivacyContractError(
-                    f"{fn.__name__} has no return annotation; "
-                    "every @mcp_tool must declare -> ResponseEnvelope[T]"
-                )
-            # Unwrap ResponseEnvelope[T] → T. Require the origin to be
-            # ResponseEnvelope specifically, not merely "some generic" — a
-            # `list[Payload]` or `dict[str, Payload]` annotation would otherwise
-            # pass and derive sensitivity from the wrong type argument, bypassing
-            # the envelope contract.
-            if typing.get_origin(return_hint) is not ResponseEnvelope:
-                raise PrivacyContractError(
-                    f"{fn.__name__} return type must be ResponseEnvelope[T], "
-                    f"got {return_hint!r}"
-                )
-            payload_type_args = typing.get_args(return_hint)
-            if not payload_type_args:
-                raise PrivacyContractError(
-                    f"{fn.__name__} return type ResponseEnvelope must be parameterized "
-                    "(e.g. ResponseEnvelope[AccountListPayload])"
-                )
-            payload_type_arg = payload_type_args[0]
             # derive_tier raises PrivacyContractError naming the *payload type*;
             # re-raise naming the tool too, so a registration-time failure points
             # at which @mcp_tool needs the fix, not just the orphaned payload.
@@ -397,7 +460,7 @@ def mcp_tool(
                 ev_sensitivity = sensitivity.value
                 ev_classes = classes_for_log
             event = build_tool_call_event(
-                actor=f"mcp.{fn.__name__}",
+                actor=f"mcp.{_public_privacy_actor.get() or fn.__name__}",
                 sensitivity=ev_sensitivity,
                 classes_returned=ev_classes,
                 # Generic envelope type erased; _envelope_row_count handles Any.
@@ -420,17 +483,11 @@ def mcp_tool(
             """
             if dynamic_classification:
                 return env
-            if sensitivity.value == env.summary.sensitivity:
-                return env
-            updated = dataclasses.replace(
-                env.summary,
-                sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
-            )
-            return dataclasses.replace(env, summary=updated)  # pyright: ignore[reportUnknownArgumentType]
+            return _stamp_envelope_sensitivity(env, sensitivity)
 
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> ResponseEnvelope[Any]:
-            log_tool_call(fn.__name__, sensitivity)
+            log_tool_call(_public_privacy_actor.get() or fn.__name__, sensitivity)
             # Resolve cap: explicit per-tool override wins; otherwise inherit settings.
             cap_attr = cast(
                 "int | None | _UnsetType",
@@ -649,6 +706,8 @@ def mcp_tool(
             return envelope
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
+        wrapper._mcp_maximum_sensitivity = sensitivity  # type: ignore[attr-defined]
+        wrapper._mcp_dynamic_classification = dynamic_classification  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]
         wrapper._mcp_read_only = read_only  # type: ignore[attr-defined]
         wrapper._mcp_destructive = destructive  # type: ignore[attr-defined]

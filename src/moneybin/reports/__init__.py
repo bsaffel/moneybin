@@ -7,15 +7,19 @@ and ``TableRef`` wiring. See ``docs/specs/extension-contracts.md``
 """
 
 from moneybin.reports._framework.contract import (
+    OutputColumn,
     ParamSpec,
     ReportQuery,
+    ReportSemantics,
     ReportSpec,
     report,
 )
 
 __all__ = [
+    "OutputColumn",
     "ParamSpec",
     "ReportQuery",
+    "ReportSemantics",
     "ReportSpec",
     "report",
 ]

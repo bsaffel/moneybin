@@ -62,15 +62,9 @@ class TestMCPServerBoot:
                 tools_result = await session.list_tools()
                 tool_names = [t.name for t in tools_result.tools]
 
-                assert len(tool_names) > 0, "No tools registered"
+                from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 
-                # Tools that should always be present (v2 names) — full surface
-                # is visible at connect (mcp-architecture.md §3).
-                assert "reports_spending" in tool_names
-                assert "accounts" in tool_names
-                assert "system_status" in tool_names
-                # Formerly extended-namespace tools must also be visible at connect:
-                assert "transactions_categorize_commit" in tool_names
+                assert set(tool_names) == STANDARD_TOOL_NAMES
 
     async def test_server_invokes_tool(self, mcp_env: dict[str, str]) -> None:
         """MCP server can invoke a tool and return a valid response envelope."""
@@ -101,7 +95,7 @@ class TestMCPServerBoot:
                 assert "summary" in envelope
                 assert "data" in envelope
                 assert "actions" in envelope
-                assert envelope["summary"]["sensitivity"] == "low"
+                assert envelope["summary"]["sensitivity"] == "medium"
 
     async def test_accounts_v2_tools_registered(self, mcp_env: dict[str, str]) -> None:
         """All v2 accounts namespace tools are registered on the server.
@@ -125,23 +119,22 @@ class TestMCPServerBoot:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                v2_accounts_tools = {
+                standard_accounts_tools = {
                     "accounts",
-                    "accounts_get",
-                    "accounts_summary",
                     "accounts_set",
                     "accounts_balances",
+                    "accounts_balance_assert",
+                }
+                assert standard_accounts_tools <= tool_names
+
+                # Legacy narrow boundaries are folded into the standard tools.
+                for removed in (
+                    "accounts_get",
+                    "accounts_summary",
                     "accounts_balance_history",
                     "accounts_balance_reconcile",
                     "accounts_balance_assertions",
-                    "accounts_balance_assert",
                     "accounts_balance_assertion_delete",
-                }
-                missing = v2_accounts_tools - tool_names
-                assert not missing, f"Missing v2 accounts tools: {missing}"
-
-                # Narrow write tools folded into accounts_set — must be absent
-                for removed in (
                     "accounts_rename",
                     "accounts_include",
                     "accounts_archive",
@@ -151,10 +144,10 @@ class TestMCPServerBoot:
                         f"{removed} should be folded into accounts_set"
                     )
 
-    async def test_accounts_balance_assertions_invocable(
+    async def test_accounts_balance_assertions_view_invocable(
         self, mcp_env: dict[str, str]
     ) -> None:
-        """accounts_balance_assertions returns a valid high-sensitivity envelope.
+        """accounts_balances assertions view returns a high-sensitivity envelope.
 
         ``account_id`` is RECORD_ID (Tier.LOW — opaque surrogate, not PII);
         the highest-tier field is ``balance`` (BALANCE → HIGH). Uses
@@ -175,9 +168,11 @@ class TestMCPServerBoot:
             async with ClientSession(read, write) as session:
                 await session.initialize()
 
-                result = await session.call_tool("accounts_balance_assertions", {})
+                result = await session.call_tool(
+                    "accounts_balances", {"view": "assertions"}
+                )
                 assert not result.isError, (
-                    f"accounts_balance_assertions returned error: {result.content}"
+                    f"accounts_balances returned error: {result.content}"
                 )
                 content = result.content[0]
                 assert isinstance(content, TextContent)
@@ -188,13 +183,13 @@ class TestMCPServerBoot:
                 assert isinstance(envelope["data"]["assertions"], list)
 
 
-class TestReportsNetworthTools:
-    """v2 reports_networth_* tool smoke tests."""
+class TestReportsTool:
+    """Generic report catalog/runner smoke tests."""
 
-    async def test_reports_networth_tools_registered(
+    async def test_generic_reports_tool_registered(
         self, mcp_env: dict[str, str]
     ) -> None:
-        """Both reports_networth_* tools are registered on the server."""
+        """The generic reports boundary replaces every per-report tool."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -210,13 +205,14 @@ class TestReportsNetworthTools:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                assert "reports_networth" in tool_names
-                assert "reports_networth_history" in tool_names
+                assert "reports" in tool_names
+                assert "reports_networth" not in tool_names
+                assert "reports_networth_history" not in tool_names
 
-    async def test_reports_view_backed_tools_registered(
+    async def test_per_report_tools_are_not_registered(
         self, mcp_env: dict[str, str]
     ) -> None:
-        """The seven view-backed `reports_*` tools (recipe library) are registered."""
+        """Report additions do not consume MCP tool slots."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -232,7 +228,7 @@ class TestReportsNetworthTools:
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
 
-                expected = {
+                removed = {
                     "reports_spending",
                     "reports_cashflow",
                     "reports_recurring",
@@ -240,8 +236,7 @@ class TestReportsNetworthTools:
                     "reports_large_transactions",
                     "reports_balance_drift",
                 }
-                missing = expected - tool_names
-                assert not missing, f"Missing reports view-backed tools: {missing}"
+                assert not removed & tool_names
 
                 # reports_uncategorized removed — use transactions_categorize_pending instead
                 assert "reports_uncategorized" not in tool_names
@@ -251,7 +246,7 @@ class TestReportsNetworthTools:
 
 
 class TestCurationTools:
-    """Curation MCP tools (notes, tags, splits, manual create, audit) are registered."""
+    """Consolidated curation boundaries are registered."""
 
     async def test_curation_tools_registered(self, mcp_env: dict[str, str]) -> None:
         from mcp import ClientSession
@@ -271,17 +266,21 @@ class TestCurationTools:
 
                 expected = {
                     "transactions_create",
+                    "transactions_annotate",
+                    "import_labels_set",
+                    "system_audit",
+                }
+                missing = expected - tool_names
+                assert not missing, f"Missing curation tools: {missing}"
+                removed = {
                     "transactions_notes_add",
                     "transactions_notes_edit",
                     "transactions_notes_delete",
                     "transactions_tags_set",
                     "transactions_tags_rename",
                     "transactions_splits_set",
-                    "import_labels_set",
-                    "system_audit",
                 }
-                missing = expected - tool_names
-                assert not missing, f"Missing curation tools: {missing}"
+                assert not removed & tool_names
 
 
 class TestNamespaceResources:
@@ -320,7 +319,7 @@ class TestNamespaceResources:
 
 
 class TestMatchesTools:
-    """transactions_matches_pending and transactions_matches_set smoke tests."""
+    """Normalized match review smoke tests."""
 
     @pytest.fixture(scope="class")
     def matches_env(self, tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
@@ -329,7 +328,7 @@ class TestMatchesTools:
         return make_workflow_env(home, "matches-test")
 
     async def test_matches_tools_registered(self, matches_env: dict[str, str]) -> None:
-        """Both matches tools are registered on the server."""
+        """Match review uses the standard normalized review boundaries."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -344,13 +343,14 @@ class TestMatchesTools:
                 await session.initialize()
                 tools_result = await session.list_tools()
                 tool_names = {t.name for t in tools_result.tools}
-                assert "transactions_matches_pending" in tool_names
-                assert "transactions_matches_set" in tool_names
+                assert {"reviews", "reviews_decide"} <= tool_names
+                assert "transactions_matches_pending" not in tool_names
+                assert "transactions_matches_set" not in tool_names
 
-    async def test_transactions_matches_pending_returns_seeded_match(
+    async def test_reviews_returns_seeded_match(
         self, matches_env: dict[str, str]
     ) -> None:
-        """transactions_matches_pending returns a seeded pending match."""
+        """Reviews returns a seeded pending match."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
         from mcp.types import TextContent
@@ -367,7 +367,9 @@ class TestMatchesTools:
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                result = await session.call_tool("transactions_matches_pending", {})
+                result = await session.call_tool(
+                    "reviews", {"kind": "matches", "status": "pending"}
+                )
 
                 assert not result.isError, f"Tool returned error: {result.content}"
                 content = result.content[0]
@@ -375,15 +377,15 @@ class TestMatchesTools:
                 envelope = json.loads(content.text)
 
                 assert "data" in envelope
-                matches = envelope["data"]["matches"]
+                matches = envelope["data"]["rows"]
                 assert isinstance(matches, list)
-                match_ids = [m["match_id"] for m in matches]
+                match_ids = [m["decision_id"] for m in matches]
                 assert seeded_match_id in match_ids
 
-    async def test_transactions_matches_set_accepts_pending_match(
+    async def test_reviews_decide_accepts_pending_match(
         self, matches_env: dict[str, str]
     ) -> None:
-        """transactions_matches_set accepts a pending match and returns accepted status."""
+        """reviews_decide accepts a pending match and returns accepted status."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
         from mcp.types import TextContent
@@ -401,8 +403,16 @@ class TestMatchesTools:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(
-                    "transactions_matches_set",
-                    {"match_id": seeded_match_id, "status": "accepted"},
+                    "reviews_decide",
+                    {
+                        "decisions": [
+                            {
+                                "kind": "match",
+                                "decision_id": seeded_match_id,
+                                "decision": "accept",
+                            }
+                        ]
+                    },
                 )
 
                 assert not result.isError, f"Tool returned error: {result.content}"
@@ -411,13 +421,14 @@ class TestMatchesTools:
                 envelope = json.loads(content.text)
 
                 assert "data" in envelope
-                assert envelope["data"]["match_id"] == seeded_match_id
-                assert envelope["data"]["match_status"] == "accepted"
+                decision = envelope["data"]["results"][0]
+                assert decision["decision_id"] == seeded_match_id
+                assert decision["status"] == "accepted"
 
-    async def test_transactions_matches_history_returns_envelope(
+    async def test_reviews_history_returns_envelope(
         self, matches_env: dict[str, str]
     ) -> None:
-        """transactions_matches_history returns decisions with decided_at timestamps."""
+        """Reviews history returns decisions with decided_at timestamps."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
         from mcp.types import TextContent
@@ -436,31 +447,40 @@ class TestMatchesTools:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 set_result = await session.call_tool(
-                    "transactions_matches_set",
-                    {"match_id": "e2e_hist_001", "status": "accepted"},
+                    "reviews_decide",
+                    {
+                        "decisions": [
+                            {
+                                "kind": "match",
+                                "decision_id": "e2e_hist_001",
+                                "decision": "accept",
+                            }
+                        ]
+                    },
                 )
                 assert not set_result.isError, f"set failed: {set_result.content}"
                 result = await session.call_tool(
-                    "transactions_matches_history", {"limit": 50}
+                    "reviews",
+                    {"kind": "matches", "status": "history", "limit": 50},
                 )
                 assert not result.isError, f"Tool returned error: {result.content}"
                 content = result.content[0]
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
-                matches = envelope["data"]["matches"]
-                ids = [m["match_id"] for m in matches]
+                matches = envelope["data"]["rows"]
+                ids = [m["decision_id"] for m in matches]
                 assert "e2e_hist_001" in ids, "accepted decision must appear in history"
                 assert "e2e_hist_pending_002" not in ids, (
                     "pending proposals must be excluded from history"
                 )
-                entry = next(m for m in matches if m["match_id"] == "e2e_hist_001")
+                entry = next(m for m in matches if m["decision_id"] == "e2e_hist_001")
                 # A time-series view must carry the decision timestamp.
-                assert entry["decided_at"]
+                assert entry["created_at"]
 
-    async def test_transactions_matches_run_registered(
+    async def test_legacy_match_boundaries_are_not_registered(
         self, matches_env: dict[str, str]
     ) -> None:
-        """transactions_matches_run is registered and returns an envelope."""
+        """Legacy match boundaries do not consume standard-registry slots."""
         from mcp import ClientSession
         from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -473,8 +493,9 @@ class TestMatchesTools:
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools = {t.name for t in (await session.list_tools()).tools}
-                assert "transactions_matches_run" in tools
-                assert "transactions_matches_history" in tools
+                assert {"reviews", "reviews_decide"} <= tools
+                assert "transactions_matches_run" not in tools
+                assert "transactions_matches_history" not in tools
 
 
 class TestMCPServeTransportGate:

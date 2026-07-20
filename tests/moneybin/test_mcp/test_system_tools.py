@@ -8,15 +8,400 @@ from typing import Any
 import pytest
 from fastmcp import FastMCP
 
-from moneybin.mcp.tools.system import register_system_tools, system_status
+from moneybin.errors import UserError
+from moneybin.mcp.tools.system import (
+    register_system_coarse_reads,
+    register_system_tools,
+    system_audit_coarse,
+    system_status,
+    system_status_coarse,
+)
+from tests.moneybin.test_mcp.schema_assertions import (
+    assert_recovery_actions_executable,
+)
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
+
+
+@pytest.mark.parametrize("section", ["overview", "doctor", "categorization"])
+async def test_system_status_coarse_dispatches_each_section(section: str) -> None:
+    response = await system_status_coarse(sections=[section])  # pyright: ignore[reportArgumentType]
+
+    assert response.data.sections[0].kind == section
+
+
+async def test_system_status_coarse_defaults_to_fixed_section_order() -> None:
+    response = await system_status_coarse()
+
+    assert [section.kind for section in response.data.sections] == [
+        "overview",
+        "doctor",
+        "categorization",
+    ]
+
+
+async def test_system_status_coarse_rejects_explicit_empty_sections() -> None:
+    response = await system_status_coarse(sections=[])
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+
+
+async def test_system_status_coarse_rejects_duplicate_sections() -> None:
+    response = await system_status_coarse(sections=["overview", "overview"])
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
+
+
+async def test_system_status_coarse_full_includes_auto_categorization() -> None:
+    response = await system_status_coarse(
+        sections=["categorization"],
+        detail="full",
+    )
+
+    section = response.data.sections[0]
+    assert section.kind == "categorization"
+    assert hasattr(section.statistics, "auto")
+
+
+async def test_system_status_auto_action_describes_persisted_rules() -> None:
+    response = await system_status_coarse(
+        sections=["categorization"],
+        detail="full",
+    )
+
+    text = " ".join(response.actions).lower()
+    assert "transactions_categorize_rules(view='history')" in text
+    assert "proposal" not in text
+    assert "inactive" not in text
+
+
+async def test_system_audit_coarse_detail_requires_exactly_one_identifier() -> None:
+    missing = await system_audit_coarse(view="detail")
+    duplicate = await system_audit_coarse(
+        view="detail",
+        operation_id="op_demo",
+        audit_id="audit_demo",
+    )
+
+    assert missing.error is not None
+    assert missing.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+    assert duplicate.error is not None
+    assert duplicate.error.code == "AUDIT_IDENTIFIER_REQUIRED"
+
+
+@pytest.mark.parametrize("view", ["events", "history"])
+async def test_system_audit_coarse_rejects_detail_identifier_for_other_views(
+    view: str,
+) -> None:
+    response = await system_audit_coarse(
+        view=view,  # pyright: ignore[reportArgumentType]
+        operation_id="op_demo",
+    )
+
+    assert response.error is not None
+    assert response.error.code == "AUDIT_IDENTIFIER_NOT_ALLOWED"
+
+
+async def test_system_audit_coarse_dispatches_events_and_history() -> None:
+    events = await system_audit_coarse(view="events")
+    history = await system_audit_coarse(view="history")
+
+    assert events.data.kind == "events"
+    assert history.data.kind == "history"
+
+
+async def test_system_audit_coarse_operation_detail(mcp_db: object) -> None:
+    operation_id = _make_tag_op()
+
+    response = await system_audit_coarse(
+        view="detail",
+        operation_id=operation_id,
+    )
+
+    assert response.data.kind == "detail"
+    assert response.data.operation_id == operation_id
+    assert response.data.audit_id is None
+    assert response.data.events[0].operation_id == operation_id
+
+
+async def test_system_audit_coarse_audit_detail(mcp_db: object) -> None:
+    operation_id = _make_tag_op()
+    events = await system_audit_coarse(view="events")
+    audit_id = next(
+        event.audit_id
+        for event in events.data.events
+        if event.operation_id == operation_id
+    )
+
+    response = await system_audit_coarse(
+        view="detail",
+        audit_id=audit_id,
+    )
+
+    assert response.data.kind == "detail"
+    assert response.data.operation_id is None
+    assert response.data.audit_id == audit_id
+    assert response.data.events[0].audit_id == audit_id
+
+
+async def test_system_audit_coarse_paginates_events(mcp_db: object) -> None:
+    _make_tag_op("first")
+    _make_tag_op("second")
+
+    first = await system_audit_coarse(view="events", limit=1)
+    second = await system_audit_coarse(
+        view="events",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert first.summary.returned_count == 1
+    assert first.summary.has_more is True
+    assert first.next_cursor is not None
+    assert second.data.events[0].audit_id != first.data.events[0].audit_id
+
+
+async def test_system_audit_event_continuation_ignores_newer_insert() -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for audit_id, occurred_at in (
+            ("audit-original-third", "2099-07-18 10:00:00"),
+            ("audit-original-second", "2099-07-18 11:00:00"),
+            ("audit-original-first", "2099-07-18 12:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO app.audit_log (
+                    audit_id, occurred_at, actor, action, target_schema,
+                    target_table, target_id, operation_id
+                ) VALUES (?, ?, 'cli', 'tag.add', 'app',
+                          'transaction_tags', ?, ?)
+                """,
+                [audit_id, occurred_at, audit_id, f"op-{audit_id}"],
+            )
+
+    first = await system_audit_coarse(view="events", limit=1)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.audit_log (
+                audit_id, occurred_at, actor, action, target_schema,
+                target_table, target_id, operation_id
+            ) VALUES ('audit-new-head', '2100-01-01 00:00:00', 'cli',
+                      'tag.add', 'app', 'transaction_tags', 'new', 'op-new')
+            """
+        )
+    second = await system_audit_coarse(
+        view="events",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert [event.audit_id for event in first.data.events] == ["audit-original-first"]
+    assert [event.audit_id for event in second.data.events] == ["audit-original-second"]
+    assert first.summary.total_count == 3
+    assert second.summary.total_count == 3
+
+
+async def test_system_audit_coarse_paginates_tied_events_without_gaps(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    timestamp = "2099-07-18 12:00:00"
+    expected = ["audit-c", "audit-b", "audit-a"]
+    with get_database(read_only=False) as db:
+        for audit_id in ("audit-a", "audit-c", "audit-b"):
+            db.execute(
+                """
+                INSERT INTO app.audit_log (
+                    audit_id, occurred_at, actor, action, target_schema,
+                    target_table, target_id, operation_id
+                ) VALUES (?, ?, 'cli', 'tag.add', 'app', 'transaction_tags', ?, ?)
+                """,
+                [audit_id, timestamp, audit_id, f"op-{audit_id}"],
+            )
+
+    observed: list[str] = []
+    cursor: str | None = None
+    for _ in expected:
+        response = await system_audit_coarse(
+            view="events",
+            limit=1,
+            cursor=cursor,
+        )
+        observed.append(response.data.events[0].audit_id)
+        cursor = response.next_cursor
+
+    assert observed == expected
+    assert cursor is None
+
+
+async def test_system_audit_coarse_paginates_history(mcp_db: object) -> None:
+    expected = {_make_tag_op(tag) for tag in ("history-a", "history-b", "history-c")}
+    observed: set[str] = set()
+    cursor: str | None = None
+
+    while True:
+        response = await system_audit_coarse(
+            view="history",
+            limit=1,
+            cursor=cursor,
+        )
+        observed.add(response.data.operations[0].operation_id)
+        cursor = response.next_cursor
+        if cursor is None:
+            break
+
+    assert observed == expected
+
+
+async def test_system_audit_history_continuation_ignores_newer_operation() -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for operation_id, occurred_at in (
+            ("op-original-third", "2099-07-18 10:00:00"),
+            ("op-original-second", "2099-07-18 11:00:00"),
+            ("op-original-first", "2099-07-18 12:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO app.audit_log (
+                    audit_id, occurred_at, actor, action, target_schema,
+                    target_table, target_id, operation_id
+                ) VALUES (?, ?, 'cli', 'tag.add', 'app',
+                          'transaction_tags', ?, ?)
+                """,
+                [
+                    f"audit-{operation_id}",
+                    occurred_at,
+                    operation_id,
+                    operation_id,
+                ],
+            )
+
+    first = await system_audit_coarse(view="history", limit=1)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.audit_log (
+                audit_id, occurred_at, actor, action, target_schema,
+                target_table, target_id, operation_id
+            ) VALUES ('audit-new-operation', '2100-01-01 00:00:00', 'cli',
+                      'tag.add', 'app', 'transaction_tags', 'new', 'op-new')
+            """
+        )
+    second = await system_audit_coarse(
+        view="history",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert [operation.operation_id for operation in first.data.operations] == [
+        "op-original-first"
+    ]
+    assert [operation.operation_id for operation in second.data.operations] == [
+        "op-original-second"
+    ]
+    assert first.summary.total_count == 3
+    assert second.summary.total_count == 3
+
+
+async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
+    mcp_db: object,
+) -> None:
+    _make_tag_op("cursor-a")
+    _make_tag_op("cursor-b")
+    first = await system_audit_coarse(view="events", limit=1)
+
+    malformed = await system_audit_coarse(view="events", cursor="not-base64")
+    from moneybin.mcp.pagination import encode_keyset_cursor
+
+    invalid_timestamp = await system_audit_coarse(
+        view="events",
+        cursor=encode_keyset_cursor(
+            namespace="system_audit",
+            scope={"view": "events"},
+            snapshot=("not-a-timestamp", "audit-a"),
+            after=("still-not-a-timestamp", "audit-b"),
+            total=2,
+        ),
+    )
+    cross_view = await system_audit_coarse(
+        view="history",
+        cursor=first.next_cursor,
+    )
+
+    assert malformed.error is not None
+    assert malformed.error.code == "infra_invalid_input"
+    assert invalid_timestamp.error is not None
+    assert invalid_timestamp.error.code == "infra_invalid_input"
+    assert cross_view.error is not None
+    assert cross_view.error.code == "infra_invalid_input"
+
+
+async def test_system_audit_coarse_returns_only_replacement_actions(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+    from moneybin.services.audit_service import AuditService
+
+    operation_id = _make_tag_op("actions-a")
+    _make_tag_op("actions-b")
+    with get_database(read_only=True) as db:
+        audit_id = AuditService(db).events_for_operation(operation_id)[0].audit_id
+
+    events = await system_audit_coarse(view="events", limit=1)
+    history = await system_audit_coarse(view="history", limit=1)
+    operation_detail = await system_audit_coarse(
+        view="detail",
+        operation_id=operation_id,
+    )
+    audit_detail = await system_audit_coarse(
+        view="detail",
+        audit_id=audit_id,
+    )
+
+    assert events.actions == [
+        "Inspect an operation with system_audit(view='detail', operation_id=...)",
+        "Continue with "
+        f"system_audit(view='events', limit=1, cursor='{events.next_cursor}')",
+    ]
+    assert history.actions == [
+        "Inspect an operation with system_audit(view='detail', operation_id=...)",
+        "Reverse an operation with system_audit_undo(operation_id=...)",
+        "Continue with "
+        f"system_audit(view='history', limit=1, cursor='{history.next_cursor}')",
+    ]
+    assert operation_detail.actions == [
+        f"Reverse with system_audit_undo(operation_id='{operation_id}')",
+    ]
+    assert audit_detail.actions == [
+        "Use the event operation_id with system_audit(view='detail', "
+        "operation_id=...) to inspect undoability.",
+    ]
+
+
+async def test_register_system_coarse_reads_registers_only_replacements() -> None:
+    server = FastMCP("system-coarse")
+
+    register_system_coarse_reads(server)
+    names = {
+        tool.name
+        for tool in await server._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    }
+
+    assert names == {"system_status", "system_audit"}
 
 
 @pytest.mark.unit
 async def test_system_status_returns_response_envelope(mcp_db: object) -> None:
     """system_status returns a valid ResponseEnvelope."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert "summary" in parsed
     assert "data" in parsed
@@ -28,7 +413,7 @@ async def test_system_status_returns_response_envelope(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_data_keys(mcp_db: object) -> None:
     """system_status data dict has all required domain keys."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     data = parsed["data"]
     assert "accounts" in data
@@ -43,7 +428,7 @@ async def test_system_status_data_keys(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_accounts_count(mcp_db: object) -> None:
     """Accounts count reflects the mcp_db fixture's 2 accounts."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert parsed["data"]["accounts"]["count"] == 2
 
@@ -51,7 +436,7 @@ async def test_system_status_accounts_count(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_transactions_empty(mcp_db: object) -> None:
     """Transactions count is 0 when no transactions are inserted."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     txn = parsed["data"]["transactions"]
     assert txn["count"] == 0
@@ -62,7 +447,7 @@ async def test_system_status_transactions_empty(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_queue_counts_are_integers(mcp_db: object) -> None:
     """matches.pending_review and categorization.uncategorized are integers."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert isinstance(parsed["data"]["matches"]["pending_review"], int)
     assert isinstance(parsed["data"]["categorization"]["uncategorized"], int)
@@ -71,7 +456,7 @@ async def test_system_status_queue_counts_are_integers(mcp_db: object) -> None:
 @pytest.mark.unit
 async def test_system_status_actions_non_empty(mcp_db: object) -> None:
     """system_status provides at least one action hint."""
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert len(parsed["actions"]) >= 1
 
@@ -92,7 +477,7 @@ async def test_register_system_tools() -> None:
 async def test_system_doctor_returns_envelope(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     parsed = result.to_dict()
     assert "summary" in parsed
     assert "data" in parsed
@@ -102,7 +487,7 @@ async def test_system_doctor_returns_envelope(mcp_db: object) -> None:
 async def test_system_doctor_data_has_required_keys(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     data = result.to_dict()["data"]
     assert "passing" in data
     assert "failing" in data
@@ -115,7 +500,7 @@ async def test_system_doctor_data_has_required_keys(mcp_db: object) -> None:
 async def test_system_doctor_transaction_count_is_int(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     data = result.to_dict()["data"]
     assert isinstance(data["transaction_count"], int)
 
@@ -124,9 +509,8 @@ async def test_system_doctor_transaction_count_is_int(mcp_db: object) -> None:
 async def test_system_doctor_sensitivity_is_low(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
-    # SystemDoctorPayload has DESCRIPTION fields → Tier.MEDIUM derived sensitivity
-    assert result.to_dict()["summary"]["sensitivity"] == "medium"
+    result = system_doctor()
+    assert result.to_dict()["summary"]["sensitivity"] == "low"
 
 
 @pytest.mark.unit
@@ -141,7 +525,7 @@ async def test_system_doctor_invariants_carry_recovery_actions_field(
     """
     from moneybin.mcp.tools.system import system_doctor
 
-    result = await system_doctor()
+    result = system_doctor()
     invariants = result.to_dict()["data"]["invariants"]
     assert invariants, "expected at least one invariant in the payload"
     for inv in invariants:
@@ -153,11 +537,7 @@ async def test_system_doctor_invariants_carry_recovery_actions_field(
 async def test_system_doctor_orphan_state_emits_executable_actions(
     mcp_db: object,
 ) -> None:
-    """Seed orphan note + tag → system_doctor emits round-trip-executable actions.
-
-    The returned invariant carries certain recovery actions whose tool names
-    and arguments validate against the registered MCP tool schemas.
-    """
+    """Orphan app rows do not advertise retired or invalid cleanup tools."""
     from moneybin.database import get_database
     from moneybin.mcp.tools.system import system_doctor
 
@@ -173,23 +553,14 @@ async def test_system_doctor_orphan_state_emits_executable_actions(
             "VALUES ('missing_txn_b', 'z', 'mcp')"
         )
 
-    result = await system_doctor()
+    result = system_doctor()
     invariants = result.to_dict()["data"]["invariants"]
     orphan = next(i for i in invariants if i["name"] == "orphan_app_state")
     assert orphan["status"] == "fail"
-    tools = sorted(a["tool"] for a in orphan["recovery_actions"])
-    assert tools == ["transactions_notes_delete", "transactions_tags_set"]
-    # Spot-check confidence + idempotent flags ride through the envelope.
-    # Confidence varies by tool: tags-clear is certain (idempotent), single-id
-    # notes-delete is suggested (non-idempotent across a batch) — see
-    # orphan_app_state recipe docstring.
-    expected_confidence = {
-        "transactions_notes_delete": "suggested",
-        "transactions_tags_set": "certain",
-    }
-    for action in orphan["recovery_actions"]:
-        assert action["confidence"] == expected_confidence[action["tool"]]
-        assert "idempotent" in action
+    assert [action["tool"] for action in orphan["recovery_actions"]] == [
+        "transactions_annotate",
+        "transactions_annotate",
+    ]
 
 
 # ── system_audit_undo / _history / _get ─────────────────────────────────────
@@ -254,10 +625,15 @@ async def test_audit_undo_reverses_operation(mcp_db: object) -> None:
 async def test_audit_undo_not_found_returns_error_envelope(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_undo
 
-    parsed = (await system_audit_undo("op_missing")).to_dict()
+    result = await system_audit_undo("op_missing")
+    parsed = result.to_dict()
     assert parsed["status"] == "error"
     assert parsed["error"]["code"] == "undo_operation_not_found"
-    assert parsed["recovery_actions"]  # history hint present
+    assert result.recovery_actions
+    await assert_recovery_actions_executable(result.recovery_actions)
+    assert [(action.tool, action.arguments) for action in result.recovery_actions] == [
+        ("system_audit", {"view": "history"})
+    ]
 
 
 @pytest.mark.unit
@@ -288,7 +664,7 @@ async def test_audit_history_lists_operations_newest_first(mcp_db: object) -> No
 
     op1 = _make_tag_op("a")
     op2 = _make_tag_op("b")
-    parsed = (await system_audit_history()).to_dict()
+    parsed = (system_audit_history()).to_dict()
     ids = [o["operation_id"] for o in parsed["data"]["operations"]]
     assert ids[:2] == [op2, op1]
     assert parsed["data"]["operations"][0]["can_undo"] is True
@@ -299,24 +675,22 @@ async def test_audit_get_returns_before_after(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_get
 
     op = _make_tag_op()
-    parsed = (await system_audit_get(op)).to_dict()
+    parsed = (system_audit_get(op)).to_dict()
     assert parsed["data"]["operation_id"] == op
     assert len(parsed["data"]["events"]) == 1
     event = parsed["data"]["events"][0]
     assert event["action"] == "tag.add"
     assert event["after_value"]["tag"] == "trip"
     assert parsed["data"]["can_undo"] is True
-    # before/after carry TXN_AMOUNT → high sensitivity (matches system_audit)
-    assert parsed["summary"]["sensitivity"] == "high"
+    assert parsed["summary"]["sensitivity"] == "low"
 
 
 @pytest.mark.unit
 async def test_audit_get_not_found_returns_error_envelope(mcp_db: object) -> None:
     from moneybin.mcp.tools.system import system_audit_get
 
-    parsed = (await system_audit_get("op_missing")).to_dict()
-    assert parsed["status"] == "error"
-    assert parsed["error"]["code"] == "undo_operation_not_found"
+    with pytest.raises(UserError, match="No operation found"):
+        system_audit_get("op_missing")
 
 
 @pytest.mark.unit
@@ -326,7 +700,7 @@ async def test_audit_get_event_carries_undo_fields(mcp_db: object) -> None:
     op = _make_tag_op()
     undo = (await system_audit_undo(op)).to_dict()
     undo_op = undo["data"]["undo_operation_id"]
-    parsed = (await system_audit_get(undo_op)).to_dict()
+    parsed = (system_audit_get(undo_op)).to_dict()
     event = parsed["data"]["events"][0]
     # Symmetric with the history entry: structural undo signal, not a string-match
     # on the .undo action suffix.
@@ -340,7 +714,7 @@ async def test_audit_history_entry_carries_recovery_actions(mcp_db: object) -> N
 
     op1 = _make_note_op()  # add note n1
     op2 = _make_note_edit_op()  # edit the same row n1 → blocks op1
-    parsed = (await system_audit_history()).to_dict()
+    parsed = (system_audit_history()).to_dict()
     entry = next(o for o in parsed["data"]["operations"] if o["operation_id"] == op1)
     # Blocked op1's pre-built recovery_actions point the agent straight at undoing
     # op2 — the structured action the service computed, not just the raw id.
@@ -365,7 +739,7 @@ async def test_audit_get_hint_distinguishes_unresolvable(mcp_db: object) -> None
             after={"row_count": 2},
             actor="cli",
         )
-    parsed = (await system_audit_get(op)).to_dict()
+    parsed = (system_audit_get(op)).to_dict()
     assert parsed["data"]["can_undo"] is False
     assert parsed["data"]["undo_blocked_by"] is None
     hint = " ".join(parsed["actions"]).lower()
@@ -389,7 +763,7 @@ async def test_audit_get_hint_for_marker_only(mcp_db: object) -> None:
             after={"new_tag": "x", "row_count": 0},
             actor="cli",
         )
-    parsed = (await system_audit_get(op)).to_dict()
+    parsed = (system_audit_get(op)).to_dict()
     assert parsed["data"]["can_undo"] is False
     hint = " ".join(parsed["actions"]).lower()
     # Marker-only: not the raw-import "re-apply" message; says nothing to reverse.
@@ -402,7 +776,7 @@ async def test_register_undo_tools() -> None:
     srv = FastMCP("test")
     register_system_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert {"system_audit_undo", "system_audit_history", "system_audit_get"} <= names
+    assert names == {"system_status", "system_audit", "system_audit_undo"}
 
 
 @pytest.mark.unit
@@ -431,7 +805,7 @@ async def test_system_status_degraded_when_db_locked(
         "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
     )
 
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert parsed["summary"]["degraded"] is True
     assert "lock" in parsed["summary"]["degraded_reason"].lower()
@@ -487,7 +861,7 @@ async def test_system_status_recomputes_connections_after_lock_error(
         "moneybin.mcp.tools.system._database_connections_block", next_block
     )
 
-    result = await system_status()
+    result = system_status()
     parsed = result.to_dict()
     assert parsed["summary"]["degraded"] is True
     writers = parsed["data"]["database_connections"]["writers"]
@@ -524,5 +898,5 @@ async def test_system_status_opens_with_short_max_wait(
         "moneybin.mcp.tools.system.find_blocking_processes", no_blockers
     )
 
-    await system_status()
+    system_status()
     assert captured["max_wait"] == 2.0

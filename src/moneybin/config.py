@@ -234,6 +234,9 @@ class MetricsConfig(BaseModel):
 # imports config, never the reverse. get_database's max_wait default imports
 # this value back. See database-writer-coordination.md.
 DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS: float = 10.0
+MIN_CONFIRMATION_TTL_SECONDS: int = 30
+DEFAULT_CONFIRMATION_TTL_SECONDS: int = 300
+MAX_CONFIRMATION_TTL_SECONDS: int = 900
 
 
 class MCPConfig(BaseModel):
@@ -263,6 +266,14 @@ class MCPConfig(BaseModel):
             "list[X] / Sequence[X] / tuple[X, ...]. Exceeding returns a "
             "ResponseEnvelope.error with code='too_many_items'. Parallels max_rows "
             "for read responses. See docs/specs/moneybin-mcp.md §Collection size cap."
+        ),
+    )
+    confirmation_ttl_seconds: int = Field(
+        default=DEFAULT_CONFIRMATION_TTL_SECONDS,
+        ge=MIN_CONFIRMATION_TTL_SECONDS,
+        le=MAX_CONFIRMATION_TTL_SECONDS,
+        description=(
+            "Lifetime of process-local destructive-mutation confirmation tokens."
         ),
     )
     tool_timeout_seconds: float = Field(
@@ -421,6 +432,16 @@ class ImportSettings(BaseModel):
     """File-import related settings (inbox layout + confirmation gate)."""
 
     model_config = ConfigDict(frozen=True)
+
+    pdf_preview_size_limit_mb: int = Field(
+        default=100,
+        ge=1,
+        description=(
+            "Maximum PDF size in MB that import_preview may materialize and "
+            "persist as an immutable confirmation snapshot. Override with "
+            "MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB."
+        ),
+    )
 
     inbox_root: Path = Field(
         default_factory=lambda: Path.home() / "Documents" / "MoneyBin",

@@ -143,7 +143,7 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | `bridge_transfers_balanced` | (1) `transactions_matches_set(match_id, status="rejected")` to reject the bad transfer match; (2) `transactions_get(transaction_id)` to investigate. `confidence=suggested` |
     | `categorization_coverage` (warn) | (1) `transactions_categorize_run(methods=["rules","merchants"])`. `confidence=certain` |
     | `dedup_reconciliation` (fail) | (1) `refresh_run(steps=["match"])` to re-apply matching when a recorded decision didn't collapse its rows; (2) `system_doctor(verbose=True)` to inspect the raw/core count delta. `confidence=suggested` |
-    | `orphan_app_state` (new) | (1) `transactions_notes_delete(note_ids=[...])` and/or `transactions_tags_set(transaction_id=..., tags=[])` per orphan. `confidence=certain` |
+    | `orphan_app_state` (new) | (1) `transactions_annotate(requests=[{"kind":"note_delete","note_id":...}, ...])` per orphan note and/or empty `tags_set` requests per orphan transaction. `confidence=certain` |
 
 8. **Self-heal safelist.** Five active recipes run at refresh time. Each MUST satisfy all five criteria:
 
@@ -224,7 +224,12 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
 12. **Existing-tool retrofit.** Every existing MCP tool's error path gains either a populated `recovery_actions` field or an explicit empty list with `error_code="recovery_no_path"` (forcing escalation rather than silence). Retrofit lands per-domain in small PRs after the envelope contract ships (PR 3 in the rollout). Domains: import, matching, categorize, accounts, balance, budget, transaction-curation, transform.
 
-13. **`transactions_notes_delete` accepts a list.** Existing tool extends to accept `note_ids: list[str]` in addition to the single-id form. Backward compat: a single string id is still accepted during the deprecation window. The `orphan_app_state` recipe cites the list form. No new `_many` tool — per the "many native" convention.
+13. **`transactions_annotate` repairs orphan state through its natural
+    shape.** Each orphan note is deleted by stable `note_id`; tags remain a
+    closed collection cleared with empty `tags_set` when the transaction is
+    absent from core. Unknown note IDs and empty tag requests with no existing
+    state fail resolution. Multiple repairs share the existing atomic batch; no
+    recovery-only tool or lossy `notes_clear` variant is added.
 
 14. **Invariant 11 — Recoverability of mutations.** Appended to `architecture-shared-primitives.md` §Architecture Invariants:
 
@@ -482,7 +487,11 @@ Deviations from the design as written, with rationale:
 
 - `src/moneybin/audits/recipes/__init__.py`, `registry.py`, plus one Python module per existing audit (per Req 7).
 - `DoctorService` constructs each `AuditResult` with `recovery_actions` populated from `registry.get(audit_name)(affected_ids, context)`.
-- New audit + recipe: `orphan_app_state` — scans `app.transaction_notes`, `app.transaction_tags` for orphans (transaction_id missing in `fct_transactions`). Recipe produces batched delete actions per orphan.
+- New audit + recipe: `orphan_app_state` — scans
+  `app.transaction_notes` and `app.transaction_tags` for orphan transaction
+  IDs absent from `fct_transactions`. The recipe produces one targeted
+  `note_delete` per orphan note and one clear-to-empty tag request per orphan
+  transaction.
 - Tests per-recipe: seed failing state → audit fires → recipe yields expected actions → tool names + arguments are valid (round-trip-executable).
 
 #### PR 4 — as implemented (deviations from the design above)
@@ -491,15 +500,27 @@ Shipped on `feat/data-recovery-doctor-recipes`. Status stays `in-progress` (PR 5
 
 - **It's `InvariantResult`, not `AuditResult`.** The doctor's per-check dataclass in `src/moneybin/services/doctor_service.py` is named `InvariantResult`; the spec's `AuditResult` was reconciled to the real name rather than introducing a parallel type. `InvariantResult` already carried `recovery_actions: list[RecoveryAction] | None = None` (REC-PR2); PR 4 populates it.
 - **Single wiring seam.** Rather than threading the registry into every `_run_*` method (~17 of them), `DoctorService.run_all` walks each computed `InvariantResult` through one `_apply_recipe` step that looks up the recipe and materializes a new `InvariantResult` with `recovery_actions` set. Pass/skipped invariants short-circuit (nothing to fix). Per-`_run_*` methods stay unaware of the registry.
-- **`RecoveryAction` field names match the REC-PR2 contract: `rationale` (not `description`) plus `idempotent: bool`.** The spec text used `description`; recipes emit the real field name. `idempotent=True` for tag-clear / categorize-run / refresh-run / system-doctor (safe to retry); `idempotent=False` for hard-delete (note delete).
-- **Prefixed `affected_ids` for `orphan_app_state`.** The audit emits `note:<note_id>` and `tag:<transaction_id>` so the recipe can dispatch by entity type without re-querying the DB. Multiple tag rows on the same orphan transaction collapse to one `tag:<txn_id>` entry (the recipe clears them all via one `transactions_tags_set(transaction_id, tags=[])` call — wholesale clear is correct because *every* tag on an orphan transaction is itself an orphan). Unknown prefixes (future audit-recipe drift, empty-id edge cases) log a warning rather than silently producing zero actions, so the misalignment surfaces in dev/test.
-- **Notes-delete action is `confidence="suggested"`, not `"certain"`.** The single-id `transactions_notes_delete` is non-idempotent across a multi-orphan batch — if a mid-stream call fails and the agent retries, already-succeeded ids raise `LookupError`. "Certain" overpromises that semantic. PR 8 lands the list form (`note_ids: list[str]`), which is atomic and idempotent; at that point the recipe upgrades to `confidence="certain"`, `idempotent=True`. The tag-clear branch stays `certain`/`idempotent=True` (clear-to-empty is safe to retry).
+- **`RecoveryAction` field names match the REC-PR2 contract: `rationale`
+  (not `description`) plus `idempotent: bool`.** The spec text used
+  `description`; recipes emit the real field name. Declarative note/tag clears,
+  categorize-run, refresh-run, and system-doctor are idempotent.
+- **Prefixed `affected_ids` for `orphan_app_state`.** The audit emits
+  `note:<note_id>` and `tag:<transaction_id>` so the recipe can dispatch by
+  entity type without re-querying the DB. Every orphan note retains its own
+  entry; multiple tag rows on the same orphan transaction collapse to one. The
+  recipe uses targeted `note_delete` and empty `tags_set` requests through
+  `transactions_annotate`. Unknown prefixes and empty-id edge cases log a
+  warning rather than silently producing zero actions.
+- **Orphan note/tag actions are `confidence="certain"`.** Tag clears are
+  idempotent. Note deletion is intentionally marked non-idempotent because a
+  second call finds no note; the containing MCP umbrella also honestly carries
+  `idempotentHint=false`.
 - **`dedup_reconciliation` emits `refresh_run()` (full cascade), not `steps=["match"]`.** The spec wording was incomplete: re-running match writes `app.match_decisions` and `prep.*` views but does NOT rebuild `core.fct_transactions`, so the audit's symptom (raw-vs-core count drift) persists across a match-only refresh. The full default cascade (`match` + `transform` + `categorize`) is what actually addresses the symptom. Recipe rationale text records the why.
 - **Recipe scope: 3 recipes (orphan_app_state + categorization_coverage + dedup_reconciliation).** PR 4 ships recipes only for audits where the action is genuinely executable AND adds information the agent doesn't already have. The three SQLMesh audits in the spec table (`fct_transactions_fk_integrity`, `fct_transactions_sign_convention`, `bridge_transfers_balanced`) deliberately ship WITHOUT recipes: the only executable action available pre-PR9 would be `system_doctor(full=True)`, but `full=True` only changes behavior for `_run_app_audit_coverage` (sampled-vs-full), not SQLMesh audits — re-running surfaces the identical failure. Emitting it would be circular noise. The spec's `accounts_get` / `import_revert` / `transactions_matches_set` citations defer to PR 9a–f (per-domain retrofit), where each audit's affected_ids will be augmented with the IDs those tools need (account_id from a transaction, source import_id, match_id from a transaction). Today's affected_ids are `transaction_id` values and the named tools take other identifiers, so emitting them now would produce non-executable actions.
 - **Audits without a registered recipe leave `recovery_actions=None`.** Per the prompt's "don't fabricate certain recipes" guidance: the 3 SQLMesh audits noted above, the per-table `app_audit_coverage_*` checks (13 of them), the FK-style app audits, and the `app_user_categories_uniqueness` / `app_user_merchants_orphans` warnings have no registered recipe yet — their cleanest recovery requires the per-domain retrofit landing in PR 9. They stay surfaced as failures with `recovery_actions=None` (rather than spurious "investigate manually" hints) so an agent can route them to the operator rather than burning tokens on a useless action.
 - **`InvariantResultPayload` gained `recovery_actions: list[RecoveryActionPayload]`** (mirrors the `SystemAuditHistoryEntryPayload` precedent — required list, possibly empty). The MCP `system_doctor` adapter and the CLI `system doctor` text + JSON renderers carry the new field. Privacy classification: `RecoveryActionPayload` is already Tier.LOW (RECORD_ID + DESCRIPTION + AGGREGATE + TXN_TYPE), so `InvariantResultPayload`'s derived tier is unchanged (still Tier.MEDIUM via `detail` = DESCRIPTION).
 - **CLI text format: one `💡 [confidence] tool(arguments) — rationale` line per action,** rendered indented under each failing/warning invariant. JSON format: a `recovery_actions` array per invariant carrying the full executable shape (tool, arguments, rationale, confidence, idempotent) so scripted / agent consumers can dispatch directly.
-- **`orphan_app_state` audit suppresses pending manual transactions** (migration V026). `transactions_create` returns the predicted gold-key `transaction_id` to the caller immediately, before the next `refresh_run` materializes the row into `core.fct_transactions`. Notes/tags written against that id in the window between create and refresh are legitimate state, not orphans — without suppression the recipe would prescribe deletion and destroy valid user curation. V026 adds a `transaction_id` column to `raw.manual_transactions` (populated at INSERT in `create_manual_batch`, backfilled from existing `(source_transaction_id, account_id)` pairs via the same SHA256 hash `_predict_manual_gold_key` computes). The audit's `NOT EXISTS(core.fct_transactions)` arm pairs with `AND NOT EXISTS(raw.manual_transactions WHERE transaction_id = ...)` to skip those rows. **Known limitation:** the suppression is broader than ideal — a manual that joins a dedup group during refresh has its predicted id replaced in core by the group's canonical id, but the raw row keeps the predicted id forever, so notes/tags written against the original predicted id stay suppressed even after they become genuinely orphaned. Closing this needs a real materialization signal (the obvious one, `prep.int_transactions__matched`, is a live VIEW that reflects raw rows immediately and can't discriminate pending-vs-processed); deferred to PR9. The trade-off is accepted because (a) the deduped-away case is rare in practice and (b) the primary protection — against destroying notes on freshly-created manuals — is the data-loss path that actually mattered. Surfaced by reviewers on PR #231 across three rounds.
+- **`orphan_app_state` audit suppresses pending manual transactions** (migration V026). `transactions_create` returns the predicted gold-key `transaction_id` to the caller immediately, before the next `refresh_run` materializes the row into `core.fct_transactions`. Notes/tags written against that id in the window between create and refresh are legitimate state, not orphans — without suppression the recipe would prescribe clearing them and destroy valid user curation. V026 adds a `transaction_id` column to `raw.manual_transactions` (populated at INSERT in `create_manual_batch`, backfilled from existing `(source_transaction_id, account_id)` pairs via the same SHA256 hash `_predict_manual_gold_key` computes). The audit's `NOT EXISTS(core.fct_transactions)` arm pairs with `AND NOT EXISTS(raw.manual_transactions WHERE transaction_id = ...)` to skip those rows. **Known limitation:** the suppression is broader than ideal — a manual that joins a dedup group during refresh has its predicted id replaced in core by the group's canonical id, but the raw row keeps the predicted id forever, so notes/tags written against the original predicted id stay suppressed even after they become genuinely orphaned. Closing this needs a real materialization signal (the obvious one, `prep.int_transactions__matched`, is a live VIEW that reflects raw rows immediately and can't discriminate pending-vs-processed); deferred to PR9. The trade-off is accepted because (a) the deduped-away case is rare in practice and (b) the primary protection — against destroying notes on freshly-created manuals — is the data-loss path that actually mattered. Surfaced by reviewers on PR #231 across three rounds.
 
 ### PR 5 — Matches MCP surface
 
@@ -521,10 +542,13 @@ Shipped on `feat/data-recovery-doctor-recipes`. Status stays `in-progress` (PR 5
 - Tests per recipe: seed drift → refresh runs → drift gone → audit rows present → `system_audit_undo(operation_id)` reverses the heal.
 - Cross-cutting test: chain of revert → refresh → self-heal → audit_history shows the self-heal as undoable; user can `system_audit_undo` it to restore the orphan.
 
-### PR 8 — `transactions_notes_delete` list-accepting form
+### PR 8 — coarse orphan annotation cleanup
 
-- Extend the existing tool to accept `note_ids: list[str]`. Single-id form deprecated but accepted for one minor release per the post-launch evolution rule in `.claude/rules/design-principles.md` (we're pre-launch, but the symmetry is cheap to keep).
-- Update the `orphan_app_state` recipe to cite the list form.
+- Route orphan note cleanup through the stable-ID `note_delete` lifecycle
+  variant and orphan tag cleanup through declarative empty `tags_set`.
+- Update `orphan_app_state` to emit schema-valid
+  `transactions_annotate` requests keyed by `note_id` for notes and
+  `transaction_id` for tags.
 
 ### PRs 9a-N — Per-domain retrofit of `recovery_actions` on existing tools
 
@@ -593,7 +617,12 @@ Resolved during the 2026-05-19/2026-05-20 brainstorm. Captured so future readers
 
 4. **Block-don't-cascade undo.** When a later operation modified the same rows, `system_audit_undo` returns `undo_cascade_blocked` with blockers; the agent walks the chain explicitly. Auto-cascade is exactly the magic that loses trust ("I undid one thing and it deleted my categorizations from last week"). No `system_audit_undo_cascade` tool. Revisit only if real agent UX shows the walk is verbose enough to warrant it.
 
-5. **Mutation tools handle the "many" case natively; no `_many` variants.** Confirmed 2026-05-20 against the initial proposal of `transactions_notes_delete_many`. The canonical `transactions_notes_delete` extends to accept `note_ids: list[str]`. Verb vocabulary stays clean; agent never disambiguates between `_delete` and `_delete_many`. Codified in the new project rule (Req 11.8).
+5. **Mutation tools handle the "many" case natively; no `_many` variants.**
+   Confirmed 2026-05-20 and preserved by the coarse surface. Declarative
+   collection state lives in `transactions_annotate`, whose `requests` batch
+   handles one or many note/tag/split targets atomically. Verb vocabulary stays
+   clean; the agent never disambiguates singular and `_many` tools. Codified in
+   the new project rule (Req 11.8).
 
 6. **Empty `recovery_actions` = escalate, never silent no-op.** A failure with no actionable recovery MUST set `error_code="recovery_no_path"` explicitly; agents read this and escalate to the user. The contract is that the system never silently treats an unrecoverable error as auto-recovered.
 

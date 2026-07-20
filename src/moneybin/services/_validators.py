@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import re
 
+IDENTIFIER_MAX_LEN = 64
+CATEGORY_NAME_MAX_LEN = 100
+MERCHANT_NAME_MAX_LEN = 200
+MERCHANT_PATTERN_MAX_LEN = 500
+DESCRIPTION_MAX_LEN = 2000
 NOTE_MAX_LEN = 2000
+SLUG_MAX_LEN = 100
 
 _SLUG_RE = re.compile(r"^[a-z0-9_-]+(:[a-z0-9_-]+)?$")
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -20,7 +26,7 @@ class InvalidSlugError(ValueError):
 
 def validate_slug(value: str) -> None:
     """Enforce ^[a-z0-9_-]+(:[a-z0-9_-]+)?$ — bare or single-namespace slug."""
-    if not _SLUG_RE.fullmatch(value):
+    if len(value) > SLUG_MAX_LEN or not _SLUG_RE.fullmatch(value):
         raise InvalidSlugError(f"invalid slug {value!r}: must match {_SLUG_RE.pattern}")
 
 

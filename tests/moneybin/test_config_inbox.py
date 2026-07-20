@@ -21,6 +21,25 @@ class TestImportSettings:
     def test_default_self_accept_high_false(self) -> None:
         assert ImportSettings().self_accept_high is False
 
+    def test_default_pdf_preview_size_limit_matches_binary_import_limit(self) -> None:
+        assert ImportSettings().pdf_preview_size_limit_mb == 100
+
+    def test_pdf_preview_size_limit_must_be_positive(self) -> None:
+        with pytest.raises(ValueError):
+            ImportSettings(pdf_preview_size_limit_mb=0)
+
+    def test_pdf_preview_size_limit_uses_nested_environment_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB",
+            "7",
+        )
+
+        settings = MoneyBinSettings(_env_file=None)
+
+        assert settings.import_.pdf_preview_size_limit_mb == 7
+
     def test_self_accept_high_can_enable(self) -> None:
         assert ImportSettings(self_accept_high=True).self_accept_high is True
 

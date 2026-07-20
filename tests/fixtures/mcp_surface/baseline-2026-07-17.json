@@ -1,0 +1,5202 @@
+{
+  "sha256": "ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79",
+  "tool_count": 105,
+  "tools": [
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List accounts (default hides archived; supports type filter and redacted mode). Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "include_archived": {
+              "default": false,
+              "description": "Include archived accounts (default: hide them)",
+              "type": "boolean"
+            },
+            "type_filter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Match account_type or account_subtype (case-insensitive)"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts"
+      },
+      "description_bytes": 144,
+      "input_schema_bytes": 326,
+      "name": "accounts",
+      "other_bytes": 50,
+      "output_schema_bytes": 0,
+      "total_bytes": 656
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Record an asserted balance for an account on a specific date. Used to reconcile against external statements when sync data is incomplete or wrong. Upsert semantics by (account_id, assertion_date) natural key \u2014 calling twice for the same date updates the existing assertion. Writes app.balance_assertions; remove with accounts_balance_assertion_delete (permanent \u2014 no undo). Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "description": "The account ID",
+              "type": "string"
+            },
+            "assertion_date": {
+              "description": "ISO date (YYYY-MM-DD)",
+              "type": "string"
+            },
+            "balance": {
+              "description": "Balance amount as decimal value",
+              "type": "number"
+            },
+            "notes": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional free-text notes"
+            }
+          },
+          "required": [
+            "account_id",
+            "assertion_date",
+            "balance"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balance_assert"
+      },
+      "description_bytes": 442,
+      "input_schema_bytes": 435,
+      "name": "accounts_balance_assert",
+      "other_bytes": 65,
+      "output_schema_bytes": 0,
+      "total_bytes": 1085
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Delete a manual balance assertion. Hard-deletes from app.balance_assertions \u2014 permanent, no revert; re-create with accounts_balance_assert.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "description": "The account ID",
+              "type": "string"
+            },
+            "assertion_date": {
+              "description": "ISO date (YYYY-MM-DD)",
+              "type": "string"
+            }
+          },
+          "required": [
+            "account_id",
+            "assertion_date"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balance_assertion_delete"
+      },
+      "description_bytes": 141,
+      "input_schema_bytes": 239,
+      "name": "accounts_balance_assertion_delete",
+      "other_bytes": 75,
+      "output_schema_bytes": 0,
+      "total_bytes": 594
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List user-entered balance assertions. Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional filter to a single account"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balance_assertions"
+      },
+      "description_bytes": 102,
+      "input_schema_bytes": 187,
+      "name": "accounts_balance_assertions",
+      "other_bytes": 69,
+      "output_schema_bytes": 0,
+      "total_bytes": 494
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Per-account balance history (daily series with carry-forward + reconciliation deltas). Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "description": "Required \u2014 the account to query",
+              "type": "string"
+            },
+            "from_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD); inclusive"
+            },
+            "to_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD); inclusive"
+            }
+          },
+          "required": [
+            "account_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balance_history"
+      },
+      "description_bytes": 151,
+      "input_schema_bytes": 413,
+      "name": "accounts_balance_history",
+      "other_bytes": 66,
+      "output_schema_bytes": 0,
+      "total_bytes": 766
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Threshold-filtered list of days where computed balance differs from asserted by more than `threshold`. Returns one row per (account, day) with the magnitude of the delta. Use when you want to find magnitude-level mismatches. Amounts use the accounting convention; currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to specific accounts"
+            },
+            "threshold": {
+              "default": 0.01,
+              "description": "Minimum absolute delta to include (default: 0.01 = 1 cent)",
+              "type": "number"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balance_reconcile"
+      },
+      "description_bytes": 307,
+      "input_schema_bytes": 325,
+      "name": "accounts_balance_reconcile",
+      "other_bytes": 68,
+      "output_schema_bytes": 0,
+      "total_bytes": 836
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Latest balance per account from fct_balances_daily (or as-of a date). Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to specific accounts"
+            },
+            "as_of_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD) \u2014 shows balance on or before this date"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_balances"
+      },
+      "description_bytes": 134,
+      "input_schema_bytes": 361,
+      "name": "accounts_balances",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 690
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Get one account's full settings + dim record. Raises a not_found error (code infra_not_found) if the account doesn't exist. Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "description": "The account ID to look up",
+              "type": "string"
+            }
+          },
+          "required": [
+            "account_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_get"
+      },
+      "description_bytes": 188,
+      "input_schema_bytes": 160,
+      "name": "accounts_get",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 538
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Recent account-link decisions (all statuses), newest first. Read-only. Filter by limit. Use accounts_links_pending for the active review queue.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 50,
+              "description": "Maximum rows (default 50).",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "accounts_links_history"
+      },
+      "description_bytes": 143,
+      "input_schema_bytes": 144,
+      "name": "accounts_links_history",
+      "other_bytes": 71,
+      "output_schema_bytes": 0,
+      "total_bytes": 494
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List pending account-link decisions grouped by provisional account. Returns the review queue of provisional accounts (recently imported, not yet confirmed canonical) with candidate merge proposals. Each candidate carries decision_id, account_id, display name, confidence score, and the match signal (institution_last4 or name). ref_value (raw native reference, which can be a full account number) is never included. Use accounts_links_set to accept or standalone-reject each group. Run accounts_links_run first to backfill proposals for pre-existing accounts.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "accounts_links_pending"
+      },
+      "description_bytes": 559,
+      "input_schema_bytes": 62,
+      "name": "accounts_links_pending",
+      "other_bytes": 71,
+      "output_schema_bytes": 0,
+      "total_bytes": 828
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Backfill account-link proposals for accounts already in core.dim_accounts that have no pending proposal yet (e.g. cross-source twins imported separately). Writes pending app.account_link_decisions rows; skips pairs already proposed or decided in either direction. Returns data.new_proposals (count of new pending decisions written). Mutation surface: writes app.account_link_decisions; revert via app.audit_log (no undo tool yet). Review results with accounts_links_pending.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "accounts_links_run"
+      },
+      "description_bytes": 474,
+      "input_schema_bytes": 62,
+      "name": "accounts_links_run",
+      "other_bytes": 67,
+      "output_schema_bytes": 0,
+      "total_bytes": 740
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Accept (merge) or standalone-reject one pending account-link decision. action='accept' + target_account_id=<the decision's own candidate_account_id> MERGES: it prompts the user to confirm (MCP elicitation naming both accounts and the match signal) and merges only on their explicit agreement \u2014 a merge fuses two accounts' transaction histories and balances, so the agent cannot accept one on its own. On a client without elicitation, accept fails with mutation_confirmation_required and names the CLI equivalent. target_account_id must equal the decision's own candidate (mismatched, empty, or missing target_account_id raises mutation_invalid_input \u2014 it is NEVER read as a reject). action='reject' (no target_account_id) keeps the provisional as its own canonical account and rejects every pending decision for it. Writes app.account_link_decisions + app.account_links; reverse with system_audit_undo(operation_id). Discover pending decisions with accounts_links_pending.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "description": "\"accept\" (merge, requires `target_account_id` + human\nconfirmation) or \"reject\" (keep the provisional account standalone;\npass no `target_account_id`).",
+              "enum": [
+                "accept",
+                "reject"
+              ],
+              "type": "string"
+            },
+            "decision_id": {
+              "description": "The decision id to act on (from accounts_links_pending).",
+              "type": "string"
+            },
+            "target_account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "With action=\"accept\", the candidate account_id to\nmerge into \u2014 must equal the decision's own candidate_account_id.\nInvalid with action=\"reject\"."
+            }
+          },
+          "required": [
+            "decision_id",
+            "action"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "accounts_links_set"
+      },
+      "description_bytes": 976,
+      "input_schema_bytes": 683,
+      "name": "accounts_links_set",
+      "other_bytes": 67,
+      "output_schema_bytes": 0,
+      "total_bytes": 1869
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Resolve a free-text account reference (e.g., 'my Chase account', 'checking') to an account_id. Returns ranked candidates with confidence scores. Use this before tools that require an account_id when you only have a natural-language reference.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 5,
+              "description": "Maximum number of candidates to return (default 5).",
+              "type": "integer"
+            },
+            "query": {
+              "description": "Free-text account reference.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_resolve"
+      },
+      "description_bytes": 242,
+      "input_schema_bytes": 260,
+      "name": "accounts_resolve",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 696
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, iso_currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). Archiving (is_archived=True) cascades include_in_net_worth=False atomically; unarchive does NOT restore the prior include value. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_id": {
+              "type": "string"
+            },
+            "account_subtype": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "clear_fields": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "credit_limit": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "default_cost_basis_method": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "display_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "holder_category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_in_net_worth": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "is_archived": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "iso_currency_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "last_four": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "official_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "account_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_set"
+      },
+      "description_bytes": 734,
+      "input_schema_bytes": 1010,
+      "name": "accounts_set",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 1935
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Aggregate account snapshot \u2014 counts by type/subtype, archived, excluded, recent activity.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "accounts_summary"
+      },
+      "description_bytes": 91,
+      "input_schema_bytes": 62,
+      "name": "accounts_summary",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 350
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List all categories in the taxonomy.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "include_inactive": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "categories"
+      },
+      "description_bytes": 36,
+      "input_schema_bytes": 115,
+      "name": "categories",
+      "other_bytes": 52,
+      "output_schema_bytes": 0,
+      "total_bytes": 339
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Create a custom category or subcategory. Writes app.user_categories; revert with categories_set (set is_active=False) or hard-remove with categories_delete.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "type": "string"
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "subcategory": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "category"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "categories_create"
+      },
+      "description_bytes": 156,
+      "input_schema_bytes": 264,
+      "name": "categories_create",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 617
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Hard-delete a user-created category. Refuses by default if referenced by transactions or budgets; pass force=True to cascade-delete those rows (affected transactions become uncategorized). Default (seeded) categories cannot be deleted \u2014 use categories_set with is_active=False to disable them. Mutation surface: deletes app.user_categories row; with force=True also deletes referencing app.transaction_categories rows and matching app.budgets rows. No revert path \u2014 recreate with categories_create.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "category_id": {
+              "description": "ID of the user-created category to delete.",
+              "type": "string"
+            },
+            "force": {
+              "default": false,
+              "description": "If True, cascade-delete referencing transaction and\nbudget rows; if False (default), refuse when references\nexist.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "category_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "categories_delete"
+      },
+      "description_bytes": 502,
+      "input_schema_bytes": 355,
+      "name": "categories_delete",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 1058
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Update a category's settings (is_active is currently the only modifiable field). Shape-1b partial-update tool matching the budget_set / accounts_set convention. Writes app.user_categories.is_active for user-created categories or app.category_overrides for seeded ones; revert by calling again with the opposite is_active value. For category lifecycle: categories_create to add, categories_delete to remove.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "category_id": {
+              "description": "ID of the category to update.",
+              "type": "string"
+            },
+            "is_active": {
+              "description": "Whether the category is selectable for new\ncategorizations.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "category_id",
+            "is_active"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "categories_set"
+      },
+      "description_bytes": 406,
+      "input_schema_bytes": 286,
+      "name": "categories_set",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 885
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List every Google Sheets connection \u2014 id, adapter, status, last-pull/last-success timestamps. Drift-detected connections surface a gsheet_reconnect hint in actions[]. (The bare name, not gsheet_list, is intentional: it reads as the gsheet domain's default collection view per the noun-only read convention.)",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet"
+      },
+      "description_bytes": 309,
+      "input_schema_bytes": 62,
+      "name": "gsheet",
+      "other_bytes": 48,
+      "output_schema_bytes": 0,
+      "total_bytes": 558
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Authenticate with Google Sheets via OAuth PKCE \u2014 opens a browser, completes consent, and stores tokens in the system keychain. Tokens never enter the MCP wire or LLM context. Call this once before gsheet_connect; subsequent calls short-circuit unless force_reauth=True.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "force_reauth": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_auth"
+      },
+      "description_bytes": 271,
+      "input_schema_bytes": 111,
+      "name": "gsheet_auth",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 575
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Bind a Google Sheet to MoneyBin via direct OAuth (user-controlled storage). Detects column mapping, persists app.gsheet_connections, and runs the initial pull by default. Amounts use MoneyBin convention (negative = expense). Run gsheet_auth first if not yet authorized \u2014 this matters for timeout: the OAuth browser consent and the initial pull share one call window, so for a first-time/large-sheet connect, authorizing separately leaves the full window for the pull (or set no_initial_pull=True and pull afterward with gsheet_pull).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "accept_seed_fallback": {
+              "default": false,
+              "type": "boolean"
+            },
+            "account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "account_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "adapter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "alias": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "column_mapping": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "no_initial_pull": {
+              "default": false,
+              "type": "boolean"
+            },
+            "sign": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "url": {
+              "type": "string"
+            },
+            "yes": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_connect"
+      },
+      "description_bytes": 535,
+      "input_schema_bytes": 733,
+      "name": "gsheet_connect",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 1464
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Soft-disconnect (default) or purge a connection. Purge=True is permanent: drops seed view (if any), deletes raw rows, hard-deletes the connection row. Soft-disconnect retains raw rows for analytics.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "type": "string"
+            },
+            "purge": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "connection_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_disconnect"
+      },
+      "description_bytes": 198,
+      "input_schema_bytes": 167,
+      "name": "gsheet_disconnect",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 560
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Pull one Google Sheets connection by ID, or every healthy connection. Returns per-connection status (complete / drift_detected / auth_expired / unreachable / rate_limited / failed). Drift-detected connections surface a gsheet_reconnect hint in actions[]. Mutation surface: writes raw.tabular_transactions (transactions adapter) or raw.gsheet_seeds (seed adapter) and soft-deletes rows no longer in the sheet; no revert \u2014 the next pull re-derives state from the live sheet.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_pull"
+      },
+      "description_bytes": 474,
+      "input_schema_bytes": 138,
+      "name": "gsheet_pull",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 805
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Re-detect sheet structure, re-pin column mapping, and run a pull. Use after drift_detected. No revert \u2014 re-binds to whatever the sheet currently looks like.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "type": "string"
+            },
+            "sign": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "yes": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "connection_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_reconnect"
+      },
+      "description_bytes": 158,
+      "input_schema_bytes": 233,
+      "name": "gsheet_reconnect",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 589
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Show status for one connection by ID, or a full summary. Drift-detected connections surface a gsheet_reconnect hint in actions[].",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "gsheet_status"
+      },
+      "description_bytes": 129,
+      "input_schema_bytes": 138,
+      "name": "gsheet_status",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 458
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Confirm or override a proposed column mapping, or apply a PDF bridge response. Terminal step of the propose->review->confirm workflow: call after import_files / import_preview returns confirmation_required. Tabular: pass accept=True to ratify the proposal as-is, or mapping={'<dest_field>': '<source_column>'} for a partial override (unspecified fields fall back to the detected proposal); writes raw.tabular_transactions + app.tabular_formats (when save_format=True). PDF bridge: pass bridge_response={'recipe': ..., 'rows': [...]} \u2014 MoneyBin re-runs your recipe against the document, reconciles, and loads, writing raw.tabular_transactions + app.pdf_formats (when save_format=True); a response that fails reconciliation is rejected and nothing loads. Data load is reversible via import_revert; format save can be undone via system_audit_undo. Amounts use the accounting convention: negative=expense, positive=income; transfers exempt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "accept": {
+              "default": false,
+              "description": "Accept the proposed mapping as-is (no overrides). Tabular only.",
+              "type": "boolean"
+            },
+            "account_bindings": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Ratify an ``account_confirmation``: a map of\n``source_account_key`` -> existing ``account_id`` (adopt) or\n``\"new\"`` (mint a distinct new account). The keys come from the\n``confirmation_payload.account_proposals[].source_account_key`` of a\nprior ``confirmation_required`` response. Use this for multi-account\nfiles; ``account_id``/``account_name`` cover the single-account case.\nOn retry, re-supply ALL bindings \u2014 the gate re-evaluates every\naccount and persists no partial state between calls."
+            },
+            "account_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Existing account id to associate single-account rows with."
+            },
+            "account_metadata": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "For accounts bound ``\"new\"``, a map of\n``source_account_key`` -> ``{display_name, account_subtype,\nlast_four, iso_currency_code}`` captured into the minted account's\nsettings. Unknown fields raise. Ignored for adopted accounts."
+            },
+            "account_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Existing account name to look up; resolves to account_id."
+            },
+            "bridge_response": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "PDF bridge reply ``{'recipe': ..., 'rows': [...]}``.\nMutually exclusive with ``accept``/``mapping``."
+            },
+            "file_path": {
+              "description": "Absolute path to the file to import. Must be within the\nuser's home directory.",
+              "type": "string"
+            },
+            "mapping": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Partial field\u2192column override dict. Tabular only."
+            },
+            "save_format": {
+              "default": true,
+              "description": "Auto-save the confirmed mapping/recipe as a named format\nfor future imports. Defaults to True.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "file_path"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_confirm"
+      },
+      "description_bytes": 938,
+      "input_schema_bytes": 2259,
+      "name": "import_confirm",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 3394
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Import one or more financial data files (OFX, QFX, QBO, CSV, TSV, Excel, Parquet, PDF) into MoneyBin. Per-file failures do not abort the batch; transforms run once at end-of-batch unless deferred. Writes raw.* source tables and raw.import_log; revert each import via import_revert with the returned import_id. Amounts use the accounting convention: negative=expense, positive=income; transfers exempt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "force": {
+              "default": false,
+              "description": "If True, re-import files already in the import log.",
+              "type": "boolean"
+            },
+            "paths": {
+              "description": "One or more absolute file paths to import. Each path must\nbe within the user's home directory.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "refresh": {
+              "default": true,
+              "description": "Run the refresh pipeline once after the batch completes.\nDefaults to True. Pass False to import without refreshing core\ntables; the transforms_pending signal in system_status will\nindicate the pending state, and a later refresh_run or\nrefresh call will catch the data up.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "paths"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_files"
+      },
+      "description_bytes": 401,
+      "input_schema_bytes": 692,
+      "name": "import_files",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 1285
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List all available tabular import formats (built-in and user-saved).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_formats"
+      },
+      "description_bytes": 68,
+      "input_schema_bytes": 62,
+      "name": "import_formats",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 322
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Preview pending items in the active profile's import inbox without moving anything.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_inbox_pending"
+      },
+      "description_bytes": 83,
+      "input_schema_bytes": 62,
+      "name": "import_inbox_pending",
+      "other_bytes": 62,
+      "output_schema_bytes": 0,
+      "total_bytes": 343
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Drain the active profile's import inbox; move successes to processed/ and failures to failed/ with structured error sidecars. Runs the post-load refresh pipeline once at end-of-batch when any file succeeded; pass refresh=false to defer the rebuild and call refresh_run later. Writes to raw.* source tables and moves files within the inbox directory; revert by manually moving processed files back into inbox/<account-slug>/ and accepting that already-imported source rows are deduplicated on the next sync.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "refresh": {
+              "default": true,
+              "description": "When True (default), run the post-load refresh pipeline\n(matching + SQLMesh apply + categorization) once after all files\nhave been imported. Set to False to defer \u2014 useful when chaining\nseveral writes before invoking ``refresh_run`` or refresh\nexplicitly.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_inbox_sync"
+      },
+      "description_bytes": 506,
+      "input_schema_bytes": 386,
+      "name": "import_inbox_sync",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 1089
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Declarative target-state: replace an import's labels; emits one full-row import.set audit event. Writes app.imports.labels; revert by calling again with the prior label list (before/after captured in app.audit_log).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "import_id": {
+              "type": "string"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "import_id",
+            "labels"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_labels_set"
+      },
+      "description_bytes": 215,
+      "input_schema_bytes": 177,
+      "name": "import_labels_set",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 588
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Preview a file's structure without importing. Tabular files: detected format, column mapping, and sample values. PDF files: the deterministic extraction outcome, or \u2014 for a bridge-eligible layout (low confidence, failed reconciliation, \u2026) \u2014 a confirmation_required envelope carrying the bridge_payload (document text + table preview) for you to propose a recipe + rows and ratify via import_confirm(bridge_response=...). The PDF bridge branch writes an app.audit_log egress row (not side-effect-free) and can return row-level document content (medium sensitivity).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "file_path": {
+              "description": "Absolute path to the file to preview.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file_path"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_preview"
+      },
+      "description_bytes": 570,
+      "input_schema_bytes": 170,
+      "name": "import_preview",
+      "other_bytes": 56,
+      "output_schema_bytes": 0,
+      "total_bytes": 943
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Undo an import batch by import_id (deletes the rows it produced and marks the batch as reverted). Hard-deletes from raw.* source tables and updates raw.import_log.status='reverted'; the deletion is permanent \u2014 re-import the original file via import_files to restore the rows.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "import_id": {
+              "description": "UUID of the import batch to revert. Get it from\nimport_files's response or from import_status.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "import_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_revert"
+      },
+      "description_bytes": 277,
+      "input_schema_bytes": 228,
+      "name": "import_revert",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 700
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List past import batches with status, row counts, and detection confidence.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "import_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to a specific import ID for full details."
+            },
+            "limit": {
+              "default": 20,
+              "description": "Maximum number of records to return (default 20).",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "import_status"
+      },
+      "description_bytes": 75,
+      "input_schema_bytes": 305,
+      "name": "import_status",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 571
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List investment ledger events (buys, sells, dividends, corporate actions, ...). Amounts use the per-type sign convention documented in investments_record; amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Account ID or free-text reference (resolved to an id;\nambiguous or unresolved references raise an error)."
+            },
+            "from_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD), inclusive lower bound on trade_date."
+            },
+            "security": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Ticker, CUSIP, ISIN, or catalog name (resolved to a\nsecurity_id the same way)."
+            },
+            "to_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD), inclusive upper bound on trade_date."
+            },
+            "type_filter": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Restrict to one event type (buy, sell, reinvest,\ndividend, interest, capital_gain_distribution, transfer_in,\ntransfer_out, deposit, withdrawal, split, fee,\nreturn_of_capital, other)."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments"
+      },
+      "description_bytes": 219,
+      "input_schema_bytes": 996,
+      "name": "investments",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 1404
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Realized gain/loss (the 1099-B surface). A row with basis_incomplete=true means the disposal was oversold or the acquisition lot is missing; data.warnings names the count when any row is incomplete. Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Account ID or free-text reference (resolved to an id)."
+            },
+            "from_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD), inclusive lower bound on disposal_date."
+            },
+            "security": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Ticker, CUSIP, ISIN, or catalog name (resolved to a\nsecurity_id)."
+            },
+            "term": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Restrict to one holding term: \"short\" or \"long\"."
+            },
+            "to_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD), inclusive upper bound on disposal_date."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_gains"
+      },
+      "description_bytes": 263,
+      "input_schema_bytes": 797,
+      "name": "investments_gains",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 1255
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Current positions: quantity, cost basis, average cost per (account, security). Market value/unrealized gain require price feeds (not yet shipped) \u2014 always carries a warning that only cost basis is available. Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Account ID or free-text reference (resolved to an id)."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_holdings"
+      },
+      "description_bytes": 274,
+      "input_schema_bytes": 203,
+      "name": "investments_holdings",
+      "other_bytes": 62,
+      "output_schema_bytes": 0,
+      "total_bytes": 678
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Tax lots with remaining quantity and basis. Open lots only by default (open_only=False for full history). A row with basis_incomplete=true opened with no supplied basis (e.g. a transfer_in with unknown cost basis); data.warnings names the count when any row is incomplete. Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Account ID or free-text reference (resolved to an id)."
+            },
+            "open_only": {
+              "default": true,
+              "description": "Show only open lots (default) or the full open+closed\nhistory when False.",
+              "type": "boolean"
+            },
+            "security": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Ticker, CUSIP, ISIN, or catalog name (resolved to a\nsecurity_id)."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_lots"
+      },
+      "description_bytes": 337,
+      "input_schema_bytes": 495,
+      "name": "investments_lots",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 1026
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Set the full specific-identification lot selection for one disposal (a sell) \u2014 the listed (lot_id, quantity) pairs REPLACE any prior selection; selections=[] clears all overrides and reverts to FIFO. Writes app.lot_selections; no revert tool (call again to undo).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "disposal_txn_id": {
+              "description": "investment_transaction_id of the disposal (must be\na \"sell\"; other event types raise mutation_invalid_input).",
+              "type": "string"
+            },
+            "selections": {
+              "description": "List of `{\"lot_id\": ..., \"quantity\": \"...\"}` dicts\n(quantity as a decimal string). The selected quantities must sum\nto no more than the disposal's magnitude.",
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "disposal_txn_id",
+            "selections"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_lots_select"
+      },
+      "description_bytes": 265,
+      "input_schema_bytes": 536,
+      "name": "investments_lots_select",
+      "other_bytes": 65,
+      "output_schema_bytes": 0,
+      "total_bytes": 1006
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Record one or more investment ledger events in one call. Sign convention: quantity positive for acquisitions / negative for disposals / absent for cash-only events; amount negative for cash out, positive for cash in. A reinvest event writes an acquisition + income row pair sharing one event_group_id. All events are validated and resolved before any write. A validation failure OR a bad/ambiguous ACCOUNT ref is a HARD failure that aborts the whole call with nothing written (standard error envelope); a bad/ambiguous SECURITY ref is a SOFT per-item failure reported in data.error_details while the rest of the batch is written. Writes raw.manual_investment_transactions; no revert tool.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "events": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "events"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_record"
+      },
+      "description_bytes": 688,
+      "input_schema_bytes": 163,
+      "name": "investments_record",
+      "other_bytes": 60,
+      "output_schema_bytes": 0,
+      "total_bytes": 1048
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List the manually-maintained securities catalog. Reference data only \u2014 no amounts, no per-user holdings.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "security_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter by instrument type (equity, etf, mutual_fund,\nbond, crypto, cash, other)."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_securities"
+      },
+      "description_bytes": 106,
+      "input_schema_bytes": 236,
+      "name": "investments_securities",
+      "other_bytes": 64,
+      "output_schema_bytes": 0,
+      "total_bytes": 545
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Recent security-link decisions (all statuses), newest first. Read-only. Filter by limit. Use investments_securities_links_pending for the active review queue.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 50,
+              "description": "Maximum rows (default 50).",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "investments_securities_links_history"
+      },
+      "description_bytes": 158,
+      "input_schema_bytes": 144,
+      "name": "investments_securities_links_history",
+      "other_bytes": 85,
+      "output_schema_bytes": 0,
+      "total_bytes": 523
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List pending security merge decisions grouped by provider ref (plaid_security_id or institution_security_id). Returns the review queue with BOTH sides of each proposed merge: provider_ticker/provider_name alongside each candidate's candidate_ticker/candidate_name, plus match_reason (identifier_tie, exchange_contradiction, fuzzy_name, ...) \u2014 the field that conveys how risky accepting is. Use investments_securities_links_set to merge or reject each decision.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "investments_securities_links_pending"
+      },
+      "description_bytes": 462,
+      "input_schema_bytes": 62,
+      "name": "investments_securities_links_pending",
+      "other_bytes": 85,
+      "output_schema_bytes": 0,
+      "total_bytes": 748
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Accept (merge) or reject one pending security merge decision. action='accept' + into=<the decision's own candidate_security_id> MERGES: it prompts the user to confirm (MCP elicitation naming both securities and the match reason) and merges only on their explicit agreement \u2014 a merge fuses two instruments' tax lots, so the agent cannot accept one on its own. On a client without elicitation, accept fails with mutation_confirmation_required and names the CLI equivalent. into must equal the decision's own candidate (mismatched, empty, or missing into raises mutation_invalid_input \u2014 it is NEVER read as a reject). action='reject' (no into) keeps the provider's security as its own instrument; only this decision is rejected, sibling candidates stay pending. Writes app.security_link_decisions + app.security_links + app.lot_selections + app.securities; reverse the whole cascade with system_audit_undo(operation_id). Discover pending decisions with investments_securities_links_pending.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "description": "\"accept\" (merge, requires `into` + human confirmation) or\n\"reject\" (keep the provisional security; pass no `into`).",
+              "enum": [
+                "accept",
+                "reject"
+              ],
+              "type": "string"
+            },
+            "decision_id": {
+              "description": "The decision id to act on (from\ninvestments_securities_links_pending).",
+              "type": "string"
+            },
+            "into": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "With action=\"accept\", the candidate_security_id to merge into \u2014\nmust equal the decision's own candidate_security_id. Invalid with\naction=\"reject\"."
+            }
+          },
+          "required": [
+            "decision_id",
+            "action"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "investments_securities_links_set"
+      },
+      "description_bytes": 991,
+      "input_schema_bytes": 650,
+      "name": "investments_securities_links_set",
+      "other_bytes": 81,
+      "output_schema_bytes": 0,
+      "total_bytes": 1865
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Create-or-update one securities-catalog entry. security_id=None creates (name + security_type required); an existing security_id partially updates (unset fields unchanged; security_type immutable post-creation). cost_basis_method='average' is valid only for mutual_fund/etf. Writes app.securities; no delete tool in v1.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "coingecko_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cost_basis_method": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "currency_code": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "cusip": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "exchange": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "figi": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "is_cash_equivalent": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "isin": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "security_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "security_type": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "ticker": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "investments_securities_set"
+      },
+      "description_bytes": 319,
+      "input_schema_bytes": 945,
+      "name": "investments_securities_set",
+      "other_bytes": 68,
+      "output_schema_bytes": 0,
+      "total_bytes": 1469
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List all merchant name mappings.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "merchants"
+      },
+      "description_bytes": 32,
+      "input_schema_bytes": 62,
+      "name": "merchants",
+      "other_bytes": 51,
+      "output_schema_bytes": 0,
+      "total_bytes": 281
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Create multiple merchant name mappings for description normalization and auto-categorization. Writes app.user_merchants; no built-in delete tool \u2014 revert by editing or repointing the row directly via SQL.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "merchants": {
+              "description": "List of merchant mapping dicts.",
+              "items": {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "merchants"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "merchants_create"
+      },
+      "description_bytes": 206,
+      "input_schema_bytes": 258,
+      "name": "merchants_create",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 663
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Recent merchant-link decisions (all statuses), newest first. Read-only. Filter by limit. Use merchants_links_pending for the active review queue.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 50,
+              "description": "Maximum rows (default 50).",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "merchants_links_history"
+      },
+      "description_bytes": 145,
+      "input_schema_bytes": 144,
+      "name": "merchants_links_history",
+      "other_bytes": 72,
+      "output_schema_bytes": 0,
+      "total_bytes": 497
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List pending merchant-link decisions grouped by provider entity id (e.g. Plaid merchant_entity_id). Returns the review queue of provider entity ids with candidate canonical merchant proposals. Each candidate carries decision_id, merchant_id, canonical name, and confidence score. Sensitivity: low for ids (ref_value, candidate_merchant_id = RECORD_ID); medium for names (provider_merchant_name, candidate_canonical_name = MERCHANT_NAME). Use merchants_links_set to bind or reject each decision. Run merchants_links_run first to backfill proposals for pre-existing data.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "merchants_links_pending"
+      },
+      "description_bytes": 569,
+      "input_schema_bytes": 62,
+      "name": "merchants_links_pending",
+      "other_bytes": 72,
+      "output_schema_bytes": 0,
+      "total_bytes": 839
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Harvest merchant-link proposals from existing categorization facts. Binds unambiguous provider entity id \u2192 merchant pairings and routes conflicts to the pending review queue. Writes app.merchant_links + app.merchant_link_decisions; skips pairs already proposed or decided. Returns data.bound (entity ids silently bound to one merchant) and data.conflicts (one-id-many-merchant cases queued for review) \u2014 bound bindings are NOT pending. Mutation surface: writes app.merchant_links + app.merchant_link_decisions; revert via app.audit_log (no undo tool yet). Review queued conflicts with merchants_links_pending.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "merchants_links_run"
+      },
+      "description_bytes": 613,
+      "input_schema_bytes": 62,
+      "name": "merchants_links_run",
+      "other_bytes": 68,
+      "output_schema_bytes": 0,
+      "total_bytes": 886
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Accept (bind) or reject one pending merchant-link decision. action='accept' + target_merchant_id=<the decision's own candidate_merchant_id> BINDS the provider entity id to that canonical merchant: it prompts the user to confirm (MCP elicitation naming both sides and the confidence) and binds only on their explicit agreement \u2014 the binding attributes every transaction carrying that entity id to the merchant, so the agent cannot accept one on its own. On a client without elicitation, accept fails with mutation_confirmation_required and names the CLI equivalent. target_merchant_id must equal the decision's own candidate (mismatched, empty, or missing target_merchant_id raises mutation_invalid_input \u2014 it is NEVER read as a reject). action='reject' (no target_merchant_id) rejects ALL pending candidates for this provider entity id; the id stays unbound, the declined pairings are not re-proposed, and the resolver mints a new merchant for the id on its next categorization pass. Writes app.merchant_link_decisions + app.merchant_links; reverse with system_audit_undo(operation_id). Discover pending decisions with merchants_links_pending.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "description": "\"accept\" (bind, requires `target_merchant_id` + human\nconfirmation) or \"reject\" (leave the entity id unbound; pass no\n`target_merchant_id`).",
+              "enum": [
+                "accept",
+                "reject"
+              ],
+              "type": "string"
+            },
+            "decision_id": {
+              "description": "The decision id to act on (from merchants_links_pending).",
+              "type": "string"
+            },
+            "target_merchant_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "With action=\"accept\", the candidate merchant_id to\nbind \u2014 must equal the decision's own candidate_merchant_id. Invalid\nwith action=\"reject\"."
+            }
+          },
+          "required": [
+            "decision_id",
+            "action"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "links"
+            ]
+          }
+        },
+        "name": "merchants_links_set"
+      },
+      "description_bytes": 1147,
+      "input_schema_bytes": 670,
+      "name": "merchants_links_set",
+      "other_bytes": 68,
+      "output_schema_bytes": 0,
+      "total_bytes": 2028
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Record consent to share a data category (mcp-data-sharing, smart-import-parsing, ml-categorization, matching-overview) with your AI backend. CRITICAL fields (account/routing numbers) always stay masked. Writes app.ai_consent_grants (one active grant per category+backend; idempotent); revert with privacy_consent_revoke. Named _grant (not _set) because recording consent is an authorization event, not a generic state assertion.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AI backend; defaults to the configured default backend."
+            },
+            "category": {
+              "description": "One of mcp-data-sharing, smart-import-parsing,\nml-categorization, matching-overview.",
+              "type": "string"
+            },
+            "mode": {
+              "default": "persistent",
+              "description": "persistent (default) or one-time. NOTE: one-time enforcement is\npending \u2014 a one-time grant currently persists until revoked.\nRe-granting an existing active category+backend is a no-op and does\nNOT change the mode; revoke then grant again to change it.",
+              "enum": [
+                "persistent",
+                "one-time"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "category"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "privacy"
+            ]
+          }
+        },
+        "name": "privacy_consent_grant"
+      },
+      "description_bytes": 428,
+      "input_schema_bytes": 716,
+      "name": "privacy_consent_grant",
+      "other_bytes": 72,
+      "output_schema_bytes": 0,
+      "total_bytes": 1353
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Revoke consent for a data category; effective immediately. Writes app.ai_consent_grants (sets revoked_at; row retained for audit); revert by calling privacy_consent_grant again. Named _revoke (not _delete) to preserve the consent-withdrawal semantics a generic delete would erase \u2014 the row is retained, not removed.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "AI backend; defaults to the configured default backend."
+            },
+            "category": {
+              "description": "The feature category to revoke.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "category"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "privacy"
+            ]
+          }
+        },
+        "name": "privacy_consent_revoke"
+      },
+      "description_bytes": 317,
+      "input_schema_bytes": 305,
+      "name": "privacy_consent_revoke",
+      "other_bytes": 73,
+      "output_schema_bytes": 0,
+      "total_bytes": 835
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return recent privacy log events (consent grants/revokes and tool calls). Read-only metadata; no financial data.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Optional exact-match actor filter."
+            },
+            "last": {
+              "default": 50,
+              "description": "Maximum number of events to return (matches the CLI --last flag;\ncapped at 1000 server-side).",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "privacy"
+            ]
+          }
+        },
+        "name": "privacy_log"
+      },
+      "description_bytes": 112,
+      "input_schema_bytes": 331,
+      "name": "privacy_log",
+      "other_bytes": 62,
+      "output_schema_bytes": 0,
+      "total_bytes": 641
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Show active AI consent grants, the configured backend, and consent policy (standard/strict). Read-only.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "privacy"
+            ]
+          }
+        },
+        "name": "privacy_status"
+      },
+      "description_bytes": 103,
+      "input_schema_bytes": 62,
+      "name": "privacy_status",
+      "other_bytes": 65,
+      "output_schema_bytes": 0,
+      "total_bytes": 366
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Run the post-load refresh pipeline: cross-source matching, SQLMesh apply, deterministic categorization. The single always-visible entry point for refreshing derived tables (core.* and reports.*) from raw inputs. Idempotent \u2014 safe to retry. Accepts optional steps (list of 'gsheet', 'match', 'transform', 'categorize') to scope which sub-operations execute; defaults to the full cascade. Steps execute in canonical order (gsheet \u2192 match \u2192 transform \u2192 categorize) regardless of input order. Best-effort steps (match, categorize) don't fail the call: a real crash is surfaced as matching_error/categorization_error plus recovery_actions (a targeted refresh_run retry and system_doctor). Only SQLMesh apply errors set the top-level error. Mutation surface: rebuilds core.* and reports.* views via SQLMesh and writes app.transaction_categories for newly-matched rules. No revert path; re-run after fixing inputs. Symmetric with transactions_categorize_run(methods=...). For SQLMesh-step granularity beyond apply, use the CLI: `moneybin transform plan|validate|audit|status` (CLI-only operator tools).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "steps": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "gsheet",
+                      "match",
+                      "transform",
+                      "categorize"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Subset of ``[\"gsheet\", \"match\", \"transform\", \"categorize\"]``\nto run. Defaults to None (full cascade). Steps execute in\ncanonical order (gsheet \u2192 match \u2192 transform \u2192 categorize)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views). Pass ``[\"transform\"]`` to run only\nSQLMesh apply."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "refresh_run"
+      },
+      "description_bytes": 1103,
+      "input_schema_bytes": 570,
+      "name": "refresh_run",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 1875
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Balance reconciliation drift: asserted vs computed, one row per assertion.\n\nAmounts use the accounting convention (negative = expense, positive = income) in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to an account; accepts account_id or case-insensitive\ndisplay_name. Ambiguous display_name matches raise; None for all."
+            },
+            "since": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date; only assertions on or after."
+            },
+            "status": {
+              "default": "all",
+              "description": "drift | warning | clean | no-data | all.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_balance_drift"
+      },
+      "description_bytes": 204,
+      "input_schema_bytes": 500,
+      "name": "reports_balance_drift",
+      "other_bytes": 63,
+      "output_schema_bytes": 0,
+      "total_bytes": 905
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Monthly cash flow rollup: inflow/outflow/net per account x category.\n\nDefaults to the last 12 calendar months when both bounds are omitted. Amounts use the accounting convention (negative = expense, positive = income) in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "default": "account-and-category",
+              "description": "account | category | account-and-category \u2014 how to group.",
+              "type": "string"
+            },
+            "from_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Lower bound (inclusive) as 'YYYY-MM' (also accepts\n'YYYY-MM-DD' and ignores the day)."
+            },
+            "to_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound (inclusive) as 'YYYY-MM'."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_cashflow"
+      },
+      "description_bytes": 268,
+      "input_schema_bytes": 499,
+      "name": "reports_cashflow",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 963
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Top transactions by absolute amount with per-account/category z-scores.\n\nAmounts use the accounting convention (negative = expense, positive = income) in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "anomaly": {
+              "default": "none",
+              "description": "account | category | none \u2014 filter to z>2.5 in the named scope.",
+              "type": "string"
+            },
+            "top": {
+              "default": 25,
+              "description": "Top N by ABS(amount) (>= 1). On MCP the result is additionally\ncapped at the session max_rows; the CLI is uncapped.",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_large_transactions"
+      },
+      "description_bytes": 201,
+      "input_schema_bytes": 362,
+      "name": "reports_large_transactions",
+      "other_bytes": 68,
+      "output_schema_bytes": 0,
+      "total_bytes": 769
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Per-merchant lifetime activity totals (spend, count, first/last seen).\n\nAmounts use the accounting convention (negative = expense, positive = income) in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "sort": {
+              "default": "spend",
+              "description": "spend | count | recent.",
+              "type": "string"
+            },
+            "top": {
+              "default": 25,
+              "description": "Limit rows (>= 1). On MCP the result is additionally capped at the\nsession max_rows; the CLI is uncapped.",
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_merchants"
+      },
+      "description_bytes": 200,
+      "input_schema_bytes": 305,
+      "name": "reports_merchants",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 702
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Current or historical net worth snapshot with per-account breakdown. Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_ids": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter the per-account breakdown to specific account IDs.\nThe headline net_worth total still reflects all included accounts."
+            },
+            "as_of_date": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO date (YYYY-MM-DD); shows networth on or before this\ndate. Default: latest available."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_networth"
+      },
+      "description_bytes": 133,
+      "input_schema_bytes": 483,
+      "name": "reports_networth",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 810
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Net worth time series with period-over-period change (daily/weekly/monthly). Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "from_date": {
+              "description": "ISO date (YYYY-MM-DD); inclusive start",
+              "type": "string"
+            },
+            "interval": {
+              "default": "monthly",
+              "description": "'daily' | 'weekly' | 'monthly' (default: monthly)",
+              "type": "string"
+            },
+            "to_date": {
+              "description": "ISO date (YYYY-MM-DD); inclusive end",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from_date",
+            "to_date"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_networth_history"
+      },
+      "description_bytes": 141,
+      "input_schema_bytes": 377,
+      "name": "reports_networth_history",
+      "other_bytes": 66,
+      "output_schema_bytes": 0,
+      "total_bytes": 720
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Likely-recurring subscription candidates with confidence scores.\n\nAmounts use the accounting convention (negative = expense, positive = income) in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "cadence": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "weekly | biweekly | monthly | quarterly | yearly | irregular\n(None returns all)."
+            },
+            "min_confidence": {
+              "default": 0.5,
+              "description": "0.0-1.0; filter to candidates >= threshold.",
+              "type": "number"
+            },
+            "status": {
+              "default": "active",
+              "description": "active | inactive | all.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_recurring"
+      },
+      "description_bytes": 194,
+      "input_schema_bytes": 426,
+      "name": "reports_recurring",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 817
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.\n\nDefaults to the last 12 calendar months when both bounds are omitted. YoY columns come from the underlying view (all history), so narrowing the window does not null out yoy_pct. Amounts use the accounting convention (negative = expense, positive = income) in the currency named by summary.display_currency.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to a specific category text. None returns all."
+            },
+            "compare": {
+              "default": "yoy",
+              "description": "yoy | mom | trailing \u2014 caller-side intent only; the view\nreturns all three comparison columns regardless.",
+              "type": "string"
+            },
+            "from_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Lower bound (inclusive) as 'YYYY-MM'."
+            },
+            "to_month": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Upper bound (inclusive) as 'YYYY-MM'."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "reports_spending"
+      },
+      "description_bytes": 374,
+      "input_schema_bytes": 629,
+      "name": "reports_spending",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 1199
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return pending counts across all four review queues (matches, categorize, account-links, merchant-links). Call this to answer 'what needs my attention?' in one sweep. Drill into `transactions_matches_pending` for match proposals, `transactions_categorize_pending` for uncategorized transactions, `accounts_links_pending` for account-link decisions, and `merchants_links_pending` for merchant-link decisions.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "review"
+      },
+      "description_bytes": 407,
+      "input_schema_bytes": 62,
+      "name": "review",
+      "other_bytes": 48,
+      "output_schema_bytes": 0,
+      "total_bytes": 653
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW, PRAGMA, EXPLAIN. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>), exactly like the typed tools \u2014 raw SQL is not a privacy bypass. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "query": {
+              "description": "The SQL query to execute.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sql_query"
+      },
+      "description_bytes": 510,
+      "input_schema_bytes": 150,
+      "name": "sql_query",
+      "other_bytes": 51,
+      "output_schema_bytes": 0,
+      "total_bytes": 850
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return the curated database schema. Default call returns a compact catalog (table names + purposes + column counts). Pass table='<schema.name>' for one table's columns/examples, or table='*' for the full ~50KB document. Mirrors the moneybin://schema resource for hosts that don't expose MCP resources.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "table": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "``None`` (default) returns the compact catalog; a full table\nname like ``'core.fct_transactions'`` returns details for that\ntable; ``'*'`` returns the full schema document."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sql_schema"
+      },
+      "description_bytes": 301,
+      "input_schema_bytes": 321,
+      "name": "sql_schema",
+      "other_bytes": 52,
+      "output_schema_bytes": 0,
+      "total_bytes": 810
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Deprecated alias for sync_link. Will be removed in the next minor release.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "institution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_connect"
+      },
+      "description_bytes": 74,
+      "input_schema_bytes": 136,
+      "name": "sync_connect",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 401
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Deprecated alias for sync_link_status. Will be removed in the next minor release.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_connect_status"
+      },
+      "description_bytes": 81,
+      "input_schema_bytes": 118,
+      "name": "sync_connect_status",
+      "other_bytes": 61,
+      "output_schema_bytes": 0,
+      "total_bytes": 396
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Remove a bank connection.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "institution": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "institution"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_disconnect"
+      },
+      "description_bytes": 25,
+      "input_schema_bytes": 120,
+      "name": "sync_disconnect",
+      "other_bytes": 57,
+      "output_schema_bytes": 0,
+      "total_bytes": 338
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Link a bank account via Plaid \u2014 returns a URL the user opens in their browser. link_url is a sensitive one-time credential.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "institution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_link"
+      },
+      "description_bytes": 125,
+      "input_schema_bytes": 136,
+      "name": "sync_link",
+      "other_bytes": 51,
+      "output_schema_bytes": 0,
+      "total_bytes": 452
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Poll a sync_link session for completion.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "session_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_link_status"
+      },
+      "description_bytes": 40,
+      "input_schema_bytes": 118,
+      "name": "sync_link_status",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 352
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Pull transactions, accounts, balances, and investment data. Amounts use MoneyBin convention (negative = expense). A pull can partially fail while still returning: security_resolution_error means this pull's investment transactions were not attributed to securities (cost basis incomplete until retried) and transforms_error means core.* is stale \u2014 surface both to the user rather than reporting a clean sync. Mutation surface: writes raw.plaid_*, and resolves security identity on every pull \u2014 binding a security to the catalog (app.security_links), minting a provisional one it has never seen (app.securities), or filing an ambiguous match for human review (app.security_link_decisions). Review what it filed with investments_securities_links_pending; reverse a binding with system_audit_undo(operation_id).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "force": {
+              "default": false,
+              "type": "boolean"
+            },
+            "institution": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "refresh": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_pull"
+      },
+      "description_bytes": 812,
+      "input_schema_bytes": 223,
+      "name": "sync_pull",
+      "other_bytes": 51,
+      "output_schema_bytes": 0,
+      "total_bytes": 1229
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Connected institutions, last-sync times, and errors.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "sync_status"
+      },
+      "description_bytes": 52,
+      "input_schema_bytes": 62,
+      "name": "sync_status",
+      "other_bytes": 53,
+      "output_schema_bytes": 0,
+      "total_bytes": 303
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List audit events with filters (actor, action_pattern, target, time, limit).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "filters": {
+              "anyOf": [
+                {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_audit"
+      },
+      "description_bytes": 76,
+      "input_schema_bytes": 201,
+      "name": "system_audit",
+      "other_bytes": 54,
+      "output_schema_bytes": 0,
+      "total_bytes": 467
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Full before/after for every row of one operation \u2014 inspect exactly what system_audit_undo would change before running it. before_value/after_value can carry financial amounts (high sensitivity). Raises undo_operation_not_found for a bad operation_id.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_audit_get"
+      },
+      "description_bytes": 252,
+      "input_schema_bytes": 122,
+      "name": "system_audit_get",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 571
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List recent audited operations, newest first \u2014 the pull surface for reversing a change when no error preceded the regret. Each entry carries can_undo and, when blocked, undo_blocked_by (operation ids to undo first). Operator territory. domain filters to an action family (e.g. 'tag'); include_undone adds the undo operations themselves (hidden by default).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "domain": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "include_undone": {
+              "default": false,
+              "type": "boolean"
+            },
+            "limit": {
+              "default": 50,
+              "type": "integer"
+            },
+            "since": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_audit_history"
+      },
+      "description_bytes": 358,
+      "input_schema_bytes": 361,
+      "name": "system_audit_history",
+      "other_bytes": 62,
+      "output_schema_bytes": 0,
+      "total_bytes": 920
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Reverse every app.* mutation in one operation as a unit, keyed on operation_id. Synthesizes each row's inverse from its audit before/after image; writes new audit rows under a fresh operation_id, so the undo is itself undoable (returned as undo_operation_id). Block-don't-cascade: if a later operation modified the same rows it refuses with undo_cascade_blocked and lists the blockers (newest first) in recovery_actions \u2014 undo those first. Other refusals: undo_operation_not_found, undo_already_undone, recovery_no_path (op touched a table outside the undoable app.* surface). Writes app.audit_log + the reversed app.* rows; revert by calling system_audit_undo on the returned undo_operation_id.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "operation_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_audit_undo"
+      },
+      "description_bytes": 697,
+      "input_schema_bytes": 122,
+      "name": "system_audit_undo",
+      "other_bytes": 59,
+      "output_schema_bytes": 0,
+      "total_bytes": 1018
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Run pipeline integrity checks across all SQLMesh named audits. Returns pass/fail/warn per invariant plus transaction count. Failing and warning invariants include a `recovery_actions` list of pre-built, directly-executable tool calls (tool, arguments, rationale, confidence, idempotent) the agent can dispatch to remediate the issue without further reasoning. May write SQLMesh state tables on first call. Call before relying on analytical results to confirm the pipeline is self-consistent.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "full": {
+              "default": false,
+              "description": "Scan every protected app.* row for audit coverage instead of the\ndefault sampled, recent-rows-only window. Slower; use for a deep\nintegrity sweep.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_doctor"
+      },
+      "description_bytes": 491,
+      "input_schema_bytes": 268,
+      "name": "system_doctor",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 951
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return data inventory (accounts, transactions, freshness), pending review queue counts, and a transforms-pending signal indicating whether derived tables need a refresh. Call this first to orient before suggesting analytical queries.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "system_status"
+      },
+      "description_bytes": 233,
+      "input_schema_bytes": 62,
+      "name": "system_status",
+      "other_bytes": 55,
+      "output_schema_bytes": 0,
+      "total_bytes": 486
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Fetch uncategorized transactions as PII-scrubbed records for LLM-assisted categorization. Merchant text (description/memo) IS sent in full \u2014 it's the categorization signal; only embedded PII (e.g. account numbers in the memo) is masked. No amounts, dates, or account IDs sent.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account_filter": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Restrict to specific account IDs."
+            },
+            "date_range": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Dict with \"start\" and \"end\" keys (ISO date strings)."
+            },
+            "limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Max records to return. Defaults to assist_default_batch_size (100)."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_assist"
+      },
+      "description_bytes": 278,
+      "input_schema_bytes": 556,
+      "name": "transactions_categorize_assist",
+      "other_bytes": 84,
+      "output_schema_bytes": 0,
+      "total_bytes": 1057
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Batch accept/reject auto-rule proposals. Accepted proposals become active rules and immediately categorize matching transactions. Two kinds of proposal are skipped, not promoted, unless allow_broad=True: one flagged is_broad (estimated_match_count far exceeds its evidence \u2014 a broad rule recategorizes many transactions at once), and one whose 'contains' pattern is too short to discriminate (e.g. 'TO', which also matches STORE, AUTO and TOTAL). Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "accept": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Proposal IDs to accept and promote to active rules."
+            },
+            "allow_broad": {
+              "default": false,
+              "description": "Required to accept a proposal that\ntransactions_categorize_auto_review flagged ``is_broad`` \u2014 one whose\n``estimated_match_count`` far exceeds the evidence behind it. Without\nthis, such proposals are skipped rather than promoted. Review\n``estimated_match_count`` before setting it: a broad rule\nrecategorizes every matching transaction at once, and a wrong\nTransfer label also removes those rows from spend reports.",
+              "type": "boolean"
+            },
+            "reject": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Proposal IDs to reject and dismiss."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_auto_accept"
+      },
+      "description_bytes": 620,
+      "input_schema_bytes": 862,
+      "name": "transactions_categorize_auto_accept",
+      "other_bytes": 89,
+      "output_schema_bytes": 0,
+      "total_bytes": 1711
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List pending auto-rule proposals with sample transactions and trigger counts, including estimated_match_count and is_broad \u2014 a proposal flagged is_broad requires allow_broad=True on transactions_categorize_auto_accept to be accepted.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Maximum number of proposals to return. Defaults to the\nconfigured ``auto_rule_list_default_limit`` (100). The envelope\n``summary.has_more`` flag indicates whether more proposals exist\nbeyond the returned page."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_auto_review"
+      },
+      "description_bytes": 235,
+      "input_schema_bytes": 360,
+      "name": "transactions_categorize_auto_review",
+      "other_bytes": 89,
+      "output_schema_bytes": 0,
+      "total_bytes": 823
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Commit externally-decided categorizations for a batch of transactions. Auto-creates merchant mappings for future auto-categorization. Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "description": "List of dicts with transaction_id, category, optional\nsubcategory, and optional canonical_merchant_name.",
+              "items": {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_commit"
+      },
+      "description_bytes": 242,
+      "input_schema_bytes": 324,
+      "name": "transactions_categorize_commit",
+      "other_bytes": 84,
+      "output_schema_bytes": 0,
+      "total_bytes": 787
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Re-categorize AI-guessed transactions to confident provider-native (Plaid PFC) categories. Only rewrites rows currently categorized_by='ai'; never overrides user, rule, or merchant categorizations. Writes app.transaction_categories; revert by re-categorizing the transaction (a user edit wins at priority 1).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_improve_ai"
+      },
+      "description_bytes": 308,
+      "input_schema_bytes": 62,
+      "name": "transactions_categorize_improve_ai",
+      "other_bytes": 88,
+      "output_schema_bytes": 0,
+      "total_bytes": 595
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Find transactions that have not been categorized yet. Excludes archived accounts and transfers whose pair has already been matched. A transfer whose pair is NOT yet matched still appears here, flagged pending_transfer_match=true \u2014 categorizing such a row double-counts it against the eventual transfer pair, so resolve matching first. sort='impact' ranks by ABS(amount)*age_days (largest-value/oldest first); sort='date' (default) orders by most recent first. Filter by min_amount (absolute value) and account (account_id or display_name). Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Amounts are in the currency named by `summary.display_currency`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "account": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to a specific account; accepts ``account_id`` or\ncase-insensitive display_name. Ambiguous matches raise. Default\nNone returns all accounts."
+            },
+            "limit": {
+              "default": 50,
+              "description": "Maximum number of results (default 50, max 1000).",
+              "type": "integer"
+            },
+            "min_amount": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                }
+              ],
+              "default": "0",
+              "description": "Filter to ABS(amount) >= this value. Default 0 returns all."
+            },
+            "sort": {
+              "default": "date",
+              "description": "``date`` (most recent first, default) or ``impact`` (ABS(amount)\n* age_days \u2014 highest-value/oldest transactions first).",
+              "enum": [
+                "date",
+                "impact"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_pending"
+      },
+      "description_bytes": 702,
+      "input_schema_bytes": 809,
+      "name": "transactions_categorize_pending",
+      "other_bytes": 85,
+      "output_schema_bytes": 0,
+      "total_bytes": 1735
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List all active categorization rules.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_rules"
+      },
+      "description_bytes": 37,
+      "input_schema_bytes": 62,
+      "name": "transactions_categorize_rules",
+      "other_bytes": 83,
+      "output_schema_bytes": 0,
+      "total_bytes": 318
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Create multiple categorization rules for automatic transaction categorization. Idempotent: rules are deduped against active rules by matcher+output (merchant_pattern, match_type, min/max_amount, account_id, category, subcategory); name and priority are metadata. Retries return the existing rule_id. A NEW 'contains' rule whose pattern is too short to discriminate (e.g. 'TO', which also matches STORE, AUTO and TOTAL) is refused and reported in error_details unless allow_broad=true \u2014 use match_type='exact' for a short pattern, or set allow_broad=true to accept the risk. An already-active rule is returned as-is, ungated. Writes app.categorization_rules; revert with transactions_categorize_rules_delete (soft-delete sets active=False).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_broad": {
+              "default": false,
+              "description": "If True, bypass the unselective-``contains`` refusal\nabove. Only set this after confirming the short pattern is\nintentional \u2014 it is not the same override as auto-rule review's\n``allow_broad`` (that gate is breadth-vs-evidence; this one is a\nfixed specificity floor).",
+              "type": "boolean"
+            },
+            "reapply": {
+              "default": false,
+              "description": "If True, retroactively apply the new rules to all\nuncategorized transactions after the inserts commit. Default\nFalse; only future categorizations are affected.",
+              "type": "boolean"
+            },
+            "rules": {
+              "description": "List of rule dicts.",
+              "items": {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "rules"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_rules_create"
+      },
+      "description_bytes": 741,
+      "input_schema_bytes": 839,
+      "name": "transactions_categorize_rules_create",
+      "other_bytes": 90,
+      "output_schema_bytes": 0,
+      "total_bytes": 1810
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Soft-delete a categorization rule (set inactive). Updates app.categorization_rules.active=False; the rule row is preserved and can be reactivated by re-creating with the same fields (no built-in reactivate tool).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "reapply": {
+              "default": false,
+              "description": "If True, run categorize_pending after the deactivation so\nrows previously covered by lower-priority sources have a chance\nto be re-evaluated. Default False; existing categorizations are\nleft untouched.",
+              "type": "boolean"
+            },
+            "rule_id": {
+              "description": "The rule ID to deactivate.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "rule_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_rules_delete"
+      },
+      "description_bytes": 212,
+      "input_schema_bytes": 421,
+      "name": "transactions_categorize_rules_delete",
+      "other_bytes": 90,
+      "output_schema_bytes": 0,
+      "total_bytes": 860
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Run the categorization engine cascade (rules and/or merchants) over uncategorized transactions. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Writes app.transaction_categories via the named engine(s); revert by calling transactions_categorize_commit with a different category, or by soft-deleting the source rule via transactions_categorize_rules_delete(reapply=True).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "methods": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "rules",
+                      "merchants"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Engines to run in the listed order. Defaults to\n[\"rules\", \"merchants\"]."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_run"
+      },
+      "description_bytes": 418,
+      "input_schema_bytes": 279,
+      "name": "transactions_categorize_run",
+      "other_bytes": 81,
+      "output_schema_bytes": 0,
+      "total_bytes": 915
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Get categorization coverage statistics: total, categorized, uncategorized, percent, and breakdown by source. In by_source, 'rule' counts rows categorized by a persisted rule and 'merchant_map' counts rows the merchant-map engine categorized (both are stored as categorized_by='rule'; the split is reporting-only, so 'rule' reconciles with the list from transactions_categorize_rules). Pass include_auto=True to also include auto-rule health metrics (active rules, pending proposals, transactions categorized by auto-rules); the response data becomes {overall: {...}, auto: {...}} instead of the flat shape.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "include_auto": {
+              "default": false,
+              "description": "When True, also return auto-rule health metrics\n(active auto-rules, pending proposals, transactions categorized\nby auto-rules). The response ``data`` becomes a\n``CategorizeStatsWithAutoPayload`` (``{overall: {...}, auto: {...}}``)\ninstead of the flat ``CategorizeStatsPayload`` shape. Default\nFalse returns the flat overall shape.",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
+        "name": "transactions_categorize_stats"
+      },
+      "description_bytes": 606,
+      "input_schema_bytes": 463,
+      "name": "transactions_categorize_stats",
+      "other_bytes": 83,
+      "output_schema_bytes": 0,
+      "total_bytes": 1288
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Create 1..100 manual transactions atomically under one import_id. Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Amounts are in the currency named by `summary.display_currency`. Writes raw.manual_transactions; revert with `moneybin import revert <import_id>`.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "transactions": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "transactions"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_create"
+      },
+      "description_bytes": 308,
+      "input_schema_bytes": 175,
+      "name": "transactions_create",
+      "other_bytes": 61,
+      "output_schema_bytes": 0,
+      "total_bytes": 682
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Fetch transactions with optional filtering by account, date range, category, amount, and description pattern. Returns full transaction records including curation fields (notes, tags, splits). Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. Amounts are in the currency named by `summary.display_currency`. `accounts` accepts display names or exact account IDs \u2014 call the `accounts` tool to discover IDs. Pass `next_cursor` from a previous response to fetch the next page.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "accounts": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Account IDs or display names to filter by. Accepts exact\naccount_id values or fuzzy display names \u2014 use accounts to\ndiscover IDs. Multiple values are OR-combined."
+            },
+            "amount_max": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Maximum amount as a decimal string."
+            },
+            "amount_min": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Minimum amount as a decimal string (e.g. '-50.00'). Negative\n= expense, positive = income."
+            },
+            "categories": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Category names to filter by. Multiple values are OR-combined."
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Opaque pagination token from a previous response's next_cursor."
+            },
+            "date_from": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO 8601 start date, inclusive (e.g. '2026-01-01')."
+            },
+            "date_to": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO 8601 end date, inclusive."
+            },
+            "description": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Case-insensitive pattern matched against description and memo."
+            },
+            "limit": {
+              "default": 50,
+              "description": "Maximum rows to return (default 50).",
+              "type": "integer"
+            },
+            "uncategorized_only": {
+              "default": false,
+              "description": "Only return transactions with no user/AI/rule\ncategorization assigned (includes source-provided categories).",
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_get"
+      },
+      "description_bytes": 520,
+      "input_schema_bytes": 1666,
+      "name": "transactions_get",
+      "other_bytes": 58,
+      "output_schema_bytes": 0,
+      "total_bytes": 2383
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Recent transaction match decisions (accepted/rejected/reversed), newest first. Filter by match_type (dedup/transfer) and limit. Read-only. Use transactions_matches_pending for the active queue.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 20,
+              "description": "Maximum rows (default 20).",
+              "type": "integer"
+            },
+            "match_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "dedup",
+                    "transfer"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to 'dedup' or 'transfer'. Default None returns both."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "matches"
+            ]
+          }
+        },
+        "name": "transactions_matches_history"
+      },
+      "description_bytes": 193,
+      "input_schema_bytes": 322,
+      "name": "transactions_matches_history",
+      "other_bytes": 79,
+      "output_schema_bytes": 0,
+      "total_bytes": 730
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "List pending transaction matches (dedup/transfer pairs) awaiting accept/reject. Returns pair ids and confidence \u2014 no amounts/descriptions; the confidence score is the decision signal. `summary.has_more` flags more beyond `limit`. Pair with transactions_matches_set to decide.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "default": 50,
+              "description": "Maximum rows (default 50).",
+              "type": "integer"
+            },
+            "match_type": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "dedup",
+                    "transfer"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Filter to 'dedup' or 'transfer'. Default None returns both."
+            }
+          },
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "matches"
+            ]
+          }
+        },
+        "name": "transactions_matches_pending"
+      },
+      "description_bytes": 277,
+      "input_schema_bytes": 322,
+      "name": "transactions_matches_pending",
+      "other_bytes": 79,
+      "output_schema_bytes": 0,
+      "total_bytes": 817
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Run the matcher (dedup + transfer detection) over existing transactions, proposing pending matches for review. Operator-level granular alternative to refresh_run; does not auto-accept. Review results with transactions_matches_pending.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "matches"
+            ]
+          }
+        },
+        "name": "transactions_matches_run"
+      },
+      "description_bytes": 234,
+      "input_schema_bytes": 62,
+      "name": "transactions_matches_run",
+      "other_bytes": 75,
+      "output_schema_bytes": 0,
+      "total_bytes": 509
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Accept or reject one pending transaction match by match_id. Mutation of app.match_decisions; only pending decisions are settable. Rejecting an already-accepted match errors \u2014 reverse via the CLI `moneybin transactions matches undo`. Discover ids with transactions_matches_pending.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "match_id": {
+              "description": "The match decision id (from transactions_matches_pending).",
+              "type": "string"
+            },
+            "status": {
+              "description": "'accepted' folds the pair via dedup; 'rejected' keeps both and\nprevents re-proposal.",
+              "enum": [
+                "accepted",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "match_id",
+            "status"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "matches"
+            ]
+          }
+        },
+        "name": "transactions_matches_set"
+      },
+      "description_bytes": 282,
+      "input_schema_bytes": 358,
+      "name": "transactions_matches_set",
+      "other_bytes": 75,
+      "output_schema_bytes": 0,
+      "total_bytes": 855
+    },
+    {
+      "annotation_bytes": 91,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Append a note to a transaction. Writes app.transaction_notes. Each note carries a unique note_id used by transactions_notes_edit and transactions_notes_delete \u2014 the canonical shape-2 lifecycle triad. Revert with transactions_notes_delete (hard-delete).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "transaction_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "transaction_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_notes_add"
+      },
+      "description_bytes": 254,
+      "input_schema_bytes": 158,
+      "name": "transactions_notes_add",
+      "other_bytes": 64,
+      "output_schema_bytes": 0,
+      "total_bytes": 617
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": false,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Remove one note by note_id. Notes are shape-2 lifecycle entities \u2014 use transactions_notes_add / transactions_notes_edit for the other operations on the triad. Hard-deletes from app.transaction_notes \u2014 permanent, no revert; re-create with transactions_notes_add.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "note_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "note_id"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_notes_delete"
+      },
+      "description_bytes": 265,
+      "input_schema_bytes": 112,
+      "name": "transactions_notes_delete",
+      "other_bytes": 67,
+      "output_schema_bytes": 0,
+      "total_bytes": 587
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Edit the text of one note by note_id. Notes are shape-2 lifecycle entities \u2014 use transactions_notes_add to create, transactions_notes_delete to remove. Writes app.transaction_notes; every edit is captured in app.audit_log.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "note_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "note_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_notes_edit"
+      },
+      "description_bytes": 224,
+      "input_schema_bytes": 144,
+      "name": "transactions_notes_edit",
+      "other_bytes": 65,
+      "output_schema_bytes": 0,
+      "total_bytes": 573
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "DEPRECATED: use `review` \u2014 removed after one minor release. Return pending counts for matches, categorize, account-links, and merchant-links queues. Call this to orient before fetching specific queue contents.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {},
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_review"
+      },
+      "description_bytes": 211,
+      "input_schema_bytes": 62,
+      "name": "transactions_review",
+      "other_bytes": 61,
+      "output_schema_bytes": 0,
+      "total_bytes": 473
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Declarative replace: set a transaction's splits; emits clear + per-split events. Amounts are in the currency named by `summary.display_currency`. Writes app.transaction_splits; revert by calling again with the prior split sequence.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "splits": {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "transaction_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "transaction_id",
+            "splits"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_splits_set"
+      },
+      "description_bytes": 231,
+      "input_schema_bytes": 215,
+      "name": "transactions_splits_set",
+      "other_bytes": 65,
+      "output_schema_bytes": 0,
+      "total_bytes": 648
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Rename one tag globally across ALL transactions that carry it \u2014 this is a multi-row mutation event, not a per-transaction operation. Writes app.transaction_tags for every affected row; emits one parent + per-row child audit entries. No undo tool \u2014 revert by renaming back.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "new_tag": {
+              "type": "string"
+            },
+            "old_tag": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "old_tag",
+            "new_tag"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_tags_rename"
+      },
+      "description_bytes": 276,
+      "input_schema_bytes": 150,
+      "name": "transactions_tags_rename",
+      "other_bytes": 66,
+      "output_schema_bytes": 0,
+      "total_bytes": 635
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Declarative target-state: replace a transaction's tag set; emits per-tag audit events for the diff. Writes app.transaction_tags; revert by calling again with the prior tag list (diff captured in app.audit_log).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "transaction_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "transaction_id",
+            "tags"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
+        "name": "transactions_tags_set"
+      },
+      "description_bytes": 210,
+      "input_schema_bytes": 183,
+      "name": "transactions_tags_set",
+      "other_bytes": 63,
+      "output_schema_bytes": 0,
+      "total_bytes": 593
+    }
+  ],
+  "total_bytes": 90734
+}

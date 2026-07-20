@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from io import BytesIO
 from pathlib import Path
 
 import pdfplumber
@@ -20,15 +21,22 @@ class PDFExtractor:
     skipped (their rows still appear via text_lines for power-user SQL later).
     """
 
-    def extract(self, file_path: str | Path) -> PdfDocument:
+    def extract(
+        self,
+        file_path: str | Path,
+        *,
+        source_bytes: bytes | None = None,
+    ) -> PdfDocument:
         """Extract tables and text lines from a native-text PDF into the IR."""
         path = Path(file_path)
-        if not path.exists():
+        if source_bytes is None and not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
 
         tables: list[PdfTable] = []
         text_lines: list[str] = []
-        with pdfplumber.open(path) as pdf:
+        with pdfplumber.open(
+            path if source_bytes is None else BytesIO(source_bytes)
+        ) as pdf:
             page_count = len(pdf.pages)
             for page_no, page in enumerate(pdf.pages, start=1):
                 # layout=True preserves horizontal column gaps as spaces, enabling

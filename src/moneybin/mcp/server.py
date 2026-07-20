@@ -28,20 +28,17 @@ mcp = FastMCP(
         """\
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
-        Top-level domains:
-        - accounts, transactions (query/correct/annotate/match/categorize), investments (ledger, holdings, lots, realized gains, securities catalog), reports (cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual)
-        - categories, merchants (taxonomy reference data)
-        - system (status, audit), import, sync (Plaid-mediated), gsheet (Google Sheets live sync), refresh (rebuild derived tables), sql (read-only escape hatch)
+        Standard tools cover system, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
 
-        Tool names: domain_<sub>_verb, verb at end — transactions_categorize_commit, reports_networth, accounts_balance_assert.
+        Call system_status first to inspect available data, freshness, review queues, and whether derived core.* tables need refresh_run. Call reports() without a report_id to discover registered analytics, then pass a stable report_id and parameters to run one. sql_query is the privacy-safe read-only SQL escape hatch; use sql_schema for its curated schema.
 
-        Start with system_status — shows what data exists, freshness, pending review queues, and whether core.* tables need a refresh (system_status.data.transforms.pending → call refresh_run).
+        Every tool returns {summary, data, actions}. Prefer batch tools; list parameters are capped per call, and summary.has_more plus actions explain continuation.
 
-        Every tool returns {summary, data, actions}. Pagination via summary.has_more; actions[] suggests next steps and explains how to widen capped defaults. Prefer batch tools; list parameters are capped per-call.
+        Money amounts are JSON numbers in summary.display_currency. The accounting convention is negative = expense, positive = income; transfers are exempt.
 
-        Money amounts are JSON numbers in `summary.display_currency`; negative = expense, positive = income (transfers exempt). Month-bucket fields (year_month, period) are 'YYYY-MM' strings.
+        Privacy tiers are low, medium, high, and critical and are logged per call. Critical account and routing fields remain masked; all other fields — including amounts, descriptions, and dates — reach the model provider as-is. The consent ledger exists, but global consent enforcement and automatic degraded responses are deferred.
 
-        Sensitivity tiers low/medium/high/critical are logged per call (critical = account/routing numbers, always masked before results leave this server). All other fields — amounts, descriptions, dates — reach the model provider as-is. There is no consent gate yet — treat any tool result as sent to the provider.
+        Destructive branches require explicit payload-bound confirmation. Inspect mutations with system_audit and recover supported app.* changes with system_audit_undo(operation_id).
         """
     ),
     # mask_error_details wraps unclassified exceptions in a generic ToolError.
@@ -163,6 +160,30 @@ def check_schema_at_boot() -> None:
         )
 
 
+def purge_expired_import_previews_at_boot() -> int:
+    """Delete expired staged-import bytes when a configured MCP server starts."""
+    from datetime import UTC, datetime
+
+    from moneybin.database import DatabaseNotInitializedError, get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    now = datetime.now(UTC)
+    try:
+        with get_database(read_only=True) as db:
+            if not ImportPreviewsRepo(db).has_expired_or_orphaned(now=now):
+                return 0
+        with get_database(read_only=False, require_existing=True) as db:
+            purged = ImportPreviewsRepo(db).purge_expired(
+                now=now,
+                actor="system",
+            )
+    except DatabaseNotInitializedError:
+        return 0
+    if purged:
+        logger.info(f"Purged {purged} expired import preview snapshots at startup")
+    return purged
+
+
 def close_db() -> None:
     """Flush metrics on session close — flush_metrics() no-ops for read-only sessions."""
     from moneybin.observability import flush_metrics
@@ -179,8 +200,7 @@ def register_core_tools() -> None:
 
     Full registered surface is visible at connect — client-driven progressive
     disclosure was retired 2026-05-17 (see docs/specs/mcp-architecture.md §3).
-    The ``@mcp_tool(domain=...)`` tag is preserved as dormant metadata for a
-    possible future first-party client.
+    The ``@mcp_tool(domain=...)`` tag remains metadata for client grouping.
 
     Idempotent — safe to call multiple times within a process.
     """
@@ -188,20 +208,20 @@ def register_core_tools() -> None:
     if _tools_registered:
         return
 
+    from moneybin.mcp.prompts import register_prompts
     from moneybin.mcp.tools.accounts import register_accounts_tools
-    from moneybin.mcp.tools.categories import register_categories_tools
     from moneybin.mcp.tools.curation import register_curation_tools
     from moneybin.mcp.tools.gsheet import register_gsheet_tools
-    from moneybin.mcp.tools.import_inbox import register_inbox_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.investments import register_investments_tools
-    from moneybin.mcp.tools.merchants import register_merchants_tools
     from moneybin.mcp.tools.privacy import register_privacy_tools
     from moneybin.mcp.tools.refresh import register_refresh_tools
     from moneybin.mcp.tools.reports import register_reports_tools
+    from moneybin.mcp.tools.reviews import register_review_tools
     from moneybin.mcp.tools.sql import register_sql_tools
-    from moneybin.mcp.tools.sync import register_sync_prompts, register_sync_tools
+    from moneybin.mcp.tools.sync import register_sync_tools
     from moneybin.mcp.tools.system import register_system_tools
+    from moneybin.mcp.tools.taxonomy import register_taxonomy_tools
     from moneybin.mcp.tools.transactions import register_transactions_tools
     from moneybin.mcp.tools.transactions_categorize import (
         register_transactions_categorize_tools,
@@ -215,12 +235,12 @@ def register_core_tools() -> None:
     # tools are CLI-accessible operator territory (category 2 per
     # mcp.md). Per ``.claude/rules/mcp.md`` "Surface change
     # discipline" they re-register when their backing spec reaches
-    # ``in-progress`` or ``implemented``. The tool implementation files
-    # (``tools/budget.py``, ``tools/transform.py``) stay in place as building
-    # blocks; only the registration is gated. Tax tools (``tax_w2``) have
-    # been removed entirely — the W-2 PDF extraction pipeline was cut; tax
-    # data ingestion will be re-designed. See ``moneybin-mcp.md`` §17
-    # "Dependency tracker".
+    # ``in-progress`` or ``implemented``. The transform implementation stays
+    # in place as a CLI-oriented building block; the partial budget MCP adapter
+    # is removed until the complete lifecycle contract is admitted. Tax tools
+    # (``tax_w2``) have been removed entirely — the W-2 PDF extraction pipeline
+    # was cut; tax data ingestion will be re-designed. See ``moneybin-mcp.md``
+    # §17 "Dependency tracker".
 
     register_system_tools(mcp)
     register_reports_tools(mcp)
@@ -230,12 +250,12 @@ def register_core_tools() -> None:
     register_transactions_categorize_tools(mcp)
     register_transactions_categorize_assist_tools(mcp)
     register_curation_tools(mcp)
-    register_categories_tools(mcp)
-    register_merchants_tools(mcp)
+    register_review_tools(mcp)
+    register_taxonomy_tools(mcp)
     register_import_tools(mcp)
-    register_inbox_tools(mcp)
     register_sync_tools(mcp)
-    register_sync_prompts(mcp)
+    register_prompts(mcp)
+
     register_gsheet_tools(mcp)
     register_privacy_tools(mcp)
     register_refresh_tools(mcp)

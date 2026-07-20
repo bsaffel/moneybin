@@ -12,14 +12,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - **An AI assistant can now resolve a credit-card PDF's sign inversion
-  without you leaving the chat.** `import_confirm(file_path=...,
-  confirm_pdf_sign=True)` shows you the statement's evidence and printed-vs-recorded
-  sample rows and asks you to approve; approving imports the statement, and
-  declining imports nothing. The assistant cannot answer the prompt on your
-  behalf, and if the statement turns out to have no such question pending,
-  nothing is imported. Previously this one case sent you to a terminal, even
-  though the same inversion already asked you in place on spreadsheet and
-  AI-extracted-PDF imports.
+  without you leaving the chat.** `import_preview(file_path=...)` followed by
+  `import_confirm(preview_id=...)` shows you the statement's evidence and
+  printed-vs-recorded sample rows and asks you to approve; approving imports
+  the statement, and declining imports nothing. Clients without an in-chat
+  prompt receive a single-use confirmation token for retrying the same bound
+  request. The assistant cannot approve on your behalf, and if the statement
+  turns out to have no such question pending, nothing is imported. Previously
+  this one case sent you to a terminal, even though the same inversion already
+  asked you in place on spreadsheet and AI-extracted-PDF imports.
 
 ### Changed
 - **`reports.*` column privacy classes are now derived from each SQLMesh
@@ -75,6 +76,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   routing numbers stay masked (`****<last4>`). (#330)
 
 ### Fixed
+- **The consolidated MCP surface now preserves the safety and recovery
+  contracts of the operations it replaces.** Permanent institution
+  disconnects require payload-bound confirmation; human import decisions keep
+  their 180-second window; PDF sign inversions can be approved over MCP against
+  immutable preview bytes; partial import/sync failures retain actionable
+  guidance; auto-rule proposals retain blast-radius review and proposal-scoped
+  approval; abandoned confirmation tokens are evicted after their TTL; bounded
+  account resolution remains confidence-ranked; investment and taxonomy
+  continuations stay within their initial high-water boundary;
+  transaction continuations retain their initial eligible-row count; multi-note
+  threads retain stable note identities; and orphan annotations and accepted
+  matches again expose executable recovery through the standard 45-tool
+  registry. (#344)
+- **Import preview parsing no longer drops rows or provenance at edge cases.**
+  Header detection counts physical CSV lines, UTF-8 probing tolerates a
+  multibyte character at the sample boundary, path-based detection stays
+  bounded instead of loading the whole file, oversized PDFs are rejected before
+  they can exhaust memory or inflate the encrypted snapshot store, and
+  completed preview-to-import records survive snapshot cleanup. (#344)
+- **Coarse reads no longer return plausible but incomplete results.** Balance
+  drift distinguishes interpolated days from first observations, transaction
+  account filters reject unresolved partial matches, archived accounts resolve
+  by exact ID, and report limits must be positive. (#344)
 - **`moneybin import preview` can now read a PDF statement.** It previously
   rejected every PDF with `Unsupported file type: '.pdf'`, because preview
   routed all files through the spreadsheet detector — so the only way to ask
@@ -277,6 +301,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 M2 closing out and M3 underway. M2A curator state shipped (transaction notes, tags, splits, manual entry, audit log). M2B architecture reference shipped (`architecture-shared-primitives.md`; writer-coordination contract via short-lived per-call connections). M2C brand surface advancing: `moneybin system doctor` integrity command, `reports.*` recipe library (eight curated views), and the `transform_*` MCP toolset closing the agent ingest loop. M3A Plaid Transactions sync shipped (Phase 1). Doc surface tightened for the personas reachable today; MCP surface hardened with protocol-standard annotations, `accounts_resolve`, list-parameter cap, structured error envelopes, and shell completion. Categorization correctness pass: memo-aware matcher, exemplar accumulation, source-precedence enforcement, auto-fan-out after apply; seed merchant catalogs retired in favor of user-driven and LLM-assist-driven merchant creation.
 
 ### Added
+- **Bounded MCP standard registry.** The pre-launch MCP cutover now exposes
+  one 45-tool standard registry to every generic client; supported hosts may
+  defer schemas from that identical registry without reconnect, packs, or
+  profiles. Reports extend the `reports` catalog rather than consuming tool
+  slots, and future tools require the published admission record. The
+  deterministic comparison reduced metadata from 90,734 to 46,454 bytes;
+  promotion remains pending observed context-budget and host-deferral evidence.
+- **Executable CLI/MCP capability parity.** A checked outcome map now covers all
+  45 standard MCP tools and every implemented Typer path by service ownership
+  and durable result, replacing the old canonical-name drift test. It includes
+  isolated-state parity tests for refresh, reports, annotations, taxonomy,
+  consent, import, sync, and SQL. `accounts summary` is now available on the
+  CLI, and the formerly-placeholder category and merchant taxonomy commands
+  execute through the shared categorization service.
+- **Nonblocking MCP sync authentication within the existing four-tool
+  surface.** `sync_link(mode="login")` begins device authorization,
+  `sync_status(auth_session_id=...)` advances it with idempotent terminal
+  replay and local expiry enforcement, and `sync_disconnect(mode="logout")`
+  clears credentials plus pending profile-scoped sessions. Secret device codes
+  and tokens remain in `SecretStore`; MCP sees only safe user-facing fields.
+  Expired flows now shed device codes during any collection update, while the
+  newly created or currently addressed flow is preserved within a per-profile
+  ceiling of 16 pending and 16 terminal sessions so abandoned or bursty flows
+  cannot grow keychain state indefinitely.
+  `transactions_categorize_run(operation="improve_ai")` similarly absorbs the
+  provider-native AI-upgrade outcome without increasing the 45-tool surface.
 - **"What the AI Provider Sees" guide.** A precise, code-verified statement of
   what reaches the model provider when an agent drives MoneyBin — what's masked
   (account/routing numbers, enforced today), what isn't (amounts, descriptions,
@@ -1152,7 +1202,7 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 - **MCP tools `accounts_rename`, `accounts_include`, `accounts_archive`, `accounts_unarchive`** — folded into `accounts_set`.
 - **CLI commands `moneybin accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive`** — folded into `moneybin accounts set` with new flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`, `--clear-display-name`).
 - **Client-driven progressive disclosure retired.** Removed the `moneybin_discover` MCP meta-tool, the `MoneyBinSettings.mcp.progressive_disclosure` setting, and the `Visibility(False, tags=...)` server transform. The full registered tool surface is now visible at connect, with orientation delivered through the FastMCP `instructions` field and prefix-grouped tool names. Rationale: `tools/list_changed` client support is too uneven (Claude Desktop unreliable, most generic clients ignore) to design a portable disclosure mechanism around. The `@mcp_tool(domain=...)` decorator argument is preserved as dormant metadata. `moneybin://tools` resource shape simplified from `{core, extended, discover_tool}` to a flat `{namespaces}` list. Server `instructions` text trimmed from ~750 to ~180 tokens by dropping per-tool subsections already covered by tool descriptions. See `docs/specs/mcp-architecture.md` §3 "Tool disclosure: full surface, taxonomy-led".
-- **MCP tools `budget_set`, `tax_w2`, `tax_deductions` and the `tax_prep` prompt de-registered** under the new stub-gating rule in `.claude/rules/mcp-server.md`. `budget-tracking.md` is `draft` (today's `budget_set` is a partial slice of the planned set/status/delete + rollovers feature); there is no backing tax spec at all. Tool implementations remain in `src/moneybin/mcp/tools/budget.py` and `tools/tax.py` as dormant building blocks — only the `register_*_tools(mcp)` call is gated. **CLI counterparts (`moneybin budget set`, `moneybin tax w2`, `moneybin tax deductions`) are unaffected** and still work. Re-register when each backing spec reaches `in-progress` or `implemented`. Tracked in `moneybin-mcp.md` §17 "Dependency tracker".
+- **MCP tools `budget_set`, `tax_w2`, `tax_deductions` and the `tax_prep` prompt de-registered** under the new stub-gating rule in `.claude/rules/mcp-server.md`. `budget-tracking.md` is `draft` (the former `budget_set` was only a partial slice of the planned set/status/delete + rollovers feature); there is no backing tax spec at all. The partial budget MCP adapter was removed rather than retained as a decorated or manually registerable dormant callback; `BudgetService` and `moneybin budget set` remain implementation foundations. Re-admit the complete budget lifecycle only when its backing spec reaches `in-progress` or `implemented`. Tracked in `moneybin-mcp.md` §17 "Dependency tracker".
 - **W-2 PDF extraction removed entirely.** The `moneybin tax w2` CLI command, `tax_w2` MCP tool, W-2 extractor and loader, `raw.w2_forms` schema table, and `TaxService` are deleted. PDF parsing dependencies (`pdfplumber`, `pytesseract`, `pdf2image`, `pillow`) dropped from the package. The IRS form layout changes annually and LLM-mediated PDF parsing is likely a better primitive than pdfplumber/tesseract for tax data; architecture will be revisited in a future brainstorm. The `docs/specs/archived/w2-extraction.md` spec documents the removed design.
 - **MCP tool `transactions_recurring_list`** — duplicate of `reports_recurring` which is strictly richer (confidence scores, cadence, status filter, annualized cost). Consumers using `transactions_recurring_list` should call `reports_recurring` instead. Removed as a duplicate surface.
 - `transactions_search` MCP tool (superseded by `transactions_get`, which covers all its filters plus multi-account, multi-category, curation fields, and cursor-based pagination).

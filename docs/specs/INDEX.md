@@ -36,7 +36,7 @@ contract. Update this table when a listed spec's status changes.
 
 | Spec | Type | Status | Summary |
 |---|---|---|---|
-| [Capabilities Map](moneybin-capabilities.md) | Architecture | draft | Cross-surface outcome map: one row per user-facing capability, one column per active surface (MCP, CLI, future REST). Single source of truth for "what user outcome reaches which surface, and under what registered name." Bootstrap rows demonstrate every coverage pattern; full population (~30–60 rows) lands incrementally. Referenced by the surface-change-discipline rule in `.claude/rules/mcp.md`. |
+| [Capabilities Map](moneybin-capabilities.md) | Architecture | implemented | Executable capability/outcome parity across all 45 standard MCP tools and every implemented Typer path, with checked service ownership, observable outcomes, narrow exemptions, guarded stubs, and representative isolated-state parity tests. |
 
 ## Smart Import
 
@@ -104,7 +104,8 @@ contract. Update this table when a listed spec's status changes.
 | Spec | Type | Status | Summary |
 |---|---|---|---|
 | [Architecture & Design](mcp-architecture.md) | Architecture | in-progress | MCP v1 design philosophy, tool taxonomy, privacy integration, CLI symmetry, Apps readiness. Supersedes archived `mcp-read-tools` and `mcp-write-tools` specs. |
-| [MoneyBin MCP](moneybin-mcp.md) | Architecture | in-progress | Concrete tool, prompt, resource, and service layer definitions for MCP. v2 (2026-05-02, in-progress) aligns naming with `moneybin-cli.md` v2 taxonomy (path-prefix-verb-suffix), adds `reports_*` namespace, exposes sync + transform to MCP under the v2 exposure principle. Renamed from `mcp-tool-surface.md` (2026-05-16) for symmetry with `moneybin-cli.md` and the future `moneybin-rest-api.md`. |
+| [MoneyBin MCP](moneybin-mcp.md) | Architecture | in-progress | Concrete 45-tool standard registry, response contract, seven prompts, and one schema resource. The single `reports` catalog preserves exact CLI/MCP outcome parity without adding tool slots; the operating registry advertises zero output schemas. Promotion remains pending observed context-budget and host-native-deferral gates. |
+| [MCP Tool Surface Scaling](mcp-tool-surface-scaling.md) | Architecture | in-progress | M3K.2. Generic clients receive the operating 45-tool standard registry; supported deferred-loading hosts use that same registry. Reports extend the catalog without tool slots. The deterministic contract passed, but promotion remains unready while context budget and host-native deferral are not observed. Future tools require the admission record. Governed by proposed [ADR-016](../decisions/016-bounded-mcp-tool-registry.md). |
 | [SQL Schema Discoverability](mcp-sql-discoverability.md) | Feature | implemented | `moneybin://schema` resource exposes curated interface tables (core + select app) with columns, comments, and example queries; eliminates per-session schema reconnaissance |
 | [Tool Timeouts & Cancellation](mcp-tool-timeouts.md) | Feature | implemented | Global 30s wall-clock cap on every tool dispatch with DuckDB `interrupt()` + connection close on timeout, so a hung call can't wedge the server's write lock |
 | [Agent Visualization](agent-visualization.md) | Feature | draft | Chart-ready response projections (long-form contiguous series, top-N + `other` + `share_pct`), presentation hints via tool descriptions + `actions[]`, and a served visualization guide — the model is the renderer in every shipping host, so rendering expertise lives in the responses. Host-agnostic by design; per-host capability matrices are an explicit non-goal. First work item (M3K.1) under the planned `mcp-ux-standards.md` umbrella. Origin: 2026-06-12 MCP-App spike verdict. |
