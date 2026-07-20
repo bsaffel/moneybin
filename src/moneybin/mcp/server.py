@@ -160,6 +160,30 @@ def check_schema_at_boot() -> None:
         )
 
 
+def purge_expired_import_previews_at_boot() -> int:
+    """Delete expired staged-import bytes when a configured MCP server starts."""
+    from datetime import UTC, datetime
+
+    from moneybin.database import DatabaseNotInitializedError, get_database
+    from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
+
+    now = datetime.now(UTC)
+    try:
+        with get_database(read_only=True) as db:
+            if not ImportPreviewsRepo(db).has_expired_or_orphaned(now=now):
+                return 0
+        with get_database(read_only=False, require_existing=True) as db:
+            purged = ImportPreviewsRepo(db).purge_expired(
+                now=now,
+                actor="system",
+            )
+    except DatabaseNotInitializedError:
+        return 0
+    if purged:
+        logger.info(f"Purged {purged} expired import preview snapshots at startup")
+    return purged
+
+
 def close_db() -> None:
     """Flush metrics on session close — flush_metrics() no-ops for read-only sessions."""
     from moneybin.observability import flush_metrics

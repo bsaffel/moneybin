@@ -1121,6 +1121,7 @@ def get_database(
     read_only: bool,
     max_wait: float = DEFAULT_WRITE_LOCK_MAX_WAIT_SECONDS,
     operation_type: OperationType = "interactive",
+    require_existing: bool = False,
 ) -> "Database":
     """Create and return a new short-lived Database connection.
 
@@ -1144,6 +1145,11 @@ def get_database(
     open can also fail (and retry) when another process holds a write
     lock, and a write open can fail (and retry) when another process
     holds a read-only attach.
+
+    ``require_existing=True`` prevents a write-mode maintenance open from
+    initializing a missing database. The path is checked both before and after
+    acquiring the writer lock so a concurrent deletion cannot turn maintenance
+    into implicit database creation.
     """
     global _database_accessed, _database_written, _active_write_conn  # noqa: PLW0603
 
@@ -1153,6 +1159,11 @@ def get_database(
 
     settings = get_settings()
     db_path = settings.database.path
+    if require_existing and not db_path.exists():
+        raise DatabaseNotInitializedError(
+            f"Database not found at {db_path}.\n"
+            f"Run 'moneybin db init' to initialize it first."
+        )
     deadline = time.monotonic() + max_wait
     skip_upgrade = (
         read_only
@@ -1193,6 +1204,11 @@ def get_database(
         stack.enter_context(
             write_lock(db_path, deadline=deadline, operation_type=operation_type)
         )
+        if require_existing and not db_path.exists():
+            raise DatabaseNotInitializedError(
+                f"Database not found at {db_path}.\n"
+                f"Run 'moneybin db init' to initialize it first."
+            )
         db = _open_with_attach_retry(
             db_path=db_path,
             read_only=False,

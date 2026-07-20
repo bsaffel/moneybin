@@ -7,6 +7,7 @@ import hashlib
 import shlex
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -500,6 +501,86 @@ async def test_import_preview_binds_parse_hash_and_storage_to_one_byte_read(
         assert row["file_sha256"] == hashlib.sha256(original).hexdigest()
         assert row["file_size_bytes"] == len(original)
         assert repo.get_source_bytes(preview_id) == original
+
+
+@pytest.mark.parametrize(
+    ("suffix", "limit_field"),
+    [
+        (".csv", "text_size_limit_mb"),
+        (".xlsx", "binary_size_limit_mb"),
+    ],
+)
+async def test_import_preview_rejects_oversized_tabular_before_full_read(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+    suffix: str,
+    limit_field: str,
+) -> None:
+    """The configured limit runs before preview materializes the whole file."""
+    source = tmp_path / f"oversized{suffix}"
+    source.write_bytes(b"x")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from moneybin.config import get_settings
+
+    settings = get_settings()
+    limited_tabular = settings.providers.tabular.model_copy(update={limit_field: 0})
+    limited_providers = settings.providers.model_copy(
+        update={"tabular": limited_tabular}
+    )
+    limited_settings = settings.model_copy(update={"providers": limited_providers})
+    monkeypatch.setattr(
+        "moneybin.config.get_settings",
+        lambda: limited_settings,
+    )
+    with patch.object(Path, "open", autospec=True) as full_open:
+        response = await import_preview_coarse(file_path=str(source))
+
+    assert response.error is not None
+    assert response.error.code == "preview_error"
+    full_open.assert_not_called()
+
+
+async def test_import_preview_rejects_file_growth_during_bounded_capture(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A post-preflight growth race reads at most expected size plus one."""
+    source = tmp_path / "growing.csv"
+    source_bytes = b"12345"
+    source.write_bytes(source_bytes)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    from moneybin.extractors.tabular.format_detector import FormatInfo
+
+    def stale_format(_path: Path) -> FormatInfo:
+        return FormatInfo(file_type="csv", file_size=4)
+
+    monkeypatch.setattr(
+        "moneybin.extractors.tabular.format_detector.detect_format",
+        stale_format,
+    )
+    read_sizes: list[int | None] = []
+
+    class TrackedBytesIO(BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            read_sizes.append(size)
+            return super().read(size)
+
+    with patch.object(
+        Path,
+        "open",
+        autospec=True,
+        return_value=TrackedBytesIO(source_bytes),
+    ) as bounded_open:
+        response = await import_preview_coarse(file_path=str(source))
+
+    assert response.error is not None
+    assert response.error.code == "IMPORT_PREVIEW_CHANGED"
+    bounded_open.assert_called_once()
+    assert read_sizes == [5]
 
 
 async def test_import_confirm_loads_stored_bytes_after_post_hash_swap(

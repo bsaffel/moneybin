@@ -187,6 +187,55 @@ class ImportPreviewsRepo(BaseRepo):
             )
             return self._require(after, "preview_id", preview_id)
 
+    def has_expired_or_orphaned(self, *, now: datetime) -> bool:
+        """Return whether preview retention maintenance needs a writer."""
+        tables = self._db.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE (table_schema = ? AND table_name = ?)
+               OR (table_schema = ? AND table_name = ?)
+            """,
+            [
+                IMPORT_PREVIEWS.schema,
+                IMPORT_PREVIEWS.name,
+                IMPORT_PREVIEW_SNAPSHOTS.schema,
+                IMPORT_PREVIEW_SNAPSHOTS.name,
+            ],
+        ).fetchone()
+        if tables is None or int(tables[0]) == 0:
+            return False
+        if int(tables[0]) == 1:
+            return True
+
+        cutoff = _db_time(now)
+        row = self._db.execute(
+            f"""
+            SELECT
+                EXISTS (
+                    SELECT 1
+                    FROM {IMPORT_PREVIEWS.full_name}
+                    WHERE consumed_at IS NULL
+                      AND (
+                          expires_at <= ?
+                          OR preview_id NOT IN (
+                              SELECT preview_id
+                              FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                          )
+                      )
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
+                    WHERE preview_id NOT IN (
+                        SELECT preview_id FROM {IMPORT_PREVIEWS.full_name}
+                    )
+                )
+            """,  # noqa: S608  # TableRefs + parameterized cutoff
+            [cutoff],
+        ).fetchone()
+        return bool(row and row[0])
+
     def purge_expired(
         self,
         *,
@@ -201,14 +250,14 @@ class ImportPreviewsRepo(BaseRepo):
                 f"""
                 SELECT preview_id
                 FROM {IMPORT_PREVIEWS.full_name}
-                WHERE expires_at <= ?
-                   OR (
-                       consumed_at IS NULL
-                       AND preview_id NOT IN (
+                WHERE consumed_at IS NULL
+                  AND (
+                       expires_at <= ?
+                       OR preview_id NOT IN (
                            SELECT preview_id
                            FROM {IMPORT_PREVIEW_SNAPSHOTS.full_name}
                        )
-                   )
+                  )
                 ORDER BY preview_id
                 """,  # noqa: S608  # TableRefs + parameterized cutoff
                 [cutoff],

@@ -132,7 +132,7 @@ def test_purge_retains_consumed_preview_provenance(db: Database) -> None:
 
     assert (
         repo.purge_expired(  # type: ignore[attr-defined]
-            now=NOW + timedelta(seconds=2),
+            now=NOW + timedelta(minutes=10),
             actor="system",
         )
         == 0
@@ -241,11 +241,25 @@ def test_purge_expired_removes_orphaned_app_and_raw_rows(db: Database) -> None:
         source_bytes=b"expired bytes",
     )
     live = _issue(repo, source_bytes=b"live bytes")
+    app_orphan = _issue(repo, source_bytes=b"missing snapshot")
+    raw_orphan = _issue(repo, source_bytes=b"missing trust row")
+    db.execute(
+        "DELETE FROM raw.import_preview_snapshots WHERE preview_id = ?",
+        [app_orphan],
+    )
+    db.execute(
+        "DELETE FROM app.import_previews WHERE preview_id = ?",
+        [raw_orphan],
+    )
 
     purged = repo.purge_expired(now=NOW, actor="system")  # type: ignore[attr-defined]
 
-    assert purged == 1
+    assert purged == 2
     assert repo.get(expired) is None  # type: ignore[attr-defined]
     assert repo.get_source_bytes(expired) is None  # type: ignore[attr-defined]
+    assert repo.get(app_orphan) is None  # type: ignore[attr-defined]
+    assert repo.get_source_bytes(app_orphan) is None  # type: ignore[attr-defined]
+    assert repo.get(raw_orphan) is None  # type: ignore[attr-defined]
+    assert repo.get_source_bytes(raw_orphan) is None  # type: ignore[attr-defined]
     assert repo.get(live) is not None  # type: ignore[attr-defined]
     assert repo.get_source_bytes(live) == b"live bytes"  # type: ignore[attr-defined]

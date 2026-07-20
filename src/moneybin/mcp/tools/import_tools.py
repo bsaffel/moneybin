@@ -971,6 +971,25 @@ def _bytes_identity(source_bytes: bytes) -> tuple[str, int]:
     return hashlib.sha256(source_bytes).hexdigest(), len(source_bytes)
 
 
+def _read_tabular_preview_bytes(path: Path) -> bytes:
+    """Enforce the tabular size limit before materializing one exact snapshot."""
+    from moneybin.extractors.tabular.format_detector import detect_format
+
+    try:
+        format_info = detect_format(path)
+    except ValueError as exc:
+        raise UserError(str(exc), code="preview_error") from exc
+
+    with path.open("rb") as handle:
+        source_bytes = handle.read(format_info.file_size + 1)
+    if len(source_bytes) != format_info.file_size:
+        raise UserError(
+            "The file changed while MoneyBin was preparing its preview. Retry.",
+            code="IMPORT_PREVIEW_CHANGED",
+        )
+    return source_bytes
+
+
 def _import_dynamic_envelope[T](
     data: T,
     *,
@@ -1008,11 +1027,12 @@ def import_preview_coarse(
             "structured financial format has no column-mapping preview.",
             code="IMPORT_PREVIEW_DIRECT_IMPORT_REQUIRED",
         )
-    source_bytes = path.read_bytes()
     response: ResponseEnvelope[ImportPreviewPayload] | ResponseEnvelope[dict[str, Any]]
     if path.suffix.lower() == ".pdf":
+        source_bytes = path.read_bytes()
         response = _import_preview_pdf(path, source_bytes=source_bytes)
     else:
+        source_bytes = _read_tabular_preview_bytes(path)
         response = _import_preview_tabular(path, source_bytes=source_bytes)
     reviewed_plan: dict[str, Any] | None = None
     if isinstance(response.data, ImportPreviewPayload):

@@ -870,7 +870,13 @@ def serve(
     validated_transport: TransportType = transport  # type: ignore[assignment] — validated above
 
     from moneybin.cli.utils import get_verbose_flag, handle_cli_errors
-    from moneybin.mcp.server import check_schema_at_boot, close_db, init_db, mcp
+    from moneybin.mcp.server import (
+        check_schema_at_boot,
+        close_db,
+        init_db,
+        mcp,
+        purge_expired_import_previews_at_boot,
+    )
     from moneybin.observability import setup_observability
 
     # Import resources/prompts to register their decorators with the server.
@@ -937,6 +943,7 @@ def serve(
         with handle_cli_errors():
             init_db()
             check_schema_at_boot()
+            purge_expired_import_previews_at_boot()
         logger.info(f"MCP server starting (transport={transport}, db={db_path})")
         mcp.run(transport=validated_transport)
     except FileNotFoundError as e:
