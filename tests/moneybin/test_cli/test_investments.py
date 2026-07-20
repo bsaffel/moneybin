@@ -493,6 +493,55 @@ class TestHoldingsAndGains:
         assert "market_value=- unrealized_gain=- status=unpriced" in result.output
 
     @pytest.mark.unit
+    def test_holdings_text_reports_the_stalest_close_as_a_number(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A four-month-old close discloses its age on the portfolio line."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   1200.00::DECIMAL(18,2) AS market_value,
+                   200.00::DECIMAL(18,2) AS unrealized_gain,
+                   DATE '2026-03-02' AS price_date, 'plaid' AS price_source,
+                   135::INT AS days_since_observed,
+                   'carried_forward' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "max_days_since_observed=135" in result.output
+
+    @pytest.mark.unit
+    def test_holdings_text_dashes_the_stalest_close_when_nothing_is_priced(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """An undefined max renders "-", never a 0 that reads as fresh."""
+        db.conn.execute(
+            """
+            CREATE OR REPLACE VIEW core.dim_holdings AS
+            SELECT 'acct_brokerage' AS account_id, 'sec_1' AS security_id,
+                   10::DECIMAL(28,10) AS quantity,
+                   1000.00::DECIMAL(18,2) AS cost_basis,
+                   100.00::DECIMAL(28,10) AS average_cost,
+                   'USD' AS currency_code,
+                   CAST(NULL AS DECIMAL(18,2)) AS market_value,
+                   CAST(NULL AS DECIMAL(18,2)) AS unrealized_gain,
+                   CAST(NULL AS DATE) AS price_date,
+                   CAST(NULL AS VARCHAR) AS price_source,
+                   CAST(NULL AS INT) AS days_since_observed,
+                   'unpriced' AS valuation_status
+            """  # noqa: S608  # test fixture view, literal test data only
+        )
+        result = runner.invoke(app, ["investments", "holdings"])
+        assert result.exit_code == 0, result.output
+        assert "max_days_since_observed=-" in result.output
+
+    @pytest.mark.unit
     def test_gains_json_reports_basis_incomplete_warning(
         self, runner: CliRunner, db: Database
     ) -> None:

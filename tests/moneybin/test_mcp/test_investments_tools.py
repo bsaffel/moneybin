@@ -277,6 +277,16 @@ class TestRegistration:
             "investments_securities_links_history",
         }
 
+    @pytest.mark.unit
+    async def test_holdings_description_explains_the_staleness_number(self) -> None:
+        """The description is the agent's only contract for the new field."""
+        srv = FastMCP("test")
+        register_investments_tools(srv)
+        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tool = next(t for t in tools if t.name == "investments_holdings")
+        assert tool.description is not None
+        assert "max_days_since_observed" in tool.description
+
 
 # ---------------------------------------------------------------------------
 # Read tools
@@ -386,6 +396,43 @@ class TestInvestmentsHoldings:
         assert parsed["data"]["rows"][0]["market_value"] is None
         assert parsed["data"]["rows"][0]["unrealized_gain"] is None
         assert "1" in parsed["data"]["warnings"][0]
+
+    @pytest.mark.unit
+    async def test_stale_portfolio_discloses_its_age_not_a_warning(
+        self, mcp_db: Path
+    ) -> None:
+        """A four-month-old close publishes its age; no warning is raised."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec,
+                market_value="2700.00",
+                unrealized_gain="225.00",
+                price_date="2026-03-02",
+                price_source="plaid",
+                days_since_observed="135",
+                valuation_status="carried_forward",
+            ),
+        ])
+        result = await investments_holdings()
+        parsed = result.to_dict()
+        assert parsed["data"]["max_days_since_observed"] == 135
+        assert parsed["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    async def test_max_days_since_observed_is_null_when_nothing_is_priced(
+        self, mcp_db: Path
+    ) -> None:
+        """Null, not 0 — a 0 would read as "every close is today's"."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(_ACCOUNT, sec, valuation_status="unpriced"),
+        ])
+        result = await investments_holdings()
+        assert result.to_dict()["data"]["max_days_since_observed"] is None
 
 
 class TestInvestmentsLots:

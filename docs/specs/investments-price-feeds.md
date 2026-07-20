@@ -704,10 +704,15 @@ rather than one row per position — which is why it is a separate tool rather t
 a flag on the holdings response.
 
 `investments_holdings` returns `market_value`, `price_date`,
-`days_since_observed`, and `valuation_status` per position, plus a
-portfolio-level count of positions not in `valued` status. An agent reading a
-total learns from the same response how much of it rests on stale or missing
-prices. `investments_gains` does not carry these columns: it reports realized
+`days_since_observed`, and `valuation_status` per position, plus two
+portfolio-level figures: a count of positions in `unpriced` or `withheld`
+status, and `max_days_since_observed`, the age in days of the stalest close
+behind any published figure. The count stays scoped to the two statuses that
+publish no number. `carried_forward` is excluded from it because markets close
+about 114 days a year, so counting it would raise the caveat on most days for
+most users and teach the reader to skip it; the age discloses the same risk as
+a number, with no threshold to pick. An agent reading a total learns from the
+same response how much of it rests on stale or missing prices. `investments_gains` does not carry these columns: it reports realized
 disposals for 1099-B reconciliation, where the sale price is the recorded one
 and a current market close has no bearing.
 

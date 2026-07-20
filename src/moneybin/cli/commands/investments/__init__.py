@@ -229,6 +229,10 @@ def investments_holdings(
     Market value and unrealized gain come from the most recent close at or
     before today. A position with no usable price, or one whose share count is
     known wrong, shows ``-`` rather than a zero — its ``status`` says which.
+
+    The closing portfolio line reports ``max_days_since_observed``: the age in
+    days of the stalest close behind any figure above, or ``-`` when no
+    position priced.
     """
     with handle_cli_errors(
         cli_actor="investments_holdings", payload_type=InvestmentHoldingsPayload
@@ -264,6 +268,15 @@ def investments_holdings(
             f"market_value={value} unrealized_gain={gain} "
             f"status={row.valuation_status}{as_of}"
         )
+    if result.rows:
+        # Portfolio-level disclosure, not a status line — `-q` keeps it, the
+        # same rule that keeps result rows.
+        stalest = (
+            result.max_days_since_observed
+            if result.max_days_since_observed is not None
+            else "-"
+        )
+        typer.echo(f"portfolio max_days_since_observed={stalest}")
     if not quiet:
         for w in result.warnings:
             typer.echo(f"⚠️  {w}", err=True)

@@ -135,8 +135,13 @@ def investments_holdings(
     `carried_forward` (the most recent close is older), `unpriced` (no close
     resolved), or `withheld` (the share count is known wrong). The last two
     report `market_value`/`unrealized_gain` as null, never zero, and
-    `data.warnings` names how many rows those are. Amounts are in the
-    currency named by `summary.display_currency`.
+    `data.warnings` names how many rows those are.
+
+    `data.max_days_since_observed` is the age in days of the stalest close any
+    published figure rests on — the largest `days_since_observed` across the
+    priced rows, null when no position priced. Read it before reporting a
+    portfolio value: a large number means the figures come from an old close.
+    Amounts are in the currency named by `summary.display_currency`.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).holdings(account_ref=account)
@@ -810,8 +815,12 @@ def register_investments_tools(mcp: FastMCP) -> None:
         "`unpriced` (no close resolved), or `withheld` (the share count is "
         "known wrong). The last two report market_value/unrealized_gain as "
         "null, never zero, and data.warnings names how many rows those are — "
-        "no warning fires when every position is valued. Amounts are in the "
-        "currency named by `summary.display_currency`.",
+        "no warning fires when every position is valued. "
+        "data.max_days_since_observed is the age in days of the stalest close "
+        "behind any published figure (the largest days_since_observed across "
+        "the priced rows, null when none priced); read it before reporting a "
+        "portfolio value. Amounts are in the currency named by "
+        "`summary.display_currency`.",
     )
     register(
         mcp,

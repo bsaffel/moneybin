@@ -187,11 +187,19 @@ class InvestmentHoldingRow:
 
 @dataclass(frozen=True, slots=True)
 class InvestmentHoldingsPayload:
-    """Payload for ``investments_holdings``."""
+    """Payload for ``investments_holdings``.
+
+    ``max_days_since_observed`` mirrors the row field's
+    TIMESTAMP_OBSERVABILITY classification — it is the maximum of that column
+    across the priced rows, so it carries no more than the rows already do.
+    """
 
     rows: list[InvestmentHoldingRow]
     # AGGREGATE (Tier.LOW) — rationale in the module-level comment above.
     warnings: Annotated[list[str], DataClass.AGGREGATE] = field(default_factory=list)
+    max_days_since_observed: Annotated[
+        int | None, DataClass.TIMESTAMP_OBSERVABILITY
+    ] = None
 
     @classmethod
     def from_result(cls, result: HoldingsResult) -> InvestmentHoldingsPayload:
@@ -199,6 +207,7 @@ class InvestmentHoldingsPayload:
         return cls(
             rows=[InvestmentHoldingRow.from_row(r) for r in result.rows],
             warnings=result.warnings,
+            max_days_since_observed=result.max_days_since_observed,
         )
 
 

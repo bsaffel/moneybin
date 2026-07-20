@@ -305,10 +305,19 @@ class HoldingRow:
 
 @dataclass(frozen=True, slots=True)
 class HoldingsResult:
-    """Result of :meth:`InvestmentService.holdings`."""
+    """Result of :meth:`InvestmentService.holdings`.
+
+    ``max_days_since_observed`` is the largest ``days_since_observed`` across
+    the priced positions — the age of the stalest close any published figure
+    rests on. It is a number, not a warning: markets close ~114 days a year, so
+    a boolean staleness flag would fire on most days for most users and train
+    the reader to ignore it. NULL when no position priced, because a 0 there
+    would read as "every close is today's".
+    """
 
     rows: list[HoldingRow]
     warnings: list[str]
+    max_days_since_observed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1614,6 +1623,9 @@ class InvestmentService:
         is. A position whose value is ``unpriced`` or ``withheld`` reports NULL
         rather than zero; the count of those rows is named in a warning, the
         same shape ``lots()`` uses for ``basis_incomplete``.
+
+        ``max_days_since_observed`` carries the age of the stalest close behind
+        any published figure — always present, never a warning.
         """
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
@@ -1665,7 +1677,18 @@ class InvestmentService:
                 "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
                 "(the share count is known wrong)."
             )
-        return HoldingsResult(rows=holding_rows, warnings=warnings)
+        # Scope the age to the rows carrying a figure: it discloses how old the
+        # published numbers are, not how old an absent one would have been.
+        observed_ages = [
+            row.days_since_observed
+            for row in holding_rows
+            if row.market_value is not None and row.days_since_observed is not None
+        ]
+        return HoldingsResult(
+            rows=holding_rows,
+            warnings=warnings,
+            max_days_since_observed=max(observed_ages) if observed_ages else None,
+        )
 
     def lots(
         self,

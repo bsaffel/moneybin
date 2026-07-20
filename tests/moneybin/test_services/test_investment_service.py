@@ -1605,6 +1605,96 @@ class TestHoldings:
         assert "unpriced" in warning
         assert "withheld" in warning
 
+    def test_max_days_since_observed_reports_the_stalest_priced_position(
+        self, db: Database
+    ) -> None:
+        """The portfolio-level number is the worst age, not the freshest."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-07-15",
+                    price_source="plaid",
+                    days_since_observed="0",
+                    valuation_status="valued",
+                ),
+                _Holding(
+                    security_id="sec_2",
+                    market_value="800.00",
+                    unrealized_gain="-200.00",
+                    price_date="2026-03-02",
+                    price_source="plaid",
+                    days_since_observed="135",
+                    valuation_status="carried_forward",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.max_days_since_observed == 135
+
+    def test_a_four_month_old_close_reports_its_age_without_a_warning(
+        self, db: Database
+    ) -> None:
+        """The carried_forward regression: staleness discloses as a number.
+
+        Counting carried_forward as unvalued would fire on every weekend, so the
+        disclosure is the age itself — always present, never a warning.
+        """
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(
+                    security_id="sec_1",
+                    market_value="1200.00",
+                    unrealized_gain="200.00",
+                    price_date="2026-03-02",
+                    price_source="plaid",
+                    days_since_observed="135",
+                    valuation_status="carried_forward",
+                ),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.max_days_since_observed == 135
+        assert result.warnings == []
+
+    def test_max_days_since_observed_is_none_when_nothing_is_priced(
+        self, db: Database
+    ) -> None:
+        """No priced position means the max is undefined — null, not a fresh 0."""
+        _seed_read_fixtures(db)
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(security_id="sec_1", valuation_status="unpriced"),
+                _Holding(security_id="sec_2", valuation_status="withheld"),
+            ],
+        )
+        result = db_service(db).holdings()
+        assert result.max_days_since_observed is None
+        # Paired positive: the same shape yields a number once one row prices.
+        _replace_holdings_view(
+            db,
+            [
+                _Holding(security_id="sec_1", valuation_status="unpriced"),
+                _Holding(
+                    security_id="sec_2",
+                    market_value="800.00",
+                    unrealized_gain="-200.00",
+                    price_date="2026-07-12",
+                    price_source="plaid",
+                    days_since_observed="3",
+                    valuation_status="carried_forward",
+                ),
+            ],
+        )
+        assert db_service(db).holdings().max_days_since_observed == 3
+
     def test_account_ref_resolves_and_filters(self, db: Database) -> None:
         _seed_read_fixtures(db)
         _replace_holdings_view(
