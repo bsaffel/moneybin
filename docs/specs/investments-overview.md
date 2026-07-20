@@ -7,9 +7,12 @@
 > Foundation child shipped 2026-07-04: [`investments-data-model.md`](investments-data-model.md)
 > (Pillars A+B — securities catalog, investment-transaction ledger, derived
 > lots/gains/holdings, four-method cost-basis engine) is now `implemented`.
-> Pillars C (price feeds) and D (net-worth integration) remain planned; the
-> M1J milestone itself stays open until cost basis ties to a real broker
-> 1099-B for a full tax year.
+> Pillar C phase C.1 shipped: positions carry `market_value` and
+> `unrealized_gain` from the close the broker already sends through `sync pull`.
+> C.2 (stooq and CoinGecko feeds, manual overrides) and C.3 (the daily
+> `core.fct_holdings_daily` series) remain designed but unbuilt, as does Pillar
+> D (net-worth integration); the M1J milestone itself stays open until cost
+> basis ties to a real broker 1099-B for a full tax year.
 > Umbrella doc for the investments initiative (milestone M1J). Child specs listed
 > in [The four pillars](#the-four-pillars) are written separately; the foundation
 > child is [`investments-data-model.md`](investments-data-model.md).
@@ -95,7 +98,7 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 |---|---|---|---|
 | **A. Investment data model** | The securities dimension + the investment-transaction ledger (raw → prep → core), plus manual entry | No | [`investments-data-model.md`](investments-data-model.md) *(foundation child — A+B)* |
 | **B. Cost-basis & gain/loss engine** | Derived lots; FIFO + HIFO + specific-ID + average-cost; realized gain/loss; short-term/long-term split | No | [`investments-data-model.md`](investments-data-model.md) *(ships with A)* |
-| **C. Price feeds & valuation** | Broker-carried, stooq, and CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss | Yes (it *is* the feed) | [`investments-price-feeds.md`](investments-price-feeds.md) |
+| **C. Price feeds & valuation** | Broker-carried, stooq, and CoinGecko ingestion → append-only `core.fct_security_prices`; `core.fct_holdings_daily`; unrealized gain/loss. **C.1 shipped** — the broker-carried close values `core.dim_holdings`; C.2 (stooq, CoinGecko, overrides) and C.3 (daily series) remain designed | Yes (it *is* the feed) | [`investments-price-feeds.md`](investments-price-feeds.md) |
 | **D. Net-worth integration** | Holdings valuation into `reports.net_worth` / `fct_balances` | Yes (consumes C) | `investments-net-worth.md` *(planned)* |
 
 ### Already-carved children

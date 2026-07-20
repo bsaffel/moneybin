@@ -779,9 +779,11 @@ stay low-cardinality and non-identifying, per the logging and privacy rules.
 
 ## Implementation plan
 
-Three phases, each independently shippable.
+Three phases, each independently shippable. **C.1 has shipped; C.2 and C.3 are
+designed but unbuilt** — which is why this spec stays `in-progress` rather than
+`implemented`.
 
-**C.1 — broker-carried prices and current value.** No outbound network code.
+**C.1 — broker-carried prices and current value.** *Shipped.* No outbound network code.
 Capture the `close_price` Plaid already delivers into `raw.security_prices`,
 build `core.fct_security_prices`, extend `core.dim_holdings`. Closes the
 no-market-value gap for every Plaid brokerage user.

@@ -55,6 +55,76 @@ def insert_security(
     )
 
 
+def insert_security_link(
+    db: Database,
+    *,
+    link_id: str,
+    security_id: str,
+    ref_value: str,
+    source_type: str = "plaid",
+    ref_kind: str = "plaid_security_id",
+    decided_at: str = "2024-01-01 00:00:00",
+) -> None:
+    """Seed one accepted ``app.security_links`` binding (provider ref → canonical).
+
+    A price observation resolves through this binding in
+    ``prep.stg_security_prices``, so the binding is a PRECONDITION of the
+    valuation chain, not the mechanism under test — the same standing
+    ``insert_security`` has for the catalog. The review flow that *produces* a
+    binding (``SecurityLinksService`` propose → accept) is covered by its own
+    unit tests; seeding an already-accepted row here is the equivalent of a
+    user who bound the security some time ago.
+    """
+    db.execute(
+        """
+        INSERT INTO app.security_links
+            (link_id, security_id, ref_kind, ref_value, source_type, status,
+             decided_by, decided_at)
+        VALUES (?, ?, ?, ?, ?, 'accepted', 'user', ?::TIMESTAMP)
+        """,  # noqa: S608  # test fixture insert, parameterized values
+        [link_id, security_id, ref_kind, ref_value, source_type, decided_at],
+    )
+
+
+def insert_security_price(
+    db: Database,
+    *,
+    provider_security_key: str,
+    price_date: str,
+    close: str,
+    source: str = "plaid",
+    source_origin: str = "item_scenario",
+    quote_currency: str = "USD",
+    price_basis: str = "raw",
+    extracted_at: str = "2024-08-01 00:00:00",
+) -> None:
+    """Seed one ``raw.security_prices`` close observation (the price-feed input).
+
+    Keyed by the PROVIDER's own security id — resolution to the canonical
+    ``security_id`` happens in staging, through ``app.security_links``. ``close``
+    is passed as a string and cast in-SQL so the exact value reaches DuckDB
+    without a float round-trip, matching ``insert_event``.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.security_prices
+            (provider_security_key, price_date, quote_currency, source,
+             source_origin, close, price_basis, extracted_at)
+        VALUES (?, ?::DATE, ?, ?, ?, ?::DECIMAL(28,10), ?, ?::TIMESTAMP)
+        """,  # noqa: S608  # test fixture insert, parameterized values
+        [
+            provider_security_key,
+            price_date,
+            quote_currency,
+            source,
+            source_origin,
+            close,
+            price_basis,
+            extracted_at,
+        ],
+    )
+
+
 def insert_event(
     db: Database,
     *,
