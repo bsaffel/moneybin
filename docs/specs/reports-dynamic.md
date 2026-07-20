@@ -89,7 +89,7 @@ New protected `app.*` table, paired per convention across
 | `name` | `VARCHAR NOT NULL UNIQUE` | Slug; resolved to `report_id` at the service boundary |
 | `description` | `VARCHAR` | Agent-visible summary |
 | `query_sql` | `VARCHAR NOT NULL` | Stored SQL with `$name` placeholders (R8) |
-| `params` | `JSON NOT NULL DEFAULT '[]'` | Declared `ParamSpec` list, bound by name; each carries a `DataClass` (R9) |
+| `params` | `JSON NOT NULL DEFAULT '[]'` | Declared `ParamSpec` list, bound by name; each carries a `DataClass` derived at save, absent = `UNRESOLVED` (R9) |
 | `classes` | `JSON NOT NULL` | Derived map, keyed by DuckDB result column name |
 | `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: {from, to, reason}}` — `from` is the derived class the downgrade was approved against (R4) |
 | `class_fingerprint` | `VARCHAR NOT NULL` | Drift key over the derivation inputs (R4) |
@@ -126,9 +126,32 @@ references:
 | `name` | `USER_NOTE` | `categorization_rules.name` — user-authored, despite also being the handle |
 | `report_id` | `RECORD_ID` | `gsheet_connections.alias` — minted opaque handle |
 | `classes`, `class_downgrades`, `params` | `DESCRIPTION` | `gsheet_connections.column_mapping` — structural JSON map |
-| `class_fingerprint` | `AGGREGATE` | A hash, carrying no row values |
+| `class_fingerprint` | `RECORD_ID` | `checksum` / `content_hash` (`taxonomy.py`) — the existing class for a hash |
 | `is_active` | `TXN_TYPE` | `categorization_rules.is_active` |
 | `created_at`, `updated_at` | `TIMESTAMP_OBSERVABILITY` | Universal across `app` tables |
+
+`query_sql`'s `USER_NOTE` (MEDIUM) is a **deliberate accepted risk, not an
+oversight**, and it has one hole worth naming so an implementer doesn't
+rediscover it. R9 keeps a CRITICAL *bound* parameter out of the provenance view,
+but a user who writes the value straight into the SQL — `WHERE routing_number =
+'021000021'` instead of `= $acct` — puts it in a MEDIUM column that
+`_TRANSFORMS` passes through unmasked today, so it reaches an agent through both
+`sql_query` over `app.user_reports` and `reports_explain`'s `sql_template`.
+
+Accepted because the alternatives are worse: masking inside user-authored SQL
+means either redacting text the user must be able to read back and edit, or
+classifying string literals by pattern-matching — a guess that would corrupt
+legitimate queries (an account-shaped literal is indistinguishable from an
+invoice number) while a determined author routes around it with string
+concatenation. The exposure also requires working against the grain of R8/R9,
+which exist precisely so the natural way to write a filter is a parameter.
+
+The cheap mitigation belongs to the save pipeline, which has already parsed the
+SQL and resolved every column by step 5: a literal compared against a CRITICAL
+column is detectable there, and that is where to surface a confirm rather than
+store it silently — the "magic stays visible" rule in `design-principles.md`,
+targeted at the moment the inference could be wrong. Deferred to implementation,
+not v1 scope; the accepted risk above is what holds until it lands.
 
 #### Archive is domain state; `deleted_at` is not the mechanism
 
@@ -193,7 +216,12 @@ Save pipeline:
    content-net floor, whether a *durable* artifact may be built over floored
    columns is decided there, not assumed here.
 5. `resolve_output_classes(..., strict=False)`. **Not strict.** An unresolvable
-   projection must not fail the save.
+   projection must not fail the save. The same resolved columns also class each
+   declared parameter, by the comparison it appears in (R9) — a parameter is an
+   input to the same schema this step has already resolved, so classifying it
+   here costs no additional parse and keeps the user out of a classification
+   decision. An unresolvable parameter lands on `UNRESOLVED`, exactly as an
+   unresolvable projection does.
 6. `DESCRIBE <query_sql>` **with every declared parameter bound to NULL**, to
    read real DuckDB result column names, then bridge through
    `_classes_by_result_column` and persist the reconciled map **keyed by DuckDB
@@ -223,7 +251,11 @@ Two verified properties of step 6, both required for it to work:
 The pipeline is not the *save* path; it is the path any mutation of `query_sql`
 or `params` takes. `reports_set` is a partial update (R5), so a call that
 touches either field must re-run steps 1–6 and persist the new SQL, class map,
-and fingerprint in a **single** repo write. Skipping it re-creates the exact bug
+parameter classes, and fingerprint in a **single** repo write. Parameter classes
+are derived from the comparison each placeholder appears in (step 5), so
+rewriting the SQL can move a parameter from `AGGREGATE` to `ROUTING_NUMBER`
+exactly as it can a projection — a stale parameter class renders a CRITICAL
+literal into the provenance view under the old, weaker class. Skipping it re-creates the exact bug
 this spec exists to prevent: re-aliasing an `AGGREGATE` projection `x` to
 `routing_number AS x` would serve a routing number under the stale LOW class,
 because `run_report` treats the stored map as authoritative. A `set` that
@@ -532,13 +564,41 @@ rather than beside it; a value that is *rendered* rather than *bound* is outside
 every guard that reads the bound form.
 
 The class reaches `ParamSpec` the same way each tier's parameters already
-arrive. Built-in and extension runners are introspected from the signature, so
-the class rides the annotation `redact_typed` already reads —
-`Annotated[str, DataClass.ACCOUNT_IDENTIFIER]` — rather than a second
-convention beside it. Dynamic reports declare it in the stored `params` JSON.
-Either way the default is `AGGREGATE`: a month, a limit, or a category name is
-LOW, which is what nearly every report parameter is, and the annotation is the
-exception a durable classification decision deserves to be.
+arrive, and **an unclassified parameter is never LOW.** Defaulting to
+`AGGREGATE` would invert this spec's own column rule: R2 step 5 runs
+`resolve_output_classes(strict=False)`, and a projection it cannot resolve
+lands on `DataClass.UNRESOLVED` — CRITICAL, masked whole. A parameter is the
+same question asked of an input, so it fails closed the same way. Defaulting to
+the weakest class in the enum would build the placeholder-retention mechanism
+above and then hand every author a way to switch it off by omission.
+
+- **Built-in and extension runners** are introspected from the signature, so the
+  class rides the annotation `redact_typed` already reads —
+  `Annotated[str, DataClass.ACCOUNT_IDENTIFIER]` — rather than a second
+  convention beside it. There is no default: a completeness test requires every
+  `ParamSpec` to carry a class, the same shape as the `CLASSIFICATION`
+  completeness test that already requires one for every `core`/`app` column. CI
+  is the right place to catch a missing annotation on code we ship.
+- **Dynamic reports derive it**, because R2's premise is that classification is
+  never something the user does — asking a report author to declare a parameter
+  class would contradict the invariant this spec exists to establish. The save
+  pipeline already parses the SQL and resolves its columns, so a parameter takes
+  the class of the column it is compared against: `WHERE routing_number =
+  $acct` classes `$acct` as `ROUTING_NUMBER`. A parameter whose comparison
+  cannot be resolved to exactly one classified column — a bare `LIMIT $n`, a
+  comparison against an expression, a placeholder used in two places with
+  different classes — resolves to `UNRESOLVED` and keeps its placeholder.
+
+`UNRESOLVED` is derived, never stored: `taxonomy.py` notes that *declaring* a
+column unresolved defeats the completeness tests that exist to find gaps, and
+the same reasoning holds for a parameter. An absent class in stored `params`
+means unresolved; it is not a value an author can write.
+
+The cost is that an unresolvable parameter renders as `$name` in the provenance
+view rather than its value. That is the correct direction to be wrong in, and
+it is bounded: the common parameters — a month, a limit, a category — either
+resolve against a classified column or are genuinely unresolvable and are the
+cheapest possible thing to withhold.
 
 ### R10 — Surfaces this change falsifies
 
@@ -552,7 +612,9 @@ requires.
 
 Implementation also updates `docs/specs/moneybin-mcp.md` and
 `docs/specs/moneybin-cli.md` for the seven MCP tools and seven CLI commands in
-R5, per mcp.md's surface-change discipline.
+R5, **and `docs/specs/moneybin-capabilities.md`** — mcp.md's surface-change
+discipline requires two specs per change, the surface-specific one and the
+cross-surface capability map, with a row added or updated per capability.
 
 ## Observability
 
