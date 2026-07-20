@@ -110,6 +110,48 @@ def _seed_broker_snapshot(
     )
 
 
+def _seed_liquidated_snapshot(db: Database) -> None:
+    """A snapshot receipt reporting ZERO holdings — the pull where the broker holds nothing.
+
+    Receipt only, deliberately: Plaid returns no holding entries for an item that
+    holds nothing, so the liquidated pull writes ``holdings_count = 0`` and not a
+    single holdings row. Writing one here would destroy the case under test — the
+    account would regain coverage through the holdings leg of the union and the
+    narrower, holdings-only scope would look correct.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_holdings_snapshots (
+            source_origin, source_file, holdings_date, holdings_count,
+            transactions_window_start, source_type, extracted_at, loaded_at
+        ) VALUES ('item_1', 'sync_job_liquidated', CURRENT_DATE, 0,
+                  DATE '2026-01-01', 'plaid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+
+def _seed_plaid_buy(db: Database, *, account_id: str) -> None:
+    """One ordinary Plaid buy: the row that keeps a liquidated account known to its item.
+
+    A buy, NOT a split: ``split_underivable`` would trip the split clause too, and a
+    fixture that satisfies two guards isolates neither — the test would stay green with
+    the phantom clause removed entirely.
+    """
+    db.execute(
+        """
+        INSERT INTO raw.plaid_investment_transactions (
+            investment_transaction_id, account_id, security_id,
+            investment_transaction_type, investment_transaction_subtype,
+            transaction_date, quantity, price, amount, fees, iso_currency_code,
+            source_file, source_type, source_origin, extracted_at, loaded_at
+        ) VALUES (?, ?, 'sec_vti', 'buy', 'buy', DATE '2026-01-10',
+                  1, 100.00, -100.00, 0.00, 'USD', 'sync_job_liquidated', 'plaid',
+                  'item_1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,  # noqa: S608  # test fixture, not executing user SQL
+        [f"itx_buy_{account_id}", account_id],
+    )
+
+
 def _seed_split_reject(db: Database, *, account_id: str) -> None:
     """A Plaid split routed to review: held out of the ledger, quantity not restated.
 
@@ -435,6 +477,45 @@ def test_phantom_position_withholds(db: Database) -> None:
 
     _quantity, claimed = _acc_1_quantities(db)
     assert claimed is None, "the snapshot omits this position — that NULL is the signal"
+
+
+@pytest.mark.slow
+def test_liquidated_account_absent_from_holdings_still_withholds(db: Database) -> None:
+    """The maximal-harm phantom: the broker reports nothing and the ledger reports 11 units.
+
+    The pull that liquidates an item writes a receipt with ``holdings_count = 0`` and no
+    holdings rows at all, so an account whose coverage is derived from HOLDINGS rows
+    drops out of broker_covered_accounts entirely — and the 100%-overstated account is
+    exactly the one that narrower scope filters out. The account stays known to its item
+    through the transactions staging view, which is the union leg that supplies coverage
+    here; ``core.dim_holdings`` withholds only because it reads both.
+
+    Ledger quantity is 11 (10 manual + 1 Plaid buy) against a close of 120.00, so a
+    regression publishes $1,320.00 of shares the broker says are gone.
+    """
+    _seed_position(db)
+    _seed_price(db, price_date=date.today(), close="120.00")
+    _seed_liquidated_snapshot(db)
+    _seed_plaid_buy(db, account_id="acc_1")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    market_value, gain, price_date, _src, _days, status = _holding(db)
+    assert status == "withheld"
+    assert market_value is None
+    assert gain is None
+    assert price_date == date.today(), (
+        "a close resolved; the NULL above is the withhold"
+    )
+
+    quantity, claimed = _acc_1_quantities(db)
+    assert quantity == Decimal("11.0000000000"), (
+        "the ledger still carries the position the broker no longer reports"
+    )
+    assert claimed is None, (
+        "the liquidated snapshot reports nothing — that NULL is the signal"
+    )
 
 
 @pytest.mark.slow

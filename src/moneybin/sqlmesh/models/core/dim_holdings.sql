@@ -126,7 +126,14 @@ WITH positions AS (
      reports the PRE-split quantity, and quantity x price is wrong by the split factor
      while every other signal reads healthy. Detected per SECURITY: a split is a
      corporate action, so a reject arriving through one account implicates every
-     position in that security. */
+     position in that security.
+
+     Bounded to BOUND securities: split_underivable is set on the mapped subtype whether
+     or not the security resolved, but an unbound reject has no canonical security_id to
+     implicate a position with. A user tracking that same security manually under a
+     canonical id therefore keeps publishing a pre-split quantity. Known and accepted —
+     an unbound Plaid security is already surfaced for binding, and inventing a fallback
+     key here would implicate positions on a match this model cannot actually prove. */
   SELECT DISTINCT
     security_id,
     trade_date
@@ -146,20 +153,39 @@ WITH positions AS (
   WHERE
     type = 'split'
 ), broker_covered_accounts AS (
-  /* An account is broker-covered when its item has a current snapshot receipt. Without
+  /* An account is broker-covered when it is known to a Plaid item — through EITHER
+     investment staging view — and that item has a current snapshot receipt. Without
      this scope the phantom clause below would fire on every manual-only account, whose
      provider claim is NULL simply because no broker reports it — silently unvaluing
      every manually-tracked position in the database.
+
+     The UNION with the transactions view is load-bearing, and mirrors the
+     investment_phantom_holdings doctor check: a LIQUIDATED account writes no holdings
+     rows at all, so a holdings-only scope drops the one account whose every position is
+     a phantom — the 100%-overstated account is exactly the one the narrower scope
+     filters out. The account survives in the transactions view, which is what supplies
+     its coverage. This is the same blind spot newest_snapshot avoids by reading
+     receipts rather than rows, one level down.
 
      Joined on source_origin alone, NOT on source_file: coverage is a property of the
      ITEM, and requiring the account to appear in the newest snapshot itself would make
      the phantom clause unreachable — a position dropped from that snapshot is exactly
      the case being detected. */
   SELECT DISTINCT
-    h.account_id
-  FROM prep.stg_plaid__investment_holdings AS h
+    ai.account_id
+  FROM (
+    SELECT DISTINCT
+      account_id,
+      source_origin
+    FROM prep.stg_plaid__investment_holdings
+    UNION
+    SELECT DISTINCT
+      account_id,
+      source_origin
+    FROM prep.stg_plaid__investment_transactions
+  ) AS ai
   JOIN newest_snapshot AS ns
-    ON ns.source_origin = h.source_origin
+    ON ns.source_origin = ai.source_origin
 ), withheld AS (
   /* Three clauses, none redundant — each guards a failure the others miss, and all
      three are quantity-specific: market value is quantity x price and does not depend
