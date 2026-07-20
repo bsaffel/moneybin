@@ -699,11 +699,13 @@ The grain differs from `investments_holdings` — observations per security-date
 rather than one row per position — which is why it is a separate tool rather than
 a flag on the holdings response.
 
-`investments_holdings` and `investments_gains` return `market_value`,
-`price_date`, `days_since_observed`, and `valuation_status` per position, plus a
+`investments_holdings` returns `market_value`, `price_date`,
+`days_since_observed`, and `valuation_status` per position, plus a
 portfolio-level count of positions not in `valued` status. An agent reading a
 total learns from the same response how much of it rests on stale or missing
-prices.
+prices. `investments_gains` does not carry these columns: it reports realized
+disposals for 1099-B reconciliation, where the sale price is the recorded one
+and a current market close has no bearing.
 
 ---
 
