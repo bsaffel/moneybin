@@ -239,6 +239,116 @@ def test_write_query_raises(populated_db: Database) -> None:
     assert ei.value.code == error_codes.SQL_INVALID_QUERY
 
 
+def test_multi_statement_query_is_rejected() -> None:
+    """Two statements in one string are refused before any classification.
+
+    Guards the trailing-statement bypass: the read-only prefix check, the
+    file/URL scans, and the write-pattern scan all pass on
+    ``SELECT 1; SELECT <critical> FROM ...`` because every statement is
+    individually a legal read. Only a statement-count check catches it.
+    """
+    error = validate_read_only_query(
+        "SELECT 1 AS a; SELECT routing_number AS a FROM core.dim_accounts"
+    )
+    assert error is not None
+    assert "one statement" in error
+
+
+def test_trailing_comment_or_semicolon_is_still_one_statement() -> None:
+    """``SELECT 1; -- note`` is one statement and must be accepted.
+
+    sqlglot puts the tail of ``SELECT 1; -- note`` in an ``exp.Block`` beside
+    the SELECT — as an ``exp.Semicolon`` carrying the comment, or ``None`` for
+    a bare extra ``;``. Treating any ``Block`` as multi-statement therefore
+    refuses two ordinary ways to end a hand-written query. Only a Block
+    holding more than one real statement is the smuggling shape.
+    """
+    assert validate_read_only_query("SELECT 1 AS a; -- how many rows") is None
+    assert validate_read_only_query("SELECT 1 AS a;;") is None
+
+
+def test_trailing_comment_query_still_executes(populated_db: Database) -> None:
+    """A query ending ``; -- note`` runs and classifies like the bare statement.
+
+    Accepting it at the validator is not enough: it reaches the router still
+    wrapped in an ``exp.Block``, which is neither data nor metadata, so the
+    fail-closed route would refuse it one layer later. The single real
+    statement has to be unwrapped before any of that.
+    """
+    result = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(*) AS n FROM core.dim_accounts; -- how many",
+        max_rows=100,
+    )
+    assert result.records[0]["n"] >= 0
+    assert result.is_metadata is False
+
+
+def test_trailing_statement_cannot_smuggle_critical_columns(
+    populated_db: Database,
+) -> None:
+    """A second statement cannot return CRITICAL data unclassified.
+
+    DuckDB executes a multi-statement string and returns the LAST statement's
+    rows, while the classifier reads the first. Before the statement-count
+    gate, ``is_data_query`` saw the two-statement ``Block`` as non-data and
+    routed the whole string to the metadata path — executing it and returning
+    routing numbers at ``Tier.LOW`` with ``output_classes == {}``, bypassing
+    redaction entirely.
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT 1 AS a; SELECT routing_number AS a FROM core.dim_accounts",
+            max_rows=100,
+        )
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
+
+
+def test_multi_line_query_with_comments_still_executes(
+    populated_db: Database,
+) -> None:
+    """Ordinary formatted SQL — newlines, indentation, inline comments — runs.
+
+    The statement gate now reads the raw text, so newlines carry meaning they
+    did not before. Nothing about a query being *formatted* may make it look
+    like smuggling: this is the benign twin of the smuggling test below, and
+    the case a fail-closed fix would silently break without ever failing a
+    privacy assertion.
+    """
+    result = execute_sql_query(
+        populated_db,
+        "SELECT\n"
+        "    COUNT(*) AS n  -- how many accounts\n"
+        "FROM core.dim_accounts\n"
+        "WHERE account_id IS NOT NULL\n",
+        max_rows=100,
+    )
+    assert result.records[0]["n"] >= 0
+    assert result.is_metadata is False
+
+
+def test_comment_smuggled_statement_cannot_bypass_the_gate(
+    populated_db: Database,
+) -> None:
+    """A `--` comment must not hide a second statement from the classifier.
+
+    The gate read whitespace-collapsed text while DuckDB read the original. A
+    `--` comment ends at a newline, so collapsing it swallowed the statement
+    that followed: the classifier saw one benign ``SELECT 1 AS a`` and DuckDB
+    returned the smuggled statement's rows. Aliasing both to ``a`` matched the
+    classified column name, so the fail-closed name check never fired and
+    routing numbers returned at ``Tier.LOW`` (#346).
+    """
+    with pytest.raises(UserError) as ei:
+        execute_sql_query(
+            populated_db,
+            "SELECT 1 AS a; -- note\nSELECT routing_number AS a FROM core.dim_accounts",
+            max_rows=100,
+        )
+    assert ei.value.code == error_codes.SQL_INVALID_QUERY
+
+
 def test_unknown_table_raises(populated_db: Database) -> None:
     """A nonexistent table raises UserError(sql_unknown_table)."""
     with pytest.raises(UserError) as ei:

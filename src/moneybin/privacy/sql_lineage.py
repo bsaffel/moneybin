@@ -39,7 +39,6 @@ from __future__ import annotations
 import functools
 import hashlib
 import logging
-import re
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -54,8 +53,6 @@ from moneybin.database import Database
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 
 logger = logging.getLogger(__name__)
-
-_WHITESPACE = re.compile(r"\s+")
 
 # Aggregate functions that destroy individual values → LOW tier. Every other
 # aggregate (SUM/AVG/MIN/MAX/STDDEV/VARIANCE) preserves the source class, which
@@ -90,28 +87,48 @@ class UnresolvedProjectionError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _normalize(sql: str) -> str:
-    """Collapse whitespace so parameterised re-runs share one cache entry."""
-    return _WHITESPACE.sub(" ", sql.strip())
+def _block_statements(tree: exp.Block) -> list[exp.Expr]:
+    """The real statements in ``tree``, dropping parse artifacts.
+
+    A trailing ``; -- comment`` lands as an ``exp.Semicolon`` carrying the
+    comment, and a doubled ``;;`` as ``None``. Neither is a statement.
+    """
+    return [
+        e
+        for e in tree.expressions
+        if e is not None and not isinstance(e, exp.Semicolon)
+    ]
 
 
 @functools.lru_cache(maxsize=256)
-def _parse_normalized(normalized_sql: str) -> exp.Expr:
-    try:
-        tree = sqlglot.parse_one(normalized_sql, dialect="duckdb")
-    except ParseError as e:
-        raise SqlParseError(str(e)) from e
-    return tree
-
-
 def parse_cached(sql: str) -> exp.Expr:
-    """Parse ``sql`` (DuckDB dialect) with an LRU cache keyed on normalized text.
+    """Parse ``sql`` (DuckDB dialect) with an LRU cache keyed on the exact text.
+
+    Keyed on the raw string deliberately. Callers classify this tree but hand
+    the *original* ``sql`` to DuckDB, so any rewrite on the way to the parser
+    lets the classified text and the executed text disagree. Collapsing
+    whitespace for a higher cache-hit rate did exactly that three ways: it
+    erased the newline ending a ``--`` comment (hiding a smuggled second
+    statement from the statement count), and rewrote the spacing inside quoted
+    identifiers and string literals (resolving a different column than DuckDB
+    reads). See #346 — cheaper cache keys are not worth reopening that gap.
 
     The returned expression is shared across callers via the cache — do NOT
     mutate it in place. ``expand_star`` / ``_qualified`` already ``.copy()``
     before transforming; any new caller must do the same.
     """
-    return _parse_normalized(_normalize(sql))
+    try:
+        tree = sqlglot.parse_one(sql, dialect="duckdb")
+    except ParseError as e:
+        raise SqlParseError(str(e)) from e
+    # `SELECT 1; -- note` and `SELECT 1;;` parse to a Block wrapping one real
+    # statement. Unwrap here so no consumer has to know Blocks exist; a Block
+    # with two real statements is left intact for `is_multi_statement`.
+    if isinstance(tree, exp.Block):
+        statements = _block_statements(tree)
+        if len(statements) == 1:
+            return statements[0]
+    return tree
 
 
 # ---------------------------------------------------------------------------
@@ -1200,6 +1217,48 @@ def is_data_query(tree: exp.Expr) -> bool:
     returned the routing number in the clear at LOW.
     """
     return isinstance(tree, (exp.Select, exp.SetOperation))
+
+
+# sqlglot has no EXPLAIN node for the DuckDB dialect — it falls back to the
+# generic exp.Command, which is ALSO what every statement it cannot parse
+# becomes. Matching the command word keeps unparsed syntax from riding in on
+# the same node type.
+_METADATA_COMMANDS = frozenset({"EXPLAIN"})
+
+
+def is_metadata_query(tree: exp.Expr) -> bool:
+    """True for DESCRIBE / SHOW / PRAGMA / EXPLAIN — and nothing else.
+
+    The complement of :func:`is_data_query` is NOT a safe test for "this is
+    metadata". Callers run metadata statements unclassified at LOW, so reading
+    "not a SELECT" as "safe to execute raw" makes every expression kind sqlglot
+    can produce a potential unredacted read — the door a top-level ``EXCEPT``
+    and a ``;``-separated ``Block`` each walked through. This allowlist is the
+    positive test callers need so an unrecognized tree fails closed.
+    """
+    if isinstance(tree, (exp.Describe, exp.Show, exp.Pragma)):
+        return True
+    return (
+        isinstance(tree, exp.Command)
+        and str(tree.this).strip().upper() in _METADATA_COMMANDS
+    )
+
+
+def is_multi_statement(tree: exp.Expr) -> bool:
+    """True when ``tree`` holds more than one real statement.
+
+    sqlglot parses ``SELECT 1; SELECT 2`` into a single ``exp.Block``. DuckDB
+    executes such a string and returns the LAST statement's rows, while every
+    classifier here reads the first — so a trailing statement can return
+    columns the class map never saw. Callers must refuse these before any
+    classification decision.
+
+    A ``Block`` alone is not the signal: sqlglot also builds one for a lone
+    statement with a trailing ``; -- comment`` (tail is an ``exp.Semicolon``
+    carrying the comment) or a doubled ``;;`` (tail is ``None``). Both are one
+    statement written the ordinary way, so count the real statements instead.
+    """
+    return isinstance(tree, exp.Block) and len(_block_statements(tree)) > 1
 
 
 def tables_outside_schemas(

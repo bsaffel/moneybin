@@ -216,6 +216,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reach the model provider as-is, and there is no consent gate yet.
 
 ### Security
+- **Fixed a redaction bypass that returned bank routing numbers in the clear
+  through `sql_query` / `moneybin sql query` when a query carried two
+  statements.** Each statement in `SELECT 1; SELECT routing_number FROM
+  core.dim_accounts` is individually a legal read, so every existing gate
+  passed; the pair parsed to one `Block`, which the classifier did not
+  recognize as a data query and the caller therefore treated as metadata —
+  executing the string unclassified at LOW. DuckDB returns the last
+  statement's rows, so the class map described the first statement while the
+  caller received the second. Multi-statement input is now refused, and the
+  metadata path routes on a positive DESCRIBE/SHOW/PRAGMA/EXPLAIN allowlist
+  rather than on "not a data query", so an unrecognized statement kind fails
+  closed instead of executing unmasked — the same default-open fallback that
+  produced the `EXCEPT`/`INTERSECT` leak below. (#346)
+- **Closed a second route to the same leak, where a `--` comment hid the extra
+  statement.** The gates read the query with its whitespace collapsed, which
+  erased the newline that ends a `--` comment: in `SELECT 1 AS a; -- note`
+  followed by `SELECT routing_number AS a FROM core.dim_accounts`, the
+  classifier saw one harmless statement while DuckDB ran both and returned the
+  second's rows. Naming both columns `a` matched the classified column name,
+  so the fail-closed check that catches a shape mismatch never fired. Queries
+  are now parsed exactly as DuckDB receives them, which also stops the same
+  collapsing from rewriting spacing inside quoted identifiers and string
+  literals — a third way the classified and executed queries could differ.
+  Formatted multi-line SQL, trailing `; -- comment`, and `;;` still run. (#346)
 - **CVE fixes via dependency bumps:** `mcp` 1.27.1 → 1.28.1, `pillow`
   12.2.0 → 12.3.0, `httplib2` 0.31.2 → 0.32.0, closing 12 advisories. The
   `mcp` ones affect MoneyBin's own MCP server: HTTP transports served
