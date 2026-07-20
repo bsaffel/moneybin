@@ -80,31 +80,33 @@ def test_one_row_per_security_date_currency(db: Database) -> None:
 
 @pytest.mark.slow
 def test_winner_is_stable_across_rebuilds(db: Database) -> None:
-    """The pick is deterministic — source_origin breaks the same-rank tie.
+    """The pick is deterministic — source_origin breaks the tie extracted_at leaves.
 
     Without that key a rebuild can return a different close from identical inputs,
     which fails the deterministic-resolution requirement.
 
-    item_b is both the fresher observation (later extracted_at) and the lower
-    close, so if source_origin's ORDER BY key were dropped, the tiebreak would
-    fall through to extracted_at DESC and then close — and item_b would win
-    instead. Only source_origin picking item_a first (alphabetically) makes
-    item_a the winner despite losing on both of the keys after it. That is what
-    proves this test actually exercises source_origin, not one of its neighbors.
+    The two rows share one extracted_at, so every key ahead of source_origin
+    (source_rank, source, extracted_at) is tied and source_origin alone decides.
+    item_b is inserted FIRST and is the cheaper close, so both plausible mutants
+    land on it rather than on the correct answer: dropping source_origin falls
+    through provider_security_key (also tied) to `close` ascending, which picks
+    item_b's 214.55. Only source_origin sorting item_a ahead of item_b yields
+    214.60. Inserting the winner first, or making it the cheaper row, would let
+    those mutants pass by coincidence.
     """
+    _insert_price(
+        db,
+        key="sec_vti",
+        close="214.55",
+        origin="item_b",
+        extracted_at="2026-07-15 09:00:00",
+    )
     _insert_price(
         db,
         key="sec_vti",
         close="214.60",
         origin="item_a",
         extracted_at="2026-07-15 09:00:00",
-    )
-    _insert_price(
-        db,
-        key="sec_vti",
-        close="214.55",
-        origin="item_b",
-        extracted_at="2026-07-15 10:00:00",
     )
     _accept_link(db, key="sec_vti", canonical_id="canonvti0000001")
 
@@ -117,8 +119,59 @@ def test_winner_is_stable_across_rebuilds(db: Database) -> None:
         seen.append(row[0])
 
     assert seen[0] == seen[1] == Decimal("214.6000000000"), (
-        "item_a sorts first on source_origin, despite item_b being both fresher "
-        "and cheaper"
+        "item_a sorts first on source_origin, the only key not tied between the two"
+    )
+
+
+@pytest.mark.slow
+def test_split_day_key_churn_resolves_by_freshness_not_key_sort(db: Database) -> None:
+    """A retired provider ref must not outrank its successor on the changeover day.
+
+    app.security_links is N:1: Plaid retires a security_id on a corporate action and
+    binds the successor to the SAME canonical security. On a 10:1 split day both refs
+    report a close for one price_date and quote currency — the retired ref at the
+    pre-split 2000.00, the successor at the post-split 200.00 — and they reach this
+    model tied on security_id, source_rank, and source. Only extracted_at distinguishes
+    them, and it must be consulted BEFORE provider_security_key.
+
+    The fixture is oriented adversarially: 'sec_a' is the row that must LOSE, it is
+    inserted FIRST, and it sorts first alphabetically on provider_security_key. So
+    ordering by provider_security_key ahead of extracted_at picks the pre-split 2000.00,
+    which core.dim_holdings would then multiply by the POST-split quantity — publishing
+    a market_value overstated by the split factor with valuation_status 'valued'. A
+    fixture whose correct answer coincided with insertion or key order could not
+    discriminate that at all.
+    """
+    _insert_price(
+        db,
+        key="sec_a",
+        close="2000.00",
+        origin="item_1",
+        extracted_at="2026-07-15 09:00:00",
+    )
+    _insert_price(
+        db,
+        key="sec_b",
+        close="200.00",
+        origin="item_1",
+        extracted_at="2026-07-15 10:00:00",
+    )
+    _accept_link(db, key="sec_a", canonical_id="canonvti0000001")
+    _accept_link(db, key="sec_b", canonical_id="canonvti0000001")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    staged = db.execute("SELECT COUNT(*) FROM prep.stg_security_prices").fetchone()
+    assert staged is not None and staged[0] == 2, (
+        "both provider refs must resolve to the one canonical security for this to "
+        "exercise the core-layer tie-break rather than an upstream filter"
+    )
+
+    rows = db.execute("SELECT close FROM core.fct_security_prices").fetchall()
+    assert rows == [(Decimal("200.0000000000"),)], (
+        "the successor ref carries the fresher observation and the post-split close; "
+        "the retired ref's pre-split 2000.00 must not win on key sort"
     )
 
 

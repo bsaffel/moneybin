@@ -10,12 +10,27 @@
    unqualified total order over the raw input. source_rank picks a preferred provider;
    source (the string, not just the rank) separates two sources that share the ELSE 99
    bucket, since a bucket is a grouping and would otherwise leave two unranked sources
-   tied; source_origin and provider_security_key separate two connections or two
-   provider keys for the same security; extracted_at DESC — freshest observation wins —
-   separates two rows still tied on all four. close is the final tiebreak, reached
-   when two rows are also tied on an identical extracted_at — see below.
+   tied; extracted_at DESC — freshest observation wins — then decides, and it must come
+   BEFORE the two identifier keys, not after. app.security_links is N:1 (one security_id
+   may own many provider refs, because Plaid retires a security_id on a corporate action
+   and re-binds the successor to the same canonical security), so on a changeover day the
+   retired ref and its successor both carry an observation for one price_date and quote
+   currency, tied on security_id, source_rank, and source. Ordering by
+   provider_security_key first would settle a 10:1 split by ASCII sort — the retired
+   ref's PRE-split close winning over the successor's post-split one — and dim_holdings
+   would then multiply the post-split quantity by the pre-split price and publish a
+   market_value overstated by the split factor, with valuation_status 'valued'. Freshness
+   is the only key that carries the right answer there. source_origin and
+   provider_security_key follow as the deterministic backstop for rows tied even on
+   extracted_at, and close is the final tiebreak — see below.
 
-   One duplicate shape survives all of the above: prep.stg_security_prices normalizes
+   This is a total order over the emitted columns. The model exposes security_id,
+   price_date, and quote_currency (the partition), plus close, source, price_basis, and
+   extracted_at; source_rank is a pure function of source, and price_basis is constant
+   ('raw') under the WHERE below. Two rows tied on source, extracted_at, and close are
+   therefore identical in every column this model publishes, whichever the QUALIFY picks.
+
+   One duplicate shape reaches that final tiebreak: prep.stg_security_prices normalizes
    quote_currency with UPPER(), so a provider observation stored as 'usd' and a
    duplicate stored as 'USD' carry distinct raw primary keys (quote_currency is part of
    raw.security_prices' PK) and both reach this model with identical security_id,
@@ -72,5 +87,5 @@ FROM ranked
 QUALIFY
   ROW_NUMBER() OVER (
     PARTITION BY security_id, price_date, quote_currency
-    ORDER BY source_rank, source, source_origin, provider_security_key, extracted_at DESC, close
+    ORDER BY source_rank, source, extracted_at DESC, source_origin, provider_security_key, close
   ) = 1
