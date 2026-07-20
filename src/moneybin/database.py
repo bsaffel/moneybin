@@ -837,7 +837,7 @@ class Database:
         df: Any,
         *,
         on_conflict: Literal["insert", "replace", "upsert", "ignore"] = "insert",
-    ) -> None:
+    ) -> int:
         """Load a Polars (or Arrow-compatible) DataFrame into the database.
 
         Converts the DataFrame to Arrow (zero-copy for Polars) and writes
@@ -860,6 +860,13 @@ class Database:
                   then re-inserted (idempotent reload pattern).
                 - ``"ignore"`` — INSERT OR IGNORE; conflicting rows are silently
                   skipped (preserves the original row and its import_id).
+
+        Returns:
+            Rows the database actually wrote — which is NOT ``len(df)`` under
+            ``"ignore"``, where conflicting rows are dropped. Callers that
+            report "rows loaded" (metrics, log lines, per-table counts) must
+            use this, not the DataFrame height, or a re-offered batch reads as
+            fresh writes and a stalled upstream feed stays invisible.
 
         Raises:
             ValueError: If on_conflict is not a recognised value.
@@ -885,23 +892,27 @@ class Database:
         self.conn.register("_ingest_tmp", arrow_table)
         try:
             if on_conflict == "replace":
-                self.conn.execute(
+                result = self.conn.execute(
                     f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "upsert":
-                self.conn.execute(
+                result = self.conn.execute(
                     f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "ignore":
-                self.conn.execute(
+                result = self.conn.execute(
                     f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
             else:
-                self.conn.execute(
+                result = self.conn.execute(
                     f"INSERT INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
                 )
+            # DuckDB returns a single-row "Count" for each of these statements.
+            # It is read inside the try so the temp view is still registered.
+            written = result.fetchone()
         finally:
             self.conn.unregister("_ingest_tmp")
+        return int(written[0]) if written else 0
 
     @property
     def path(self) -> Path:

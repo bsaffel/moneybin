@@ -651,11 +651,33 @@ class PlaidExtractor:
         if not rows:
             return 0
         df = pl.DataFrame(rows, schema=_SECURITY_PRICES_SCHEMA)
+        # The pre-conversion guard above sees pydantic's unbounded Decimal; the
+        # column is DECIMAL(28,10), so a quote below 1e-10 rounds to zero HERE,
+        # silently and without error. Writing it would be permanent: the table
+        # is append-only with on_conflict='ignore', so a zero row squats on its
+        # primary key and every later corrected close for that date is dropped.
+        priced = df.filter(pl.col("close") > 0)
+        rounded_away = df.height - priced.height
+        if rounded_away:
+            logger.warning(
+                f"Skipped {rounded_away} security price observation(s) whose "
+                "quote rounds to zero at the stored scale (10 decimal places); "
+                "those positions stay unpriced"
+            )
+        if priced.is_empty():
+            return 0
         # Append-only: keep the observation already stored for this key.
-        self.db.ingest_dataframe(SECURITY_PRICES.full_name, df, on_conflict="ignore")
-        PRICE_ROWS_WRITTEN_TOTAL.labels(source="plaid").inc(len(df))
-        logger.info(f"Loaded {len(df)} security price observations")
-        return len(df)
+        written = self.db.ingest_dataframe(
+            SECURITY_PRICES.full_name, priced, on_conflict="ignore"
+        )
+        # Rows WRITTEN, never rows offered: Plaid re-reports the same
+        # (security_id, close_price_as_of) on every pull until the close date
+        # advances, so counting the batch would make this counter climb
+        # steadily through a fully stalled upstream feed — the one condition it
+        # exists to expose.
+        PRICE_ROWS_WRITTEN_TOTAL.labels(source="plaid").inc(written)
+        logger.info(f"Loaded {written} security price observations")
+        return written
 
     def _load_investment_transactions(
         self,

@@ -668,6 +668,201 @@ def test_load_result_counts_price_rows(
     assert result.security_prices_loaded == 2
 
 
+def test_reload_counts_no_price_rows_and_does_not_advance_the_metric(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """The stalled-feed detector must be able to read zero.
+
+    Plaid re-reports the same (security_id, close_price_as_of) on every pull
+    until the close date advances, and the append-only insert drops every one
+    of them. If the metric, the log line, or the returned count reported rows
+    OFFERED, moneybin_price_rows_written_total would climb steadily through a
+    completely stalled upstream feed — the one condition it exists to expose.
+    """
+    name = "moneybin_price_rows_written_total"
+    labels = {"source": "plaid"}
+
+    first = _load(db, sync_data, job_id="job-price-1")
+    assert first.security_prices_loaded == 2, "first pull writes both observations"
+
+    before = REGISTRY.get_sample_value(name, labels) or 0.0
+    second = _load(db, sync_data, job_id="job-price-2")
+
+    assert second.security_prices_loaded == 0, (
+        "a re-reported observation is dropped by on_conflict='ignore'; "
+        "the returned count must report rows written, not rows offered"
+    )
+    assert (REGISTRY.get_sample_value(name, labels) or 0.0) - before == 0.0, (
+        "the counter must stay flat when nothing was written"
+    )
+    stored = db.execute("SELECT COUNT(*) FROM raw.security_prices").fetchone()
+    assert stored == (2,), "no second copy landed — the count matches the table"
+
+
+def test_a_partially_new_batch_counts_only_the_new_observation(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """The count is per-row, not all-or-nothing across the batch.
+
+    A pull where one security's close date advanced and the other's did not is
+    the ordinary case the moment two feeds tick at different times; reporting
+    the whole batch or zero would both misstate it.
+    """
+    _load(db, sync_data, job_id="job-partial-1")
+
+    advanced = sync_data.model_copy(deep=True)
+    for sec in advanced.securities:
+        if sec.security_id == "sec_aapl" and sec.close_price_as_of is not None:
+            sec.close_price_as_of = sec.close_price_as_of + timedelta(days=1)
+
+    result = _load(db, advanced, job_id="job-partial-2")
+    assert result.security_prices_loaded == 1, (
+        "only sec_aapl's new close date is a new row; the other is re-reported"
+    )
+
+
+def test_a_quote_that_rounds_away_is_skipped_not_stored_as_zero(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A sub-1e-10 quote must never occupy its primary key with a zero.
+
+    close is DECIMAL(28,10), so pl.DataFrame rounds a smaller quote to
+    0.0000000000 with no error. The table is append-only with
+    on_conflict='ignore', so a zero row would permanently squat on
+    (source, source_origin, provider_security_key, price_date, quote_currency)
+    and silently discard every corrected close later offered for that date —
+    while stg_security_prices' `WHERE close > 0` keeps the position unpriced.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [],
+        "securities": [
+            {
+                "security_id": "sec_dust",
+                "provider_item_id": "item_1",
+                "ticker_symbol": "DUST",
+                "name": "Sub-scale token",
+                "type": "cryptocurrency",
+                "close_price": "0.00000000001",  # 1e-11 — below the 10-dp scale
+                "close_price_as_of": "2026-07-15",
+                "iso_currency_code": "USD",
+            }
+        ],
+        "metadata": {
+            "job_id": "j-dust",
+            "synced_at": "2026-07-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+    with caplog.at_level("WARNING"):
+        result = _load(db, SyncDataResponse.model_validate(payload), job_id="j-dust")
+
+    assert result.security_prices_loaded == 0
+    row = db.execute(
+        "SELECT COUNT(*) FROM raw.security_prices WHERE provider_security_key = ?",
+        ["sec_dust"],
+    ).fetchone()
+    assert row == (0,), "no zero-valued row may occupy the key"
+    assert "rounds to zero" in caplog.text, "an operator must see the skip"
+    assert "sec_dust" not in caplog.text, "no security identifier in logs"
+    assert "0.00000000001" not in caplog.text, "no monetary value in logs"
+
+
+def test_a_blank_iso_currency_falls_through_to_the_unofficial_code(
+    db: Database,
+) -> None:
+    """An empty-string currency means absent, and both sides must agree it does.
+
+    Plaid can return iso_currency_code="" beside a populated
+    unofficial_currency_code. The extractor collapses the pair with Python's
+    `or` (blank is falsy → falls through) while the lot side of the valuation
+    join collapses it with SQL COALESCE (falls through only on NULL → yields
+    ''). Normalising blanks to None at the sync-model boundary is what keeps
+    the two from disagreeing: without it the price stores 'USD', the lot
+    yields '', the join on quote_currency finds nothing, and the position
+    reports 'unpriced' while its close sits queryable in core.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [],
+        "securities": [
+            {
+                "security_id": "sec_blank_iso",
+                "provider_item_id": "item_1",
+                "ticker_symbol": "BLNK",
+                "name": "Blank-iso security",
+                "type": "cryptocurrency",
+                "close_price": "42.5000000000",
+                "close_price_as_of": "2026-07-15",
+                "iso_currency_code": "",
+                "unofficial_currency_code": "USD",
+            }
+        ],
+        "metadata": {
+            "job_id": "j-blank",
+            "synced_at": "2026-07-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+    parsed = SyncDataResponse.model_validate(payload)
+    assert parsed.securities[0].iso_currency_code is None, (
+        "the blank is normalised at the boundary, so SQL COALESCE on the same "
+        "value falls through exactly as Python's `or` does"
+    )
+
+    _load(db, parsed, job_id="j-blank")
+    row = db.execute(
+        "SELECT quote_currency FROM raw.security_prices WHERE provider_security_key = ?",
+        ["sec_blank_iso"],
+    ).fetchone()
+    assert row is not None and row[0] == "USD"
+
+
+def test_a_whitespace_only_currency_on_both_fields_yields_no_price_row(
+    db: Database,
+) -> None:
+    """Whitespace is absent too — the row is skipped, not keyed on ' '.
+
+    quote_currency is part of the append-only primary key, so a blank stored
+    there would squat on a key no lot can ever join to.
+    """
+    payload = {
+        "accounts": [],
+        "transactions": [],
+        "balances": [],
+        "removed_transactions": [],
+        "securities": [
+            {
+                "security_id": "sec_ws",
+                "provider_item_id": "item_1",
+                "ticker_symbol": "WS",
+                "name": "Whitespace-currency security",
+                "type": "equity",
+                "close_price": "10.0000000000",
+                "close_price_as_of": "2026-07-15",
+                "iso_currency_code": "   ",
+                "unofficial_currency_code": "",
+            }
+        ],
+        "metadata": {
+            "job_id": "j-ws",
+            "synced_at": "2026-07-08T12:00:00Z",
+            "institutions": [],
+        },
+    }
+    result = _load(db, SyncDataResponse.model_validate(payload), job_id="j-ws")
+    assert result.security_prices_loaded == 0
+    row = db.execute(
+        "SELECT COUNT(*) FROM raw.security_prices WHERE provider_security_key = ?",
+        ["sec_ws"],
+    ).fetchone()
+    assert row == (0,)
+
+
 def test_empty_arrays_load_cleanly(db: Database) -> None:
     payload = {
         "accounts": [],
