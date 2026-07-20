@@ -225,7 +225,8 @@ Save pipeline:
 6. `DESCRIBE <query_sql>` **with every declared parameter bound to NULL**, to
    read real DuckDB result column names, then bridge through
    `_classes_by_result_column` and persist the reconciled map **keyed by DuckDB
-   column names**.
+   column names**. **Duplicate result column names are rejected here**, with an
+   error naming the repeated name.
 
 Step 6 is load-bearing, not an optimization. `resolve_output_classes` returns
 names from sqlglot projections; `classify_columns` looks them up by DuckDB
@@ -233,6 +234,18 @@ result name. Persisting the unbridged map would mask `COUNT(*)` — sqlglot `*`,
 DuckDB `count_star()` — to `'*****'` on every run of every report containing
 one. That is the over-redaction bug class M2P.1 shipped and had to fix in
 review; `DESCRIBE` closes it structurally rather than by vigilance.
+
+Rejecting duplicate names is what keeps that map addressable. DuckDB permits
+`SELECT 0 AS x, routing_number AS x` and returns two columns both named `x`,
+but `classes` is a JSON object keyed by name and `redact_records` masks
+`row.items()` by that same key — so one entry survives, holding whichever class
+resolved last, and it governs whichever value survives. The mask stops
+corresponding to the value it is supposed to cover, and
+`reports_reclassify(x, …)` would then mutate one entry for a name that means two
+things. A duplicate name carries no meaning in a durable report that anything
+downstream can address by name, so this refuses at save rather than becoming a
+named risk: the alternative is masking that is correct only by the accident of
+projection order.
 
 Two verified properties of step 6, both required for it to work:
 
@@ -321,8 +334,15 @@ consequently blind to every input above — it must not be used as the drift key
 
 Instead, `class_fingerprint` is a hash over two things: the sorted
 `(schema, table, column, DataClass)` tuples for **the tables this query reads**,
-and a **`DERIVATION_VERSION`** constant bumped whenever `resolve_output_classes`
-changes how it classifies.
+and a **`DERIVATION_VERSION`** constant bumped whenever **any function the
+persisted map depends on** changes how it classifies — `resolve_output_classes`
+*and* the `_classes_by_result_column` bridging step 6 calls load-bearing. The
+scope is the pipeline, not one function: a change to how sqlglot projection
+names reconcile against DuckDB result names moves no tuple and touches no
+classifier, so scoping the constant to `resolve_output_classes` alone would
+leave every saved report on the `Match` branch serving output under the old
+bridging behaviour. That is the same stale-authority failure one function to
+the left — and step 6 is where M2P.1's over-redaction bug actually lived.
 
 The version term is not ceremony. The tuples describe derivation's *inputs*; a
 change to the classifier itself moves no tuple, so a fix that raises a computed
@@ -464,25 +484,34 @@ The generic MCP consent ladder does not cover this — it gates what leaves the
 machine on one request, not a durable change to what is masked on all future
 ones.
 
-**A downgrade must weaken, never strengthen.** `reports_reclassify` compares the
-**`(tier, mask_strength)` pair** — the same pair M2P.1 settled on
-(`reports-foundation.md` R3, `privacy/redaction.py`) — and persists only when
-neither component rises and at least one falls. Materialized reports get this
-free at CI time; a dynamic report has no repo artifact and no CI step, so the
-tool is the only place the check can run. Without it a call could "downgrade"
-`ROUTING_NUMBER` to a class that masks less, recreating #330 through an explicit
-tool instead of a missing declaration.
+**A downgrade must lower the tier, and an equal-tier weakening is refused
+outright.** `reports_reclassify` applies the rule `.claude/rules/reports.md`
+already states for materialized reports — not a second rule beside it:
+`tier(to)` must be strictly below `tier(from)`, and `mask_strength(to)` may not
+rise. A reason cannot waive the equal-tier case.
 
-Both components are load-bearing, and either one alone fails in a different
-direction. `mask_strength` alone rejects this spec's own worked example: the
-z-score column downgraded `TXN_AMOUNT → AGGREGATE` moves HIGH → LOW while both
-classes share the passthrough transform, so their strengths are equal and a
-strength-only test refuses a legitimate correction — as it would for every
-HIGH/MEDIUM → LOW reclassification, which is most of what this tool is for.
-Tier alone is the failure M2P.1 already found: two classes at one tier whose
-transforms differ are not interchangeable, so tier equality is not class
-equivalence. Requiring that neither component rise keeps a "downgrade" from
-strengthening one axis while weakening the other.
+The equal-tier prohibition is the part a pair-ordering test misses, and it is
+the dangerous one. `ROUTING_NUMBER → ACCOUNT_IDENTIFIER` holds tier at CRITICAL
+and drops mask strength from `WHOLE` to `PARTIAL`, so "neither component rises
+and at least one falls" would admit it — and every future run of that report
+would render the real last four digits where every row previously showed
+`'*****'`. `reports.md` names exactly this: the downgrade mechanism exists
+because derivation over-classifies *computed* columns, and that argument is
+unavailable when both classes agree on the tier and differ only in transform.
+There, a waiver would not correct an over-classification; it would elect to
+publish part of a value everyone agrees is CRITICAL.
+
+Requiring the tier to fall is what carries that. This spec's worked example is
+unaffected — `TXN_AMOUNT → AGGREGATE` moves HIGH → LOW — while the equal-tier
+weakening is refused with no reason able to excuse it. Holding
+`mask_strength` flat-or-falling on top keeps a tier drop from strengthening one
+axis while weakening the other.
+
+Materialized reports get this at CI time (`reports-foundation.md` R3); a dynamic
+report has no repo artifact and no CI step, so the tool is the only place it can
+run. The two surfaces must enforce the *same* rule: the agent-reachable,
+runtime, un-reviewed-by-CI path is the last one that should get the weaker of
+two guards.
 
 **Renames go through the same collision check as creation.** `reports_set` is
 how a report is renamed (R1), so a rename into a name already held by a built-in
