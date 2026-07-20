@@ -172,10 +172,11 @@ archiving mutation's own `app.audit_log` row carries its timestamp, so a
 dedicated column would duplicate audit state and could drift from it.
 
 Because `name` is `UNIQUE` and archived rows stay in the table, an archived name
-stays taken. `reports_create` on a colliding archived name must say so and name
-both exits — restore it with `reports_set(name, is_active=True)`, or free the
-name with `reports_delete`. Reporting a bare "name already exists" for a report
-the default catalog hides is the failure this clause exists to prevent.
+stays taken. A save onto a colliding archived name must say so and name both
+exits — restore it with `reports_set(name, is_active=True)`, or free the name
+with `reports_set(name, state="absent")`. Reporting a bare "name already exists"
+for a report the default catalog hides is the failure this clause exists to
+prevent.
 
 ### R2 — Save-time classification is invisible
 
@@ -427,37 +428,66 @@ docstring widens to cover stale classification, and `degraded_reason` must name
 which of the two applies. Two meanings on one flag with no way to tell them
 apart is not acceptable; two meanings with a mandatory discriminator is.
 
-### R5 — One access path, typed shortcuts over it
+### R5 — One access path, three tiers behind it
 
-`reports_run(name, params)` resolves a name across **all three tiers** and is the
-universal path an agent can always take. The generated `reports_<name>` tools
-remain as typed, discoverable shortcuts over the same execution.
+Reading a report — catalog or execution — adds **no MCP tool**. The shipped
+`reports(report_id, parameters, limit)` contract is already the universal path,
+and a user report resolves through it exactly as a built-in does. This spec
+extends that tool's resolution to span all three tiers; it does not sit a second
+dispatcher beside it.
 
 | Operation | MCP | CLI |
 |---|---|---|
-| Run any report | `reports_run` | `moneybin reports run` |
-| Catalog, all tiers | `reports` | `moneybin reports list` |
-| Save | `reports_create` | `moneybin reports create` |
-| Update / archive | `reports_set` | `moneybin reports set` |
-| Delete | `reports_delete` | `moneybin reports delete` |
+| Catalog, all tiers | `reports` (omit `report_id`) | `moneybin reports list` |
+| Run any report | `reports(report_id, parameters)` | `moneybin reports run` |
+| Save / update / rename / archive / delete | `reports_set` | `moneybin reports create`, `set`, `delete` |
 | Inspect | `reports_explain` | `moneybin reports explain` |
 | Downgrade a class | `reports_reclassify` | `moneybin reports reclassify` |
 
-Verb choices per `surface-design.md`: `_create` is a strict create so a name
-collision errors rather than silently overwriting someone's report; `_set` is
-the paired idempotent partial update; `_update` is banned as its synonym. The
-catalog read is the **noun** `reports`, because `_list` is on the rule's explicit
-drop list and no shipped MCP tool carries the suffix. The CLI keeps `reports
-list`, matching 18 existing `list` subcommands. `_reclassify` is a domain verb
-because it carries D5's mandatory `reason`, which a generic field-set erases.
+**The write surface is three new tools, not six, and the constraint is the
+registry budget.** `mcp-tool-surface-scaling.md` operates one bounded registry
+of 45 standard tools against a hard maximum of 50 (ADR-016), with a
+carrying-weight review required of every tool above 40. Six new `reports_*`
+identities would land at 51 — over the hard maximum — so the earlier shape was
+not merely unfashionable under the consolidated surface, it was unbuildable
+without superseding an ADR. Three lands at 48, and each of the three owes the
+seven-question admission record in its implementing PR.
+
+The collapse follows `surface-design.md` rather than the count. `reports_set` is
+shape 1b: create, update, rename, archive, and delete share intent,
+authorization, sensitivity, and audit contract, so they belong in one typed
+target-state mutation (`state="absent"` for the hard delete, which advertises
+maximum static risk and confirms only that branch). The rule reserves a strict
+`_create` and a paired `_delete` for cases where those contracts *materially*
+differ, which is not this one — the collision guard that motivated a strict
+create is a property of the registry and runs on every path that sets a name,
+so it does not need a tool of its own.
+
+`reports_explain` stays separate because its trust contract genuinely differs:
+[R9](#r9--provenance-renders-identically-across-tiers) has it render a
+parameter value verbatim that the same report's results mask, so folding it into
+`reports` behind a flag would put two sensitivity contracts under one identity —
+and its output family (SQL, lineage, class map) is not the row union `reports`
+returns, which fails the shared-output test for acceptable polymorphism.
+`_reclassify` is a domain verb because it carries D5's mandatory `reason`, which
+a generic field-set erases, and because its elicitation and audit contracts are
+unlike any other write in the domain.
+
+The catalog read is the **noun** `reports`, because `_list` is on the rule's
+explicit drop list and no shipped MCP tool carries the suffix. The CLI keeps
+`reports list`, matching 18 existing `list` subcommands, and keeps `create` /
+`set` / `delete` as separate subcommands — CLI discoverability is cheap
+(`--help` navigation costs no context window), so the surfaces map to the same
+capability through the same service without requiring name equality, which is
+the parity `.claude/rules/cli.md` asks for.
 
 The catalog excludes archived reports by default; `include_archived` (CLI
 `--archived`) widens it. Each entry carries a `tier` field.
 
 **Names are unique across the whole registry, not just against built-ins.**
-`reports_run` resolves one handle across three tiers, so two reports sharing a
-name make the dispatcher and the catalog ambiguous. The check runs in both
-directions: `reports_create` rejects a name already held by a built-in *or* an
+`reports` resolves one `report_id` across three tiers, so two reports sharing a
+name make the catalog and its runner ambiguous. The check runs in both
+directions: `reports_set` rejects a name already held by a built-in *or* an
 installed extension, and installing an extension whose report name collides with
 an existing user report fails with both names rather than silently shadowing
 one. Defining a precedence order instead would mean a user's saved report can
@@ -466,7 +496,7 @@ from the catalog.
 
 **`reports_reclassify` requires human confirmation and cannot be self-accepted
 by the agent that calls it.** A downgrade permanently lowers the masking floor
-for a column across every future run and every surface — `reports_run`,
+for a column across every future run and every surface — `reports`,
 `sql_query`, `reports_explain` — on the strength of a `reason` string the caller
 supplies about its own request. `design-principles.md` is explicit that an
 inference this consequential "is never eligible for agent self-accept, regardless
@@ -516,15 +546,16 @@ two guards.
 **Renames go through the same collision check as creation.** `reports_set` is
 how a report is renamed (R1), so a rename into a name already held by a built-in
 or an installed extension would satisfy the table's `UNIQUE` constraint — which
-only spans `app.user_reports` — and still leave `reports_run` ambiguous across
-tiers. The check above is a property of the registry, not of the create path;
-every tool that can set a name runs it.
+only spans `app.user_reports` — and still leave `reports` ambiguous across
+tiers. The check is a property of the registry, not of any one branch of
+`reports_set`; every path that can set a name runs it.
 
 **Parameters cross the wire as a mapping, not `**kwargs`.** Both registrars
 synthesize an explicit signature from `spec.params`, and FastMCP and Typer
 derive their schemas from it — so a variadic tool would advertise no parameters
-at all and an agent could not discover or pass any. `reports_run` therefore takes
-a typed `params: dict[str, Any] | None`; the CLI twin takes repeated
+at all and an agent could not discover or pass any. `reports` already takes a
+typed `parameters: dict[str, JsonValue] | None` for exactly this reason, and a
+user report binds through it unchanged; the CLI twin takes repeated
 `--param key=value`. Validating names against the report's declared list is the
 binder's job, which is where R8's "an unknown name raises" is enforced.
 
@@ -544,17 +575,24 @@ redaction, same audit actor threading.
 #### Where parity is real and where it is not
 
 The umbrella requires user reports to reach "the same tool surface, envelope,
-privacy path, and provenance" as a shipped report. Three of those four hold
-exactly: identical envelope, identical privacy path, identical provenance, all
-because R7's shared `run_report` path guarantees it.
+privacy path, and provenance" as a shipped report. All four now hold exactly,
+and the fourth arrived from outside this spec.
 
-Tool surface is the concession. A user report does **not** get a generated
+Tool surface used to be the concession: a user report could not get a generated
 `reports_<name>` tool, because registration happens at startup and the MCP tool
-list cannot mutate mid-session without clients that refresh. A user report is
-reachable, discoverable, and equal in output — but reached through `reports_run`
-rather than a tool of its own. M2P.3's graduation path is what closes the
-remaining gap, and stating it plainly is better than claiming a parity the
-architecture does not deliver.
+list cannot mutate mid-session without clients that refresh. The surface
+consolidation removed generated per-report tools from every tier — a report
+"registers behind the single read-only `reports` catalog/runner and never adds
+an MCP tool" (`.claude/rules/mcp.md`) — so a built-in no longer has the shortcut
+a user report was measured against. Every tier is now reached identically, by
+`report_id` through one tool.
+
+This is parity by deletion rather than by construction, and it holds only while
+that rule does. If per-report tools ever return, they return for built-ins first
+and the gap reopens against the tier that cannot have them — so a proposal to
+reintroduce them has to answer for user reports in the same change. What
+M2P.3's graduation path buys is no longer discoverability; it is the automation
+and distribution a repo artifact gets and a database row does not.
 
 ### R6 — The verify surface (absorbs M2I)
 
@@ -767,11 +805,10 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
 
 ## Open questions
 
-- **Does `reports_run` fit the `_run` verb?** `surface-design.md` defines `_run`
-  as "execute a discrete batch/pipeline operation," and all five shipped `_run`
-  tools mutate state (`refresh_run`, `transactions_categorize_run`,
-  `transactions_matches_run`, `accounts_links_run`, `merchants_links_run`).
-  `reports_run` is a read-only projection dispatcher, so it either extends the
-  verb to cover read dispatch or needs a different name. MCP tool names are a
-  public contract under design-principles.md, so this is settled before
-  implementation, not during.
+- **Does `reports_set` earn a registry slot at 48 of 50?** The three write tools
+  fit `surface-design.md`'s shapes, but fitting a shape is not the admission
+  test — the seven-question record in `.claude/rules/mcp.md` also demands the
+  serialized byte delta and evaluation evidence, and neither exists until the
+  tools do. If the carrying-weight review rejects one, the fallback is folding
+  the write path into an existing coarse mutation rather than superseding
+  ADR-016's hard maximum. Settle this in the implementing PR, with numbers.

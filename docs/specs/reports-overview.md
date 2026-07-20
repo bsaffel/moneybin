@@ -217,17 +217,16 @@ enumerate the *exposed* set.
 
 ## Open questions
 
-- **Is a bespoke-tool report a permanent sanctioned category, or a migration
-  state?** `net_worth` is user-facing, so under D3 it stays in `reports.*` and
-  must be classified — but D4's derivation classifies it like any other view, so
-  this stopped being a privacy question. What remains is tool ergonomics: its
-  `NetworthService`-backed tools are hand-written because `@report` *couples*
-  declaring a contract with generating a tool, and a generated `reports_networth`
-  would collide with the shipped one. The question has consequences because M2P.2
-  and M2P.3 create reports at runtime, and those cannot have hand-written tools —
-  so generation-required is the dominant future population and bespoke tools are
-  a legacy of one. **Resolve in C**, alongside the `extension-contracts.md` M3I
-  addressing reconciliation.
+- ~~**Is a bespoke-tool report a permanent sanctioned category, or a migration
+  state?**~~ — **migration state; the migration landed in the MCP surface
+  consolidation.** `@report` no longer couples declaring a contract with
+  generating a tool: every report, `net_worth` included, is a `ReportSpec`
+  reached by `report_id` through the single `reports` catalog/runner, and
+  reports consume no tool slots. The `NetworthService` backing survives as a
+  runner; what disappeared is its hand-written tool identity, and with it the
+  collision that made the category look permanent. Generation-required was
+  indeed the dominant population — M2P.2 and M2P.3 now inherit the same access
+  path as the built-in rather than a second one.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
 - ~~**Dynamic reports over floored columns**~~ — **scoped out in B, decided in
