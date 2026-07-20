@@ -802,11 +802,16 @@ def register_investments_tools(mcp: FastMCP) -> None:
         mcp,
         investments_holdings,
         "investments_holdings",
-        "Current positions: quantity, cost basis, average cost per "
-        "(account, security). Market value/unrealized gain require price "
-        "feeds (not yet shipped) — always carries a warning that only cost "
-        "basis is available. Amounts are in the currency named by "
-        "`summary.display_currency`.",
+        "Current positions per (account, security): quantity, cost basis, "
+        "average cost, plus market_value, unrealized_gain (signed: negative "
+        "below cost), price_date, days_since_observed, and price_source when "
+        "a close resolved. valuation_status is `valued` (the close is "
+        "today's), `carried_forward` (the most recent close is older), "
+        "`unpriced` (no close resolved), or `withheld` (the share count is "
+        "known wrong). The last two report market_value/unrealized_gain as "
+        "null, never zero, and data.warnings names how many rows those are — "
+        "no warning fires when every position is valued. Amounts are in the "
+        "currency named by `summary.display_currency`.",
     )
     register(
         mcp,

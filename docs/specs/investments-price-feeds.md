@@ -11,8 +11,11 @@ history for held securities, resolve one price per security per date from
 competing sources, and publish holdings market value and unrealized gain/loss on
 top of the shipped cost-basis engine.
 
-MoneyBin computes cost basis today and no market value anywhere.
-`core.dim_holdings` carries `quantity`, `cost_basis`, and `average_cost`;
+Phase C.1 shipped: `core.dim_holdings` carries `market_value`, `unrealized_gain`,
+`price_date`, `price_source`, `days_since_observed`, and `valuation_status` beside
+`quantity`, `cost_basis`, and `average_cost`, valued from the close Plaid already
+delivers in its existing sync payload. External feeds, manual overrides, and
+trade-implied prices (C.2) and the daily valued series (C.3) remain designed.
 `src/moneybin/sqlmesh/models/reports/net_worth.sql` reads `core.fct_balances_daily`
 alone and excludes holdings entirely. A brokerage account therefore contributes
 its cash balance to net worth and none of its positions. This spec closes that
@@ -275,11 +278,10 @@ recorded, rather than silently valued.
 ### Extended model: `core.dim_holdings`
 
 Adds `market_value`, `unrealized_gain`, `price_date`, `price_source`,
-`days_since_observed`, and `valuation_status`. Two comments go stale and are
-rewritten: the header's "Cost basis only — unrealized gain/loss needs a current
-price, which Pillar C (price feeds) supplies", and the parenthetical on
-`provider_reported_value` reading "MoneyBin computes no market value until
-price feeds land".
+`days_since_observed`, and `valuation_status`. Shipped in C.1, which also
+rewrote the two comments the change made stale — the header's cost-basis-only
+note and the parenthetical on `provider_reported_value` that described MoneyBin
+as computing no market value.
 
 ### New model: `core.fct_holdings_daily`
 
@@ -670,8 +672,10 @@ value while keeping `source = 'override'` provenance. `surface-design.md` also
 requires a paired `_delete` for this mutation shape.
 
 `moneybin sync pull` refreshes prices for held securities as part of its existing
-run. `investments holdings` and `investments gains` gain `market_value`,
-`unrealized_gain`, and an as-of column reporting `price_date` and staleness.
+run. `investments holdings` gains `market_value`, `unrealized_gain`, and an as-of
+column reporting `price_date` and staleness. `investments gains` does not: it
+reports realized disposals for 1099-B reconciliation, where the sale price is the
+recorded one and a current market close has no bearing.
 
 Sensitivity is `high`, matching the tier MCP derives for cost-basis and quantity
 data. Market values are the same class of data as the holdings they value.
