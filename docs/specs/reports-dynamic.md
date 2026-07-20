@@ -33,10 +33,17 @@ lands here as R6.
 
 ## The one architectural claim
 
-`ReportSpec` is already the sole contract. `run_report`, `make_tool_fn`, and
-`build_cli_command` consume the frozen dataclass and never touch the `@report`
-decorator — verified against the current code. So dynamic reports need **a
-second constructor, not a second pattern**:
+`ReportSpec` is already the sole contract. `run_report`
+(`_framework/execute.py:186`), `build_cli_command`
+(`_framework/cli_register.py:62`), and the catalog projections
+`catalog_to_payload` / `result_to_payload` (`_framework/catalog.py:247,254`)
+consume the frozen dataclass and never touch the `@report` decorator — verified
+against the current code. There is no per-report tool factory to name here: the
+MCP path is one generic dispatcher (`register_generic_reports_tool`,
+`_framework/registry.py:85`) registering the single `reports` tool, which is
+what makes [R5](#r5--one-access-path-three-tiers-behind-it)'s tier parity fall
+out for free. So dynamic reports need **a second constructor, not a second
+pattern**:
 
 ```mermaid
 flowchart LR
@@ -80,17 +87,19 @@ SQLMesh view at build time, so it cannot express runtime creation.
 
 New protected `app.*` table, paired per convention across
 `src/moneybin/sql/schema/app_user_reports.sql` and
-`src/moneybin/sql/migrations/V039__create_app_user_reports.py`, registered as
+`src/moneybin/sql/migrations/V041__create_app_user_reports.py` (`V039` and
+`V040` are taken on `main`), registered as
 `USER_REPORTS = TableRef("app", "user_reports", audience="interface")`.
 
 | Column | Type | Notes |
 |---|---|---|
-| `report_id` | `VARCHAR PRIMARY KEY` | `uuid4().hex[:12]`, identifiers.md strategy 3 |
+| `report_id` | `VARCHAR PRIMARY KEY` | `user:r<uuid4().hex[:12]>` — identifiers.md strategy 3, namespaced and letter-led to satisfy `ReportSpec` (below) |
 | `name` | `VARCHAR NOT NULL UNIQUE` | Slug; resolved to `report_id` at the service boundary |
 | `description` | `VARCHAR` | Agent-visible summary |
 | `query_sql` | `VARCHAR NOT NULL` | Stored SQL with `$name` placeholders (R8) |
 | `params` | `JSON NOT NULL DEFAULT '[]'` | Declared `ParamSpec` list, bound by name; each carries a `DataClass` derived at save, absent = `UNRESOLVED` (R9) |
 | `classes` | `JSON NOT NULL` | Derived map, keyed by DuckDB result column name |
+| `semantics` | `JSON NOT NULL` | `ReportSemantics` fields, explicitly-unknown for a user query (below) |
 | `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: {from, to, reason}}` — `from` is the derived class the downgrade was approved against (R4) |
 | `class_fingerprint` | `VARCHAR NOT NULL` | Drift key over the derivation inputs (R4) |
 | `is_active` | `BOOLEAN NOT NULL DEFAULT true` | False = archived; hidden from the default catalog |
@@ -106,6 +115,58 @@ one `_run_app_audit_coverage(USER_REPORTS, "report_id")` call.
 `name` is the handle every tool in R5 takes; the service layer resolves it to
 `report_id` before touching the repo, per identifiers.md Guard 2. `report_id` is
 the audit target and the stable identity across renames.
+
+#### `report_id` is namespaced, and the namespace is not decoration
+
+`ReportSpec.__post_init__` rejects any `report_id` that does not match
+`[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*` (`_framework/contract.py:25`), so a bare
+`uuid4().hex[:12]` cannot construct a spec at all — the second constructor
+would raise on its first row. Every shipped report already carries the
+namespace (`core:spending`, `core:networth`), and `user:` extends the same
+scheme to this tier, which is also what keeps a user report from colliding with
+a built-in in the id space even when R5's name check is what users actually see.
+
+The `r` prefix on the hex is load-bearing, not styling: **both** segments must
+begin with `[a-z]`, and `uuid4().hex` starts with a digit roughly 62% of the
+time. `user:3f9c2d81b4e0` fails the pattern; `user:r3f9c2d81b4e` passes. A mint
+helper owns this so no call site re-derives it, and its test asserts the
+letter-led property directly rather than sampling a few generated ids.
+
+#### `columns` and `semantics` are required fields, and only one of them is free
+
+`ReportSpec` declares `columns: tuple[OutputColumn, ...]` and
+`semantics: ReportSemantics` with **no defaults**
+(`_framework/contract.py`), so the second constructor must produce both or it
+cannot build a spec at all. They are not equally hard.
+
+`columns` is free. `__post_init__` compares `columns` against `classes` on name
+and `data_class` only — `OutputColumn.description` is unconstrained — so the
+constructor synthesizes one `OutputColumn` per entry in the derived class map
+and carries the result column name as its own description. Nothing is asked of
+the user and nothing is invented.
+
+`semantics` is not free, which is why it gets a stored column rather than a
+synthesized constant. Its 11 fields (`unit`, `sign`, `kind`, `valuation_basis`,
+`fx_basis`, `time_basis`, `denominator`, `comparison_window`, `exclusions`,
+`provenance`, `currency`) are financial *interpretation*, and MoneyBin cannot
+derive them from an arbitrary `SELECT`. Defaulting them to plausible-looking
+values would publish a claim about a user's query that nobody made — an agent
+reading `sign: "natural"` on a report whose author flipped the sign gets a
+confidently wrong answer, which is worse than getting none.
+
+So a user report stores **explicitly unknown** semantics, and the catalog
+renders it as unknown rather than omitting the field. This requires
+`ReportSemantics` to be able to *say* unknown: `kind` is currently
+`Literal["position", "flow", "ratio", "count"]` with no fifth option, and
+`unit`, `sign`, and `time_basis` are non-optional `str`. Widening `kind` to
+include `"unknown"` and letting those three admit `None` is the smallest change
+that keeps the type honest for this tier.
+
+That widening touches a contract every shipped report already satisfies, so it
+belongs in the implementing PR with its own review, not asserted here as
+settled — see [Open questions](#open-questions). The alternative, keeping
+`ReportSemantics` closed and requiring the user to supply 11 fields at save,
+contradicts R2's rule that saving requires a name and a query and nothing else.
 
 #### These columns must be classified
 
@@ -328,6 +389,23 @@ The drift key must therefore cover what derivation actually reads:
 - `reports.*` classes come from `reports_class_map()`, built in-process from
   `@report` declarations plus the generated module.
 
+`reports_class_map()` covers the in-tree `ALL_REPORTS` runners and the
+generated module — **not** package-contributed reports. Its own docstring
+(`privacy/sql_lineage.py`) states the consequence and the obligation: package
+discovery is not wired into the live server today, and when it is (M2M) it
+"MUST feed this map too — otherwise a package report with an undeclared
+CRITICAL column resolves to the unmasked `AGGREGATE` fallback."
+
+That is a live constraint on this spec, not a note about someone else's
+milestone. A user report may `SELECT` from a package-contributed `reports.*`
+view the moment both features exist, and R2 step 5 would resolve its columns
+against a map that has never heard of it — producing `AGGREGATE`, unmasked,
+for a column the package declared CRITICAL. So M2P.2 does not ship against a
+live package-report surface until `discover_reports()` feeds
+`reports_class_map()`; whichever of the two lands second owns the wiring, and
+the `test_reports_classification.py` deployed-view backstop is what makes the
+omission fail loudly rather than silently.
+
 None of these bump a migration version, and `core.*` / `reports.*` are
 SQLMesh-built, so a column added or retyped there runs no migration either.
 `SchemaSnapshot.version` reads `MAX(version) FROM app.schema_migrations` and is
@@ -399,9 +477,9 @@ precisely the stale-authority hole R4 closes for the data surface.
 
 The fingerprint is a cache key, not authority: re-resolution is what decides the
 run, so a stale fingerprint costs work, never correctness. That matters because
-the read path has no writable connection — both generated adapters call
-`run_report` inside `get_database(read_only=True)`
-(`_framework/mcp_register.py`, `_framework/cli_register.py`), and R1 routes every
+the read path has no writable connection — both adapters call `run_report`
+inside `get_database(read_only=True)` (`mcp/tools/reports.py:58`,
+`_framework/cli_register.py:82`), and R1 routes every
 `app.user_reports` mutation through the audited repo, which would emit an audit
 row per *read*. So a run never persists a refreshed fingerprint.
 
@@ -493,6 +571,23 @@ an existing user report fails with both names rather than silently shadowing
 one. Defining a precedence order instead would mean a user's saved report can
 change meaning when an unrelated package is installed — a rule nobody can see
 from the catalog.
+
+**Both of those are mutation-time checks, and a collision can arrive without a
+mutation.** Upgrading MoneyBin can add a built-in whose name a user already
+took; upgrading an installed package can rename one of its reports onto the
+same ground. Neither path calls `reports_set` or the install check, so a
+registry validated at every write can still be ambiguous at the next startup —
+and the tier that loses is always the user's, since the colliding name was
+theirs first.
+
+So catalog construction validates the assembled registry rather than trusting
+that every entry was checked on the way in, and a collision found there is
+surfaced, never silently resolved: the affected reports are listed by name and
+tier, and the user report stays runnable by `report_id` while its name is
+contested. Resolving it silently in either direction is the failure — shadowing
+the user's report hides their work behind an upgrade they did not ask for, and
+shadowing the built-in makes a shipped report vanish for one user with no
+visible cause.
 
 **`reports_reclassify` requires human confirmation and cannot be self-accepted
 by the agent that calls it.** A downgrade permanently lowers the masking floor
@@ -614,15 +709,32 @@ made uniform here:
 - **User-created** — the SQL is a stored template. A missing required value
   renders as its `$name` placeholder in `sql_template`, the executed `sql` form
   is omitted, and the response names the parameters that suppressed it.
-- **Built-in and extension** — there is no template. The only way to obtain the
-  query is `spec.runner(db, **params)` (`_framework/execute.py`), which raises on
-  a missing keyword argument before a query exists, and a placeholder sentinel
-  would fail the runner's own validation or ID resolution instead. So
-  `reports_explain` requires every `required` parameter for these tiers and
-  returns a validation error naming the missing ones.
+- **Built-in and extension backed by a `runner`** — there is no template. The
+  only way to obtain the query is `spec.runner(db, **params)`
+  (`_framework/execute.py:194`), which raises on a missing keyword argument
+  before a query exists, and a placeholder sentinel would fail the runner's own
+  validation or ID resolution instead. So `reports_explain` requires every
+  `required` parameter for these tiers and returns a validation error naming
+  the missing ones.
+- **Service-backed (`ServiceReportSpec`)** — there is no query to return at
+  all. This kind carries an `executor` returning a finished
+  `CatalogReportResult` (`_framework/catalog.py`), not a `runner` returning a
+  `ReportQuery`, so no SQL string exists anywhere in the path. `core:networth`
+  and `core:networth_history` are the shipped instances.
+
+The third kind is why R9's "provenance renders identically across tiers" is
+bounded rather than absolute, and the bound is worth stating plainly: a
+service-backed report cannot feed the brass SQL chip a query, because it has
+none. `reports_explain` returns its declared `semantics.provenance` — the
+`reports.*` view names the service reads (`("reports.net_worth",)` for
+`core:networth`) — and an explicit `sql_unavailable` reason naming the
+service-backed kind. A chip that renders "derived by `NetworthService` from
+`reports.net_worth`" tells the truth; one that fabricates a plausible `SELECT`
+to fill the slot does not, and the whole point of the provenance chip is that
+it can be checked.
 
 Everything else `reports_explain` returns — class map, lineage, freshness,
-graduation eligibility — is parameter-independent and available in both cases.
+graduation eligibility — is parameter-independent and available for all three.
 
 This is the *verify* half of "create and verify", and R5's dispatcher makes it
 uniform across tiers.
@@ -717,9 +829,20 @@ above and then hand every author a way to switch it off by omission.
 signature describes what the *user* passes; the bound value can be something
 else entirely. `balance_drift` binds
 `AccountService(db).resolve_strict(account)` — the parameter is declared
-`account: str` (free text a user typed), and the value that reaches the query is
-a resolved `account_id`, CRITICAL. An annotation on the signature classifies the
-input and would render the transformed value under it.
+`account: str`, free text a user typed, which classifies as the account name it
+is (`INSTITUTION`, or `USER_NOTE` for a nickname at MEDIUM). The value that
+reaches the query is a resolved `account_id`: `RECORD_ID`, LOW, because
+`.claude/rules/reports.md` is explicit that an `account_id` is a minted opaque
+surrogate and not an account number. An annotation on the signature classifies
+the input and would render the transformed value under it.
+
+Here that errs toward over-masking — a LOW opaque id displayed under the
+MEDIUM class of the text it was resolved from — and the direction is the point:
+signature and binding are not a stricter and a looser view of one value, they
+are classes of two different values. Whichever way the mismatch falls, the
+class rendered is not the class of the thing rendered. The
+[fail-closed section](#r9--provenance-renders-identically-across-tiers) treats
+over-masking as its own failure, so "it errs safe" does not rescue it.
 
 Positional inference fails for the same reason one step earlier. R8 keeps
 `ReportQuery.params` a positional `Sequence[object]`, and `balance_drift`
@@ -776,8 +899,9 @@ change owns the fix — the rule is rewritten to define the contract in terms of
 requires.
 
 Implementation also updates `docs/specs/moneybin-mcp.md` and
-`docs/specs/moneybin-cli.md` for the seven MCP tools and seven CLI commands in
-R5, **and `docs/specs/moneybin-capabilities.md`** — mcp.md's surface-change
+`docs/specs/moneybin-cli.md` for the four MCP tools (three of them new) and
+seven CLI subcommands in R5, **and `docs/specs/moneybin-capabilities.md`** —
+mcp.md's surface-change
 discipline requires two specs per change, the surface-specific one and the
 cross-surface capability map, with a row added or updated per capability.
 
@@ -805,6 +929,17 @@ would hide a surface that is refusing every downgrade for mechanical reasons.
 
 ## Open questions
 
+- **Does `ReportSemantics` widen, or does the catalog carry the unknown?** R1
+  needs a user report to say its financial semantics are unknown, and the
+  dataclass currently cannot: `kind` is a closed `Literal` of four values and
+  `unit` / `sign` / `time_basis` are non-optional. Widening it is the smaller
+  change and keeps one type across tiers, but it touches a contract every
+  shipped report satisfies and every catalog consumer reads. The alternative —
+  leaving `ReportSemantics` closed and letting the catalog payload represent an
+  absent-semantics report — keeps the built-in contract frozen at the cost of
+  two shapes for one concept, which is the two-patterns rot `design-principles.md`
+  names as the largest source of decay. Decide with the implementing PR, which
+  is where the consumer list can actually be enumerated.
 - **Does `reports_set` earn a registry slot at 48 of 50?** The three write tools
   fit `surface-design.md`'s shapes, but fitting a shape is not the admission
   test — the seven-question record in `.claude/rules/mcp.md` also demands the
