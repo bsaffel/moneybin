@@ -444,6 +444,44 @@ one. Defining a precedence order instead would mean a user's saved report can
 change meaning when an unrelated package is installed — a rule nobody can see
 from the catalog.
 
+**`reports_reclassify` requires human confirmation and cannot be self-accepted
+by the agent that calls it.** A downgrade permanently lowers the masking floor
+for a column across every future run and every surface — `reports_run`,
+`sql_query`, `reports_explain` — on the strength of a `reason` string the caller
+supplies about its own request. `design-principles.md` is explicit that an
+inference this consequential "is never eligible for agent self-accept, regardless
+of confidence score," and the cost of a wrong one is exactly the kind it names as
+raising the bar: silent, durable, and invisible in the result.
+
+The mechanism already exists and the precedent is unambiguous. `import_confirm`
+is agent-callable and still cannot be answered by the agent —
+`confirm_or_raise` raises when the client cannot elicit, so nothing loads
+(`mcp/tools/import_tools.py`). `reports_reclassify` takes the same shape: the
+tool presents the column, its derived class, the proposed class, and the
+`reason`, and the downgrade persists only on human confirmation through
+elicitation. A client that cannot elicit gets a refusal, not a default-accept.
+The generic MCP consent ladder does not cover this — it gates what leaves the
+machine on one request, not a durable change to what is masked on all future
+ones.
+
+**A downgrade must weaken, never strengthen.** `reports_reclassify` validates
+`mask_strength(to) < mask_strength(from)` (`privacy/redaction.py`) before
+persisting, and refuses otherwise. Materialized reports get this free at CI time
+— `reports-foundation.md` R3 compares declared against derived on
+`(tier, mask strength)` — but a dynamic report has no repo artifact and no CI
+step, so the tool is the only place the check can run. Without it a call could
+"downgrade" `ROUTING_NUMBER` to a class that masks less predictably or not at
+all, recreating #330 through an explicit tool instead of a missing declaration.
+The comparison is on the same `(tier, mask strength)` pair M2P.1 settled on,
+because tier alone does not order two classes whose transforms differ.
+
+**Renames go through the same collision check as creation.** `reports_set` is
+how a report is renamed (R1), so a rename into a name already held by a built-in
+or an installed extension would satisfy the table's `UNIQUE` constraint — which
+only spans `app.user_reports` — and still leave `reports_run` ambiguous across
+tiers. The check above is a property of the registry, not of the create path;
+every tool that can set a name runs it.
+
 **Parameters cross the wire as a mapping, not `**kwargs`.** Both registrars
 synthesize an explicit signature from `spec.params`, and FastMCP and Typer
 derive their schemas from it — so a variadic tool would advertise no parameters
@@ -451,6 +489,16 @@ at all and an agent could not discover or pass any. `reports_run` therefore take
 a typed `params: dict[str, Any] | None`; the CLI twin takes repeated
 `--param key=value`. Validating names against the report's declared list is the
 binder's job, which is where R8's "an unknown name raises" is enforced.
+
+The binder also **coerces each value to its `ParamSpec.annotation`** before
+either surface invokes the report, raising a validation error naming the
+parameter and the expected type when it cannot. `--param top=5` arrives as the
+string `"5"`, and a runner declaring `top: int` would otherwise receive it raw
+and fail somewhere inside its own body — an error about the report's internals
+for what is a boundary mistake. Coercing at the binder keeps the two surfaces
+behaving identically: the MCP path gets typed values from the synthesized
+signature, and the CLI path reaches the same place instead of failing later and
+worse.
 
 Both surfaces are peers per `.claude/rules/cli.md` — same envelope, same
 redaction, same audit actor threading.
@@ -665,10 +713,19 @@ cross-surface capability map, with a row added or updated per capability.
 | `moneybin_user_report_runs_total` | Counter | `tier`, `outcome` |
 | `moneybin_user_report_unresolved_columns_total` | Counter | — |
 | `moneybin_user_report_drift_detected_total` | Counter | `resolution` (`equal`, `failed_closed`) |
+| `moneybin_user_report_reclassify_total` | Counter | `outcome` (`confirmed`, `declined`, `refused_not_weaker`, `no_elicitation`) |
 
 The unresolved-columns and drift counters carry the load: together they say
 whether the invisible classification is invisible in practice, or whether users
 are quietly accumulating masked columns.
+
+The reclassify counter is the one to watch for abuse rather than health. It is
+the only path that durably lowers a masking floor, so a rising `confirmed` rate
+against a flat `declined` rate is the signal that the confirm has become a
+formality people click through — the failure mode `design-principles.md` warns
+about when a confirm is not targeted at genuine uncertainty. `no_elicitation`
+separates clients that cannot confirm from humans who said no; conflating them
+would hide a surface that is refusing every downgrade for mechanical reasons.
 
 ## Open questions
 
