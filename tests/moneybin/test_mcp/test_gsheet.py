@@ -11,12 +11,15 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import threading
+from collections.abc import Callable
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastmcp import FastMCP
 
+import moneybin.mcp.tools.gsheet as gsheet_module
 from moneybin.connectors.gsheet.adapters.base import (
     DetectionResult,
     GSheetConnection,
@@ -26,7 +29,12 @@ from moneybin.connectors.gsheet.connection_service import ConnectResult
 from moneybin.connectors.gsheet.errors import GSheetSignConfirmationRequiredError
 from moneybin.connectors.gsheet.pull_service import PullResult
 from moneybin.errors import UserError
-from moneybin.mcp.tools.gsheet import register_gsheet_tools
+from moneybin.mcp.tools.gsheet import (
+    gsheet_coarse,
+    gsheet_connect_coarse,
+    register_gsheet_coarse_reads,
+    register_gsheet_tools,
+)
 
 
 def _make_connection(
@@ -86,23 +94,281 @@ def _make_load_result() -> LoadResult:
 
 
 _EXPECTED_GSHEET_TOOLS = {
-    "gsheet_auth",
     "gsheet",
     "gsheet_connect",
     "gsheet_pull",
-    "gsheet_status",
-    "gsheet_reconnect",
     "gsheet_disconnect",
 }
 
 
 @pytest.mark.unit
 async def test_register_gsheet_tools_registers_expected_tools() -> None:
-    """All seven gsheet_* MCP tools (including gsheet_auth) register."""
+    """The standard Google Sheets workflow registers without aliases."""
     srv = FastMCP("test")
     register_gsheet_tools(srv)
     names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert _EXPECTED_GSHEET_TOOLS <= names
+    assert names == _EXPECTED_GSHEET_TOOLS
+
+
+@pytest.mark.unit
+async def test_register_gsheet_coarse_reads_is_standard_and_isolated() -> None:
+    srv = FastMCP("test")
+    register_gsheet_coarse_reads(srv)
+
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert names == {"gsheet"}
+
+
+@pytest.mark.unit
+async def test_register_gsheet_workflow_tools_excludes_fragmented_aliases() -> None:
+    srv = FastMCP("test")
+    gsheet_module.register_gsheet_workflow_tools(srv)
+
+    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    assert names == {"gsheet", "gsheet_connect", "gsheet_pull", "gsheet_disconnect"}
+    assert "gsheet_auth" not in names
+    assert "gsheet_status" not in names
+    assert "gsheet_reconnect" not in names
+
+
+@pytest.mark.unit
+async def test_gsheet_workflow_schemas_are_strict_and_target_state_based() -> None:
+    srv = FastMCP("test")
+    gsheet_module.register_gsheet_workflow_tools(srv)
+    tools = {t.name: t for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+    connect = tools["gsheet_connect"]
+    disconnect = tools["gsheet_disconnect"]
+
+    assert set(connect.parameters["properties"]) == {
+        "url",
+        "connection_id",
+        "force_reauth",
+        "adapter",
+        "alias",
+        "account_name",
+        "account_id",
+        "column_mapping",
+        "confirm_mapping",
+        "accept_seed_fallback",
+        "no_initial_pull",
+    }
+    for field in (
+        "force_reauth",
+        "confirm_mapping",
+        "accept_seed_fallback",
+        "no_initial_pull",
+    ):
+        assert connect.parameters["properties"][field]["type"] == "boolean"
+    assert disconnect.parameters["required"] == ["connection_id"]
+    assert set(disconnect.parameters["properties"]["state"]["enum"]) == {
+        "disconnected",
+        "absent",
+    }
+    assert "confirmation_token" in disconnect.parameters["properties"]
+    assert connect.output_schema is None
+    assert disconnect.output_schema is None
+
+
+@pytest.mark.parametrize(
+    ("argument", "value"),
+    [
+        ("adapter", "transactions"),
+        ("alias", "budget"),
+        ("account_name", "Checking"),
+        ("account_id", "acct_1"),
+        ("column_mapping", {"Date": "transaction_date"}),
+        ("confirm_mapping", True),
+        ("accept_seed_fallback", True),
+        ("no_initial_pull", True),
+    ],
+)
+async def test_gsheet_connect_auth_only_rejects_connection_arguments(
+    argument: str,
+    value: object,
+) -> None:
+    response = await gsheet_connect_coarse(**{argument: value})  # type: ignore[arg-type]
+
+    assert response.error is not None
+    assert response.error.code == "GSHEET_AUTH_ARGUMENT_CONFLICT"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_oauth_client")
+@patch("moneybin.mcp.tools.gsheet.gsheet_reconnect", new_callable=AsyncMock)
+async def test_gsheet_connect_force_reauth_offloads_oauth(
+    mock_reconnect: AsyncMock,
+    mock_build: MagicMock,
+) -> None:
+    oauth = MagicMock()
+    mock_build.return_value = oauth
+    mock_reconnect.return_value = gsheet_module.build_error_envelope(
+        error=UserError("Reconnect unavailable.", code="GSHEET_RECONNECT_UNAVAILABLE")
+    )
+
+    async def run_sync(
+        callback: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        return callback(*args, **kwargs)
+
+    offload = AsyncMock(side_effect=run_sync)
+    with patch.object(gsheet_module.asyncio, "to_thread", offload):
+        response = await gsheet_connect_coarse(
+            connection_id="conn_1",
+            force_reauth=True,
+        )
+
+    assert response.error is not None
+    assert response.error.code == "GSHEET_RECONNECT_UNAVAILABLE"
+    assert offload.await_args_list[0].args == (oauth.authorize,)
+    mock_reconnect.assert_awaited_once_with(connection_id="conn_1", yes=False)
+
+
+@pytest.mark.unit
+async def test_gsheet_disconnected_write_runs_off_event_loop() -> None:
+    """The reversible disconnect DB write cannot block the MCP event loop."""
+    loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    service = MagicMock()
+
+    def disconnect(
+        _connection_id: str,
+        *,
+        purge: bool,
+        actor: str,
+    ) -> None:
+        worker_threads.append(threading.get_ident())
+        assert purge is False
+        assert actor == "mcp"
+
+    service.disconnect.side_effect = disconnect
+    service_context = MagicMock()
+    service_context.__enter__.return_value = service
+
+    with patch.object(
+        gsheet_module,
+        "_build_connection_service",
+        return_value=service_context,
+    ):
+        response = await gsheet_module.gsheet_disconnect_coarse(
+            connection_id="conn_abc",
+            state="disconnected",
+        )
+
+    assert response.error is None
+    assert response.data.purged is False
+    assert worker_threads and worker_threads[0] != loop_thread
+
+
+@pytest.mark.unit
+async def test_gsheet_absent_plan_and_purge_run_off_event_loop() -> None:
+    """The destructive DB plan and write cannot block the MCP event loop."""
+    plan = MagicMock(
+        connection_id="conn_abc",
+        connection_before_state={
+            "spreadsheet_id": "sheet_123",
+            "sheet_gid": 0,
+            "adapter": "transactions",
+            "alias": None,
+            "account_id": None,
+        },
+        raw_before_state=[{"row_id": "row_1"}],
+        blast_radius={"connections": 1, "raw_rows": 1},
+    )
+    loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    service = MagicMock()
+
+    def plan_purge(_connection_id: str) -> object:
+        worker_threads.append(threading.get_ident())
+        return plan
+
+    def purge_confirmed(
+        _connection_id: str,
+        *,
+        verify: Callable[[object], None],
+        actor: str,
+    ) -> None:
+        worker_threads.append(threading.get_ident())
+        assert actor == "mcp"
+        verify(plan)
+
+    service.plan_purge.side_effect = plan_purge
+    service.purge_confirmed.side_effect = purge_confirmed
+    service_context = MagicMock()
+    service_context.__enter__.return_value = service
+    grant = MagicMock()
+
+    with (
+        patch.object(
+            gsheet_module,
+            "_build_connection_service",
+            return_value=service_context,
+        ),
+        patch.object(
+            gsheet_module,
+            "grant_confirmation_or_raise",
+            new=AsyncMock(return_value=grant),
+        ),
+        patch.object(gsheet_module, "get_settings") as settings,
+    ):
+        settings.return_value.profile = "default"
+        response = await gsheet_module.gsheet_disconnect_coarse(
+            connection_id="conn_abc",
+            state="absent",
+        )
+
+    assert response.error is None
+    assert response.data.purged is True
+    assert len(worker_threads) == 2
+    assert all(thread_id != loop_thread for thread_id in worker_threads)
+    grant.verify.assert_called_once()
+
+
+def test_gsheet_workflow_registrar_uses_public_privacy_actor_names() -> None:
+    registered: list[tuple[str, str | None]] = []
+
+    def capture(
+        _mcp: object,
+        _callback: object,
+        name: str,
+        _description: str,
+        *,
+        privacy_actor: str | None = None,
+        **_kwargs: object,
+    ) -> None:
+        registered.append((name, privacy_actor))
+
+    with patch.object(gsheet_module, "register", capture):
+        gsheet_module.register_gsheet_workflow_tools(MagicMock())
+
+    assert registered == [(name, name) for name, _ in registered]
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_replacement_actions_are_closed_over_isolated_cohort(
+    mock_build: MagicMock,
+) -> None:
+    drifted = _make_connection(
+        connection_id="conn_drift",
+        status="drift_detected",
+        last_status_reason="Header reworded",
+    )
+    service = MagicMock()
+    service.list_connections.return_value = [drifted]
+    mock_build.return_value.__enter__.return_value = service
+
+    response = await gsheet_coarse(view="status")
+    actions = " ".join(response.actions)
+
+    assert "gsheet_reconnect" not in actions
+    assert "gsheet_status" not in actions
+    assert "gsheet_connect(connection_id=" in actions
 
 
 @pytest.mark.unit
@@ -114,28 +380,32 @@ async def test_gsheet_write_tool_schemas_hide_sign_confirmation_inputs() -> None
 
     assert set(tools["gsheet_connect"].parameters["properties"]) == {
         "url",
+        "connection_id",
+        "force_reauth",
         "adapter",
         "alias",
         "account_name",
         "account_id",
         "column_mapping",
-        "yes",
+        "confirm_mapping",
         "accept_seed_fallback",
         "no_initial_pull",
     }
-    assert set(tools["gsheet_reconnect"].parameters["properties"]) == {
-        "connection_id",
-        "yes",
-    }
+    for tool in tools.values():
+        assert "sign" not in tool.parameters["properties"]
+        assert "human_sign_confirmation" not in tool.parameters["properties"]
 
 
 @pytest.mark.unit
 def test_gsheet_write_tools_allow_human_confirmation_timeout() -> None:
-    """Both sign-gated write tools allow the same 180s human decision window."""
-    from moneybin.mcp.tools.gsheet import gsheet_connect, gsheet_reconnect
+    """The public mode-aware workflow owns the human decision window."""
+    from moneybin.mcp.tools.gsheet import (
+        gsheet_connect_coarse,
+        gsheet_disconnect_coarse,
+    )
 
-    assert gsheet_connect._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
-    assert gsheet_reconnect._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+    assert gsheet_connect_coarse._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
+    assert gsheet_disconnect_coarse._mcp_timeout_seconds == 180.0  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +490,6 @@ async def test_gsheet_connect_returns_envelope_with_connection(
     envelope = await gsheet_connect(
         url="https://docs.google.com/spreadsheets/d/abc/edit#gid=0"
     )
-    # account_id is RECORD_ID (spec D6); last_status_reason / column_mapping are
-    # DESCRIPTION (MEDIUM) → tool derives medium tier.
     assert envelope.summary.sensitivity == "medium"
     assert envelope.data.connection.connection_id == "conn_abc"
     assert envelope.data.initial_pull is not None
@@ -427,8 +695,8 @@ async def test_gsheet_pull_returns_status_per_connection(
 
     from moneybin.mcp.tools.gsheet import gsheet_pull
 
-    envelope = await gsheet_pull()
-    assert envelope.summary.sensitivity == "medium"
+    envelope = gsheet_pull()
+    assert envelope.summary.sensitivity == "low"
     pulls = envelope.data.pulls
     assert {p.connection_id for p in pulls} == {"conn_a", "conn_b"}
     by_id = {p.connection_id: p for p in pulls}
@@ -436,7 +704,7 @@ async def test_gsheet_pull_returns_status_per_connection(
     assert by_id["conn_a"].rows_inserted == 10
     assert by_id["conn_b"].status == "drift_detected"
     # Drift on conn_b must surface a reconnect hint to the agent.
-    assert any("gsheet_reconnect" in a and "conn_b" in a for a in envelope.actions)
+    assert any("gsheet_connect" in a and "conn_b" in a for a in envelope.actions)
 
 
 @pytest.mark.unit
@@ -453,7 +721,7 @@ async def test_gsheet_pull_single_connection(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_pull
 
-    envelope = await gsheet_pull(connection_id="conn_a")
+    envelope = gsheet_pull(connection_id="conn_a")
     service.pull_connection.assert_called_once_with("conn_a")
     service.pull_all_healthy.assert_not_called()
     pulls = envelope.data.pulls
@@ -484,14 +752,99 @@ async def test_gsheet_collection_returns_actions_on_drift(
 
     from moneybin.mcp.tools.gsheet import gsheet
 
-    envelope = await gsheet()
-    # account_id is RECORD_ID (spec D6); last_status_reason is DESCRIPTION → medium tier.
-    assert envelope.summary.sensitivity == "medium"
+    envelope = gsheet()
+    assert envelope.summary.sensitivity == "low"
     rows = envelope.data.connections
     assert len(rows) == 2
     # Only the drifted connection should have a reconnect hint.
-    assert any("gsheet_reconnect" in a and "conn_drift" in a for a in envelope.actions)
+    assert any("gsheet_connect" in a and "conn_drift" in a for a in envelope.actions)
     assert not any("conn_ok" in a for a in envelope.actions)
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_connections_is_default_collection(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = [_make_connection()]
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse()
+
+    assert envelope.data.kind == "connections"
+    assert [row.connection_id for row in envelope.data.connections] == ["conn_abc"]
+    service.list_connections.assert_called_once_with()
+    service.get.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_status_supports_global_summary(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.list_connections.return_value = [
+        _make_connection(connection_id="conn_a"),
+        _make_connection(connection_id="conn_b"),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse(view="status")
+
+    assert envelope.data.kind == "status"
+    assert [row.connection_id for row in envelope.data.connections] == [
+        "conn_a",
+        "conn_b",
+    ]
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_status_supports_one_connection(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.get.return_value = _make_connection(connection_id="conn_a")
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse(view="status", connection_id="conn_a")
+
+    assert envelope.data.kind == "status"
+    assert [row.connection_id for row in envelope.data.connections] == ["conn_a"]
+    service.get.assert_called_once_with("conn_a")
+    service.list_connections.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_gsheet_coarse_connections_rejects_connection_id() -> None:
+    envelope = await gsheet_coarse(
+        view="connections",
+        connection_id="secret-connection-id",
+    )
+
+    assert envelope.error is not None
+    assert envelope.error.code == "GSHEET_CONNECTION_ID_NOT_ALLOWED"
+    assert "secret-connection-id" not in envelope.error.message
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.gsheet._build_connection_service")
+async def test_gsheet_coarse_unknown_status_id_is_sanitized(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.get.return_value = None
+    mock_build.return_value.__enter__.return_value = service
+
+    envelope = await gsheet_coarse(
+        view="status",
+        connection_id="secret-connection-id",
+    )
+
+    assert envelope.error is not None
+    assert envelope.error.code == "infra_not_found"
+    assert "secret-connection-id" not in envelope.error.message
 
 
 # ---------------------------------------------------------------------------
@@ -510,8 +863,8 @@ async def test_gsheet_status_single_connection(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_status
 
-    envelope = await gsheet_status(connection_id="conn_abc")
-    assert envelope.summary.sensitivity == "medium"
+    envelope = gsheet_status(connection_id="conn_abc")
+    assert envelope.summary.sensitivity == "low"
     rows = envelope.data.connections
     assert rows[0].connection_id == "conn_abc"
     service.get.assert_called_once_with("conn_abc")
@@ -529,7 +882,7 @@ async def test_gsheet_status_unknown_connection_returns_error(
 
     from moneybin.mcp.tools.gsheet import gsheet_status
 
-    envelope = await gsheet_status(connection_id="bogus")
+    envelope = gsheet_status(connection_id="bogus")
     parsed = envelope.to_dict()
     assert parsed["status"] == "error"
     assert parsed["error"]["code"] == "infra_not_found"
@@ -551,8 +904,8 @@ async def test_gsheet_status_surfaces_drift_hint(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_status
 
-    envelope = await gsheet_status(connection_id="conn_drift")
-    assert any("gsheet_reconnect" in a and "conn_drift" in a for a in envelope.actions)
+    envelope = gsheet_status(connection_id="conn_drift")
+    assert any("gsheet_connect" in a and "conn_drift" in a for a in envelope.actions)
 
 
 # ---------------------------------------------------------------------------
@@ -701,7 +1054,7 @@ async def test_gsheet_disconnect_with_purge_param(mock_build: MagicMock) -> None
 
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
-    envelope = await gsheet_disconnect(connection_id="conn_abc", purge=True)
+    envelope = gsheet_disconnect(connection_id="conn_abc", purge=True)
     service.disconnect.assert_called_once_with("conn_abc", purge=True, actor="mcp")
     assert envelope.summary.sensitivity == "low"
     assert envelope.data.purged is True
@@ -717,7 +1070,7 @@ async def test_gsheet_disconnect_soft_default(mock_build: MagicMock) -> None:
 
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
-    envelope = await gsheet_disconnect(connection_id="conn_abc")
+    envelope = gsheet_disconnect(connection_id="conn_abc")
     service.disconnect.assert_called_once_with("conn_abc", purge=False, actor="mcp")
     assert envelope.data.purged is False
     assert envelope.data.status == "disconnected"
@@ -735,8 +1088,5 @@ async def test_gsheet_disconnect_unknown_connection_returns_error(
 
     from moneybin.mcp.tools.gsheet import gsheet_disconnect
 
-    envelope = await gsheet_disconnect(connection_id="bogus", purge=True)
-    parsed = envelope.to_dict()
-    # ValueError → UserError(code='infra_invalid_input') via classify_user_error.
-    assert parsed["status"] == "error"
-    assert parsed["error"]["code"] == "infra_invalid_input"
+    with pytest.raises(ValueError, match="Unknown connection"):
+        gsheet_disconnect(connection_id="bogus", purge=True)

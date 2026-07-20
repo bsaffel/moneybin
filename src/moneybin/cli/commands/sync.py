@@ -72,10 +72,12 @@ def sync_login(
 
 @app.command("logout")
 def sync_logout() -> None:
-    """Clear stored JWT from keychain (or fallback file)."""
+    """Clear stored JWTs and any in-progress device authorization sessions."""
+    from moneybin.connectors.sync_auth import SyncAuthService
+
     with handle_cli_errors():
         client = _build_sync_client()
-        client.logout()
+        SyncAuthService(client=client).logout()
         typer.echo("✅ Logged out.")
 
 

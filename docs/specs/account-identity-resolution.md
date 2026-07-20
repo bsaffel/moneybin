@@ -363,7 +363,7 @@ COALESCE-across-group** that preserves the best non-null value:
   by **source strength** (`ofx > plaid > tabular` — the `MatchingSettings.source_priority`
   ordering, which governs field merging only and is decoupled from transaction
   identity; see the `transaction_id` stability section above) then recency.
-- `institution_name`, `account_type` — first non-null by recency.
+- `institution_name`, `account_type` — first non-null by recency. `account_type` is normalized to one canonical vocabulary by the staging views (`seeds.account_type_map`) before it reaches this merge, so the comparison is like-for-like; before that normalization a later `depository` could out-rank an earlier `CHECKING` for the same account and silently rename it.
 - `source_type` / `source_file` — record the contributing set (the winning row's
   for display; the union is recoverable from `app.account_links`).
 
@@ -371,7 +371,7 @@ This is the same "golden-record merge across sources" rule
 [`matching-same-record-dedup.md`](matching-same-record-dedup.md) applies to
 transactions, lifted to the account grain. `display_name`'s
 `RIGHT(account_id, 4)` fallback is dropped (the id is now opaque); the default
-becomes `institution_name || ' ' || account_type || ' …' || last_four`, where
+becomes `institution_name || ' ' || account_subtype || ' …' || last_four`, where
 `last_four` is `COALESCE(`user-set `app.account_settings.last_four`, per-source
 **derived** last4`)` — **not user-set only** (corrected in Decision 8; the
 user-set-only reading is the live display + bridge bug).

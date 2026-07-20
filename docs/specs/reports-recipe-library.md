@@ -11,7 +11,7 @@
 > [`reports-foundation.md`](reports-foundation.md) R5: membership in
 > `reports.*` is the definition of "user-facing report," and this view's only
 > runtime reader is `services/categorization/queries.py` (backing
-> `transactions_categorize_pending`), never a `reports *` CLI command or
+> `reviews(kind="categorization", status="pending")`), never a `reports *` CLI command or
 > `reports_*` MCP tool. The live model is
 > `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`; the `TableRef`
 > is `CORE_UNCATEGORIZED_QUEUE`. Original section text below still describes
@@ -50,12 +50,12 @@ This spec is the inaugurating implementation of that convention. It exercises th
 
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — gate spec; defines the `reports.*` schema, layer rules, and the `core.agg_net_worth → reports.net_worth` cascading edit. **Carries one small follow-up amendment in this spec** (rename `reports.networth` → `reports.net_worth`); see [Migrations](#migrations).
 - [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`). This spec adds four more subcommands (`reports recurring`, `reports merchants`, `reports large-transactions`, `reports balance-drift`). The `uncategorized_queue` view ships, but no `reports uncategorized` command is exposed — agents reach the curation queue via `transactions_categorize_pending`.
-- [`moneybin-mcp.md`](moneybin-mcp.md) — v2 `reports_*` MCP tools mirror the CLI 1:1.
+- [`moneybin-mcp.md`](moneybin-mcp.md) — v2 currently exposes per-report MCP tools. M3K.2 migrates them behind one `reports` catalog/runner while preserving per-report CLI commands.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. **Extended** by this spec to include the `reports` schema with `audience: "interface"`.
 - [`reports-net-worth.md`](reports-net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
 - [`transaction-curation.md`](transaction-curation.md) — sibling M1E spec that introduces `app.audit_log`, `app.transaction_tags`, etc. This spec does not depend on its tables; the doctor spec ([`moneybin-doctor.md`](moneybin-doctor.md), drafted next) will.
-- [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers. All `reports_*` tools are **Tier 1 (Account-Level)** — they expose aggregate financial state and category breakdowns, never raw PII or full transaction descriptions.
-- [`extension-contracts.md`](extension-contracts.md) — governance layer for the Report extension type. Defines the contributor-facing surface (manifest, structured-comment format, auto-generated registration trinity, Quality Scale tiers). This spec describes WHAT the v1 in-tree `reports.*` models are; `extension-contracts.md` describes HOW any report — in-tree or contributed — registers and is validated. The eight v1 models migrate to the structured-comment shape as part of `extension-contracts.md`'s pre-launch surgical work.
+- [`mcp-architecture.md`](mcp-architecture.md) — sensitivity tiers. All registered report entries are **Tier 1 (Account-Level)** — they expose aggregate financial state and category breakdowns, never raw PII or full transaction descriptions.
+- [`extension-contracts.md`](extension-contracts.md) — governance layer for the Report extension type. Defines the contributor-facing surface (manifest, `@report` runner, generated catalog/CLI/TableRef surfaces, Quality Scale tiers). This spec describes WHAT the v1 in-tree `reports.*` models are; `extension-contracts.md` describes HOW any report — in-tree or contributed — registers and is validated.
 
 ### Decisions made during design (cross-references for reviewers)
 
@@ -105,6 +105,12 @@ Eight models in v1. Each section: purpose, grain, source, columns (with comments
 
 **Source:** `core.fct_balances_daily` joined with `core.dim_accounts`. Identical query body to today's `core.agg_net_worth` — this is a rename, not a redesign.
 
+Snapshot consumers resolve the last transaction-adjusted daily position on or
+before the requested date. History consumers select the last such resolved
+position in each returned period. If a snapshot has no eligible row,
+`balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null and
+`account_count` is `0`; the service does not manufacture a zero position.
+
 **Columns:**
 
 | Column | Type | Comment |
@@ -126,13 +132,20 @@ MCP: `reports_networth` (point-in-time), `reports_networth_history` (time series
 
 **Grain:** One row per `(year_month, account_id, category)`. Wide-grain — consumers `GROUP BY` further, or aggregate over the whole table for a single net number.
 
-**Source:** `core.fct_transactions` joined with `core.dim_accounts` for `account_name`. Category is the denormalized `category` text already on `core.fct_transactions` (resolved at categorization time from `app.transaction_categories`); no join to a categories dim is needed for any v1 report. Excludes transactions where `is_transfer = TRUE` (transfers are intra-portfolio movements, not cash flow). Excludes transactions in archived accounts.
+**Source:** `core.fct_transactions` joined with `core.dim_accounts` for
+`account_name`. Calendar month is derived from `transaction_date` with
+`STRFTIME(DATE_TRUNC('MONTH', transaction_date), '%Y-%m')`. Category is the
+denormalized `category` text already on `core.fct_transactions` (resolved at
+categorization time from `app.transaction_categories`); no join to a categories
+dim is needed for any v1 report. Excludes transactions where
+`is_transfer = TRUE` (transfers are intra-portfolio movements, not cash flow).
+Excludes transactions in archived accounts.
 
 **Columns:**
 
 | Column | Type | Comment |
 |---|---|---|
-| `year_month` | `DATE` | First-of-month for the calendar month |
+| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
 | `account_id` | `VARCHAR` | Owning account (joinable to core.dim_accounts) |
 | `account_name` | `VARCHAR` | Account display name (resolved from app.account_settings if overridden) |
 | `category` | `VARCHAR` | Spending category text from core.fct_transactions; NULL for uncategorized |
@@ -150,25 +163,39 @@ MCP: `reports_cashflow`. Tier 1.
 
 **Purpose:** Monthly spending per category with month-over-month and year-over-year deltas. Subsumes the brief's `year_over_year_spending` — the wider grain supports YoY, MoM, and 3-month-trailing comparisons from a single view.
 
-**Grain:** One row per `(year_month, category)`. Outflow-only — this is a spending lens, not a cashflow lens. Consumers comparing income trends should use `reports.cash_flow` and aggregate.
+**Grain:** One row per `(year_month, category)`. The month range is bounded
+to the earliest and latest eligible outflow month, and every category has a
+row for every month in that range; missing category-months carry zero spend and
+zero transactions. Outflow-only — this is a spending lens, not a cashflow
+lens. Consumers comparing income trends should use `reports.cash_flow` and
+aggregate.
 
-**Source:** `core.fct_transactions` filtered to `amount < 0 AND is_transfer = FALSE`, grouped by `(date_trunc('month', txn_date), category)`. Window functions (`LAG`) compute deltas within each category. Category is the denormalized text on `core.fct_transactions`; no join needed.
+**Source:** `core.fct_transactions` filtered to
+`amount < 0 AND is_transfer = FALSE`, grouped by
+`(DATE_TRUNC('MONTH', transaction_date), category)`, then joined to an
+eligible-data calendar spine from the minimum through maximum grouped month.
+Window functions operate on that dense monthly series before `year_month` is
+formatted with `STRFTIME(month_date, '%Y-%m')`, so `LAG(1)`, `LAG(12)`, and the
+three-row average mean previous calendar month, same month one year prior, and
+trailing three calendar months rather than previous observed rows. Category is
+the denormalized text on `core.fct_transactions`; no category dimension join
+is needed.
 
 **Columns:**
 
 | Column | Type | Comment |
 |---|---|---|
-| `year_month` | `DATE` | First-of-month |
+| `year_month` | `VARCHAR` | Calendar month formatted as `YYYY-MM` |
 | `category` | `VARCHAR` | Spending category text; NULL for uncategorized |
-| `total_spend` | `DECIMAL(18,2)` | Sum of absolute outflow this month in this category |
-| `txn_count` | `INTEGER` | Outflow transaction count |
+| `total_spend` | `DECIMAL(18,2)` | Sum of absolute outflow this month in this category; zero for a missing category-month |
+| `txn_count` | `INTEGER` | Outflow transaction count; zero for a missing category-month |
 | `prev_month_spend` | `DECIMAL(18,2)` | Spend in the previous calendar month for the same category |
 | `mom_delta` | `DECIMAL(18,2)` | total_spend - prev_month_spend |
 | `mom_pct` | `DECIMAL(8,4)` | mom_delta / prev_month_spend; NULL if prev_month_spend = 0 |
 | `prev_year_spend` | `DECIMAL(18,2)` | Spend in the same calendar month one year prior |
 | `yoy_delta` | `DECIMAL(18,2)` | total_spend - prev_year_spend |
 | `yoy_pct` | `DECIMAL(8,4)` | yoy_delta / prev_year_spend; NULL if prev_year_spend = 0 |
-| `trailing_3mo_avg` | `DECIMAL(18,2)` | Rolling 3-month average ending this month, same category |
+| `trailing_3mo_avg` | `DECIMAL(18,2)` | Rolling average of up to 3 calendar months ending this month, same category; missing category-months contribute zero |
 
 CLI: `moneybin reports spending [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
 MCP: `reports_spending`. Tier 1.
@@ -329,7 +356,18 @@ MCP: `reports_large_transactions`. Tier 1.
 
 **Grain:** One row per `(account_id, assertion_date)` from `app.balance_assertions`.
 
-**Source:** `app.balance_assertions` left-joined with `core.fct_balances_daily` on `(account_id, assertion_date)`. NULL `computed_balance` (assertion exists for a date with no daily balance row) becomes `drift_status = 'no-data'`.
+**Source:** `app.balance_assertions` left-joined with
+`core.fct_balances_daily` on `(account_id, assertion_date)`. The daily model's
+winning `balance` is not an independent comparison when the user assertion
+wins same-date precedence. The independent transaction-derived position is
+therefore reconstructed as
+the interpolated daily balance when `is_observed = false`, or as
+`fct_balances_daily.balance - fct_balances_daily.reconciliation_delta` on an
+observed day with an adjustment, using the reconciliation contract defined in
+`reports-net-worth.md`. The adjustment is NULL both on interpolated days and
+on the first observation, so `is_observed` is required to distinguish them.
+The first observation has no prior transaction-derived anchor and remains
+`status = 'no-data'`; a missing daily row does as well.
 
 **Columns:**
 
@@ -339,7 +377,7 @@ MCP: `reports_large_transactions`. Tier 1.
 | `account_name` | `VARCHAR` | Account display name |
 | `assertion_date` | `DATE` | User-asserted balance date |
 | `asserted_balance` | `DECIMAL(18,2)` | User-entered balance for this date |
-| `computed_balance` | `DECIMAL(18,2)` | Carried-forward balance from core.fct_balances_daily; NULL if missing |
+| `computed_balance` | `DECIMAL(18,2)` | Interpolated daily balance, or observed balance minus its same-day reconciliation adjustment; NULL for a missing row or first observation |
 | `drift` | `DECIMAL(18,2)` | asserted_balance - computed_balance |
 | `drift_abs` | `DECIMAL(18,2)` | ABS(drift); for default sort |
 | `drift_pct` | `DECIMAL(8,4)` | drift / asserted_balance; NULL if asserted_balance = 0 |
@@ -438,7 +476,7 @@ ORDER BY year_month;
 -- Spending by category, last 12 months
 SELECT category, SUM(outflow) AS total_outflow
 FROM reports.cash_flow
-WHERE year_month >= date_trunc('month', current_date - INTERVAL '12 months')
+WHERE year_month >= STRFTIME(CURRENT_DATE - INTERVAL '12 MONTHS', '%Y-%m')
 GROUP BY category
 ORDER BY total_outflow ASC;
 
@@ -467,7 +505,7 @@ moneybin reports
 +-- balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
 ```
 
-The `uncategorized_queue` view ships but no `reports uncategorized` command is registered — agents use `transactions_categorize_pending` for the curation queue (see [`reports.uncategorized_queue`](#reportsuncategorized_queue)). `reports budget` and the `reports health` stub were also removed: budget is synthesized from `BudgetService` rather than a `reports.*` view and returns through the framework once M3C ships a `reports.budget` view; `health` had no backing spec.
+The `uncategorized_queue` view ships but no `reports uncategorized` command is registered — agents use `reviews(kind="categorization", status="pending")` for the curation queue (see [`reports.uncategorized_queue`](#reportsuncategorized_queue)). `reports budget` and the `reports health` stub were also removed: budget is synthesized from `BudgetService` rather than a `reports.*` view and returns through the framework once M3C ships a `reports.budget` view; `health` had no backing spec.
 
 All commands support `--output json` per `moneybin-cli.md`. JSON output uses `ResponseEnvelope` shape per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry.
 

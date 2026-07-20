@@ -28,6 +28,8 @@ _READ_ONLY_HELP_PATHS: list[list[str]] = [
     ["transactions", "categorize", "auto", "review", "--help"],
     ["transactions", "categorize", "auto", "rules", "--help"],
     ["transactions", "categorize", "rules", "list", "--help"],
+    ["categories", "list", "--help"],
+    ["merchants", "list", "--help"],
     ["sync", "status", "--help"],
     ["profile", "list", "--help"],
     ["profile", "show", "--help"],

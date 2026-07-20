@@ -94,6 +94,17 @@ def test_reconciliation_self_heal() -> None:
         assert abs(delta_phase1 - _EXPECTED_DELTA_PHASE1) < Decimal("0.01"), (
             f"Phase 1: expected delta {_EXPECTED_DELTA_PHASE1}, got {delta_phase1}"
         )
+        report_phase1 = db.execute(
+            """
+            SELECT computed_balance, drift
+            FROM reports.balance_drift
+            WHERE account_id = ? AND assertion_date = ?
+            """,
+            [_ACCOUNT, _OBS_DATE],
+        ).fetchone()
+        assert report_phase1 is not None
+        assert Decimal(str(report_phase1[0])) == Decimal("4900.00")
+        assert Decimal(str(report_phase1[1])) == _EXPECTED_DELTA_PHASE1
 
         # --- Phase 2: load gap transactions and re-transform ---
         gap_spec = FixtureSpec(
@@ -127,3 +138,14 @@ def test_reconciliation_self_heal() -> None:
         assert abs(delta_phase2) < Decimal("0.01"), (
             f"Phase 2: expected delta ≈ 0, got {delta_phase2}"
         )
+        report_phase2 = db.execute(
+            """
+            SELECT computed_balance, drift
+            FROM reports.balance_drift
+            WHERE account_id = ? AND assertion_date = ?
+            """,
+            [_ACCOUNT, _OBS_DATE],
+        ).fetchone()
+        assert report_phase2 is not None
+        assert Decimal(str(report_phase2[0])) == _END_BALANCE
+        assert Decimal(str(report_phase2[1])) == Decimal("0.00")

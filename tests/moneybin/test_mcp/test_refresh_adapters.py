@@ -10,6 +10,9 @@ from moneybin.mcp.adapters.refresh_adapters import refresh_envelope
 from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.refresh import RefreshResult, SelfHealRecord, expand_steps
+from tests.moneybin.test_mcp.schema_assertions import (
+    assert_recovery_actions_executable,
+)
 
 
 def _payload(env: ResponseEnvelope[Any]) -> RefreshRunPayload:
@@ -46,32 +49,41 @@ def test_envelope_serializes_self_heal_records() -> None:
 
 
 @pytest.mark.unit
-def test_matching_error_yields_match_retry_and_doctor() -> None:
+async def test_matching_error_yields_match_retry_and_doctor() -> None:
     env = refresh_envelope(
         RefreshResult(applied=True, duration_seconds=1.0, matching_error="boom"),
         requested=expand_steps(None),
     )
     assert _payload(env).matching_error == "boom"
-    tools = [(ra.tool, ra.arguments) for ra in env.recovery_actions or []]
+    actions = env.recovery_actions or []
+    await assert_recovery_actions_executable(actions)
+    tools = [(ra.tool, ra.arguments) for ra in actions]
     assert ("refresh_run", {"steps": ["match"]}) in tools
-    # system_doctor takes no MCP parameters — args must be empty to stay executable.
-    assert ("system_doctor", {}) in tools
+    assert (
+        "system_status",
+        {"sections": ["doctor"], "detail": "full"},
+    ) in tools
 
 
 @pytest.mark.unit
-def test_categorization_error_yields_categorize_retry_and_doctor() -> None:
+async def test_categorization_error_yields_categorize_retry_and_doctor() -> None:
     env = refresh_envelope(
         RefreshResult(applied=True, duration_seconds=1.0, categorization_error="bang"),
         requested=expand_steps(None),
     )
     assert _payload(env).categorization_error == "bang"
-    tools = [(ra.tool, ra.arguments) for ra in env.recovery_actions or []]
+    actions = env.recovery_actions or []
+    await assert_recovery_actions_executable(actions)
+    tools = [(ra.tool, ra.arguments) for ra in actions]
     assert ("refresh_run", {"steps": ["categorize"]}) in tools
-    assert ("system_doctor", {}) in tools
+    assert (
+        "system_status",
+        {"sections": ["doctor"], "detail": "full"},
+    ) in tools
 
 
 @pytest.mark.unit
-def test_both_errors_emit_single_doctor_action() -> None:
+async def test_both_errors_emit_single_doctor_action() -> None:
     env = refresh_envelope(
         RefreshResult(
             applied=True,
@@ -82,13 +94,18 @@ def test_both_errors_emit_single_doctor_action() -> None:
         requested=expand_steps(None),
     )
     actions = env.recovery_actions or []
-    doctor = [ra for ra in actions if ra.tool == "system_doctor"]
+    await assert_recovery_actions_executable(actions)
+    doctor = [
+        ra
+        for ra in actions
+        if ra.tool == "system_status" and ra.arguments.get("sections") == ["doctor"]
+    ]
     assert len(doctor) == 1
     # Match-retry first, categorize-retry second, doctor last (most-likely first).
     assert [ra.tool for ra in actions] == [
         "refresh_run",
         "refresh_run",
-        "system_doctor",
+        "system_status",
     ]
     assert all(ra.confidence == "suggested" for ra in actions)
 

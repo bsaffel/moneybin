@@ -165,9 +165,9 @@ def suggest_holder_category(value: str) -> str | None:
 
 _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
 
-# Sentinel used in summary() count_by_subtype to represent accounts with
+# Bucket label for a NULL account_type or account_subtype in summary() to represent accounts with
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
-_UNSET_SUBTYPE_LABEL = "<unset>"
+_UNSET_LABEL = "<unset>"
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,7 +437,7 @@ class AccountService:
                 account_id=str(row[0]),
                 display_name=row[1],
                 institution_name=row[2],
-                account_type=str(row[3]),
+                account_type=row[3],
                 account_subtype=row[4],
                 holder_category=row[5],
                 currency_code=str(row[6]),
@@ -491,7 +491,7 @@ class AccountService:
             display_name=r["display_name"],  # type: ignore[arg-type]
             official_name=r["official_name"],  # type: ignore[arg-type]
             institution_name=r["institution_name"],  # type: ignore[arg-type]
-            account_type=str(r["account_type"]),
+            account_type=r["account_type"],  # type: ignore[arg-type]
             account_subtype=r["account_subtype"],  # type: ignore[arg-type]
             holder_category=r["holder_category"],  # type: ignore[arg-type]
             currency_code=str(r["currency_code"]),
@@ -523,11 +523,12 @@ class AccountService:
         by_type: dict[str, int] = dict(
             self._db.execute(
                 f"""
-                SELECT account_type, COUNT(*)
+                SELECT COALESCE(account_type, ?), COUNT(*)
                 FROM {DIM_ACCOUNTS.full_name}
                 WHERE NOT archived
-                GROUP BY account_type
-                """
+                GROUP BY 1
+                """,
+                [_UNSET_LABEL],
             ).fetchall()
         )
         by_subtype: dict[str, int] = dict(
@@ -538,7 +539,7 @@ class AccountService:
                 WHERE NOT archived
                 GROUP BY 1
                 """,
-                [_UNSET_SUBTYPE_LABEL],
+                [_UNSET_LABEL],
             ).fetchall()
         )
         recent_row = self._db.execute(
@@ -732,19 +733,18 @@ class AccountService:
         )
         return updated, warnings
 
-    def resolve(self, query: str, limit: int = 5) -> AccountResolvePayload:
+    def resolve(self, query: str, limit: int | None = 5) -> AccountResolvePayload:
         """Fuzzy-match a free-text query against core.dim_accounts.
 
         Scores each account against display_name, account_subtype, and
         institution_name using difflib.SequenceMatcher. Returns the top-`limit`
-        matches sorted by confidence descending. ``limit < 1`` returns an empty
-        payload — slicing with a negative value would silently return "all but the
-        last N" matches, which violates the documented max-candidates semantics.
+        matches sorted by confidence descending, then stable account ID.
+        ``limit=None`` returns every match; ``limit < 1`` returns an empty payload.
 
         See docs/specs/moneybin-mcp.md §accounts_resolve.
         """
         query_clean = query.lower().strip()
-        if not query_clean or limit < 1:
+        if not query_clean or (limit is not None and limit < 1):
             return AccountResolvePayload(matches=[])
 
         rows = self._db.execute(
@@ -775,8 +775,8 @@ class AccountService:
                     )
                 )
 
-        scored.sort(key=lambda r: r.confidence, reverse=True)
-        top = scored[:limit]
+        scored.sort(key=lambda row: (-row.confidence, row.account_id))
+        top = scored if limit is None else scored[:limit]
         logger.info(
             f"Resolved query (len={len(query_clean)}): "
             f"{len(scored)} candidates, returning {len(top)}"

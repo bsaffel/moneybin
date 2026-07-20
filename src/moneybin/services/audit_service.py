@@ -180,9 +180,11 @@ class AuditService:
         target_id: str | None = None,
         from_ts: str | None = None,
         to_ts: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
+        snapshot: tuple[str, str] | None = None,
+        after: tuple[str, str] | None = None,
     ) -> list[AuditEvent]:
-        """Return filtered events ordered by ``occurred_at DESC``."""
+        """Return filtered events in stable newest-first order."""
         clauses: list[str] = []
         params: list[Any] = []
         if actor is not None:
@@ -203,8 +205,17 @@ class AuditService:
         if to_ts is not None:
             clauses.append("occurred_at <= ?")
             params.append(to_ts)
+        if snapshot is not None:
+            clauses.append("(occurred_at < ? OR (occurred_at = ? AND audit_id <= ?))")
+            params.extend([snapshot[0], snapshot[0], snapshot[1]])
+        if after is not None:
+            clauses.append("(occurred_at < ? OR (occurred_at = ? AND audit_id < ?))")
+            params.extend([after[0], after[0], after[1]])
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        params.append(limit)
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            params.append(limit)
         rows = self._db.conn.execute(
             f"""
             SELECT audit_id, occurred_at, actor, action,
@@ -213,12 +224,29 @@ class AuditService:
                    operation_id, context_json, {self._undo_columns_sql()}
               FROM app.audit_log
               {where}
-              ORDER BY occurred_at DESC
-              LIMIT ?
-            """,  # noqa: S608  # undo-columns fragment is a controlled literal
+              ORDER BY occurred_at DESC, audit_id DESC
+              {limit_sql}
+            """,  # noqa: S608  # controlled fragments + parameterized filters
             params,
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
+
+    def count_events(
+        self,
+        *,
+        snapshot: tuple[str, str] | None = None,
+    ) -> int:
+        """Count events at or below an optional newest-first snapshot key."""
+        where = ""
+        params: list[str] = []
+        if snapshot is not None:
+            where = "WHERE occurred_at < ? OR (occurred_at = ? AND audit_id <= ?)"
+            params.extend([snapshot[0], snapshot[0], snapshot[1]])
+        row = self._db.conn.execute(
+            f"SELECT COUNT(*) FROM app.audit_log {where}",  # noqa: S608  # fixed predicate fragment
+            params,
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def events_for_transaction(
         self, transaction_id: str, *, limit: int = 100

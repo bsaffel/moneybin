@@ -9,11 +9,13 @@ envelope shape.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp.tools.transactions_categorize import (
     transactions_categorize_pending,
 )
@@ -59,10 +61,8 @@ class TestCategorizePendingGet:
     @pytest.mark.unit
     async def test_returns_all_rows_default_sort_date(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await transactions_categorize_pending()).to_dict()
-        # CatPendingPayload → PendingTxnRow amount is TXN_AMOUNT → Tier.HIGH
-        # (account_id is RECORD_ID per spec D6).
-        assert parsed["summary"]["sensitivity"] == "high"
+        parsed = (transactions_categorize_pending()).to_dict()
+        assert parsed["summary"]["sensitivity"] == "low"
         # Default sort=date → most recent first (T3 > T2 > T1).
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T3", "T2", "T1"]
@@ -72,7 +72,7 @@ class TestCategorizePendingGet:
         self, mcp_db: Path
     ) -> None:
         self._install_view()
-        parsed = (await transactions_categorize_pending(sort="impact")).to_dict()
+        parsed = (transactions_categorize_pending(sort="impact")).to_dict()
         # Impact sort: T2(500*30=15000) > T1(25*39=975) > T3(5*25=125).
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T2", "T1", "T3"]
@@ -80,7 +80,9 @@ class TestCategorizePendingGet:
     @pytest.mark.unit
     async def test_min_amount_filters_low_value(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (await transactions_categorize_pending(min_amount=20.0)).to_dict()
+        parsed = (
+            transactions_categorize_pending(min_amount=Decimal("20.00"))
+        ).to_dict()
         ids = {row["transaction_id"] for row in parsed["data"]["transactions"]}
         assert ids == {"T1", "T2"}
 
@@ -89,7 +91,7 @@ class TestCategorizePendingGet:
         # Filter via canonical account_id; the resolver resolves the
         # reference against core.dim_accounts.
         self._install_view()
-        parsed = (await transactions_categorize_pending(account="ACC002")).to_dict()
+        parsed = (transactions_categorize_pending(account="ACC002")).to_dict()
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["T3"]
 
@@ -128,7 +130,7 @@ class TestCategorizePendingGet:
                     'ofx' AS source_type,
                     CAST(NULL AS VARCHAR) AS source_id
             """)  # noqa: S608  # test input, not executing dynamic SQL
-        parsed = (await transactions_categorize_pending(account="Alpha")).to_dict()
+        parsed = (transactions_categorize_pending(account="Alpha")).to_dict()
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["TA"]
 
@@ -138,9 +140,9 @@ class TestCategorizePendingGet:
     ) -> None:
         self._install_view()
         self._install_resolver_accounts()
-        result = await transactions_categorize_pending(account="Nonexistent")
-        parsed = result.to_dict()
-        assert parsed["error"]["code"] == "account_not_found"
+        with pytest.raises(UserError) as exc_info:
+            transactions_categorize_pending(account="Nonexistent")
+        assert exc_info.value.code == "account_not_found"
 
     @pytest.mark.unit
     async def test_account_filter_ambiguous_returns_error_envelope(
@@ -148,19 +150,19 @@ class TestCategorizePendingGet:
     ) -> None:
         self._install_view()
         self._install_resolver_accounts()
-        result = await transactions_categorize_pending(account="Joint")
-        parsed = result.to_dict()
-        assert parsed["error"]["code"] == "account_ambiguous"
+        with pytest.raises(UserError) as exc_info:
+            transactions_categorize_pending(account="Joint")
+        assert exc_info.value.code == "account_ambiguous"
 
     @pytest.mark.unit
     async def test_missing_view_raises_schema_out_of_date(self, mcp_db: Path) -> None:
         # fct_transactions exists (from conftest) but the queue view does not.
         # This is the schema-drift case — must surface a structured error
         # pointing at refresh_run, NOT silently collapse to "no data".
-        result = await transactions_categorize_pending()
-        parsed = result.to_dict()
-        assert parsed["error"]["code"] == "schema_out_of_date"
-        assert "refresh" in parsed["error"]["message"].lower()
+        with pytest.raises(UserError) as exc_info:
+            transactions_categorize_pending()
+        assert exc_info.value.code == "schema_out_of_date"
+        assert "refresh" in str(exc_info.value).lower()
 
     @pytest.mark.unit
     async def test_pre_import_returns_empty(self, mcp_db: Path) -> None:
@@ -169,7 +171,7 @@ class TestCategorizePendingGet:
         # with an "import first" action hint, not an error.
         with get_database(read_only=False) as db:
             db.conn.execute("DROP TABLE core.fct_transactions")
-        result = await transactions_categorize_pending()
+        result = transactions_categorize_pending()
         parsed = result.to_dict()
         assert parsed["data"]["transactions"] == []
         assert any("import" in a.lower() for a in parsed["actions"])
@@ -177,9 +179,7 @@ class TestCategorizePendingGet:
     @pytest.mark.unit
     async def test_limit_caps_rows(self, mcp_db: Path) -> None:
         self._install_view()
-        parsed = (
-            await transactions_categorize_pending(sort="impact", limit=1)
-        ).to_dict()
+        parsed = (transactions_categorize_pending(sort="impact", limit=1)).to_dict()
         assert len(parsed["data"]["transactions"]) == 1
         # Highest impact wins.
         assert parsed["data"]["transactions"][0]["transaction_id"] == "T2"

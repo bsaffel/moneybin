@@ -896,6 +896,22 @@ class TestAccountServiceResolve:
         assert len(payload.matches) == 2
 
     @pytest.mark.unit
+    def test_unlimited_results_have_stable_account_id_tiebreak(
+        self, extended_db: Database
+    ) -> None:
+        """Equal-confidence matches are complete and ordered by stable ID."""
+        for account_id in ("tie_c", "tie_a", "tie_b"):
+            _insert_dim_account(extended_db, account_id, display_name="zzzz")
+
+        payload = AccountService(extended_db).resolve("zzzz", limit=None)
+
+        assert [match.account_id for match in payload.matches] == [
+            "tie_a",
+            "tie_b",
+            "tie_c",
+        ]
+
+    @pytest.mark.unit
     def test_negative_limit_returns_empty(self, extended_db: Database) -> None:
         """Negative limit returns empty payload.
 
@@ -1088,3 +1104,66 @@ class TestAccountServiceResolveStrict:
         )
         with pytest.raises(AccountNotFoundError):
             AccountService(extended_db).resolve_strict("acct_old")
+
+
+class TestNullAccountType:
+    """A NULL account_type must not surface as the string "None".
+
+    Normalizing account_type to a canonical vocabulary made NULL a routine,
+    documented outcome (an unrecognized source spelling resolves to NULL rather
+    than a guess). The read path coerced the column with str(), which turns SQL
+    NULL into the four-character string "None" — shown to the user and returned
+    to the agent as though it were a real classification.
+    """
+
+    @pytest.fixture
+    def untyped_account_db(self, db: Database) -> Database:
+        conn = db.conn
+        create_core_tables_raw(conn)
+        conn.execute("""
+            INSERT INTO core.dim_accounts
+                (account_id, routing_number, account_type, institution_name,
+                 institution_fid, source_type, source_file, extracted_at,
+                 loaded_at, updated_at)
+            VALUES
+            ('ACCNULL', '333000075', NULL, 'Untyped Bank', '9999', 'ofx',
+             'untyped.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """)
+        return db
+
+    @pytest.mark.unit
+    def test_list_accounts_preserves_null_account_type(
+        self, untyped_account_db: Database
+    ) -> None:
+        service = AccountService(untyped_account_db)
+        acct = service.list_accounts().rows[0]
+        assert acct.account_type is None, (
+            f"NULL rendered as {acct.account_type!r} instead of None"
+        )
+
+    @pytest.mark.unit
+    def test_get_account_preserves_null_account_type(
+        self, untyped_account_db: Database
+    ) -> None:
+        service = AccountService(untyped_account_db)
+        acct = service.get_account("ACCNULL")
+        assert acct is not None
+        assert acct.account_type is None, (
+            f"NULL rendered as {acct.account_type!r} instead of None"
+        )
+
+    @pytest.mark.unit
+    def test_summary_buckets_null_account_type(
+        self, untyped_account_db: Database
+    ) -> None:
+        """count_by_type must label NULL, not carry a None key.
+
+        AccountSummaryStats.count_by_type is declared dict[str, int]; a raw None
+        key violates that contract and renders as a bare "null" in JSON output.
+        count_by_subtype has always used the <unset> label — count_by_type now
+        does too.
+        """
+        service = AccountService(untyped_account_db)
+        counts = service.summary().count_by_type
+        assert None not in counts, f"count_by_type carries a None key: {counts!r}"
+        assert counts.get("<unset>") == 1, counts

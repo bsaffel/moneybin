@@ -198,6 +198,66 @@ def test_login_user_denied_raises(sync_client: SyncClient) -> None:
 
 
 @respx.mock
+def test_begin_login_returns_safe_challenge_without_polling(
+    sync_client: SyncClient,
+) -> None:
+    """Nonblocking login exposes the user challenge but never a device code."""
+    token_route = respx.post("https://test.api/auth/device/token")
+    respx.post("https://test.api/auth/device/code").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "device_code": "secret-device-code",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "https://x/activate",
+                "verification_uri_complete": "https://x/activate?code=ABCD-EFGH",
+                "expires_in": 900,
+                "interval": 5,
+            },
+        )
+    )
+
+    challenge = sync_client.begin_login()
+
+    assert challenge.user_code == "ABCD-EFGH"
+    assert challenge.verification_uri_complete == "https://x/activate?code=ABCD-EFGH"
+    assert challenge.device_code.get_secret_value() == "secret-device-code"
+    assert challenge.expires_in == 900
+    assert token_route.call_count == 0
+    assert sync_client._read_token() is None  # type: ignore[reportPrivateUsage]
+
+
+@respx.mock
+def test_poll_login_pending_then_stores_tokens_on_completion(
+    sync_client: SyncClient,
+) -> None:
+    """A single poll reports pending; a later poll stores the returned tokens."""
+    route = respx.post("https://test.api/auth/device/token").mock(
+        side_effect=[
+            httpx.Response(202, json={"status": "pending"}),
+            httpx.Response(
+                200,
+                json={
+                    "access_token": "eyJ-jwt",
+                    "refresh_token": "v1.refresh",
+                    "expires_in": 3600,
+                    "token_type": "Bearer",
+                },
+            ),
+        ]
+    )
+
+    pending = sync_client.poll_login("secret-device-code")
+    authenticated = sync_client.poll_login("secret-device-code")
+
+    assert pending.status == "pending"
+    assert authenticated.status == "authenticated"
+    assert route.call_count == 2
+    assert sync_client._read_token() == "eyJ-jwt"  # type: ignore[reportPrivateUsage]
+    assert sync_client._read_refresh_token() == "v1.refresh"  # type: ignore[reportPrivateUsage]
+
+
+@respx.mock
 def test_authed_request_refreshes_on_401_then_retries(sync_client: SyncClient) -> None:
     sync_client._store_tokens(access_token="old-jwt", refresh_token="old-refresh")  # type: ignore[reportPrivateUsage]  # noqa: S106  # test fixture, not a real credential
 

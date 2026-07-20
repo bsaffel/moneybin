@@ -31,6 +31,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
     AccountResolvePayload,
+    AccountSummaryStats,
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.account_service import (
@@ -65,7 +66,11 @@ def accounts_list(
     type_filter: str | None = typer.Option(
         None,
         "--type",
-        help="Filter by account_type or account_subtype (case-insensitive)",
+        help=(
+            "Filter by account_type (canonical: depository, credit, loan, "
+            "investment, other) or account_subtype (source detail: checking, "
+            "savings, credit card, ...); case-insensitive"
+        ),
     ),
 ) -> None:
     """List accounts. Hides archived accounts by default."""
@@ -87,8 +92,36 @@ def accounts_list(
     for acct in result.rows:
         display = acct.display_name or acct.account_id
         institution = acct.institution_name or ""
-        acct_type = acct.account_type
+        acct_type = acct.account_type or ""
         typer.echo(f"  {display}  [{institution}]  {acct_type}")
+
+
+@app.command("summary")
+def accounts_summary(
+    output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+) -> None:
+    """Summarize account counts, lifecycle state, and recent activity."""
+    with handle_cli_errors(
+        cli_actor="accounts_summary", payload_type=AccountSummaryStats
+    ):
+        with get_database(read_only=True) as db:
+            result = AccountService(db).summary()
+
+    def _render_text(_: object) -> None:
+        if quiet:
+            return
+        typer.echo(f"Accounts: {result.total_accounts}")
+        typer.echo(f"Archived: {result.count_archived}")
+        typer.echo(f"Excluded from net worth: {result.count_excluded_from_net_worth}")
+        typer.echo(f"With recent activity: {result.count_with_recent_activity}")
+
+    render_or_json(
+        build_envelope(data=result),
+        output,
+        render_fn=_render_text,
+        cli_actor="accounts_summary",
+    )
 
 
 @app.command("get")

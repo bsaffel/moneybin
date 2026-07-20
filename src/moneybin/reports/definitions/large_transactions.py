@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    report,
+)
 from moneybin.reports.definitions._shared import LARGE_TXN_ANOMALIES
 from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
 
 
 @report(
+    report_id="core:large_transactions",
     name="large_transactions",
     view=REPORTS_LARGE_TRANSACTIONS,
     classes={
         "transaction_id": DataClass.RECORD_ID,
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
@@ -28,6 +34,68 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         "amount_zscore_category": DataClass.AGGREGATE,
         "is_top_100": DataClass.AGGREGATE,
     },
+    parameter_classes={
+        "top": DataClass.AGGREGATE,
+        "anomaly": DataClass.TXN_TYPE,
+    },
+    columns=(
+        OutputColumn(
+            "transaction_id", "Canonical transaction identifier.", DataClass.RECORD_ID
+        ),
+        OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
+        OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
+        OutputColumn("txn_date", "Transaction date.", DataClass.TXN_DATE),
+        OutputColumn("amount", "Signed transaction amount.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "description", "Original transaction description.", DataClass.DESCRIPTION
+        ),
+        OutputColumn(
+            "merchant_id", "Canonical merchant identifier.", DataClass.RECORD_ID
+        ),
+        OutputColumn(
+            "merchant_normalized",
+            "Normalized merchant label.",
+            DataClass.MERCHANT_NAME,
+        ),
+        OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
+        OutputColumn(
+            "amount_zscore_account",
+            "Modified absolute-amount z-score against the account baseline.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "amount_zscore_category",
+            "Modified absolute-amount z-score against the category baseline.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "is_top_100",
+            "Whether the transaction is among the top 100 by absolute amount.",
+            DataClass.AGGREGATE,
+        ),
+    ),
+    semantics=ReportSemantics(
+        unit="currency",
+        currency="summary.display_currency",
+        sign="negative expense; positive income; ranking uses absolute amount",
+        kind="flow",
+        valuation_basis="transaction amount ranked by absolute magnitude",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        time_basis="inclusive full observed transaction period",
+        denominator=(
+            "account or category median absolute deviation scaled by 1.4826 "
+            "for modified z-scores"
+        ),
+        comparison_window="account and category baselines over full observed history",
+        exclusions=(
+            "transfers",
+            "archived accounts",
+            "account z-scores for zero median absolute deviation",
+            "category z-scores for fewer than five transactions or zero median "
+            "absolute deviation",
+        ),
+        provenance=("reports.large_transactions",),
+    ),
     # Both z-scores ARE a direct function of amount — unlike
     # recurring_subscriptions.amount_bucket, which only scopes a window
     # partition — so "it is computed from amount" cannot be the argument. What
@@ -66,7 +134,7 @@ def large_transactions(
         anomaly: account | category | none — filter to z>2.5 in the named scope.
 
     Examples:
-        reports_large_transactions(top=50, anomaly="account")
+        reports(report_id="core:large_transactions", parameters={"top": 50, "anomaly": "account"})
     """
     if anomaly not in LARGE_TXN_ANOMALIES:
         raise ValueError(f"Unknown anomaly: {anomaly}")

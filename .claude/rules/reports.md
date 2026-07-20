@@ -5,7 +5,7 @@ paths: ["src/moneybin/reports/**", "src/moneybin/sqlmesh/models/reports/**"]
 
 # Report Authoring
 
-A complete report has three parts, all required:
+A complete SQL-backed report has three parts, all required:
 
 1. A SQLMesh model at `src/moneybin/sqlmesh/models/reports/<name>.sql`.
 2. An `@report`-decorated runner in `src/moneybin/reports/definitions/<name>.py`
@@ -18,8 +18,15 @@ A complete report has three parts, all required:
    `DataClass`, plus a `class_downgrades={...}` entry (with a real reason) for
    any column whose declared class sits below its derived floor.
 
-A view with no runner (`net_worth` today) instead gets its classes from the
-generated module — see "Runner-less views" below.
+A service-backed report instead declares one `ServiceReportSpec` with its
+parameters, output columns, privacy classes, semantics, executor, and
+validator. It has no SQL model to derive lineage from, so its complete expected
+parameter and output class maps must also be added to
+`test_service_report_privacy_maps_match_independent_contract`; see
+"Service-backed reports" below.
+
+A SQL view with no runner instead gets its classes from the generated module —
+see "Runner-less views" below.
 
 ## Classes are declared, then mechanically verified — never hand-waved
 
@@ -131,6 +138,26 @@ Decision 1 (opaque-by-construction) and Decision 6 (the reclassification from
 CRITICAL class for it over-declares across tiers, which the comparison above
 allows) but masks a column that is safe to expose and is not the pattern to
 copy into a new report.
+
+This applies to `ServiceReportSpec` parameters as well as output columns:
+exact `account_id` / `account_ids` parameters are `RECORD_ID`. Service-backed
+reports have no SQL model for source-lineage derivation, so they require an
+independently written expected column and parameter class map in
+`tests/moneybin/test_reports/test_catalog.py::test_service_report_privacy_maps_match_independent_contract`.
+That test enumerates the complete service-backed registry, so adding a report
+without reviewing its privacy contract fails CI. The registry-wide
+`test_registered_account_id_metadata_uses_opaque_record_id_class` separately
+checks the opaque-ID naming invariant across both report kinds.
+
+## Service-backed reports use an independent reviewed class map
+
+`ServiceReportSpec.__post_init__` checks internal consistency, but its columns
+and runtime class map can share the same mistaken declaration. Because there
+is no SQL source for independent lineage derivation,
+`test_service_report_privacy_maps_match_independent_contract` is the second
+source of truth: it names every service report and every parameter/output
+class explicitly. Additions or classification changes require updating that
+reviewed map in the same change.
 
 ## This rule documents a contract CI already enforces
 

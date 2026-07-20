@@ -118,6 +118,30 @@ class TestQueryHelpers:
         events = audit_service.list_events(target_id="t1")
         assert len(events) == 2
 
+    def test_list_events_tiebreaks_equal_timestamps_by_audit_id(
+        self,
+        db: Database,
+    ) -> None:
+        timestamp = "2026-07-18 12:00:00"
+        for audit_id in ("audit-a", "audit-c", "audit-b"):
+            db.execute(
+                """
+                INSERT INTO app.audit_log (
+                    audit_id, occurred_at, actor, action, target_schema,
+                    target_table, target_id, operation_id
+                ) VALUES (?, ?, 'cli', 'tag.add', 'app', 'transaction_tags', ?, ?)
+                """,
+                [audit_id, timestamp, audit_id, f"op-{audit_id}"],
+            )
+
+        events = AuditService(db).list_events()
+
+        assert [event.audit_id for event in events] == [
+            "audit-c",
+            "audit-b",
+            "audit-a",
+        ]
+
     def test_chain_for_returns_parent_and_children(
         self, audit_service: AuditService
     ) -> None:

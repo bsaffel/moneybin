@@ -12,7 +12,10 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.reports._framework.contract import Runner
+from moneybin.privacy.taxonomy import DataClass
+from moneybin.reports._framework.contract import ReportSemantics, Runner
+from moneybin.reports._framework.registry import spec_of
+from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.reports.definitions.balance_drift import balance_drift
 from moneybin.reports.definitions.cash_flow import cash_flow
 from moneybin.reports.definitions.large_transactions import large_transactions
@@ -22,12 +25,116 @@ from moneybin.reports.definitions.spending_trend import spending_trend
 
 pytestmark = pytest.mark.unit
 
+_CORE_REPORT_IDS = {
+    "spending": "core:spending",
+    "cashflow": "core:cashflow",
+    "recurring": "core:recurring",
+    "merchants": "core:merchants",
+    "large_transactions": "core:large_transactions",
+    "balance_drift": "core:balance_drift",
+}
+_FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
+_NO_FX_V1 = "no FX conversion in v1; assumes single-currency inputs"
+_EXPECTED_DESCRIPTIONS = {
+    "spending": (
+        "Spending amounts are positive absolute outflows; comparison deltas "
+        "are current spend minus comparison-period spend."
+    ),
+    "recurring": (
+        "Average and annualized costs are positive absolute outflows in the "
+        "currency named by summary.display_currency."
+    ),
+    "merchants": (
+        "total_spend is positive absolute outflow; total_outflow is negative; "
+        "total_inflow is positive; avg_amount and median_amount are signed."
+    ),
+    "balance_drift": (
+        "Drift is asserted balance minus the independent transaction-derived "
+        "position for assertion_date."
+    ),
+}
+
 
 def _rows(db: Database, runner: Runner, **params: Any) -> list[dict[str, Any]]:
     rq = runner(db, **params)
     cur = db.execute(rq.sql, list(rq.params))
     cols = [d[0] for d in cur.description] if cur.description else []
     return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
+
+
+def test_core_report_definitions_have_complete_financial_semantics() -> None:
+    specs = {spec.name: spec for spec in map(spec_of, ALL_REPORTS)}
+
+    assert {name: spec.report_id for name, spec in specs.items()} == _CORE_REPORT_IDS
+    for name, spec in specs.items():
+        assert spec.columns
+        assert all(column.description for column in spec.columns)
+        assert {column.name: column.data_class for column in spec.columns} == dict(
+            spec.classes
+        )
+
+        semantics = spec.semantics
+        assert isinstance(semantics, ReportSemantics)
+        assert semantics.unit
+        assert semantics.sign
+        assert semantics.valuation_basis
+        assert semantics.fx_basis
+        assert semantics.time_basis
+        assert semantics.exclusions
+        assert semantics.provenance == (spec.view.full_name,)
+
+        monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
+        assert monetary_classes.intersection(spec.classes.values())
+        assert semantics.unit == "currency"
+        assert semantics.currency == "summary.display_currency"
+        assert semantics.fx_basis == _NO_FX_V1
+
+        if name in _FLOW_REPORTS:
+            assert semantics.kind == "flow"
+            assert "inclusive" in semantics.time_basis
+        else:
+            assert semantics.kind == "position"
+            assert semantics.comparison_window
+            assert semantics.denominator
+            assert semantics.time_basis == (
+                "asserted and transaction-derived positions compared as of "
+                "assertion_date; freshness measured from assertion_date through "
+                "current date"
+            )
+
+    assert specs["spending"].semantics.denominator == (
+        "previous-month spend for mom_pct; prior-year spend for yoy_pct; "
+        "available calendar months up to three for trailing_3mo_avg, including "
+        "zero-spend months"
+    )
+    assert specs["spending"].semantics.time_basis == (
+        "inclusive eligible-data calendar-month period with zero-filled missing "
+        "category-months"
+    )
+    assert specs["spending"].semantics.comparison_window == (
+        "previous calendar month, same calendar month one year earlier, and "
+        "trailing three calendar months including current month"
+    )
+    assert specs["merchants"].semantics.denominator == "txn_count for avg_amount"
+    assert specs["large_transactions"].semantics.exclusions == (
+        "transfers",
+        "archived accounts",
+        "account z-scores for zero median absolute deviation",
+        "category z-scores for fewer than five transactions or zero median "
+        "absolute deviation",
+    )
+    assert specs["balance_drift"].semantics.valuation_basis == (
+        "transaction-derived position reconstructed from daily balance minus "
+        "reconciliation_delta"
+    )
+    assert specs["balance_drift"].semantics.comparison_window == (
+        "asserted position versus independent transaction-derived position on "
+        "assertion_date"
+    )
+
+    for name, expected in _EXPECTED_DESCRIPTIONS.items():
+        assert expected in specs[name].description
+        assert "negative = expense, positive = income" not in specs[name].description
 
 
 def _install_cash_flow_view(db: Database) -> None:

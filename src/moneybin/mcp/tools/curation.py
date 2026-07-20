@@ -179,13 +179,12 @@ def transactions_create(
             ],
         ),
         actions=[
-            "Use transactions_get to confirm the rows landed",
+            "Use transactions to confirm the rows landed",
             "Use refresh_run to materialize them into core.fct_transactions",
         ],
     )
 
 
-@mcp_tool(read_only=False, idempotent=False)
 def transactions_notes_add(
     transaction_id: str, text: str
 ) -> ResponseEnvelope[NotePayload]:
@@ -195,7 +194,6 @@ def transactions_notes_add(
     return build_envelope(data=_note_payload(note))
 
 
-@mcp_tool(read_only=False)
 def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePayload]:
     """Update an existing note's text. Returns the updated row."""
     with get_database(read_only=False) as db:
@@ -203,7 +201,6 @@ def transactions_notes_edit(note_id: str, text: str) -> ResponseEnvelope[NotePay
     return build_envelope(data=_note_payload(note))
 
 
-@mcp_tool(read_only=False, destructive=True, idempotent=False)
 def transactions_notes_delete(note_id: str) -> ResponseEnvelope[NoteDeletePayload]:
     """Delete a note by ID. Hard-delete; raises LookupError if the note is gone."""
     with get_database(read_only=False) as db:
@@ -211,7 +208,6 @@ def transactions_notes_delete(note_id: str) -> ResponseEnvelope[NoteDeletePayloa
     return build_envelope(data=NoteDeletePayload(note_id=note_id))
 
 
-@mcp_tool(read_only=False)
 def transactions_tags_set(
     transaction_id: str, tags: list[str]
 ) -> ResponseEnvelope[TagsPayload]:
@@ -227,7 +223,6 @@ def transactions_tags_set(
     return build_envelope(data=TagsPayload(transaction_id=transaction_id, tags=final))
 
 
-@mcp_tool(read_only=False)
 def transactions_tags_rename(
     old_tag: str, new_tag: str
 ) -> ResponseEnvelope[TagRenamePayload]:
@@ -244,7 +239,6 @@ def transactions_tags_rename(
     )
 
 
-@mcp_tool(read_only=False)
 def transactions_splits_set(
     transaction_id: str, splits: list[dict[str, Any]]
 ) -> ResponseEnvelope[SplitsPayload]:
@@ -259,7 +253,6 @@ def transactions_splits_set(
     return build_envelope(data=SplitsPayload(splits=[_split_row(s) for s in out]))
 
 
-@mcp_tool(read_only=False)
 def import_labels_set(
     import_id: str, labels: list[str]
 ) -> ResponseEnvelope[ImportLabelsSetPayload]:
@@ -275,7 +268,6 @@ def import_labels_set(
     )
 
 
-@mcp_tool()
 def system_audit(
     filters: dict[str, Any] | None = None, limit: int = 100
 ) -> ResponseEnvelope[SystemAuditPayload]:
@@ -327,80 +319,24 @@ def system_audit(
 
 # ---------- registration ----------
 
+_LEGACY_INTERNAL_CALLBACKS = (
+    system_audit,
+    transactions_notes_add,
+    transactions_notes_edit,
+    transactions_notes_delete,
+    transactions_tags_set,
+    transactions_tags_rename,
+    transactions_splits_set,
+)
+
 
 def register_curation_tools(mcp: FastMCP) -> None:
-    """Register all curation namespace tools with the FastMCP server."""
+    """Register the standard manual transaction creation boundary."""
     register(
         mcp,
         transactions_create,
         "transactions_create",
-        "Create 1..100 manual transactions atomically under one import_id. "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
-        "Amounts are in the currency named by `summary.display_currency`. "
-        "Writes raw.manual_transactions; revert with `moneybin import revert <import_id>`.",
-    )
-    register(
-        mcp,
-        transactions_notes_add,
-        "transactions_notes_add",
-        "Append a note to a transaction. Writes app.transaction_notes. "
-        "Each note carries a unique note_id used by transactions_notes_edit and "
-        "transactions_notes_delete — the canonical shape-2 lifecycle triad. "
-        "Revert with transactions_notes_delete (hard-delete).",
-    )
-    register(
-        mcp,
-        transactions_notes_edit,
-        "transactions_notes_edit",
-        "Edit the text of one note by note_id. Notes are shape-2 lifecycle "
-        "entities — use transactions_notes_add to create, transactions_notes_delete "
-        "to remove. Writes app.transaction_notes; every edit is captured in app.audit_log.",
-    )
-    register(
-        mcp,
-        transactions_notes_delete,
-        "transactions_notes_delete",
-        "Remove one note by note_id. Notes are shape-2 lifecycle entities — "
-        "use transactions_notes_add / transactions_notes_edit for the other "
-        "operations on the triad. Hard-deletes from app.transaction_notes — "
-        "permanent, no revert; re-create with transactions_notes_add.",
-    )
-    register(
-        mcp,
-        transactions_tags_set,
-        "transactions_tags_set",
-        "Declarative target-state: replace a transaction's tag set; "
-        "emits per-tag audit events for the diff. Writes app.transaction_tags; "
-        "revert by calling again with the prior tag list (diff captured in app.audit_log).",
-    )
-    register(
-        mcp,
-        transactions_tags_rename,
-        "transactions_tags_rename",
-        "Rename one tag globally across ALL transactions that carry it — "
-        "this is a multi-row mutation event, not a per-transaction operation. "
-        "Writes app.transaction_tags for every affected row; emits one parent + "
-        "per-row child audit entries. No undo tool — revert by renaming back.",
-    )
-    register(
-        mcp,
-        transactions_splits_set,
-        "transactions_splits_set",
-        "Declarative replace: set a transaction's splits; emits clear + per-split events. "
-        "Amounts are in the currency named by `summary.display_currency`. "
-        "Writes app.transaction_splits; revert by calling again with the prior split sequence.",
-    )
-    register(
-        mcp,
-        import_labels_set,
-        "import_labels_set",
-        "Declarative target-state: replace an import's labels; "
-        "emits one full-row import.set audit event. Writes app.imports.labels; "
-        "revert by calling again with the prior label list (before/after captured in app.audit_log).",
-    )
-    register(
-        mcp,
-        system_audit,
-        "system_audit",
-        "List audit events with filters (actor, action_pattern, target, time, limit).",
+        "Create manual transactions as a validated batch. Amounts use the "
+        "accounting convention: negative = expense, positive = income; "
+        "transfers exempt. Reverse with system_audit_undo(operation_id).",
     )

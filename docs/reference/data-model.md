@@ -125,15 +125,15 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 |---|---|---|
 | `account_id` | VARCHAR | Stable across imports; FK target for `fct_transactions.account_id`. |
 | `routing_number` | VARCHAR | ABA routing number; NULL when not provided. |
-| `account_type` | VARCHAR | Source-supplied classification (`CHECKING`, `SAVINGS`, `CREDITLINE`, ...). |
-| `institution_name` | VARCHAR | Human-readable institution. |
+| `account_type` | VARCHAR | Canonical classification, normalized across all sources via `seeds.account_type_map`: `depository`, `credit`, `loan`, `investment`, `other`. `NULL` when the source spelling is unrecognized. |
+| `institution_name` | VARCHAR | Human-readable institution. For OFX, resolved from `<FI><FID>` via `seeds.institutions`, falling back to the raw `<ORG>` for an unregistered FID — `<ORG>` is a routing code (Chase publishes `B1`), not a name. |
 | `institution_fid` | VARCHAR | OFX FID; NULL for tabular sources. |
 | `source_type`, `source_file` | VARCHAR | Source of the winning record after dedup; source file path. |
 | `extracted_at`, `loaded_at`, `updated_at` | TIMESTAMP | Source-parse / DB-write times (UTC). `updated_at = GREATEST(loaded_at, account_settings.updated_at)`. |
-| `display_name` | VARCHAR | User override → derived default (`institution_name + account_type + …<last4>`) → bare `account_id`. |
+| `display_name` | VARCHAR | User override → derived default (`institution_name + account_subtype + …<last4>`; the subtype is preferred over the canonical type because "checking" reads to a human where "depository" does not) → `institution_name + …<last4>` for a typeless account → bare `account_id`. |
 | `official_name` | VARCHAR | User-set or Plaid-supplied formal name. |
 | `last_four` | VARCHAR | User-set or Plaid mask. |
-| `account_subtype` | VARCHAR | Plaid-style subtype (`checking`, `savings`, `credit card`, `mortgage`, ...). |
+| `account_subtype` | VARCHAR | Plaid-style subtype (`checking`, `savings`, `credit card`, `mortgage`, ...). User override, else the provider's own subtype, else derived from the source spelling by `seeds.account_type_map`. |
 | `holder_category` | VARCHAR | `personal` / `business` / `joint`. |
 | `currency_code` | VARCHAR | ISO-4217; defaults to `'USD'`. |
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
@@ -397,7 +397,7 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 | `account_name` | VARCHAR | Resolved display name. |
 | `assertion_date` | DATE | User-asserted balance date. |
 | `asserted_balance` | DECIMAL(18,2) | User-entered value. |
-| `computed_balance` | DECIMAL(18,2) | Carry-forward from `core.fct_balances_daily`; NULL if missing. |
+| `computed_balance` | DECIMAL(18,2) | Interpolated daily balance, or observed balance minus its reconciliation adjustment; NULL if the daily row is missing or is the first observation. |
 | `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |

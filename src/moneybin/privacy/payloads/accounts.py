@@ -14,9 +14,16 @@ surrogate (spec D6) is not PII. CRITICAL propagates from
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from moneybin.privacy.payloads.balances import (
+    BalanceAssertionRow,
+    BalanceObservationRow,
+)
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.utils.parsing import signal_from_match_signals
 
@@ -36,7 +43,7 @@ class AccountSummary:
     account_id: Annotated[str, DataClass.RECORD_ID]
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
-    account_type: Annotated[str, DataClass.TXN_TYPE]
+    account_type: Annotated[str | None, DataClass.TXN_TYPE]
     account_subtype: Annotated[str | None, DataClass.TXN_TYPE]
     holder_category: Annotated[str | None, DataClass.TXN_TYPE]
     currency_code: Annotated[str, DataClass.CURRENCY]
@@ -61,7 +68,7 @@ class AccountDetail:
     display_name: Annotated[str | None, DataClass.USER_NOTE]
     official_name: Annotated[str | None, DataClass.INSTITUTION]
     institution_name: Annotated[str | None, DataClass.INSTITUTION]
-    account_type: Annotated[str, DataClass.TXN_TYPE]
+    account_type: Annotated[str | None, DataClass.TXN_TYPE]
     account_subtype: Annotated[str | None, DataClass.TXN_TYPE]
     holder_category: Annotated[str | None, DataClass.TXN_TYPE]
     currency_code: Annotated[str, DataClass.CURRENCY]
@@ -101,6 +108,109 @@ class AccountResolvePayload:
     """Payload for accounts_resolve."""
 
     matches: list[AccountResolutionItem]
+
+
+# ---------------------------------------------------------------------------
+# Dormant coarse account and balance reads
+# ---------------------------------------------------------------------------
+
+
+class AccountsListView(BaseModel):
+    """Paginated account collection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["list"] = "list"
+    rows: list[AccountSummary]
+
+
+class AccountsDetailView(BaseModel):
+    """One deterministically resolved account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["detail"] = "detail"
+    account: AccountDetail
+
+
+class AccountsSummaryView(BaseModel):
+    """Aggregate account-count snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["summary"] = "summary"
+    summary: AccountSummaryStats
+
+
+class AccountsResolveView(BaseModel):
+    """Ranked fuzzy account-reference candidates."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["resolve"] = "resolve"
+    matches: list[AccountResolutionItem]
+
+
+AccountsCoarsePayload = Annotated[
+    AccountsListView | AccountsDetailView | AccountsSummaryView | AccountsResolveView,
+    Field(discriminator="kind"),
+]
+
+
+class AccountsBalancesLatestView(BaseModel):
+    """Most recent balance observations."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["latest"] = "latest"
+    observations: list[BalanceObservationRow]
+
+
+class AccountsBalancesHistoryView(BaseModel):
+    """Daily balance history for one resolved account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["history"] = "history"
+    observations: list[BalanceObservationRow]
+
+
+class AccountsBalancesAssertionsView(BaseModel):
+    """Manual balance assertions, optionally filtered to one account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["assertions"] = "assertions"
+    assertions: list[BalanceAssertionRow]
+
+
+class AccountsBalancesReconcileView(BaseModel):
+    """Balance observations whose reconciliation delta exceeds a threshold."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["reconcile"] = "reconcile"
+    observations: list[BalanceObservationRow]
+
+
+AccountsBalancesCoarsePayload = Annotated[
+    AccountsBalancesLatestView
+    | AccountsBalancesHistoryView
+    | AccountsBalancesAssertionsView
+    | AccountsBalancesReconcileView,
+    Field(discriminator="kind"),
+]
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceAssertionStatePayload:
+    """Result of declaring one balance assertion's target state."""
+
+    account_id: Annotated[str, DataClass.RECORD_ID]
+    as_of: Annotated[date, DataClass.TXN_DATE]
+    prior_state: Annotated[Literal["present", "absent"], DataClass.TXN_TYPE]
+    state: Annotated[Literal["present", "absent"], DataClass.TXN_TYPE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
 @dataclass(frozen=True, slots=True)

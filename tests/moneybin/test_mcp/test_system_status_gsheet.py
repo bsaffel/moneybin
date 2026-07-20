@@ -56,7 +56,7 @@ async def test_system_status_gsheet_block_present_when_no_connections(
     mcp_db: object,
 ) -> None:
     """With zero connections the gsheet block exists in zero-shape."""
-    env = await system_status()
+    env = system_status()
     data = env.to_dict()["data"]
     assert "gsheet" in data
     block = data["gsheet"]
@@ -73,7 +73,7 @@ async def test_system_status_groups_connections_by_status(mcp_db: object) -> Non
         connection_id="c_d", status="drift_detected", drift_reason="header_added"
     )
     _insert_connection(connection_id="c_a", status="auth_expired", sheet_gid=1)
-    env = await system_status()
+    env = system_status()
     block = env.to_dict()["data"]["gsheet"]
     assert block["total_connections"] == 3
     assert block["by_status"] == {
@@ -90,7 +90,7 @@ async def test_system_status_needs_attention_omits_healthy(mcp_db: object) -> No
     _insert_connection(
         connection_id="c_d", status="drift_detected", drift_reason="reordered"
     )
-    env = await system_status()
+    env = system_status()
     block = env.to_dict()["data"]["gsheet"]
     ids = [row["connection_id"] for row in block["needs_attention"]]
     assert "c_h" not in ids
@@ -103,7 +103,7 @@ async def test_system_status_needs_attention_omits_disconnected(
 ) -> None:
     """Soft-disconnected connections are not flagged as needing attention."""
     _insert_connection(connection_id="c_off", status="disconnected")
-    env = await system_status()
+    env = system_status()
     block = env.to_dict()["data"]["gsheet"]
     assert block["by_status"] == {"disconnected": 1}
     assert block["needs_attention"] == []
@@ -117,16 +117,16 @@ async def test_system_status_drift_action_hint(mcp_db: object) -> None:
         status="drift_detected",
         drift_reason="header_added",
     )
-    env = await system_status()
+    env = system_status()
     actions = env.to_dict()["actions"]
-    assert any("gsheet_reconnect" in a and "c_drift" in a for a in actions), actions
+    assert any("gsheet_connect" in a and "c_drift" in a for a in actions), actions
 
 
 @pytest.mark.unit
 async def test_system_status_auth_expired_action_hint(mcp_db: object) -> None:
     """auth_expired connections surface a CLI re-auth message."""
     _insert_connection(connection_id="c_auth", status="auth_expired")
-    env = await system_status()
+    env = system_status()
     actions = env.to_dict()["actions"]
     assert any("moneybin gsheet auth" in a for a in actions), actions
 
@@ -141,7 +141,7 @@ async def test_system_status_needs_attention_row_shape(mcp_db: object) -> None:
         sheet="Transactions",
         drift_reason="header_added: Notes",
     )
-    env = await system_status()
+    env = system_status()
     row: dict[str, Any] = env.to_dict()["data"]["gsheet"]["needs_attention"][0]
     assert row["connection_id"] == "c_d"
     assert row["workbook_name"] == "Budget 2025"

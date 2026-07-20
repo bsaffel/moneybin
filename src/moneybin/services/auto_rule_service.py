@@ -17,8 +17,10 @@ from typing import Any
 
 import duckdb
 
+from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.metrics.registry import (
     AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
     AUTO_RULE_BROAD_PENDING,
@@ -102,6 +104,14 @@ class AutoConfirmResult:
     skipped: int = 0
     newly_categorized: int = 0
     rule_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AutoRuleDecisionResult:
+    """Atomic strict-decision outcome with exact terminal proposal states."""
+
+    statuses: dict[str, str]
+    impact: AutoConfirmResult
 
 
 @dataclass(slots=True)
@@ -501,6 +511,7 @@ class AutoRuleService:
         *,
         actor: str = "system",
         allow_broad: bool = False,
+        allow_broad_ids: set[str] | None = None,
     ) -> AutoConfirmResult:
         """Accept and/or reject pending proposals; returns aggregate counts.
 
@@ -516,8 +527,24 @@ class AutoRuleService:
         approve_set = set(accept or [])
         reject_set = set(reject or [])
         approve_set -= reject_set
-        a = self.approve(sorted(approve_set), actor=actor, allow_broad=allow_broad)
-        r = self.reject(sorted(reject_set), actor=actor)
+        self._db.begin()
+        try:
+            a = self.approve(
+                sorted(approve_set),
+                actor=actor,
+                allow_broad=allow_broad,
+                allow_broad_ids=allow_broad_ids,
+                in_outer_txn=True,
+            )
+            r = self.reject(
+                sorted(reject_set),
+                actor=actor,
+                in_outer_txn=True,
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
         return AutoConfirmResult(
             approved=a.approved,
             rejected=r.rejected,
@@ -526,12 +553,96 @@ class AutoRuleService:
             rule_ids=a.rule_ids,
         )
 
+    def decide(
+        self,
+        *,
+        expected_pending_ids: list[str],
+        accept: list[str],
+        reject: list[str],
+        actor: str,
+        allow_broad_ids: set[str] | None = None,
+    ) -> AutoRuleDecisionResult:
+        """Strictly decide one proposal batch inside one write transaction."""
+        expected = list(expected_pending_ids)
+        expected_set = set(expected)
+        accept_set = set(accept)
+        reject_set = set(reject)
+        allowed = set(allow_broad_ids or ())
+        if (
+            not expected
+            or len(expected) != len(expected_set)
+            or accept_set & reject_set
+            or accept_set | reject_set != expected_set
+            or not allowed <= accept_set
+        ):
+            raise UserError(
+                "Invalid auto-rule decision batch.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+
+        self._db.begin()
+        try:
+            before = self.proposal_statuses(expected)
+            invalid = [
+                proposal_id
+                for proposal_id in expected
+                if before.get(proposal_id) != "pending"
+            ]
+            if invalid:
+                raise UserError(
+                    "Auto-rule decision preflight failed.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    details={"decision_ids": invalid},
+                )
+
+            approved = self.approve(
+                sorted(accept_set),
+                actor=actor,
+                allow_broad_ids=allowed,
+                in_outer_txn=True,
+            )
+            rejected = self.reject(
+                sorted(reject_set),
+                actor=actor,
+                in_outer_txn=True,
+            )
+            after = self.proposal_statuses(expected)
+            unexpected = [
+                proposal_id
+                for proposal_id in expected
+                if (
+                    proposal_id in accept_set
+                    and after.get(proposal_id) not in {"approved", "pending"}
+                )
+                or (proposal_id in reject_set and after.get(proposal_id) != "rejected")
+            ]
+            if unexpected:
+                raise UserError(
+                    "Auto-rule proposal state changed during decision.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                    details={"decision_ids": unexpected},
+                )
+            impact = AutoConfirmResult(
+                approved=approved.approved,
+                rejected=rejected.rejected,
+                skipped=approved.skipped + rejected.skipped,
+                newly_categorized=approved.newly_categorized,
+                rule_ids=approved.rule_ids,
+            )
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return AutoRuleDecisionResult(statuses=after, impact=impact)
+
     def approve(
         self,
         proposed_rule_ids: list[str],
         *,
         actor: str = "system",
         allow_broad: bool = False,
+        allow_broad_ids: set[str] | None = None,
+        in_outer_txn: bool = False,
     ) -> ApproveResult:
         """Promote pending proposals to active rules and immediately categorize matching transactions.
 
@@ -558,11 +669,15 @@ class AutoRuleService:
         result = ApproveResult()
         broad_ids: set[str] = set()
         unselective_ids: set[str] = set()
-        if not allow_broad and proposed_rule_ids:
+        explicitly_allowed = (
+            set(proposed_rule_ids) if allow_broad else set(allow_broad_ids or ())
+        )
+        guarded_ids = set(proposed_rule_ids) - explicitly_allowed
+        if guarded_ids:
             pending: list[dict[str, Any]] = [
                 p
                 for p in self.list_pending_proposals(limit=None)
-                if str(p["proposed_rule_id"]) in set(proposed_rule_ids)
+                if str(p["proposed_rule_id"]) in guarded_ids
             ]
             # Specificity floor needs no DB scan — a pure length check against
             # the pattern already in `pending`. Checked ahead of the scan below
@@ -640,7 +755,8 @@ class AutoRuleService:
             # write time (the proposed_rule's own category_id may have been NULL
             # during V014 backfill if the target category didn't yet exist).
             category_id = resolve_category_id(self._db, category, subcategory)
-            self._db.begin()
+            if not in_outer_txn:
+                self._db.begin()
             try:
                 rule_event = self._rules.insert(
                     name=f"auto: {pattern}",
@@ -672,9 +788,11 @@ class AutoRuleService:
                 newly = self._categorize_existing_with_rule(
                     rule_id, category, subcategory
                 )
-                self._db.commit()
+                if not in_outer_txn:
+                    self._db.commit()
             except BaseException:
-                self._db.rollback()
+                if not in_outer_txn:
+                    self._db.rollback()
                 raise
             result.approved += 1
             result.rule_ids.append(rule_id)
@@ -688,7 +806,11 @@ class AutoRuleService:
         return result
 
     def reject(
-        self, proposed_rule_ids: list[str], *, actor: str = "system"
+        self,
+        proposed_rule_ids: list[str],
+        *,
+        actor: str = "system",
+        in_outer_txn: bool = False,
     ) -> RejectResult:
         """Mark pending proposals as rejected. No rule is created."""
         result = RejectResult()
@@ -700,7 +822,11 @@ class AutoRuleService:
             if not row or row[0] != "pending":
                 result.skipped += 1
                 continue
-            self._proposed.mark_rejected(pid, actor=actor)
+            self._proposed.mark_rejected(
+                pid,
+                actor=actor,
+                in_outer_txn=in_outer_txn,
+            )
             result.rejected += 1
         return result
 
@@ -865,6 +991,57 @@ class AutoRuleService:
             for r in rows
         ]
 
+    def list_proposal_history(self) -> list[dict[str, object]]:
+        """Return terminal auto-rule proposal decisions newest-first."""
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT proposed_rule_id, merchant_pattern, match_type, category,
+                       subcategory, trigger_count, sample_txn_ids, status,
+                       rule_id, proposed_at, decided_at, decided_by
+                FROM {PROPOSED_RULES.full_name}
+                WHERE status IN ('approved', 'rejected', 'superseded')
+                ORDER BY COALESCE(decided_at, proposed_at) DESC, proposed_rule_id
+                """
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+        return [
+            {
+                "proposed_rule_id": row[0],
+                "merchant_pattern": row[1],
+                "match_type": row[2],
+                "category": row[3],
+                "subcategory": row[4],
+                "trigger_count": row[5],
+                "sample_txn_ids": list(row[6] or []),
+                "status": row[7],
+                "rule_id": row[8],
+                "proposed_at": row[9],
+                "decided_at": row[10],
+                "decided_by": row[11],
+            }
+            for row in rows
+        ]
+
+    def proposal_statuses(self, proposed_rule_ids: list[str]) -> dict[str, str]:
+        """Return exact lifecycle states for the requested proposal IDs."""
+        if not proposed_rule_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in proposed_rule_ids)
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT proposed_rule_id, status
+                FROM {PROPOSED_RULES.full_name}
+                WHERE proposed_rule_id IN ({placeholders})
+                """,  # noqa: S608  # placeholders are generated, values parameterized
+                proposed_rule_ids,
+            ).fetchall()
+        except duckdb.CatalogException:
+            return {}
+        return {str(row[0]): str(row[1]) for row in rows}
+
     def list_active_rules(self, *, limit: int | None = None) -> list[dict[str, object]]:
         """Return active auto-rules (rows with created_by='auto_rule').
 
@@ -906,6 +1083,24 @@ class AutoRuleService:
         try:
             row = self._db.execute(
                 f"SELECT COUNT(*) FROM {PROPOSED_RULES.full_name} WHERE status = 'pending'"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0
+
+    def count_pending_proposals(self) -> int:
+        """Return the complete pending proposal count for normalized review paging."""
+        return self._count_pending_proposals()
+
+    def count_proposal_history(self) -> int:
+        """Return the exact number of terminal proposal decisions."""
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {PROPOSED_RULES.full_name}
+                WHERE status IN ('approved', 'rejected', 'superseded')
+                """
             ).fetchone()
         except duckdb.CatalogException:
             return 0

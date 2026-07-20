@@ -17,7 +17,7 @@ from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.privacy import get_max_rows, tier_to_sensitivity
+from moneybin.mcp.privacy import Sensitivity, get_max_rows, tier_to_sensitivity
 from moneybin.privacy.sql_query import execute_sql_query
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
@@ -27,7 +27,7 @@ from moneybin.protocol.envelope import (
 from moneybin.services.schema_catalog import build_schema_doc
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
 def sql_query(query: str) -> ResponseEnvelope[Any]:
     """Execute a read-only SQL query against the core, app, and reports schemas.
 
@@ -64,7 +64,7 @@ def sql_query(query: str) -> ResponseEnvelope[Any]:
     )
 
 
-@mcp_tool(dynamic_classification=True)
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
 def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
     """Return the curated database schema for ad-hoc SQL composition.
 
@@ -117,7 +117,9 @@ def sql_schema(table: str | None = None) -> ResponseEnvelope[Any]:
 
     if table == "*":
         return build_envelope(
-            data=doc, sensitivity="low", classes_returned=["aggregate"]
+            data=doc,
+            sensitivity="low",
+            classes_returned=["aggregate"],
         )
 
     matches = [t for t in tables if t["name"] == table]

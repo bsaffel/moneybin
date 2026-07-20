@@ -157,3 +157,29 @@ class TransactionSplitsRepo(BaseRepo):
                     )
                 )
             return events
+
+    def delete_by_category(
+        self,
+        category_id: str,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> list[AuditEvent]:
+        """Delete every split using one category, with per-row audit."""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            split_ids = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT split_id FROM {TRANSACTION_SPLITS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    "WHERE category_id = ? ORDER BY split_id",
+                    [category_id],
+                ).fetchall()
+            ]
+            return [
+                self.delete(
+                    split_id=split_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+                for split_id in split_ids
+            ]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
@@ -9,18 +10,31 @@ from typing import Literal
 
 from fastmcp import FastMCP
 
+from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.adapters.categorize_adapters import (
     auto_accept_envelope,
     auto_review_envelope,
 )
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.write_contracts import CategorizationRuleTarget
 from moneybin.privacy.payloads.categorize import (
     AutoAcceptPayload,
     AutoReviewPayload,
     AutoStatsPayload,
+    CategorizationRulesCoarsePayload,
+    CategorizationRulesCurrentView,
+    CategorizationRulesHistoryView,
+    CategorizationRulesSetPayload,
+    CategorizationRuleStateResult,
     CategorizeCommitPayload,
     CategorizeRulesPayload,
     CategorizeRunPayload,
@@ -41,11 +55,15 @@ from moneybin.services.categorization import (
     validate_items,
     validate_rule_items,
 )
+from moneybin.services.categorization.applier import (
+    RuleStateTarget,
+    RuleTargetPlan,
+)
+from moneybin.services.mutation_context import current_operation_id
 
 logger = logging.getLogger(__name__)
 
 
-@mcp_tool(domain="categorize")
 def transactions_categorize_rules() -> ResponseEnvelope[CategorizeRulesPayload]:
     """List all categorization rules.
 
@@ -57,13 +75,200 @@ def transactions_categorize_rules() -> ResponseEnvelope[CategorizeRulesPayload]:
     return build_envelope(
         data=payload,
         actions=[
-            "Use transactions_categorize_rules_create to add new rules",
-            "Use transactions_categorize_rules_delete to soft-delete a rule",
+            "Use transactions_categorize_rules_set to declare rule target states",
+        ],
+    )
+
+
+def _to_rule_state_target(target: CategorizationRuleTarget) -> RuleStateTarget:
+    """Translate the strict MCP target contract into the service-owned type."""
+    matcher = target.matcher
+    return RuleStateTarget(
+        rule_id=target.rule_id,
+        state=target.state,
+        merchant_pattern=matcher.value if matcher is not None else None,
+        match_type=matcher.type if matcher is not None else None,
+        min_amount=matcher.min_amount if matcher is not None else None,
+        max_amount=matcher.max_amount if matcher is not None else None,
+        account_id=matcher.account_id if matcher is not None else None,
+        category=target.category,
+        subcategory=target.subcategory,
+        priority=target.priority,
+    )
+
+
+def _rule_targets_binding(
+    rules: list[CategorizationRuleTarget], plan: RuleTargetPlan
+) -> ConfirmationBinding:
+    """Bind a destructive batch to validated targets and resolved rule IDs."""
+    return ConfirmationBinding(
+        arguments={
+            "rules": [rule.model_dump(mode="json") for rule in rules],
+            "live_states": [
+                {
+                    "rule_id": item.rule_id,
+                    "action": item.action,
+                    "before_digest": item.before_digest,
+                }
+                for item in plan.items
+            ],
+        },
+        resolved_ids=plan.resolved_ids,
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="transactions_categorize_rules_set",
+        blast_radius={
+            "rules": len(rules),
+            "changed_rules": len(plan.changed),
+            "deleted_rules": sum(item.action == "delete" for item in plan.items),
+        },
+    )
+
+
+def _preview_rule_targets(rules: list[CategorizationRuleTarget]) -> RuleTargetPlan:
+    """Validate target-state resolution without opening a mutation transaction."""
+    with get_database(read_only=True) as db:
+        return CategorizationService(db).plan_rule_targets([
+            _to_rule_state_target(rule) for rule in rules
+        ])
+
+
+def _apply_rule_targets(
+    rules: list[CategorizationRuleTarget],
+    plan: RuleTargetPlan,
+    *,
+    grant: ConfirmationGrant | None,
+    expected_binding: ConfirmationBinding,
+) -> list[CategorizationRuleStateResult]:
+    """Re-preflight and write every changed rule within one audited transaction."""
+    with get_database(read_only=False) as db:
+        service = CategorizationService(db)
+
+        def verify(live_plan: RuleTargetPlan) -> None:
+            binding = _rule_targets_binding(rules, live_plan)
+            if grant is not None:
+                grant.verify(binding)
+            elif binding.canonical_bytes() != expected_binding.canonical_bytes():
+                raise UserError(
+                    "Categorization rule state changed after preflight.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        result = service.apply_rule_targets(plan, actor="mcp", verify=verify)
+    return [
+        CategorizationRuleStateResult(
+            rule_id=item.rule_id,
+            state=item.state,
+            changed=item.changed,
+        )
+        for item in result
+    ]
+
+
+@mcp_tool(domain="categorize", read_only=False, destructive=True, idempotent=True)
+async def transactions_categorize_rules_set_coarse(
+    rules: list[CategorizationRuleTarget],
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[CategorizationRulesSetPayload]:
+    """Atomically declare complete categorization-rule target states."""
+    if not rules:
+        raise UserError(
+            "rules must contain at least one target.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    plan = await asyncio.to_thread(_preview_rule_targets, rules)
+    expected_binding = _rule_targets_binding(rules, plan)
+    if confirmation_token is not None and not plan.destructive:
+        raise UserError(
+            "confirmation_token is only valid when removing a present rule.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    grant: ConfirmationGrant | None = None
+    if plan.destructive or confirmation_token is not None:
+        grant = await grant_confirmation_or_raise(
+            binding=expected_binding if confirmation_token is None else None,
+            message=(
+                "Remove the selected categorization rule(s)? Their full prior "
+                "state is retained in the audit log and can be restored with "
+                "system_audit_undo(operation_id)."
+            ),
+            confirmation_token=confirmation_token,
+        )
+    results = await asyncio.to_thread(
+        _apply_rule_targets,
+        rules,
+        plan,
+        grant=grant,
+        expected_binding=expected_binding,
+    )
+    operation_id = current_operation_id()
+    return build_envelope(
+        data=CategorizationRulesSetPayload(
+            results=results,
+            operation_id=operation_id,
+        ),
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": operation_id},
+                rationale="Restore the audited rule-state mutation.",
+                confidence="certain",
+                idempotent=False,
+            )
         ],
     )
 
 
 @mcp_tool(domain="categorize")
+def transactions_categorize_rules_coarse(
+    view: Literal["active", "inactive", "history"] = "active",
+) -> ResponseEnvelope[CategorizationRulesCoarsePayload]:
+    """Read active, inactive, or complete historical categorization-rule states."""
+    with get_database(read_only=True) as db:
+        service = CategorizationService(db)
+        if view == "history":
+            payload: CategorizationRulesCoarsePayload = CategorizationRulesHistoryView(
+                kind="history",
+                events=service.list_rule_history(),
+            )
+        else:
+            payload = CategorizationRulesCurrentView(
+                kind=view,
+                rules=service.list_rule_snapshots(active=view == "active"),
+            )
+    return build_envelope(data=payload)
+
+
+def register_categorization_coarse_reads(mcp: FastMCP) -> None:
+    """Register the standard categorization-rule read projection."""
+    register(
+        mcp,
+        transactions_categorize_rules_coarse,
+        "transactions_categorize_rules",
+        "Read active, inactive, or audit-backed historical categorization rules. "
+        "Use view='history' to include prior and deleted states; statistics "
+        "are available from system_status(sections=['categorization']).",
+        privacy_actor="transactions_categorize_rules",
+    )
+
+
+def register_categorization_coarse_writes(mcp: FastMCP) -> None:
+    """Register the standard declarative categorization-rule write."""
+    register(
+        mcp,
+        transactions_categorize_rules_set_coarse,
+        "transactions_categorize_rules_set",
+        "Atomically declare categorization rules present, inactive, or absent. "
+        "Present requires matcher, category, and priority; inactive and absent "
+        "require rule_id and forbid replacement fields. The tool advertises its "
+        "maximum destructive risk, but asks for exact payload-bound confirmation "
+        "only before a present rule is hard-deleted. Rule removal is recoverable "
+        "with system_audit_undo(operation_id).",
+        privacy_actor="transactions_categorize_rules_set",
+    )
+
+
 def transactions_categorize_stats(
     include_auto: bool = False,
 ) -> ResponseEnvelope[CategorizeStatsPayload | CategorizeStatsWithAutoPayload]:
@@ -97,7 +302,7 @@ def transactions_categorize_stats(
             return build_envelope(
                 data=overall.to_payload(),
                 actions=[
-                    "Use transactions_categorize_pending to see uncategorized transactions"
+                    "Use reviews(kind='categorization') for uncategorized transactions"
                 ],
             )
         auto_data = AutoRuleService(db).stats()
@@ -114,13 +319,13 @@ def transactions_categorize_stats(
             ),
         ),
         actions=[
-            "Use transactions_categorize_pending to see uncategorized transactions",
-            "Use transactions_categorize_auto_review to review pending proposals",
+            "Use reviews(kind='categorization') for uncategorized transactions",
+            "Use transactions_categorize_rules(view='history') to inspect "
+            "persisted rule state changes",
         ],
     )
 
 
-@mcp_tool(domain="categorize")
 def transactions_categorize_pending(
     limit: int = 50,
     sort: Literal["date", "impact"] = "date",
@@ -180,14 +385,14 @@ def transactions_categorize_pending(
     )
     actions = [
         "Use transactions_categorize_commit to commit categorizations for these transactions",
-        "Use transactions_categorize_rules_create to set up automatic categorization",
+        "Use transactions_categorize_rules_set to set up automatic categorization",
     ]
     flagged = sum(1 for r in records if r.get("pending_transfer_match"))
     if flagged:
         actions.append(
             f"{flagged} of these have an unresolved transfer match. Categorizing "
             "a transfer leg double-counts it against the eventual pair — resolve "
-            "them first with transactions_matches_run / transactions_matches_set."
+            "them first with reviews(kind='matches') and reviews_decide."
         )
     return build_envelope(
         data=payload,
@@ -228,7 +433,7 @@ def transactions_categorize_commit(
             total_count=0,
             actions=[
                 "Use transactions_categorize_rules to review auto-created rules",
-                "Use transactions_categorize_pending to fetch the next batch",
+                "Use reviews(kind='categorization') to fetch the next batch",
             ],
         )
 
@@ -241,12 +446,11 @@ def transactions_categorize_commit(
         total_count=len(items),
         actions=[
             "Use transactions_categorize_rules to review auto-created rules",
-            "Use transactions_categorize_pending to fetch the next batch",
+            "Use reviews(kind='categorization') to fetch the next batch",
         ],
     )
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_rules_create(
     rules: list[dict[str, str | float | int | None]],
     reapply: bool = False,
@@ -292,7 +496,6 @@ def transactions_categorize_rules_create(
     )
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_rules_delete(
     rule_id: str, reapply: bool = False
 ) -> ResponseEnvelope[RulesDeletePayload]:
@@ -319,7 +522,6 @@ def transactions_categorize_rules_delete(
     )
 
 
-@mcp_tool(domain="categorize")
 def transactions_categorize_auto_review(
     limit: int | None = None,
 ) -> ResponseEnvelope[AutoReviewPayload]:
@@ -339,7 +541,6 @@ def transactions_categorize_auto_review(
     return auto_review_envelope(result)
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_auto_accept(
     accept: list[str] | None = None,
     reject: list[str] | None = None,
@@ -377,21 +578,42 @@ def transactions_categorize_auto_accept(
 @mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_run(
     methods: list[Literal["rules", "merchants"]] | None = None,
-) -> ResponseEnvelope[CategorizeRunPayload]:
-    """Run the categorization engine cascade over uncategorized transactions.
+    operation: Literal["categorize", "improve_ai"] = "categorize",
+) -> ResponseEnvelope[CategorizeRunPayload | ImproveAiPayload]:
+    """Run categorization or upgrade AI guesses to provider-native categories.
 
-    Each method runs a deterministic engine: ``rules`` applies active
-    user-authored pattern rules; ``merchants`` applies the stored merchant
-    catalog. Engines run in the order given — an earlier engine's write
-    blocks a later engine's write on the same row via source-precedence.
-    The canonical order ``["rules", "merchants"]`` takes an optimized
-    shared-scan path. Amounts use the accounting convention: negative =
-    expense, positive = income; transfers exempt.
+    ``operation="categorize"`` runs deterministic engines over uncategorized
+    transactions. ``rules`` applies active user-authored pattern rules and
+    ``merchants`` applies the stored merchant catalog. Engines run in the
+    order given; the canonical order takes an optimized shared-scan path.
+
+    ``operation="improve_ai"`` revisits only transactions currently labeled
+    by AI and upgrades those with a confident provider-native category. It
+    forbids ``methods`` because rules/merchant engines target a different
+    transaction population. Amounts use the accounting convention: negative
+    = expense, positive = income; transfers exempt.
 
     Args:
+        operation: ``categorize`` (default) or ``improve_ai``.
         methods: Engines to run in the listed order. Defaults to
-            ["rules", "merchants"].
+            ["rules", "merchants"]. Valid only for ``categorize``.
     """
+    if operation == "improve_ai":
+        if methods is not None:
+            raise UserError(
+                "methods is valid only when operation='categorize'.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        with get_database(read_only=False) as db:
+            count = CategorizationService(db).improve_ai_categories()
+        return build_envelope(
+            data=ImproveAiPayload(upgraded_count=count),
+            sensitivity="low",
+            actions=[
+                "Use system_status(sections=['categorization']) to check coverage",
+            ],
+        )
+
     with get_database(read_only=False) as db:
         data = CategorizationService(db).categorize_run(methods=methods)
     payload = CategorizeRunPayload(
@@ -400,13 +622,12 @@ def transactions_categorize_run(
     return build_envelope(
         data=payload,
         actions=[
-            "Use transactions_categorize_stats to check resulting coverage",
-            "Use transactions_categorize_pending to see remaining uncategorized rows",
+            "Use system_status(sections=['categorization']) to check coverage",
+            "Use reviews(kind='categorization') for remaining rows",
         ],
     )
 
 
-@mcp_tool(domain="categorize", read_only=False)
 def transactions_categorize_improve_ai() -> ResponseEnvelope[ImproveAiPayload]:
     """Re-categorize AI-guessed transactions to confident provider-native categories.
 
@@ -425,116 +646,40 @@ def transactions_categorize_improve_ai() -> ResponseEnvelope[ImproveAiPayload]:
         data=ImproveAiPayload(upgraded_count=count),
         sensitivity="low",
         actions=[
-            "Use transactions_categorize_stats to check resulting coverage",
+            "Use system_status(sections=['categorization']) to check coverage",
         ],
     )
 
 
+_LEGACY_INTERNAL_CALLBACKS = (
+    transactions_categorize_rules,
+    transactions_categorize_stats,
+    transactions_categorize_pending,
+    transactions_categorize_auto_review,
+    transactions_categorize_rules_create,
+    transactions_categorize_rules_delete,
+    transactions_categorize_auto_accept,
+)
+
+
 def register_transactions_categorize_tools(mcp: FastMCP) -> None:
-    """Register all transactions categorize namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        transactions_categorize_rules,
-        "transactions_categorize_rules",
-        "List all active categorization rules.",
-    )
-    register(
-        mcp,
-        transactions_categorize_stats,
-        "transactions_categorize_stats",
-        "Get categorization coverage statistics: total, categorized, uncategorized, "
-        "percent, and breakdown by source. In by_source, 'rule' counts rows "
-        "categorized by a persisted rule and 'merchant_map' counts rows the "
-        "merchant-map engine categorized (both are stored as categorized_by='rule'; "
-        "the split is reporting-only, so 'rule' reconciles with the list from "
-        "transactions_categorize_rules). Pass include_auto=True to also include "
-        "auto-rule health metrics (active rules, pending proposals, transactions "
-        "categorized by auto-rules); the response data becomes "
-        "{overall: {...}, auto: {...}} instead of the flat shape.",
-    )
-    register(
-        mcp,
-        transactions_categorize_pending,
-        "transactions_categorize_pending",
-        "Find transactions that have not been categorized yet. "
-        "Excludes archived accounts and transfers whose pair has already been "
-        "matched. A transfer whose pair is NOT yet matched still appears here, "
-        "flagged pending_transfer_match=true — categorizing such a row "
-        "double-counts it against the eventual transfer pair, so resolve "
-        "matching first. "
-        "sort='impact' ranks by ABS(amount)*age_days (largest-value/oldest first); "
-        "sort='date' (default) orders by most recent first. "
-        "Filter by min_amount (absolute value) and account (account_id or display_name). "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
+    """Register the standard categorization read and write boundaries."""
+    register_categorization_coarse_reads(mcp)
     register(
         mcp,
         transactions_categorize_commit,
         "transactions_categorize_commit",
-        "Commit externally-decided categorizations for a batch of transactions. "
-        "Auto-creates merchant mappings for future auto-categorization. "
-        "Writes app.transaction_categories and app.user_merchants; revert by calling again with a different category.",
-    )
-    register(
-        mcp,
-        transactions_categorize_rules_create,
-        "transactions_categorize_rules_create",
-        "Create multiple categorization rules for automatic "
-        "transaction categorization. Idempotent: rules are deduped against "
-        "active rules by matcher+output (merchant_pattern, match_type, "
-        "min/max_amount, account_id, category, subcategory); name and "
-        "priority are metadata. Retries return the existing rule_id. "
-        "A NEW 'contains' rule whose pattern is too short to discriminate "
-        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL) is refused and "
-        "reported in error_details unless allow_broad=true — use "
-        "match_type='exact' for a short pattern, or set allow_broad=true to "
-        "accept the risk. An already-active rule is returned as-is, ungated. "
-        "Writes app.categorization_rules; revert with transactions_categorize_rules_delete (soft-delete sets active=False).",
-    )
-    register(
-        mcp,
-        transactions_categorize_rules_delete,
-        "transactions_categorize_rules_delete",
-        "Soft-delete a categorization rule (set inactive). "
-        "Updates app.categorization_rules.active=False; the rule row is preserved and can be reactivated by re-creating with the same fields (no built-in reactivate tool).",
-    )
-    register(
-        mcp,
-        transactions_categorize_auto_review,
-        "transactions_categorize_auto_review",
-        "List pending auto-rule proposals with sample transactions and trigger counts, "
-        "including estimated_match_count and is_broad — a proposal flagged is_broad "
-        "requires allow_broad=True on transactions_categorize_auto_accept to be accepted.",
-    )
-    register(
-        mcp,
-        transactions_categorize_auto_accept,
-        "transactions_categorize_auto_accept",
-        "Batch accept/reject auto-rule proposals. Accepted "
-        "proposals become active rules and immediately categorize "
-        "matching transactions. Two kinds of proposal are skipped, not promoted, "
-        "unless allow_broad=True: one flagged is_broad (estimated_match_count far "
-        "exceeds its evidence — a broad rule recategorizes many transactions at "
-        "once), and one whose 'contains' pattern is too short to discriminate "
-        "(e.g. 'TO', which also matches STORE, AUTO and TOTAL). "
-        "Writes app.categorization_rules and app.transaction_categories; revert accepted rules with transactions_categorize_rules_delete (rejected proposals cannot be un-rejected).",
+        "Commit a caller-reviewed categorization batch to "
+        "app.transaction_categories and app.user_merchants. Re-categorize a "
+        "transaction to replace a prior decision.",
     )
     register(
         mcp,
         transactions_categorize_run,
         "transactions_categorize_run",
-        "Run the categorization engine cascade (rules and/or merchants) over uncategorized transactions. "
-        "Amounts use the accounting convention: negative = expense, positive = income; transfers exempt. "
-        "Writes app.transaction_categories via the named engine(s); revert by calling transactions_categorize_commit with a different category, or by soft-deleting the source rule via transactions_categorize_rules_delete(reapply=True).",
+        "Run deterministic categorization engines or upgrade confident AI "
+        "guesses to provider-native categories. operation='categorize' accepts "
+        "methods; operation='improve_ai' forbids it. Amounts use the accounting "
+        "convention: negative = expense, positive = income; transfers exempt.",
     )
-    register(
-        mcp,
-        transactions_categorize_improve_ai,
-        "transactions_categorize_improve_ai",
-        "Re-categorize AI-guessed transactions to confident provider-native "
-        "(Plaid PFC) categories. Only rewrites rows currently "
-        "categorized_by='ai'; never overrides user, rule, or merchant "
-        "categorizations. Writes app.transaction_categories; revert by "
-        "re-categorizing the transaction (a user edit wins at priority 1).",
-    )
+    register_categorization_coarse_writes(mcp)

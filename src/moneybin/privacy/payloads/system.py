@@ -38,8 +38,14 @@ Tier derivation summary:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from moneybin.privacy.payloads.categorize import (
+    CategorizeStatsPayload,
+    CategorizeStatsWithAutoPayload,
+)
 from moneybin.privacy.taxonomy import DataClass
 
 # ---------------------------------------------------------------------------
@@ -316,6 +322,53 @@ class SystemDoctorPayload:
 
 
 # ---------------------------------------------------------------------------
+# dormant coarse system_status payload
+# ---------------------------------------------------------------------------
+
+
+class OverviewStatus(BaseModel):
+    """The existing data-inventory projection inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["overview"] = "overview"
+    overview: SystemStatusPayload
+
+
+class DoctorStatus(BaseModel):
+    """The existing integrity-check projection inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["doctor"] = "doctor"
+    doctor: SystemDoctorPayload
+
+
+class CategorizationStatus(BaseModel):
+    """The existing categorization statistics inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["categorization"] = "categorization"
+    statistics: CategorizeStatsPayload | CategorizeStatsWithAutoPayload
+
+
+SystemStatusSection = Annotated[
+    OverviewStatus | DoctorStatus | CategorizationStatus,
+    Field(discriminator="kind"),
+]
+
+
+class SystemStatusCoarsePayload(BaseModel):
+    """Selected status sections in deterministic request order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["sections"] = "sections"
+    sections: list[SystemStatusSection]
+
+
+# ---------------------------------------------------------------------------
 # refresh_run payload
 # ---------------------------------------------------------------------------
 
@@ -340,9 +393,10 @@ class RefreshRunPayload:
 
     The ``*_error`` fields are DESCRIPTION (Tier.MEDIUM): SQLMesh / step error
     type names are non-PII but we conservatively classify them as DESCRIPTION
-    since error strings in adjacent tooling sometimes embed model paths. They
-    are emitted as stable ``null`` keys (not omitted when absent) so agents see
-    a consistent shape — matching the ``self_heal_actions`` stable-key intent.
+    since error strings in adjacent tooling sometimes embed model paths.
+    ``identity_errors`` contains only fixed domain labels and is therefore
+    TXN_TYPE (Tier.LOW). These fields are emitted as stable keys so agents see a
+    consistent shape — matching the ``self_heal_actions`` stable-key intent.
     """
 
     applied: Annotated[bool, DataClass.TXN_TYPE]
@@ -350,6 +404,7 @@ class RefreshRunPayload:
     error: Annotated[str | None, DataClass.DESCRIPTION]
     matching_error: Annotated[str | None, DataClass.DESCRIPTION]
     categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
+    identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
     self_heal_actions: list[SelfHealActionRow]
 
 
@@ -475,3 +530,45 @@ class SystemAuditGetPayload:
     events: list[SystemAuditEventPayload]
     can_undo: Annotated[bool, DataClass.TXN_TYPE]
     undo_blocked_by: Annotated[list[str] | None, DataClass.RECORD_ID]
+
+
+# ---------------------------------------------------------------------------
+# dormant coarse system_audit payload
+# ---------------------------------------------------------------------------
+
+
+class AuditEvents(BaseModel):
+    """Recent audit events."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["events"] = "events"
+    events: list[SystemAuditEventPayload]
+
+
+class AuditHistory(BaseModel):
+    """Recent audited operations with undoability metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["history"] = "history"
+    operations: list[SystemAuditHistoryEntryPayload]
+
+
+class AuditDetail(BaseModel):
+    """One operation or one parent audit event and its child chain."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["detail"] = "detail"
+    operation_id: Annotated[str | None, DataClass.RECORD_ID]
+    audit_id: Annotated[str | None, DataClass.RECORD_ID]
+    events: list[SystemAuditEventPayload]
+    can_undo: Annotated[bool | None, DataClass.TXN_TYPE]
+    undo_blocked_by: Annotated[list[str] | None, DataClass.RECORD_ID]
+
+
+SystemAuditCoarsePayload = Annotated[
+    AuditEvents | AuditHistory | AuditDetail,
+    Field(discriminator="kind"),
+]

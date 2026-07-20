@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.services.transaction_service import (
     Transaction,
     TransactionGetResult,
@@ -171,9 +172,16 @@ class TestTransactionGet:
         assert len(result.transactions) == 4
 
     @pytest.mark.unit
-    def test_unresolvable_account_silently_skipped(self, txn_db: Database) -> None:
-        result = TransactionService(txn_db).get(accounts=["DOES_NOT_EXIST_XYZ"])
-        assert len(result.transactions) == 0
+    def test_unresolvable_account_is_rejected(self, txn_db: Database) -> None:
+        with pytest.raises(UserError, match="No account matches"):
+            TransactionService(txn_db).get(accounts=["DOES_NOT_EXIST_XYZ"])
+
+    @pytest.mark.unit
+    def test_partial_account_resolution_is_rejected(self, txn_db: Database) -> None:
+        with pytest.raises(UserError, match="No account matches"):
+            TransactionService(txn_db).get(
+                accounts=["A1", "DOES_NOT_EXIST_XYZ"],
+            )
 
     @pytest.mark.unit
     def test_cursor_pagination(self, txn_db: Database) -> None:

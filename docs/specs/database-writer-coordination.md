@@ -492,7 +492,6 @@ The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchang
 | `src/moneybin/mcp/tools/transactions.py` | Mixed |
 | `src/moneybin/mcp/tools/transactions_categorize.py` | Mixed |
 | `src/moneybin/mcp/tools/transactions_categorize_assist.py` | Read-only |
-| `src/moneybin/mcp/tools/budget.py` | Write |
 | `src/moneybin/cli/utils.py` | `handle_cli_errors()` becomes error-only (no `db` yield); `sqlmesh_command()` opens its own write connection |
 | `src/moneybin/cli/commands/import_cmd.py` | Add explicit `get_database()` calls inside `handle_cli_errors()` blocks |
 | `src/moneybin/observability.py` | Phase 4 changes |

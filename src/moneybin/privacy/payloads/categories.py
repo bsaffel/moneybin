@@ -12,6 +12,7 @@ Tier derivation summary:
   - ``CategoryDeletePayload``    → Tier.LOW (CATEGORY + TXN_TYPE)
   - ``MerchantRow``              → Tier.MEDIUM (MERCHANT_NAME fields)
   - ``MerchantsPayload``         → Tier.MEDIUM (via MerchantRow)
+  - ``MerchantCreatePayload``    → Tier.LOW (RECORD_ID + TXN_TYPE)
   - ``MerchantsCreatePayload``   → Tier.LOW (AGGREGATE only — counts + opaque dicts)
 
 ``merchants`` returns raw_pattern and canonical_name, both MERCHANT_NAME
@@ -135,6 +136,19 @@ class MerchantsPayload:
     """Payload for the ``merchants`` list tool."""
 
     merchants: list[MerchantRow]
+
+
+# ---------------------------------------------------------------------------
+# merchant create — one mapping result
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class MerchantCreatePayload:
+    """Payload for one merchant-mapping creation."""
+
+    merchant_id: Annotated[str, DataClass.RECORD_ID]
+    action: Annotated[str, DataClass.TXN_TYPE]
 
 
 # ---------------------------------------------------------------------------

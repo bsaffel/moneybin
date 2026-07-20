@@ -300,19 +300,22 @@ class SecurityLinkDecisionsRepo(BaseRepo):
             return 0
         return int(row[0]) if row else 0
 
-    def history(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def history(self, *, limit: int | None = 50) -> list[dict[str, Any]]:
         """All decisions (any status) newest-first by ``decided_at``. Read-only.
 
         Returns an empty list when the table does not yet exist
         (``CatalogException`` guard). A negative ``limit`` is clamped to 0 —
         DuckDB rejects a negative LIMIT (``BinderException``). No audit emitted.
         """
-        limit = max(limit, 0)
+        if limit is not None:
+            limit = max(limit, 0)
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        params = [limit] if limit is not None else []
         try:
             rows = self._db.execute(
                 f"SELECT {_COLS} FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # constant column list + TableRef + parameterized limit
-                "ORDER BY decided_at DESC NULLS LAST, decision_id DESC LIMIT ?",
-                [limit],
+                f"ORDER BY decided_at DESC NULLS LAST, decision_id DESC {limit_clause}",
+                params,
             ).fetchall()
         except duckdb.CatalogException:
             return []

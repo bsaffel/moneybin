@@ -22,24 +22,42 @@ envelope. The investments_securities_links_* review tools delegate to
 SecurityLinksService instead — the agent-facing peer to the
 `investments securities links` CLI (mirrors merchants_links_* /
 accounts_links_*).
+
+The granular callbacks named in ``_LEGACY_INTERNAL_CALLBACKS`` are internal
+helpers retained for standard-boundary composition and parity. They are never
+individually registered, remain undecorated, and are pinned by the
+surface-budget tests.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date as _date
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import Field, StrictBool
 
 from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.elicitation import confirm_or_raise
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
     InvestmentGainsPayload,
@@ -48,15 +66,32 @@ from moneybin.privacy.payloads.investments import (
     InvestmentLotsPayload,
     InvestmentLotsSelectPayload,
     InvestmentRecordPayload,
+    InvestmentsCoarsePayload,
     InvestmentSecuritiesPayload,
     InvestmentSecuritySetPayload,
+    InvestmentsEventsView,
+    InvestmentsGainsView,
+    InvestmentsHoldingsView,
+    InvestmentsLotsView,
+    InvestmentsSecuritiesView,
     SecurityLinksHistoryPayload,
     SecurityLinksPendingPayload,
     SecurityLinksSetPayload,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.services.account_service import AccountService
+from moneybin.services.entity_reference import (
+    AmbiguousEntity,
+    EntityCandidate,
+    MissingEntity,
+    resolve_entity_reference,
+)
 from moneybin.services.investment_service import InvestmentService
-from moneybin.services.security_links_service import SecurityLinksService
+from moneybin.services.security_links_service import (
+    SecurityLinkAcceptImpact,
+    SecurityLinksService,
+)
 
 
 def _parse_date(value: str | None) -> _date | None:
@@ -74,7 +109,6 @@ def _parse_decimal(value: object) -> Decimal | None:
 # ─── Read tools ─────────────────────────────────────────────────────────────
 
 
-@mcp_tool()
 def investments(
     account: str | None = None,
     security: str | None = None,
@@ -113,13 +147,12 @@ def investments(
     return build_envelope(
         data=InvestmentEventsPayload.from_result(result),
         actions=[
-            "Use investments_holdings for current positions",
-            "Use investments_gains for realized gain/loss",
+            "Use investments(view='holdings') for current positions",
+            "Use investments(view='gains') for realized gain/loss",
         ],
     )
 
 
-@mcp_tool()
 def investments_holdings(
     account: str | None = None,
 ) -> ResponseEnvelope[InvestmentHoldingsPayload]:
@@ -137,13 +170,12 @@ def investments_holdings(
     return build_envelope(
         data=InvestmentHoldingsPayload.from_result(result),
         actions=[
-            "Use investments_lots for per-lot basis",
-            "Use investments_gains for realized gain/loss",
+            "Use investments(view='lots') for per-lot basis",
+            "Use investments(view='gains') for realized gain/loss",
         ],
     )
 
 
-@mcp_tool()
 def investments_lots(
     account: str | None = None,
     security: str | None = None,
@@ -172,12 +204,11 @@ def investments_lots(
         data=InvestmentLotsPayload.from_result(result),
         actions=[
             "Use investments_lots_select to override FIFO for a disposal",
-            "Use investments_gains for realized gain/loss",
+            "Use investments(view='gains') for realized gain/loss",
         ],
     )
 
 
-@mcp_tool()
 def investments_gains(
     account: str | None = None,
     security: str | None = None,
@@ -211,11 +242,10 @@ def investments_gains(
         )
     return build_envelope(
         data=InvestmentGainsPayload.from_result(result),
-        actions=["Use investments_lots for lot-level detail"],
+        actions=["Use investments(view='lots') for lot-level detail"],
     )
 
 
-@mcp_tool()
 def investments_securities(
     security_type: str | None = None,
 ) -> ResponseEnvelope[InvestmentSecuritiesPayload]:
@@ -356,7 +386,7 @@ def investments_record(
             "Use refresh_run to materialize them into "
             "core.fct_investment_transactions (and derive holdings, lots, gains)",
             "Use investments to view recorded events",
-            "Use investments_holdings to see updated positions",
+            "Use investments(view='holdings') to see updated positions",
         ],
     )
 
@@ -491,7 +521,7 @@ def investments_lots_select(
         actions=[
             "Use refresh_run to materialize the updated selection into "
             "core.fct_realized_gains",
-            "Use investments_gains to see the updated allocation",
+            "Use investments(view='gains') to see the updated allocation",
         ],
     )
 
@@ -499,7 +529,6 @@ def investments_lots_select(
 # ─── Review tools (security links) ─────────────────────────────────────────
 
 
-@mcp_tool(domain="links")
 def investments_securities_links_pending() -> ResponseEnvelope[
     SecurityLinksPendingPayload
 ]:
@@ -529,11 +558,10 @@ def investments_securities_links_pending() -> ResponseEnvelope[
         data=payload,
         total_count=n_pending,
         actions=[
-            "Use investments_securities_links_set(decision_id, action='accept', "
-            "into=<candidate_security_id>) to merge — the user is prompted to "
-            "confirm the merge before anything is written",
-            "Use investments_securities_links_set(decision_id, action='reject') "
-            "to keep the provider's security as its own distinct instrument",
+            "Use identity_links_decide with kind='security_link', "
+            "decision='accept', decision_id, and target_id to merge",
+            "Use identity_links_decide with kind='security_link', "
+            "decision='reject', and decision_id to keep it distinct",
         ],
     )
 
@@ -551,37 +579,65 @@ class _MergeProposal:
     candidate_ticker: str | None
     candidate_name: str | None
     match_reason: str | None
-
-
-def _cli_equivalent(decision_id: str, into: str) -> str:
-    return (
-        f"moneybin investments securities links set {decision_id} "
-        f"--accept --into {into}"
-    )
+    provisional_security_id: str
+    blast_radius: dict[str, int]
 
 
 def _load_pending_proposal(decision_id: str) -> _MergeProposal:
     """Read the decision out of the live review queue, or raise if it isn't there."""
     with get_database(read_only=True) as db:
-        groups = SecurityLinksService(db, actor="mcp").pending()
-    for group in groups:
-        for candidate in group.candidates:
-            if candidate.decision_id == decision_id:
-                return _MergeProposal(
-                    decision_id=decision_id,
-                    ref_kind=group.ref_kind,
-                    ref_value=group.ref_value,
-                    provider_ticker=group.provider_ticker,
-                    provider_name=group.provider_name,
-                    candidate_security_id=candidate.candidate_security_id,
-                    candidate_ticker=candidate.candidate_ticker,
-                    candidate_name=candidate.candidate_name,
-                    match_reason=candidate.match_reason,
-                )
+        service = SecurityLinksService(db, actor="mcp")
+        groups = service.pending()
+        for group in groups:
+            for candidate in group.candidates:
+                if candidate.decision_id == decision_id:
+                    impact = service.accept_impact(
+                        decision_id,
+                        into=candidate.candidate_security_id,
+                    )
+                    return _MergeProposal(
+                        decision_id=decision_id,
+                        ref_kind=group.ref_kind,
+                        ref_value=group.ref_value,
+                        provider_ticker=group.provider_ticker,
+                        provider_name=group.provider_name,
+                        candidate_security_id=candidate.candidate_security_id,
+                        candidate_ticker=candidate.candidate_ticker,
+                        candidate_name=candidate.candidate_name,
+                        match_reason=candidate.match_reason,
+                        provisional_security_id=impact.provisional_security_id,
+                        blast_radius=impact.blast_radius,
+                    )
     raise UserError(
         f"No pending security merge decision '{decision_id}'.",
-        code=error_codes.MUTATION_NOT_FOUND,
-        hint="List open decisions with investments_securities_links_pending.",
+        code=error_codes.MUTATION_NOTHING_TO_DO,
+        hint="List open decisions with reviews(kind='security_links').",
+    )
+
+
+def _security_link_binding(
+    *,
+    decision_id: str,
+    candidate_security_id: str,
+    provisional_security_id: str,
+    blast_radius: dict[str, int],
+) -> ConfirmationBinding:
+    """Bind approval without exposing the raw provider reference."""
+    return ConfirmationBinding(
+        arguments={
+            "decision_id": decision_id,
+            "action": "accept",
+            "into": candidate_security_id,
+        },
+        resolved_ids=(
+            provisional_security_id,
+            candidate_security_id,
+        ),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="security_identity_merge",
+        blast_radius=blast_radius,
     )
 
 
@@ -603,36 +659,38 @@ def _confirm_message(p: _MergeProposal) -> str:
         f"Proposed on: {p.match_reason or 'unspecified'}. The resolver proposes a "
         "merge ONLY when it cannot decide on its own — this is an ambiguous "
         "match, not a certain one.\n\n"
-        "Accepting re-points every accepted provider ref and tax-lot selection "
-        "onto the survivor and deletes the provisional catalog row. If these are "
-        "not the same instrument, cost basis and every later realized gain will "
-        "be wrong. Reversible via system_audit_undo(operation_id).\n\n"
+        "Accepting re-points every accepted provider ref, tax-lot selection, "
+        "and manual investment ledger row onto the survivor, then deletes the "
+        "provisional catalog row. If these are not the same instrument, cost "
+        "basis and every later realized gain will be wrong. Reversible via "
+        "system_audit_undo(operation_id).\n\n"
         "Accept this merge?"
     )
 
 
-async def _confirm_merge_or_raise(p: _MergeProposal) -> None:
-    """Obtain explicit human agreement for a merge, or raise — never fall through.
-
-    Delegates the gate itself to the shared ``confirm_or_raise`` helper (one
-    elicitation pattern across every accept gate); only the prompt and the CLI
-    equivalent are security-specific.
-    """
-    await confirm_or_raise(
-        _confirm_message(p),
-        subject="This merge",
-        unchanged=f"decision '{p.decision_id}' is still pending",
-        cli_equivalent=_cli_equivalent(p.decision_id, p.candidate_security_id),
-        details={"decision_id": p.decision_id},
-    )
-
-
-def _apply_accept(decision_id: str, into: str) -> None:
+def _apply_accept(
+    decision_id: str,
+    into: str,
+    grant: ConfirmationGrant,
+) -> None:
     # decided_by="user" is truthful only on this path: a human just ratified the
     # merge through the elicitation gate above.
+    def verify(impact: SecurityLinkAcceptImpact) -> None:
+        grant.verify(
+            _security_link_binding(
+                decision_id=decision_id,
+                candidate_security_id=into,
+                provisional_security_id=impact.provisional_security_id,
+                blast_radius=impact.blast_radius,
+            )
+        )
+
     with get_database(read_only=False) as db:
         SecurityLinksService(db, actor="mcp").accept_merge(
-            decision_id, into=into, decided_by="user"
+            decision_id,
+            into=into,
+            decided_by="user",
+            verify_accept=verify,
         )
 
 
@@ -647,23 +705,11 @@ def _apply_reject(decision_id: str) -> None:
         )
 
 
-@mcp_tool(
-    domain="links",
-    read_only=False,
-    destructive=True,
-    idempotent=False,
-    # The accept path blocks on a human reading a merge confirmation (two
-    # securities + the reason they're ambiguous). The 30s default would routinely
-    # fire first — and a cap that expires mid-decision means the user "accepts"
-    # into a coroutine that was already cancelled. Same headroom as gsheet_auth's
-    # interactive OAuth wait. Timing out is still safe (nothing is written), just
-    # confusing.
-    timeout_seconds=180.0,
-)
 async def investments_securities_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
     into: str | None = None,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[SecurityLinksSetPayload]:
     """Accept (merge) or reject one pending security merge decision.
 
@@ -673,13 +719,12 @@ async def investments_securities_links_set(
     - `action="accept"` + `into=<the decision's own candidate_security_id>`
       MERGES. This REQUIRES explicit human confirmation: the tool prompts the
       user through an MCP elicitation naming both securities and the reason,
-      and merges only if they agree. On a client that cannot prompt (no
-      elicitation capability), accept HARD-FAILS with
-      mutation_confirmation_required and points at the CLI — an agent cannot
-      accept a merge on its own, at any confidence. `into` is also a
-      confirming safety check: it must equal the decision's own candidate (on
-      a tied group the resolver files one decision per candidate), so a
-      mistyped or stale decision_id cannot merge into the wrong security.
+      and merges only if they agree. A client that cannot prompt receives
+      mutation_confirmation_required with a short-lived, payload-bound token
+      for an exact retry. `into` is also a confirming safety check: it must
+      equal the decision's own candidate (on a tied group the resolver files
+      one decision per candidate), so a mistyped or stale decision_id cannot
+      merge into the wrong security.
       Mismatched, empty, or missing `into` raises mutation_invalid_input —
       it is never treated as a reject.
     - `action="reject"` (pass no `into`) REJECTS — keeps the provisional
@@ -695,11 +740,11 @@ async def investments_securities_links_set(
     and every later realized gain are wrong.
 
     Mutation surface: writes app.security_link_decisions + app.security_links
-    + app.lot_selections + app.securities (deletes the merged-away
-    provisional row on accept). Revert with system_audit_undo(operation_id) —
-    the whole cascade is one audited operation and reverses atomically; find
-    the operation_id via system_audit. Find pending decisions with
-    investments_securities_links_pending.
+    + app.lot_selections + raw.manual_investment_transactions + app.securities
+    (deletes the merged-away provisional row on accept). Revert with
+    system_audit_undo(operation_id) — the whole cascade is one audited operation
+    and reverses atomically; find the operation_id via system_audit. Find pending
+    decisions with investments_securities_links_pending.
 
     Args:
         decision_id: The decision id to act on (from
@@ -709,6 +754,8 @@ async def investments_securities_links_set(
         into: With action="accept", the candidate_security_id to merge into —
             must equal the decision's own candidate_security_id. Invalid with
             action="reject".
+        confirmation_token: Opaque payload-bound token returned to clients that
+            cannot elicit. Used only with action="accept".
     """
     if action not in ("accept", "reject"):
         raise UserError(
@@ -729,36 +776,54 @@ async def investments_securities_links_set(
     else:
         if not into:
             raise UserError(
-                "action='accept' requires 'into' = the decision's own "
-                "candidate_security_id (see investments_securities_links_pending). "
+                "action='accept' requires 'into' = the target_id shown by "
+                "reviews(kind='security_links'). "
                 "An empty 'into' is not a reject — pass action='reject' for that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        proposal = await asyncio.to_thread(_load_pending_proposal, decision_id)
-        if into != proposal.candidate_security_id:
-            # Refuse BEFORE prompting: a doomed merge must not cost the user a
-            # confirmation. The service re-checks this; this is the boundary copy.
-            raise UserError(
-                f"'into' does not match decision '{decision_id}' — it must be that "
-                "decision's own candidate_security_id.",
-                code=error_codes.MUTATION_INVALID_INPUT,
-                hint="Re-read the decision with investments_securities_links_pending.",
+        if confirmation_token is None:
+            proposal = await asyncio.to_thread(_load_pending_proposal, decision_id)
+            if into != proposal.candidate_security_id:
+                # Refuse BEFORE prompting: a doomed merge must not cost the user a
+                # confirmation. The service re-checks this; this is the boundary copy.
+                raise UserError(
+                    f"'into' does not match decision '{decision_id}' — it must be that "
+                    "decision's own candidate_security_id.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint=("Re-read the decision with reviews(kind='security_links')."),
+                )
+            binding = _security_link_binding(
+                decision_id=decision_id,
+                candidate_security_id=into,
+                provisional_security_id=proposal.provisional_security_id,
+                blast_radius=proposal.blast_radius,
             )
-        await _confirm_merge_or_raise(proposal)
-        await asyncio.to_thread(_apply_accept, decision_id, into)
+            message = _confirm_message(proposal)
+        else:
+            binding = None
+            message = ""
+        grant = await grant_confirmation_or_raise(
+            binding=binding,
+            message=message,
+            confirmation_token=confirmation_token,
+        )
+        await asyncio.to_thread(
+            _apply_accept,
+            decision_id,
+            into,
+            grant,
+        )
         status = "accepted"
     return build_envelope(
         data=SecurityLinksSetPayload(decision_id=decision_id, status=status),
         actions=[
-            "Use investments_securities_links_pending to review remaining "
-            "pending decisions",
+            "Use reviews(kind='security_links') for remaining pending decisions",
             "Reverse this decision with system_audit_undo(operation_id) — find "
             "the operation_id with system_audit",
         ],
     )
 
 
-@mcp_tool(domain="links")
 def investments_securities_links_history(
     limit: int = 50,
 ) -> ResponseEnvelope[SecurityLinksHistoryPayload]:
@@ -772,138 +837,477 @@ def investments_securities_links_history(
     payload = SecurityLinksHistoryPayload.from_rows(rows)
     return build_envelope(
         data=payload,
-        actions=[
-            "Use investments_securities_links_pending for the active review queue"
+        actions=["Use reviews(kind='security_links') for the active review queue"],
+    )
+
+
+# ─── Standard coarse read ─────────────────────────────────────────────────
+
+
+def _resolve_coarse_reference(
+    reference: str,
+    candidates: list[EntityCandidate],
+    *,
+    noun: Literal["account", "security"],
+) -> str:
+    """Resolve one filter reference without echoing it in errors."""
+    resolution = resolve_entity_reference(reference, candidates)
+    if isinstance(resolution, AmbiguousEntity):
+        raise UserError(
+            f"The {noun} reference matches multiple {noun}s.",
+            code="ENTITY_REFERENCE_AMBIGUOUS",
+            details={"candidate_ids": list(resolution.candidate_ids)},
+        )
+    if isinstance(resolution, MissingEntity):
+        raise UserError(
+            f"The {noun} reference did not match a {noun}.",
+            code="ENTITY_REFERENCE_NOT_FOUND",
+            details={"candidate_ids": []},
+        )
+    return resolution.entity_id
+
+
+def _coarse_account_candidates(service: AccountService) -> list[EntityCandidate]:
+    """Project active accounts into the shared resolver shape."""
+    payload = service.list_accounts(include_archived=False, type_filter=None)
+    return [
+        EntityCandidate(
+            entity_id=row.account_id,
+            display_name=row.display_name or row.account_id,
+            aliases=tuple(
+                value
+                for value in (
+                    row.institution_name,
+                    row.account_type,
+                    row.account_subtype,
+                )
+                if value is not None
+            ),
+        )
+        for row in payload.rows
+    ]
+
+
+def _coarse_security_candidates(
+    service: InvestmentService,
+) -> list[EntityCandidate]:
+    """Project securities into the shared resolver shape."""
+    return [
+        EntityCandidate(
+            entity_id=row.security_id,
+            display_name=row.name,
+            aliases=tuple(
+                value
+                for value in (
+                    row.ticker,
+                    (
+                        f"{row.ticker}.{row.exchange}"
+                        if row.ticker is not None and row.exchange is not None
+                        else None
+                    ),
+                    row.cusip,
+                    row.isin,
+                    row.figi,
+                    row.coingecko_id,
+                )
+                if value is not None
+            ),
+        )
+        for row in service.list_securities().rows
+    ]
+
+
+def _investment_scope(
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    filters: dict[str, object],
+) -> dict[str, object]:
+    """Return the complete canonical investment cursor scope."""
+    return {"view": view, **filters}
+
+
+def _investment_position(
+    cursor: str | None,
+    *,
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    filters: dict[str, object],
+) -> KeysetPosition | None:
+    """Decode and type-check a stable-identity investment cursor."""
+    if cursor is None:
+        return None
+    try:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace="investments",
+            scope=_investment_scope(view, filters),
+        )
+        key_length = 2 if view == "holdings" else 1
+        if (
+            len(position.snapshot) != key_length
+            or len(position.after) != key_length
+            or not all(
+                type(value) is str for value in (*position.snapshot, *position.after)
+            )
+        ):
+            raise ValueError("invalid investment key")
+        snapshot = cast(tuple[str, ...], position.snapshot)
+        after = cast(tuple[str, ...], position.after)
+        if after > snapshot:
+            raise ValueError("invalid investment key order")
+        return position
+    except ValueError as exc:
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="INVESTMENT_CURSOR_INVALID",
+        ) from exc
+
+
+def _investment_row_key(
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    row: Any,
+) -> tuple[str, ...]:
+    """Return immutable stable IDs for one investment projection row."""
+    if view == "events":
+        return (str(row.investment_transaction_id),)
+    if view == "holdings":
+        return (str(row.account_id), str(row.security_id))
+    if view == "lots":
+        return (str(row.lot_id),)
+    if view == "gains":
+        return (str(row.realized_gain_id),)
+    return (str(row.security_id),)
+
+
+def _investment_page[T](
+    rows: list[T],
+    *,
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    filters: dict[str, object],
+    limit: int,
+    position: KeysetPosition | None,
+) -> tuple[list[T], str | None, int]:
+    """Page immutable identities within the initial high-water boundary."""
+    ordered = sorted(rows, key=lambda row: _investment_row_key(view, row))
+    if position is None:
+        eligible = ordered
+        total_count = len(ordered)
+        snapshot = _investment_row_key(view, ordered[-1]) if ordered else None
+    else:
+        snapshot = cast(tuple[str, ...], position.snapshot)
+        after = cast(tuple[str, ...], position.after)
+        eligible = [
+            row for row in ordered if after < _investment_row_key(view, row) <= snapshot
+        ]
+        total_count = position.total
+    page = eligible[:limit]
+    if len(eligible) <= limit or not page or snapshot is None:
+        return page, None, total_count
+    return (
+        page,
+        encode_keyset_cursor(
+            namespace="investments",
+            scope=_investment_scope(view, filters),
+            snapshot=snapshot,
+            after=_investment_row_key(view, page[-1]),
+            total=total_count,
+        ),
+        total_count,
+    )
+
+
+def _investment_period(start: _date | None, end: _date | None) -> str | None:
+    """Render the selected investment date window."""
+    if start is not None and end is not None:
+        return f"{start.isoformat()} to {end.isoformat()}"
+    if start is not None:
+        return f"from {start.isoformat()}"
+    if end is not None:
+        return f"through {end.isoformat()}"
+    return None
+
+
+def _investment_actions(
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    *,
+    account: str | None,
+    security: str | None,
+    start: _date | None,
+    end: _date | None,
+    open_only: bool | None,
+    limit: int,
+    next_cursor: str | None,
+) -> list[str]:
+    """Return replacement-only hints with an executable continuation."""
+    by_view = {
+        "events": [
+            "Use investments(view='holdings') for current positions",
+            "Use investments(view='gains') for realized gain/loss",
         ],
+        "holdings": [
+            "Use investments(view='lots') for per-lot basis",
+            "Use investments(view='gains') for realized gain/loss",
+        ],
+        "lots": [
+            "Use investments_lots_select to override FIFO for a disposal",
+            "Use investments(view='gains') for realized gain/loss",
+        ],
+        "gains": ["Use investments(view='lots') for lot-level detail"],
+        "securities": [
+            "Use investments_securities_set to add or update a catalog entry"
+        ],
+    }
+    actions = list(by_view[view])
+    if next_cursor is not None:
+        arguments = [f"view={view!r}"]
+        if account is not None:
+            arguments.append(f"account={account!r}")
+        if security is not None:
+            arguments.append(f"security={security!r}")
+        if start is not None:
+            arguments.append(f"start={start.isoformat()!r}")
+        if end is not None:
+            arguments.append(f"end={end.isoformat()!r}")
+        if open_only is not None:
+            arguments.append(f"open_only={open_only!r}")
+        arguments.extend((f"limit={limit}", f"cursor={next_cursor!r}"))
+        actions.append(f"Continue with investments({', '.join(arguments)})")
+    return actions
+
+
+def _investment_coarse_envelope(
+    data: InvestmentsCoarsePayload,
+    *,
+    total_count: int,
+    next_cursor: str | None,
+    period: str | None,
+    actions: list[str],
+) -> ResponseEnvelope[InvestmentsCoarsePayload]:
+    """Build a runtime-classified investment envelope."""
+    contract_type = type(data)
+    classes = extract_data_classes(contract_type)
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(InvestmentsCoarsePayload, redact_typed(data, None))
+    envelope = cast(
+        ResponseEnvelope[InvestmentsCoarsePayload],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=len(data.rows),
+            next_cursor=next_cursor,
+            period=period,
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(envelope.summary, has_more=next_cursor is not None),
+    )
+
+
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+def investments_coarse(
+    view: Literal["events", "holdings", "lots", "gains", "securities"] = "holdings",
+    account: str | None = None,
+    security: str | None = None,
+    start: _date | None = None,
+    end: _date | None = None,
+    open_only: StrictBool | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[InvestmentsCoarsePayload]:
+    """Return one paginated investment projection selected by a closed view."""
+    if view not in ("events", "gains") and (start is not None or end is not None):
+        raise UserError(
+            "start and end are only valid for investment events and gains.",
+            code="INVESTMENT_DATES_NOT_ALLOWED",
+        )
+    if view != "lots" and open_only is not None:
+        raise UserError(
+            "open_only is only valid for investment lots.",
+            code="INVESTMENT_OPEN_ONLY_NOT_ALLOWED",
+        )
+    if view == "securities" and account is not None:
+        raise UserError(
+            "account is not valid for the securities catalog.",
+            code="INVESTMENT_ACCOUNT_NOT_ALLOWED",
+        )
+    if start is not None and end is not None and start > end:
+        raise UserError(
+            "Investment start must not be after end.",
+            code="INVESTMENT_DATE_RANGE_INVALID",
+        )
+
+    filters: dict[str, object] = {
+        "account": account.casefold().strip() if account is not None else None,
+        "end": end.isoformat() if end is not None else None,
+        "open_only": (True if view == "lots" and open_only is None else open_only),
+        "security": security.casefold().strip() if security is not None else None,
+        "start": start.isoformat() if start is not None else None,
+    }
+    position = _investment_position(cursor, view=view, filters=filters)
+
+    with get_database(read_only=True) as db:
+        service = InvestmentService(db)
+        account_id = (
+            _resolve_coarse_reference(
+                account,
+                _coarse_account_candidates(AccountService(db)),
+                noun="account",
+            )
+            if account is not None
+            else None
+        )
+        security_id = (
+            _resolve_coarse_reference(
+                security,
+                _coarse_security_candidates(service),
+                noun="security",
+            )
+            if security is not None
+            else None
+        )
+
+        if view == "events":
+            result = service.list_events(
+                account_ref=account_id,
+                security_ref=security_id,
+                date_from=start,
+                date_to=end,
+            )
+            all_rows = InvestmentEventsPayload.from_result(result)
+        elif view == "holdings":
+            result = service.holdings(
+                account_ref=account_id,
+                security_ref=security_id,
+            )
+            all_rows = InvestmentHoldingsPayload.from_result(result)
+        elif view == "lots":
+            result = service.lots(
+                account_ref=account_id,
+                security_ref=security_id,
+                open_only=True if open_only is None else bool(open_only),
+            )
+            all_rows = InvestmentLotsPayload.from_result(result)
+        elif view == "gains":
+            result = service.gains(
+                account_ref=account_id,
+                security_ref=security_id,
+                date_from=start,
+                date_to=end,
+            )
+            all_rows = InvestmentGainsPayload.from_result(result)
+        else:
+            result = service.list_securities()
+            all_rows = InvestmentSecuritiesPayload.from_result(result)
+            filtered_rows = (
+                [row for row in all_rows.rows if row.security_id == security_id]
+                if security_id is not None
+                else all_rows.rows
+            )
+            all_rows = InvestmentSecuritiesPayload(
+                rows=filtered_rows,
+                warnings=all_rows.warnings,
+            )
+        page, next_cursor, total_count = _investment_page(
+            cast(list[Any], all_rows.rows),
+            view=view,
+            filters=filters,
+            limit=limit,
+            position=position,
+        )
+        if view == "events":
+            data: InvestmentsCoarsePayload = InvestmentsEventsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "holdings":
+            data = InvestmentsHoldingsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "lots":
+            data = InvestmentsLotsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "gains":
+            data = InvestmentsGainsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        else:
+            data = InvestmentsSecuritiesView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+
+    return _investment_coarse_envelope(
+        data,
+        total_count=total_count,
+        next_cursor=next_cursor,
+        period=_investment_period(start, end),
+        actions=_investment_actions(
+            view,
+            account=account,
+            security=security,
+            start=start,
+            end=end,
+            open_only=open_only,
+            limit=limit,
+            next_cursor=next_cursor,
+        ),
+    )
+
+
+def register_investment_coarse_reads(mcp: FastMCP) -> None:
+    """Register the standard investment read."""
+    register(
+        mcp,
+        investments_coarse,
+        "investments",
+        "Return investment events, holdings, open or full tax-lot history, "
+        "realized gains, or securities through one typed view. Amounts use the investment "
+        "ledger sign convention and the currency in summary.display_currency.",
+        privacy_actor="investments",
     )
 
 
 # ─── Registration ──────────────────────────────────────────────────────────
 
+_LEGACY_INTERNAL_CALLBACKS = (
+    investments,
+    investments_holdings,
+    investments_lots,
+    investments_gains,
+    investments_securities,
+    investments_securities_links_pending,
+    investments_securities_links_set,
+    investments_securities_links_history,
+)
+
 
 def register_investments_tools(mcp: FastMCP) -> None:
-    """Register all investments namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        investments,
-        "investments",
-        "List investment ledger events (buys, sells, dividends, corporate "
-        "actions, ...). Amounts use the per-type sign convention documented "
-        "in investments_record; amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_holdings,
-        "investments_holdings",
-        "Current positions: quantity, cost basis, average cost per "
-        "(account, security). Market value/unrealized gain require price "
-        "feeds (not yet shipped) — always carries a warning that only cost "
-        "basis is available. Amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_lots,
-        "investments_lots",
-        "Tax lots with remaining quantity and basis. Open lots only by "
-        "default (open_only=False for full history). A row with "
-        "basis_incomplete=true opened with no supplied basis (e.g. a "
-        "transfer_in with unknown cost basis); data.warnings names the count "
-        "when any row is incomplete. Amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_gains,
-        "investments_gains",
-        "Realized gain/loss (the 1099-B surface). A row with "
-        "basis_incomplete=true means the disposal was oversold or the "
-        "acquisition lot is missing; data.warnings names the count when any "
-        "row is incomplete. Amounts are in the currency named by "
-        "`summary.display_currency`.",
-    )
-    register(
-        mcp,
-        investments_securities,
-        "investments_securities",
-        "List the manually-maintained securities catalog. Reference data "
-        "only — no amounts, no per-user holdings.",
-    )
+    """Register the standard investment read and write boundaries."""
+    register_investment_coarse_reads(mcp)
     register(
         mcp,
         investments_record,
         "investments_record",
-        "Record one or more investment ledger events in one call. Sign "
-        "convention: quantity positive for acquisitions / negative for "
-        "disposals / absent for cash-only events; amount negative for cash "
-        "out, positive for cash in. A reinvest event writes an acquisition + "
-        "income row pair sharing one event_group_id. All events are validated "
-        "and resolved before any write. A validation failure OR a bad/ambiguous "
-        "ACCOUNT ref is a HARD failure that aborts the whole call with nothing "
-        "written (standard error envelope); a bad/ambiguous SECURITY ref is a "
-        "SOFT per-item failure reported in data.error_details while the rest of "
-        "the batch is written. Writes raw.manual_investment_transactions; no "
-        "revert tool.",
+        "Record investment ledger events as one validated batch. Quantity and "
+        "cash signs follow the investment event convention; no revert tool.",
     )
     register(
         mcp,
         investments_securities_set,
         "investments_securities_set",
-        "Create-or-update one securities-catalog entry. security_id=None "
-        "creates (name + security_type required); an existing security_id "
-        "partially updates (unset fields unchanged; security_type immutable "
-        "post-creation). cost_basis_method='average' is valid only for "
-        "mutual_fund/etf. Writes app.securities; no delete tool in v1.",
+        "Create or update securities in app.securities by stable ID or ticker. "
+        "Call again with prior values to revert.",
     )
     register(
         mcp,
         investments_lots_select,
         "investments_lots_select",
-        "Set the full specific-identification lot selection for one "
-        "disposal (a sell) — the listed (lot_id, quantity) pairs REPLACE any "
-        "prior selection; selections=[] clears all overrides and reverts to "
-        "FIFO. Writes app.lot_selections; no revert tool (call again to "
-        "undo).",
-    )
-    register(
-        mcp,
-        investments_securities_links_pending,
-        "investments_securities_links_pending",
-        "List pending security merge decisions grouped by provider ref "
-        "(plaid_security_id or institution_security_id). Returns the review "
-        "queue with BOTH sides of each proposed merge: provider_ticker/"
-        "provider_name alongside each candidate's candidate_ticker/"
-        "candidate_name, plus match_reason (identifier_tie, "
-        "exchange_contradiction, fuzzy_name, ...) — the field that conveys "
-        "how risky accepting is. Use investments_securities_links_set to "
-        "merge or reject each decision.",
-    )
-    register(
-        mcp,
-        investments_securities_links_set,
-        "investments_securities_links_set",
-        "Accept (merge) or reject one pending security merge decision. "
-        "action='accept' + into=<the decision's own candidate_security_id> "
-        "MERGES: it prompts the user to confirm (MCP elicitation naming both "
-        "securities and the match reason) and merges only on their explicit "
-        "agreement — a merge fuses two instruments' tax lots, so the agent "
-        "cannot accept one on its own. On a client without elicitation, "
-        "accept fails with mutation_confirmation_required and names the CLI "
-        "equivalent. into must equal the decision's own candidate (mismatched, "
-        "empty, or missing into raises mutation_invalid_input — it is NEVER "
-        "read as a reject). action='reject' (no into) keeps the provider's "
-        "security as its own instrument; only this decision is rejected, "
-        "sibling candidates stay pending. Writes app.security_link_decisions "
-        "+ app.security_links + app.lot_selections + app.securities; reverse "
-        "the whole cascade with system_audit_undo(operation_id). Discover "
-        "pending decisions with investments_securities_links_pending.",
-    )
-    register(
-        mcp,
-        investments_securities_links_history,
-        "investments_securities_links_history",
-        "Recent security-link decisions (all statuses), newest first. "
-        "Read-only. Filter by limit. Use investments_securities_links_pending "
-        "for the active review queue.",
+        "Select specific acquisition lots for one disposal. Writes "
+        "app.lot_selections; replace the selection to revert.",
     )

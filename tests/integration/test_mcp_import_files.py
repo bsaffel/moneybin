@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.mcp.tools.import_tools import import_files
 
 pytestmark = pytest.mark.integration
@@ -58,7 +59,7 @@ async def test_import_files_accepts_list(
         _copy_fixture(FIXTURES_DIR / "qbo_bank_sample.qbo", tmp_path),
     ]
     paths = [str(p) for p in fixtures]
-    env = await import_files(paths=paths, refresh=True)
+    env = import_files(paths=paths, refresh=True)
     assert env.data.total_count == 3
     assert env.data.imported_count == 3
     assert env.data.transforms_applied is True
@@ -76,7 +77,7 @@ async def test_import_files_continues_past_failure(
     bogus = tmp_path / "bogus.ofx"
     bogus.write_text("not actually OFX content\n")
 
-    env = await import_files(
+    env = import_files(
         paths=[str(good_a), str(bogus), str(good_b)],
         refresh=True,
     )
@@ -91,7 +92,7 @@ async def test_import_files_refresh_false_skips(
     """refresh=False suppresses transforms; action hints refresh_run."""
     _setup_db(tmp_path, monkeypatch)
     fixture = _copy_fixture(FIXTURES_DIR / "sample_minimal.ofx", tmp_path)
-    env = await import_files(paths=[str(fixture)], refresh=False)
+    env = import_files(paths=[str(fixture)], refresh=False)
     assert env.data.transforms_applied is False
     assert any("refresh_run" in a for a in env.actions)
 
@@ -105,6 +106,6 @@ async def test_import_files_validates_path_under_home(
     envelope with the validator's ``invalid_file_path`` code.
     """
     _setup_db(tmp_path, monkeypatch)
-    env = await import_files(paths=["/etc/passwd"])
-    assert env.error is not None
-    assert env.error.code == "invalid_file_path"
+    with pytest.raises(UserError) as exc_info:
+        import_files(paths=["/etc/passwd"])
+    assert exc_info.value.code == "invalid_file_path"

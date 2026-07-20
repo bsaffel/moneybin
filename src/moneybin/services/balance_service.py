@@ -7,6 +7,8 @@ Backs both CLI (moneybin accounts balance ...) and MCP (accounts_balance_*).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -23,6 +25,18 @@ from moneybin.services.audit_service import AuditService
 from moneybin.tables import BALANCE_ASSERTIONS, FCT_BALANCES_DAILY
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceAssertionSnapshot:
+    """Exact persisted assertion state used for pre-mutation verification."""
+
+    account_id: str
+    assertion_date: date
+    balance: Decimal
+    notes: str | None
+    created_at: str
+    updated_at: str
 
 
 def _observation_row_from_db(row: tuple[object, ...]) -> BalanceObservationRow:
@@ -52,6 +66,20 @@ def _assertion_row_from_db(row: tuple[object, ...]) -> BalanceAssertionRow:
         balance=row[2],  # type: ignore[arg-type]
         notes=row[3],  # type: ignore[arg-type]
         created_at=str(row[4]),
+    )
+
+
+def _assertion_snapshot_from_db(
+    row: tuple[object, ...],
+) -> BalanceAssertionSnapshot:
+    """Construct the exact persisted snapshot from a SELECT result tuple."""
+    return BalanceAssertionSnapshot(
+        account_id=row[0],  # type: ignore[arg-type]
+        assertion_date=row[1],  # type: ignore[arg-type]
+        balance=row[2],  # type: ignore[arg-type]
+        notes=row[3],  # type: ignore[arg-type]
+        created_at=str(row[4]),
+        updated_at=str(row[5]),
     )
 
 
@@ -110,8 +138,13 @@ class BalanceService:
         )
 
     def delete_assertion(
-        self, account_id: str, assertion_date: date, *, actor: str
-    ) -> None:
+        self,
+        account_id: str,
+        assertion_date: date,
+        *,
+        actor: str,
+        verify: Callable[[BalanceAssertionSnapshot], None] | None = None,
+    ) -> bool:
         """Delete the assertion for (account_id, assertion_date).
 
         Deliberately does NOT validate ``account_id`` against ``dim_accounts``
@@ -119,17 +152,42 @@ class BalanceService:
         unknown ``account_id`` is a silent no-op, just like a known account with
         no assertion on that date. This forgiving-delete contract is locked by
         ``test_e2e_mutating.py::...test_balance_delete_nonexistent_is_noop``.
+
+        When ``verify`` is supplied, it receives the live assertion after the
+        transaction begins and immediately before the repository delete. A
+        raised exception rolls back without a mutation or audit row.
         """
-        deleted = self._assertions_repo.delete(account_id, assertion_date, actor=actor)
-        if deleted is not None:
-            logger.info(
-                f"Deleted balance assertion for account {account_id} on {assertion_date}"
+        self._db.begin()
+        try:
+            assertion = self._find_assertion_snapshot(account_id, assertion_date)
+            if assertion is not None and verify is not None:
+                verify(assertion)
+            deleted = (
+                self._assertions_repo.delete(
+                    account_id,
+                    assertion_date,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+                if assertion is not None
+                else None
             )
-        else:
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+
+        if deleted is None:
             logger.info(
                 f"No balance assertion to delete for account {account_id} "
                 f"on {assertion_date}"
             )
+            return False
+        else:
+            logger.info(
+                f"Deleted balance assertion for account {account_id} on {assertion_date}"
+            )
+            return True
 
     def list_assertions(
         self, account_id: str | None = None
@@ -151,9 +209,33 @@ class BalanceService:
             ]
         )
 
+    def get_assertion(
+        self, account_id: str, assertion_date: date
+    ) -> BalanceAssertionRow | None:
+        """Return one exact assertion, or ``None`` when absent."""
+        return self._find_assertion(account_id, assertion_date)
+
+    def get_assertion_snapshot(
+        self, account_id: str, assertion_date: date
+    ) -> BalanceAssertionSnapshot | None:
+        """Return every persisted field used to verify a mutation target."""
+        return self._find_assertion_snapshot(account_id, assertion_date)
+
     def _load_assertion(
         self, account_id: str, assertion_date: date
     ) -> BalanceAssertionRow:
+        assertion = self._find_assertion(account_id, assertion_date)
+        if assertion is None:
+            # No interpolated account_id: it is ACCOUNT_IDENTIFIER (CRITICAL)
+            # and must not reach application logs (no-PII-in-logs rule). This is
+            # a should-never-happen invariant guard right after an upsert.
+            raise RuntimeError("assertion not found immediately after upsert")
+        return assertion
+
+    def _find_assertion(
+        self, account_id: str, assertion_date: date
+    ) -> BalanceAssertionRow | None:
+        """Return one exact assertion, or ``None`` when absent."""
         row = self._db.execute(
             f"""
             SELECT account_id, assertion_date, balance, notes, created_at
@@ -163,11 +245,25 @@ class BalanceService:
             [account_id, assertion_date],
         ).fetchone()
         if row is None:
-            # No interpolated account_id: it is ACCOUNT_IDENTIFIER (CRITICAL)
-            # and must not reach application logs (no-PII-in-logs rule). This is
-            # a should-never-happen invariant guard right after an upsert.
-            raise RuntimeError("assertion not found immediately after upsert")
+            return None
         return _assertion_row_from_db(row)
+
+    def _find_assertion_snapshot(
+        self, account_id: str, assertion_date: date
+    ) -> BalanceAssertionSnapshot | None:
+        """Return the exact persisted row, including mutable metadata."""
+        row = self._db.execute(
+            f"""
+            SELECT
+                account_id, assertion_date, balance, notes, created_at, updated_at
+            FROM {BALANCE_ASSERTIONS.full_name}
+            WHERE account_id = ? AND assertion_date = ?
+            """,
+            [account_id, assertion_date],
+        ).fetchone()
+        if row is None:
+            return None
+        return _assertion_snapshot_from_db(row)
 
     # --- Reads ---
 

@@ -1,0 +1,397 @@
+{
+  "baseline": {
+    "arguments": 1.0,
+    "metadata_bytes": 90734,
+    "outcomes": [
+      {
+        "arguments": true,
+        "case_id": "first-contact-financial-pulse",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "account-and-transaction-lookup",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "discover-and-run-spending-report",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "import-preview-confirm-status",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "categorization-rule-and-review",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "matching-identity-resolution",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "investment-recording-and-views",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "privacy-consent-grant",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "privacy-degraded-without-consent",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "audit-inspection-and-undo",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "sql-schema-escape-hatch",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "invalid-request-refusal",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "ambiguous-reference-refusal",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "destructive-request-requires-confirmation",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "open-world-request-refusal",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "historical-balance-and-reconciliation",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "closed-investment-lot-history",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      }
+    ],
+    "recovery": 1.0,
+    "safety": 1.0,
+    "selection": 1.0,
+    "surface_id": "baseline-105",
+    "unnecessary_calls": 0,
+    "workflow": 1.0
+  },
+  "candidate": {
+    "arguments": 1.0,
+    "metadata_bytes": 47111,
+    "outcomes": [
+      {
+        "arguments": true,
+        "case_id": "first-contact-financial-pulse",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "account-and-transaction-lookup",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "discover-and-run-spending-report",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "import-preview-confirm-status",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "categorization-rule-and-review",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "matching-identity-resolution",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "investment-recording-and-views",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "privacy-consent-grant",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "privacy-degraded-without-consent",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "audit-inspection-and-undo",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "sql-schema-escape-hatch",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "invalid-request-refusal",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "ambiguous-reference-refusal",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "destructive-request-requires-confirmation",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "open-world-request-refusal",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "historical-balance-and-reconciliation",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      },
+      {
+        "arguments": true,
+        "case_id": "closed-investment-lot-history",
+        "passed": true,
+        "recovery": true,
+        "safety": true,
+        "selection": true,
+        "unnecessary_calls": 0,
+        "workflow": true
+      }
+    ],
+    "recovery": 1.0,
+    "safety": 1.0,
+    "selection": 1.0,
+    "surface_id": "standard-45",
+    "unnecessary_calls": 0,
+    "workflow": 1.0
+  },
+  "comparison": {
+    "argument_delta": 0.0,
+    "failed_gates": [],
+    "metadata_bytes_delta": -43623,
+    "passed": true,
+    "recovery_delta": 0.0,
+    "safety_delta": 0.0,
+    "selection_delta": 0.0,
+    "unnecessary_calls_delta": 0,
+    "workflow_delta": 0.0
+  },
+  "contract_passed": true,
+  "evidence": {
+    "baseline_registry_sha256": "ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79",
+    "baseline_run_date": "2026-07-17",
+    "candidate_registry_sha256": "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
+    "candidate_run_date": "2026-07-19",
+    "context_budget": {
+      "limit": 0.02,
+      "ratio": null,
+      "status": "not_observed"
+    },
+    "evidence_kind": "contract_fixture",
+    "host": "contract-fixture",
+    "host_native_deferral": {
+      "status": "not_observed"
+    },
+    "model": "deterministic",
+    "same_host_model": true
+  },
+  "promotion_ready": false
+}
