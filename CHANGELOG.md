@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not derive — withholds its value instead of publishing a number wrong by the split
   factor. Previously `investments holdings` reported cost basis alone. A security no
   connected broker prices stays unvalued until external feeds land, and positions do
-  not yet fold into net worth. (#NNN)
+  not yet fold into net worth. (#347)
 - **An AI assistant can now resolve a credit-card PDF's sign inversion
   without you leaving the chat.** `import_confirm(file_path=...,
   confirm_pdf_sign=True)` shows you the statement's evidence and printed-vs-recorded
