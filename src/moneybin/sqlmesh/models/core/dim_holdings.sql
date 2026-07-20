@@ -133,18 +133,35 @@ WITH positions AS (
      implicate a position with. A user tracking that same security manually under a
      canonical id therefore keeps publishing a pre-split quantity. Known and accepted —
      an unbound Plaid security is already surfaced for binding, and inventing a fallback
-     key here would implicate positions on a match this model cannot actually prove. */
+     key here would implicate positions on a match this model cannot actually prove.
+
+     match_window_days is the tolerance the clearing match below allows between the two
+     dates, and exists because the reject and the ledger split come from INDEPENDENT
+     suppliers that date the same corporate action differently: Plaid's reject carries
+     whatever its feed reported (commonly the settlement date), while a hand-entered or
+     third-party split is normally recorded on the ex-date. Requiring the two to be
+     equal means a user who reconciles a reject dated 2026-03-16 by entering the split
+     on its ex-date, 2026-03-15, restates the quantity correctly and still withholds
+     forever — the design carries no resolved-flag to clear, so an exact-match miss is
+     permanent, not merely delayed. Observed ex-date/settlement skew is 1-3 calendar
+     days; 5 covers it with margin while staying far below the interval between two
+     splits of one security. Defined once here and referenced once below; fixed by
+     design, never configurable — a tunable would let a user widen it until unrelated
+     splits started clearing each other. */
   SELECT DISTINCT
     security_id,
-    trade_date
+    trade_date,
+    5 AS match_window_days
   FROM prep.stg_plaid__investment_transactions
   WHERE
     review_reason = 'split_underivable' AND NOT security_id IS NULL
 ), position_split_events AS (
-  /* Resolved per POSITION: a ledger that already carries a split on that date has been
-     restated correctly, whoever supplied it. This is also what makes the withhold
-     self-clearing — when the Plaid split behaviour is settled and the events reach the
-     ledger, positions stop withholding with no resolved-flag to maintain. */
+  /* Resolved per POSITION: a ledger that already carries a split within the reject's
+     match window has been restated correctly, whoever supplied it. This is also what
+     makes the withhold self-clearing — when the Plaid split behaviour is settled and
+     the events reach the ledger, positions stop withholding with no resolved-flag to
+     maintain. Self-clearing is only true because the match is windowed: under exact
+     date equality it clears solely when both suppliers happen to pick the same date. */
   SELECT DISTINCT
     account_id,
     security_id,
@@ -219,7 +236,7 @@ WITH positions AS (
           WHERE
             pse.account_id = pos.account_id
             AND pse.security_id = pos.security_id
-            AND pse.trade_date = sr.trade_date
+            AND ABS(CAST(pse.trade_date - sr.trade_date AS INT)) <= sr.match_window_days
         )
     )
     OR (

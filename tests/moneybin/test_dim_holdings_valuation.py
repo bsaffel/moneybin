@@ -533,6 +533,49 @@ def test_position_that_recorded_the_split_still_values(db: Database) -> None:
 
 
 @pytest.mark.slow
+def test_split_recorded_on_the_ex_date_clears_a_settlement_dated_reject(
+    db: Database,
+) -> None:
+    """The two suppliers date one corporate action differently; the match is windowed.
+
+    Plaid routes the split to review dated 2026-06-01 — whatever its feed reported,
+    commonly the settlement date. The user reconciles it by hand on the ex-date,
+    2026-05-31, one day earlier. The quantity is now correct, so withholding would be
+    wrong; and because the design carries no resolved-flag, an exact-date match would
+    make that withhold PERMANENT rather than merely late — no later event can ever
+    clear it.
+
+    The offset is deliberately 1 day rather than 0: at 0 this test passes against the
+    exact-equality predicate it exists to reject, and would discriminate nothing.
+    """
+    anchor = _db_today(db)
+    _seed_position(db)
+    _seed_price(db, price_date=anchor, close="120.00")
+    _seed_split_reject(db, account_id="acc_1", trade_date=date(2026, 6, 1))
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, security_id,
+            security_ref, type, trade_date, quantity, price, amount, fees, created_by,
+            investment_transaction_id
+        ) VALUES ('split_exdate', 'imp_1', 'acc_1', 'canonvti0000001', 'VTI', 'split',
+                  DATE '2026-05-31', 4, NULL, NULL, NULL, 'test', 'split_exdate')
+        """  # noqa: S608  # test fixture, not executing user SQL
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    elapsed = (_db_today(db) - anchor).days
+    market_value, _gain, _pd, _src, _days, status = _holding(db)
+    assert status == _expected_status(elapsed), (
+        "the ledger carries the split one day off the reject's date; the quantity is "
+        "restated and withholding it would be permanent"
+    )
+    assert market_value == Decimal("4800.00"), "40 restated units × the 120.00 close"
+
+
+@pytest.mark.slow
 def test_quantity_divergence_withholds(db: Database) -> None:
     """The broker's newest snapshot contradicts the ledger's own share count.
 
