@@ -326,13 +326,13 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 +-- categories                     -- Category taxonomy (reference data)
 |   +-- list
-|   +-- create <name> [--parent] [--icon]
-|   +-- set <category_id> --active/--inactive
+|   +-- create <name> [--parent] [--icon] [--output text|json]
+|   +-- set <category_id> --active/--inactive [--output text|json]
 |   +-- delete <category_id> [--force]
 |
 +-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list
-|   +-- create <pattern> <canonical_name> [--default-category]
+|   +-- create <pattern> <canonical_name> [--default-category] [--output text|json]
 |   +-- links                      -- Review and manage merchant-link binding decisions
 |       +-- pending [--output json] [--quiet]
 |       |         List provider entity ids + candidate merchant proposals; each candidate

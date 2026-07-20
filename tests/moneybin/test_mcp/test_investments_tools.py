@@ -18,11 +18,14 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Literal
+from unittest.mock import patch
 
 import pytest
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
+from moneybin.mcp.pagination import encode_keyset_cursor
 from moneybin.mcp.tools.investments import (
     investments_coarse,
     investments_lots_select,
@@ -33,6 +36,19 @@ from moneybin.mcp.tools.investments import (
     register_investments_tools,
 )
 from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.services.investment_service import (
+    EventRow,
+    EventsResult,
+    GainsResult,
+    HoldingRow,
+    HoldingsResult,
+    InvestmentService,
+    LotRow,
+    LotsResult,
+    RealizedGainRow,
+    SecuritiesResult,
+    SecurityRow,
+)
 from tests.moneybin.db_helpers import create_core_dim_stub_views
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -100,6 +116,143 @@ def _count_raw_investment_rows() -> int:
         ).fetchone()
     assert row is not None
     return int(row[0])
+
+
+InvestmentView = Literal["events", "holdings", "lots", "gains", "securities"]
+
+
+def _investment_result(
+    view: InvestmentView,
+    ids: list[str],
+) -> EventsResult | HoldingsResult | LotsResult | GainsResult | SecuritiesResult:
+    """Build minimal service rows whose immutable pagination keys use ``ids``."""
+    if view == "events":
+        return EventsResult(
+            rows=[
+                EventRow(
+                    investment_transaction_id=row_id,
+                    account_id=_ACCOUNT,
+                    security_id=None,
+                    trade_date=date(2024, 1, 15),
+                    settlement_date=None,
+                    original_acquisition_date=None,
+                    type="buy",
+                    subtype=None,
+                    event_group_id=None,
+                    quantity=Decimal("1"),
+                    price=Decimal("1"),
+                    amount=Decimal("-1"),
+                    fees=None,
+                    currency_code="USD",
+                    description=None,
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    if view == "holdings":
+        return HoldingsResult(
+            rows=[
+                HoldingRow(
+                    account_id=row_id,
+                    security_id="security",
+                    quantity=Decimal("1"),
+                    cost_basis=Decimal("1"),
+                    average_cost=Decimal("1"),
+                    currency_code="USD",
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    if view == "lots":
+        return LotsResult(
+            rows=[
+                LotRow(
+                    lot_id=row_id,
+                    account_id=_ACCOUNT,
+                    security_id="security",
+                    acquisition_date=date(2024, 1, 15),
+                    acquisition_type="buy",
+                    original_quantity=Decimal("1"),
+                    remaining_quantity=Decimal("1"),
+                    cost_basis_total=Decimal("1"),
+                    cost_basis_remaining=Decimal("1"),
+                    cost_basis_method="fifo",
+                    currency_code="USD",
+                    is_open=True,
+                    basis_incomplete=False,
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    if view == "gains":
+        return GainsResult(
+            rows=[
+                RealizedGainRow(
+                    realized_gain_id=row_id,
+                    account_id=_ACCOUNT,
+                    security_id="security",
+                    disposal_txn_id=f"disposal-{row_id}",
+                    lot_id=f"lot-{row_id}",
+                    quantity=Decimal("1"),
+                    acquisition_date=date(2024, 1, 1),
+                    disposal_date=date(2024, 1, 15),
+                    proceeds=Decimal("2"),
+                    cost_basis=Decimal("1"),
+                    gain_loss=Decimal("1"),
+                    term="short",
+                    cost_basis_method="fifo",
+                    basis_incomplete=False,
+                    currency_code="USD",
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    return SecuritiesResult(
+        rows=[
+            SecurityRow(
+                security_id=row_id,
+                name=row_id,
+                security_type="equity",
+                ticker=None,
+                exchange=None,
+                cusip=None,
+                isin=None,
+                figi=None,
+                coingecko_id=None,
+                is_cash_equivalent=False,
+                currency_code="USD",
+            )
+            for row_id in ids
+        ],
+        warnings=[],
+    )
+
+
+def _investment_method(view: InvestmentView) -> str:
+    """Return the service method backing one coarse investment view."""
+    return {
+        "events": "list_events",
+        "holdings": "holdings",
+        "lots": "lots",
+        "gains": "gains",
+        "securities": "list_securities",
+    }[view]
+
+
+def _investment_row_id(view: InvestmentView, row: object) -> str:
+    """Read the stable pagination id from one surfaced investment row."""
+    attribute = {
+        "events": "investment_transaction_id",
+        "holdings": "account_id",
+        "lots": "lot_id",
+        "gains": "realized_gain_id",
+        "securities": "security_id",
+    }[view]
+    return str(getattr(row, attribute))
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +390,99 @@ async def test_investment_coarse_paginates_with_exact_counts(
         assert argument in continuation
 
 
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_continuation_survives_first_page_removal(
+    view: InvestmentView,
+) -> None:
+    with patch.object(
+        InvestmentService,
+        _investment_method(view),
+        side_effect=[
+            _investment_result(view, ["item-b", "item-c"]),
+            _investment_result(view, ["item-c"]),
+        ],
+    ):
+        first = await investments_coarse(view=view, limit=1)
+        second = await investments_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [
+        _investment_row_id(view, first.data.rows[0]),
+        _investment_row_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
+
+
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_continuation_excludes_prepended_row(
+    view: InvestmentView,
+) -> None:
+    with patch.object(
+        InvestmentService,
+        _investment_method(view),
+        side_effect=[
+            _investment_result(view, ["item-b", "item-c"]),
+            _investment_result(view, ["item-a", "item-b", "item-c"]),
+        ],
+    ):
+        first = await investments_coarse(view=view, limit=1)
+        second = await investments_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [
+        _investment_row_id(view, first.data.rows[0]),
+        _investment_row_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
+
+
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_rejects_typed_key_shape_before_reading_live_rows(
+    view: InvestmentView,
+) -> None:
+    invalid_key = (1, 2) if view == "holdings" else (1,)
+    cursor = encode_keyset_cursor(
+        namespace="investments",
+        scope={
+            "account": None,
+            "end": None,
+            "open_only": True if view == "lots" else None,
+            "security": None,
+            "start": None,
+            "view": view,
+        },
+        snapshot=invalid_key,
+        after=invalid_key,
+        total=2,
+    )
+
+    with patch.object(InvestmentService, _investment_method(view)) as read:
+        response = await investments_coarse(view=view, cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    read.assert_not_called()
+
+
 async def test_investment_coarse_cursor_is_bound_to_filters(
     mcp_db: Path,
 ) -> None:
@@ -253,6 +499,59 @@ async def test_investment_coarse_cursor_is_bound_to_filters(
     response = await investments_coarse(
         view="events",
         start=date(2024, 1, 16),
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_cursor_is_validated_before_reference_data_access() -> None:
+    cursor = encode_keyset_cursor(
+        namespace="investments",
+        scope={
+            "account": "checking",
+            "end": None,
+            "open_only": None,
+            "security": None,
+            "start": None,
+            "view": "holdings",
+        },
+        snapshot=(1, 2),
+        after=(1, 2),
+        total=2,
+    )
+
+    with patch(
+        "moneybin.mcp.tools.investments.get_database",
+        side_effect=AssertionError("reference data accessed"),
+    ):
+        response = await investments_coarse(
+            view="holdings",
+            account="CHECKING",
+            cursor=cursor,
+        )
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_coarse_cursor_is_bound_to_view(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+    _insert_event(
+        investment_transaction_id="evt_2",
+        security_id=sec,
+        trade_date=date(2024, 1, 16),
+    )
+    first = await investments_coarse(view="events", limit=1)
+
+    response = await investments_coarse(
+        view="gains",
         limit=1,
         cursor=first.next_cursor,
     )

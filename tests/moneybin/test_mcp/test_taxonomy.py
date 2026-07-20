@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from moneybin import error_codes
+from moneybin.mcp.pagination import encode_keyset_cursor
 from moneybin.mcp.tools.taxonomy import (
     register_taxonomy_coarse_reads,
     register_taxonomy_coarse_writes,
@@ -739,6 +740,34 @@ def _merchant(merchant_id: str, canonical_name: str, raw_pattern: str) -> Mercha
     )
 
 
+def _taxonomy_payload(
+    view: Literal["categories", "merchants"],
+    ids: list[str],
+) -> CategoriesPayload | MerchantsPayload:
+    """Build minimal rows whose stable pagination keys use ``ids``."""
+    if view == "categories":
+        return CategoriesPayload(
+            categories=[_category(row_id, row_id) for row_id in ids]
+        )
+    return MerchantsPayload(
+        merchants=[_merchant(row_id, row_id, row_id) for row_id in ids]
+    )
+
+
+def _taxonomy_method(view: Literal["categories", "merchants"]) -> str:
+    """Return the service method backing one taxonomy view."""
+    return "get_all_categories" if view == "categories" else "list_merchants"
+
+
+def _taxonomy_result_id(
+    view: Literal["categories", "merchants"],
+    row: object,
+) -> str:
+    """Read the stable pagination id from one surfaced taxonomy row."""
+    attribute = "category_id" if view == "categories" else "merchant_id"
+    return str(getattr(row, attribute))
+
+
 async def test_taxonomy_filters_sorts_and_paginates_exactly() -> None:
     payload = CategoriesPayload(
         categories=[
@@ -802,6 +831,111 @@ async def test_taxonomy_merchants_filter_is_deterministic() -> None:
         "merchant-b",
     ]
     assert response.summary.total_count == 2
+
+
+@pytest.mark.parametrize("view", ["categories", "merchants"])
+async def test_taxonomy_continuation_survives_first_page_removal(
+    view: Literal["categories", "merchants"],
+) -> None:
+    with patch.object(
+        CategorizationService,
+        _taxonomy_method(view),
+        side_effect=[
+            _taxonomy_payload(view, ["item-b", "item-c"]),
+            _taxonomy_payload(view, ["item-c"]),
+        ],
+    ):
+        first = await taxonomy_coarse(view=view, limit=1)
+        second = await taxonomy_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [
+        _taxonomy_result_id(view, first.data.rows[0]),
+        _taxonomy_result_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
+
+
+@pytest.mark.parametrize("view", ["categories", "merchants"])
+async def test_taxonomy_continuation_excludes_prepended_row(
+    view: Literal["categories", "merchants"],
+) -> None:
+    with patch.object(
+        CategorizationService,
+        _taxonomy_method(view),
+        side_effect=[
+            _taxonomy_payload(view, ["item-b", "item-c"]),
+            _taxonomy_payload(view, ["item-a", "item-b", "item-c"]),
+        ],
+    ):
+        first = await taxonomy_coarse(view=view, limit=1)
+        second = await taxonomy_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [
+        _taxonomy_result_id(view, first.data.rows[0]),
+        _taxonomy_result_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
+
+
+@pytest.mark.parametrize("view", ["categories", "merchants"])
+async def test_taxonomy_rejects_typed_key_shape_before_reading_live_rows(
+    view: Literal["categories", "merchants"],
+) -> None:
+    cursor = encode_keyset_cursor(
+        namespace="taxonomy",
+        scope={
+            "include_inactive": False,
+            "query": None,
+            "view": view,
+        },
+        snapshot=(1,),
+        after=(2,),
+        total=2,
+    )
+    with patch.object(CategorizationService, _taxonomy_method(view)) as read:
+        response = await taxonomy_coarse(view=view, cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "TAXONOMY_CURSOR_INVALID"
+    read.assert_not_called()
+
+
+async def test_taxonomy_cursor_is_bound_to_view() -> None:
+    payload = CategoriesPayload(
+        categories=[
+            _category("item-a", "First"),
+            _category("item-b", "Second"),
+        ]
+    )
+    with patch.object(
+        CategorizationService,
+        "get_all_categories",
+        return_value=payload,
+    ):
+        first = await taxonomy_coarse(view="categories", limit=1)
+
+    with patch.object(CategorizationService, "list_merchants") as read:
+        response = await taxonomy_coarse(
+            view="merchants",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert response.error is not None
+    assert response.error.code == "TAXONOMY_CURSOR_INVALID"
+    read.assert_not_called()
 
 
 @pytest.mark.parametrize(

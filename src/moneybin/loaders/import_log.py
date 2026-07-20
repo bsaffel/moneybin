@@ -11,8 +11,6 @@ source_type populates — see ``REVERT_TABLES`` below. ``ImportService.revert``
 revert operation itself lives on the service, not here.
 """
 
-import base64
-import hashlib
 import json
 import logging
 import uuid
@@ -261,77 +259,105 @@ def get_import_history(
 
 @dataclass(frozen=True)
 class ImportHistoryPage:
-    """One page plus a compact identity/order snapshot of import history."""
+    """One keyset page bound to an immutable import-history high-water mark."""
 
     records: list[dict[str, str | int | None]]
     total_count: int
-    head_started_at: str | None
-    head_import_id: str | None
-    snapshot_digest: str
+    snapshot_started_at: str | None
+    snapshot_import_id: str | None
+    has_more: bool
 
 
 def get_import_history_page(
     db: Database,
     *,
     limit: int,
-    offset: int,
-    head_started_at: str | None = None,
-    head_import_id: str | None = None,
+    snapshot_started_at: str | None = None,
+    snapshot_import_id: str | None = None,
+    after_started_at: str | None = None,
+    after_import_id: str | None = None,
+    snapshot_total: int | None = None,
 ) -> ImportHistoryPage:
-    """Read a totally ordered page bound to one import-history snapshot head."""
-    if limit < 0 or offset < 0:
-        raise ValueError("limit and offset must be non-negative")
-    if (head_started_at is None) != (head_import_id is None):
-        raise ValueError("snapshot head fields must be supplied together")
+    """Read one bounded ``started_at DESC, import_id DESC`` keyset page."""
+    if limit < 0:
+        raise ValueError("limit must be non-negative")
+    if (snapshot_started_at is None) != (snapshot_import_id is None):
+        raise ValueError("snapshot fields must be supplied together")
+    if (after_started_at is None) != (after_import_id is None):
+        raise ValueError("after fields must be supplied together")
+    if snapshot_total is not None and snapshot_total < 0:
+        raise ValueError("snapshot_total must be non-negative")
 
-    if head_started_at is None:
-        rows = db.execute(
+    if snapshot_started_at is None:
+        head = db.execute(
             f"""
-            SELECT import_id, source_file, source_type, source_origin,
-                   format_name, status, rows_imported, rows_rejected,
-                   detection_confidence, started_at, completed_at
+            SELECT started_at, import_id
             FROM {IMPORT_LOG.full_name}
             ORDER BY started_at DESC, import_id DESC
+            LIMIT 1
             """  # noqa: S608  # TableRef constant
-        ).fetchall()
-    else:
-        rows = db.execute(
+        ).fetchone()
+        if head is None:
+            return ImportHistoryPage(
+                records=[],
+                total_count=0,
+                snapshot_started_at=None,
+                snapshot_import_id=None,
+                has_more=False,
+            )
+        snapshot_started_at = str(head[0])
+        snapshot_import_id = str(head[1])
+
+    if snapshot_total is None:
+        count_row = db.execute(
             f"""
-            SELECT import_id, source_file, source_type, source_origin,
-                   format_name, status, rows_imported, rows_rejected,
-                   detection_confidence, started_at, completed_at
+            SELECT COUNT(*)
             FROM {IMPORT_LOG.full_name}
             WHERE started_at < CAST(? AS TIMESTAMP)
                OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
-            ORDER BY started_at DESC, import_id DESC
-            """,  # noqa: S608  # TableRef constant + parameterized snapshot head
-            [head_started_at, head_started_at, head_import_id],
-        ).fetchall()
+            """,  # noqa: S608  # TableRef constant + parameterized keyset bound
+            [snapshot_started_at, snapshot_started_at, snapshot_import_id],
+        ).fetchone()
+        snapshot_total = int(count_row[0]) if count_row is not None else 0
 
-    resolved_head_started_at = (
-        str(rows[0][9]) if head_started_at is None and rows else head_started_at
-    )
-    resolved_head_import_id = (
-        str(rows[0][0]) if head_import_id is None and rows else head_import_id
-    )
-    digest = hashlib.sha256()
-    for row in rows:
-        identity = json.dumps(
-            [str(row[9]), str(row[0])],
-            separators=(",", ":"),
-        )
-        digest.update(identity.encode())
-        digest.update(b"\n")
-    snapshot_digest = base64.urlsafe_b64encode(digest.digest()).decode().rstrip("=")
-    page_rows = rows[offset : offset + limit]
+    rows = db.execute(
+        f"""
+            SELECT import_id, source_file, source_type, source_origin,
+                   format_name, status, rows_imported, rows_rejected,
+                   detection_confidence, started_at, completed_at
+            FROM {IMPORT_LOG.full_name}
+            WHERE (
+                   started_at < CAST(? AS TIMESTAMP)
+               OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
+            )
+              AND (
+                   CAST(? AS TIMESTAMP) IS NULL
+                OR started_at < CAST(? AS TIMESTAMP)
+                OR (started_at = CAST(? AS TIMESTAMP) AND import_id < ?)
+              )
+            ORDER BY started_at DESC, import_id DESC
+            LIMIT ?
+            """,  # noqa: S608  # TableRef constant + parameterized snapshot head
+        [
+            snapshot_started_at,
+            snapshot_started_at,
+            snapshot_import_id,
+            after_started_at,
+            after_started_at,
+            after_started_at,
+            after_import_id,
+            limit + 1,
+        ],
+    ).fetchall()
+    page_rows = rows[:limit]
     return ImportHistoryPage(
         records=[
             dict(zip(_IMPORT_HISTORY_COLUMNS, row, strict=True)) for row in page_rows
         ],
-        total_count=len(rows),
-        head_started_at=resolved_head_started_at,
-        head_import_id=resolved_head_import_id,
-        snapshot_digest=snapshot_digest,
+        total_count=snapshot_total,
+        snapshot_started_at=snapshot_started_at,
+        snapshot_import_id=snapshot_import_id,
+        has_more=len(rows) > limit,
     )
 
 

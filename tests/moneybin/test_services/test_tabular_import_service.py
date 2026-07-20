@@ -116,6 +116,96 @@ def test_resolved_mapping_round_trip() -> None:
         raise AssertionError("ResolvedMapping must be frozen")
 
 
+@pytest.mark.parametrize(
+    ("plan_overrides", "message"),
+    [
+        (
+            {"header_signature": ["Amount", "Date", "Wrong"]},
+            "header signature",
+        ),
+        ({"rows_in_file": 3}, "row accounting"),
+        (
+            {
+                "field_mapping": {
+                    "transaction_date": "Date",
+                    "amount": "Missing",
+                    "description": "Description",
+                }
+            },
+            "unavailable columns",
+        ),
+    ],
+)
+def test_reviewed_plan_rejects_parse_or_mapping_drift(
+    db: Database,
+    tmp_path: Path,
+    plan_overrides: dict[str, object],
+    message: str,
+) -> None:
+    import polars as pl
+
+    from moneybin.errors import UserError
+    from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+    csv_file = tmp_path / "reviewed.csv"
+    csv_file.write_text(
+        "Date,Description,Amount\n2026-01-05,Coffee,-4.75\n",
+        encoding="utf-8",
+    )
+    plan_kwargs: dict[str, object] = {
+        "file_type": "csv",
+        "delimiter": ",",
+        "encoding": "utf-8",
+        "file_size": csv_file.stat().st_size,
+        "field_mapping": {
+            "transaction_date": "Date",
+            "amount": "Amount",
+            "description": "Description",
+        },
+        "date_format": "%Y-%m-%d",
+        "sign_convention": "negative_is_expense",
+        "number_format": "us",
+        "is_multi_account": False,
+        "confidence": "high",
+        "skip_rows": 0,
+        "has_header": True,
+        "rows_in_file": 2,
+        "rows_skipped_trailing": 0,
+        "header_row_looks_like_data": False,
+        "header_signature": ["Amount", "Date", "Description"],
+    }
+    plan_kwargs.update(plan_overrides)
+    reviewed_plan = ReviewedTabularPlan(**plan_kwargs)  # type: ignore[arg-type]  # parametrized valid dataclass fields
+    read_result = type(
+        "ReadResult",
+        (),
+        {
+            "df": pl.DataFrame({
+                "Date": ["2026-01-05"],
+                "Description": ["Coffee"],
+                "Amount": ["-4.75"],
+            }),
+            "rows_in_file": 2,
+        },
+    )()
+
+    with (
+        patch(
+            "moneybin.extractors.tabular.readers.read_file",
+            return_value=read_result,
+        ),
+        pytest.raises(UserError, match=message) as exc,
+    ):
+        ImportService(db).import_file(
+            csv_file,
+            reviewed_plan=reviewed_plan,
+            refresh=False,
+            save_format=False,
+        )
+
+    assert exc.value.code == "IMPORT_PREVIEW_PLAN_MISMATCH"
+
+
 def test_reimport_writes_single_accepted_source_native_link(
     db: Database,
 ) -> None:

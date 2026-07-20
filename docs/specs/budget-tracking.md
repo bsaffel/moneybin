@@ -7,7 +7,7 @@ draft
 Enable users to define monthly budgets by category and track spending against those budgets, with rollover support and status alerts.
 
 ## Background
-- [`moneybin-mcp.md`](moneybin-mcp.md) -- `budget_set` (formerly `set_budget`) already implemented. `reports_budget` (formerly `get_budget_status`) is currently **de-registered**: it previously synthesized budget-vs-actual from `BudgetService`, violating the convention that `reports_*` surfaces read a `reports.*` view. It returns via the report auto-generation framework once this spec ships a `reports.budget` view (gated on M3C). `BudgetService` and the `budget_*` mutation tools are unaffected.
+- [`moneybin-mcp.md`](moneybin-mcp.md) -- the partial `budget_set` MCP adapter is removed while this spec is draft. `reports_budget` (formerly `get_budget_status`) is also **de-registered**: it previously synthesized budget-vs-actual from `BudgetService`, violating the convention that `reports_*` surfaces read a `reports.*` view. The complete lifecycle mutation and report surfaces return through normal tool admission once this spec ships the required models and operations (gated on M3C). `BudgetService` and the CLI remain available as implementation foundations.
 - [`categorization-overview.md`](categorization-overview.md) -- Prerequisite for meaningful budgets (supersedes archived `transaction-categorization` spec)
 - App schema: `src/moneybin/sql/schema/app_schema.sql`
 
@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS app.budget_rollovers (
 
 ### Existing tools (already implemented)
 
-- `budget_set` -- Create/update budget
+- lifecycle mutation surface (name admitted during implementation) -- create,
+  update, disable, or delete a budget
 - `budget_delete` -- Remove a budget
 
 ### Planned read tools (via the report framework)

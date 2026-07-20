@@ -754,6 +754,31 @@ def _purge_binding(plan: Any) -> ConfirmationBinding:
     )
 
 
+def _plan_gsheet_purge(connection_id: str) -> Any:
+    """Build the purge plan outside the MCP event loop."""
+    with _build_connection_service() as service:
+        return service.plan_purge(connection_id)
+
+
+def _disconnect_gsheet(connection_id: str) -> None:
+    """Persist a reversible disconnect outside the MCP event loop."""
+    with _build_connection_service() as service:
+        service.disconnect(connection_id, purge=False, actor="mcp")
+
+
+def _purge_gsheet_confirmed(
+    connection_id: str,
+    grant: ConfirmationGrant,
+) -> None:
+    """Apply an exactly confirmed purge outside the MCP event loop."""
+    with _build_connection_service() as service:
+        service.purge_confirmed(
+            connection_id,
+            verify=lambda live: grant.verify(_purge_binding(live)),
+            actor="mcp",
+        )
+
+
 @mcp_tool(
     read_only=False,
     idempotent=False,
@@ -775,8 +800,7 @@ async def gsheet_disconnect_coarse(
                 "confirmation_token is valid only for state='absent'.",
                 code="GSHEET_CONFIRMATION_NOT_ALLOWED",
             )
-        with _build_connection_service() as service:
-            service.disconnect(connection_id, purge=False, actor="mcp")
+        await asyncio.to_thread(_disconnect_gsheet, connection_id)
         return _gsheet_disconnect_envelope(
             GsheetDisconnectCoarsePayload(
                 kind="disconnected",
@@ -789,8 +813,7 @@ async def gsheet_disconnect_coarse(
             ],
         )
 
-    with _build_connection_service() as service:
-        plan = service.plan_purge(connection_id)
+    plan = await asyncio.to_thread(_plan_gsheet_purge, connection_id)
     binding = _purge_binding(plan)
     grant: ConfirmationGrant = await grant_confirmation_or_raise(
         binding=binding if confirmation_token is None else None,
@@ -800,12 +823,7 @@ async def gsheet_disconnect_coarse(
         ),
         confirmation_token=confirmation_token,
     )
-    with _build_connection_service() as service:
-        service.purge_confirmed(
-            connection_id,
-            verify=lambda live: grant.verify(_purge_binding(live)),
-            actor="mcp",
-        )
+    await asyncio.to_thread(_purge_gsheet_confirmed, connection_id, grant)
     before = plan.connection_before_state
     return _gsheet_disconnect_envelope(
         GsheetDisconnectCoarsePayload(

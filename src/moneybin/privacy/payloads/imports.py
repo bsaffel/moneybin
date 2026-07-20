@@ -47,7 +47,7 @@ class ImportConfirmationBridgeTable(TypedDict, total=False):
 
     page: Annotated[int, DataClass.AGGREGATE]
     header: Annotated[list[str], DataClass.TXN_TYPE]
-    rows: list[list[Annotated[str, DataClass.ACCOUNT_IDENTIFIER]]]
+    rows: list[list[Annotated[str, DataClass.DESCRIPTION]]]
 
 
 class ImportConfirmationBridgePayload(TypedDict, total=False):
@@ -55,7 +55,7 @@ class ImportConfirmationBridgePayload(TypedDict, total=False):
 
     transparency_notice: Annotated[str, DataClass.DESCRIPTION]
     source_file: Annotated[str, DataClass.RECORD_ID]
-    document_text: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    document_text: Annotated[str, DataClass.DESCRIPTION]
     tables_preview: list[ImportConfirmationBridgeTable]
     fingerprint: Annotated[dict[str, Any], DataClass.DESCRIPTION]
     request_kind: Annotated[str, DataClass.TXN_TYPE]
@@ -225,23 +225,23 @@ class ImportTabularPreviewCoarsePayload(BaseModel):
 
 
 class ImportBridgeTablePreview(BaseModel):
-    """One bridge table with conservatively classified raw statement cells."""
+    """One bridge table whose cells remain usable for recipe generation."""
 
     model_config = ConfigDict(frozen=True)
 
     page: Annotated[int, DataClass.AGGREGATE]
     header: Annotated[list[str], DataClass.TXN_TYPE]
-    rows: list[list[Annotated[str, DataClass.ACCOUNT_IDENTIFIER]]]
+    rows: list[list[Annotated[str, DataClass.DESCRIPTION]]]
 
 
 class ImportBridgeStatementPayload(BaseModel):
-    """Raw PDF bridge request; statement content may contain critical IDs."""
+    """Raw PDF bridge request whose statement content must remain usable."""
 
     model_config = ConfigDict(frozen=True)
 
     transparency_notice: Annotated[str, DataClass.DESCRIPTION]
     source_file: Annotated[str, DataClass.RECORD_ID]
-    document_text: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    document_text: Annotated[str, DataClass.DESCRIPTION]
     tables_preview: list[ImportBridgeTablePreview]
     fingerprint: Annotated[dict[str, Any], DataClass.DESCRIPTION]
     request_kind: Annotated[str, DataClass.TXN_TYPE]

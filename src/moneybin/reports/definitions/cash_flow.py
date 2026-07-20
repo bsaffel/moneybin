@@ -20,7 +20,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
     view=REPORTS_CASH_FLOW,
     classes={
         "year_month": DataClass.TXN_DATE,
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
@@ -37,9 +37,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
     },
     columns=(
         OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
-        OutputColumn(
-            "account_id", "Owning account identifier.", DataClass.ACCOUNT_IDENTIFIER
-        ),
+        OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn("category", "Transaction category.", DataClass.CATEGORY),
         OutputColumn("inflow", "Sum of positive amounts.", DataClass.TXN_AMOUNT),

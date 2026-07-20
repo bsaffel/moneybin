@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -225,6 +226,107 @@ async def test_gsheet_connect_force_reauth_offloads_oauth(
     assert response.error.code == "GSHEET_RECONNECT_UNAVAILABLE"
     assert offload.await_args_list[0].args == (oauth.authorize,)
     mock_reconnect.assert_awaited_once_with(connection_id="conn_1", yes=False)
+
+
+@pytest.mark.unit
+async def test_gsheet_disconnected_write_runs_off_event_loop() -> None:
+    """The reversible disconnect DB write cannot block the MCP event loop."""
+    loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    service = MagicMock()
+
+    def disconnect(
+        _connection_id: str,
+        *,
+        purge: bool,
+        actor: str,
+    ) -> None:
+        worker_threads.append(threading.get_ident())
+        assert purge is False
+        assert actor == "mcp"
+
+    service.disconnect.side_effect = disconnect
+    service_context = MagicMock()
+    service_context.__enter__.return_value = service
+
+    with patch.object(
+        gsheet_module,
+        "_build_connection_service",
+        return_value=service_context,
+    ):
+        response = await gsheet_module.gsheet_disconnect_coarse(
+            connection_id="conn_abc",
+            state="disconnected",
+        )
+
+    assert response.error is None
+    assert response.data.purged is False
+    assert worker_threads and worker_threads[0] != loop_thread
+
+
+@pytest.mark.unit
+async def test_gsheet_absent_plan_and_purge_run_off_event_loop() -> None:
+    """The destructive DB plan and write cannot block the MCP event loop."""
+    plan = MagicMock(
+        connection_id="conn_abc",
+        connection_before_state={
+            "spreadsheet_id": "sheet_123",
+            "sheet_gid": 0,
+            "adapter": "transactions",
+            "alias": None,
+            "account_id": None,
+        },
+        raw_before_state=[{"row_id": "row_1"}],
+        blast_radius={"connections": 1, "raw_rows": 1},
+    )
+    loop_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    service = MagicMock()
+
+    def plan_purge(_connection_id: str) -> object:
+        worker_threads.append(threading.get_ident())
+        return plan
+
+    def purge_confirmed(
+        _connection_id: str,
+        *,
+        verify: Callable[[object], None],
+        actor: str,
+    ) -> None:
+        worker_threads.append(threading.get_ident())
+        assert actor == "mcp"
+        verify(plan)
+
+    service.plan_purge.side_effect = plan_purge
+    service.purge_confirmed.side_effect = purge_confirmed
+    service_context = MagicMock()
+    service_context.__enter__.return_value = service
+    grant = MagicMock()
+
+    with (
+        patch.object(
+            gsheet_module,
+            "_build_connection_service",
+            return_value=service_context,
+        ),
+        patch.object(
+            gsheet_module,
+            "grant_confirmation_or_raise",
+            new=AsyncMock(return_value=grant),
+        ),
+        patch.object(gsheet_module, "get_settings") as settings,
+    ):
+        settings.return_value.profile = "default"
+        response = await gsheet_module.gsheet_disconnect_coarse(
+            connection_id="conn_abc",
+            state="absent",
+        )
+
+    assert response.error is None
+    assert response.data.purged is True
+    assert len(worker_threads) == 2
+    assert all(thread_id != loop_thread for thread_id in worker_threads)
+    grant.verify.assert_called_once()
 
 
 def test_gsheet_workflow_registrar_uses_public_privacy_actor_names() -> None:

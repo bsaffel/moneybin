@@ -148,6 +148,7 @@ async def test_live_standard_read_selectors_render_exactly() -> None:
         ("reviews", "kind"): {
             "summary",
             "categorization",
+            "auto_rules",
             "matches",
             "account_links",
             "merchant_links",

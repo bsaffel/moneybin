@@ -2212,8 +2212,10 @@ def formats_delete(
         moneybin import formats delete my_custom_format
         moneybin import formats delete my_custom_format --yes
     """
+    from moneybin import error_codes
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.errors import UserError
     from moneybin.extractors.tabular.formats import load_builtin_formats
     from moneybin.services.import_service import ImportService
 
@@ -2221,22 +2223,30 @@ def formats_delete(
         logger.error(f"❌ {name!r} is a built-in format and cannot be deleted")
         raise typer.Exit(1)
 
-    if not yes:
-        confirmed = typer.confirm(f"Delete format {name!r}?")
-        if not confirmed:
-            logger.info("Delete cancelled")
-            raise typer.Exit(0)
-
     with handle_cli_errors():
-        with get_database(read_only=False) as db:
-            status = ImportService(db).delete_saved_format(name, actor="cli")
+        with get_database(read_only=True) as db:
+            reviewed_plan = ImportService(db).plan_saved_format_delete(name)
 
-    if status == "builtin":
-        logger.error(f"❌ {name!r} is a built-in format and cannot be deleted")
-        raise typer.Exit(1)
-    if status == "not_found":
-        logger.error(f"❌ Format {name!r} not found")
-        raise typer.Exit(1)
+        if not yes:
+            confirmed = typer.confirm(f"Delete format {name!r}?")
+            if not confirmed:
+                logger.info("Delete cancelled")
+                raise typer.Exit(0)
+
+        def verify(live_plan: object) -> None:
+            if live_plan != reviewed_plan:
+                raise UserError(
+                    "Saved format changed after confirmation; review and retry.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        with get_database(read_only=False) as db:
+            ImportService(db).delete_saved_format_confirmed(
+                name,
+                actor="cli",
+                verify=verify,
+            )
+
     logger.info(f"✅ Deleted format {name!r}")
 
 

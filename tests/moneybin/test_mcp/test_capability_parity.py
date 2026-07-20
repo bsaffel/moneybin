@@ -301,7 +301,7 @@ def test_flagged_routes_map_their_actual_owners() -> None:
         in rows["import.status"].service_methods
     )
     assert (
-        "moneybin.services.import_service.ImportService.delete_saved_format"
+        "moneybin.services.import_service.ImportService.delete_saved_format_confirmed"
         in rows["import.revert"].service_methods
     )
     assert (

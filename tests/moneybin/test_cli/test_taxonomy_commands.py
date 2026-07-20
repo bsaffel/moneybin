@@ -78,6 +78,38 @@ def test_categories_create_forwards_subcategory_shape(
 
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.categories.get_database")
+def test_categories_create_json_emits_typed_result_envelope(
+    mock_get_db: MagicMock, mock_service_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service_cls.return_value.create_category.return_value = "cat-1"
+
+    result = runner.invoke(
+        categories_app,
+        [
+            "create",
+            "Coffee",
+            "--parent",
+            "Food",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["data"] == {
+        "category_id": "cat-1",
+        "category": "Food",
+        "subcategory": "Coffee",
+        "action": "created",
+        "display": "Food / Coffee",
+    }
+    assert envelope["summary"]["sensitivity"] == "low"
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.categories.get_database")
 def test_categories_set_forwards_inactive_state(
     mock_get_db: MagicMock, mock_service_cls: MagicMock
 ) -> None:
@@ -93,6 +125,27 @@ def test_categories_set_forwards_inactive_state(
         is_active=False,
         actor="cli",
     )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.categories.get_database")
+def test_categories_set_json_emits_typed_result_envelope(
+    mock_get_db: MagicMock, mock_service_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    result = runner.invoke(
+        categories_app,
+        ["set", "cat-1", "--inactive", "--output", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["data"] == {
+        "category_id": "cat-1",
+        "action": "disabled",
+    }
+    assert envelope["summary"]["sensitivity"] == "low"
 
 
 @patch("moneybin.services.categorization.CategorizationService")
@@ -157,3 +210,33 @@ def test_merchants_create_forwards_mapping_fields(
         created_by="user",
         actor="cli",
     )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.merchants.get_database")
+def test_merchants_create_json_emits_typed_result_envelope(
+    mock_get_db: MagicMock, mock_service_cls: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service_cls.return_value.create_merchant.return_value = "merchant-1"
+
+    result = runner.invoke(
+        merchants_app,
+        [
+            "create",
+            "COFFEE",
+            "Coffee Shop",
+            "--default-category",
+            "Food",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    envelope = json.loads(result.stdout)
+    assert envelope["data"] == {
+        "merchant_id": "merchant-1",
+        "action": "created",
+    }
+    assert envelope["summary"]["sensitivity"] == "low"

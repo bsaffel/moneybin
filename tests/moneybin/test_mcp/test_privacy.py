@@ -93,6 +93,92 @@ async def test_privacy_coarse_log_paginates_exactly_and_preserves_rows(
     assert second.next_cursor is None
 
 
+async def test_privacy_coarse_log_survives_prepend_and_removal_without_skips(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    monkeypatch.setattr(
+        "moneybin.privacy.log._resolve_privacy_log_dir",
+        lambda: tmp_path,
+    )
+    for index in range(4):
+        write_privacy_event({
+            "ts": f"2099-01-01T00:00:0{index}+00:00",
+            "actor": f"mcp.tool_{index}",
+            "action": "tool_call",
+            "sensitivity": "low",
+            "classes_returned": [],
+            "row_count": index,
+        })
+
+    first = await privacy_coarse(view="log", limit=1)
+    assert [event.actor for event in first.data.events] == ["mcp.tool_3"]
+    assert first.next_cursor is not None
+
+    path = tmp_path / "privacy.log.jsonl"
+    events = [
+        line for line in path.read_text().splitlines() if "mcp.tool_2" not in line
+    ]
+    path.write_text("\n".join(events) + "\n")
+    write_privacy_event({
+        "ts": "2100-01-01T00:00:00+00:00",
+        "actor": "mcp.prepended",
+        "action": "tool_call",
+        "sensitivity": "low",
+        "classes_returned": [],
+        "row_count": 1,
+    })
+
+    second = await privacy_coarse(
+        view="log",
+        limit=2,
+        cursor=first.next_cursor,
+    )
+
+    assert [event.actor for event in second.data.events] == [
+        "mcp.tool_1",
+        "mcp.tool_0",
+    ]
+    assert second.summary.total_count == 4
+    assert second.next_cursor is None
+
+
+async def test_privacy_coarse_rejects_wrong_key_type_before_log_read(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.mcp.pagination import encode_keyset_cursor
+    from moneybin.mcp.tools.privacy import privacy_coarse
+
+    cursor = encode_keyset_cursor(
+        namespace="privacy.log",
+        scope={"filters": {}, "view": "log"},
+        snapshot=(1,),
+        after=(1,),
+        total=1,
+    )
+    accessed = False
+
+    def fail_if_accessed(*args: object, **kwargs: object) -> object:
+        nonlocal accessed
+        accessed = True
+        raise AssertionError("log read must follow cursor validation")
+
+    monkeypatch.setattr(
+        "moneybin.mcp.tools.privacy.read_privacy_events_page",
+        fail_if_accessed,
+    )
+
+    response = await privacy_coarse(view="log", cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "PRIVACY_CURSOR_INVALID"
+    assert accessed is False
+
+
 async def test_privacy_coarse_log_rejects_malformed_cursor_without_echo() -> None:
     from moneybin.mcp.tools.privacy import privacy_coarse
 

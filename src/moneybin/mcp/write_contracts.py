@@ -16,6 +16,15 @@ from pydantic import (
     model_validator,
 )
 
+from moneybin.services._validators import (
+    CATEGORY_NAME_MAX_LEN,
+    DESCRIPTION_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    MERCHANT_NAME_MAX_LEN,
+    MERCHANT_PATTERN_MAX_LEN,
+    NOTE_MAX_LEN,
+    SLUG_MAX_LEN,
+)
 from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
 
 
@@ -79,11 +88,33 @@ def _conditional_schema_extra(
     return {"allOf": list(branches)}
 
 
-NonBlankString = Annotated[
+IdentifierString = Annotated[
     str,
-    Field(min_length=1),
+    Field(min_length=1, max_length=IDENTIFIER_MAX_LEN),
     AfterValidator(_reject_whitespace_only),
 ]
+CategoryName = Annotated[
+    str,
+    Field(min_length=1, max_length=CATEGORY_NAME_MAX_LEN),
+    AfterValidator(_reject_whitespace_only),
+]
+MerchantName = Annotated[
+    str,
+    Field(min_length=1, max_length=MERCHANT_NAME_MAX_LEN),
+    AfterValidator(_reject_whitespace_only),
+]
+MerchantPattern = Annotated[
+    str,
+    Field(min_length=1, max_length=MERCHANT_PATTERN_MAX_LEN),
+    AfterValidator(_reject_whitespace_only),
+]
+SlugString = Annotated[
+    str,
+    Field(min_length=1, max_length=SLUG_MAX_LEN),
+    AfterValidator(_reject_whitespace_only),
+]
+DescriptionText = Annotated[str, Field(max_length=DESCRIPTION_MAX_LEN)]
+NoteText = Annotated[str, Field(max_length=NOTE_MAX_LEN)]
 FiniteDecimal = Annotated[
     Decimal,
     BeforeValidator(
@@ -140,9 +171,9 @@ class SplitTarget(_StrictRequest):
     )
 
     amount: SplitAmount
-    category: NonBlankString | None = None
-    subcategory: NonBlankString | None = None
-    note: str | None = None
+    category: CategoryName | None = None
+    subcategory: CategoryName | None = None
+    note: NoteText | None = None
 
     @model_validator(mode="after")
     def _validate_category_hierarchy(self) -> Self:
@@ -155,23 +186,23 @@ class NoteSet(_StrictRequest):
     """Set or clear the note on one transaction."""
 
     kind: Literal["note_set"]
-    transaction_id: NonBlankString
-    note: str | None
+    transaction_id: IdentifierString
+    note: NoteText | None
 
 
 class TagsSet(_StrictRequest):
     """Replace the complete tag collection on one transaction."""
 
     kind: Literal["tags_set"]
-    transaction_id: NonBlankString
-    tags: list[NonBlankString]
+    transaction_id: IdentifierString
+    tags: list[SlugString]
 
 
 class SplitsSet(_StrictRequest):
     """Replace the complete split collection on one transaction."""
 
     kind: Literal["splits_set"]
-    transaction_id: NonBlankString
+    transaction_id: IdentifierString
     splits: list[SplitTarget]
 
 
@@ -179,8 +210,8 @@ class TagRename(_StrictRequest):
     """Rename one tag everywhere."""
 
     kind: Literal["tag_rename"]
-    old_name: NonBlankString
-    new_name: NonBlankString
+    old_name: SlugString
+    new_name: SlugString
 
 
 AnnotationRequest = Annotated[
@@ -212,11 +243,11 @@ class CategorizationDecisionRequest(_StrictRequest):
     )
 
     kind: Literal["categorization"]
-    decision_id: NonBlankString
+    decision_id: IdentifierString
     decision: Literal["accept", "reject"]
-    category: NonBlankString | None = None
-    subcategory: NonBlankString | None = None
-    canonical_merchant_name: NonBlankString | None = None
+    category: CategoryName | None = None
+    subcategory: CategoryName | None = None
+    canonical_merchant_name: MerchantName | None = None
 
     @model_validator(mode="after")
     def _validate_decision(self) -> Self:
@@ -236,7 +267,7 @@ class MatchDecisionRequest(_StrictRequest):
     """Accept or reject one transaction-match proposal."""
 
     kind: Literal["match"]
-    decision_id: NonBlankString
+    decision_id: IdentifierString
     decision: Literal["accept", "reject"]
 
 
@@ -256,7 +287,7 @@ class AutoRuleDecisionRequest(_StrictRequest):
     )
 
     kind: Literal["auto_rule"]
-    decision_id: NonBlankString
+    decision_id: IdentifierString
     decision: Literal["accept", "reject"]
     allow_broad: StrictBool = False
 
@@ -292,9 +323,9 @@ class _IdentityDecisionRequest(_StrictRequest):
         )
     )
 
-    decision_id: NonBlankString
+    decision_id: IdentifierString
     decision: Literal["accept", "reject"]
-    target_id: NonBlankString | None = None
+    target_id: IdentifierString | None = None
 
     @model_validator(mode="after")
     def _validate_decision(self) -> Self:
@@ -360,10 +391,10 @@ class CategoryStateRequest(_StrictRequest):
 
     kind: Literal["category"]
     state: Literal["present", "inactive", "absent"]
-    category_id: NonBlankString | None = None
-    category: NonBlankString | None = None
-    subcategory: NonBlankString | None = None
-    description: str | None = None
+    category_id: IdentifierString | None = None
+    category: CategoryName | None = None
+    subcategory: CategoryName | None = None
+    description: DescriptionText | None = None
     force: StrictBool = False
 
     @model_validator(mode="after")
@@ -411,12 +442,12 @@ class MerchantStateRequest(_StrictRequest):
 
     kind: Literal["merchant"]
     state: Literal["present", "absent"]
-    merchant_id: NonBlankString | None = None
-    raw_pattern: NonBlankString | None = None
-    canonical_name: NonBlankString | None = None
+    merchant_id: IdentifierString | None = None
+    raw_pattern: MerchantPattern | None = None
+    canonical_name: MerchantName | None = None
     match_type: MatchType | None = None
-    category: NonBlankString | None = None
-    subcategory: NonBlankString | None = None
+    category: CategoryName | None = None
+    subcategory: CategoryName | None = None
 
     @model_validator(mode="after")
     def _validate_state(self) -> Self:
@@ -461,7 +492,7 @@ class ConsentStateRequest(_StrictRequest):
     kind: Literal["consent"]
     category: FeatureCategory
     state: Literal["granted", "revoked"]
-    backend: NonBlankString | None = None
+    backend: IdentifierString | None = None
     mode: Literal["persistent", "one-time"] | None = None
 
     @model_validator(mode="after")
@@ -475,10 +506,10 @@ class CategorizationRuleMatch(_StrictRequest):
     """Strict matching target for one categorization rule."""
 
     type: MatchType
-    value: NonBlankString
+    value: MerchantPattern
     min_amount: FiniteDecimal | None = None
     max_amount: FiniteDecimal | None = None
-    account_id: NonBlankString | None = None
+    account_id: IdentifierString | None = None
 
     @model_validator(mode="after")
     def _validate_amount_bounds(self) -> Self:
@@ -531,11 +562,11 @@ class CategorizationRuleTarget(_StrictRequest):
     )
 
     kind: Literal["rule"]
-    rule_id: NonBlankString | None = None
+    rule_id: IdentifierString | None = None
     state: Literal["present", "inactive", "absent"]
     matcher: CategorizationRuleMatch | None = None
-    category: NonBlankString | None = None
-    subcategory: NonBlankString | None = None
+    category: CategoryName | None = None
+    subcategory: CategoryName | None = None
     priority: int | None = Field(default=None, ge=0, le=10_000)
 
     @model_validator(mode="after")

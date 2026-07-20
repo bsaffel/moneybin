@@ -163,6 +163,49 @@ async def test_system_audit_coarse_paginates_events(mcp_db: object) -> None:
     assert second.data.events[0].audit_id != first.data.events[0].audit_id
 
 
+async def test_system_audit_event_continuation_ignores_newer_insert() -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for audit_id, occurred_at in (
+            ("audit-original-third", "2099-07-18 10:00:00"),
+            ("audit-original-second", "2099-07-18 11:00:00"),
+            ("audit-original-first", "2099-07-18 12:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO app.audit_log (
+                    audit_id, occurred_at, actor, action, target_schema,
+                    target_table, target_id, operation_id
+                ) VALUES (?, ?, 'cli', 'tag.add', 'app',
+                          'transaction_tags', ?, ?)
+                """,
+                [audit_id, occurred_at, audit_id, f"op-{audit_id}"],
+            )
+
+    first = await system_audit_coarse(view="events", limit=1)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.audit_log (
+                audit_id, occurred_at, actor, action, target_schema,
+                target_table, target_id, operation_id
+            ) VALUES ('audit-new-head', '2100-01-01 00:00:00', 'cli',
+                      'tag.add', 'app', 'transaction_tags', 'new', 'op-new')
+            """
+        )
+    second = await system_audit_coarse(
+        view="events",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert [event.audit_id for event in first.data.events] == ["audit-original-first"]
+    assert [event.audit_id for event in second.data.events] == ["audit-original-second"]
+    assert first.summary.total_count == 3
+    assert second.summary.total_count == 3
+
+
 async def test_system_audit_coarse_paginates_tied_events_without_gaps(
     mcp_db: object,
 ) -> None:
@@ -216,6 +259,58 @@ async def test_system_audit_coarse_paginates_history(mcp_db: object) -> None:
     assert observed == expected
 
 
+async def test_system_audit_history_continuation_ignores_newer_operation() -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        for operation_id, occurred_at in (
+            ("op-original-third", "2099-07-18 10:00:00"),
+            ("op-original-second", "2099-07-18 11:00:00"),
+            ("op-original-first", "2099-07-18 12:00:00"),
+        ):
+            db.execute(
+                """
+                INSERT INTO app.audit_log (
+                    audit_id, occurred_at, actor, action, target_schema,
+                    target_table, target_id, operation_id
+                ) VALUES (?, ?, 'cli', 'tag.add', 'app',
+                          'transaction_tags', ?, ?)
+                """,
+                [
+                    f"audit-{operation_id}",
+                    occurred_at,
+                    operation_id,
+                    operation_id,
+                ],
+            )
+
+    first = await system_audit_coarse(view="history", limit=1)
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.audit_log (
+                audit_id, occurred_at, actor, action, target_schema,
+                target_table, target_id, operation_id
+            ) VALUES ('audit-new-operation', '2100-01-01 00:00:00', 'cli',
+                      'tag.add', 'app', 'transaction_tags', 'new', 'op-new')
+            """
+        )
+    second = await system_audit_coarse(
+        view="history",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert [operation.operation_id for operation in first.data.operations] == [
+        "op-original-first"
+    ]
+    assert [operation.operation_id for operation in second.data.operations] == [
+        "op-original-second"
+    ]
+    assert first.summary.total_count == 3
+    assert second.summary.total_count == 3
+
+
 async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
     mcp_db: object,
 ) -> None:
@@ -224,6 +319,18 @@ async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
     first = await system_audit_coarse(view="events", limit=1)
 
     malformed = await system_audit_coarse(view="events", cursor="not-base64")
+    from moneybin.mcp.pagination import encode_keyset_cursor
+
+    invalid_timestamp = await system_audit_coarse(
+        view="events",
+        cursor=encode_keyset_cursor(
+            namespace="system_audit",
+            scope={"view": "events"},
+            snapshot=("not-a-timestamp", "audit-a"),
+            after=("still-not-a-timestamp", "audit-b"),
+            total=2,
+        ),
+    )
     cross_view = await system_audit_coarse(
         view="history",
         cursor=first.next_cursor,
@@ -231,6 +338,8 @@ async def test_system_audit_coarse_rejects_malformed_and_cross_view_cursors(
 
     assert malformed.error is not None
     assert malformed.error.code == "infra_invalid_input"
+    assert invalid_timestamp.error is not None
+    assert invalid_timestamp.error.code == "infra_invalid_input"
     assert cross_view.error is not None
     assert cross_view.error.code == "infra_invalid_input"
 

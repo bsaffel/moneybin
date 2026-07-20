@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
-import json
 import shlex
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -616,7 +614,7 @@ async def test_import_confirm_ignores_format_created_after_preview(
     }
 
 
-async def test_import_preview_pdf_bridge_is_typed_critical_and_confirmable(
+async def test_import_preview_pdf_bridge_keeps_recipe_inputs_usable(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
@@ -636,9 +634,14 @@ async def test_import_preview_pdf_bridge_is_typed_critical_and_confirmable(
     from moneybin.privacy.payloads.imports import ImportPdfBridgePreviewPayload
 
     assert isinstance(response.data, ImportPdfBridgePreviewPayload)
-    assert response.summary.sensitivity == "critical"
-    assert "account_identifier" in (response.classes_returned or [])
-    assert response.data.bridge_payload.document_text.startswith("****")
+    assert response.summary.sensitivity == "medium"
+    assert "description" in (response.classes_returned or [])
+    assert response.data.bridge_payload.document_text == (
+        "Chase Bank\nDate Description Amount\n05/01 COFFEE SHOP -12.34"
+    )
+    assert response.data.bridge_payload.tables_preview[0].rows == [
+        ["05/01", "COFFEE SHOP", "-12.34"]
+    ]
     assert any(
         f"preview_id='{response.data.preview_id}'" in action
         for action in response.actions
@@ -2086,6 +2089,44 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
     assert wrong_filter.error.code == "IMPORT_CURSOR_INVALID"
 
 
+async def test_import_status_mixed_cursor_carries_full_initial_total(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+    from moneybin.mcp.pagination import decode_keyset_cursor
+
+    with get_database(read_only=False) as db:
+        for import_id in ("imp_a", "imp_b"):
+            db.execute(
+                """
+                INSERT INTO raw.import_log (
+                    import_id, source_file, source_type, source_origin,
+                    account_names, status, started_at
+                ) VALUES (
+                    ?, ?, 'csv', 'test', '[]', 'complete',
+                    '2099-01-01 00:00:00'
+                )
+                """,
+                [import_id, f"/home/test/imports/{import_id}.csv"],
+            )
+
+    first = await import_status_coarse(
+        sections=["imports", "formats"],
+        limit=1,
+    )
+    assert first.next_cursor is not None
+    position = decode_keyset_cursor(
+        first.next_cursor,
+        namespace="import_status.imports",
+        scope={"import_id": None, "sections": ["imports", "formats"]},
+    )
+
+    assert first.summary.total_count > 2
+    assert position.total == first.summary.total_count
+    assert position.snapshot[2] == 2
+    assert position.after[2] == 2
+
+
 async def test_import_status_coarse_allows_multiple_canonical_prepends(
     mcp_db: object,
 ) -> None:
@@ -2196,7 +2237,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
     assert second.next_cursor is None
 
 
-async def test_import_status_coarse_rejects_delete_plus_prepend(
+async def test_import_status_coarse_survives_removal_and_prepend_without_skipping(
     mcp_db: object,
 ) -> None:
     from moneybin.database import get_database
@@ -2221,7 +2262,7 @@ async def test_import_status_coarse_rejects_delete_plus_prepend(
     assert first.next_cursor is not None
 
     with get_database(read_only=False) as db:
-        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_a'")
+        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_c'")
         db.execute(
             """
             INSERT INTO raw.import_log (
@@ -2239,11 +2280,12 @@ async def test_import_status_coarse_rejects_delete_plus_prepend(
         limit=1,
         cursor=first.next_cursor,
     )
-    assert response.error is not None
-    assert response.error.code == "IMPORT_CURSOR_INVALID"
+    assert [row["import_id"] for row in response.data.sections[0].records] == ["imp_b"]
+    assert response.summary.total_count == 3
+    assert response.next_cursor is not None
 
 
-async def test_import_status_coarse_rejects_snapshot_anchor_deletion(
+async def test_import_status_coarse_survives_unserved_row_removal_without_duplication(
     mcp_db: object,
 ) -> None:
     from moneybin.database import get_database
@@ -2268,106 +2310,49 @@ async def test_import_status_coarse_rejects_snapshot_anchor_deletion(
     assert first.next_cursor is not None
 
     with get_database(read_only=False) as db:
-        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_c'")
-        db.execute(
-            """
-            INSERT INTO raw.import_log (
-                import_id, source_file, source_type, source_origin,
-                account_names, status, started_at
-            ) VALUES (
-                'imp_z', '/tmp/imp_z.csv', 'csv', 'test', '[]', 'complete',
-                '2099-01-01 00:00:00'
-            )
-            """
-        )
+        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_b'")
 
     response = await import_status_coarse(
         sections=["imports"],
-        limit=1,
+        limit=2,
         cursor=first.next_cursor,
     )
-    assert response.error is not None
-    assert response.error.code == "IMPORT_CURSOR_INVALID"
+    assert [row["import_id"] for row in response.data.sections[0].records] == ["imp_a"]
+    assert response.summary.total_count == 3
+    assert response.next_cursor is None
 
 
-async def test_import_status_coarse_rejects_original_order_mutation(
+async def test_import_status_coarse_rejects_invalid_key_types_before_data_access(
     mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from moneybin.database import get_database
+    from moneybin.mcp.pagination import encode_keyset_cursor
 
-    with get_database(read_only=False) as db:
-        for import_id, started_at in (
-            ("imp_a", "2099-01-01 00:00:00"),
-            ("imp_b", "2099-02-01 00:00:00"),
-            ("imp_c", "2099-03-01 00:00:00"),
-        ):
-            db.execute(
-                """
-                INSERT INTO raw.import_log (
-                    import_id, source_file, source_type, source_origin,
-                    account_names, status, started_at
-                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
-                """,
-                [import_id, f"/home/test/imports/{import_id}.csv", started_at],
-            )
+    invalid_cursor = encode_keyset_cursor(
+        namespace="import_status.imports",
+        scope={"import_id": None, "sections": ["imports"]},
+        snapshot=(123, "imp_b"),
+        after=(123, "imp_b"),
+        total=2,
+    )
+    accessed = False
 
-    first = await import_status_coarse(sections=["imports"], limit=1)
-    assert first.next_cursor is not None
+    def fail_if_accessed(*args: object, **kwargs: object) -> object:
+        nonlocal accessed
+        accessed = True
+        raise AssertionError("data access must follow cursor validation")
 
-    with get_database(read_only=False) as db:
-        db.execute(
-            """
-            UPDATE raw.import_log
-            SET started_at = '2098-01-01 00:00:00'
-            WHERE import_id = 'imp_b'
-            """
-        )
+    monkeypatch.setattr(
+        "moneybin.loaders.import_log.get_import_history_page",
+        fail_if_accessed,
+    )
 
     response = await import_status_coarse(
-        sections=["imports"],
-        limit=1,
-        cursor=first.next_cursor,
+        sections=["imports"], limit=1, cursor=invalid_cursor
     )
     assert response.error is not None
     assert response.error.code == "IMPORT_CURSOR_INVALID"
-
-
-async def test_import_status_coarse_rejects_invalid_snapshot_head(
-    mcp_db: object,
-) -> None:
-    from moneybin.database import get_database
-
-    with get_database(read_only=False) as db:
-        for import_id in ("imp_a", "imp_b"):
-            db.execute(
-                """
-                INSERT INTO raw.import_log (
-                    import_id, source_file, source_type, source_origin,
-                    account_names, status, started_at
-                ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
-                """,
-                [
-                    import_id,
-                    f"/home/test/imports/{import_id}.csv",
-                    "2099-01-01 00:00:00",
-                ],
-            )
-
-    first = await import_status_coarse(sections=["imports"], limit=1)
-    assert first.next_cursor is not None
-    decoded = json.loads(base64.urlsafe_b64decode(first.next_cursor))
-    decoded["snapshot"]["head"][0] = "not-a-timestamp"
-    invalid_cursor = base64.urlsafe_b64encode(
-        json.dumps(decoded, sort_keys=True, separators=(",", ":")).encode()
-    ).decode()
-
-    response = await import_status_coarse(
-        sections=["imports"],
-        limit=1,
-        cursor=invalid_cursor,
-    )
-    assert response.error is not None
-    assert response.error.code == "IMPORT_CURSOR_INVALID"
+    assert accessed is False
 
 
 async def test_import_status_coarse_import_id_returns_one_exact_record(
@@ -3325,8 +3310,16 @@ def _bridge_error(reason: str = "unknown_layout") -> ImportConfirmationRequiredE
         payload={
             "transparency_notice": "Proceeding surfaces this PDF to the agent.",
             "source_file": "chase.pdf",
-            "document_text": "Chase Bank\nDate Description Amount\n...",
-            "tables_preview": [{"page": 1, "header": ["Date"], "rows": [["05/01"]]}],
+            "document_text": (
+                "Chase Bank\nDate Description Amount\n05/01 COFFEE SHOP -12.34"
+            ),
+            "tables_preview": [
+                {
+                    "page": 1,
+                    "header": ["Date", "Description", "Amount"],
+                    "rows": [["05/01", "COFFEE SHOP", "-12.34"]],
+                }
+            ],
             "fingerprint": {"issuer": "chase", "headers": ["Date"], "page_bucket": "1"},
             "request_kind": "propose_recipe",
             "saved_recipe_for_re_derive": None,
@@ -3400,6 +3393,16 @@ class TestImportFilesPdfBridge:
         assert isinstance(bridge, dict)
         assert bridge.get("request_kind") == "propose_recipe"
         assert "transparency_notice" in bridge
+        assert bridge.get("document_text") == (
+            "Chase Bank\nDate Description Amount\n05/01 COFFEE SHOP -12.34"
+        )
+        assert bridge.get("tables_preview") == [
+            {
+                "page": 1,
+                "header": ["Date", "Description", "Amount"],
+                "rows": [["05/01", "COFFEE SHOP", "-12.34"]],
+            }
+        ]
 
     async def test_pdf_escalation_action_points_at_bridge_response(
         self, tmp_path: Path, monkeypatch: MonkeyPatch

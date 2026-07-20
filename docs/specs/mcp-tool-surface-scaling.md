@@ -458,12 +458,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic Plan 6
 [`standard-45.json`](../../tests/fixtures/mcp_surface/standard-45.json) snapshot
-contains 45 tools, 45,752 bytes of serialized metadata, zero advertised output schemas,
+contains 45 tools, 46,454 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`ed29b3d659fff626ba87917916aea4c27d50dd1cc5aba4117b4507678353d592`.
+`4c0ec7d2f7255b10cd692a4ae9e38d2081532cd867e8fa9a8bbec7324e64de19`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -44,982 bytes (-49.6%). The deterministic estimate is 11,438
+The delta is -44,280 bytes (-48.8%). The deterministic estimate is 11,614
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
@@ -481,22 +481,22 @@ narrower definitions did not express.
 |---|---:|---:|
 | `system_status` | 663 / 2,725 (-2,062) | 277 / 793 (-516) |
 | `system_audit` | 746 / 1,958 (-1,212) | 412 / 684 (-272) |
-| `accounts` | 830 / 2,240 (-1,410) | 465 / 808 (-343) |
+| `accounts` | 823 / 2,240 (-1,417) | 465 / 808 (-343) |
 | `accounts_balances` | 1,069 / 2,786 (-1,717) | 718 / 1,286 (-568) |
 | `investments` | 1,076 / 4,908 (-3,832) | 672 / 2,727 (-2,055) |
 | `transactions` | 1,287 / 2,383 (-1,096) | 821 / 1,666 (-845) |
 | `transactions_categorize_rules` | 564 / 318 (+246) | 144 / 62 (+82) |
-| `reviews` | 690 / 8,687 (-7,997) | 401 / 2,493 (-2,092) |
+| `reviews` | 703 / 8,687 (-7,984) | 414 / 2,493 (-2,079) |
 | `taxonomy` | 669 / 620 (+49) | 389 / 177 (+212) |
 | `import_status` | 642 / 1,236 (-594) | 405 / 429 (-24) |
 | `gsheet` | 441 / 1,016 (-575) | 219 / 200 (+19) |
 | `privacy` | 590 / 1,007 (-417) | 267 / 393 (-126) |
 | `accounts_balance_assert` | 1,416 / 1,679 (-263) | 775 / 674 (+101) |
-| `transactions_annotate` | 2,641 / 3,653 (-1,012) | 2,162 / 962 (+1,200) |
-| `transactions_categorize_rules_set` | 2,965 / 2,670 (+295) | 2,350 / 1,260 (+1,090) |
-| `reviews_decide` | 1,802 / 2,566 (-764) | 1,419 / 1,220 (+199) |
-| `identity_links_decide` | 2,758 / 5,762 (-3,004) | 2,348 / 2,003 (+345) |
-| `taxonomy_set` | 3,337 / 3,223 (+114) | 2,942 / 1,163 (+1,779) |
+| `transactions_annotate` | 2,800 / 3,653 (-853) | 2,321 / 962 (+1,359) |
+| `transactions_categorize_rules_set` | 3,043 / 2,670 (+373) | 2,428 / 1,260 (+1,168) |
+| `reviews_decide` | 2,480 / 2,566 (-86) | 2,039 / 1,220 (+819) |
+| `identity_links_decide` | 2,848 / 5,762 (-2,914) | 2,438 / 2,003 (+435) |
+| `taxonomy_set` | 3,480 / 3,223 (+257) | 3,085 / 1,163 (+1,922) |
 | `privacy_consent_set` | 1,217 / 2,188 (-971) | 799 / 1,021 (-222) |
 
 The exact historical replaced-name cohorts are:

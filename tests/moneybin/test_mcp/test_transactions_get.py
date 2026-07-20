@@ -249,6 +249,35 @@ async def test_transactions_coarse_paginates_with_exact_counts(
 
 
 @pytest.mark.unit
+async def test_transaction_continuation_ignores_newer_matching_insert() -> None:
+    _insert_transactions()
+    first = await transactions_coarse(account="ACC001", limit=1)
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                description, source_type, category, categorized_by
+            ) VALUES (
+                'txn_new_head', 'ACC001', DATE '2025-06-02', -10.00,
+                'Newer transaction', 'ofx', 'Food & Drink', 'user'
+            )
+            """
+        )
+    second = await transactions_coarse(
+        account="ACC001",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert [row.transaction_id for row in first.data.transactions] == ["txn_1"]
+    assert [row.transaction_id for row in second.data.transactions] == ["txn_2"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+
+
+@pytest.mark.unit
 async def test_transactions_coarse_cursor_is_bound_to_filters(
     mcp_db: object,
 ) -> None:
@@ -261,6 +290,66 @@ async def test_transactions_coarse_cursor_is_bound_to_filters(
         limit=1,
         cursor=first.next_cursor,
     )
+
+    assert response.error is not None
+    assert response.error.code == "TRANSACTION_CURSOR_INVALID"
+
+
+@pytest.mark.unit
+async def test_transactions_coarse_rejects_non_date_key_before_query() -> None:
+    from moneybin.mcp.pagination import encode_keyset_cursor
+
+    cursor = encode_keyset_cursor(
+        namespace="transactions",
+        scope={
+            "account": None,
+            "category": None,
+            "end": None,
+            "max_amount": None,
+            "merchant": None,
+            "min_amount": None,
+            "start": None,
+            "text": None,
+        },
+        snapshot=("not-a-date", "txn-a"),
+        after=("also-not-a-date", "txn-b"),
+        total=2,
+    )
+
+    response = await transactions_coarse(cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "TRANSACTION_CURSOR_INVALID"
+
+
+@pytest.mark.unit
+async def test_transaction_cursor_is_validated_before_reference_data_access() -> None:
+    from unittest.mock import patch
+
+    from moneybin.mcp.pagination import encode_keyset_cursor
+
+    cursor = encode_keyset_cursor(
+        namespace="transactions",
+        scope={
+            "account": "checking",
+            "category": None,
+            "end": None,
+            "max_amount": None,
+            "merchant": None,
+            "min_amount": None,
+            "start": None,
+            "text": None,
+        },
+        snapshot=("not-a-date", "txn-a"),
+        after=("also-not-a-date", "txn-b"),
+        total=2,
+    )
+
+    with patch(
+        "moneybin.mcp.tools.transactions.get_database",
+        side_effect=AssertionError("reference data accessed"),
+    ):
+        response = await transactions_coarse(account="CHECKING", cursor=cursor)
 
     assert response.error is not None
     assert response.error.code == "TRANSACTION_CURSOR_INVALID"

@@ -158,8 +158,8 @@ def test_redacts_pydantic_nested_list() -> None:
     assert out.total_balance == Decimal("100.00")
 
 
-def test_import_files_masks_pdf_bridge_content_like_import_preview() -> None:
-    """The batch confirmation path must not bypass the typed bridge redaction."""
+def test_import_files_preserves_bridge_input_but_masks_explicit_account_keys() -> None:
+    """Bridge prose stays usable while semantically typed account keys mask."""
     from moneybin.privacy.introspection import derive_tier  # noqa: PLC0415
     from moneybin.privacy.payloads.imports import (  # noqa: PLC0415
         ImportFilesPayload,
@@ -187,18 +187,31 @@ def test_import_files_masks_pdf_bridge_content_like_import_preview() -> None:
                     "bridge_payload": {
                         "transparency_notice": "Review this statement.",
                         "source_file": "statement.pdf",
-                        "document_text": "Account 12345678",
+                        "document_text": (
+                            "Account ending 5678\n"
+                            "05/01 COFFEE SHOP -12.34\n"
+                            "05/02 PAYROLL 2500.00"
+                        ),
                         "tables_preview": [
                             {
                                 "page": 1,
-                                "header": ["Account"],
-                                "rows": [["12345678"]],
+                                "header": ["Date", "Description", "Amount"],
+                                "rows": [
+                                    ["05/01", "COFFEE SHOP", "-12.34"],
+                                    ["05/02", "PAYROLL", "2500.00"],
+                                ],
                             }
                         ],
                         "fingerprint": {"issuer": "example"},
                         "request_kind": "propose_recipe",
                         "saved_recipe_for_re_derive": None,
                     },
+                    "account_proposals": [
+                        {
+                            "source_account_key": "12345678",
+                            "requires_confirm": True,
+                        }
+                    ],
                 },
             )
         ],
@@ -211,8 +224,14 @@ def test_import_files_masks_pdf_bridge_content_like_import_preview() -> None:
     assert confirmation is not None
     bridge = confirmation["bridge_payload"]
     assert bridge is not None
-    assert bridge["document_text"] == "****5678"
-    assert bridge["tables_preview"][0]["rows"] == [["****5678"]]
+    assert bridge["document_text"] == (
+        "Account ending 5678\n05/01 COFFEE SHOP -12.34\n05/02 PAYROLL 2500.00"
+    )
+    assert bridge["tables_preview"][0]["rows"] == [
+        ["05/01", "COFFEE SHOP", "-12.34"],
+        ["05/02", "PAYROLL", "2500.00"],
+    ]
+    assert confirmation["account_proposals"][0]["source_account_key"] == "****5678"
 
 
 def test_typed_dict_union_selects_the_matching_discriminator_arm() -> None:

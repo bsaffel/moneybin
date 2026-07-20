@@ -19,13 +19,10 @@ surface-budget tests.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import json
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Literal, cast
 
 from fastmcp import FastMCP
 from pydantic import BeforeValidator, Field, JsonValue
@@ -41,6 +38,11 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.write_contracts import AnnotationRequest
 from moneybin.privacy.payloads.transactions import (
     MatchesHistoryPayload,
@@ -250,52 +252,63 @@ def _transaction_merchant_candidates(
     ]
 
 
-def _transaction_cursor(offset: int, filters: dict[str, object]) -> str:
-    """Encode a transaction cursor bound to canonical query state."""
-    raw = json.dumps(
-        {"filters": filters, "offset": offset, "tool": "transactions"},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-def _transaction_offset(
+def _transaction_position(
     cursor: str | None,
     *,
     filters: dict[str, object],
-) -> int:
-    """Decode a transaction cursor and reject cross-filter reuse."""
+) -> KeysetPosition | None:
+    """Decode a transaction keyset cursor and reject cross-filter reuse."""
     if cursor is None:
-        return 0
+        return None
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return decode_keyset_cursor(
+            cursor,
+            namespace="transactions",
+            scope=filters,
+        )
+    except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
             code="TRANSACTION_CURSOR_INVALID",
         ) from exc
-    if not isinstance(value, dict):
-        raise UserError(
-            "Invalid pagination cursor.",
-            code="TRANSACTION_CURSOR_INVALID",
-        )
-    payload = cast(dict[str, Any], value)
-    offset = payload.get("offset")
+
+
+def _transaction_bounds(
+    position: KeysetPosition | None,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+    """Validate and narrow decoded transaction keys to date/id pairs."""
+    if position is None:
+        return None, None
     if (
-        set(payload) != {"filters", "offset", "tool"}
-        or payload.get("filters") != filters
-        or payload.get("tool") != "transactions"
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
+        len(position.snapshot) != 2
+        or len(position.after) != 2
+        or not all(
+            isinstance(value, str) for value in (*position.snapshot, *position.after)
+        )
     ):
         raise UserError(
             "Invalid pagination cursor.",
             code="TRANSACTION_CURSOR_INVALID",
         )
-    return offset
+    snapshot = cast(tuple[str, str], position.snapshot)
+    after = cast(tuple[str, str], position.after)
+    try:
+        date.fromisoformat(snapshot[0])
+        date.fromisoformat(after[0])
+    except ValueError as exc:
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="TRANSACTION_CURSOR_INVALID",
+        ) from exc
+    if not snapshot[1] or not after[1]:
+        raise UserError(
+            "Invalid pagination cursor.",
+            code="TRANSACTION_CURSOR_INVALID",
+        )
+    return (
+        snapshot,
+        after,
+    )
 
 
 def _transaction_period(start: date | None, end: date | None) -> str | None:
@@ -375,6 +388,19 @@ def transactions_coarse(
             code="TRANSACTION_AMOUNT_RANGE_INVALID",
         )
 
+    filters: dict[str, object] = {
+        "account": account.casefold().strip() if account is not None else None,
+        "category": category,
+        "end": end.isoformat() if end is not None else None,
+        "max_amount": str(max_amount) if max_amount is not None else None,
+        "merchant": merchant.casefold().strip() if merchant is not None else None,
+        "min_amount": str(min_amount) if min_amount is not None else None,
+        "start": start.isoformat() if start is not None else None,
+        "text": text.casefold() if text is not None else None,
+    }
+    position = _transaction_position(cursor, filters=filters)
+    snapshot, after = _transaction_bounds(position)
+
     with get_database(read_only=True) as db:
         account_id = (
             _resolve_transaction_account(
@@ -393,17 +419,6 @@ def transactions_coarse(
             if merchant is not None
             else None
         )
-        filters: dict[str, object] = {
-            "account_id": account_id,
-            "category": category,
-            "end": end.isoformat() if end is not None else None,
-            "max_amount": str(max_amount) if max_amount is not None else None,
-            "merchant_id": merchant_id,
-            "min_amount": str(min_amount) if min_amount is not None else None,
-            "start": start.isoformat() if start is not None else None,
-            "text": text.casefold() if text is not None else None,
-        }
-        offset = _transaction_offset(cursor, filters=filters)
         result = TransactionService(db).query_operational(
             account_id=account_id,
             date_from=start.isoformat() if start is not None else None,
@@ -413,20 +428,42 @@ def transactions_coarse(
             amount_min=min_amount,
             amount_max=max_amount,
             text=text,
-            limit=limit,
-            offset=offset,
+            limit=limit + 1,
+            snapshot=snapshot,
+            after=after,
         )
 
-    next_cursor = (
-        _transaction_cursor(offset + limit, filters)
-        if result.total_count > offset + limit
-        else None
+    page_transactions = result.transactions[:limit]
+    if len(result.transactions) > limit and page_transactions:
+        snapshot_key = (
+            snapshot
+            if snapshot is not None
+            else (
+                page_transactions[0].transaction_date,
+                page_transactions[0].transaction_id,
+            )
+        )
+        next_cursor = encode_keyset_cursor(
+            namespace="transactions",
+            scope=filters,
+            snapshot=snapshot_key,
+            after=(
+                page_transactions[-1].transaction_date,
+                page_transactions[-1].transaction_id,
+            ),
+            total=result.total_count,
+        )
+    else:
+        next_cursor = None
+    page_result = OperationalTransactionResult(
+        transactions=page_transactions,
+        total_count=result.total_count,
     )
-    payload = _transaction_payload(result, next_cursor=next_cursor)
+    payload = _transaction_payload(page_result, next_cursor=next_cursor)
     envelope = build_envelope(
         data=payload,
         total_count=result.total_count,
-        returned_count=len(result.transactions),
+        returned_count=len(page_transactions),
         next_cursor=next_cursor,
         period=_transaction_period(start, end),
         actions=_transaction_actions(

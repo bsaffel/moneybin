@@ -169,6 +169,75 @@ def test_catalog_lists_reports_in_full_id_order() -> None:
     )
 
 
+def test_registered_account_id_metadata_uses_opaque_record_id_class() -> None:
+    """Exact account-id fields stay unmasked across both report kinds."""
+    problems: list[str] = []
+    for report in get_report_catalog().list():
+        if report.classes.get("account_id") is not None and (
+            report.classes["account_id"] is not DataClass.RECORD_ID
+        ):
+            problems.append(f"{report.report_id}.account_id output")
+        parameters = (
+            report.params if isinstance(report, ReportSpec) else report.parameters
+        )
+        for parameter in parameters:
+            if parameter.name in {"account_id", "account_ids"} and (
+                parameter.data_class is not DataClass.RECORD_ID
+            ):
+                problems.append(f"{report.report_id}.{parameter.name} parameter")
+
+    assert problems == []
+
+
+def test_service_report_privacy_maps_match_independent_contract() -> None:
+    """Every service-backed report has an explicit, independently reviewed map."""
+    expected = {
+        "core:networth": {
+            "columns": {
+                "balance_date": DataClass.TXN_DATE,
+                "net_worth": DataClass.BALANCE,
+                "total_assets": DataClass.BALANCE,
+                "total_liabilities": DataClass.BALANCE,
+                "account_count": DataClass.AGGREGATE,
+                "account_id": DataClass.RECORD_ID,
+                "account_name": DataClass.USER_NOTE,
+                "account_balance": DataClass.BALANCE,
+                "observation_source": DataClass.TXN_TYPE,
+            },
+            "parameters": {
+                "as_of": DataClass.TXN_DATE,
+                "account_ids": DataClass.RECORD_ID,
+            },
+        },
+        "core:networth_history": {
+            "columns": {
+                "period": DataClass.TXN_DATE,
+                "net_worth": DataClass.BALANCE,
+                "change_abs": DataClass.BALANCE,
+                "change_pct": DataClass.AGGREGATE,
+            },
+            "parameters": {
+                "from_date": DataClass.TXN_DATE,
+                "to_date": DataClass.TXN_DATE,
+                "interval": DataClass.TXN_TYPE,
+            },
+        },
+    }
+    service_reports = {
+        report.report_id: report
+        for report in get_report_catalog().list()
+        if isinstance(report, ServiceReportSpec)
+    }
+
+    assert set(service_reports) == set(expected)
+    for report_id, contract in expected.items():
+        report = service_reports[report_id]
+        assert report.classes == contract["columns"]
+        assert {
+            parameter.name: parameter.data_class for parameter in report.parameters
+        } == contract["parameters"]
+
+
 def test_catalog_resolves_namespaced_and_unique_short_ids() -> None:
     sql_report = _sql_report()
     catalog = ReportCatalog((sql_report, NETWORTH_REPORT))
@@ -554,7 +623,7 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
     db.execute.assert_not_called()
 
 
-def test_networth_parameter_metadata_masks_accounts_but_dispatch_uses_raw_values(
+def test_networth_account_id_parameter_metadata_preserves_opaque_ids(
     mocker: MockerFixture,
 ) -> None:
     current = mocker.patch(
@@ -582,7 +651,7 @@ def test_networth_parameter_metadata_masks_accounts_but_dispatch_uses_raw_values
     )
     assert result.parameters == {
         "as_of": None,
-        "account_ids": ("****2222",),
+        "account_ids": ("acct_11112222",),
     }
 
 

@@ -565,7 +565,10 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
         (
             sync_link_coarse,
             "sync_link",
-            "Start a hosted institution-link or nonblocking device-login session.",
+            "Start a hosted institution-link or nonblocking device-login session. "
+            "Returned link_url and user_code values are sensitive one-time "
+            "credentials; present them to the user, but never include them in "
+            "logs or summaries.",
         ),
         (
             sync_status_coarse,

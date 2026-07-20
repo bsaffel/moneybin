@@ -9,6 +9,8 @@ the rename / include / archive / unarchive narrow tools.
 
 from __future__ import annotations
 
+import base64
+import json
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -120,6 +122,74 @@ def _seed_archived_balance_data() -> None:
         )
 
 
+def _replace_cursor_keys_with_numbers(cursor: str) -> str:
+    """Return a structurally valid cursor with the wrong account key types."""
+    payload = json.loads(base64.urlsafe_b64decode(cursor))
+    payload["snapshot"] = [1] * len(payload["snapshot"])
+    payload["after"] = [1] * len(payload["after"])
+    return base64.urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).decode()
+
+
+def _seed_paginated_balance_views() -> None:
+    """Give every balance view at least two rows."""
+    _seed_balance_data()
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_balances_daily (
+                account_id, balance_date, balance, is_observed,
+                observation_source, reconciliation_delta
+            ) VALUES ('ACC002', '2025-06-29', 14900.00, TRUE, 'ofx', 10.00)
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO app.balance_assertions (
+                account_id, assertion_date, balance, notes
+            ) VALUES ('ACC002', '2025-06-30', 14950.00, 'statement')
+            """
+        )
+
+
+def _prepend_balance_view(
+    view: Literal["latest", "history", "assertions", "reconcile"],
+) -> None:
+    """Insert a row before one view's initial high-water key."""
+    if view == "history":
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta
+                ) VALUES ('ACC001', '2025-06-28', 4800.00, TRUE, 'ofx', NULL)
+                """
+            )
+        return
+
+    _seed_named_account("000_PREPENDED", display_name="New")
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO core.fct_balances_daily (
+                account_id, balance_date, balance, is_observed,
+                observation_source, reconciliation_delta
+            ) VALUES (
+                '000_PREPENDED', '2025-06-30', 50.00, TRUE, 'ofx', 5.00
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO app.balance_assertions (
+                account_id, assertion_date, balance, notes
+            ) VALUES ('000_PREPENDED', '2025-06-30', 45.00, 'statement')
+            """
+        )
+
+
 class TestStandardCoarseAccountReads:
     """Contract tests for the standard account-read replacements."""
 
@@ -193,6 +263,31 @@ class TestStandardCoarseAccountReads:
         assert second.summary.has_more is False
 
     @pytest.mark.unit
+    async def test_account_list_cursor_survives_prepend_and_removal(
+        self, mcp_db: Path
+    ) -> None:
+        first = await accounts_coarse(view="list", limit=1)
+        assert first.next_cursor is not None
+        first_id = first.data.rows[0].account_id
+
+        _seed_named_account("000_PREPENDED", display_name="New")
+        with get_database(read_only=False) as db:
+            db.execute(
+                "DELETE FROM core.dim_accounts WHERE account_id = ?",
+                [first_id],
+            )
+
+        second = await accounts_coarse(
+            view="list",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+        assert [row.account_id for row in second.data.rows] == ["ACC002"]
+        assert second.summary.total_count == 2
+        assert second.summary.has_more is False
+
+    @pytest.mark.unit
     async def test_account_list_cursor_binds_include_closed_and_action(
         self, mcp_db: Path
     ) -> None:
@@ -253,6 +348,29 @@ class TestStandardCoarseAccountReads:
         )
         assert reused.error is not None
         assert reused.error.code == "ACCOUNT_CURSOR_INVALID"
+
+    @pytest.mark.unit
+    async def test_account_resolve_cursor_survives_prepended_candidate(
+        self, mcp_db: Path
+    ) -> None:
+        for account_id in ("stable_b", "stable_c"):
+            _seed_named_account(account_id, display_name="stable")
+        initial = await accounts_coarse(view="resolve", query="stable")
+        initial_ids = sorted(row.account_id for row in initial.data.matches)
+        assert len(initial_ids) > 1
+        first = await accounts_coarse(view="resolve", query="stable", limit=1)
+        assert first.next_cursor is not None
+
+        _seed_named_account("000_PREPENDED", display_name="stable")
+        second = await accounts_coarse(
+            view="resolve",
+            query="stable",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+        assert [row.account_id for row in second.data.matches] == [initial_ids[1]]
+        assert second.summary.total_count == len(initial_ids)
 
     @pytest.mark.unit
     async def test_account_list_include_closed_is_strict_and_effective(
@@ -387,6 +505,40 @@ class TestStandardCoarseAccountReads:
         assert reused.error.code == "BALANCE_CURSOR_INVALID"
 
     @pytest.mark.unit
+    async def test_balance_history_cursor_survives_prepended_observation(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_balance_data()
+        first = await accounts_balances_coarse(
+            view="history",
+            reference="ACC001",
+            limit=1,
+        )
+        assert first.next_cursor is not None
+
+        with get_database(read_only=False) as db:
+            db.execute(
+                """
+                INSERT INTO core.fct_balances_daily (
+                    account_id, balance_date, balance, is_observed,
+                    observation_source, reconciliation_delta
+                ) VALUES ('ACC001', '2025-06-28', 4800.00, TRUE, 'ofx', NULL)
+                """
+            )
+        second = await accounts_balances_coarse(
+            view="history",
+            reference="ACC001",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+        assert [row.balance_date for row in second.data.observations] == [
+            date(2025, 6, 30)
+        ]
+        assert second.summary.total_count == 2
+        assert second.summary.has_more is False
+
+    @pytest.mark.unit
     async def test_balance_latest_as_of_and_reconcile_are_paginated(
         self, mcp_db: Path
     ) -> None:
@@ -431,6 +583,99 @@ class TestStandardCoarseAccountReads:
         )
         assert reused.error is not None
         assert reused.error.code == "BALANCE_CURSOR_INVALID"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("view", "kwargs"),
+        [
+            ("list", {}),
+            ("resolve", {"query": "acc"}),
+        ],
+    )
+    async def test_accounts_paginated_views_reject_wrong_typed_keys(
+        self,
+        view: Literal["list", "resolve"],
+        kwargs: dict[str, object],
+        mcp_db: Path,
+    ) -> None:
+        first = await accounts_coarse(view=view, limit=1, **kwargs)  # type: ignore[arg-type]
+        assert first.next_cursor is not None
+
+        response = await accounts_coarse(
+            view=view,
+            limit=1,
+            cursor=_replace_cursor_keys_with_numbers(first.next_cursor),
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+        assert response.error is not None
+        assert response.error.code == "ACCOUNT_CURSOR_INVALID"
+        assert response.error.message == "Invalid pagination cursor."
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "view",
+        ["latest", "history", "assertions", "reconcile"],
+    )
+    async def test_balance_paginated_views_reject_wrong_typed_keys(
+        self,
+        view: Literal["latest", "history", "assertions", "reconcile"],
+        mcp_db: Path,
+    ) -> None:
+        _seed_paginated_balance_views()
+        kwargs: dict[str, object] = {}
+        if view == "history":
+            kwargs["reference"] = "ACC001"
+        first = await accounts_balances_coarse(
+            view=view,
+            limit=1,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        assert first.next_cursor is not None
+
+        response = await accounts_balances_coarse(
+            view=view,
+            limit=1,
+            cursor=_replace_cursor_keys_with_numbers(first.next_cursor),
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+        assert response.error is not None
+        assert response.error.code == "BALANCE_CURSOR_INVALID"
+        assert response.error.message == "Invalid pagination cursor."
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "view",
+        ["latest", "history", "assertions", "reconcile"],
+    )
+    async def test_balance_paginated_views_preserve_snapshot_total_after_prepend(
+        self,
+        view: Literal["latest", "history", "assertions", "reconcile"],
+        mcp_db: Path,
+    ) -> None:
+        _seed_paginated_balance_views()
+        kwargs: dict[str, object] = {}
+        if view == "history":
+            kwargs["reference"] = "ACC001"
+        first = await accounts_balances_coarse(
+            view=view,
+            limit=1,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        assert first.next_cursor is not None
+
+        _prepend_balance_view(view)
+
+        second = await accounts_balances_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+        assert first.summary.total_count == 2
+        assert second.summary.total_count == first.summary.total_count
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -490,6 +735,34 @@ class TestStandardCoarseAccountReads:
         mcp_db: Path,
     ) -> None:
         response = await accounts_balances_coarse(**kwargs)  # type: ignore[arg-type]
+
+        assert response.error is not None
+        assert response.error.code == code
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("callback", "code"),
+        [
+            (accounts_coarse, "ACCOUNT_CURSOR_INVALID"),
+            (accounts_balances_coarse, "BALANCE_CURSOR_INVALID"),
+        ],
+    )
+    async def test_malformed_cursor_is_rejected_before_account_data_access(
+        self,
+        callback: Any,
+        code: str,
+        monkeypatch: pytest.MonkeyPatch,
+        mcp_db: Path,
+    ) -> None:
+        async def fail_if_called(*args: object, **kwargs: object) -> object:
+            raise AssertionError("account data was accessed before cursor validation")
+
+        monkeypatch.setattr(
+            "moneybin.mcp.tools.accounts._run_account_read",
+            fail_if_called,
+        )
+
+        response = await callback(cursor="not-a-cursor")
 
         assert response.error is not None
         assert response.error.code == code

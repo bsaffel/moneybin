@@ -1,5 +1,5 @@
 {
-  "sha256": "ed29b3d659fff626ba87917916aea4c27d50dd1cc5aba4117b4507678353d592",
+  "sha256": "4c0ec7d2f7255b10cd692a4ae9e38d2081532cd867e8fa9a8bbec7324e64de19",
   "tool_count": 45,
   "tools": [
     {
@@ -11,7 +11,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "List accounts, inspect one deterministic reference, summarize the portfolio, or return ranked resolution candidates. Amounts are in the currency named by summary.display_currency.",
+        "description": "List accounts, inspect one deterministic reference, summarize the portfolio, or return resolution candidates. Amounts are in the currency named by summary.display_currency.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -77,12 +77,12 @@
         },
         "name": "accounts"
       },
-      "description_bytes": 179,
+      "description_bytes": 172,
       "input_schema_bytes": 465,
       "name": "accounts",
       "other_bytes": 50,
       "output_schema_bytes": 0,
-      "total_bytes": 830
+      "total_bytes": 823
     },
     {
       "annotation_bytes": 89,
@@ -853,6 +853,7 @@
                         "type": "string"
                       },
                       "decision_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -863,6 +864,7 @@
                       "target_id": {
                         "anyOf": [
                           {
+                            "maxLength": 64,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -941,6 +943,7 @@
                         "type": "string"
                       },
                       "decision_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -951,6 +954,7 @@
                       "target_id": {
                         "anyOf": [
                           {
+                            "maxLength": 64,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -1029,6 +1033,7 @@
                         "type": "string"
                       },
                       "decision_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -1039,6 +1044,7 @@
                       "target_id": {
                         "anyOf": [
                           {
+                            "maxLength": 64,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -1074,11 +1080,11 @@
         "name": "identity_links_decide"
       },
       "description_bytes": 211,
-      "input_schema_bytes": 2348,
+      "input_schema_bytes": 2438,
       "name": "identity_links_decide",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 2758
+      "total_bytes": 2848
     },
     {
       "annotation_bytes": 91,
@@ -2397,6 +2403,7 @@
                       "canonical_merchant_name": {
                         "anyOf": [
                           {
+                            "maxLength": 200,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -2409,6 +2416,7 @@
                       "category": {
                         "anyOf": [
                           {
+                            "maxLength": 100,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -2426,6 +2434,7 @@
                         "type": "string"
                       },
                       "decision_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -2436,6 +2445,7 @@
                       "subcategory": {
                         "anyOf": [
                           {
+                            "maxLength": 100,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -2465,6 +2475,7 @@
                         "type": "string"
                       },
                       "decision_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -2517,6 +2528,7 @@
                         "type": "string"
                       },
                       "decision_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -2550,11 +2562,11 @@
         "name": "reviews_decide"
       },
       "description_bytes": 248,
-      "input_schema_bytes": 1946,
+      "input_schema_bytes": 2039,
       "name": "reviews_decide",
       "other_bytes": 56,
       "output_schema_bytes": 0,
-      "total_bytes": 2387
+      "total_bytes": 2480
     },
     {
       "annotation_bytes": 89,
@@ -2704,7 +2716,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Start a hosted institution-link or nonblocking device-login session.",
+        "description": "Start a hosted institution-link or nonblocking device-login session. Returned link_url and user_code values are sensitive one-time credentials; present them to the user, but never include them in logs or summaries.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2737,12 +2749,12 @@
         },
         "name": "sync_link"
       },
-      "description_bytes": 68,
+      "description_bytes": 214,
       "input_schema_bytes": 216,
       "name": "sync_link",
       "other_bytes": 51,
       "output_schema_bytes": 0,
-      "total_bytes": 472
+      "total_bytes": 618
     },
     {
       "annotation_bytes": 90,
@@ -3228,6 +3240,7 @@
                       "category": {
                         "anyOf": [
                           {
+                            "maxLength": 100,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3240,6 +3253,7 @@
                       "category_id": {
                         "anyOf": [
                           {
+                            "maxLength": 64,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3252,6 +3266,7 @@
                       "description": {
                         "anyOf": [
                           {
+                            "maxLength": 2000,
                             "type": "string"
                           },
                           {
@@ -3279,6 +3294,7 @@
                       "subcategory": {
                         "anyOf": [
                           {
+                            "maxLength": 100,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3387,6 +3403,7 @@
                       "canonical_name": {
                         "anyOf": [
                           {
+                            "maxLength": 200,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3399,6 +3416,7 @@
                       "category": {
                         "anyOf": [
                           {
+                            "maxLength": 100,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3431,6 +3449,7 @@
                       "merchant_id": {
                         "anyOf": [
                           {
+                            "maxLength": 64,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3443,6 +3462,7 @@
                       "raw_pattern": {
                         "anyOf": [
                           {
+                            "maxLength": 500,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3462,6 +3482,7 @@
                       "subcategory": {
                         "anyOf": [
                           {
+                            "maxLength": 100,
                             "minLength": 1,
                             "type": "string"
                           },
@@ -3496,11 +3517,11 @@
         "name": "taxonomy_set"
       },
       "description_bytes": 205,
-      "input_schema_bytes": 2942,
+      "input_schema_bytes": 3085,
       "name": "taxonomy_set",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 3337
+      "total_bytes": 3480
     },
     {
       "annotation_bytes": 89,
@@ -3682,6 +3703,7 @@
                       "note": {
                         "anyOf": [
                           {
+                            "maxLength": 2000,
                             "type": "string"
                           },
                           {
@@ -3690,6 +3712,7 @@
                         ]
                       },
                       "transaction_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       }
@@ -3711,12 +3734,14 @@
                       },
                       "tags": {
                         "items": {
+                          "maxLength": 100,
                           "minLength": 1,
                           "type": "string"
                         },
                         "type": "array"
                       },
                       "transaction_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       }
@@ -3786,6 +3811,7 @@
                             "category": {
                               "anyOf": [
                                 {
+                                  "maxLength": 100,
                                   "minLength": 1,
                                   "type": "string"
                                 },
@@ -3798,6 +3824,7 @@
                             "note": {
                               "anyOf": [
                                 {
+                                  "maxLength": 2000,
                                   "type": "string"
                                 },
                                 {
@@ -3809,6 +3836,7 @@
                             "subcategory": {
                               "anyOf": [
                                 {
+                                  "maxLength": 100,
                                   "minLength": 1,
                                   "type": "string"
                                 },
@@ -3827,6 +3855,7 @@
                         "type": "array"
                       },
                       "transaction_id": {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       }
@@ -3847,10 +3876,12 @@
                         "type": "string"
                       },
                       "new_name": {
+                        "maxLength": 100,
                         "minLength": 1,
                         "type": "string"
                       },
                       "old_name": {
+                        "maxLength": 100,
                         "minLength": 1,
                         "type": "string"
                       }
@@ -3880,11 +3911,11 @@
         "name": "transactions_annotate"
       },
       "description_bytes": 280,
-      "input_schema_bytes": 2162,
+      "input_schema_bytes": 2321,
       "name": "transactions_annotate",
       "other_bytes": 63,
       "output_schema_bytes": 0,
-      "total_bytes": 2641
+      "total_bytes": 2800
     },
     {
       "annotation_bytes": 89,
@@ -4219,6 +4250,7 @@
                   "category": {
                     "anyOf": [
                       {
+                        "maxLength": 100,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -4241,6 +4273,7 @@
                           "account_id": {
                             "anyOf": [
                               {
+                                "maxLength": 64,
                                 "minLength": 1,
                                 "type": "string"
                               },
@@ -4287,6 +4320,7 @@
                             "type": "string"
                           },
                           "value": {
+                            "maxLength": 500,
                             "minLength": 1,
                             "type": "string"
                           }
@@ -4319,6 +4353,7 @@
                   "rule_id": {
                     "anyOf": [
                       {
+                        "maxLength": 64,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -4339,6 +4374,7 @@
                   "subcategory": {
                     "anyOf": [
                       {
+                        "maxLength": 100,
                         "minLength": 1,
                         "type": "string"
                       },
@@ -4373,11 +4409,11 @@
         "name": "transactions_categorize_rules_set"
       },
       "description_bytes": 392,
-      "input_schema_bytes": 2350,
+      "input_schema_bytes": 2428,
       "name": "transactions_categorize_rules_set",
       "other_bytes": 87,
       "output_schema_bytes": 0,
-      "total_bytes": 2965
+      "total_bytes": 3043
     },
     {
       "annotation_bytes": 90,
@@ -4480,5 +4516,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 45752
+  "total_bytes": 46454
 }

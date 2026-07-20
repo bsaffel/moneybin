@@ -129,7 +129,7 @@ _REPLACED_TOOL_NAME_COHORTS = {
 _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "system_status": (663, 2_725),
     "system_audit": (746, 1_958),
-    "accounts": (830, 2_240),
+    "accounts": (823, 2_240),
     "accounts_balances": (1_069, 2_786),
     "investments": (1_076, 4_908),
     "transactions": (1_287, 2_383),
@@ -140,11 +140,11 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     "gsheet": (441, 1_016),
     "privacy": (590, 1_007),
     "accounts_balance_assert": (1_416, 1_679),
-    "transactions_annotate": (2_641, 3_653),
-    "transactions_categorize_rules_set": (2_965, 2_670),
-    "reviews_decide": (2_387, 2_566),
-    "identity_links_decide": (2_758, 5_762),
-    "taxonomy_set": (3_337, 3_223),
+    "transactions_annotate": (2_800, 3_653),
+    "transactions_categorize_rules_set": (3_043, 2_670),
+    "reviews_decide": (2_480, 2_566),
+    "identity_links_decide": (2_848, 5_762),
+    "taxonomy_set": (3_480, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }
 

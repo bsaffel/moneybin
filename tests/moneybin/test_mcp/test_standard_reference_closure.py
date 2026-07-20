@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import inspect
 import json
 import re
@@ -17,6 +18,7 @@ from pydantic import JsonValue
 from moneybin.audits.recipes import registry as recipe_registry
 from moneybin.database import Database
 from moneybin.mcp import prompts
+from moneybin.mcp.pagination import decode_keyset_cursor
 from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 from moneybin.mcp.tools.reports import reports
 from moneybin.reports._framework.catalog import get_report_catalog
@@ -170,6 +172,35 @@ async def test_only_live_standard_callbacks_are_decorated_as_mcp_tools() -> None
         f"obsolete={sorted(decorated - live)!r}; "
         f"missing_decorators={sorted(live - decorated)!r}"
     )
+
+
+async def test_standard_cursor_tools_use_the_shared_keyset_contract() -> None:
+    from moneybin.mcp.server import init_db, mcp
+
+    expected = {
+        "accounts",
+        "accounts_balances",
+        "import_status",
+        "investments",
+        "privacy",
+        "reviews",
+        "system_audit",
+        "taxonomy",
+        "transactions",
+    }
+    init_db()
+    actual: set[str] = set()
+    for name in STANDARD_TOOL_NAMES:
+        tool = await mcp.get_tool(name)
+        assert isinstance(tool, FunctionTool)
+        if "cursor" not in tool.parameters.get("properties", {}):
+            continue
+        actual.add(name)
+        callback = inspect.getclosurevars(tool.fn).nonlocals["fn"]
+        module = importlib.import_module(callback.__module__)
+        assert module.decode_keyset_cursor is decode_keyset_cursor
+
+    assert actual == expected
 
 
 def test_shipped_prompts_reference_only_standard_tools() -> None:

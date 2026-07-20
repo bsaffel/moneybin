@@ -211,12 +211,12 @@ def register_core_tools() -> None:
     # tools are CLI-accessible operator territory (category 2 per
     # mcp.md). Per ``.claude/rules/mcp.md`` "Surface change
     # discipline" they re-register when their backing spec reaches
-    # ``in-progress`` or ``implemented``. The tool implementation files
-    # (``tools/budget.py``, ``tools/transform.py``) stay in place as building
-    # blocks; only the registration is gated. Tax tools (``tax_w2``) have
-    # been removed entirely — the W-2 PDF extraction pipeline was cut; tax
-    # data ingestion will be re-designed. See ``moneybin-mcp.md`` §17
-    # "Dependency tracker".
+    # ``in-progress`` or ``implemented``. The transform implementation stays
+    # in place as a CLI-oriented building block; the partial budget MCP adapter
+    # is removed until the complete lifecycle contract is admitted. Tax tools
+    # (``tax_w2``) have been removed entirely — the W-2 PDF extraction pipeline
+    # was cut; tax data ingestion will be re-designed. See ``moneybin-mcp.md``
+    # §17 "Dependency tracker".
 
     register_system_tools(mcp)
     register_reports_tools(mcp)

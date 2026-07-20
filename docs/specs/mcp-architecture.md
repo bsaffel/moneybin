@@ -366,14 +366,40 @@ Target properties:
 
 Tools return a configurable number of results (default varies by tool, respects `MAX_ROWS`). For large result sets:
 
-> **Current contract:** the bounded registry uses noun-oriented coarse reads —
-> `reports`, `accounts`, `accounts_balances`, `transactions`, `reviews`, and
-> `privacy`. Views and filters carry query variation; `_list` is not used for
-> additional read identities. See `.claude/rules/surface-design.md`.
+> **Current contract:** the bounded registry uses noun-oriented coarse reads.
+> Views and filters carry query variation; `_list` is not used for additional
+> read identities. See `.claude/rules/surface-design.md`.
 
-- **`limit`** and **`offset`** parameters on read tools that can return unbounded results.
+- **`limit`** and opaque **`cursor`** parameters on resumable collection views.
+  Cursors use one versioned, tool/view/filter-bound keyset envelope. Each
+  collection declares immutable ordered keys; database-backed reads push the
+  boundary and continuation predicates into the service query when practical.
+  Removing a row or inserting one ahead of the first-page boundary between
+  requests neither skips nor duplicates the remaining continuation. The cursor
+  carries the exact initial eligible-row count, so `summary.total_count` stays
+  coherent across pages.
+- **Stateless weak consistency is explicit.** A concurrent insert whose
+  immutable sort key falls inside the unserved range may appear. Freezing
+  arbitrary membership would require a domain-wide monotonic creation key or a
+  stateful snapshot store; this contract claims neither. The privacy log's
+  persisted monotonic event identity excludes every later supported-writer
+  append. Pre-identity legacy rows are derived without rewriting the audit log;
+  changing that legacy cohort invalidates its cursor rather than risking a
+  skip. Import history excludes later rows that sort ahead of its
+  `(started_at, import_id)` boundary but does not claim a monotonic append
+  identity.
+- **Bounded execution exceptions.** `reports` and `sql_query` execute
+  caller-shaped queries without a declared immutable unique ordering key. They
+  do not expose a cursor. `has_more` means the bounded result was truncated and
+  `total_count` is a lower bound; callers refine the query or rerun with a
+  higher limit. Bounded summary, detail, catalog, and status views likewise do
+  not become resumable collections.
 - **`summary.has_more: true`** signals more data is available.
 - **Prefer filtering over paging.** Tools expose rich filter parameters (date ranges, amount thresholds, categories, accounts) so the AI narrows the query rather than paging through everything. A well-filtered query should rarely need page 2.
+
+The shared keyset envelope intentionally invalidates the pre-launch offset cursors.
+Callers treat cursors as opaque and restart from page one when a cursor returns
+the tool's canonical invalid-cursor error.
 
 ### Parameter conventions
 
@@ -384,7 +410,7 @@ Consistent across all tools:
 | Date ranges | `start_date` / `end_date` as ISO 8601 strings, optional | `2026-01-01` |
 | Lookback | `months` integer as alternative to explicit dates | `months=3` |
 | Account filter | `account_id`, optional, accepts list | `["acct_1", "acct_2"]` |
-| Pagination | `limit` (default per tool), `offset` (default 0) | `limit=50, offset=100` |
+| Pagination | `limit` (default per tool), opaque `cursor` from the prior response | `limit=50, cursor="..."` |
 | Output detail | `detail` enum: `summary`, `standard`, `full` | `detail="full"` |
 
 The `detail` parameter controls response verbosity — `summary` returns aggregates only (always tier-1 safe), `standard` is the default, `full` includes every available field. This gives the AI a way to request minimal data when it only needs a quick answer.

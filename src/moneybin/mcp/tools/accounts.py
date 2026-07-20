@@ -27,14 +27,12 @@ guards against accidental publication.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import inspect
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date as _date
 from decimal import Decimal
+from functools import cmp_to_key
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
@@ -51,6 +49,12 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import FiniteDecimal
 from moneybin.privacy.introspection import extract_data_classes
@@ -819,72 +823,88 @@ def _coarse_envelope[T](
     )
 
 
-def _coarse_cursor(
-    tool: str,
-    view: str,
-    offset: int,
-    filters: dict[str, object],
-) -> str:
-    """Encode a cursor bound to its complete canonical query state."""
-    raw = json.dumps(
-        {"filters": filters, "offset": offset, "tool": tool, "view": view},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-def _coarse_offset(
+def _coarse_position(
     cursor: str | None,
     *,
     tool: Literal["accounts", "accounts_balances"],
     view: str,
     filters: dict[str, object],
-) -> int:
-    """Decode an opaque cursor and reject cross-query reuse."""
+    key_size: int,
+) -> KeysetPosition | None:
+    """Decode one scope-bound cursor and validate its string key shape."""
     if cursor is None:
-        return 0
+        return None
     code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace=tool,
+            scope={"filters": filters, "view": view},
+        )
+    except ValueError as exc:
         raise UserError("Invalid pagination cursor.", code=code) from exc
-    if not isinstance(value, dict):
-        raise UserError("Invalid pagination cursor.", code=code)
-    payload = cast(dict[str, Any], value)
-    offset = payload.get("offset")
     if (
-        set(payload) != {"filters", "offset", "tool", "view"}
-        or payload.get("filters") != filters
-        or payload.get("tool") != tool
-        or payload.get("view") != view
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
+        len(position.snapshot) != key_size
+        or len(position.after) != key_size
+        or not all(
+            type(value) is str for value in (*position.snapshot, *position.after)
+        )
     ):
         raise UserError("Invalid pagination cursor.", code=code)
-    return offset
+    return position
 
 
-def _page[T](
+def _keyset_page[T](
     rows: list[T],
     *,
     tool: Literal["accounts", "accounts_balances"],
     view: str,
     limit: int,
-    cursor: str | None,
+    position: KeysetPosition | None,
     filters: dict[str, object],
-) -> tuple[list[T], str | None]:
-    """Return one deterministic offset page and its next cursor."""
-    offset = _coarse_offset(cursor, tool=tool, view=view, filters=filters)
-    selected = rows[offset : offset + limit]
-    next_cursor = (
-        _coarse_cursor(tool, view, offset + limit, filters)
-        if len(rows) > offset + limit
-        else None
+    key: Callable[[T], tuple[str, ...]],
+    directions: tuple[Literal["asc", "desc"], ...],
+) -> tuple[list[T], str | None, int]:
+    """Page immutable keys behind the cursor's first-page prepend boundary."""
+    code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
+
+    def compare_rows(left: T, right: T) -> int:
+        return compare_keyset(key(left), key(right), directions)
+
+    ordered = sorted(rows, key=cmp_to_key(compare_rows))
+    if position is None:
+        if not ordered:
+            return [], None, 0
+        snapshot = key(ordered[0])
+        eligible = ordered
+        total_count = len(ordered)
+    else:
+        snapshot = cast(tuple[str, ...], position.snapshot)
+        after = cast(tuple[str, ...], position.after)
+        try:
+            if compare_keyset(after, snapshot, directions) < 0:
+                raise ValueError("continuation precedes snapshot")
+            eligible = [
+                row
+                for row in ordered
+                if compare_keyset(key(row), snapshot, directions) >= 0
+                and compare_keyset(key(row), after, directions) > 0
+            ]
+        except ValueError as exc:
+            raise UserError("Invalid pagination cursor.", code=code) from exc
+        total_count = position.total
+
+    page = eligible[:limit]
+    if len(eligible) <= limit or not page:
+        return page, None, total_count
+    next_cursor = encode_keyset_cursor(
+        namespace=tool,
+        scope={"filters": filters, "view": view},
+        snapshot=snapshot,
+        after=key(page[-1]),
+        total=total_count,
     )
-    return selected, next_cursor
+    return page, next_cursor, total_count
 
 
 def _account_candidates(payload: AccountListPayload) -> list[EntityCandidate]:
@@ -1043,24 +1063,33 @@ async def accounts_coarse(
 
     if view == "list":
         filters: dict[str, object] = {"include_closed": bool(include_closed)}
+        position = _coarse_position(
+            cursor,
+            tool="accounts",
+            view="list",
+            filters=filters,
+            key_size=1,
+        )
         response = await _run_account_read(
             accounts,
             include_archived=bool(include_closed),
             type_filter=None,
         )
-        page, next_cursor = _page(
+        page, next_cursor, total_count = _keyset_page(
             response.data.rows,
             tool="accounts",
             view="list",
             limit=limit,
-            cursor=cursor,
+            position=position,
             filters=filters,
+            key=lambda row: (row.account_id,),
+            directions=("asc",),
         )
         payload = AccountsListView(rows=page)
         return _coarse_envelope(
             payload,
             contract_type=AccountsListView,
-            total_count=len(response.data.rows),
+            total_count=total_count,
             returned_count=len(page),
             next_cursor=next_cursor,
             display_currency=response.summary.display_currency,
@@ -1103,24 +1132,33 @@ async def accounts_coarse(
 
     canonical_query = cast(str, query).lower().strip()
     filters = {"query": canonical_query}
+    position = _coarse_position(
+        cursor,
+        tool="accounts",
+        view="resolve",
+        filters=filters,
+        key_size=1,
+    )
     response = await _run_account_read(
         _resolve_accounts,
         query=cast(str, query),
         limit=None,
     )
-    page, next_cursor = _page(
+    page, next_cursor, total_count = _keyset_page(
         response.data.matches,
         tool="accounts",
         view="resolve",
         limit=limit,
-        cursor=cursor,
+        position=position,
         filters=filters,
+        key=lambda row: (row.account_id,),
+        directions=("asc",),
     )
     payload = AccountsResolveView(matches=page)
     return _coarse_envelope(
         payload,
         contract_type=AccountsResolveView,
-        total_count=len(response.data.matches),
+        total_count=total_count,
         returned_count=len(page),
         next_cursor=next_cursor,
         display_currency=response.summary.display_currency,
@@ -1214,18 +1252,26 @@ async def accounts_balances_coarse(
             code="BALANCE_DATE_RANGE_INVALID",
         )
 
+    filters: dict[str, object] = {
+        "as_of": as_of.isoformat() if as_of is not None else None,
+        "end": end.isoformat() if end is not None else None,
+        "reference": reference.casefold().strip() if reference is not None else None,
+        "start": start.isoformat() if start is not None else None,
+        "threshold": str(threshold) if threshold is not None else None,
+    }
+    key_size = 1 if view == "latest" else 2
+    position = _coarse_position(
+        cursor,
+        tool="accounts_balances",
+        view=view,
+        filters=filters,
+        key_size=key_size,
+    )
     account_id = (
         await _resolve_account_reference(reference, include_closed=True)
         if reference is not None
         else None
     )
-    filters: dict[str, object] = {
-        "account_id": account_id,
-        "as_of": as_of.isoformat() if as_of is not None else None,
-        "end": end.isoformat() if end is not None else None,
-        "start": start.isoformat() if start is not None else None,
-        "threshold": str(threshold) if threshold is not None else None,
-    }
 
     if view == "latest":
         response = await _run_account_read(
@@ -1233,17 +1279,18 @@ async def accounts_balances_coarse(
             account_ids=[account_id] if account_id is not None else None,
             as_of_date=as_of.isoformat() if as_of is not None else None,
         )
-        page, next_cursor = _page(
+        page, next_cursor, total_count = _keyset_page(
             response.data.observations,
             tool="accounts_balances",
             view="latest",
             limit=limit,
-            cursor=cursor,
+            position=position,
             filters=filters,
+            key=lambda row: (row.account_id,),
+            directions=("asc",),
         )
         payload = AccountsBalancesLatestView(observations=page)
         contract_type = AccountsBalancesLatestView
-        total_count = len(response.data.observations)
     elif view == "history":
         response = await _run_account_read(
             accounts_balance_history,
@@ -1251,50 +1298,53 @@ async def accounts_balances_coarse(
             from_date=start.isoformat() if start is not None else None,
             to_date=end.isoformat() if end is not None else None,
         )
-        page, next_cursor = _page(
+        page, next_cursor, total_count = _keyset_page(
             response.data.observations,
             tool="accounts_balances",
             view="history",
             limit=limit,
-            cursor=cursor,
+            position=position,
             filters=filters,
+            key=lambda row: (row.balance_date.isoformat(), row.account_id),
+            directions=("asc", "asc"),
         )
         payload = AccountsBalancesHistoryView(observations=page)
         contract_type = AccountsBalancesHistoryView
-        total_count = len(response.data.observations)
     elif view == "assertions":
         response = await _run_account_read(
             accounts_balance_assertions,
             account_id,
         )
-        page, next_cursor = _page(
+        page, next_cursor, total_count = _keyset_page(
             response.data.assertions,
             tool="accounts_balances",
             view="assertions",
             limit=limit,
-            cursor=cursor,
+            position=position,
             filters=filters,
+            key=lambda row: (row.account_id, row.assertion_date.isoformat()),
+            directions=("asc", "desc"),
         )
         payload = AccountsBalancesAssertionsView(assertions=page)
         contract_type = AccountsBalancesAssertionsView
-        total_count = len(response.data.assertions)
     else:
         response = await _run_account_read(
             accounts_balance_reconcile,
             account_ids=[account_id] if account_id is not None else None,
             threshold=threshold if threshold is not None else Decimal("0.01"),
         )
-        page, next_cursor = _page(
+        page, next_cursor, total_count = _keyset_page(
             response.data.observations,
             tool="accounts_balances",
             view="reconcile",
             limit=limit,
-            cursor=cursor,
+            position=position,
             filters=filters,
+            key=lambda row: (row.account_id, row.balance_date.isoformat()),
+            directions=("asc", "desc"),
         )
         payload = AccountsBalancesReconcileView(observations=page)
         contract_type = AccountsBalancesReconcileView
-        total_count = len(response.data.observations)
 
     return _coarse_envelope(
         payload,
@@ -1325,7 +1375,7 @@ def register_accounts_coarse_reads(mcp: FastMCP) -> None:
         accounts_coarse,
         "accounts",
         "List accounts, inspect one deterministic reference, summarize the "
-        "portfolio, or return ranked resolution candidates. Amounts are in "
+        "portfolio, or return resolution candidates. Amounts are in "
         "the currency named by summary.display_currency.",
         privacy_actor="accounts",
     )

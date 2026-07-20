@@ -235,6 +235,7 @@ class CategoryReferenceGroup:
     """One protected referential store in canonical cascade order."""
 
     store: str
+    label: str
     rows: tuple[CategoryReferenceSnapshot, ...]
 
 
@@ -258,17 +259,8 @@ class CategoryDeletePlan:
 
     def usage(self, *, effective: bool = False) -> dict[str, int]:
         """Return stable user-facing reference counts."""
-        labels = {
-            "app.transaction_categories": "transactions",
-            "app.budgets": "budgets",
-            "app.user_merchants": "merchants",
-            "app.transaction_splits": "splits",
-            "app.categorization_rules": "rules",
-            "app.proposed_rules": "proposed_rules",
-            "app.category_source_map": "source_mappings",
-        }
         return {
-            labels[group.store]: sum(
+            group.label: sum(
                 not effective
                 or (group.store, row.target_id) not in self.excluded_references
                 for row in group.rows
@@ -1202,22 +1194,24 @@ class MatchApplier:
         references = tuple(
             CategoryReferenceGroup(
                 store=table.full_name,
+                label=label,
                 rows=self._complete_rows(
                     table,
                     category_id=category_id,
                     pk_columns=pk_columns,
                 ),
             )
-            for table, pk_columns in (
-                (TRANSACTION_CATEGORIES, ("transaction_id",)),
-                (BUDGETS, ("budget_id",)),
-                (USER_MERCHANTS, ("merchant_id",)),
-                (TRANSACTION_SPLITS, ("split_id",)),
-                (CATEGORIZATION_RULES, ("rule_id",)),
-                (PROPOSED_RULES, ("proposed_rule_id",)),
+            for table, pk_columns, label in (
+                (TRANSACTION_CATEGORIES, ("transaction_id",), "transactions"),
+                (BUDGETS, ("budget_id",), "budgets"),
+                (USER_MERCHANTS, ("merchant_id",), "merchants"),
+                (TRANSACTION_SPLITS, ("split_id",), "splits"),
+                (CATEGORIZATION_RULES, ("rule_id",), "rules"),
+                (PROPOSED_RULES, ("proposed_rule_id",), "proposed_rules"),
                 (
                     CATEGORY_SOURCE_MAP,
                     ("source_type", "source_category_code"),
+                    "source_mappings",
                 ),
             )
         )

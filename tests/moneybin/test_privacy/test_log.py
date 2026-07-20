@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
 import stat
 from datetime import UTC, datetime
@@ -41,6 +42,24 @@ def _sample_event() -> dict[str, object]:
     }
 
 
+def _write_event_in_process(
+    profile_dir: str,
+    start: object,
+    ready: object,
+    row_count: int,
+) -> None:
+    """Append after a shared start signal from an isolated process."""
+    import moneybin.privacy.log as privacy_log
+
+    privacy_log._resolve_privacy_log_dir = (  # pyright: ignore[reportPrivateUsage]  # isolate child log
+        lambda: Path(profile_dir)
+    )
+    privacy_log.time.time_ns = lambda: 1
+    ready.put(row_count)  # type: ignore[attr-defined]  # multiprocessing proxy
+    start.wait()  # type: ignore[attr-defined]  # multiprocessing proxy
+    privacy_log.write_privacy_event(_sample_event() | {"row_count": row_count})
+
+
 def test_write_creates_jsonl_file_with_0600_perms(profile_dir: Path) -> None:
     write_privacy_event(_sample_event())
     log = profile_dir / "privacy.log.jsonl"
@@ -58,6 +77,39 @@ def test_append_produces_parseable_lines(profile_dir: Path) -> None:
     parsed = [json.loads(line) for line in lines]
     assert parsed[0]["row_count"] == 42
     assert parsed[1]["row_count"] == 100
+    assert len(parsed[0]["event_id"]) == 32
+    assert parsed[0]["event_id"] != parsed[1]["event_id"]
+
+
+def test_concurrent_processes_persist_monotonic_event_ids(profile_dir: Path) -> None:
+    process_count = 4
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    ready = context.Queue()
+    processes = [
+        context.Process(
+            target=_write_event_in_process,
+            args=(str(profile_dir), start, ready, row_count),
+        )
+        for row_count in range(process_count)
+    ]
+    for process in processes:
+        process.start()
+    for _ in processes:
+        ready.get(timeout=10)
+    start.set()
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    events = [
+        json.loads(line)
+        for line in (profile_dir / "privacy.log.jsonl").read_text().splitlines()
+    ]
+    event_ids = [event["event_id"] for event in events]
+    assert len(event_ids) == process_count
+    assert len(set(event_ids)) == process_count
+    assert event_ids == sorted(event_ids)
 
 
 def test_daily_rotation_renames_previous_day(profile_dir: Path) -> None:
@@ -115,7 +167,96 @@ def test_read_page_returns_exact_total_beyond_legacy_cap(profile_dir: Path) -> N
     for i in range(1002):
         write_privacy_event(_sample_event() | {"row_count": i})
 
-    rows, total = read_privacy_events_page({}, limit=2, offset=1000)
+    page = read_privacy_events_page({}, limit=2)
 
-    assert [row["row_count"] for row in rows] == [1, 0]
-    assert total == 1002
+    assert [row["row_count"] for row in page.events] == [1001, 1000]
+    assert page.total_count == 1002
+    assert page.snapshot_event_id is not None
+    assert page.has_more is True
+
+
+def test_page_synthesizes_duplicate_legacy_ids_without_rewriting(
+    profile_dir: Path,
+) -> None:
+    log = profile_dir / "privacy.log.jsonl"
+    event = _sample_event()
+    log.write_text(
+        "\n".join(json.dumps(event, sort_keys=True) for _ in range(3)) + "\n"
+    )
+    log.chmod(0o600)
+    original = log.read_bytes()
+    original_inode = log.stat().st_ino
+
+    first = read_privacy_events_page({}, limit=2)
+    second = read_privacy_events_page(
+        {},
+        limit=2,
+        snapshot_event_id=first.snapshot_event_id,
+        after_event_id=first.events[-1]["event_id"],
+        snapshot_total=first.total_count,
+        legacy_digest=first.legacy_digest,
+    )
+
+    assert len({event["event_id"] for event in first.events + second.events}) == 3
+    assert len(first.events) == 2
+    assert len(second.events) == 1
+    assert log.read_bytes() == original
+    assert log.stat().st_ino == original_inode
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+def test_late_legacy_append_invalidates_cursor_without_rewriting(
+    profile_dir: Path,
+) -> None:
+    for row_count in range(3):
+        write_privacy_event(_sample_event() | {"row_count": row_count})
+    log = profile_dir / "privacy.log.jsonl"
+    original = [json.loads(line) for line in log.read_text().splitlines()]
+    first = read_privacy_events_page({}, limit=1)
+    assert first.snapshot_event_id is not None
+
+    with log.open("a", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                _sample_event() | {"row_count": 99, "ts": "2099-01-01T00:00:00+00:00"}
+            )
+            + "\n"
+        )
+    with pytest.raises(ValueError, match="legacy privacy log changed"):
+        read_privacy_events_page(
+            {},
+            limit=2,
+            snapshot_event_id=first.snapshot_event_id,
+            after_event_id=first.events[-1]["event_id"],
+            snapshot_total=first.total_count,
+            legacy_digest=first.legacy_digest,
+        )
+    persisted = [json.loads(line) for line in log.read_text().splitlines()]
+    fresh = read_privacy_events_page({}, limit=10)
+    late = next(event for event in fresh.events if event["row_count"] == 99)
+
+    assert [event["event_id"] for event in persisted[:3]] == [
+        event["event_id"] for event in original
+    ]
+    assert "event_id" not in persisted[-1]
+    assert late["event_id"] > first.snapshot_event_id
+
+
+def test_duplicate_legacy_removal_invalidates_cursor(profile_dir: Path) -> None:
+    log = profile_dir / "privacy.log.jsonl"
+    line = json.dumps(_sample_event(), sort_keys=True)
+    log.write_text(f"{line}\n{line}\n{line}\n")
+    first = read_privacy_events_page({}, limit=1)
+    assert first.snapshot_event_id is not None
+
+    log.write_text(f"{line}\n{line}\n")
+
+    with pytest.raises(ValueError, match="legacy privacy log changed"):
+        read_privacy_events_page(
+            {},
+            limit=1,
+            snapshot_event_id=first.snapshot_event_id,
+            after_event_id=first.events[-1]["event_id"],
+            snapshot_total=first.total_count,
+            legacy_digest=first.legacy_digest,
+        )

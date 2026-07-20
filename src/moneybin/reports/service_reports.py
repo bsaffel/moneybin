@@ -320,7 +320,7 @@ NETWORTH_REPORT = ServiceReportSpec(
             None,
             False,
             "Account IDs included in the breakdown; headline totals stay global.",
-            DataClass.ACCOUNT_IDENTIFIER,
+            DataClass.RECORD_ID,
         ),
     ),
     columns=_SNAPSHOT_COLUMNS,

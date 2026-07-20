@@ -20,7 +20,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
     name="balance_drift",
     view=REPORTS_BALANCE_DRIFT,
     classes={
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
@@ -43,9 +43,7 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "since": DataClass.TXN_DATE,
     },
     columns=(
-        OutputColumn(
-            "account_id", "Owning account identifier.", DataClass.ACCOUNT_IDENTIFIER
-        ),
+        OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn(
             "assertion_date", "User-asserted balance date.", DataClass.TXN_DATE

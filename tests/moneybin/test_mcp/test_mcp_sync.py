@@ -246,11 +246,16 @@ async def test_sync_link_status_pending(mock_client_builder: MagicMock) -> None:
 
 @pytest.mark.unit
 async def test_sync_link_mcp_tool_registered() -> None:
-    """The new sync_link tool is registered with MCP."""
+    """The live schema preserves the bearer-credential handling warning."""
     srv = FastMCP("test")
     register_sync_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-    assert "sync_link" in names
+    tools = {
+        tool.name: tool
+        for tool in await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    }
+
+    assert "sync_link" in tools
+    assert "sensitive one-time credential" in (tools["sync_link"].description or "")
 
 
 @pytest.mark.unit

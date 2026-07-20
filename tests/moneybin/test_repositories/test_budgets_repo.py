@@ -118,6 +118,29 @@ def test_insert_records_parent_audit_id(db: Database) -> None:
     assert _audit_rows_for(db, event.target_id or "")[0][7] == "p1"
 
 
+def test_delete_and_delete_by_category_preserve_audited_before_images(
+    db: Database,
+) -> None:
+    repo = BudgetsRepo(db)
+    one = _insert(repo, category_id="cat_target").target_id
+    two = _insert(repo, category_id="cat_target").target_id
+    other = _insert(repo, category_id="cat_other").target_id
+    assert one is not None and two is not None and other is not None
+
+    repo.delete(one, actor="mcp")
+    events = repo.delete_by_category("cat_target", actor="mcp")
+
+    assert [event.target_id for event in events] == [two]
+    assert db.conn.execute(
+        "SELECT budget_id FROM app.budgets ORDER BY budget_id"
+    ).fetchall() == [(other,)]
+    for target_id in (one, two):
+        delete_audit = _audit_rows_for(db, target_id)[-1]
+        assert delete_audit[0] == "budget.delete"
+        assert json.loads(delete_audit[4])["category_id"] == "cat_target"
+        assert delete_audit[5] is None
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")

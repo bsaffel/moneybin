@@ -156,6 +156,29 @@ def test_reinforce_raises_on_missing_proposal(db: Database) -> None:
     assert _audit_rows_for(db, "nope") == []
 
 
+def test_delete_and_delete_by_category_preserve_audited_before_images(
+    db: Database,
+) -> None:
+    repo = ProposedRulesRepo(db)
+    one = _insert(repo, merchant_pattern="ONE", category_id="cat_target").target_id
+    two = _insert(repo, merchant_pattern="TWO", category_id="cat_target").target_id
+    other = _insert(repo, merchant_pattern="OTHER", category_id="cat_other").target_id
+    assert one is not None and two is not None and other is not None
+
+    repo.delete(one, actor="mcp")
+    events = repo.delete_by_category("cat_target", actor="mcp")
+
+    assert [event.target_id for event in events] == [two]
+    assert db.conn.execute(
+        "SELECT proposed_rule_id FROM app.proposed_rules ORDER BY proposed_rule_id"
+    ).fetchall() == [(other,)]
+    for target_id in (one, two):
+        delete_audit = _audit_rows_for(db, target_id)[-1]
+        assert delete_audit[0] == "proposed_rule.delete"
+        assert json.loads(delete_audit[4])["category_id"] == "cat_target"
+        assert delete_audit[5] is None
+
+
 def test_insert_rolls_back_when_audit_raises(db: Database) -> None:
     audit = MagicMock()
     audit.record_audit_event.side_effect = RuntimeError("simulated audit failure")

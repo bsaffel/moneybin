@@ -10,6 +10,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.categories import MerchantCreatePayload
 from moneybin.protocol.envelope import build_envelope
 
 from . import links
@@ -49,6 +50,7 @@ def merchants_create(
     default_category: str | None = typer.Option(
         None, "--default-category", help="Default category for this merchant"
     ),
+    output: OutputFormat = output_option,
 ) -> None:
     """Create a merchant mapping."""
     from moneybin.services.categorization import CategorizationService
@@ -63,4 +65,16 @@ def merchants_create(
                 created_by="user",
                 actor="cli",
             )
+    if output == OutputFormat.JSON:
+        render_or_json(
+            build_envelope(
+                data=MerchantCreatePayload(
+                    merchant_id=merchant_id,
+                    action="created",
+                )
+            ),
+            output,
+            cli_actor="merchants_create",
+        )
+        return
     typer.echo(merchant_id)

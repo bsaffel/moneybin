@@ -235,7 +235,7 @@
     "capability_id": "import.revert",
     "mcp_tools": ["import_revert"],
     "cli_commands": ["import revert", "import formats delete"],
-    "service_methods": ["moneybin.services.import_service.ImportService.revert", "moneybin.services.import_service.ImportService.plan_saved_format_delete", "moneybin.services.import_service.ImportService.delete_saved_format_confirmed", "moneybin.services.import_service.ImportService.delete_saved_format"],
+    "service_methods": ["moneybin.services.import_service.ImportService.revert", "moneybin.services.import_service.ImportService.plan_saved_format_delete", "moneybin.services.import_service.ImportService.delete_saved_format_confirmed"],
     "observable_outcomes": ["the selected import's raw rows are removed and its status becomes reverted", "the exact confirmed user-saved format is audit-deleted with an undoable operation ID while built-ins remain immutable"],
     "exemption": null
   },

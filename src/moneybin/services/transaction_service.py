@@ -760,6 +760,8 @@ class TransactionService:
         text: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        snapshot: tuple[str, str] | None = None,
+        after: tuple[str, str] | None = None,
     ) -> OperationalTransactionResult:
         """Query the cutover operational surface with already-resolved IDs."""
         if limit < 1:
@@ -778,6 +780,8 @@ class TransactionService:
             uncategorized_only=False,
             limit=limit,
             offset=offset,
+            snapshot=snapshot,
+            after=after,
         )
 
     def _query_transactions(
@@ -794,6 +798,8 @@ class TransactionService:
         uncategorized_only: bool,
         limit: int,
         offset: int,
+        snapshot: tuple[str, str] | None = None,
+        after: tuple[str, str] | None = None,
     ) -> OperationalTransactionResult:
         """Run the shared parameterized transaction filter and page query."""
         conditions: list[str] = []
@@ -832,10 +838,24 @@ class TransactionService:
         if uncategorized_only:
             conditions.append("categorized_by IS NULL")
 
+        if snapshot is not None:
+            conditions.append(
+                "(transaction_date < ? OR "
+                "(transaction_date = ? AND transaction_id >= ?))"
+            )
+            params.extend([snapshot[0], snapshot[0], snapshot[1]])
+        count_where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        count_params = list(params)
+        if after is not None:
+            conditions.append(
+                "(transaction_date < ? OR "
+                "(transaction_date = ? AND transaction_id > ?))"
+            )
+            params.extend([after[0], after[0], after[1]])
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         total_row = self._db.execute(
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} {where}",  # noqa: S608  # TableRef + fixed predicates
-            params,
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} {count_where}",  # noqa: S608  # TableRef + fixed predicates
+            count_params,
         ).fetchone()
         total_count = int(total_row[0]) if total_row is not None else 0
         rows = self._db.execute(

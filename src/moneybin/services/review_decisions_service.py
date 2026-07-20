@@ -102,8 +102,8 @@ class IdentityDecisionPlan:
     @property
     def destructive(self) -> bool:
         """Return whether the material batch contains an identity merge accept."""
-        return self.changed_count > 0 and any(
-            item.request.decision == "accept" for item in self.items
+        return any(
+            item.changed and item.request.decision == "accept" for item in self.items
         )
 
 

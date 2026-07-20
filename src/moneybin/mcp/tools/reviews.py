@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import json
 from dataclasses import replace
 from decimal import Decimal
+from functools import cmp_to_key
 from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
@@ -24,6 +22,14 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    KeysetScalar,
+    SortDirection,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import (
     AutoRuleDecisionRequest,
@@ -111,61 +117,37 @@ def _text(value: object | None) -> str | None:
     return str(value) if value is not None else None
 
 
-def _review_cursor(kind: ReviewQueueKind, status: ReviewStatus, offset: int) -> str:
-    """Encode a cursor bound to its exact queue and collection state."""
-    raw = json.dumps(
-        {
-            "filters": {},
-            "kind": kind,
-            "offset": offset,
-            "status": status,
-            "tool": "reviews",
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-def _review_offset(
+def _review_position(
     cursor: str | None,
     *,
     kind: ReviewQueueKind,
     status: ReviewStatus,
-) -> int:
-    """Decode a cursor and reject cross-queue or cross-status reuse."""
+) -> KeysetPosition | None:
+    """Decode a keyset cursor and reject cross-queue or cross-status reuse."""
     if cursor is None:
-        return 0
+        return None
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace="reviews",
+            scope={"kind": kind, "status": status},
+        )
+    except ValueError as exc:
         raise UserError(
             "Invalid review pagination cursor.",
             code="REVIEW_CURSOR_INVALID",
         ) from exc
-    if not isinstance(value, dict):
-        raise UserError(
-            "Invalid review pagination cursor.",
-            code="REVIEW_CURSOR_INVALID",
-        )
-    payload = cast(dict[str, Any], value)
-    offset = payload.get("offset")
-    if (
-        set(payload) != {"filters", "kind", "offset", "status", "tool"}
-        or payload.get("filters") != {}
-        or payload.get("kind") != kind
-        or payload.get("status") != status
-        or payload.get("tool") != "reviews"
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
-    ):
-        raise UserError(
-            "Invalid review pagination cursor.",
-            code="REVIEW_CURSOR_INVALID",
-        )
-    return offset
+    types, _ = _review_key_contract(kind, status)
+    for key in (position.snapshot, position.after):
+        if len(key) != len(types) or any(
+            type(value) is not expected
+            for value, expected in zip(key, types, strict=True)
+        ):
+            raise UserError(
+                "Invalid review pagination cursor.",
+                code="REVIEW_CURSOR_INVALID",
+            )
+    return position
 
 
 def _review_envelope[T](
@@ -660,6 +642,137 @@ def _view_rows(
     return list(view.rows)
 
 
+def _review_key_contract(
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+) -> tuple[tuple[type[object], ...], tuple[SortDirection, ...]]:
+    """Return the typed immutable ordering contract for one review queue."""
+    if status == "history" or kind == "categorization":
+        return ((str, str), ("desc", "asc" if status == "history" else "desc"))
+    if kind == "auto_rules":
+        return ((str,), ("asc",))
+    if kind == "matches":
+        return ((float, str), ("desc", "asc"))
+    if kind == "account_links":
+        return ((str, str), ("asc", "asc"))
+    return ((str, str, str), ("asc", "asc", "asc"))
+
+
+def _review_ordering(
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+    row: Any,
+) -> tuple[tuple[KeysetScalar, ...], tuple[SortDirection, ...]]:
+    """Return one immutable queue key whose directions match display order."""
+    _, directions = _review_key_contract(kind, status)
+    if status == "history":
+        return (
+            (_text(row.created_at) or "", str(row.decision_id)),
+            directions,
+        )
+    if kind == "categorization":
+        return (
+            (_text(row.created_at) or "", str(row.decision_id)),
+            directions,
+        )
+    if kind == "auto_rules":
+        # trigger_count can change while a proposal is pending; the stable id
+        # is the only immutable ordering key currently projected by this queue.
+        return ((str(row.decision_id),), directions)
+    if kind == "matches":
+        return (
+            (
+                float(row.details.match.confidence_score),
+                str(row.decision_id),
+            ),
+            directions,
+        )
+    if kind == "account_links":
+        return (
+            (
+                str(row.details.group.provisional_account_id),
+                str(row.decision_id),
+            ),
+            directions,
+        )
+    if kind == "merchant_links":
+        return (
+            (
+                str(row.details.group.source_type),
+                str(row.details.group.ref_value),
+                str(row.decision_id),
+            ),
+            directions,
+        )
+    return (
+        (
+            str(row.details.group.ref_kind),
+            str(row.details.group.ref_value),
+            str(row.decision_id),
+        ),
+        directions,
+    )
+
+
+def _review_page(
+    rows: list[Any],
+    *,
+    kind: ReviewQueueKind,
+    status: ReviewStatus,
+    limit: int,
+    position: KeysetPosition | None,
+) -> tuple[list[Any], str | None]:
+    """Page one evolving queue without depending on live-list offsets."""
+    if not rows:
+        return [], None
+    _, directions = _review_key_contract(kind, status)
+
+    def compare_rows(left: Any, right: Any) -> int:
+        left_key, _ = _review_ordering(kind, status, left)
+        right_key, _ = _review_ordering(kind, status, right)
+        return compare_keyset(left_key, right_key, directions)
+
+    ordered = sorted(rows, key=cmp_to_key(compare_rows))
+    if position is None:
+        snapshot, _ = _review_ordering(kind, status, ordered[0])
+        eligible = ordered
+    else:
+        snapshot = position.snapshot
+        try:
+            eligible = [
+                row
+                for row in ordered
+                if compare_keyset(
+                    _review_ordering(kind, status, row)[0],
+                    snapshot,
+                    directions,
+                )
+                >= 0
+                and compare_keyset(
+                    _review_ordering(kind, status, row)[0],
+                    position.after,
+                    directions,
+                )
+                > 0
+            ]
+        except ValueError as exc:
+            raise UserError(
+                "Invalid review pagination cursor.",
+                code="REVIEW_CURSOR_INVALID",
+            ) from exc
+    page = eligible[:limit]
+    if len(eligible) <= limit or not page:
+        return page, None
+    after, _ = _review_ordering(kind, status, page[-1])
+    return page, encode_keyset_cursor(
+        namespace="reviews",
+        scope={"kind": kind, "status": status},
+        snapshot=snapshot,
+        after=after,
+        total=position.total if position is not None else len(ordered),
+    )
+
+
 def _review_count(
     db: Database,
     *,
@@ -769,21 +882,22 @@ def reviews_coarse(
         )
 
     queue_kind = kind
-    offset = _review_offset(cursor, kind=queue_kind, status=status)
+    position = _review_position(cursor, kind=queue_kind, status=status)
     with get_database(read_only=True) as db:
         complete = _load_review_view(db, kind=queue_kind, status=status)
     rows = _view_rows(complete)
-    page = rows[offset : offset + limit]
-    next_cursor = (
-        _review_cursor(queue_kind, status, offset + limit)
-        if len(rows) > offset + limit
-        else None
+    page, next_cursor = _review_page(
+        rows,
+        kind=queue_kind,
+        status=status,
+        limit=limit,
+        position=position,
     )
     payload = complete.model_copy(update={"rows": page})
     return _review_envelope(
         payload,
         contract_type=type(complete),
-        total_count=len(rows),
+        total_count=position.total if position is not None else len(rows),
         returned_count=len(page),
         next_cursor=next_cursor,
         actions=_review_actions(

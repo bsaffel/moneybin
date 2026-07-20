@@ -46,11 +46,11 @@ def test_governing_spec_records_runtime_facts_without_promotion_claim() -> None:
 
     for fact in (
         "45 tools",
-        "45,752 bytes",
-        "ed29b3d659fff626ba87917916aea4c27d50dd1cc5aba4117b4507678353d592",
+        "46,454 bytes",
+        "4c0ec7d2f7255b10cd692a4ae9e38d2081532cd867e8fa9a8bbec7324e64de19",
         "90,734 bytes",
         "ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79",
-        "-44,982 bytes (-49.6%)",
+        "-44,280 bytes (-48.8%)",
         "zero advertised output schemas",
         "contract_passed: true",
         "promotion_ready: false",

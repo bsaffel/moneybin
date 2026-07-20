@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -530,6 +531,73 @@ async def test_review_pagination_is_stable_filter_bound_and_executable() -> None
         )
         assert incompatible.error is not None
         assert incompatible.error.code == "REVIEW_CURSOR_INVALID"
+
+
+async def test_review_pending_continuation_does_not_skip_after_first_row_removed() -> (
+    None
+):
+    initial = [_pending_match("match-a"), _pending_match("match-b")]
+    after_decision = [_pending_match("match-b")]
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        side_effect=[initial, after_decision],
+    ):
+        first = await reviews_coarse(kind="matches", status="pending", limit=1)
+        second = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [row.decision_id for row in first.data.rows] == ["match-a"]
+    assert [row.decision_id for row in second.data.rows] == ["match-b"]
+    assert second.next_cursor is None
+
+
+async def test_review_cursor_snapshot_excludes_prepends_and_preserves_total() -> None:
+    initial = [_pending_match("match-a"), _pending_match("match-b")]
+    prepended = _pending_match("match-new")
+    prepended["confidence_score"] = 1.0
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        side_effect=[initial, [prepended, *initial]],
+    ):
+        first = await reviews_coarse(kind="matches", status="pending", limit=1)
+        second = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            limit=1,
+            cursor=first.next_cursor,
+        )
+
+    assert [row.decision_id for row in first.data.rows] == ["match-a"]
+    assert [row.decision_id for row in second.data.rows] == ["match-b"]
+    assert first.summary.total_count == second.summary.total_count == 2
+
+
+async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
+    from moneybin.mcp.pagination import encode_keyset_cursor
+
+    cursor = encode_keyset_cursor(
+        namespace="reviews",
+        scope={"kind": "matches", "status": "pending"},
+        snapshot=("not-a-confidence", "match-a"),
+        after=("still-not-a-confidence", "match-b"),
+        total=2,
+    )
+    with patch(
+        "moneybin.mcp.tools.reviews.MatchingService.get_pending",
+        return_value=[],
+    ):
+        response = await reviews_coarse(
+            kind="matches",
+            status="pending",
+            cursor=cursor,
+        )
+
+    assert response.error is not None
+    assert response.error.code == "REVIEW_CURSOR_INVALID"
 
 
 async def test_review_standard_registrar_renders_closed_contract() -> None:
@@ -1757,6 +1825,30 @@ def test_identity_confirmation_binds_order_state_ids_and_blast_radius() -> None:
         "transactions": 3,
         "lots": 1,
     }
+
+
+def test_identity_plan_ignores_unchanged_accept_for_destructive_gate() -> None:
+    """Only an accept that will materially transition state needs confirmation."""
+    decisions = [
+        AccountLinkDecisionRequest(
+            kind="account_link",
+            decision_id="already-accepted",
+            decision="accept",
+            target_id="account-target",
+        ),
+        MerchantLinkDecisionRequest(
+            kind="merchant_link",
+            decision_id="pending-reject",
+            decision="reject",
+        ),
+    ]
+    initial = _identity_plan(decisions)
+    plan = IdentityDecisionPlan(
+        items=(replace(initial.items[0], changed=False), initial.items[1])
+    )
+
+    assert plan.changed_count == 1
+    assert plan.destructive is False
 
 
 async def test_identity_confirmation_rechecks_live_state_and_consumes_token(

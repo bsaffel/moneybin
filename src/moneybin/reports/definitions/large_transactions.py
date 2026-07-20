@@ -20,7 +20,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
     view=REPORTS_LARGE_TRANSACTIONS,
     classes={
         "transaction_id": DataClass.RECORD_ID,
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
@@ -42,9 +42,7 @@ from moneybin.tables import REPORTS_LARGE_TRANSACTIONS
         OutputColumn(
             "transaction_id", "Canonical transaction identifier.", DataClass.RECORD_ID
         ),
-        OutputColumn(
-            "account_id", "Owning account identifier.", DataClass.ACCOUNT_IDENTIFIER
-        ),
+        OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
         OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
         OutputColumn("txn_date", "Transaction date.", DataClass.TXN_DATE),
         OutputColumn("amount", "Signed transaction amount.", DataClass.TXN_AMOUNT),

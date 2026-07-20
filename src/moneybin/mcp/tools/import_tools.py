@@ -13,8 +13,6 @@ Tools:
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import hashlib
 import inspect
 import json
@@ -45,6 +43,12 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.imports import (
@@ -1332,110 +1336,53 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     )
 
 
-def _import_status_cursor(
-    offset: int,
-    *,
-    sections: list[Literal["imports", "formats", "inbox"]],
-    snapshot_digest: str,
-    snapshot_head_import_id: str,
-    snapshot_head_started_at: str,
-    snapshot_total: int,
-) -> str:
-    """Encode an import cursor bound to its exact selected sections."""
-    raw = json.dumps(
-        {
-            "filters": {"import_id": None, "sections": sections},
-            "offset": offset,
-            "snapshot": {
-                "digest": snapshot_digest,
-                "head": [snapshot_head_started_at, snapshot_head_import_id],
-                "total": snapshot_total,
-            },
-            "tool": "import_status",
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-def _import_status_offset(
+def _import_status_position(
     cursor: str | None,
     *,
     sections: list[Literal["imports", "formats", "inbox"]],
-) -> tuple[int, int | None, str | None, str | None, str | None]:
-    """Decode an import cursor and reject malformed or cross-section reuse."""
+) -> KeysetPosition | None:
+    """Decode and type-check one imports-view keyset before data access."""
     if cursor is None:
-        return 0, None, None, None, None
+        return None
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace="import_status.imports",
+            scope={"import_id": None, "sections": sections},
+        )
+        if (
+            len(position.snapshot) != 3
+            or len(position.after) != 3
+            or not all(
+                isinstance(value, str)
+                for value in (
+                    position.snapshot[0],
+                    position.snapshot[1],
+                    position.after[0],
+                    position.after[1],
+                )
+            )
+            or not position.snapshot[1]
+            or not position.after[1]
+            or type(position.snapshot[2]) is not int
+            or type(position.after[2]) is not int
+            or position.snapshot[2] < 0
+            or position.snapshot[2] != position.after[2]
+            or position.snapshot[2] > position.total
+        ):
+            raise ValueError("invalid import keyset shape")
+        snapshot = cast(tuple[str, str], position.snapshot[:2])
+        after = cast(tuple[str, str], position.after[:2])
+        datetime.fromisoformat(snapshot[0])
+        datetime.fromisoformat(after[0])
+        if compare_keyset(snapshot, after, ("desc", "desc")) > 0:
+            raise ValueError("import continuation precedes its snapshot")
+        return position
+    except ValueError as exc:
         raise UserError(
             "Invalid import pagination cursor.",
             code="IMPORT_CURSOR_INVALID",
         ) from exc
-    if not isinstance(value, dict):
-        raise UserError(
-            "Invalid import pagination cursor.",
-            code="IMPORT_CURSOR_INVALID",
-        )
-    payload = cast(dict[str, Any], value)
-    offset = payload.get("offset")
-    snapshot = payload.get("snapshot")
-    if not isinstance(snapshot, dict):
-        raise UserError(
-            "Invalid import pagination cursor.",
-            code="IMPORT_CURSOR_INVALID",
-        )
-    snapshot_payload = cast(dict[str, Any], snapshot)
-    snapshot_digest = snapshot_payload.get("digest")
-    snapshot_head = snapshot_payload.get("head")
-    snapshot_head_items = (
-        cast(list[Any], snapshot_head) if isinstance(snapshot_head, list) else None
-    )
-    snapshot_total = snapshot_payload.get("total")
-    if (
-        set(payload) != {"filters", "offset", "snapshot", "tool"}
-        or payload.get("filters") != {"import_id": None, "sections": sections}
-        or payload.get("tool") != "import_status"
-        or set(snapshot_payload) != {"digest", "head", "total"}
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
-        or not isinstance(snapshot_digest, str)
-        or len(snapshot_digest) != 43
-        or snapshot_head_items is None
-        or len(snapshot_head_items) != 2
-        or not all(isinstance(value, str) for value in snapshot_head_items)
-        or isinstance(snapshot_total, bool)
-        or not isinstance(snapshot_total, int)
-        or snapshot_total < 0
-    ):
-        raise UserError(
-            "Invalid import pagination cursor.",
-            code="IMPORT_CURSOR_INVALID",
-        )
-    head_started_at, head_import_id = cast(list[str], snapshot_head_items)
-    try:
-        datetime.fromisoformat(head_started_at)
-        base64.b64decode(
-            f"{snapshot_digest}=".encode(),
-            altchars=b"-_",
-            validate=True,
-        )
-    except (ValueError, binascii.Error) as exc:
-        raise UserError(
-            "Invalid import pagination cursor.",
-            code="IMPORT_CURSOR_INVALID",
-        ) from exc
-    return (
-        offset,
-        snapshot_total,
-        snapshot_digest,
-        head_started_at,
-        head_import_id,
-    )
 
 
 def _import_status_envelope(
@@ -1513,16 +1460,10 @@ def import_status_coarse(
             code="IMPORT_PAGINATION_NOT_ALLOWED",
         )
 
-    (
-        offset,
-        snapshot_total,
-        snapshot_digest,
-        snapshot_head_started_at,
-        snapshot_head_import_id,
-    ) = (
-        _import_status_offset(cursor, sections=requested)
+    position = (
+        _import_status_position(cursor, sections=requested)
         if import_id is None and "imports" in requested
-        else (0, None, None, None, None)
+        else None
     )
     selected: list[
         ImportStatusImportsSection
@@ -1533,6 +1474,7 @@ def import_status_coarse(
     total_count = 0
     returned_count = 0
     next_cursor: str | None = None
+    pending_cursor: tuple[tuple[str, str, int], tuple[str, str, int]] | None = None
     actions: list[str] = []
 
     for section in requested:
@@ -1552,39 +1494,57 @@ def import_status_coarse(
                     page = import_log.get_import_history_page(
                         db,
                         limit=limit,
-                        offset=offset,
-                        head_started_at=snapshot_head_started_at,
-                        head_import_id=snapshot_head_import_id,
+                        snapshot_started_at=(
+                            cast(str, position.snapshot[0])
+                            if position is not None
+                            else None
+                        ),
+                        snapshot_import_id=(
+                            cast(str, position.snapshot[1])
+                            if position is not None
+                            else None
+                        ),
+                        after_started_at=(
+                            cast(str, position.after[0])
+                            if position is not None
+                            else None
+                        ),
+                        after_import_id=(
+                            cast(str, position.after[1])
+                            if position is not None
+                            else None
+                        ),
+                        snapshot_total=(
+                            cast(int, position.snapshot[2])
+                            if position is not None
+                            else None
+                        ),
                     )
                     records = page.records
                     count = page.total_count
-                if snapshot_total is not None and (
-                    page is None
-                    or page.total_count != snapshot_total
-                    or page.snapshot_digest != snapshot_digest
-                ):
-                    raise UserError(
-                        "Invalid import pagination cursor.",
-                        code="IMPORT_CURSOR_INVALID",
-                    )
             selected.append(ImportStatusImportsSection(records=records))
             contract_types.append(ImportStatusImportsSection)
             total_count += count
             returned_count += len(records)
-            if import_id is None and offset + len(records) < count:
+            if import_id is None and page is not None and page.has_more:
                 if (
-                    page is None
-                    or page.head_started_at is None
-                    or page.head_import_id is None
+                    not records
+                    or page.snapshot_started_at is None
+                    or page.snapshot_import_id is None
                 ):
                     raise RuntimeError("non-empty import snapshot is missing its head")
-                next_cursor = _import_status_cursor(
-                    offset + len(records),
-                    sections=requested,
-                    snapshot_digest=page.snapshot_digest,
-                    snapshot_head_import_id=page.head_import_id,
-                    snapshot_head_started_at=page.head_started_at,
-                    snapshot_total=count,
+                last = records[-1]
+                pending_cursor = (
+                    (
+                        page.snapshot_started_at,
+                        page.snapshot_import_id,
+                        count,
+                    ),
+                    (
+                        str(last["started_at"]),
+                        str(last["import_id"]),
+                        count,
+                    ),
                 )
         elif section == "formats":
             body = inspect.unwrap(import_formats)
@@ -1616,7 +1576,15 @@ def import_status_coarse(
             returned_count += count
             actions.append("Use import_inbox_sync to drain the inbox")
 
-    if next_cursor is not None:
+    stable_total = position.total if position is not None else total_count
+    if pending_cursor is not None:
+        next_cursor = encode_keyset_cursor(
+            namespace="import_status.imports",
+            scope={"import_id": None, "sections": requested},
+            snapshot=pending_cursor[0],
+            after=pending_cursor[1],
+            total=stable_total,
+        )
         actions.append(
             f"Continue with import_status(sections={requested!r}, limit={limit}, "
             f"cursor={next_cursor!r})"
@@ -1627,7 +1595,7 @@ def import_status_coarse(
     return _import_status_envelope(
         payload,
         contract_types=contract_types,
-        total_count=total_count,
+        total_count=stable_total,
         returned_count=returned_count,
         next_cursor=next_cursor,
         actions=list(dict.fromkeys(actions)),

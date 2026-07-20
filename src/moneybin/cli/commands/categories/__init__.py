@@ -14,6 +14,10 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.categories import (
+    CategoryCreatePayload,
+    CategorySetPayload,
+)
 from moneybin.protocol.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -57,6 +61,7 @@ def categories_list(
 def categories_create(
     name: str = typer.Argument(..., help="Category name"),
     parent: str | None = typer.Option(None, "--parent", help="Parent category name"),
+    output: OutputFormat = output_option,
 ) -> None:
     """Create a new category."""
     from moneybin.services.categorization import CategorizationService
@@ -70,6 +75,21 @@ def categories_create(
                 subcategory=subcategory,
                 actor="cli",
             )
+    sub = f" / {subcategory}" if subcategory else ""
+    payload = CategoryCreatePayload(
+        category_id=category_id,
+        category=category,
+        subcategory=subcategory,
+        action="created",
+        display=f"{category}{sub}",
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(
+            build_envelope(data=payload),
+            output,
+            cli_actor="categories_create",
+        )
+        return
     typer.echo(category_id)
 
 
@@ -79,6 +99,7 @@ def categories_set(
     is_active: bool = typer.Option(
         True, "--active/--inactive", help="Set category active or inactive"
     ),
+    output: OutputFormat = output_option,
 ) -> None:
     """Update a category's settings (is_active is the only modifiable field)."""
     from moneybin.services.categorization import CategorizationService
@@ -90,6 +111,17 @@ def categories_set(
                 is_active=is_active,
                 actor="cli",
             )
+    payload = CategorySetPayload(
+        category_id=category_id,
+        action="enabled" if is_active else "disabled",
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(
+            build_envelope(data=payload),
+            output,
+            cli_actor="categories_set",
+        )
+        return
     typer.echo(category_id)
 
 

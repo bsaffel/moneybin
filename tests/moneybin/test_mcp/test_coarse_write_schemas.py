@@ -38,6 +38,15 @@ from moneybin.mcp.write_contracts import (
     TaxonomyStateRequest,
 )
 from moneybin.privacy.consent import FEATURE_CATEGORIES
+from moneybin.services._validators import (
+    CATEGORY_NAME_MAX_LEN,
+    DESCRIPTION_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    MERCHANT_NAME_MAX_LEN,
+    MERCHANT_PATTERN_MAX_LEN,
+    NOTE_MAX_LEN,
+    SLUG_MAX_LEN,
+)
 from moneybin.services.categorization._shared import MatchType as ServiceMatchType
 from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
 
@@ -322,6 +331,87 @@ def test_annotation_requests_reject_stringified_or_empty_values(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         TypeAdapter(AnnotationRequest).validate_python(payload)
+
+
+@pytest.mark.parametrize(
+    ("contract", "payload"),
+    [
+        (
+            AnnotationRequest,
+            {
+                "kind": "note_set",
+                "transaction_id": "x" * (IDENTIFIER_MAX_LEN + 1),
+                "note": None,
+            },
+        ),
+        (
+            AnnotationRequest,
+            {
+                "kind": "note_set",
+                "transaction_id": "tx_1",
+                "note": "x" * (NOTE_MAX_LEN + 1),
+            },
+        ),
+        (
+            AnnotationRequest,
+            {
+                "kind": "tags_set",
+                "transaction_id": "tx_1",
+                "tags": ["x" * (SLUG_MAX_LEN + 1)],
+            },
+        ),
+        (
+            CategorizationDecisionRequest,
+            {
+                "kind": "categorization",
+                "decision_id": "decision_1",
+                "decision": "accept",
+                "category": "x" * (CATEGORY_NAME_MAX_LEN + 1),
+            },
+        ),
+        (
+            CategorizationDecisionRequest,
+            {
+                "kind": "categorization",
+                "decision_id": "decision_1",
+                "decision": "accept",
+                "category": "Food",
+                "canonical_merchant_name": "x" * (MERCHANT_NAME_MAX_LEN + 1),
+            },
+        ),
+        (
+            CategoryStateRequest,
+            {
+                "kind": "category",
+                "state": "present",
+                "category": "Food",
+                "description": "x" * (DESCRIPTION_MAX_LEN + 1),
+            },
+        ),
+        (
+            MerchantStateRequest,
+            {
+                "kind": "merchant",
+                "state": "present",
+                "raw_pattern": "x" * (MERCHANT_PATTERN_MAX_LEN + 1),
+                "canonical_name": "Merchant",
+            },
+        ),
+        (
+            CategorizationRuleMatch,
+            {
+                "type": "contains",
+                "value": "x" * (MERCHANT_PATTERN_MAX_LEN + 1),
+            },
+        ),
+    ],
+)
+def test_write_contracts_bound_user_supplied_strings(
+    contract: Any,
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="at most"):
+        TypeAdapter(contract).validate_python(payload)
 
 
 @pytest.mark.parametrize(
@@ -715,6 +805,7 @@ async def test_live_standard_write_discriminators_render_exactly() -> None:
         "tag_rename": {"kind", "old_name", "new_name"},
     }
     assert _rendered_variants(reviews.inputSchema, collection="decisions") == {
+        "auto_rule": {"kind", "decision_id", "decision"},
         "categorization": {"kind", "decision_id", "decision"},
         "match": {"kind", "decision_id", "decision"},
     }

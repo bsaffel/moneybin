@@ -92,6 +92,33 @@ structured content alone is insufficient, exact byte/context cost,
 representative client tests, and persisted benefit evidence. If admitted, it
 MUST match runtime `structuredContent` exactly.
 
+### Pagination
+
+Every standard **resumable collection read** uses the shared versioned keyset
+cursor in `moneybin.mcp.pagination`; do not add an offset cursor or a second
+opaque envelope. Bind the cursor to the exact public view and canonicalized
+public filters, order by immutable keys with an explicit unique tie-breaker,
+validate decoded key types before reference resolution or data access, and push
+snapshot/continuation predicates into the service query when practical. The
+cursor carries the exact initial eligible-row total so continuations keep one
+coherent `summary.total_count`. Tests must cover a removal and a row that
+prepends ahead of the first-page boundary, malformed typed keys, and
+cross-view/filter reuse.
+
+This is a stateless, weakly consistent contract: removals and prepends do not
+skip or duplicate the continuation, but an arbitrary concurrent insert whose
+immutable sort key falls inside the unserved range may appear. A fully frozen
+membership snapshot requires either a monotonic creation key in that domain or
+a stateful snapshot store; do not claim that stronger guarantee without one.
+
+`reports` and `sql_query` are bounded caller-shaped executions, not resumable
+collections: neither has a declared immutable unique ordering key that MoneyBin
+can safely continue. They may signal truncation with `has_more` and a
+lower-bound total, never an offset cursor; callers refine the query or rerun
+with a higher limit. Bounded summary, detail, catalog, and status views also do
+not acquire cursors merely because they accept a limit elsewhere in the same
+coarse tool.
+
 ## Sensitivity Tiers
 
 | Tier | Data | Consent |

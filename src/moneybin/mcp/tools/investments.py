@@ -32,9 +32,6 @@ surface-budget tests.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import json
 from dataclasses import dataclass, replace
 from datetime import date as _date
 from decimal import Decimal
@@ -54,6 +51,11 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.investments import (
@@ -915,63 +917,99 @@ def _coarse_security_candidates(
     ]
 
 
-def _investment_cursor(
-    view: str,
-    offset: int,
+def _investment_scope(
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
     filters: dict[str, object],
-) -> str:
-    """Encode an investment cursor bound to canonical query state."""
-    raw = json.dumps(
-        {
-            "filters": filters,
-            "offset": offset,
-            "tool": "investments",
-            "view": view,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
+) -> dict[str, object]:
+    """Return the complete canonical investment cursor scope."""
+    return {"view": view, **filters}
 
 
-def _investment_offset(
+def _investment_position(
     cursor: str | None,
     *,
-    view: str,
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
     filters: dict[str, object],
-) -> int:
-    """Decode an investment cursor and reject cross-query reuse."""
+) -> KeysetPosition | None:
+    """Decode and type-check a stable-identity investment cursor."""
     if cursor is None:
-        return 0
+        return None
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace="investments",
+            scope=_investment_scope(view, filters),
+        )
+        key_length = 2 if view == "holdings" else 1
+        if (
+            len(position.snapshot) != key_length
+            or len(position.after) != key_length
+            or not all(
+                type(value) is str for value in (*position.snapshot, *position.after)
+            )
+        ):
+            raise ValueError("invalid investment key")
+        snapshot = cast(tuple[str, ...], position.snapshot)
+        after = cast(tuple[str, ...], position.after)
+        if snapshot > after:
+            raise ValueError("invalid investment key order")
+        return position
+    except ValueError as exc:
         raise UserError(
             "Invalid pagination cursor.",
             code="INVESTMENT_CURSOR_INVALID",
         ) from exc
-    if not isinstance(value, dict):
-        raise UserError(
-            "Invalid pagination cursor.",
-            code="INVESTMENT_CURSOR_INVALID",
-        )
-    payload = cast(dict[str, Any], value)
-    offset = payload.get("offset")
-    if (
-        set(payload) != {"filters", "offset", "tool", "view"}
-        or payload.get("filters") != filters
-        or payload.get("tool") != "investments"
-        or payload.get("view") != view
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
-    ):
-        raise UserError(
-            "Invalid pagination cursor.",
-            code="INVESTMENT_CURSOR_INVALID",
-        )
-    return offset
+
+
+def _investment_row_key(
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    row: Any,
+) -> tuple[str, ...]:
+    """Return immutable stable IDs for one investment projection row."""
+    if view == "events":
+        return (str(row.investment_transaction_id),)
+    if view == "holdings":
+        return (str(row.account_id), str(row.security_id))
+    if view == "lots":
+        return (str(row.lot_id),)
+    if view == "gains":
+        return (str(row.realized_gain_id),)
+    return (str(row.security_id),)
+
+
+def _investment_page[T](
+    rows: list[T],
+    *,
+    view: Literal["events", "holdings", "lots", "gains", "securities"],
+    filters: dict[str, object],
+    limit: int,
+    position: KeysetPosition | None,
+) -> tuple[list[T], str | None, int]:
+    """Page immutable identities behind the first-page prepend boundary."""
+    ordered = sorted(rows, key=lambda row: _investment_row_key(view, row))
+    if position is None:
+        eligible = ordered
+        total_count = len(ordered)
+        snapshot = _investment_row_key(view, ordered[0]) if ordered else None
+    else:
+        snapshot = cast(tuple[str, ...], position.snapshot)
+        after = cast(tuple[str, ...], position.after)
+        eligible = [row for row in ordered if _investment_row_key(view, row) > after]
+        total_count = position.total
+    page = eligible[:limit]
+    if len(eligible) <= limit or not page or snapshot is None:
+        return page, None, total_count
+    return (
+        page,
+        encode_keyset_cursor(
+            namespace="investments",
+            scope=_investment_scope(view, filters),
+            snapshot=snapshot,
+            after=_investment_row_key(view, page[-1]),
+            total=total_count,
+        ),
+        total_count,
+    )
 
 
 def _investment_period(start: _date | None, end: _date | None) -> str | None:
@@ -1098,6 +1136,15 @@ def investments_coarse(
             code="INVESTMENT_DATE_RANGE_INVALID",
         )
 
+    filters: dict[str, object] = {
+        "account": account.casefold().strip() if account is not None else None,
+        "end": end.isoformat() if end is not None else None,
+        "open_only": (True if view == "lots" and open_only is None else open_only),
+        "security": security.casefold().strip() if security is not None else None,
+        "start": start.isoformat() if start is not None else None,
+    }
+    position = _investment_position(cursor, view=view, filters=filters)
+
     with get_database(read_only=True) as db:
         service = InvestmentService(db)
         account_id = (
@@ -1118,14 +1165,6 @@ def investments_coarse(
             if security is not None
             else None
         )
-        filters: dict[str, object] = {
-            "account_id": account_id,
-            "end": end.isoformat() if end is not None else None,
-            "security_id": security_id,
-            "start": start.isoformat() if start is not None else None,
-            "open_only": open_only,
-        }
-        offset = _investment_offset(cursor, view=view, filters=filters)
 
         if view == "events":
             result = service.list_events(
@@ -1135,22 +1174,12 @@ def investments_coarse(
                 date_to=end,
             )
             all_rows = InvestmentEventsPayload.from_result(result)
-            page = all_rows.rows[offset : offset + limit]
-            data: InvestmentsCoarsePayload = InvestmentsEventsView(
-                rows=page,
-                warnings=all_rows.warnings,
-            )
         elif view == "holdings":
             result = service.holdings(
                 account_ref=account_id,
                 security_ref=security_id,
             )
             all_rows = InvestmentHoldingsPayload.from_result(result)
-            page = all_rows.rows[offset : offset + limit]
-            data = InvestmentsHoldingsView(
-                rows=page,
-                warnings=all_rows.warnings,
-            )
         elif view == "lots":
             result = service.lots(
                 account_ref=account_id,
@@ -1158,11 +1187,6 @@ def investments_coarse(
                 open_only=True if open_only is None else bool(open_only),
             )
             all_rows = InvestmentLotsPayload.from_result(result)
-            page = all_rows.rows[offset : offset + limit]
-            data = InvestmentsLotsView(
-                rows=page,
-                warnings=all_rows.warnings,
-            )
         elif view == "gains":
             result = service.gains(
                 account_ref=account_id,
@@ -1171,11 +1195,6 @@ def investments_coarse(
                 date_to=end,
             )
             all_rows = InvestmentGainsPayload.from_result(result)
-            page = all_rows.rows[offset : offset + limit]
-            data = InvestmentsGainsView(
-                rows=page,
-                warnings=all_rows.warnings,
-            )
         else:
             result = service.list_securities()
             all_rows = InvestmentSecuritiesPayload.from_result(result)
@@ -1184,22 +1203,43 @@ def investments_coarse(
                 if security_id is not None
                 else all_rows.rows
             )
-            page = filtered_rows[offset : offset + limit]
             all_rows = InvestmentSecuritiesPayload(
                 rows=filtered_rows,
                 warnings=all_rows.warnings,
             )
+        page, next_cursor, total_count = _investment_page(
+            cast(list[Any], all_rows.rows),
+            view=view,
+            filters=filters,
+            limit=limit,
+            position=position,
+        )
+        if view == "events":
+            data: InvestmentsCoarsePayload = InvestmentsEventsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "holdings":
+            data = InvestmentsHoldingsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "lots":
+            data = InvestmentsLotsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        elif view == "gains":
+            data = InvestmentsGainsView(
+                rows=page,
+                warnings=all_rows.warnings,
+            )
+        else:
             data = InvestmentsSecuritiesView(
                 rows=page,
                 warnings=all_rows.warnings,
             )
 
-    total_count = len(all_rows.rows)
-    next_cursor = (
-        _investment_cursor(view, offset + limit, filters)
-        if total_count > offset + limit
-        else None
-    )
     return _investment_coarse_envelope(
         data,
         total_count=total_count,

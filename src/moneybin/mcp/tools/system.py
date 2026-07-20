@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import fcntl  # POSIX-only: project targets macOS/Linux
 import inspect
 import json
 import os
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
@@ -21,6 +20,11 @@ from moneybin.db_lock import lock_path_for
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.system import (
@@ -532,6 +536,8 @@ def system_audit_history(
     actor: str | None = None,
     limit: int = 50,
     include_undone: bool = False,
+    snapshot: tuple[str, str] | None = None,
+    after: tuple[str, str] | None = None,
 ) -> ResponseEnvelope[SystemAuditHistoryPayload]:
     """List recent audited operations, newest first — the "I changed my mind" surface.
 
@@ -554,6 +560,8 @@ def system_audit_history(
             actor=actor,
             limit=limit,
             include_undone=include_undone,
+            snapshot=snapshot,
+            after=after,
         )
     return build_envelope(
         data=SystemAuditHistoryPayload(
@@ -715,42 +723,50 @@ def _audit_event_payload(event: Any) -> SystemAuditEventPayload:
     )
 
 
-def _audit_cursor(view: Literal["events", "history"], offset: int) -> str:
-    """Encode a view-bound opaque audit pagination cursor."""
-    raw = json.dumps(
-        {"offset": offset, "view": view},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-def _audit_offset(
+def _audit_position(
     cursor: str | None,
     view: Literal["events", "history"],
-) -> int:
-    """Decode an audit cursor and reject malformed or cross-view reuse."""
+) -> KeysetPosition | None:
+    """Decode an audit keyset cursor and reject malformed or cross-view reuse."""
     if cursor is None:
-        return 0
+        return None
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return decode_keyset_cursor(
+            cursor,
+            namespace="system_audit",
+            scope={"view": view},
+        )
+    except ValueError as exc:
         raise ValueError("invalid audit cursor") from exc
-    if not isinstance(value, dict):
-        raise ValueError("invalid audit cursor")
-    cursor_payload = cast(dict[str, Any], value)
-    if set(cursor_payload) != {"offset", "view"}:
-        raise ValueError("invalid audit cursor")
-    offset = cursor_payload["offset"]
+
+
+def _audit_bounds(
+    position: KeysetPosition | None,
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+    """Validate and narrow decoded audit keys to timestamp/id string pairs."""
+    if position is None:
+        return None, None
     if (
-        cursor_payload["view"] != view
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
+        len(position.snapshot) != 2
+        or len(position.after) != 2
+        or not all(
+            isinstance(value, str) for value in (*position.snapshot, *position.after)
+        )
     ):
         raise ValueError("invalid audit cursor")
-    return offset
+    snapshot = cast(tuple[str, str], position.snapshot)
+    after = cast(tuple[str, str], position.after)
+    try:
+        datetime.fromisoformat(snapshot[0])
+        datetime.fromisoformat(after[0])
+    except ValueError as exc:
+        raise ValueError("invalid audit cursor") from exc
+    if not snapshot[1] or not after[1]:
+        raise ValueError("invalid audit cursor")
+    return (
+        snapshot,
+        after,
+    )
 
 
 def _audit_list_actions(
@@ -861,21 +877,45 @@ async def system_audit_coarse(
         )
 
     if view == "events":
-        from moneybin.mcp.tools.curation import system_audit
+        from moneybin.database import get_database
+        from moneybin.services.audit_service import AuditService
 
-        offset = _audit_offset(cursor, "events")
-        response = await _run_tool_body(system_audit, limit=offset + limit + 1)
-        if response.error is not None:
-            return cast(ResponseEnvelope[SystemAuditCoarsePayload], response)
-        rows = response.data.events
-        page = rows[offset : offset + limit]
-        has_more = len(rows) > offset + limit
-        next_cursor = _audit_cursor("events", offset + limit) if has_more else None
+        position = _audit_position(cursor, "events")
+        snapshot, after = _audit_bounds(position)
+        with get_database(read_only=True) as db:
+            service = AuditService(db)
+            events = service.list_events(
+                limit=limit + 1,
+                snapshot=snapshot,
+                after=after,
+            )
+            page = [_audit_event_payload(event) for event in events[:limit]]
+            has_more = len(events) > limit
+            snapshot_key = (
+                snapshot
+                if snapshot is not None
+                else ((str(page[0].occurred_at), page[0].audit_id) if page else None)
+            )
+            total_count = (
+                position.total
+                if position is not None
+                else service.count_events(snapshot=snapshot_key)
+            )
+        if has_more and page and snapshot_key is not None:
+            next_cursor = encode_keyset_cursor(
+                namespace="system_audit",
+                scope={"view": "events"},
+                snapshot=snapshot_key,
+                after=(str(page[-1].occurred_at), page[-1].audit_id),
+                total=total_count,
+            )
+        else:
+            next_cursor = None
         payload = AuditEvents(events=page)
         return _dynamic_coarse_envelope(
             payload,
             contract_types=[AuditEvents],
-            total_count=offset + len(page) + (1 if has_more else 0),
+            total_count=total_count,
             returned_count=len(page),
             next_cursor=next_cursor,
             actions=_audit_list_actions(
@@ -886,22 +926,47 @@ async def system_audit_coarse(
         )
 
     if view == "history":
-        offset = _audit_offset(cursor, "history")
+        position = _audit_position(cursor, "history")
+        snapshot, after = _audit_bounds(position)
         response = await _run_tool_body(
             system_audit_history,
-            limit=offset + limit + 1,
+            limit=limit + 1,
+            snapshot=snapshot,
+            after=after,
         )
         if response.error is not None:
             return cast(ResponseEnvelope[SystemAuditCoarsePayload], response)
         rows = response.data.operations
-        page = rows[offset : offset + limit]
-        has_more = len(rows) > offset + limit
-        next_cursor = _audit_cursor("history", offset + limit) if has_more else None
+        page = rows[:limit]
+        has_more = len(rows) > limit
+        snapshot_key = (
+            snapshot
+            if snapshot is not None
+            else ((str(page[0].occurred_at), page[0].operation_id) if page else None)
+        )
+        if position is not None:
+            total_count = position.total
+        else:
+            from moneybin.database import get_database
+            from moneybin.services.undo_service import UndoService
+
+            with get_database(read_only=True) as db:
+                total_count = UndoService(db).history_count(snapshot=snapshot_key)
+        if has_more and page and snapshot_key is not None:
+            next_cursor = encode_keyset_cursor(
+                namespace="system_audit",
+                scope={"view": "history"},
+                snapshot=snapshot_key,
+                after=(str(page[-1].occurred_at), page[-1].operation_id),
+                total=total_count,
+            )
+        else:
+            next_cursor = None
         payload = AuditHistory(operations=page)
         return _dynamic_coarse_envelope(
             payload,
             contract_types=[AuditHistory],
-            total_count=offset + len(page) + (1 if has_more else 0),
+            total_count=total_count,
             returned_count=len(page),
             next_cursor=next_cursor,
             actions=_audit_list_actions(

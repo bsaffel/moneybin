@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 from dataclasses import replace
 from typing import Annotated, Any, Literal, cast
@@ -23,6 +21,11 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.mcp.write_contracts import (
     CategoryStateRequest,
@@ -51,63 +54,47 @@ from moneybin.services.mutation_context import current_operation_id
 _TAXONOMY_TOOL = "taxonomy"
 
 
-def _taxonomy_cursor(
-    view: str,
-    offset: int,
+def _taxonomy_scope(
+    view: Literal["categories", "merchants"],
     filters: dict[str, object],
-) -> str:
-    """Encode a cursor bound to the complete taxonomy query."""
-    raw = json.dumps(
-        {
-            "filters": filters,
-            "offset": offset,
-            "tool": _TAXONOMY_TOOL,
-            "view": view,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
+) -> dict[str, object]:
+    """Return the complete canonical taxonomy cursor scope."""
+    return {"view": view, **filters}
 
 
-def _taxonomy_offset(
+def _taxonomy_position(
     cursor: str | None,
     *,
-    view: str,
+    view: Literal["categories", "merchants"],
     filters: dict[str, object],
-) -> int:
-    """Decode a cursor and reject cross-filter reuse."""
+) -> KeysetPosition | None:
+    """Decode and type-check a stable-ID taxonomy cursor."""
     if cursor is None:
-        return 0
+        return None
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace=_TAXONOMY_TOOL,
+            scope=_taxonomy_scope(view, filters),
+        )
+        if (
+            len(position.snapshot) != 1
+            or len(position.after) != 1
+            or not all(
+                type(value) is str for value in (*position.snapshot, *position.after)
+            )
+        ):
+            raise ValueError("invalid taxonomy key")
+        snapshot = cast(tuple[str], position.snapshot)
+        after = cast(tuple[str], position.after)
+        if snapshot > after:
+            raise ValueError("invalid taxonomy key order")
+        return position
+    except ValueError as exc:
         raise UserError(
             "Invalid taxonomy pagination cursor.",
             code="TAXONOMY_CURSOR_INVALID",
         ) from exc
-    if not isinstance(value, dict):
-        raise UserError(
-            "Invalid taxonomy pagination cursor.",
-            code="TAXONOMY_CURSOR_INVALID",
-        )
-    payload = cast(dict[str, Any], value)
-    offset = payload.get("offset")
-    if (
-        set(payload) != {"filters", "offset", "tool", "view"}
-        or payload.get("filters") != filters
-        or payload.get("tool") != _TAXONOMY_TOOL
-        or payload.get("view") != view
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
-    ):
-        raise UserError(
-            "Invalid taxonomy pagination cursor.",
-            code="TAXONOMY_CURSOR_INVALID",
-        )
-    return offset
 
 
 def _taxonomy_envelope[T](
@@ -169,14 +156,7 @@ def _category_rows(
             query,
         )
     ]
-    return sorted(
-        selected,
-        key=lambda row: (
-            (row.category or "").casefold(),
-            (row.subcategory or "").casefold(),
-            row.category_id,
-        ),
-    )
+    return sorted(selected, key=lambda row: row.category_id)
 
 
 def _merchant_rows(
@@ -201,13 +181,46 @@ def _merchant_rows(
             query,
         )
     ]
-    return sorted(
-        selected,
-        key=lambda row: (
-            row.canonical_name.casefold(),
-            row.merchant_id,
-            (row.raw_pattern or "").casefold(),
+    return sorted(selected, key=lambda row: row.merchant_id)
+
+
+def _taxonomy_row_id(row: CategoryRow | MerchantRow) -> str:
+    """Return the stable identifier used by taxonomy pagination."""
+    return row.category_id if isinstance(row, CategoryRow) else row.merchant_id
+
+
+def _taxonomy_page[T: CategoryRow | MerchantRow](
+    rows: list[T],
+    *,
+    view: Literal["categories", "merchants"],
+    filters: dict[str, object],
+    limit: int,
+    position: KeysetPosition | None,
+) -> tuple[list[T], str | None, int]:
+    """Page stable IDs behind the first-page prepend boundary."""
+    if position is None:
+        eligible = rows
+        total_count = len(rows)
+        snapshot = (_taxonomy_row_id(rows[0]),) if rows else None
+    else:
+        snapshot = position.snapshot
+        after = cast(tuple[str], position.after)
+        eligible = [row for row in rows if _taxonomy_row_id(row) > after[0]]
+        total_count = position.total
+    page = eligible[:limit]
+    if len(eligible) <= limit or not page or snapshot is None:
+        return page, None, total_count
+    after_id = _taxonomy_row_id(page[-1])
+    return (
+        page,
+        encode_keyset_cursor(
+            namespace=_TAXONOMY_TOOL,
+            scope=_taxonomy_scope(view, filters),
+            snapshot=cast(tuple[str], snapshot),
+            after=(after_id,),
+            total=total_count,
         ),
+        total_count,
     )
 
 
@@ -253,7 +266,7 @@ def taxonomy_coarse(
         "include_inactive": bool(include_inactive),
         "query": canonical_query,
     }
-    offset = _taxonomy_offset(cursor, view=view, filters=filters)
+    position = _taxonomy_position(cursor, view=view, filters=filters)
 
     with get_database(read_only=True) as db:
         service = CategorizationService(db)
@@ -263,24 +276,31 @@ def taxonomy_coarse(
                 include_inactive=bool(include_inactive),
                 query=canonical_query,
             )
-            page = rows[offset : offset + limit]
+            page, next_cursor, total_count = _taxonomy_page(
+                rows,
+                view=view,
+                filters=filters,
+                limit=limit,
+                position=position,
+            )
             payload: TaxonomyCoarsePayload = TaxonomyCategoriesView(rows=page)
             contract_type = TaxonomyCategoriesView
         else:
             rows = _merchant_rows(service, query=canonical_query)
-            page = rows[offset : offset + limit]
+            page, next_cursor, total_count = _taxonomy_page(
+                rows,
+                view=view,
+                filters=filters,
+                limit=limit,
+                position=position,
+            )
             payload = TaxonomyMerchantsView(rows=page)
             contract_type = TaxonomyMerchantsView
 
-    next_cursor = (
-        _taxonomy_cursor(view, offset + limit, filters)
-        if len(rows) > offset + limit
-        else None
-    )
     return _taxonomy_envelope(
         payload,
         contract_type=contract_type,
-        total_count=len(rows),
+        total_count=total_count,
         returned_count=len(page),
         next_cursor=next_cursor,
         actions=_taxonomy_actions(

@@ -19,6 +19,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from moneybin.config import get_settings
 from moneybin.database import Database
+from moneybin.services._validators import (
+    CATEGORY_NAME_MAX_LEN,
+    IDENTIFIER_MAX_LEN,
+    MERCHANT_NAME_MAX_LEN,
+    MERCHANT_PATTERN_MAX_LEN,
+)
 from moneybin.tables import CATEGORIES
 from moneybin.vocabulary import (
     CATEGORIZATION_MATCH_TYPES,
@@ -176,13 +182,17 @@ class CategorizationItem(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    transaction_id: str = Field(min_length=1, max_length=64)
-    category: str = Field(min_length=1, max_length=100)
-    subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+    transaction_id: str = Field(min_length=1, max_length=IDENTIFIER_MAX_LEN)
+    category: str = Field(min_length=1, max_length=CATEGORY_NAME_MAX_LEN)
+    subcategory: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=CATEGORY_NAME_MAX_LEN,
+    )
     canonical_merchant_name: str | None = Field(
         default=None,
         min_length=1,
-        max_length=200,
+        max_length=MERCHANT_NAME_MAX_LEN,
         description=(
             "LLM-proposed canonical merchant name; merges this row's match_text "
             "into an existing merchant's oneOf exemplar set rather than creating "
@@ -200,14 +210,22 @@ class CategorizationRuleInput(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    name: str = Field(min_length=1, max_length=200)
-    merchant_pattern: str = Field(min_length=1, max_length=500)
-    category: str = Field(min_length=1, max_length=100)
-    subcategory: str | None = Field(default=None, min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=MERCHANT_NAME_MAX_LEN)
+    merchant_pattern: str = Field(min_length=1, max_length=MERCHANT_PATTERN_MAX_LEN)
+    category: str = Field(min_length=1, max_length=CATEGORY_NAME_MAX_LEN)
+    subcategory: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=CATEGORY_NAME_MAX_LEN,
+    )
     match_type: MatchType = "contains"
     min_amount: float | None = None
     max_amount: float | None = None
-    account_id: str | None = Field(default=None, min_length=1, max_length=64)
+    account_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=IDENTIFIER_MAX_LEN,
+    )
     priority: int = Field(default=100, ge=0, le=10_000)
 
 

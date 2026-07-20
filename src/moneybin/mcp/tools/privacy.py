@@ -13,9 +13,6 @@ deferred — these tools record and report consent only.
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import json
 from dataclasses import replace
 from typing import Annotated, Any, Literal, cast
 
@@ -33,6 +30,11 @@ from moneybin.mcp.confirmation import (
     grant_confirmation_or_raise,
 )
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
 from moneybin.privacy.consent import ConsentMode
 from moneybin.privacy.introspection import extract_data_classes
@@ -180,59 +182,41 @@ def privacy_log(
     )
 
 
-def _privacy_cursor(offset: int, *, snapshot_total: int) -> str:
-    """Encode a cursor bound to the consolidated privacy log query."""
-    raw = json.dumps(
-        {
-            "filters": {},
-            "offset": offset,
-            "snapshot_total": snapshot_total,
-            "tool": "privacy",
-            "view": "log",
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return base64.urlsafe_b64encode(raw).decode()
-
-
-def _privacy_page_state(cursor: str | None) -> tuple[int, int | None]:
-    """Decode a privacy cursor and reject malformed or cross-query reuse."""
+def _privacy_position(cursor: str | None) -> KeysetPosition | None:
+    """Decode and type-check one log-view cursor before reading JSONL data."""
     if cursor is None:
-        return 0, None
+        return None
     try:
-        decoded = base64.b64decode(cursor.encode(), altchars=b"-_", validate=True)
-        value = json.loads(decoded)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace="privacy.log",
+            scope={"filters": {}, "view": "log"},
+        )
+        if len(position.snapshot) != 2 or not all(
+            isinstance(value, str) for value in (*position.snapshot, *position.after)
+        ):
+            raise ValueError("invalid privacy keyset shape")
+        snapshot = cast(str, position.snapshot[0])
+        after = cast(str, position.after[0])
+        snapshot_digest = cast(str, position.snapshot[1])
+        after_digest = cast(str, position.after[1])
+        if (
+            len(snapshot) != 32
+            or len(after) != 32
+            or any(character not in "0123456789abcdef" for character in snapshot)
+            or any(character not in "0123456789abcdef" for character in after)
+            or after > snapshot
+            or len(snapshot_digest) != 64
+            or snapshot_digest != after_digest
+            or any(character not in "0123456789abcdef" for character in snapshot_digest)
+        ):
+            raise ValueError("invalid privacy event identity")
+        return position
+    except ValueError as exc:
         raise UserError(
             "Invalid privacy pagination cursor.",
             code="PRIVACY_CURSOR_INVALID",
         ) from exc
-    if not isinstance(value, dict):
-        raise UserError(
-            "Invalid privacy pagination cursor.",
-            code="PRIVACY_CURSOR_INVALID",
-        )
-    payload = cast(dict[str, Any], value)
-    offset = payload.get("offset")
-    snapshot_total = payload.get("snapshot_total")
-    if (
-        set(payload) != {"filters", "offset", "snapshot_total", "tool", "view"}
-        or payload.get("filters") != {}
-        or payload.get("tool") != "privacy"
-        or payload.get("view") != "log"
-        or isinstance(offset, bool)
-        or not isinstance(offset, int)
-        or offset < 0
-        or isinstance(snapshot_total, bool)
-        or not isinstance(snapshot_total, int)
-        or snapshot_total < 0
-    ):
-        raise UserError(
-            "Invalid privacy pagination cursor.",
-            code="PRIVACY_CURSOR_INVALID",
-        )
-    return offset, snapshot_total
 
 
 def _privacy_coarse_envelope(
@@ -305,26 +289,40 @@ def privacy_coarse(
             actions=["Use privacy_consent_set(state='granted') to add consent"],
         )
 
-    offset, snapshot_total = _privacy_page_state(cursor)
+    position = _privacy_position(cursor)
     try:
-        events, total_count = read_privacy_events_page(
+        page = read_privacy_events_page(
             {},
             limit=limit,
-            offset=offset,
-            snapshot_total=snapshot_total,
+            snapshot_event_id=(
+                cast(str, position.snapshot[0]) if position is not None else None
+            ),
+            after_event_id=(
+                cast(str, position.after[0]) if position is not None else None
+            ),
+            snapshot_total=position.total if position is not None else None,
+            legacy_digest=(
+                cast(str, position.snapshot[1]) if position is not None else None
+            ),
         )
     except ValueError as exc:
         raise UserError(
             "Invalid privacy pagination cursor.",
             code="PRIVACY_CURSOR_INVALID",
         ) from exc
-    rows = [PrivacyLogRow.from_event(event) for event in events]
+    rows = [PrivacyLogRow.from_event(event) for event in page.events]
     next_cursor = (
-        _privacy_cursor(
-            offset + len(rows),
-            snapshot_total=total_count,
+        encode_keyset_cursor(
+            namespace="privacy.log",
+            scope={"filters": {}, "view": "log"},
+            snapshot=(page.snapshot_event_id, page.legacy_digest),
+            after=(
+                cast(str, page.events[-1]["event_id"]),
+                page.legacy_digest,
+            ),
+            total=page.total_count,
         )
-        if offset + len(rows) < total_count
+        if page.has_more and page.events and page.snapshot_event_id is not None
         else None
     )
     actions = (
@@ -334,7 +332,7 @@ def privacy_coarse(
     )
     return _privacy_coarse_envelope(
         PrivacyLogView(events=rows),
-        total_count=total_count,
+        total_count=page.total_count,
         returned_count=len(rows),
         next_cursor=next_cursor,
         actions=actions,
