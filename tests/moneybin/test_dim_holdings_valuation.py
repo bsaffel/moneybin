@@ -12,7 +12,12 @@ from moneybin.database import Database, sqlmesh_context
 pytestmark = pytest.mark.integration
 
 
-def _seed_position(db: Database, *, security_id: str = "canonvti0000001") -> None:
+def _seed_position(
+    db: Database,
+    *,
+    security_id: str = "canonvti0000001",
+    currency_code: str = "USD",
+) -> None:
     """10 units at 100.00, cost basis 1000.00, in account acc_1."""
     db.execute(
         """
@@ -26,26 +31,31 @@ def _seed_position(db: Database, *, security_id: str = "canonvti0000001") -> Non
         INSERT INTO raw.manual_investment_transactions (
             source_transaction_id, import_id, account_id, security_id,
             security_ref, type, trade_date, quantity, price, amount, fees, created_by,
-            investment_transaction_id
+            investment_transaction_id, currency_code
         ) VALUES ('buy_1', 'imp_1', 'acc_1', ?, 'VTI', 'buy',
-                  DATE '2026-01-05', 10, 100.00, -1000.00, 0.00, 'test', 'buy_1')
+                  DATE '2026-01-05', 10, 100.00, -1000.00, 0.00, 'test', 'buy_1', ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [security_id],
+        [security_id, currency_code],
     )
 
 
 def _seed_price(
-    db: Database, *, price_date: date, close: str, security_id: str = "canonvti0000001"
+    db: Database,
+    *,
+    price_date: date,
+    close: str,
+    security_id: str = "canonvti0000001",
+    quote_currency: str = "USD",
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.security_prices
             (provider_security_key, price_date, quote_currency, source,
              source_origin, close, price_basis, extracted_at, loaded_at)
-        VALUES ('sec_vti', ?, 'USD', 'plaid', 'item_1', ?, 'raw',
+        VALUES ('sec_vti', ?, ?, 'plaid', 'item_1', ?, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [price_date, close],
+        [price_date, quote_currency, close],
     )
     db.execute(
         """
@@ -323,6 +333,34 @@ def test_price_in_another_currency_does_not_value_the_position(db: Database) -> 
     assert price_date == date.today() - timedelta(days=400), (
         "the GBP close must not win over an older USD one"
     )
+
+
+@pytest.mark.slow
+def test_currency_casing_mismatch_still_values_the_position(db: Database) -> None:
+    """The price side is normalized upstream; the lot side is stored verbatim.
+
+    ``prep.stg_security_prices`` UPPER()s ``quote_currency`` because
+    ``core.fct_security_prices``' grain depends on the normalized value, but a lot's
+    ``currency_code`` is stored exactly as the source supplied it — Plaid's
+    ``COALESCE(iso_currency_code, unofficial_currency_code)`` passes through
+    unnormalized, and ``unofficial_currency_code`` (crypto, non-ISO instruments)
+    guarantees no casing at all. The two sides also read *different* provider
+    objects — the price comes from the security, the lot from the transaction — so
+    they are not guaranteed to agree. A case-sensitive join here reports the
+    position ``unpriced`` while the close that values it sits in
+    ``core.fct_security_prices``: the system has the price and denies it.
+    """
+    _seed_position(db, currency_code="usd")
+    _seed_price(db, price_date=date.today(), close="120.00", quote_currency="usd")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    market_value, gain, _pd, source, _days, status = _holding(db)
+    assert status == "valued", "a casing difference must not unvalue a priced position"
+    assert market_value == Decimal("1200.00")
+    assert gain == Decimal("200.00")
+    assert source == "plaid"
 
 
 @pytest.mark.slow

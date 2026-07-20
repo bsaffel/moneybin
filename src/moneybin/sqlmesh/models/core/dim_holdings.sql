@@ -277,7 +277,16 @@ SELECT
 FROM positions AS p
 LEFT JOIN provider_reported AS pr
   ON pr.account_id = p.account_id AND pr.security_id = p.security_id
+/* Both sides of the currency predicate are UPPER()ed because they arrive from
+   different provider objects with no shared casing guarantee: the price's
+   quote_currency comes from the security object, the lot's currency_code from the
+   transaction object (COALESCE(iso_currency_code, unofficial_currency_code), stored
+   verbatim). unofficial_currency_code — crypto and other non-ISO instruments —
+   promises no casing at all. A case-sensitive match here would report a position as
+   'unpriced' while the resolved close for it sits in core.fct_security_prices.
+   prep.stg_security_prices normalizes its own side because fct_security_prices'
+   grain depends on it; the lot side is left as stored, so the fold happens here. */
 LEFT JOIN latest_price AS lp
-  ON lp.security_id = p.security_id AND lp.quote_currency = p.currency_code
+  ON lp.security_id = p.security_id AND lp.quote_currency = UPPER(p.currency_code)
 LEFT JOIN withheld AS wh
   ON wh.account_id = p.account_id AND wh.security_id = p.security_id
