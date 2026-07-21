@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from pydantic import JsonValue
 
@@ -31,6 +31,10 @@ from moneybin.reports._framework.contract import ReportSpec
 from moneybin.reports._framework.execute import redact_report_parameters
 from moneybin.tables import TableRef
 
+if TYPE_CHECKING:
+    from moneybin.exports.sheets import SheetsAuthorization
+    from moneybin.services.audit_service import AuditEvent
+
 
 class ExportService:
     """Prepare format-neutral exports from trusted semantic sources."""
@@ -44,6 +48,33 @@ class ExportService:
         """Bind the database used for canonical snapshot reads."""
         self._db = db
         self._report_catalog = report_catalog
+
+    def set_sheets_destination(
+        self,
+        *,
+        name: str,
+        spreadsheet_id: str,
+        managed_tab_prefix: str,
+        actor: str,
+        oauth_client: SheetsAuthorization,
+    ) -> AuditEvent:
+        """Validate, authorize, and persist one Sheets output destination."""
+        from moneybin.connectors.gsheet.errors import GSheetAuthError  # noqa: PLC0415
+        from moneybin.exports.sheets import validate_managed_tab_prefix  # noqa: PLC0415
+        from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
+            ExportDestinationsRepo,
+        )
+
+        prefix = validate_managed_tab_prefix(managed_tab_prefix)
+        grant = oauth_client.authorize(require_write=True)
+        if not grant.can_write:
+            raise GSheetAuthError("Google Sheets write authorization was not granted")
+        return ExportDestinationsRepo(self._db).set_sheets(
+            name=name,
+            spreadsheet_id=spreadsheet_id,
+            managed_tab_prefix=prefix,
+            actor=actor,
+        )
 
     def prepare_bundle(
         self,

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 
 from moneybin.config import MoneyBinSettings
 from moneybin.connectors.gsheet.errors import GSheetAuthError
@@ -28,11 +29,24 @@ from moneybin.secrets import (
 
 logger = logging.getLogger(__name__)
 
-# Read-only Sheets scope; drive.readonly is intentionally NOT requested.
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+GOOGLE_SHEETS_READ_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
+GOOGLE_SHEETS_WRITE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+GSHEET_GRANTED_SCOPES_KEY = "gsheet:granted_scopes"  # noqa: S105  # keyring metadata name, not a secret value
 
 # Refresh the access token slightly before it expires to avoid races.
 _REFRESH_LEEWAY_SECONDS = 60
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthGrant:
+    """Persisted Google authorization capabilities without exposing tokens."""
+
+    scopes: frozenset[str]
+
+    @property
+    def can_write(self) -> bool:
+        """Return whether the grant permits Sheets mutations."""
+        return GOOGLE_SHEETS_WRITE_SCOPE in self.scopes
 
 
 class GoogleOAuthClient:
@@ -48,28 +62,34 @@ class GoogleOAuthClient:
         self._settings = settings
 
     # OAuthCredentialsProvider protocol -----------------------------------
-    def is_authorized(self) -> bool:
-        """Return True iff a refresh token is persisted."""
+    def is_authorized(self, *, require_write: bool = False) -> bool:
+        """Return whether a persisted refresh grant satisfies the capability."""
         try:
             self._secrets.get_key(GSHEET_REFRESH_TOKEN_KEY)
         except SecretNotFoundError:
             return False
-        return True
+        return not require_write or self._persisted_grant().can_write
 
-    def get_access_token(self) -> str:
-        """Return a current access token, refreshing if necessary.
+    def get_access_token(self, *, require_write: bool = False) -> str:
+        """Return a current token valid for the requested capability.
 
         Reuses the cached access token when it has at least
         ``_REFRESH_LEEWAY_SECONDS`` of remaining lifetime; otherwise
         refreshes via the persisted refresh token.
         """
+        grant = self._persisted_grant()
+        if require_write and not grant.can_write:
+            raise GSheetAuthError(
+                "Google Sheets write authorization is required. Re-authorize "
+                "the export destination with write access."
+            )
         cached = self._cached_access_token()
         if cached is not None:
             return cached
-        return self._refresh_access_token()
+        return self._refresh_access_token(grant)
 
-    def authorize(self) -> None:
-        """Run the installed-app + PKCE browser flow and persist tokens."""
+    def authorize(self, *, require_write: bool = False) -> OAuthGrant:
+        """Establish or incrementally upgrade the persisted OAuth grant."""
         client_id = self._settings.gsheet.oauth_client_id
         if not client_id:
             raise GSheetAuthError(
@@ -96,14 +116,23 @@ class GoogleOAuthClient:
                 "redirect_uris": ["http://127.0.0.1"],
             }
         }
+        requested_scope = (
+            GOOGLE_SHEETS_WRITE_SCOPE if require_write else GOOGLE_SHEETS_READ_SCOPE
+        )
         flow = InstalledAppFlow.from_client_config(  # type: ignore[reportUnknownMemberType]
-            client_config, _SCOPES
+            client_config, [requested_scope]
         )
         try:
+            # Google recommends incremental authorization in context. The
+            # combined grant applies to refreshes even when an upgrade omits a
+            # replacement refresh token, so we retain the existing token below:
+            # https://developers.google.com/identity/protocols/oauth2/web-server#incrementalAuth
             creds = flow.run_local_server(  # type: ignore[reportUnknownMemberType]
                 # port=0 → google-auth-oauthlib picks any free ephemeral port.
                 port=0,
                 bind_addr="127.0.0.1",
+                access_type="offline",
+                include_granted_scopes="true",
             )
         except Exception as exc:  # noqa: BLE001  # google-auth raises untyped errors
             # str(exc) on google_auth_oauthlib errors can include OAuth
@@ -119,6 +148,11 @@ class GoogleOAuthClient:
             ) from exc
 
         refresh_token = getattr(creds, "refresh_token", None)
+        if not refresh_token:
+            try:
+                refresh_token = self._secrets.get_key(GSHEET_REFRESH_TOKEN_KEY)
+            except SecretNotFoundError:
+                refresh_token = None
         access_token = getattr(creds, "token", None)
         expiry = getattr(creds, "expiry", None)
         if not refresh_token or not access_token:
@@ -126,14 +160,29 @@ class GoogleOAuthClient:
                 "OAuth flow completed without returning refresh + access tokens."
             )
 
+        raw_scopes = getattr(creds, "granted_scopes", None) or getattr(
+            creds, "scopes", None
+        )
+        granted_scopes = frozenset(raw_scopes or [requested_scope])
+        grant = OAuthGrant(scopes=granted_scopes)
+        if require_write and not grant.can_write:
+            raise GSheetAuthError(
+                "OAuth authorization completed, but Google Sheets write scope "
+                "was not granted."
+            )
+
         self._secrets.set_key(GSHEET_REFRESH_TOKEN_KEY, refresh_token)
         self._secrets.set_key(GSHEET_ACCESS_TOKEN_KEY, access_token)
+        self._secrets.set_key(
+            GSHEET_GRANTED_SCOPES_KEY, " ".join(sorted(granted_scopes))
+        )
         if expiry is not None:
             self._secrets.set_key(
                 GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
                 str(int(expiry.timestamp())),
             )
         logger.info("gsheet OAuth authorize completed")
+        return grant
 
     def revoke(self) -> None:
         """Clear all persisted OAuth secrets.
@@ -145,6 +194,7 @@ class GoogleOAuthClient:
             GSHEET_REFRESH_TOKEN_KEY,
             GSHEET_ACCESS_TOKEN_KEY,
             GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
+            GSHEET_GRANTED_SCOPES_KEY,
         ):
             try:
                 self._secrets.delete_key(key)
@@ -168,7 +218,15 @@ class GoogleOAuthClient:
             return None
         return token
 
-    def _refresh_access_token(self) -> str:
+    def _persisted_grant(self) -> OAuthGrant:
+        """Load capability metadata, treating pre-metadata grants as read-only."""
+        try:
+            raw_scopes = self._secrets.get_key(GSHEET_GRANTED_SCOPES_KEY)
+        except SecretNotFoundError:
+            return OAuthGrant(scopes=frozenset({GOOGLE_SHEETS_READ_SCOPE}))
+        return OAuthGrant(scopes=frozenset(raw_scopes.split()))
+
+    def _refresh_access_token(self, grant: OAuthGrant) -> str:
         """Use the persisted refresh token to mint a new access token."""
         try:
             refresh_token = self._secrets.get_key(GSHEET_REFRESH_TOKEN_KEY)
@@ -195,7 +253,7 @@ class GoogleOAuthClient:
             token_uri="https://oauth2.googleapis.com/token",  # noqa: S106  # Google OAuth endpoint URL, not a credential
             client_id=client_id,
             client_secret=None,
-            scopes=_SCOPES,
+            scopes=sorted(grant.scopes),
         )
         try:
             creds.refresh(Request())  # type: ignore[reportUnknownMemberType]

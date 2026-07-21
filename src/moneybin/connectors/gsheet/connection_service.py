@@ -249,8 +249,8 @@ class GSheetConnectionService:
 
     def connect(self, req: ConnectionRequest, *, actor: str = "cli") -> ConnectResult:
         """Detect, persist, and optionally pull the initial snapshot."""
-        if not self._oauth.is_authorized():
-            self._oauth.authorize()
+        if not self._oauth.is_authorized(require_write=False):
+            self._oauth.authorize(require_write=False)
 
         try:
             spreadsheet_id, gid = parse_sheet_url(req.url)

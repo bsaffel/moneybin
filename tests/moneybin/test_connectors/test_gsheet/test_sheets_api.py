@@ -12,7 +12,12 @@ from moneybin.connectors.gsheet.errors import (
     GSheetUnreachableError,
 )
 from moneybin.connectors.gsheet.sheets_api import (
+    SheetCreate,
+    SheetIdentity,
+    SheetRename,
     SheetsAPI,
+    SheetsClient,
+    SheetValueWrite,
     _map_error,  # pyright: ignore[reportPrivateUsage]
     _quote_a1_sheet_name,  # pyright: ignore[reportPrivateUsage]
 )
@@ -154,6 +159,250 @@ def test_fake_sheets_client_implements_sheets_api_protocol() -> None:
     # Touch both methods to keep the structural assignment load-bearing.
     assert callable(client.get_workbook_metadata)
     assert callable(client.read_sheet_values)
+    assert callable(client.create_sheets)
+    assert callable(client.write_sheet_values)
+    assert callable(client.promote_sheets)
+
+
+def test_fake_create_write_and_promote_are_captured_and_use_stable_ids() -> None:
+    client = TestSheetsClient()
+    client.register_workbook(
+        "ss1",
+        FakeWorkbook(
+            title="WB",
+            tabs=[FakeSheetTab(name="User Notes", gid=7, headers=["Note"], rows=[])],
+        ),
+    )
+
+    created = client.create_sheets(
+        "ss1", (SheetCreate(name="MB Staging run data", row_count=2, col_count=2),)
+    )
+    client.write_sheet_values(
+        "ss1",
+        (SheetValueWrite(sheet=created[0], values=(("A", "B"), ("1", "2"))),),
+    )
+    client.promote_sheets(
+        "ss1",
+        managed_prefix="MB",
+        renames=(SheetRename(sheet=created[0], new_name="MB Bundle run data"),),
+        deletes=(),
+    )
+
+    assert created[0].gid != 7
+    assert client.read_sheet_values("ss1", "MB Bundle run data") == [
+        ["A", "B"],
+        ["1", "2"],
+    ]
+    assert client.requests == [
+        ("create", ("MB Staging run data",)),
+        ("write", (created[0].gid,)),
+        ("promote", (created[0].gid,)),
+    ]
+    assert client.read_sheet_values("ss1", "User Notes") == [["Note"]]
+
+
+def test_fake_promotion_deletes_only_explicit_sheet_identity() -> None:
+    client = TestSheetsClient()
+    client.register_workbook(
+        "ss1",
+        FakeWorkbook(
+            title="WB",
+            tabs=[
+                FakeSheetTab(name="User Notes", gid=1, headers=["Note"], rows=[]),
+                FakeSheetTab(name="MB Bundle old data", gid=2, headers=["A"], rows=[]),
+                FakeSheetTab(
+                    name="MB Report old report", gid=3, headers=["A"], rows=[]
+                ),
+            ],
+        ),
+    )
+    staged = client.create_sheets(
+        "ss1", (SheetCreate(name="MB Staging run data", row_count=1, col_count=1),)
+    )[0]
+
+    client.promote_sheets(
+        "ss1",
+        managed_prefix="MB",
+        renames=(SheetRename(sheet=staged, new_name="MB Bundle run data"),),
+        deletes=(SheetIdentity(name="MB Bundle old data", gid=2),),
+    )
+
+    names = [sheet.name for sheet in client.get_workbook_metadata("ss1").sheets]
+    assert names == ["User Notes", "MB Report old report", "MB Bundle run data"]
+
+
+def test_fake_promotion_rejects_identity_outside_managed_prefix() -> None:
+    client = TestSheetsClient()
+    client.register_workbook(
+        "ss1",
+        FakeWorkbook(
+            title="WB",
+            tabs=[FakeSheetTab(name="User Notes", gid=1, headers=["Note"], rows=[])],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="managed namespace"):
+        client.promote_sheets(
+            "ss1",
+            managed_prefix="MB",
+            renames=(),
+            deletes=(SheetIdentity(name="User Notes", gid=1),),
+        )
+
+    assert client.read_sheet_values("ss1", "User Notes") == [["Note"]]
+
+
+@pytest.mark.parametrize("operation", ["create", "write", "promote"])
+def test_fake_can_inject_failure_for_each_write_phase(operation: str) -> None:
+    client = TestSheetsClient()
+    client.register_workbook("ss1", FakeWorkbook(title="WB"))
+    client.inject_error_for(operation, GSheetAPIError("injected"))
+
+    with pytest.raises(GSheetAPIError, match="injected"):
+        if operation == "create":
+            client.create_sheets(
+                "ss1", (SheetCreate(name="MB Staging run", row_count=1, col_count=1),)
+            )
+        elif operation == "write":
+            client.write_sheet_values(
+                "ss1",
+                (
+                    SheetValueWrite(
+                        sheet=SheetIdentity("MB Staging run", 9), values=(("A",),)
+                    ),
+                ),
+            )
+        else:
+            client.promote_sheets(
+                "ss1",
+                managed_prefix="MB",
+                renames=(
+                    SheetRename(
+                        sheet=SheetIdentity("MB Staging run", 9),
+                        new_name="MB Bundle run",
+                    ),
+                ),
+                deletes=(),
+            )
+
+
+def test_sheets_client_create_uses_documented_batch_update_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oauth = MagicMock()
+    service = MagicMock()
+    service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {
+        "replies": [
+            {
+                "addSheet": {
+                    "properties": {
+                        "title": "MB Staging run data",
+                        "sheetId": 42,
+                        "gridProperties": {"rowCount": 3, "columnCount": 2},
+                    }
+                }
+            }
+        ]
+    }
+    client = SheetsClient(oauth=oauth)
+    build = MagicMock(return_value=service)
+    monkeypatch.setattr(client, "_build_service", build)
+
+    result = client.create_sheets(
+        "ss1", (SheetCreate(name="MB Staging run data", row_count=3, col_count=2),)
+    )
+
+    build.assert_called_once_with(require_write=True)
+    service.spreadsheets.return_value.batchUpdate.assert_called_once_with(
+        spreadsheetId="ss1",
+        body={
+            "requests": [
+                {
+                    "addSheet": {
+                        "properties": {
+                            "title": "MB Staging run data",
+                            "gridProperties": {"rowCount": 3, "columnCount": 2},
+                        }
+                    }
+                }
+            ]
+        },
+    )
+    assert result == (SheetIdentity(name="MB Staging run data", gid=42),)
+
+
+def test_sheets_client_values_batch_update_uses_rectangular_value_ranges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oauth = MagicMock()
+    service = MagicMock()
+    client = SheetsClient(oauth=oauth)
+    build = MagicMock(return_value=service)
+    monkeypatch.setattr(client, "_build_service", build)
+
+    client.write_sheet_values(
+        "ss1",
+        (
+            SheetValueWrite(
+                sheet=SheetIdentity("MB Staging run data", 42),
+                values=(("A", "B"), ("1", "2")),
+            ),
+        ),
+    )
+
+    build.assert_called_once_with(require_write=True)
+    service.spreadsheets.return_value.values.return_value.batchUpdate.assert_called_once_with(
+        spreadsheetId="ss1",
+        body={
+            "valueInputOption": "RAW",
+            "data": [
+                {
+                    "range": "'MB Staging run data'!A1:B2",
+                    "majorDimension": "ROWS",
+                    "values": [["A", "B"], ["1", "2"]],
+                }
+            ],
+        },
+    )
+
+
+def test_sheets_client_promote_uses_atomic_delete_then_rename_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = MagicMock()
+    client = SheetsClient(oauth=MagicMock())
+    build = MagicMock(return_value=service)
+    monkeypatch.setattr(client, "_build_service", build)
+
+    client.promote_sheets(
+        "ss1",
+        managed_prefix="MB",
+        deletes=(SheetIdentity("MB Bundle old data", 4),),
+        renames=(
+            SheetRename(
+                sheet=SheetIdentity("MB Staging run data", 42),
+                new_name="MB Bundle run data",
+            ),
+        ),
+    )
+
+    service.spreadsheets.return_value.batchUpdate.assert_called_once_with(
+        spreadsheetId="ss1",
+        body={
+            "requests": [
+                {"deleteSheet": {"sheetId": 4}},
+                {
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": 42,
+                            "title": "MB Bundle run data",
+                        },
+                        "fields": "title",
+                    }
+                },
+            ]
+        },
+    )
 
 
 # -- _map_error ---------------------------------------------------------------

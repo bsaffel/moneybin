@@ -9,7 +9,12 @@ import pytest
 
 from moneybin.config import MoneyBinSettings
 from moneybin.connectors.gsheet.errors import GSheetAuthError
-from moneybin.connectors.gsheet.oauth_client import GoogleOAuthClient
+from moneybin.connectors.gsheet.oauth_client import (
+    GOOGLE_SHEETS_READ_SCOPE,
+    GOOGLE_SHEETS_WRITE_SCOPE,
+    GSHEET_GRANTED_SCOPES_KEY,
+    GoogleOAuthClient,
+)
 from moneybin.connectors.gsheet.sheets_api import OAuthCredentialsProvider
 from moneybin.connectors.gsheet.testing.fake_oauth_client import TestOAuthClient
 from moneybin.secrets import (
@@ -56,6 +61,25 @@ def test_fake_oauth_default_token() -> None:
     assert client.get_access_token() == "test-token"
 
 
+def test_fake_oauth_requires_explicit_write_grant() -> None:
+    client = TestOAuthClient(write_authorized=False)
+
+    with pytest.raises(GSheetAuthError, match="write authorization"):
+        client.get_access_token(require_write=True)
+
+    assert client.get_access_token(require_write=False) == "test-token"
+
+
+def test_fake_oauth_can_upgrade_to_write() -> None:
+    client = TestOAuthClient(write_authorized=False)
+
+    grant = client.authorize(require_write=True)
+
+    assert grant.can_write is True
+    assert client.is_authorized(require_write=True) is True
+    assert client.authorize_require_write == [True]
+
+
 def test_fake_oauth_implements_oauth_credentials_provider_protocol() -> None:
     """TestOAuthClient must structurally satisfy OAuthCredentialsProvider."""
     client: OAuthCredentialsProvider = TestOAuthClient()
@@ -93,6 +117,17 @@ def test_google_oauth_is_authorized_true_when_refresh_token_present() -> None:
     assert client.is_authorized() is True
 
 
+def test_google_oauth_legacy_refresh_token_is_readonly_not_write_capable() -> None:
+    store = _store_with({GSHEET_REFRESH_TOKEN_KEY: "refresh-abc"})
+    client = GoogleOAuthClient(store, _make_settings())
+
+    assert client.is_authorized(require_write=False) is True
+    assert client.is_authorized(require_write=True) is False
+
+    with pytest.raises(GSheetAuthError, match="write authorization"):
+        client.get_access_token(require_write=True)
+
+
 def test_google_oauth_is_authorized_false_when_secret_not_found() -> None:
     store = _store_with({})
     client = GoogleOAuthClient(store, _make_settings())
@@ -123,7 +158,7 @@ def test_google_oauth_get_access_token_raises_when_no_refresh_token() -> None:
         client.get_access_token()
 
 
-def test_google_oauth_revoke_deletes_all_three_keys() -> None:
+def test_google_oauth_revoke_deletes_all_grant_keys() -> None:
     store = MagicMock()
     client = GoogleOAuthClient(store, _make_settings())
 
@@ -134,8 +169,9 @@ def test_google_oauth_revoke_deletes_all_three_keys() -> None:
         GSHEET_REFRESH_TOKEN_KEY,
         GSHEET_ACCESS_TOKEN_KEY,
         GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
+        GSHEET_GRANTED_SCOPES_KEY,
     }
-    assert store.delete_key.call_count == 3
+    assert store.delete_key.call_count == 4
 
 
 def test_google_oauth_revoke_survives_missing_keys() -> None:
@@ -144,7 +180,96 @@ def test_google_oauth_revoke_survives_missing_keys() -> None:
     client = GoogleOAuthClient(store, _make_settings())
     # Should not raise even when every key is already gone.
     client.revoke()
-    assert store.delete_key.call_count == 3
+    assert store.delete_key.call_count == 4
+
+
+def test_google_oauth_cached_read_token_is_rejected_for_write() -> None:
+    future = int(time.time()) + 3600
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "read-refresh",
+        GSHEET_ACCESS_TOKEN_KEY: "read-access",
+        GSHEET_ACCESS_TOKEN_EXPIRES_KEY: str(future),
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    client = GoogleOAuthClient(store, _make_settings())
+
+    with pytest.raises(GSheetAuthError, match="write authorization"):
+        client.get_access_token(require_write=True)
+
+
+def test_google_oauth_write_grant_can_serve_read_and_write_tokens() -> None:
+    future = int(time.time()) + 3600
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "write-refresh",
+        GSHEET_ACCESS_TOKEN_KEY: "write-access",
+        GSHEET_ACCESS_TOKEN_EXPIRES_KEY: str(future),
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_WRITE_SCOPE,
+    })
+    client = GoogleOAuthClient(store, _make_settings())
+
+    assert client.get_access_token(require_write=False) == "write-access"
+    assert client.get_access_token(require_write=True) == "write-access"
+
+
+def test_google_oauth_upgrade_retains_refresh_token_when_google_omits_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "existing-read-refresh",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    creds = MagicMock(
+        refresh_token=None,
+        token="combined-access",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_WRITE_SCOPE],
+        scopes=[GOOGLE_SHEETS_WRITE_SCOPE],
+    )
+    flow = MagicMock()
+    flow.run_local_server.return_value = creds
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    from_config = MagicMock(return_value=flow)
+    monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    client = GoogleOAuthClient(store, _make_settings())
+
+    grant = client.authorize(require_write=True)
+
+    assert grant.can_write is True
+    from_config.assert_called_once()
+    assert from_config.call_args.args[1] == [GOOGLE_SHEETS_WRITE_SCOPE]
+    assert flow.run_local_server.call_args.kwargs["include_granted_scopes"] == "true"
+    store.set_key.assert_any_call(GSHEET_REFRESH_TOKEN_KEY, "existing-read-refresh")
+    store.set_key.assert_any_call(GSHEET_GRANTED_SCOPES_KEY, GOOGLE_SHEETS_WRITE_SCOPE)
+
+
+def test_google_oauth_write_upgrade_rejects_partial_scope_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store_with({
+        GSHEET_REFRESH_TOKEN_KEY: "existing-read-refresh",
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+    })
+    creds = MagicMock(
+        refresh_token=None,
+        token="read-access",  # noqa: S106  # test credential
+        expiry=None,
+        granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
+        scopes=[GOOGLE_SHEETS_WRITE_SCOPE],
+    )
+    flow = MagicMock()
+    flow.run_local_server.return_value = creds
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    monkeypatch.setattr(
+        InstalledAppFlow, "from_client_config", MagicMock(return_value=flow)
+    )
+    client = GoogleOAuthClient(store, _make_settings())
+
+    with pytest.raises(GSheetAuthError, match="write scope was not granted"):
+        client.authorize(require_write=True)
+
+    store.set_key.assert_not_called()
 
 
 def test_google_oauth_authorize_raises_when_client_id_empty() -> None:
