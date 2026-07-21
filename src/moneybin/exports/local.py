@@ -6,9 +6,12 @@ import csv
 import fcntl
 import hashlib
 import json
+import os
 import shutil
+import stat
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
@@ -38,6 +41,13 @@ _BUNDLE_SIDECARS = {
     "checksums.sha256",
     "data-dictionary.json",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedArtifact:
+    checksums: dict[str, str]
+    directories: tuple[Path, ...]
+    files: tuple[Path, ...]
 
 
 class LocalExportPublisher:
@@ -73,17 +83,18 @@ class LocalExportPublisher:
         try:
             artifact_path = self._render(snapshot, format, staging_root)
             if format == "xlsx":
-                verified_checksums = validate_xlsx(artifact_path, snapshot)
+                validated = validate_xlsx(artifact_path, snapshot)
             else:
-                verified_checksums = validate_bundle(artifact_path, snapshot, format)
-            _apply_restrictive_modes(artifact_path)
+                validated = validate_bundle(artifact_path, snapshot, format)
+            _apply_restrictive_modes(validated)
+            verified_checksums = dict(validated.checksums)
 
             zip_path = None
             if compress_zip:
                 zip_path = staging_root / "artifact.zip"
-                _write_zip(artifact_path, zip_path)
+                _write_zip(artifact_path, validated.files, zip_path)
                 verified_checksums["archive.zip"] = validate_zip(
-                    artifact_path, zip_path
+                    artifact_path, validated.files, zip_path
                 )
                 zip_path.chmod(0o600)
 
@@ -182,28 +193,26 @@ def validate_bundle(
     root: Path,
     snapshot: PreparedExport,
     format: Literal["csv", "parquet"],
-) -> dict[str, str]:
+) -> _ValidatedArtifact:
     """Independently validate emitted bundle bytes and receipt records."""
-    manifest = _read_json_object(root / "manifest.json")
-    dictionary = _read_json_object(root / "data-dictionary.json")
-    if dictionary != snapshot.data_dictionary:
-        raise ValueError("export data dictionary does not match prepared snapshot")
-
     table_paths = {
         table.name: bundle_table_path(table.name, format) for table in snapshot.tables
     }
-    actual_paths = {
-        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
-    }
-    if actual_paths != _BUNDLE_SIDECARS | set(table_paths.values()):
-        raise ValueError("export bundle contains missing or unexpected files")
+    files, directories = _validated_bundle_layout(
+        root,
+        expected_files=_BUNDLE_SIDECARS | set(table_paths.values()),
+    )
+    manifest = _read_json_object(files["manifest.json"])
+    dictionary = _read_json_object(files["data-dictionary.json"])
+    if dictionary != snapshot.data_dictionary:
+        raise ValueError("export data dictionary does not match prepared snapshot")
 
     table_files: dict[str, tuple[str, str]] = {}
     checksum_records: dict[str, str] = {}
-    emitted_checksum_records = _read_checksum_records(root / "checksums.sha256")
+    emitted_checksum_records = _read_checksum_records(files["checksums.sha256"])
     for table in snapshot.tables:
         relative_path = table_paths[table.name]
-        artifact_path = _safe_bundle_path(root, relative_path)
+        artifact_path = files[relative_path]
         digest = _file_digest(artifact_path)
         table_files[table.name] = (relative_path, digest)
         checksum_records[relative_path] = digest
@@ -221,15 +230,16 @@ def validate_bundle(
         raise ValueError("export manifest does not match prepared snapshot")
     if emitted_checksum_records != checksum_records:
         raise ValueError("export checksum records do not match validated bytes")
-    return {
-        path.relative_to(root).as_posix(): _file_digest(path)
-        for path in root.rglob("*")
-        if path.is_file()
-    }
+    return _ValidatedArtifact(
+        checksums={name: _file_digest(path) for name, path in files.items()},
+        directories=directories,
+        files=tuple(files.values()),
+    )
 
 
-def validate_xlsx(path: Path, snapshot: PreparedExport) -> dict[str, str]:
+def validate_xlsx(path: Path, snapshot: PreparedExport) -> _ValidatedArtifact:
     """Read the workbook back and validate its visible data and receipts."""
+    _validate_regular_file(path)
     worksheets = workbook_worksheet_names(snapshot)
     workbook = load_workbook(path, read_only=True, data_only=False)
     try:
@@ -287,15 +297,22 @@ def validate_xlsx(path: Path, snapshot: PreparedExport) -> dict[str, str]:
                             )
     finally:
         workbook.close()
-    return {"export.xlsx": _file_digest(path)}
+    return _ValidatedArtifact(
+        checksums={"export.xlsx": _file_digest(path)},
+        directories=(),
+        files=(path,),
+    )
 
 
-def validate_zip(bundle_root: Path, zip_path: Path) -> str:
+def validate_zip(
+    bundle_root: Path,
+    bundle_files: tuple[Path, ...],
+    zip_path: Path,
+) -> str:
     """Verify every archived byte against the already validated bundle."""
     expected = {
         path.relative_to(bundle_root).as_posix(): _file_digest(path)
-        for path in bundle_root.rglob("*")
-        if path.is_file()
+        for path in bundle_files
     }
     with ZipFile(zip_path) as archive:
         if set(archive.namelist()) != set(expected):
@@ -306,11 +323,14 @@ def validate_zip(bundle_root: Path, zip_path: Path) -> str:
     return _file_digest(zip_path)
 
 
-def _write_zip(bundle_root: Path, zip_path: Path) -> None:
+def _write_zip(
+    bundle_root: Path,
+    bundle_files: tuple[Path, ...],
+    zip_path: Path,
+) -> None:
     with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as archive:
-        for path in sorted(bundle_root.rglob("*")):
-            if path.is_file():
-                archive.write(path, path.relative_to(bundle_root).as_posix())
+        for path in sorted(bundle_files):
+            archive.write(path, path.relative_to(bundle_root).as_posix())
 
 
 def _remove_owned_artifact(path: Path) -> None:
@@ -344,14 +364,65 @@ def _table_row_count(path: Path, format: Literal["csv", "parquet"]) -> int:
     return cast(int, row[0])
 
 
-def _safe_bundle_path(root: Path, relative_path: str) -> Path:
-    relative = PurePosixPath(relative_path)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError("export manifest contains an unsafe table path")
-    candidate = root.joinpath(*relative.parts).resolve()
-    if not candidate.is_relative_to(root.resolve()):
-        raise ValueError("export manifest table path escapes its bundle")
-    return candidate
+def _validated_bundle_layout(
+    root: Path,
+    *,
+    expected_files: set[str],
+) -> tuple[dict[str, Path], tuple[Path, ...]]:
+    _validate_directory(root)
+    expected_directories = _expected_bundle_directories(expected_files)
+    files: dict[str, Path] = {}
+    directories: dict[str, Path] = {}
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                path = Path(entry.path)
+                relative_path = path.relative_to(root).as_posix()
+                if entry.is_symlink():
+                    raise ValueError("export bundle contains a symlink")
+                if entry.is_dir(follow_symlinks=False):
+                    directories[relative_path] = path
+                    pending.append(path)
+                elif entry.is_file(follow_symlinks=False):
+                    files[relative_path] = path
+                else:
+                    raise ValueError("export bundle contains an unsupported entry")
+
+    if set(files) != expected_files or set(directories) != expected_directories:
+        raise ValueError("export bundle layout does not match prepared snapshot")
+    ordered_directories = (root, *(directories[name] for name in sorted(directories)))
+    return ({name: files[name] for name in sorted(files)}, ordered_directories)
+
+
+def _expected_bundle_directories(expected_files: set[str]) -> set[str]:
+    directories: set[str] = set()
+    for name in expected_files:
+        relative = PurePosixPath(name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("export bundle contains an unsafe expected path")
+        parent = relative.parent
+        while parent != PurePosixPath("."):
+            directories.add(parent.as_posix())
+            parent = parent.parent
+    return directories
+
+
+def _validate_directory(path: Path) -> None:
+    mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        raise ValueError("export bundle contains a symlink")
+    if not stat.S_ISDIR(mode):
+        raise ValueError("export bundle root is not a directory")
+
+
+def _validate_regular_file(path: Path) -> None:
+    mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        raise ValueError("export artifact is a symlink")
+    if not stat.S_ISREG(mode):
+        raise ValueError("export artifact is not a regular file")
 
 
 def _read_checksum_records(path: Path) -> dict[str, str]:
@@ -388,10 +459,8 @@ def _file_digest(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def _apply_restrictive_modes(path: Path) -> None:
-    if path.is_file():
-        path.chmod(0o600)
-        return
-    path.chmod(0o700)
-    for child in path.rglob("*"):
-        child.chmod(0o700 if child.is_dir() else 0o600)
+def _apply_restrictive_modes(artifact: _ValidatedArtifact) -> None:
+    for directory in artifact.directories:
+        directory.chmod(0o700)
+    for file in artifact.files:
+        file.chmod(0o600)

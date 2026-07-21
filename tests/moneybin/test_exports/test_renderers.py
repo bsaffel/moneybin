@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 from collections.abc import Sequence
@@ -139,7 +140,22 @@ def test_csv_round_trips_typed_values_through_duckdb(tmp_path: Path) -> None:
 def test_csv_null_escape_and_formula_contract_round_trips_losslessly(
     tmp_path: Path,
 ) -> None:
-    values = (None, r"\N", r"\escape", "=SUM(A1:A2)", "+cmd", "-cmd", "@cmd")
+    values = (
+        None,
+        r"\N",
+        r"\escape",
+        "=SUM(A1:A2)",
+        "+cmd",
+        "-cmd",
+        "@cmd",
+        "\tcmd",
+        "\rcmd",
+        "\ncmd",
+        "＝cmd",
+        "＋cmd",
+        "－cmd",
+        "＠cmd",
+    )
     rendered = render_csv(make_text_snapshot(values), tmp_path / "bundle")
 
     relation = duckdb.read_csv(
@@ -160,14 +176,34 @@ def test_csv_null_escape_and_formula_contract_round_trips_losslessly(
         r"\+cmd",
         r"\-cmd",
         r"\@cmd",
+        "\\\tcmd",
+        "\\\rcmd",
+        "\\\ncmd",
+        "\\＝cmd",
+        "\\＋cmd",
+        "\\－cmd",
+        "\\＠cmd",
     ]
     assert decoded == list(values)
     assert manifest["csv_encoding"] == {
         "scheme": "moneybin.csv-cell",
-        "version": 1,
+        "version": 2,
         "null": r"\N",
         "escape": "\\",
-        "escaped_prefixes": ["\\", "=", "+", "-", "@"],
+        "escaped_prefixes": [
+            "\\",
+            "=",
+            "+",
+            "-",
+            "@",
+            "\t",
+            "\r",
+            "\n",
+            "＝",
+            "＋",
+            "－",
+            "＠",
+        ],
     }
 
 
@@ -187,6 +223,25 @@ def test_csv_formula_leading_header_uses_the_reversible_escape_contract(
 
     assert relation.columns == [r"\=formula"]
     assert decode_csv_cell(relation.columns[0]) == "=formula"
+
+
+def test_csv_added_formula_prefixes_are_reversibly_escaped_in_headers(
+    tmp_path: Path,
+) -> None:
+    prefixes = ("\t", "\r", "\n", "＝", "＋", "－", "＠")
+
+    for index, prefix in enumerate(prefixes):
+        rendered = render_csv(
+            make_text_snapshot(("value",), column_name=f"{prefix}formula"),
+            tmp_path / f"bundle-{index}",
+        )
+        with rendered.table_files["activity"].open(
+            encoding="utf-8", newline=""
+        ) as handle:
+            encoded_header = next(csv.reader(handle))[0]
+
+        assert encoded_header == f"\\{prefix}formula"
+        assert decode_csv_cell(encoded_header) == f"{prefix}formula"
 
 
 def test_parquet_round_trips_native_typed_values_through_duckdb(

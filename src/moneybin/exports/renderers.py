@@ -205,7 +205,7 @@ def _csv_payload_cell(value: object) -> object:
 
 
 def decode_csv_cell(value: str | None) -> str | None:
-    """Decode one CSV v1 text cell after DuckDB applies the null marker."""
+    """Decode one versioned CSV text cell after the reader applies the null marker."""
     if value is None or value == CSV_ENCODING["null"]:
         return None
     escape = cast(str, CSV_ENCODING["escape"])

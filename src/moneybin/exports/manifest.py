@@ -13,10 +13,23 @@ type LocalExportFormat = Literal["csv", "parquet", "xlsx"]
 
 CSV_ENCODING = {
     "scheme": "moneybin.csv-cell",
-    "version": 1,
+    "version": 2,
     "null": r"\N",
     "escape": "\\",
-    "escaped_prefixes": ["\\", "=", "+", "-", "@"],
+    "escaped_prefixes": [
+        "\\",
+        "=",
+        "+",
+        "-",
+        "@",
+        "\t",
+        "\r",
+        "\n",
+        "＝",
+        "＋",
+        "－",
+        "＠",
+    ],
 }
 
 

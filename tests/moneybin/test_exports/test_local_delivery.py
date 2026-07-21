@@ -116,6 +116,97 @@ def test_tampered_staging_bundle_is_not_published_or_left_behind(
     assert not list(exports_root.glob(".staging-*"))
 
 
+def test_unexpected_bundle_directory_is_not_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exports_root = tmp_path / "exports"
+    original = local_delivery.render_csv
+
+    def render_with_directory(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        (rendered.path / "unexpected").mkdir()
+        return rendered
+
+    monkeypatch.setattr(local_delivery, "render_csv", render_with_directory)
+
+    with pytest.raises(ValueError, match="layout"):
+        LocalExportPublisher(exports_root).publish(
+            make_snapshot(), format="csv", compress_zip=False
+        )
+
+    assert not list(exports_root.glob("export-*"))
+    assert not list(exports_root.glob(".staging-*"))
+
+
+def test_symlinked_bundle_directory_is_rejected_before_chmod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exports_root = tmp_path / "exports"
+    publisher = LocalExportPublisher(exports_root)
+    existing = publisher.publish(make_snapshot(), format="csv", compress_zip=False)
+    assert existing.artifact_path is not None
+    existing_manifest = (existing.artifact_path / "manifest.json").read_bytes()
+
+    outside = tmp_path / "outside"
+    outside.mkdir(mode=0o751)
+    outside.chmod(0o751)
+    original = local_delivery.render_csv
+
+    def render_with_symlink(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        (rendered.path / "unexpected").symlink_to(outside, target_is_directory=True)
+        return rendered
+
+    monkeypatch.setattr(local_delivery, "render_csv", render_with_symlink)
+
+    with pytest.raises(ValueError, match="symlink"):
+        publisher.publish(make_snapshot(), format="csv", compress_zip=False)
+
+    assert _mode(outside) == 0o751
+    assert existing.artifact_path.exists()
+    assert (existing.artifact_path / "manifest.json").read_bytes() == existing_manifest
+    assert {path.name for path in exports_root.glob("export-*")} == {
+        "export-20260721T184233Z"
+    }
+    assert not list(exports_root.glob(".staging-*"))
+
+
+def test_symlinked_bundle_file_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exports_root = tmp_path / "exports"
+    outside = tmp_path / "outside.csv"
+    original = local_delivery.render_csv
+
+    def render_with_symlink(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        table_path = rendered.table_files["activity"]
+        outside.write_bytes(table_path.read_bytes())
+        table_path.unlink()
+        table_path.symlink_to(outside)
+        return rendered
+
+    monkeypatch.setattr(local_delivery, "render_csv", render_with_symlink)
+
+    with pytest.raises(ValueError, match="symlink"):
+        LocalExportPublisher(exports_root).publish(
+            make_snapshot(), format="csv", compress_zip=False
+        )
+
+    assert outside.exists()
+    assert not list(exports_root.glob("export-*"))
+    assert not list(exports_root.glob(".staging-*"))
+
+
 def test_snapshot_manifest_tamper_is_not_published(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
