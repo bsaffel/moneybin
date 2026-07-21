@@ -46,7 +46,7 @@ This spec ships the bundle as a single coherent surface. It is the lead M1E spec
 | Manual transactions live in `raw.manual_transactions` (mirror tabular shape) | Existing pipeline runs unchanged; `source_type='manual'` discriminator drives matcher and auto-rule exemptions | §Data Model, §Pipeline Integration |
 | Curation tables stored relationally in `app.*`, presented as DuckDB nested types in `core.fct_transactions` | Write ergonomics from flat tables, consumer ergonomics from `LIST`/`LIST(STRUCT)` | §Architectural Pattern |
 | Notes are multi-note (extending existing `app.transaction_notes`) | Curator journaling needs history; audit log is wrong UX for that | §Data Model |
-| CLI imperative (`add`/`remove`/`edit`), MCP declarative (`*_set`) | Humans procedural, LLMs target-state — same service layer, asymmetric vocabulary | §Architectural Pattern, §CLI Interface, §MCP Interface |
+| CLI imperative (`add`/`remove`/`edit`), MCP target-state variants (`tags_set`, `splits_set`, `import_labels_set`) | Humans procedural, LLMs target-state — same service layer, asymmetric vocabulary | §Architectural Pattern, §CLI Interface, §MCP Interface |
 | `transactions_create` MCP tool is bulk (1–100 per call); CLI is single-txn | LLMs batch naturally; humans type interactively | §MCP Interface |
 
 ## Architectural Pattern
@@ -71,7 +71,7 @@ When write volume is low (e.g., import labels — once per batch, rarely edited)
 **The service layer is the source of truth for capability. CLI and MCP call into the same methods but expose different verb vocabularies to match how each surface is used.**
 
 - **CLI: imperative verbs** (`add`/`remove`/`edit`/`delete`/`clear`). Humans think procedurally; fine-grained ops compose into curator workflows. Example: `transactions tags add txn_x foo`, then `transactions tags remove txn_x bar`.
-- **MCP: declarative state-setters** (`*_set`) when the operation's semantic is "make state look like this." LLMs reason about target states more reliably than diffs. Example: `transactions_annotate(requests=[{"kind": "tags_set", "transaction_id": "x", "tags": ["foo", "baz"]}])` — the service computes the diff and applies it.
+- **MCP: declarative state-setters** (`transactions_annotate` request kinds `tags_set` and `splits_set`, plus `import_labels_set`) when the operation's semantic is "make state look like this." LLMs reason about target states more reliably than diffs. Example: `transactions_annotate(requests=[{"kind": "tags_set", "transaction_id": "x", "tags": ["foo", "baz"]}])` — the service computes the diff and applies it.
 - **Symmetry contract**: any capability reachable from one surface is reachable from the other. The translation lives in the service layer, not in surface-specific business logic.
 - **When NOT to declarative-set**: when individual ops have distinct semantics that don't collapse into a target-state representation. Notes (`add`/`edit`/`delete` operate on individual `note_id`s with separate audit semantics) keep imperative verbs in both CLI and MCP.
 
@@ -530,7 +530,7 @@ consume an MCP tool slot.
 | `transactions_create` | write | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
 | `transactions_annotate` | write | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename` |
 | `import_labels_set` | write | `(import_id, labels: list[str]) → list[str]` — declarative |
-| `system_audit` | medium | `(filters, limit) → list[AuditEvent]` — supports `audit_id` filter for show-equivalent (returns single-element list with full payload) |
+| `system_audit` | medium | `view="events" | "history" | "detail"`, with `limit` and `cursor` for lists. `view="detail"` requires exactly one of `audit_id` or `operation_id`; list views reject both identifiers. |
 | (read tools) | — | Dropped — curation data is on `core.fct_transactions` LIST/STRUCT columns; LLM uses SQL via `moneybin://schema` |
 
 **Why the read tools were cut:** after this spec ships, `notes`, `tags`, and `splits` are columns on `core.fct_transactions`. The LLM writes `SELECT notes, tags, splits FROM core.fct_transactions WHERE transaction_id = ?` via the schema catalog. Adding dedicated read tools would duplicate token surface without adding capability.
@@ -676,7 +676,7 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 | Tag table shape | Flat M:N with slug-pattern VARCHAR (`namespace:value` optional) |
 | Import labels shape | Single consolidated `app.imports` row with `LIST(VARCHAR)` labels column |
 | MCP bulk vs single | Bulk `transactions_create` (1–100); CLI stays single-txn |
-| MCP declarative-set | Tags, splits, import labels use `*_set`; notes stay stable-ID imperative inside `transactions_annotate` |
+| MCP declarative-set | Tags and splits use the `tags_set` / `splits_set` variants inside `transactions_annotate`; import labels use `import_labels_set`; notes stay stable-ID imperative inside `transactions_annotate` |
 | Service organization | Extend existing `TransactionService` and `ImportService`; new cross-cutting `AuditService` |
 
 ## Synthetic Data Requirements

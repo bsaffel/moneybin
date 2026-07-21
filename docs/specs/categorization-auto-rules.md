@@ -232,7 +232,7 @@ Imported 120 transactions from chase_checking.csv
 |---|---|---|
 | `reviews` | Read | List pending proposals with `kind="auto_rules"` and `status="pending"`, including samples, trigger counts, pattern details, and blast-radius (`estimated_match_count`, `is_broad`). |
 | `reviews_decide` | Write | Batch accept/reject proposal IDs with `decisions=[{"kind": "auto_rule", "decision_id": "...", "decision": "accept", "allow_broad": false}]` or a `decision="reject"` item. Accepted proposals are promoted to active rules. `allow_broad=True` is required to promote a proposal flagged `is_broad`; see Blast-Radius Review. |
-| `system_status` | Read | Categorization counts with `sections=["categorization"]`, including the auto-rule queue summary. |
+| `system_status` | Read | Auto-rule health with `sections=["categorization"]` and `detail="full"`: active auto-rules, pending proposals, and the number of transactions categorized by auto-rules. |
 
 ### Prompt
 

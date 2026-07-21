@@ -408,7 +408,7 @@ Because both functions share the same `_TRANSFORMS` table, a change to how CRITI
 **This PR is redaction-only.** Specifically:
 
 - CRITICAL-tier columns (`ACCOUNT_IDENTIFIER`, `INSTITUTION_ACCOUNT_NUMBER`, `ROUTING_NUMBER`) are **always masked** in `sql_query` results, exactly as the typed tools mask them (account number → `****<last4>`, routing number → `*****`).
-- HIGH/MEDIUM/LOW columns (amounts, descriptions, dates, categories) **pass through in the clear**, matching the current behavior of `transactions_search` and other typed tools.
+- HIGH/MEDIUM/LOW columns (amounts, descriptions, dates, categories) **pass through in the clear**, matching the current behavior of `transactions(account=..., start=..., end=..., merchant=..., category=..., min_amount=..., max_amount=..., text=..., limit=..., cursor=...)` and other typed tools.
 - There is **no consent gate** on `sql_query`. The consent enforcement gate is deferred project-wide. When the gate un-defers, `sql_query` will inherit it automatically because it routes column → class → `_TRANSFORMS`, the same path the typed surface uses.
 - There are **no degraded/refusal responses**. Those were explicitly dropped from the PR 4 scope.
 

@@ -566,7 +566,11 @@ The pending auto-rule queue is `reviews(kind="auto_rules", status="pending")`.
 Its decision is `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": ..., "decision": "accept" | "reject"}])`.
 The `approve` framing remains reserved for a rule *promotion* outcome, not an MCP parameter.
 
-The categorization tools live under the `categorize.*` namespace per `mcp.md`. The namespace is visible at connect alongside all other registered tools — client-driven progressive disclosure (and its `moneybin_discover` meta-tool) was retired 2026-05-17; see [`mcp-architecture.md`](mcp-architecture.md) §3 "Tool disclosure: full surface, taxonomy-led". The agent reaches `transactions_categorize_assist` directly when uncategorized transactions exist (surfaced via `system_status` and via the `import_inbox_sync` envelope's `actions[]` hint).
+The standard registry is visible at connect alongside all other registered
+tools; discovery does not require a separate meta-tool. The agent reaches
+`transactions_categorize_assist` directly when uncategorized transactions
+exist, surfaced by `system_status(sections=["categorization"])` and relevant
+workflow actions.
 
 ## Forward compatibility
 
@@ -587,7 +591,7 @@ Future spec recommended (see Adjacent initiatives in overview).
 
 - Recurring detection is a transaction-relationship concern, not categorization.
 - Complements LLM-assist + auto-rules — recurring detection identifies series and surfaces "you have N subscriptions."
-- A future `transactions_recurring_assist` peer tool wouldn't change cold-start primitives.
+- A future recurring-review capability would not change cold-start primitives.
 
 ### Server-side merchant DB enrichment
 
@@ -702,7 +706,7 @@ Cross-cutting decisions deferred to implementation or future work.
 
 ### Auditability
 
-- Every `categorize_assist` call appears in audit log with `txn_count`, `account_filter`, `timestamp` — verifiable via `privacy_audit_list`
+- Every `categorize_assist` call appears in the audit log with `txn_count`, `account_filter`, and `timestamp` — inspect audit events through `system_audit(view="events", limit=...)`.
 - Every cold-start solver writes its `categorized_by` value — verifiable via `SELECT categorized_by, COUNT(*) FROM app.transaction_categories GROUP BY categorized_by`
 
 ### Documentation

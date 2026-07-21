@@ -236,12 +236,14 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 | Import completes | `import_service.py` (existing) | All uncategorized rows from the import |
 | Rules CLI command | `cli/commands/transactions/categorize/rules.py` (existing) | All uncategorized rows |
 | **`transactions_categorize_commit` commits a batch** | `transactions_categorize_commit` MCP tool | All still-uncategorized rows |
-| **Edit op with `reapply=True`** | rule target-state changes in `transactions_categorize_rules_set(rules=[...])` | Rows matching the edited entity |
+| **Rule target-state change** | `transactions_categorize_rules_set(rules=[...])`, then a separate `transactions_categorize_run(methods=["rules"])` call when an immediate cascade is required | All still-uncategorized rows |
 | **Categorize cascade** | `transactions_categorize_run(methods=[...])` umbrella (PR #171) — canonical `["rules","merchants"]` routes through `categorize_pending()`'s shared-scan path; non-canonical orders fall through to per-method invocations | All still-uncategorized rows |
 
 The third row is the snowball fix. After the LLM-assist batch's writes commit, `categorize_pending()` runs once. New merchants and rules from the batch fan out to remaining uncategorized rows in the same dataset. The next `categorize_assist` call sees only what's still genuinely uncategorized.
 
-The fourth row is opt-in via flag — not a new tool. Edit operations on merchants and rules accept a `reapply: bool = False` parameter; when `True`, the operation runs `categorize_pending()` scoped to that one entity's match set after the write.
+The fourth row is an explicit two-call workflow, not a mutation parameter. Set
+the rule target state, then call `transactions_categorize_run(methods=["rules"])`
+when the caller needs an immediate rules cascade.
 
 ### Convergence
 

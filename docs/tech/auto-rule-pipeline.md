@@ -143,7 +143,7 @@ Distinct-`transaction_id` dedup matters because retries and re-imports can repla
 | CLI `transactions categorize auto accept --accept <id>` / MCP `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": "...", "decision": "accept"}])` | Promote proposal → rule, back-fill matching rows | Write | Yes (per proposal ID) |
 | CLI `transactions categorize auto accept --reject <id>` / MCP `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": "...", "decision": "reject"}])` | Mark proposal `rejected` | Write | Yes |
 | CLI `transactions categorize auto accept --accept-all` | Bulk promote (CLI-only convenience; expands to a list) | Write | Yes |
-| CLI `transactions categorize auto stats` / MCP `system_status(sections=["categorization"])` | Active-rule and pending counts | None | Yes |
+| CLI `transactions categorize auto stats` / MCP `system_status(sections=["categorization"], detail="full")` | Active auto-rules, pending proposals, and auto-categorized transaction count | None | Yes |
 | CLI `transactions categorize auto rules` | List active auto-rules | None | Yes |
 | CLI `transactions categorize rules delete <id> --reapply` | Soft-delete a rule and re-categorize affected rows | Write | Yes |
 
@@ -367,7 +367,8 @@ A worked example for an agent (Claude Code, Codex, or an MCP-driving script) pol
 ```python
 # Poll the queue
 review = mcp.call("reviews", kind="auto_rules", status="pending")
-for proposal in review.data["proposals"]:
+for row in review.data["rows"]:
+    proposal = row["details"]["proposal"]
     # There is no confidence column today; trigger_count is the proxy.
     high_evidence = proposal["trigger_count"] >= 5
     # Pattern-quality is the agent's responsibility — the service does
@@ -386,7 +387,7 @@ for proposal in review.data["proposals"]:
             decisions=[
                 {
                     "kind": "auto_rule",
-                    "decision_id": proposal["proposed_rule_id"],
+                    "decision_id": row["decision_id"],
                     "decision": "accept",
                 }
             ],

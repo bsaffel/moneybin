@@ -95,7 +95,7 @@ MCP uses the bounded standard surface rather than one tool for every CLI subcomm
 | `transactions_categorize_run` | Run the deterministic categorization engines. |
 | `system_status` | Return categorization coverage and queue counts with `sections=["categorization"]`. |
 | `reviews` | Read the pending categorization or auto-rule queue with `kind="categorization"` or `kind="auto_rules"`. |
-| `reviews_decide` | Accept or reject reviewed categorization and auto-rule proposals in one `decisions` batch. |
+| `reviews_decide` | Accept or reject reviewed categorization proposals or auto-rule proposals in one `decisions` batch. |
 | `taxonomy` / `taxonomy_set` | Read or declare category and merchant target state with `view="categories"` or `view="merchants"`. |
 
 Every tool returns the standard response envelope (`summary`, `data`, `actions`). `summary.display_currency` carries the currency for any amount-bearing data; amounts follow the accounting convention (negative = expense, positive = income; transfers exempt).
@@ -115,6 +115,10 @@ category items with `kind="category"` and `state="present" | "inactive" |
 `transactions_annotate(requests=[...])`; each request has a `kind` of
 `note_add`, `note_edit`, `note_delete`, `tags_set`, `splits_set`, or
 `tag_rename`.
+
+Submit categorization and auto-rule decisions in separate `reviews_decide`
+calls. An atomic decision batch may contain ordinary review kinds together, or
+only `kind="auto_rule"` items; it cannot mix the two.
 
 ## A typical session
 
