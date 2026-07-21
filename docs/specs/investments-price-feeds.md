@@ -656,18 +656,14 @@ run. `investments holdings` and `investments gains` gain `market_value`,
 Sensitivity is `high`, matching the tier MCP derives for cost-basis and quantity
 data. Market values are the same class of data as the holdings they value.
 
-## MCP surface
+## MCP and report integration
 
-No price-observation MCP read or write is registered. Current portfolio reads
-use `investments(view="holdings", ...)` and
-`investments(view="gains", ...)`, which return `market_value`, `price_date`,
-`days_since_observed`, and `valuation_status` per position, plus a
-portfolio-level count of positions not in `valued` status. An agent reading a
-total therefore learns how much rests on stale or missing prices.
-
-A price-observation workflow would have a different grain — one observation
-per security-date rather than one row per position — and must complete the
-standard tool-admission review before it receives an MCP contract.
+This spec adds no price-observation MCP route. Its agent-facing integration
+extends the existing `investments(view="holdings", ...)` and
+`investments(view="gains", ...)` projections with `market_value`, `price_date`,
+`days_since_observed`, and `valuation_status`, and feeds valued positions into
+registered net-worth reports. A future observation-grain capability remains
+unnamed until it passes the standard tool-admission review.
 
 ---
 
@@ -764,7 +760,7 @@ sits between them.
 extension that lets their keys bind, the override table and repo, trade-implied
 prices, the first-available floor, staleness surfacing,
 `investment_price_disagreement` (the first phase in which one security can carry
-two sources), and the CLI and MCP surface.
+two sources), the CLI surface, and the existing investment/report integration.
 
 **C.3 — the daily series.** `core.fct_holdings_daily` and
 `investment_price_discontinuity`. Unblocks Pillar D. Pre-window dates report
@@ -784,7 +780,6 @@ two sources), and the CLI and MCP surface.
 - `src/moneybin/connectors/prices/coingecko.py`
 - `src/moneybin/services/price_service.py`
 - `src/moneybin/cli/commands/investments/prices.py`
-- `src/moneybin/mcp/tools/investment_prices.py`
 - `src/moneybin/sql/migrations/V0NN__extend_security_link_ref_kinds.py` (C.2) —
   adds `stooq_ticker` and `coingecko_slug` to the `app.security_links.ref_kind`
   CHECK. `V038` is the highest at the time of writing; take the next free number

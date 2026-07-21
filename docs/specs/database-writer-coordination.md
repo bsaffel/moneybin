@@ -3,7 +3,10 @@
 ## Status
 implemented
 
-> **Tool-name drift since this spec landed.** The pattern is unchanged — every MCP tool acquires its own `get_database(read_only=...)` connection — but several tool names referenced in the body have evolved through coherence passes: noun-only reads (PR #172 dropped `_list`), `transactions_categorize_apply` → `_commit` (PR #171), per-field account writes consolidated into `accounts_set` (PR #170/#171), `refresh_run` umbrella retiring `transform_apply` from the user-intent layer (PR #173). The classification rule (read vs. write) is still the source of truth; the example lists below reflect today's surface.
+> **Current MCP mapping.** Every registered tool acquires its own
+> `get_database(read_only=...)` connection. The classification rule (read vs.
+> write) is the source of truth, and the tables below use only the bounded
+> standard registry's current names.
 
 > **Required-kwarg hardening (PR #234).** `Database.__init__()` and `get_database()` now require `read_only` as a keyword-only argument; the prior `read_only: bool = False` default is removed. Every caller declares intent explicitly. Read-only enforcement at every read site is the trust boundary protected by this change — the SQL allowlists at MCP/CLI boundaries remain as defense-in-depth, but `ATTACH ... READ_ONLY` is the physical guard. The mechanism is the type system (no separate lint rule); pyright in `make check` fails any call site that omits the kwarg.
 
@@ -291,34 +294,31 @@ with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
 | `read_only=True` | Tool only SELECTs from `core.*`, `reports.*`, `app.*` |
 | `read_only=False` | Tool INSERTs/UPDATEs/DELETEs to `app.*` or `raw.*`, or runs import |
 
-**Read-only MCP tools** (representative; the file-level mapping at the bottom of "Files to Modify" is the full list)
+**Read-only MCP tools** (representative)
 
-- Registered reports through `reports(report_id=..., parameters=...)`
-- `accounts.py`: `accounts`, `accounts_balances(view=...)`
-- `categories.py`: read tools (the create/toggle paths are write)
-- `transactions_categorize.py`: read paths (rules listing, stats, uncategorized review)
-- `transactions_categorize_assist.py`: all (redacted read-only)
-- `merchants.py`: merchant listing
-- `system.py`: `system_status`, `system_audit`
-- `tax.py`: registered as read but the tools are not promoted today (backing spec `draft`; see `mcp-architecture.md` §3)
-- `curation.py`: audit-log read paths
-- `mcp/resources.py`: every resource (`moneybin://status`, `moneybin://accounts`, `moneybin://privacy`, `moneybin://schema`, `moneybin://tools`, `accounts://summary`, `moneybin://recent-curation`, `net-worth://summary`)
+- `reports`, `accounts`, `accounts_balances`, and `investments`
+- `transactions`, `transactions_categorize_assist`,
+  `transactions_categorize_rules`, `reviews`, and `taxonomy`
+- `import_preview`, `import_status`, `sync_status`, `gsheet`, and `privacy`
+- `system_status`, `system_audit`, `sql_query`, and `sql_schema`; `sql_query`
+  accepts arbitrary SQL but enforces a read-only statement class and opens a
+  read-only database connection
+- `mcp/resources.py`: the single current resource, `moneybin://schema`
 
 **Write MCP tools** (representative)
 
-- `accounts.py`: `accounts_set` and `accounts_balance_assert`
-- `categories.py`: category creation and target-state updates (the typed
-  `is_active` field replaces the prior toggle path)
-- `merchants.py`: merchant settings + rule writes
-- `transactions_categorize.py`: `transactions_categorize_commit` (formerly `_apply`), `transactions_categorize_run`, rule create/deactivate, auto-rule accept
-- `curation.py`: note add/edit/delete, tag set/rename, split set, label set
-- `import_tools.py`: all
-- `import_inbox.py`: `import_inbox_sync`
-- `sync.py`: `sync_pull`, `sync_link`, `sync_disconnect`, schedule writes
-- `refresh.py` / `transform.py`: `refresh_run`, `transform_audit`
-- `sql.py`: `sql_query` is always write mode (conservative; accepts arbitrary SQL)
-- `transactions.py`: writes route through categorization and curation handlers;
-  transaction reads remain read-only
+- `accounts_set` and `accounts_balance_assert`
+- `investments_record`, `investments_securities_set`, and
+  `investments_lots_select`
+- `transactions_create`, `transactions_annotate`,
+  `transactions_categorize_commit`, `transactions_categorize_run`, and
+  `transactions_categorize_rules_set`
+- `reviews_decide`, `identity_links_decide`, and `taxonomy_set`
+- `import_files`, `import_confirm`, `import_revert`, `import_inbox_sync`, and
+  `import_labels_set`
+- `sync_link`, `sync_pull`, `sync_disconnect`, `gsheet_connect`, `gsheet_pull`,
+  and `gsheet_disconnect`
+- `privacy_consent_set`, `refresh_run`, and `system_audit_undo`
 
 **Caller pattern**
 
@@ -480,7 +480,7 @@ The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchang
 | `src/moneybin/database.py` | All Phase 1 changes |
 | `src/moneybin/mcp/server.py` | Remove `get_db()`, update `init_db()`/`close_db()`/`table_exists()` |
 | `src/moneybin/mcp/decorator.py` | No change (uses `interrupt_and_reset_database()` which still exists) |
-| `src/moneybin/mcp/resources.py` | All three resources: `read_only=True` |
+| `src/moneybin/mcp/resources.py` | The single read-only `moneybin://schema` resource |
 | `src/moneybin/mcp/tools/accounts.py` | Mixed: classify per tool |
 | `src/moneybin/mcp/tools/categories.py` | Mixed |
 | `src/moneybin/mcp/tools/curation.py` | Mixed (reads: list_events; writes: all others) |
@@ -488,9 +488,8 @@ The periodic flush (MCP stream, every 5 minutes) calls `flush_metrics()` unchang
 | `src/moneybin/mcp/tools/import_tools.py` | Write |
 | `src/moneybin/mcp/tools/merchants.py` | Mixed |
 | `src/moneybin/mcp/tools/reports.py` | Read-only |
-| `src/moneybin/mcp/tools/sql.py` | Write (conservative) |
+| `src/moneybin/mcp/tools/sql.py` | Read-only |
 | `src/moneybin/mcp/tools/system.py` | Read-only |
-| `src/moneybin/mcp/tools/tax.py` | Read-only |
 | `src/moneybin/mcp/tools/transactions.py` | Mixed |
 | `src/moneybin/mcp/tools/transactions_categorize.py` | Mixed |
 | `src/moneybin/mcp/tools/transactions_categorize_assist.py` | Read-only |

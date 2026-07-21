@@ -761,11 +761,12 @@ reachable, not that callback names mirror command names.
 - Sensitivity: `high` (derived from field classification — quantity/price/amount/fees are `TXN_AMOUNT`)
 
 **`investments(view="holdings", ...)`** — Current positions with cost basis.
-- Params: `account` (optional), `limit`, and `cursor`
+- Params: `account` (optional), `security` (optional), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis / average cost are `BALANCE`-classified)
 
 **`investments(view="lots", ...)`** — Open/closed lots.
-- Params: `account` (optional), `security` (optional), `open_only` (BOOLEAN), `limit`, and `cursor`
+- Params: `account` (optional), `security` (optional), `open_only` (optional
+  BOOLEAN; defaults to `true` when omitted), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis fields are `BALANCE`-classified)
 
 **`investments(view="gains", ...)`** — Realized gain/loss (1099-B surface).
@@ -791,12 +792,29 @@ so a retry cannot double-insert. The one soft exception is an unresolved or
 ambiguous *security* ref: that event is skipped and reported in `error_details`,
 and the rest of the batch still commits.
 
+Registered top-level schema: `investments_record(events=[...])`. `events` is
+the sole required top-level field and must be an array; no other top-level
+fields are accepted. Each event uses the item contract above (`account`, `type`,
+and `date` required; the remaining event fields are optional by event type).
+
 **`investments_securities_set`** — Shape 1b (entity upsert). Create-or-update one
 catalog entry, including its `cost_basis_method` per-security override.
+
+Registered top-level schema: `coingecko_id`, `cost_basis_method`,
+`currency_code`, `cusip`, `exchange`, `figi`, `is_cash_equivalent`, `isin`,
+`name`, `security_id`, `security_type`, and `ticker`. All 12 fields are optional
+in the tool schema and no other top-level fields are accepted. Creating a row
+(`security_id` omitted) requires `name` and `security_type`; updating an
+existing row uses `security_id` and forbids changing `security_type`.
 
 **`investments_lots_select`** — Shape 1a (collection state-set). Set the full set of
 `(lot_id, quantity)` selections for one disposal (delete by omission); an empty
 `selections=[]` clears all overrides and reverts the disposal to FIFO.
+
+Registered top-level schema:
+`investments_lots_select(disposal_txn_id=..., selections=[...])`. Both fields
+are required and no other top-level fields are accepted. Each selection is a
+`{"lot_id": ..., "quantity": "..."}` object.
 
 The **per-account default** cost-basis method is a field on `accounts_set`
 (`default_cost_basis_method`), not a separate tool — same reasoning as the CLI.

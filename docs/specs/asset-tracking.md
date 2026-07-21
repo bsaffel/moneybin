@@ -232,7 +232,6 @@ asset_staleness_default_days: int = (
 
 - **`assets list`** — warning indicator next to stale assets with days since last valuation
 - **`reports networth`** — summary note: "N assets have stale valuations" with asset names
-- **MCP tools** — `summary.warnings` array includes stale asset notices
 
 Staleness is informational only — never blocks queries or omits stale assets from net worth. The value is still included; the system tells you it might be outdated.
 
@@ -324,22 +323,19 @@ Net Worth: $347,250 as of 2025-04-23
 
 ## MCP boundary
 
-No asset-specific MCP route is registered. The durable surfaces are the
-`assets` CLI workflow and the `reports.net_worth` model consumed through the
-report catalog; any future MCP addition must satisfy the bounded-registry
-admission contract.
+Asset tracking is draft. No asset-specific MCP route or asset contribution to
+the report catalog is registered today. If this spec is implemented, asset
+valuation reads reach agents through the standard coarse registry or the
+existing report catalog; this spec does not reserve callback names.
 
-### Write tools
+### Draft report-catalog change
 
-Deferred to v2, same as balance assertion write tools in the net worth spec. The `assets` CLI handles the low-frequency asset management workflow for v1.
-
-### Net worth tools (existing, extended)
-
+Implementation would extend
 `reports(report_id="core:networth", parameters={...})` and
-`reports(report_id="core:networth_history", parameters={...})` from the net
-worth spec automatically include assets via the extended `reports.net_worth`
-view — no new tools needed. The response gains a `total_physical_assets` field
-alongside `total_assets` and `total_liabilities`.
+`reports(report_id="core:networth_history", parameters={...})` through the
+underlying `reports.net_worth` model. The proposed snapshot response adds
+`total_physical_assets` alongside `total_assets` and `total_liabilities`; that
+field is not part of the live catalog response.
 
 ## Testing Strategy
 
@@ -407,7 +403,6 @@ alongside `total_assets` and `total_liabilities`.
 - `src/moneybin/sql/schema.py` — register new DDL files for `app.assets` and `app.asset_valuations`
 - `src/moneybin/config.py` — add `asset_staleness_default_days` to `MoneyBinSettings`
 - `src/moneybin/sqlmesh/models/reports/net_worth.sql` — extend to include asset valuations (created by net worth spec, modified here)
-- `src/moneybin/mcp/tools/` — add `assets.list`, `assets.detail`, `assets.summary` tools
 - `docs/specs/INDEX.md` — add entry for this spec
 
 ### Key Decisions
@@ -415,7 +410,8 @@ alongside `total_assets` and `total_liabilities`.
 1. **Assets are not accounts.** Accounts have transactions and balances; assets have appraisals and valuations. Separate data models, united only at the net worth aggregation layer.
 2. **Manual valuations in `app`, external in `raw`.** Follows the existing layer conventions — user-authored state in `app`, external source data in `raw` flowing through `prep` to `core`.
 3. **Liability linking is informational.** The FK to `dim_accounts` enables equity display but does not affect net worth arithmetic. No double-counting risk.
-4. **Staleness is informational.** Warnings surface in CLI and MCP but never block queries or omit values from net worth.
+4. **Staleness is informational.** Warnings surface in the CLI and the proposed
+   report-catalog result but never block queries or omit values from net worth.
 5. **`sell` not `dispose`.** Natural language for the 90% case. Edge cases (gift, loss) handled with `--amount 0` and `--notes`.
 6. **`value set/unset`** — declarative verb pair for valuations. "Set" handles both insert and update. "Unset" is the natural inverse.
 7. **Source precedence mirrors net worth.** Manual > appraisal > automated estimate, same philosophy as balance observation precedence.

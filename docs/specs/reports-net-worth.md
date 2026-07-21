@@ -241,43 +241,53 @@ rollups and a view-selected balance projection for per-account reads.
 **`reports(report_id="core:networth", parameters={...})`** — Current or
 historical net worth.
 - Params: `{"as_of": "YYYY-MM-DD", "account_ids": ["..."]}`; both are optional
-- Returns: total net worth, total assets, total liabilities, per-account breakdown with balance and source, as-of date
+- Returns rows with `balance_date`, `net_worth`, `total_assets`,
+  `total_liabilities`, `account_count`, `account_id`, `account_name`,
+  `account_balance`, and `observation_source`; headline fields repeat on each
+  account-breakdown row
 - No-data contract: if no position exists on or before the requested date,
   `balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null;
-  `account_count` is `0` and the account breakdown is empty. A missing position is
-  never synthesized as a zero balance or assigned the current date.
+  `account_count` is `0`, and the result contains one sentinel row with null
+  `account_id`, `account_name`, `account_balance`, and `observation_source`. A
+  missing position is never synthesized as a zero balance or assigned the
+  current date.
 
 **`reports(report_id="core:networth_history", parameters={...})`** — Net
 worth time series.
 - Params: `{"from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "interval": "daily|weekly|monthly"}`
-- Returns: time series with net worth, period-over-period change (absolute and percentage), account count
+- Returns rows with only `period`, `net_worth`, `change_abs`, and `change_pct`
 - Each returned period uses its last resolved transaction-adjusted daily
   position; periods without a position are omitted.
 
 **`accounts_balances(view="latest", ...)`** — Current balance per account.
 - Params: `reference` (optional account reference), `as_of` (optional DATE), `limit`, and `cursor`
-- Returns: per-account balance with date of last observation and source attribution
+- Returns observations with `account_id`, `balance_date`, `balance`,
+  `is_observed`, `observation_source`, and `reconciliation_delta`
 
 **`accounts_balances(view="history", ...)`** — Per-account balance time
 series.
 - Params: `reference` (required account reference), `start`/`end` (optional DATE), `limit`, and `cursor`
-- Returns: time series of `{date, balance, is_observed, observation_source, reconciliation_delta}`
+- Returns observations with `account_id`, `balance_date`, `balance`,
+  `is_observed`, `observation_source`, and `reconciliation_delta`
 
 **`accounts_balances(view="reconcile", ...)`** — Accounts with non-zero
 reconciliation deltas.
 - Params: `reference` (optional account reference), `threshold` (optional DECIMAL), `limit`, and `cursor`
-- Returns: list of `{account_id, balance_date, observed_balance, transaction_derived_balance, delta, source_type}` for days where the delta exceeds the threshold
+- Returns observations with `account_id`, `balance_date`, `balance`,
+  `is_observed`, `observation_source`, and `reconciliation_delta` for days where
+  the absolute reconciliation delta exceeds the threshold
 
 **`accounts_balances(view="assertions", ...)`** — Manual balance assertions.
 - Params: `reference` (optional account reference), `limit`, and `cursor`
-- Returns: list of assertions with dates, amounts, and notes
+- Returns assertions with `account_id`, `assertion_date`, `balance`, `notes`,
+  and `created_at`
 
 ### Write tools
 
 **`accounts_balance_assert(state="present", ...)`** — Insert or update a
 manual balance assertion.
 - Params: `account` (required), `as_of` (required DATE), `amount` (required DECIMAL)
-- Returns: the upserted assertion row
+- Returns `account_id`, `as_of`, `prior_state`, `state`, and `operation_id`
 - Sensitivity: `medium` (writes financial data); `confirmation_token` is invalid
   for `state="present"`
 
@@ -285,7 +295,8 @@ manual balance assertion.
 assertion.
 - Params: `account` (required), `as_of` (required DATE), and the exact
   payload-bound `confirmation_token`; `amount` is forbidden
-- Returns: the declared target state or `mutation_nothing_to_do` when already absent
+- Returns `account_id`, `as_of`, `prior_state`, `state`, and `operation_id`, or
+  `mutation_nothing_to_do` when already absent
 - Sensitivity: `medium`; requires confirmation
 
 ## Synthetic Data Requirements
@@ -402,9 +413,9 @@ Tests:
 
 - `src/moneybin/sql/schema.py` — register `app_balance_assertions.sql` in the schema init list (account-management.md registers `app_account_settings.sql`)
 - `src/moneybin/cli/main.py` — register the new top-level `reports` group; remove the `track networth` / `track balance` stubs from `commands/stubs.py` (they migrate to their v2 homes)
-- `src/moneybin/mcp/tools/__init__.py` (and the per-tool registry) — add tools listed in §MCP Interface
-- `src/moneybin/mcp/resources/` — add `net-worth://summary` resource
-- `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers per `moneybin-mcp.md`
+- `src/moneybin/mcp/tools/reports.py` and
+  `src/moneybin/mcp/tools/accounts.py` — register the catalog, balance-view,
+  and assertion-state routes listed in §MCP Interface
 - `docs/specs/INDEX.md` — flip status to `in-progress` on entry; flip to `implemented` when shipped
 
 ### Key Decisions
