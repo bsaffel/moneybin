@@ -18,7 +18,7 @@ from moneybin.exports.local import LocalExportPublisher
 from moneybin.exports.manifest import LocalExportFormat
 from moneybin.exports.renderers import RenderedArtifact
 from moneybin.exports.snapshot import PreparedExport
-from tests.moneybin.test_exports.test_renderers import make_snapshot
+from tests.moneybin.test_exports.test_renderers import make_snapshot, make_text_snapshot
 
 
 def _mode(path: Path) -> int:
@@ -73,6 +73,43 @@ def test_publish_creates_an_exact_restrictive_timestamped_bundle(
         for path in receipt.artifact_path.rglob("*")
         if path.is_file()
     }
+
+
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+def test_empty_snapshot_publishes_required_restrictive_bundle_layout(
+    tmp_path: Path,
+    format: LocalExportFormat,
+) -> None:
+    receipt = LocalExportPublisher(tmp_path / "exports").publish(
+        make_text_snapshot((), table_names=()),
+        format=format,
+        compress_zip=False,
+    )
+
+    assert receipt.artifact_path is not None
+    assert receipt.row_counts == {}
+    assert {
+        path.relative_to(receipt.artifact_path).as_posix()
+        for path in receipt.artifact_path.rglob("*")
+    } == {
+        "manifest.json",
+        "checksums.sha256",
+        "data-dictionary.json",
+        "tables",
+    }
+    assert _mode(receipt.artifact_path) == 0o700
+    assert _mode(receipt.artifact_path / "tables") == 0o700
+    assert all(
+        _mode(receipt.artifact_path / name) == 0o600
+        for name in ("manifest.json", "checksums.sha256", "data-dictionary.json")
+    )
+    assert receipt.checksums == {
+        name: _digest(receipt.artifact_path / name)
+        for name in ("manifest.json", "checksums.sha256", "data-dictionary.json")
+    }
+    manifest = json.loads((receipt.artifact_path / "manifest.json").read_text())
+    assert manifest["tables"] == []
+    assert (receipt.artifact_path / "checksums.sha256").read_text() == ""
 
 
 def test_publish_never_overwrites_a_successful_collision(tmp_path: Path) -> None:

@@ -397,7 +397,7 @@ def _validated_bundle_layout(
 
 
 def _expected_bundle_directories(expected_files: set[str]) -> set[str]:
-    directories: set[str] = set()
+    directories = {"tables"}
     for name in expected_files:
         relative = PurePosixPath(name)
         if relative.is_absolute() or ".." in relative.parts:
