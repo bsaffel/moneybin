@@ -57,7 +57,7 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 | `app` | Tables | Services (write); migrations (DDL); managed-write MCP tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc.; plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
 | `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports(report_id=..., parameters=...)`; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `moneybin-cli.md` v2. |
 | `meta` | Tables / Views | SQLMesh transforms | Reconciliation tooling; provenance queries; freshness probes | `fct_<entity>_provenance` (today: `fct_transaction_provenance`); `fct_<entity>_lineage` reserved; `model_freshness` | Provenance and pipeline metadata. Cross-source row lineage (`fct_*_provenance`) and model-level freshness (`model_freshness`, wrapping SQLMesh state). |
-| `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
+| `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `seeds.categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
 | `synthetic` | Tables | Synthetic data generator (`moneybin synthetic generate`) | Scenario tests | `ground_truth`, persona-named tables | Test scenario tables created on demand. Excluded from production builds. |
 
 ### Layer Rules
@@ -197,7 +197,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 |---|---|---|---|
 | List accounts | `accounts list` | `accounts` | `GET /accounts` |
 | Net worth report | `reports networth` | `reports(report_id="core:networth", parameters={...})` | `GET /reports/networth` |
-| Confirm a match | `transactions matches confirm <id>` | `transactions_matches_confirm` | `POST /transactions/matches/{id}/confirm` |
+| Decide a match | `transactions matches set <id> <status>` | `reviews_decide(decisions=[...])` | `POST /transactions/matches/{id}/decision` |
 
 Same noun ordering across all three; only the verb position and separators differ. The architecture spec's job here is to point at the rule, not restate it.
 
@@ -220,12 +220,22 @@ Sensitivity tiers and the `ResponseEnvelope` are MoneyBin-specific primitives. T
 
 ### MCP exposure principle
 
-Per `.claude/rules/mcp.md` "When CLI-only is justified": the default for every new operation is "expose to MCP." CLI-only status requires one of two justifications:
+Per `.claude/rules/mcp.md` "When CLI-only is justified," every new operation
+is evaluated for MCP exposure. Evaluation is not registration: no operation
+receives a public MCP identifier until its explicit admission record is
+accepted into the bounded standard registry. CLI-only status requires one of
+two justifications:
 
 1. The tool accepts secret material (passphrases, encryption keys) that must not pass through an LLM context window.
 2. The tool requires hands-on operator presence and is meaningless when the database is locked or the server isn't running (`db init`, `db unlock`, `db migrate`, `mcp serve`, `mcp config_*`, `profile_*`).
 
-Anything else — long-running operations, OAuth flows, destructive actions, interactive workflows, scheduler/filesystem writes — is MCP-exposable. Long-running operations use a job-handle pattern (`*_start` → `*_status` → `*_result`); destructive operations use a `confirm` parameter; interactive workflows split into list/act tools with the AI orchestrating.
+Anything else — long-running operations, OAuth flows, destructive actions,
+interactive workflows, scheduler/filesystem writes — may be considered for
+MCP exposure through that admission process. A future deferred-job capability
+must define opaque handles, cancellation, progress, retention, and privacy in
+its accepted record without reserving identifiers in advance. Admitted
+destructive and interactive workflows follow the confirmation and list/act
+contracts fixed by their registry records.
 
 ### CLI as a first-class agent surface
 

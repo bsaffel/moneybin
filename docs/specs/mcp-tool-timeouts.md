@@ -118,7 +118,11 @@ None. The timeout mechanism is data-agnostic; existing test fixtures are suffici
 ## Out of Scope
 
 - Per-tool timeout overrides.
-- Background continuation / job-handle pattern (`job_status` / `job_result` tools). If a future tool legitimately needs longer than the cap, that's the time to design this — not now.
+- Background continuation or deferred-job semantics. No such MCP capability is
+  registered today. If a future operation legitimately needs longer than the
+  cap, its workflow remains unnamed until an explicit admission record is
+  accepted into the bounded standard registry; that later design must define
+  cancellation, progress, result retention, and privacy together.
 - Streaming progress updates from long-running tools.
 - Decomposing `import_inbox_sync` into per-file calls. The timeout will surface that this tool needs redesign; the redesign itself is a separate spec.
 - Recovery from corrupted on-disk state caused by an unclean DuckDB shutdown. The contract is "release the lock" not "guarantee transactional consistency under SIGKILL."
