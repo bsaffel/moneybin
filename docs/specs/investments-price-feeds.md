@@ -207,7 +207,8 @@ non-positive closes, and **resolves `provider_security_key` to the canonical
 `security_id`** through the same link tables `SecurityResolver` populates. A row
 whose provider key has not resolved yet stays in `raw` and is absent from
 staging — it is not dropped, and it appears once its security resolves.
-`investment_unresolved_securities` already reports that backlog.
+The unresolved-security backlog remains available through the current
+investment workflow; it does not add a separate MCP callback.
 
 **Every provider resolves the same way, including the keyless feeds.**
 `app.security_links` is already provider-neutral by design — its header calls
@@ -655,34 +656,18 @@ run. `investments holdings` and `investments gains` gain `market_value`,
 Sensitivity is `high`, matching the tier MCP derives for cost-basis and quantity
 data. Market values are the same class of data as the holdings they value.
 
-## MCP interface
+## MCP surface
 
-- `investments_prices_sync` — refresh; returns counts written, failed, and
-  skipped, with per-security reasons.
-- `investments_prices_list` — the observation history for a security: every
-  stored row with its `source`, `price_date`, `quote_currency`, `price_basis`,
-  and whether it is the resolved winner for its date.
-- `investments_prices_set` — record a mark.
-- `investments_prices_delete` — remove a mark, returning the date to
-  provider-derived valuation.
-
-`investments_prices_list` is not optional ergonomics. `mcp.md` makes MCP exposure
-the default and admits only two exceptions — secret material and hands-on
-operator territory — and price history is neither. It also closes a concrete gap:
-an agent about to call `_set` cannot otherwise discover that an override already
-exists for that date, because `investments_holdings` reports the *resolved* value
-and not the observations behind it. Writing blind over an existing mark is
-exactly the silent action `design-principles.md` requires a surface for.
-
-The grain differs from `investments_holdings` — observations per security-date
-rather than one row per position — which is why it is a separate tool rather than
-a flag on the holdings response.
-
-`investments_holdings` and `investments_gains` return `market_value`,
-`price_date`, `days_since_observed`, and `valuation_status` per position, plus a
+No price-observation MCP read or write is registered. Current portfolio reads
+use `investments(view="holdings", ...)` and
+`investments(view="gains", ...)`, which return `market_value`, `price_date`,
+`days_since_observed`, and `valuation_status` per position, plus a
 portfolio-level count of positions not in `valued` status. An agent reading a
-total learns from the same response how much of it rests on stale or missing
-prices.
+total therefore learns how much rests on stale or missing prices.
+
+A price-observation workflow would have a different grain — one observation
+per security-date rather than one row per position — and must complete the
+standard tool-admission review before it receives an MCP contract.
 
 ---
 
@@ -725,8 +710,8 @@ prices.
 - **`price_basis` enforcement** — an adapter returning no basis fails ingest.
 - **Non-Plaid key binding** — a stooq ticker and a CoinGecko slug each bind
   through `SecurityLinksRepo` and resolve in `prep.stg_security_prices`; an
-  unbound key leaves its row in `raw` and surfaces in
-  `investment_unresolved_securities` rather than vanishing. The migration test
+  unbound key leaves its row in `raw` and surfaces in the unresolved-security
+  backlog rather than vanishing. The migration test
   runs against a populated `app.security_links`, per the migration-realism rule.
 - **Adapter fixtures** — recorded provider responses. No test performs a network
   call.

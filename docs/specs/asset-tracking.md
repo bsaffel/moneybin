@@ -30,11 +30,11 @@ Related specs and docs:
 6. **Materialize `core.fct_asset_valuations_daily`** — a SQLMesh TABLE with one row per asset per day. Carries forward the latest valuation until a new one arrives. Simpler than account balance carry-forward — no transaction adjustments needed.
 7. **Extend `reports.net_worth`** to include asset valuations. Net worth = sum of account balances + sum of asset valuations. Disposed assets stop contributing after their disposal date.
 8. **Liability linking.** An asset can optionally reference a liability account in `dim_accounts` (e.g., a mortgage for a house, an auto loan for a car). This link is informational — it enables equity display (`value - liability balance`) but is not used in net worth arithmetic. Both the asset value and the liability balance contribute to net worth independently.
-9. **Staleness warnings.** Each valuation in `fct_asset_valuations_daily` tracks days since the last real observation. Warnings surface in CLI output and MCP responses when a valuation exceeds its staleness threshold. Warnings are informational only — stale values are still included in net worth.
+9. **Staleness warnings.** Each valuation in `fct_asset_valuations_daily` tracks days since the last real observation. Warnings surface in CLI output when a valuation exceeds its staleness threshold. Warnings are informational only — stale values are still included in net worth.
 10. **Staleness threshold resolution:** per-asset override → per-type default → global config default.
 11. **Asset disposal.** Assets can be marked as sold with a date and sale amount. Disposed assets stop contributing to net worth but their history is preserved.
 12. **CLI commands** under `assets` (see CLI Interface section).
-13. **MCP tools:** `assets`, `assets_get`, `assets_summary` (see MCP Interface section).
+13. **MCP boundary:** No asset-specific MCP route is registered.
 14. **All commands support `--output json`** for non-interactive parity.
 15. **Source precedence within a day.** When multiple valuation sources exist for the same asset on the same date: manual (user assertion) > appraisal > automated estimate (Zillow/KBB).
 
@@ -322,41 +322,12 @@ Net Worth: $347,250 as of 2025-04-23
   ⚠️ 1 asset has a stale valuation: 2021 Tesla Model 3 (234 days)
 ```
 
-## MCP Interface
+## MCP boundary
 
-### Tools
-
-**`assets`** — List assets with current valuations and staleness status.
-- Params: `asset_type` (optional VARCHAR), `include_disposed` (optional BOOLEAN, default false)
-- Sensitivity: `medium` (asset names and values)
-- Returns: assets with latest valuation, days since valuation, staleness warning, linked liability balance
-
-**`assets_get`** — Full detail for a single asset including valuation history.
-- Params: `asset_id` (VARCHAR)
-- Sensitivity: `medium` (individual asset details)
-- Returns: all asset fields, valuation history, linked liability info, gain/loss vs acquisition cost
-
-**`assets_summary`** — Aggregate asset value by type.
-- Params: `as_of_date` (optional DATE)
-- Sensitivity: `low` (aggregates only)
-- Returns: total value, breakdown by type, count, stale asset warnings
-
-### Response envelope
-
-Follows the standard envelope from [`mcp-architecture.md`](mcp-architecture.md):
-
-```json
-{
-  "summary": {
-    "total_count": 3,
-    "sensitivity": "medium",
-    "display_currency": "USD",
-    "warnings": ["1 asset has a stale valuation: 2021 Tesla Model 3 (234 days)"]
-  },
-  "data": [...],
-  "actions": ["Use assets_get for full history", "Use 'assets value set' to update stale valuations"]
-}
-```
+No asset-specific MCP route is registered. The durable surfaces are the
+`assets` CLI workflow and the `reports.net_worth` model consumed through the
+report catalog; any future MCP addition must satisfy the bounded-registry
+admission contract.
 
 ### Write tools
 
@@ -364,7 +335,11 @@ Deferred to v2, same as balance assertion write tools in the net worth spec. The
 
 ### Net worth tools (existing, extended)
 
-`reports_networth` and `reports_networth_history` from the net worth spec automatically include assets via the extended `reports.net_worth` view — no new tools needed. The response gains a `total_physical_assets` field alongside `total_assets` and `total_liabilities`.
+`reports(report_id="core:networth", parameters={...})` and
+`reports(report_id="core:networth_history", parameters={...})` from the net
+worth spec automatically include assets via the extended `reports.net_worth`
+view — no new tools needed. The response gains a `total_physical_assets` field
+alongside `total_assets` and `total_liabilities`.
 
 ## Testing Strategy
 

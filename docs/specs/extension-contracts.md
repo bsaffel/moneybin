@@ -366,7 +366,9 @@ callers install a decorated runner explicitly through
 | Package reports | `<package>:<name>`; package CLI namespace | `assets:summary` |
 | Standalone report extensions | `<publisher-or-package>:<name>` | `community:seasonal_spending` |
 
-MCP calls `reports(report_id=..., parameters=...)` for every row above.
+MCP calls `reports(report_id=..., parameters=...)` for every row above; for
+example, cash flow runs through
+`reports(report_id="core:cashflow", parameters={"by": "account"})`.
 Report IDs are public contracts and must not collide. Registration may expose a
 short alias only when it resolves to exactly one stable ID.
 
@@ -478,7 +480,7 @@ identical envelopes via the shared `ReportResult`.
 
 Report column classification is **declared, not lineage-derived** ([ADR-013](../decisions/013-report-classification-declared.md)). SQLMesh deploys each report view as a `SELECT * FROM <internal physical table>` pointer, so lineage on the deployed view body classifies the pointer (not the logic) and would leak; and provenance ≠ sensitivity for derived columns (a z-score of an amount is `AGGREGATE`, not `TXN_AMOUNT`). Reports are a fixed, first-party surface known at design time, so each declares its `column → DataClass` map on `@report` — on the same footing as the `CLASSIFICATION` registry that declares `core`/`app` base truth. A scenario test (`tests/scenarios/test_reports_classification.py`) asserts the declared map covers the real built view's columns and that `account_id` stays CRITICAL. (`sql_query` keeps using lineage — its correct home: an arbitrary agent query reading `core`/`app` directly.)
 
-The six in-tree view-backed reports — `cashflow`, `spending`, `recurring`, `merchants`, `large_transactions`, `balance_drift` — ship through this framework as `@report` runners in `src/moneybin/reports/definitions/`. They are wired via an explicit `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`; extensions may use `discover_reports` to collect decorated runners but must pass that explicit collection to `register_extension_reports`. The `networth` / `networth-history` CLI commands stay hand-written for their established flags and text layouts, while their execution uses the same `ReportCatalog` and service-backed specs. `reports_budget` was removed (it synthesized from `BudgetService` rather than a `reports.*` view; it returns through the framework once M3C ships a `reports.budget` view).
+The six in-tree view-backed reports — `cashflow`, `spending`, `recurring`, `merchants`, `large_transactions`, `balance_drift` — ship through this framework as `@report` runners in `src/moneybin/reports/definitions/`. They are wired via an explicit `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`; extensions may use `discover_reports` to collect decorated runners but must pass that explicit collection to `register_extension_reports`. The `networth` / `networth-history` CLI commands stay hand-written for their established flags and text layouts, while their execution uses the same `ReportCatalog` and service-backed specs.
 
 ### Documentation requirements
 
@@ -678,7 +680,7 @@ Same tier names; different evidence by extension type. Each row in the tables be
 |---|---|
 | **Bronze** | Implements `Provider` Protocol; basic happy-path test against fixture data; `schema_files()` return valid DDL |
 | **Silver** | Error-case tests (auth failures, schema drift, partial data); fixture corpus covers historical bank quirks; documented in `docs/guides/data-import.md` |
-| **Gold** | Named code owner; signed releases (MoneyBin Core's release pipeline signs all in-tree providers); `system_doctor` checks for the provider's data freshness/integrity; per-provider section in `docs/guides/data-import.md` covering auth setup, known bank quirks, troubleshooting |
+| **Gold** | Named code owner; signed releases (MoneyBin Core's release pipeline signs all in-tree providers); provider data-freshness and integrity checks; per-provider section in `docs/guides/data-import.md` covering auth setup, known bank quirks, troubleshooting |
 | **Platinum** | Scenario-test coverage; schema-drift alarm (provider notifies framework when bank changes export format); regression fixtures across multiple bank-format eras; full migration/troubleshooting reference covering historical format eras |
 
 ### Verified Publisher signal

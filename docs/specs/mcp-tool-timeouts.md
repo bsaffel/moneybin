@@ -103,7 +103,7 @@ Existing tools that return `error: null` on success are unaffected.
 - **Unit**: a fake tool handler that sleeps 60s returns the structured timeout envelope within ~30s wall-clock.
 - **Unit**: a fake tool handler that holds a DuckDB connection and runs a long query — verify `interrupt()` is called and the connection is closed on timeout.
 - **Integration**: two back-to-back calls where the first times out — the second must succeed against the same profile (proves the lock was released).
-- **Regression**: existing fast tools (e.g., `accounts`, `reports_spending`) complete unchanged and well under the cap on the standard test fixture.
+- **Regression**: existing fast tools (e.g., `accounts`, `reports(report_id="core:spending", parameters={...})`) complete unchanged and well under the cap on the standard test fixture.
 
 ## Synthetic Data Requirements
 

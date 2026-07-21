@@ -93,7 +93,7 @@ Surface symmetry (same nouns, different verb position):
 | Capability | CLI | MCP |
 |---|---|---|
 | List accounts | `moneybin accounts list` | `accounts` |
-| Net worth report | `moneybin reports networth` | `reports(report_id=...)` |
+| Net worth report | `moneybin reports networth` | `reports(report_id="core:networth", parameters={...})` |
 | Refresh the pipeline | `moneybin refresh` | `refresh_run` |
 | Confirm a match | `moneybin transactions matches confirm <id>` | `reviews_decide(decisions=[{"kind": "match", "decision_id": "<id>", "decision": "accept"}])` |
 

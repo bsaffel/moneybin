@@ -142,7 +142,8 @@ Related specs:
     (deferred to M1K). Named **`currency_code`** per `multi-currency.md`'s canonical
     column-name decision (matching `core.fct_transactions` / `core.dim_accounts`).
 16. **CLI commands** under a top-level `investments` group (see CLI Interface).
-17. **MCP tools** under the `investments_*` namespace (see MCP Interface).
+17. **MCP reads** through `investments(view=...)`, plus the three admitted
+    investment write tools (see MCP Interface).
 18. **All commands support `--output json`** for non-interactive / agent parity.
 
 ## Data Model
@@ -748,30 +749,31 @@ Date         Security  Qty     Proceeds    Basis       Gain/Loss   Term
 
 ## MCP Interface
 
-Namespace `investments_*`, following [`mcp-architecture.md`](mcp-architecture.md)
-conventions (response envelope, sensitivity tiers). Functional parity with the CLI
-(same outcomes reachable), not 1:1 naming.
+The `investments` tool selects a read projection with `view`, following
+[`mcp-architecture.md`](mcp-architecture.md) conventions (response envelope,
+sensitivity tiers). Functional parity with the CLI means the same outcomes are
+reachable, not that callback names mirror command names.
 
 ### Read tools
 
-**`investments`** — List ledger events.
-- Params: `account` (optional), `security` (optional), `type` (optional), `from`/`to` (optional DATE)
+**`investments(view="events", ...)`** — List ledger events.
+- Params: `account` (optional), `security` (optional), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Sensitivity: `high` (derived from field classification — quantity/price/amount/fees are `TXN_AMOUNT`)
 
-**`investments_holdings`** — Current positions with cost basis.
-- Params: `account` (optional)
+**`investments(view="holdings", ...)`** — Current positions with cost basis.
+- Params: `account` (optional), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis / average cost are `BALANCE`-classified)
 
-**`investments_lots`** — Open/closed lots.
-- Params: `account` (optional), `security` (optional), `open_only` (BOOLEAN, default true)
+**`investments(view="lots", ...)`** — Open/closed lots.
+- Params: `account` (optional), `security` (optional), `open_only` (BOOLEAN), `limit`, and `cursor`
 - Sensitivity: `high` (cost basis fields are `BALANCE`-classified)
 
-**`investments_gains`** — Realized gain/loss (1099-B surface).
-- Params: `account` (optional), `security` (optional), `from`/`to` (optional DATE), `term` (optional)
+**`investments(view="gains", ...)`** — Realized gain/loss (1099-B surface).
+- Params: `account` (optional), `security` (optional), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Sensitivity: `high` (proceeds/cost basis/gain-loss are `BALANCE`-classified)
 
-**`investments_securities`** — The catalog.
-- Params: `security_type` (optional)
+**`investments(view="securities", ...)`** — The catalog.
+- Params: `security` (optional), `limit`, and `cursor`
 - Sensitivity: `low` (reference data, no amounts)
 
 ### Write tools
@@ -802,7 +804,7 @@ The **per-account default** cost-basis method is a field on `accounts_set`
 ### Response envelope
 
 Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
-`investments_holdings`:
+`investments(view="holdings")`:
 
 ```json
 {
@@ -813,7 +815,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
     "warnings": ["Market value/unrealized gain unavailable until price feeds ship"]
   },
   "data": [...],
-  "actions": ["Use investments_lots for per-lot basis", "Use investments_gains for realized gain/loss"]
+  "actions": ["Use investments(view='lots') for per-lot basis", "Use investments(view='gains') for realized gain/loss"]
 }
 ```
 
@@ -912,7 +914,7 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `src/moneybin/services/investment_service.py` — security resolution, manual entry, method election, lot selection (composes the repos)
 - `src/moneybin/privacy/payloads/investments.py` — response payload shapes backing the field-classification-derived sensitivity tiers (MCP Interface)
 - `src/moneybin/cli/commands/investments/` — `investments` command group (`__init__.py` for `add`/`list`/`holdings`/`gains`, `securities.py`, `lots.py`)
-- `src/moneybin/mcp/tools/investments.py` — `investments_*` tools
+- `src/moneybin/mcp/tools/investments.py` — investment MCP handlers
 - `tests/moneybin/test_services/test_investment_service.py`, `tests/moneybin/test_cli/test_investments.py`,
   `tests/moneybin/test_investments/test_cost_basis_engine.py`, `tests/moneybin/test_investments/test_sqlmesh_loader.py`,
   `tests/moneybin/test_investments/test_investment_models_transform.py`, `tests/moneybin/test_investments_schema.py`,
@@ -931,7 +933,8 @@ Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
 - `src/moneybin/sql/schema/app_account_settings.sql` — add the `default_cost_basis_method` column for fresh installs (the migration covers existing databases)
 - `src/moneybin/repositories/account_settings_repo.py` — extend `AccountSettingsRepo.set()` and `_ACCOUNT_SETTINGS_COLUMNS` with the new column
 - `src/moneybin/tables.py` — add table constants (`DIM_SECURITIES`, `FCT_INVESTMENT_TRANSACTIONS`, `FCT_INVESTMENT_LOTS`, `FCT_REALIZED_GAINS`, `DIM_HOLDINGS`)
-- `src/moneybin/privacy/taxonomy.py` — field classifications backing the `investments_*` tools' sensitivity tiers
+- `src/moneybin/privacy/taxonomy.py` — field classifications backing the
+  investment MCP handlers' sensitivity tiers
 - `src/moneybin/metrics/registry.py` — instrumentation for ingestion + cost-basis runs (per `observability.md`)
 - `docs/specs/account-management.md` — document the `accounts set` / `accounts_set` cost-basis-method extension + the new `app.account_settings` column
 - `docs/specs/INDEX.md`, `docs/roadmap.md` — status + milestone rows

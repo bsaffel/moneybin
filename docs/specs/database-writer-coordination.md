@@ -293,8 +293,8 @@ with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
 
 **Read-only MCP tools** (representative; the file-level mapping at the bottom of "Files to Modify" is the full list)
 
-- All `reports.py` tools (`reports_networth`, `reports_spending`, `reports_cashflow`, `reports_recurring`, `reports_merchants`, …)
-- `accounts.py`: `accounts`, `accounts_get`, `accounts_summary`, `accounts_balances`, `accounts_balance_history`, `accounts_balance_assertions`, `accounts_resolve`
+- Registered reports through `reports(report_id=..., parameters=...)`
+- `accounts.py`: `accounts`, `accounts_balances(view=...)`
 - `categories.py`: read tools (the create/toggle paths are write)
 - `transactions_categorize.py`: read paths (rules listing, stats, uncategorized review)
 - `transactions_categorize_assist.py`: all (redacted read-only)
@@ -306,8 +306,9 @@ with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
 
 **Write MCP tools** (representative)
 
-- `accounts.py`: `accounts_set` (replaces the earlier per-field `rename` / `set_include_in_net_worth` / `archive` / `unarchive` / `settings_update` set), `accounts_balance_reconcile`, `accounts_balance_assert`, `accounts_balance_assertion_delete`
-- `categories.py`: `categories_create`, `categories_set` (folds the prior `toggle_category` into the typed `is_active` field)
+- `accounts.py`: `accounts_set` and `accounts_balance_assert`
+- `categories.py`: category creation and target-state updates (the typed
+  `is_active` field replaces the prior toggle path)
 - `merchants.py`: merchant settings + rule writes
 - `transactions_categorize.py`: `transactions_categorize_commit` (formerly `_apply`), `transactions_categorize_run`, rule create/deactivate, auto-rule accept
 - `curation.py`: note add/edit/delete, tag set/rename, split set, label set
@@ -316,7 +317,8 @@ with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
 - `sync.py`: `sync_pull`, `sync_link`, `sync_disconnect`, schedule writes
 - `refresh.py` / `transform.py`: `refresh_run`, `transform_audit`
 - `sql.py`: `sql_query` is always write mode (conservative; accepts arbitrary SQL)
-- `transactions.py`: writes route through `transactions_categorize_*` and `curation.py`; the bare `transactions_*` tools today are read-only
+- `transactions.py`: writes route through categorization and curation handlers;
+  transaction reads remain read-only
 
 **Caller pattern**
 

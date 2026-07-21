@@ -45,7 +45,7 @@ Related specs and docs:
 8. **Manual balance assertions:** Users can assert a known balance via `moneybin accounts balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
 9. **No balance without an anchor:** Accounts with zero balance observations produce no `fct_balances_daily` rows. The system does not estimate an opening balance from transactions alone.
 10. **CLI commands:** `moneybin reports networth`, `moneybin reports networth-history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance assertion-delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
-11. **MCP tools** (per [`moneybin-mcp.md`](moneybin-mcp.md) v2): `reports_networth`, `reports_networth_history`, `accounts_balances`, `accounts_balance_history`, `accounts_balance_reconcile`, `accounts_balance_assertions`, `accounts_balance_assert` (write), `accounts_balance_assertion_delete` (write).
+11. **MCP surface** (per [`moneybin-mcp.md`](moneybin-mcp.md)): `reports(report_id="core:networth" | "core:networth_history", parameters={...})`, `accounts_balances(view=...)`, and `accounts_balance_assert(state=...)`.
 12. **All commands support `--output json`** for non-interactive parity.
 13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M1J and M1K respectively). Net worth v1 covers cash accounts only.
 
@@ -233,55 +233,60 @@ moneybin accounts balance reconcile [--account ACCOUNT_ID] [--threshold AMOUNT] 
 
 ## MCP Interface
 
-Tool naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix). Cross-domain rollups live under `reports_*`; per-account workflows live under `accounts_balance_*`.
+The registered MCP surface uses the generic report catalog for cross-domain
+rollups and a view-selected balance projection for per-account reads.
 
 ### Read tools
 
-**`reports_networth`** — Current or historical net worth.
-- Params: `as_of_date` (optional DATE), `account_ids` (optional list of VARCHAR)
+**`reports(report_id="core:networth", parameters={...})`** — Current or
+historical net worth.
+- Params: `{"as_of": "YYYY-MM-DD", "account_ids": ["..."]}`; both are optional
 - Returns: total net worth, total assets, total liabilities, per-account breakdown with balance and source, as-of date
 - No-data contract: if no position exists on or before the requested date,
   `balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null;
   `account_count` is `0` and the account breakdown is empty. A missing position is
   never synthesized as a zero balance or assigned the current date.
 
-**`reports_networth_history`** — Net worth time series.
-- Params: `from_date` (DATE), `to_date` (DATE), `interval` (daily|weekly|monthly, default monthly)
+**`reports(report_id="core:networth_history", parameters={...})`** — Net
+worth time series.
+- Params: `{"from_date": "YYYY-MM-DD", "to_date": "YYYY-MM-DD", "interval": "daily|weekly|monthly"}`
 - Returns: time series with net worth, period-over-period change (absolute and percentage), account count
 - Each returned period uses its last resolved transaction-adjusted daily
   position; periods without a position are omitted.
 
-**`accounts_balances`** — Current balance per account.
-- Params: `account_ids` (optional list), `as_of_date` (optional DATE)
+**`accounts_balances(view="latest", ...)`** — Current balance per account.
+- Params: `reference` (optional account reference), `as_of` (optional DATE), `limit`, and `cursor`
 - Returns: per-account balance with date of last observation and source attribution
 
-**`accounts_balance_history`** — Per-account balance time series.
-- Params: `account_id` (VARCHAR, required), `from_date` (optional DATE), `to_date` (optional DATE), `interval` (daily|weekly|monthly, default daily)
+**`accounts_balances(view="history", ...)`** — Per-account balance time
+series.
+- Params: `reference` (required account reference), `start`/`end` (optional DATE), `limit`, and `cursor`
 - Returns: time series of `{date, balance, is_observed, observation_source, reconciliation_delta}`
 
-**`accounts_balance_reconcile`** — Accounts with non-zero reconciliation deltas.
-- Params: `account_ids` (optional list), `threshold` (optional DECIMAL, default 0.01)
+**`accounts_balances(view="reconcile", ...)`** — Accounts with non-zero
+reconciliation deltas.
+- Params: `reference` (optional account reference), `threshold` (optional DECIMAL), `limit`, and `cursor`
 - Returns: list of `{account_id, balance_date, observed_balance, transaction_derived_balance, delta, source_type}` for days where the delta exceeds the threshold
 
-**`accounts_balance_assertions`** — Manual balance assertions.
-- Params: `account_id` (optional VARCHAR)
+**`accounts_balances(view="assertions", ...)`** — Manual balance assertions.
+- Params: `reference` (optional account reference), `limit`, and `cursor`
 - Returns: list of assertions with dates, amounts, and notes
 
 ### Write tools
 
-**`accounts_balance_assert`** — Insert or update a manual balance assertion.
-- Params: `account_id` (VARCHAR, required), `assertion_date` (DATE, required), `balance` (DECIMAL, required), `notes` (optional VARCHAR)
+**`accounts_balance_assert(state="present", ...)`** — Insert or update a
+manual balance assertion.
+- Params: `account` (required), `as_of` (required DATE), `amount` (required DECIMAL)
 - Returns: the upserted assertion row
-- Sensitivity: `medium` (writes financial data); requires confirmation per MCP write-tool conventions
+- Sensitivity: `medium` (writes financial data); `confirmation_token` is invalid
+  for `state="present"`
 
-**`accounts_balance_assertion_delete`** — Remove a manual balance assertion.
-- Params: `account_id` (VARCHAR, required), `assertion_date` (DATE, required)
-- Returns: status + the deleted row's previous values
+**`accounts_balance_assert(state="absent", ...)`** — Remove a manual balance
+assertion.
+- Params: `account` (required), `as_of` (required DATE), and the exact
+  payload-bound `confirmation_token`; `amount` is forbidden
+- Returns: the declared target state or `mutation_nothing_to_do` when already absent
 - Sensitivity: `medium`; requires confirmation
-
-### Resources
-
-**`net-worth://summary`** — Current net worth snapshot. Useful as context for AI conversations about finances. Returns: total net worth, total assets, total liabilities, account count, as-of date.
 
 ## Synthetic Data Requirements
 
