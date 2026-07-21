@@ -209,7 +209,10 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     - `refresh_run(steps=["match"])` or `refresh_run(steps=["categorize"])` for retry, `confidence=suggested`.
     - `system_status(sections=["doctor"], detail="full")` for diagnosis, `confidence=suggested`.
 
-10. **Matches MCP surface.** Four MCP tools over the pair-decision model (`app.match_decisions`, one row per proposed pair keyed by `match_id`):
+10. **Matches MCP workflow.** Four workflow operations over the pair-decision
+    model (`app.match_decisions`, one row per proposed pair keyed by `match_id`)
+    use three existing standard tools: `refresh_run`, `reviews`, and
+    `reviews_decide`.
 
     | MCP tool | Shape | CLI equivalent |
     |----------|-------|----------------|
@@ -221,14 +224,13 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     `refresh_run` and the history projection mirror the existing CLI.
     `reviews(kind="matches", status="pending")` lists pending match proposals
     (pair IDs + confidence, no amounts or descriptions).
-    `reviews_decide(decisions=[...])` is the non-interactive surface: today
-    accept/reject lives only in the interactive `transactions review --type
-    matches` queue, so agents cannot reach it. Each item is
+    `reviews_decide(decisions=[...])` is the non-interactive decision surface.
+    Each item is
     `{kind: "match", decision_id, decision}`, where `decision` is `"accept"`
     or `"reject"`. Rejecting an already-accepted match errors with a recovery
-    action pointing at `system_audit_undo` (the M1L audit-log undo consumer);
-    until it ships, the CLI `moneybin transactions matches undo` is the manual
-    interim route named in the action's rationale. There is no
+    action pointing at `system_audit_undo`. The CLI
+    `moneybin transactions matches undo` calls the same audited recovery path.
+    There is no
     `match_group_id`/`primary` write surface — `match_group_id` is a derived
     prep-layer column (the connected-component group key in
     `int_transactions__matched`), and dedup collapses each group by field-level
@@ -550,11 +552,12 @@ Shipped on `feat/data-recovery-doctor-recipes`. Status stays `in-progress` (PR 5
 - **CLI text format: one `💡 [confidence] tool(arguments) — rationale` line per action,** rendered indented under each failing/warning invariant. JSON format: a `recovery_actions` array per invariant carrying the full executable shape (tool, arguments, rationale, confidence, idempotent) so scripted / agent consumers can dispatch directly.
 - **`orphan_app_state` audit suppresses pending manual transactions** (migration V026). `transactions_create` returns the predicted gold-key `transaction_id` to the caller immediately, before the next `refresh_run` materializes the row into `core.fct_transactions`. Notes/tags written against that id in the window between create and refresh are legitimate state, not orphans — without suppression the recipe would prescribe clearing them and destroy valid user curation. V026 adds a `transaction_id` column to `raw.manual_transactions` (populated at INSERT in `create_manual_batch`, backfilled from existing `(source_transaction_id, account_id)` pairs via the same SHA256 hash `_predict_manual_gold_key` computes). The audit's `NOT EXISTS(core.fct_transactions)` arm pairs with `AND NOT EXISTS(raw.manual_transactions WHERE transaction_id = ...)` to skip those rows. **Known limitation:** the suppression is broader than ideal — a manual that joins a dedup group during refresh has its predicted id replaced in core by the group's canonical id, but the raw row keeps the predicted id forever, so notes/tags written against the original predicted id stay suppressed even after they become genuinely orphaned. Closing this needs a real materialization signal (the obvious one, `prep.int_transactions__matched`, is a live VIEW that reflects raw rows immediately and can't discriminate pending-vs-processed); deferred to PR9. The trade-off is accepted because (a) the deduped-away case is rare in practice and (b) the primary protection — against destroying notes on freshly-created manuals — is the data-loss path that actually mattered. Surfaced by reviewers on PR #231 across three rounds.
 
-### PR 5 — Matches MCP surface
+### Matching workflow
 
-- Four new tools in `src/moneybin/mcp/tools/transactions.py`, wrapping the existing matching service.
-- CLI: existing commands stay (already implemented); CLI's `transactions matches undo` migrates to call `system_audit_undo` internally (thin wrapper).
-- Tests: surface tests per `.claude/rules/testing.md`; cross-surface parity test asserts CLI and MCP yield equivalent JSON.
+The matching workflow is implemented through the three standard tools described
+above. The CLI keeps its existing commands and reaches the same service outcomes;
+`moneybin transactions matches undo` uses `system_audit_undo`. Surface and
+cross-surface tests assert equivalent JSON outcomes.
 
 ### PR 6 — `RefreshResult` error surfacing
 
@@ -614,7 +617,7 @@ Per `.claude/rules/testing.md` test layers.
 | Integration (cascade) | `tests/integration/test_audit_undo_cascade.py` | op1 → op2 on same row → `system_audit_undo(op1)` fails with blocker list = [op2]; undo op2 then op1 succeeds |
 | Integration (doctor recipe) | `tests/integration/test_doctor_recipes.py` | Seed audit-failing state → `system_status(sections=["doctor"], detail="full")` → `recovery_actions` non-empty; tools named exist in registry |
 | Integration (refresh) | `tests/integration/test_refresh_error_surfacing.py` | Inject matcher crash → `RefreshResult.matching_error` populated; envelope `recovery_actions` correct |
-| Integration (matches MCP) | `tests/integration/test_matches_mcp.py` | All four new tools functional; parity with CLI JSON |
+| Integration (matches MCP) | `tests/integration/test_matches_mcp.py` | Four matching workflow operations work through the three standard tools; parity with CLI JSON |
 | Property | `tests/moneybin/test_envelope_property.py` | For every registered MCP tool, every code path that raises `UserError` either populates `recovery_actions` or sets `error_code="recovery_no_path"`. Fails CI if a new error site forgets. |
 | Scenario | `tests/scenarios/test_scenario_recoverable_state.py` | End-to-end: import → categorize → split → tag → revert → verify orphans cleaned by self-heal; bad rule → undo via `system_audit_undo`; agent never reaches for `sql_query` |
 | Cross-surface | `tests/integration/test_cli_mcp_recovery_parity.py` | CLI JSON output of recovery_actions = MCP envelope contents for matched failure shapes |

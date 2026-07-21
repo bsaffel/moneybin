@@ -173,7 +173,9 @@ moneybin accounts set <account_id>
 
 ## MCP Interface
 
-Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix).
+The 45-tool registry uses coarse domain operations with typed projections and
+view selectors. Account reads therefore share `accounts(view=...)`; the separate
+`accounts_set` operation retains the account target-state mutation boundary.
 
 ### Read tools
 
