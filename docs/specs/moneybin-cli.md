@@ -546,7 +546,8 @@ selectors to preserve bounded agent context.
 | Net worth now | `reports networth` | `reports(report_id="core:networth")` | `GET /reports/networth` |
 | Pending matches | `transactions matches pending` | `reviews(kind="matches", status="pending")` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `reviews(kind="matches", status="history")` | `GET /transactions/matches` |
-| Undo a match | `transactions matches undo <id>` | `system_audit_undo(operation_id=<id>)` | `POST /transactions/matches/{id}/undo` |
+| Locate an accepted match operation | `transactions matches history` | `system_audit(view="history", ...)` or `system_audit(view="events", ...)` | `GET /transactions/matches` |
+| Undo a match | `transactions matches undo <match_id>` | `system_audit_undo(operation_id=<operation_id>)` after locating the audit operation | `POST /transactions/matches/{match_id}/undo` |
 | Run matching | `transactions matches run` | `refresh_run(steps=["match"])` | `POST /refresh/match` |
 | Spending report | `reports spending` | `reports(report_id="core:spending")` | `GET /reports/spending` |
 
@@ -562,6 +563,14 @@ Each protocol uses its own idiom:
 
 Capability symmetry is executable rather than nominal. The checked outcome map
 owns the exact CLI paths and standard MCP operations.
+
+Match undo illustrates why identifier equality is not part of that contract.
+The CLI leaf accepts the domain `match_id`. MCP recovery is audit-oriented: call
+`system_audit(view="events", ...)`, find the match event by its `target_id`, and
+use that event's `operation_id` with
+`system_audit_undo(operation_id=<operation_id>)`. Alternatively, browse
+`system_audit(view="history", ...)` and inspect candidate operations with the
+detail view before undoing. The identifiers are not interchangeable.
 
 ### Why this rule
 
@@ -923,7 +932,7 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 | `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | Use `accounts_balances(view=...)` for balances and `reports(report_id="core:networth")` for net worth. |
 | `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Future MCP capabilities remain unnamed until bounded-registry admission. |
 | `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Use `accounts(view=...)` for reads and `accounts_set(...)` for settings. |
-| `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Use `reviews(kind="matches", status=...)`, `reviews_decide(...)`, `system_audit_undo(...)`, and `refresh_run(steps=["match"])`. |
+| `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Use `reviews(kind="matches", status=...)`, `reviews_decide(...)`, locate the audit `operation_id` with `system_audit(view="history"|"events", ...)` before `system_audit_undo(...)`, and use `refresh_run(steps=["match"])`. |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Use the admitted categorization operations, `reviews(kind=...)`, and `taxonomy(view=...)` / `taxonomy_set(...)`. |
 | `budget-tracking.md` | `track budget *` → `budget *`; the budget-vs-actual read command (`reports budget`) is de-registered pending the `reports.budget` view (M3C) and returns when the view ships | Future MCP capabilities remain unnamed until bounded-registry admission. |
 | `moneybin-mcp.md` | n/a | Maintain the current registry and selectors; historical names stay in ADR-016 and the archived catalog. |

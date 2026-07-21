@@ -43,20 +43,28 @@ in-progress
 ### Import-first rationale
 
 MoneyBin is designed around records from files and connectors. With OFX exports,
-CSV downloads, and provider APIs available, source-backed imports give every
-transaction durable provenance; manual entry cannot provide that guarantee.
+CSV downloads, and provider APIs available, source-backed imports remain the
+preferred path because they carry upstream provenance. Explicit manual batches
+are represented as their own source rather than bypassing the data pipeline.
 
 MoneyBin's position:
 
-- **Transactions come from sources** — files and connectors. Every transaction has provenance.
+- **Transactions come from sources** — files, connectors, and explicit manual
+  batches. Every transaction has MoneyBin source provenance.
 - **Corrections are metadata** — when a source record is wrong, the fix is an override in the prep layer ("for this transaction_id, the canonical amount is $42.50"), not a counter-entry in a ledger. The correction travels with the transaction, is auditable, and doesn't create phantom records.
 - **Annotations enrich, they don't create** — tags, notes, and cash breakdowns are metadata on existing transactions. A $200 ATM withdrawal can be annotated with how the cash was spent, but the annotation doesn't create new transactions that double-count the withdrawal.
-- **No general-purpose transaction insertion surface** — investment trades,
-  manual adjustments, and other sourceless records use their admitted
-  domain-specific source or recording contract. Future MCP capabilities remain
-  unnamed until admission through the bounded registry.
+- **Validated manual batches use the pipeline** — `transactions_create` is the
+  validated batch-creation surface for 1–100 manual transactions. The batch is
+  validated atomically, recorded under one manual-source import, and materialized
+  through the normal pipeline; it is not a raw SQL or ledger-write bypass.
+  Investment trades and other domain-specific records still require an admitted
+  source or recording contract. Future MCP capabilities remain unnamed until
+  admission through the bounded registry.
 
-This philosophy is a deliberate product decision. MoneyBin is a data platform that imports and analyzes financial data, not a bookkeeping tool that records it manually.
+This philosophy is a deliberate product decision. MoneyBin is a data platform
+that preserves source identity through ingestion and analysis, including for
+explicitly created manual batches; it is not a general-purpose bookkeeping
+ledger.
 
 ---
 

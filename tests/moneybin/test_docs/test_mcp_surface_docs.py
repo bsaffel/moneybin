@@ -30,15 +30,14 @@ CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
 STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-45.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
-CURRENT_MCP_GOVERNANCE_DOCS = (
-    INDEX,
-    CLIENT_COMPATIBILITY_SPEC,
-    ARCHITECTURE_SPEC,
-    SCALING_SPEC,
-    CLI_SPEC,
-    MCP_SPEC,
-    MCP_RULE,
-    SURFACE_RULE,
+CURRENT_PUBLIC_ROOTS = (
+    ROOT / "README.md",
+    *sorted((ROOT / ".claude/rules").glob("*.md")),
+    *sorted((ROOT / "docs").rglob("*.md")),
+)
+HISTORICAL_PUBLIC_PREFIXES = (
+    ROOT / "docs/decisions",
+    ROOT / "docs/specs/archived",
 )
 RETIRED_COUNT_PATTERNS = (
     re.compile(
@@ -51,6 +50,15 @@ RETIRED_COUNT_PATTERNS = (
     re.compile(r"\btotal_count:\s*105\b", re.IGNORECASE),
 )
 INLINE_CODE_SPAN_PATTERN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
+
+
+def _current_public_mcp_docs() -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path in CURRENT_PUBLIC_ROOTS
+        if path.is_file()
+        and not any(prefix in path.parents for prefix in HISTORICAL_PUBLIC_PREFIXES)
+    )
 
 
 def _retired_mcp_code_spans(
@@ -138,11 +146,25 @@ def test_cli_mcp_examples_use_coarse_operations_with_selectors() -> None:
         '`accounts balance history` | `accounts_balances(view="history", reference=...)`',
         '`reports networth` | `reports(report_id="core:networth")`',
         '`transactions matches pending` | `reviews(kind="matches", status="pending")`',
-        "`transactions matches undo <id>` | `system_audit_undo(operation_id=<id>)`",
         '`transactions matches run` | `refresh_run(steps=["match"])`',
     ):
         assert mapping in text
+    assert "`transactions matches undo <match_id>`" in text
+    assert '`system_audit(view="history", ...)`' in text
+    assert '`system_audit(view="events", ...)`' in text
+    assert "`system_audit_undo(operation_id=<operation_id>)`" in text
+    assert "The identifiers are not interchangeable" in text
+    assert (
+        "`transactions matches undo <id>` | `system_audit_undo(operation_id=<id>)`"
+    ) not in text
     assert "MCP mirrors CLI exactly" not in text
+
+
+def test_architecture_documents_validated_manual_transaction_creation() -> None:
+    text = " ".join(ARCHITECTURE_SPEC.read_text().split())
+
+    assert "`transactions_create` is the validated batch-creation surface" in text
+    assert "No general-purpose transaction insertion surface" not in text
 
 
 def test_future_mcp_capabilities_remain_unnamed_until_admission() -> None:
@@ -240,6 +262,17 @@ def test_spec_index_describes_the_current_mcp_contract() -> None:
     assert "sync + transform" not in row
 
 
+def test_spec_index_keeps_deferred_loading_optional() -> None:
+    row = next(
+        line
+        for line in INDEX.read_text().splitlines()
+        if "[MCP Tool Surface Scaling]" in line
+    )
+
+    assert "deferred-loading hosts may use that same registry" in row
+    assert "deferred-loading hosts use that same registry" not in row
+
+
 def test_active_governance_does_not_teach_legacy_registry_names() -> None:
     active_paths = (
         ARCHITECTURE_SPEC,
@@ -295,7 +328,7 @@ def test_retired_mcp_code_spans_ignore_generic_inline_code() -> None:
     assert _retired_mcp_code_spans("`categories` and `*`", retired_names) == set()
 
 
-def test_current_mcp_governance_does_not_repeat_the_retired_surface() -> None:
+def test_current_public_docs_do_not_repeat_the_retired_mcp_surface() -> None:
     baseline = json.loads(BASELINE_SNAPSHOT.read_text())
     current = json.loads(STANDARD_SNAPSHOT.read_text())
     # One-word retired tool names overlap with preserved CLI command words.
@@ -306,7 +339,7 @@ def test_current_mcp_governance_does_not_repeat_the_retired_surface() -> None:
 
     violations: list[str] = []
 
-    for path in CURRENT_MCP_GOVERNANCE_DOCS:
+    for path in _current_public_mcp_docs():
         text = path.read_text()
         relative = path.relative_to(ROOT)
         for span in sorted(

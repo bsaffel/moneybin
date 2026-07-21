@@ -29,7 +29,9 @@ Agents should never have to reshape MoneyBin data before plotting — reshaping 
 - **Breakdowns offer top-N + `"other"`** — an explicit rollup row plus `share_pct` per row (display-ready percent of total), so "top 8 categories" charts don't require client-side math.
 - **Display-sign guidance, never silent flips** — `data` keeps the accounting convention (negative = expense, positive = income; per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)). Tools whose natural chart displays expenses as positive magnitudes say so in their hints; the data layer never flips.
 
-Implementation is an additive audit of `reports_*` (and other series/breakdown tools) against this checklist — new fields or parameters only, no breaking changes.
+Implementation is an additive audit of the `reports` catalog (and other
+series/breakdown operations) against this checklist — new fields or parameters
+only, no breaking changes.
 
 ### 2. Presentation hints (existing levers only)
 

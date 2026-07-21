@@ -79,7 +79,7 @@ account numbers in the clear — the module docstring flags this.
 
 ### Curated reports aren't queryable either
 `reports.*` views already carry declared privacy classes (ADR-013) and
-back the `reports_*` tools, but `sql_query` still refuses the `reports`
+back entries in the `reports` catalog, but `sql_query` still refuses the `reports`
 schema — so an agent can't join a report against `core` or filter it
 ad hoc.
 

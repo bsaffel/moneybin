@@ -40,7 +40,7 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 - **Provider categorization (Plaid)** — Transactions synced from Plaid are auto-categorized from Plaid's Personal Finance Category, mapped to your canonical categories through the category-source bridge and confidence-gated (assigns only when Plaid is confident). It runs after your rules and merchants — so it never overrides a deliberate choice, it just clears the long tail before the LLM is ever asked. -> [Categorization guide](guides/categorization.md)
 - **Smart matcher** — Matches against description plus memo text, and uses structural signals (check number, transfer flag, payment channel, amount sign), so PayPal / Venmo / Zelle / generic-ACH wrappers categorize on the merchant identity that lives in memo. -> [Categorization guide](guides/categorization.md)
 - **Auto-rule learning** — User edits propose rules; review and promote them through a queue. -> [Categorization guide](guides/categorization.md)
-- **Curator-impact queue** — What still needs categorizing, ranked by `ABS(amount) × age_days` so the highest-impact gaps surface first. CLI: `moneybin transactions categorize pending`; MCP: `transactions_categorize_pending`. -> [Categorization guide](guides/categorization.md)
+- **Curator-impact queue** — What still needs categorizing, ranked by `ABS(amount) × age_days` so the highest-impact gaps surface first. CLI: `moneybin transactions categorize pending`; MCP's current assisted workflow begins with the scrubbed `transactions_categorize_assist` batch. -> [Categorization guide](guides/categorization.md)
 - **LLM-assist (opt-in)** — Propose → review → commit workflow. The redactor strips amounts, dates, and account identifiers before any prompt leaves the machine; structural fields are exposed as signals. Auto-created merchants accumulate `oneOf` exemplars instead of inventing over-general patterns. CLI: `moneybin transactions categorize assist`. -> [Categorization guide](guides/categorization.md)
 - **Auto-apply on commit** — Newly created rules and merchants apply across the rest of the dataset automatically, so the LLM is meaningfully less involved by the third or fourth import. -> [Categorization guide](guides/categorization.md)
 - **Merchant catalog** — User- and system-created (no seeded catalog). Plaid pass-through, migration imports, LLM-assist, and the auto-apply pass all populate it. -> [Categorization guide](guides/categorization.md)
@@ -53,7 +53,7 @@ What MoneyBin can do today. Each capability links to its guide; the [roadmap](ro
 - **Splits via annotation** — Annotation-based splits today; first-class split rows are parked (see [roadmap](roadmap.md)).
 - **Import-batch labels** — Group imported rows under a human label.
 - **Edit-history audit log** — Per-row history of every curation edit.
-- **Reversible edits** — Every protected `app.*` mutation (notes, tags, splits, categories, rules, account settings) is audit-paired and undoable as a unit keyed on `operation_id`. `moneybin system audit undo|history|get` (and `system_audit_undo` / `system_audit_history` / `system_audit_get` on MCP) reverse a change from its full before/after image; the undo is itself audited and undoable. Undo refuses (rather than silently cascading) when a later operation touched the same rows. -> [CLI reference](guides/cli-reference.md)
+- **Reversible edits** — Every protected `app.*` mutation (notes, tags, splits, categories, rules, account settings) is audit-paired and undoable as a unit keyed on `operation_id`. `moneybin system audit undo|history|get` and MCP's `system_audit(view="history"|"detail")` plus `system_audit_undo(operation_id=...)` expose and reverse a change from its full before/after image; the undo is itself audited and undoable. Undo refuses (rather than silently cascading) when a later operation touched the same rows. -> [CLI reference](guides/cli-reference.md)
 
 All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated guide yet — see [CLI reference](guides/cli-reference.md) and [MCP server guide](guides/mcp-server.md).)
 
@@ -118,7 +118,7 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 
 - **Structured logs** — `moneybin logs clean / path / tail`. PII and financial detail are stripped at the formatter layer; see [Threat model](guides/threat-model.md). -> [Observability guide](guides/observability.md)
 - **Prometheus-style metrics** — Per-operation counters and durations, persisted to DuckDB. `moneybin stats`. -> [Observability guide](guides/observability.md)
-- **`moneybin system doctor`** — Read-only pipeline integrity check (FK integrity, sign convention, transfer balance, staging coverage, categorization coverage). Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--output json` for agents. Registered as the `system_doctor` MCP tool. -> [CLI reference](guides/cli-reference.md)
+- **`moneybin system doctor`** — Read-only pipeline integrity check (FK integrity, sign convention, transfer balance, staging coverage, categorization coverage). Exits 0 on pass / warn, 1 on fail. `--verbose` for affected IDs, `--output json` for agents. MCP exposes the same outcome through `system_status(sections=["doctor"])`. -> [CLI reference](guides/cli-reference.md)
 
 ## Extensibility
 
