@@ -13,6 +13,9 @@ import importlib
 import pkgutil
 
 from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.export_destinations_repo import (
+    ExportDestinationsRepo as ExportDestinationsRepo,
+)
 
 
 def concrete_repo_classes() -> list[type[BaseRepo]]:

@@ -276,6 +276,16 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "workbook_name": DataClass.INSTITUTION,
     },
+    ("app", "export_destinations"): {
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "destination_id": DataClass.RECORD_ID,
+        "kind": DataClass.TXN_TYPE,
+        "local_path": DataClass.RECORD_ID,
+        "managed_tab_prefix": DataClass.USER_NOTE,
+        "name": DataClass.USER_NOTE,
+        "spreadsheet_id": DataClass.RECORD_ID,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "imports"): {
         "import_id": DataClass.RECORD_ID,
         "labels": DataClass.USER_NOTE,

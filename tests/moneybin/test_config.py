@@ -5,6 +5,16 @@ import pytest
 from moneybin.config import MCPConfig
 
 
+def test_profile_exports_dir_is_profile_scoped() -> None:
+    """Exports live beside the active profile's inbox rather than the shared root."""
+    from moneybin.config import MoneyBinSettings
+
+    settings = MoneyBinSettings(profile="alex")
+    assert (
+        settings.profile_exports_dir == settings.import_.inbox_root / "alex" / "exports"
+    )
+
+
 @pytest.mark.unit
 def test_mcp_tool_timeout_default() -> None:
     cfg = MCPConfig()
