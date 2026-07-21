@@ -16,6 +16,8 @@ from fastmcp import Client
 from fastmcp.tools import FunctionTool
 
 from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+from moneybin.reports._framework.catalog import get_report_catalog
+from moneybin.tables import INTERFACE_TABLES
 
 ROOT = Path(__file__).parents[3]
 SCALING_SPEC = ROOT / "docs/specs/mcp-tool-surface-scaling.md"
@@ -38,6 +40,7 @@ MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
 FEATURES = ROOT / "docs/features.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 REPORT_RECIPE_SPEC = ROOT / "docs/specs/reports-recipe-library.md"
+QUERYABLE_INTERNAL_SCHEMAS_SPEC = ROOT / "docs/specs/queryable-internal-schemas.md"
 STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-45.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
 BASELINE_EVAL_CAPTURE = ROOT / "tests/fixtures/mcp_eval/captures/baseline-105.json"
@@ -85,6 +88,19 @@ MCP_LABELLED_IDENTIFIER_PATTERN = re.compile(
 MCP_LABELLED_PROMPT_PATTERN = re.compile(
     r"\bMCP[ \t]+prompt[ \t]+`([^`\n]+)`",
     re.IGNORECASE,
+)
+MCP_FENCED_IDENTITY_PATTERN = re.compile(
+    r"(?m)^```[ \t]*mcp[ \t]+(?P<kind>tools?|prompts?)[ \t]*\n"
+    r"[ \t]*(?P<name>[a-z][a-z0-9]*)[ \t]*\n^```[ \t]*$"
+)
+FENCED_ONE_WORD_IDENTIFIER_PATTERN = re.compile(
+    r"(?m)^(?!```[ \t]*mcp\b)```[^\n]*\n"
+    r"[ \t]*(?P<name>[a-z][a-z0-9]*)[ \t]*\n^```[ \t]*$"
+)
+MCP_CONTRACT_TABLE_PATTERN = re.compile(
+    r"(?m)^(?P<header>[ \t]*\|?[^\n|]+(?:\|[^\n|]+)+\|?[ \t]*)\n"
+    r"^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)+\|?[ \t]*\n"
+    r"(?P<rows>(?:^[ \t]*\|?[^\n|]+(?:\|[^\n|]+)+\|?[ \t]*(?:\n|$))*)"
 )
 REMOVED_MCP_DECORATOR_ARGUMENT_PATTERN = re.compile(
     r"@mcp_tool\([^)]*\bsensitivity\s*=", re.DOTALL
@@ -1088,6 +1104,61 @@ def _mcp_contract_violations(
                 f"unregistered MCP prompt {name!r}"
             )
 
+    for match in MCP_FENCED_IDENTITY_PATTERN.finditer(text):
+        name = match.group("name")
+        kind = match.group("kind").rstrip("s")
+        label = "identifier" if kind == "tool" else "prompt"
+        registered = schemas if kind == "tool" else registered_prompts
+        if name not in registered:
+            violations.add(
+                f"{path}:{_line_number(text, match.start('name'))}: "
+                f"unregistered MCP {label} {name!r}"
+            )
+
+    for match in FENCED_ONE_WORD_IDENTIFIER_PATTERN.finditer(text):
+        kind = _closed_world_presentation_kind(text, match)
+        if kind not in {"tool", "prompt"}:
+            continue
+        name = match.group("name")
+        label = "identifier" if kind == "tool" else "prompt"
+        registered = schemas if kind == "tool" else registered_prompts
+        if name not in registered:
+            violations.add(
+                f"{path}:{_line_number(text, match.start('name'))}: "
+                f"unregistered MCP {label} {name!r}"
+            )
+
+    for table in MCP_CONTRACT_TABLE_PATTERN.finditer(text):
+        header = table.group("header").strip().removeprefix("|").removesuffix("|")
+        headers = header.split("|")
+        table_kind = _closed_world_presentation_kind(text, table)
+        kinds: list[str | None] = []
+        for header in headers:
+            kind = _mcp_contract_table_kind(header.strip())
+            is_explicit_mcp = bool(re.search(r"\bMCP\b", header, re.IGNORECASE))
+            kinds.append(kind if is_explicit_mcp or kind == table_kind else None)
+        if not any(kind in {"tool", "prompt"} for kind in kinds):
+            continue
+        rows_start = table.start("rows")
+        row_offset = 0
+        for row in table.group("rows").splitlines(keepends=True):
+            normalized = row.strip().removeprefix("|").removesuffix("|")
+            cells = normalized.split("|")
+            for kind, cell in zip(kinds, cells, strict=False):
+                name = cell.strip()
+                if kind not in {"tool", "prompt"} or not re.fullmatch(
+                    r"[a-z][a-z0-9]*", name
+                ):
+                    continue
+                label = "identifier" if kind == "tool" else "prompt"
+                registered = schemas if kind == "tool" else registered_prompts
+                if name not in registered:
+                    violations.add(
+                        f"{path}:{_line_number(text, rows_start + row_offset)}: "
+                        f"unregistered MCP {label} {name!r}"
+                    )
+            row_offset += len(row)
+
     for match in MCP_IDENTIFIER_TOKEN_PATTERN.finditer(text):
         name = match.group(1)
         presentation_kind = _closed_world_presentation_kind(
@@ -1921,6 +1992,81 @@ def test_mcp_contract_scan_uses_section_context_for_unknown_contracts(
     assert any(expected in violation for violation in violations)
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "```mcp tool\nadvisor\n```",
+            "unregistered MCP identifier 'advisor'",
+        ),
+        (
+            "```mcp prompt\nbriefing\n```",
+            "unregistered MCP prompt 'briefing'",
+        ),
+        (
+            "## MCP Interface\n\n### Tools\n\n```text\nadvisor\n```",
+            "unregistered MCP identifier 'advisor'",
+        ),
+        (
+            "## MCP Interface\n\n### Prompts\n\n```text\nbriefing\n```",
+            "unregistered MCP prompt 'briefing'",
+        ),
+        (
+            "| MCP tool | Purpose |\n|---|---|\n| advisor | Give advice |",
+            "unregistered MCP identifier 'advisor'",
+        ),
+        (
+            "| MCP prompt | Purpose |\n|---|---|\n| briefing | Summarize finances |",
+            "unregistered MCP prompt 'briefing'",
+        ),
+        (
+            "## MCP Interface\n\n### Tools\n\n"
+            "Tool | Purpose\n---|---\nadvisor | Give advice",
+            "unregistered MCP identifier 'advisor'",
+        ),
+        (
+            "## MCP Interface\n\n### Prompts\n\n"
+            "Prompt | Purpose\n---|---\nbriefing | Summarize finances",
+            "unregistered MCP prompt 'briefing'",
+        ),
+    ],
+)
+def test_mcp_contract_scan_rejects_one_word_names_in_explicit_identity_contexts(
+    text: str,
+    expected: str,
+) -> None:
+    violations = _mcp_contract_violations(
+        text,
+        Path("docs/example.md"),
+        prompt_names=frozenset({"monthly_review"}),
+    )
+
+    assert any(expected in violation for violation in violations)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "An advisor can explain a budget without becoming an MCP tool.",
+        ("| MCP tool | Domain value |\n|---|---|\n| reports | advisor |"),
+        ("| Tool | Purpose |\n|---|---|\n| advisor | Give advice |"),
+        "## Developer tools\n\n```text\nadvisor\n```",
+        (
+            "# MCP Server\n\n## Developer tools\n\n"
+            "| Tool | Purpose |\n|---|---|\n| advisor | Give advice |"
+        ),
+        (
+            "# MCP Server\n\n## Developer tools\n\n"
+            "Tool | Purpose\n---|---\nadvisor | Give advice"
+        ),
+    ],
+)
+def test_mcp_contract_scan_ignores_one_word_prose_and_domain_values(
+    text: str,
+) -> None:
+    assert _mcp_contract_violations(text, Path("docs/example.md")) == []
+
+
 @pytest.mark.parametrize("identifier", ["categories", "merchants", "review"])
 def test_mcp_contract_scan_rejects_ambiguous_retired_names_in_tool_tables(
     identifier: str,
@@ -2588,6 +2734,10 @@ def test_final_review_host_and_report_wording_is_current() -> None:
     assert "implemented" in features.partition("Declarative reports")[2].splitlines()[0]
     assert "A capable host may optionally defer" in server_guide
     assert "Observed host-native deferral evidence remains absent" in server_guide
+    assert (
+        "Promotion remains blocked until both observed context-budget evidence "
+        "and observed host-native-deferral evidence exist."
+    ) in server_guide
     assert "The current registry advertises zero output schemas" in client_guide
     assert "registry of 45 intent-shaped tools" in roadmap
 
@@ -2607,6 +2757,34 @@ def test_final_review_refresh_and_report_counts_match_runtime() -> None:
     assert "two service-backed net-worth routes" in reports
     assert "eight SQLMesh views" not in reports
     assert "all eight `reports.*` views" not in reports
+
+
+def test_current_report_docs_match_live_catalog_and_interface_views() -> None:
+    report_routes = {report.report_id for report in get_report_catalog().list()}
+    report_views = {
+        table.full_name for table in INTERFACE_TABLES if table.schema == "reports"
+    }
+    assert len(report_views) == 7
+    assert len(report_routes) == 8
+
+    current_surface_summary = (
+        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven')[len(report_views)]} "
+        "SQLMesh report views back "
+        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight')[len(report_routes)]} "
+        "report routes"
+    )
+    queryable_schemas = QUERYABLE_INTERNAL_SCHEMAS_SPEC.read_text()
+    reports = REPORT_RECIPE_SPEC.read_text()
+    normalized_reports = " ".join(reports.split())
+
+    assert (
+        current_surface_summary.lower() in " ".join(queryable_schemas.split()).lower()
+    )
+    assert current_surface_summary.lower() in normalized_reports.lower()
+    assert "reports.uncategorized_queue" not in reports
+    assert "core.uncategorized_queue" in reports
+    assert "internal categorization-review queue" in reports
+    assert "no registered report route" in normalized_reports
 
 
 def test_final_review_mcp_decorator_and_writer_guidance_match_runtime() -> None:

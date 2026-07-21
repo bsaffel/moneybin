@@ -31,7 +31,7 @@ declaration covers.
 > this spec proposed *deriving* internal-schema classes automatically via
 > the `sql_lineage` graph, "self-maintaining, no hand-authored registry."
 > [ADR-013](../decisions/013-report-classification-declared.md) already
-> rejected exactly that, verified against all eight real report views:
+> rejected exactly that. As a current runtime invariant, seven SQLMesh report views back eight report routes:
 > SQLMesh deploys every `kind VIEW` model as `SELECT * FROM
 > <internal physical table>`, so runtime lineage classifies the pointer,
 > not the logic, and CRITICAL columns **leak in the clear**; and lineage

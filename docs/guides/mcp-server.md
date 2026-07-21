@@ -48,7 +48,8 @@ records, connector egress, and local-model use.
 ## Contract status
 
 The 45-tool registry is operating. It advertises zero output schemas and has
-passed its deterministic contract check. Observed host-native deferral evidence remains absent,
-and promotion remains pending observed context-budget evidence. Do not add a tool, report
+passed its deterministic contract check. Observed host-native deferral evidence remains absent.
+Promotion remains blocked until both observed context-budget evidence and observed
+host-native-deferral evidence exist. Do not add a tool, report
 slot, profile, pack, or reconnect mode without the admission record in the
 scaling spec.

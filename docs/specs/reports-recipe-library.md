@@ -6,21 +6,17 @@
 - **Status:** implemented
 - **Milestone:** M2A ("brand surface" cluster — recipe library + `moneybin doctor`)
 
-> **Migration note (2026-07-18):** `reports.uncategorized_queue` moved to
-> `core.uncategorized_queue` as part of
-> [`reports-foundation.md`](reports-foundation.md) R5: membership in
-> `reports.*` is the definition of "user-facing report," and this view's only
-> runtime reader is `services/categorization/queries.py` (backing
-> `reviews(kind="categorization", status="pending")`), never a `reports *` CLI command or
-> registered report-catalog route. The live model is
-> `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`; the `TableRef`
-> is `CORE_UNCATEGORIZED_QUEUE`. Original section text below still describes
-> the other seven `reports.*` views accurately and is preserved for
-> historical context.
+> **Current categorization queue (2026-07-18):**
+> `core.uncategorized_queue` is an internal categorization-review queue. Its
+> only runtime reader is `services/categorization/queries.py`, backing
+> `reviews(kind="categorization", status="pending")`; it has no registered
+> report route. The live model is
+> `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`, and its
+> `TableRef` is `CORE_UNCATEGORIZED_QUEUE`.
 
 ## Goal
 
-Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).
+Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes. Seven SQLMesh report views back eight report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).
 
 Bundle in three migrations that should ship alongside the inaugurating `reports.*` work:
 
@@ -49,7 +45,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 ### Related specs
 
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — gate spec; defines the `reports.*` schema, layer rules, and the `core.agg_net_worth → reports.net_worth` cascading edit. **Carries one small follow-up amendment in this spec** (rename `reports.networth` → `reports.net_worth`); see [Migrations](#migrations).
-- [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`). This spec adds four more subcommands (`reports recurring`, `reports merchants`, `reports large-transactions`, `reports balance-drift`). The `uncategorized_queue` view ships, but no `reports uncategorized` command is exposed — agents reach the curation queue through the reviews surface.
+- [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`). This spec adds four more subcommands (`reports recurring`, `reports merchants`, `reports large-transactions`, `reports balance-drift`). `core.uncategorized_queue` is an internal categorization-review queue, reached through the reviews surface rather than a report command or registered report route.
 - [`moneybin-mcp.md`](moneybin-mcp.md) — the current `reports` catalog/runner preserves per-report CLI commands.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. **Extended** by this spec to include the `reports` schema with `audience: "interface"`.
 - [`reports-net-worth.md`](reports-net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
@@ -80,8 +76,9 @@ This spec is the inaugurating implementation of that convention. It exercises th
 > `ALL_REPORTS`; MCP dispatches the same catalog entries through `reports`.
 > Names and result shapes are unchanged. `networth` /
 > `networth-history` stay hand-written (NetworthService-backed, not single
-> `reports.*` view reads) — a documented exception. `uncategorized_queue` is
-> not registered as a report runner (see [CLI Interface](#cli-interface)).
+> `reports.*` view reads) — a documented exception.
+> `core.uncategorized_queue` is an internal categorization-review queue, not a
+> report runner (see [CLI Interface](#cli-interface)).
 
 The `reports.*` schema is a **read-only presentation layer** (`architecture-shared-primitives.md` §Data Layer). Every model is a SQLMesh view (`kind VIEW`) reading exclusively from `core.*` and (where applicable) `app.*` joined into `core.dim_*` resolved views. **No `reports.*` model writes to `app.*`, no service writes to `reports.*`, no consumer reads from `prep.*` or `raw.*` directly.**
 
@@ -95,9 +92,8 @@ The pattern is small and uniform:
 
 ## Models
 
-Seven `reports.*` views shipped. The original eighth candidate,
-`uncategorized_queue`, is documented below for historical context but lives in
-`core.*` and is not a report route.
+Seven `reports.*` views shipped. `core.uncategorized_queue` is an internal
+categorization-review queue, not a report view or registered report route.
 
 ### `reports.net_worth`
 
@@ -266,38 +262,6 @@ CLI: `moneybin reports recurring [--min-confidence FLOAT] [--status active|inact
 MCP: `reports(report_id="core:recurring", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 
-### `reports.uncategorized_queue`
-
-**Shipped:** PR #121 (M2A entry).
-
-**Purpose:** Surface uncategorized transactions ranked by curator-impact (large + old first). Backs the curation workflow; complements (does not replace) the `transactions categorize` review surface.
-
-**Grain:** One row per uncategorized transaction.
-
-**Source:** `core.fct_transactions` filtered to `category IS NULL AND is_transfer = FALSE`.
-
-**Columns:**
-
-| Column | Type | Comment |
-|---|---|---|
-| `transaction_id` | `VARCHAR` | Joinable to core.fct_transactions |
-| `account_id` | `VARCHAR` | Owning account |
-| `account_name` | `VARCHAR` | Account display name |
-| `txn_date` | `DATE` | Transaction date |
-| `amount` | `DECIMAL(18,2)` | Signed amount |
-| `description` | `VARCHAR` | Original description (for inspection; categorization usually keys on merchant_normalized) |
-| `merchant_normalized` | `VARCHAR` | Normalized merchant string |
-| `age_days` | `INTEGER` | Days since txn_date |
-| `priority_score` | `DECIMAL(18,2)` | ABS(amount) * age_days; higher = higher curator priority |
-| `source_type` | `VARCHAR` | Source system that contributed this transaction |
-| `source_id` | `VARCHAR` | Provenance reference within the source system |
-
-Default sort: `ORDER BY priority_score DESC`. The view does not bake the sort in — SQL consumers can re-rank by recency, by amount, by account, etc.
-
-**Surface:** the `uncategorized_queue` view is not a registered report. Agents
-reach the curation queue through the reviews surface; SQL
-consumers can query the view with `sql_query` / `moneybin sql query`.
-
 ### `reports.merchant_activity`
 
 **Shipped:** PR #121 (M2A entry).
@@ -417,14 +381,14 @@ src/moneybin/sqlmesh/models/reports/
 ├── cash_flow.sql
 ├── spending_trend.sql
 ├── recurring_subscriptions.sql
-├── uncategorized_queue.sql
 ├── merchant_activity.sql
 ├── large_transactions.sql
 └── balance_drift.sql
 
 src/moneybin/sqlmesh/models/core/
 ├── dim_categories.sql            -- migrated from app.categories Python-built view
-└── dim_merchants.sql             -- migrated from app.merchants Python-built view
+├── dim_merchants.sql             -- migrated from app.merchants Python-built view
+└── uncategorized_queue.sql       -- internal categorization-review queue
 ```
 
 ### Files to modify
@@ -453,7 +417,7 @@ src/moneybin/sqlmesh/models/core/
 - `docs/specs/architecture-shared-primitives.md` — small text amendment per [Migration 1](#1-amendment-to-architecture-shared-primitivesmd).
 
 **CLI:**
-- The view-backed subcommands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners in `src/moneybin/reports/definitions/` and registered by `register_reports_cli(ALL_REPORTS, app)` in `src/moneybin/cli/commands/reports/__init__.py`. `networth` / `networth-history` stay hand-written. (`uncategorized_queue` is not a registered runner — no `reports uncategorized` command.)
+- The view-backed subcommands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners in `src/moneybin/reports/definitions/` and registered by `register_reports_cli(ALL_REPORTS, app)` in `src/moneybin/cli/commands/reports/__init__.py`. `networth` / `networth-history` stay hand-written. `core.uncategorized_queue` is an internal categorization-review queue, served through `reviews(kind="categorization", status="pending")` rather than a report command.
 - The existing `categories list` and `merchants list` CLI commands are unaffected because their services use the module-level `CATEGORIES` / `MERCHANTS` constants. After migration, those constants resolve to `core.dim_*`.
 
 **MCP:**
@@ -521,7 +485,12 @@ moneybin reports
 +-- balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
 ```
 
-The `uncategorized_queue` view ships but no `reports uncategorized` command is registered — agents use `reviews(kind="categorization", status="pending")` for the curation queue (see [`reports.uncategorized_queue`](#reportsuncategorized_queue)). `reports budget` and the `reports health` stub were also removed: budget is synthesized from `BudgetService` rather than a `reports.*` view and returns through the framework once M3C ships a `reports.budget` view; `health` had no backing spec.
+`core.uncategorized_queue` is an internal categorization-review queue with no
+registered report route; agents use `reviews(kind="categorization",
+status="pending")` for the curation queue. `reports budget` and the `reports
+health` stub were also removed: budget is synthesized from `BudgetService`
+rather than a `reports.*` view and returns through the framework once M3C ships
+a `reports.budget` view; `health` had no backing spec.
 
 All commands support `--output json` per `moneybin-cli.md`. JSON output uses `ResponseEnvelope` shape per `architecture-shared-primitives.md` §MCP/CLI/SQL Symmetry.
 
@@ -544,8 +513,8 @@ does not mirror the CLI 1:1 or generate one MCP callback per report.
 | `reports(report_id="core:large_transactions", parameters={...})` | Dynamic; maximum `critical` | Large transactions |
 | `reports(report_id="core:balance_drift", parameters={...})` | Dynamic; maximum `critical` | Balance reconciliation drift |
 
-The `uncategorized_queue` view is not a registered report. The categorization
-surface owns that queue.
+`core.uncategorized_queue` is an internal categorization-review queue with no
+registered report route. The categorization surface owns that queue.
 
 Classification is field-derived for each execution. Most report columns are
 aggregate financial state, category breakdowns, and merchant totals;
@@ -663,9 +632,8 @@ Specific audits per model:
 - `reports.cash_flow` — `unique_combination_of_columns(year_month, account_id, category)`. (NULL category is permitted; DuckDB's grouping handles it.)
 - `reports.spending_trend` — `unique_combination_of_columns(year_month, category)`.
 - `reports.recurring_subscriptions` — `not_null(merchant_normalized, cadence, confidence)`. Confidence range is asserted in scenario tests, not as an audit (DuckDB SQLMesh audits don't natively support range checks; would be a custom audit).
-- `reports.uncategorized_queue` — planned `not_null(transaction_id, priority_score)`;
-  never implemented. The shipped `core.uncategorized_queue.sql` (see the
-  migration note above) declares no `audits(...)` block at all.
+- `core.uncategorized_queue` — an internal categorization-review queue with no
+  registered report route; its SQLMesh model declares no `audits(...)` block.
 - `reports.merchant_activity` — `unique_combination_of_columns(merchant_normalized)`, `not_null(total_spend, txn_count)`.
 - `reports.large_transactions` — `not_null(transaction_id, amount)`.
 - `reports.balance_drift` — `unique_combination_of_columns(account_id, assertion_date)`, `not_null(asserted_balance)`.
