@@ -148,7 +148,7 @@ first, implementing this shared shape rather than a PDF-only one.
     tier + calibration decide who satisfies it.
 11. **Recovery is a first-class, surfaced step.** Every confirmed new-format import
     returns `actions[]` with the concrete recovery paths: undo the data load
-    (`import_revert <import_id>`), undo the format save / PDF recipe-version bump
+    (`import_revert(operation="revert_import", import_id=...)`), undo the format save / PDF recipe-version bump
     (`system_audit_undo <operation_id>` per `data-recovery-contract.md`), and create a
     fresh preview before a new confirmation. On a detection or transform error, the
     source is previewed again rather than modifying a prior confirmation payload.
@@ -273,7 +273,7 @@ shapes or verbs.** The confirm flow uses the existing import tools plus
 | Tool / command | Shape | Role |
 |---|---|---|
 | `import_files(paths, …)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
-| `import_preview(file)` | Shape 5 (read-projection) | Read-only inspect: proposed mapping, `Confidence`, samples, unmapped columns. For PDF, also emits the bridge payload (IR / page image + extraction request). |
+| `import_preview(file_path=...)` | Shape 5 (read-projection) | Read-only inspect: proposed mapping, `Confidence`, samples, unmapped columns. For PDF, also emits the bridge payload (IR / page image + extraction request). |
 | `import_confirm(preview_id, account_bindings?, account_id?, account_metadata?, account_name?, bridge_response?, confirmation_token?, save_format?)` | Shape 3, `_confirm` | Atomically consume an unchanged staged preview and import its file. Sign inversion remains human-owned through elicitation. |
 | `import_status(sections=["formats"])` | Shape 5 | List learned formats (tabular + pdf). |
 | `gsheet_connect` | `_connect` lifecycle | Its `connection_id` mode re-detects and reconnects a binding; its `url` mode creates one. Both retain inline `confirm_mapping` / `column_mapping` and share the confidence bands + `resolve_or_confirm` primitive underneath. |

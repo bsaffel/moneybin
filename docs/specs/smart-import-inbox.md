@@ -140,7 +140,8 @@ Done: 1 imported, 0 failed, 1 pending.
 
 ## MCP Interface
 
-Two new tools under the existing `import.*` namespace.
+One dedicated `import_inbox_sync` tool plus the `sections=["inbox"]`
+projection of the existing `import_status` tool.
 
 ### `import_inbox_sync`
 
