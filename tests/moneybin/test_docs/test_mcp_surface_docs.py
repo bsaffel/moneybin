@@ -47,6 +47,7 @@ RETIRED_COUNT_PATTERNS = (
     re.compile(r"\bour 105\b", re.IGNORECASE),
     re.compile(r"\btotal_count:\s*105\b", re.IGNORECASE),
 )
+INLINE_CODE_SPAN_PATTERN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 
 
 def _current_public_mcp_docs() -> tuple[Path, ...]:
@@ -56,6 +57,19 @@ def _current_public_mcp_docs() -> tuple[Path, ...]:
         if path.is_file()
         and not any(prefix in path.parents for prefix in HISTORICAL_PUBLIC_PREFIXES)
     )
+
+
+def _retired_mcp_code_spans(text: str, retired_names: set[str]) -> set[str]:
+    retired_spans: set[str] = set()
+    for span in INLINE_CODE_SPAN_PATTERN.findall(text):
+        name, has_arguments, _ = span.partition("(")
+        if name in retired_names and (not has_arguments or span.endswith(")")):
+            retired_spans.add(span)
+        elif span.endswith("_*") and any(
+            retired_name.startswith(span[:-1]) for retired_name in retired_names
+        ):
+            retired_spans.add(span)
+    return retired_spans
 
 
 def test_documented_standard_names_match_runtime() -> None:
@@ -197,6 +211,30 @@ def test_active_governance_does_not_teach_legacy_registry_names() -> None:
             assert term not in text, f"{path}: {term}"
 
 
+def test_retired_mcp_code_spans_include_calls_and_wildcard_families() -> None:
+    baseline = json.loads(BASELINE_SNAPSHOT.read_text())
+    current = json.loads(STANDARD_SNAPSHOT.read_text())
+    retired_names = {
+        tool["name"] for tool in baseline["tools"] if "_" in tool["name"]
+    } - {tool["name"] for tool in current["tools"]}
+
+    text = (
+        "`system_audit_history(...)` and `transactions_matches_*` are retired; "
+        "`categories` remains a valid domain noun."
+    )
+
+    assert _retired_mcp_code_spans(text, retired_names) == {
+        "system_audit_history(...)",
+        "transactions_matches_*",
+    }
+
+
+def test_retired_mcp_code_spans_ignore_generic_inline_code() -> None:
+    retired_names = {"system_audit_history", "transactions_matches_run"}
+
+    assert _retired_mcp_code_spans("`categories` and `*`", retired_names) == set()
+
+
 def test_current_public_docs_do_not_repeat_the_retired_mcp_surface() -> None:
     baseline = json.loads(BASELINE_SNAPSHOT.read_text())
     current = json.loads(STANDARD_SNAPSHOT.read_text())
@@ -211,9 +249,8 @@ def test_current_public_docs_do_not_repeat_the_retired_mcp_surface() -> None:
     for path in _current_public_mcp_docs():
         text = path.read_text()
         relative = path.relative_to(ROOT)
-        for name in sorted(retired_names):
-            if f"`{name}`" in text:
-                violations.append(f"{relative}: retired MCP identifier `{name}`")
+        for span in sorted(_retired_mcp_code_spans(text, retired_names)):
+            violations.append(f"{relative}: retired MCP identifier `{span}`")
         for pattern in RETIRED_COUNT_PATTERNS:
             if match := pattern.search(text):
                 violations.append(f"{relative}: retired count {match.group()!r}")
