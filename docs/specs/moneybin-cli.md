@@ -576,8 +576,8 @@ detail view before undoing. The identifiers are not interchangeable.
 
 Three justifications:
 
-1. **Outcome parity is testable.** Equal inputs reach the same services and
-   preserve observable results even when surface shapes differ.
+1. **Outcome parity is testable.** Equivalent requests reach the mapped services
+   and preserve observable outcomes.
 2. **CLI discoverability stays cheap.** Nested `--help` keeps surgical operator
    controls available without spending MCP slots.
 3. **MCP selection stays bounded.** Coarse operations and selectors reduce

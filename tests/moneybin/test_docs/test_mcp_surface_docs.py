@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from inspect import getdoc
 from pathlib import Path
 
 from fastmcp.tools import FunctionTool
@@ -28,8 +29,10 @@ PROMPTS = ROOT / "src/moneybin/mcp/prompts.py"
 CHANGELOG = ROOT / "CHANGELOG.md"
 CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
+FEATURES = ROOT / "docs/features.md"
 STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-45.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
+OUTCOME_MAP = ROOT / "tests/fixtures/mcp_capabilities/outcome-map.json"
 CURRENT_PUBLIC_ROOTS = (
     ROOT / "README.md",
     *sorted((ROOT / ".claude/rules").glob("*.md")),
@@ -165,6 +168,68 @@ def test_architecture_documents_validated_manual_transaction_creation() -> None:
 
     assert "`transactions_create` is the validated batch-creation surface" in text
     assert "No general-purpose transaction insertion surface" not in text
+
+
+def test_features_maps_categorization_queue_to_the_reviews_capability() -> None:
+    outcome_map = json.loads(OUTCOME_MAP.read_text())
+    reviews_capability = next(
+        item for item in outcome_map if item["capability_id"] == "reviews.read"
+    )
+    snapshot = json.loads(STANDARD_SNAPSHOT.read_text())
+    reviews_tool = next(tool for tool in snapshot["tools"] if tool["name"] == "reviews")
+    kinds = reviews_tool["definition"]["inputSchema"]["properties"]["kind"]["enum"]
+
+    assert "transactions categorize pending" in reviews_capability["cli_commands"]
+    assert reviews_capability["mcp_tools"] == ["reviews"]
+    assert "categorization" in kinds
+
+    queue_line = next(
+        line
+        for line in FEATURES.read_text().splitlines()
+        if "Curator-impact queue" in line
+    )
+    assert '`reviews(kind="categorization", status="pending")`' in queue_line
+    assert "transactions_categorize_assist" not in queue_line
+
+
+def test_features_documents_the_executable_manual_batch_contract() -> None:
+    from moneybin.mcp.tools.curation import transactions_create
+
+    outcome_map = json.loads(OUTCOME_MAP.read_text())
+    create_capability = next(
+        item for item in outcome_map if item["capability_id"] == "transactions.create"
+    )
+    doc = getdoc(transactions_create)
+
+    assert create_capability["mcp_tools"] == ["transactions_create"]
+    assert create_capability["service_methods"] == [
+        "moneybin.services.transaction_service.TransactionService.create_manual_batch"
+    ]
+    assert doc is not None
+    batch_range = re.search(r"Create (\d+)\.\.(\d+) manual transactions", doc)
+    assert batch_range is not None
+
+    manual_line = next(
+        line
+        for line in FEATURES.read_text().splitlines()
+        if "Manual transaction entry" in line
+    )
+    assert (
+        f"validated batch of {batch_range.group(1)}–{batch_range.group(2)} transactions"
+        in manual_line
+    )
+    assert "one at a time" not in manual_line
+    assert "not yet wired" not in manual_line
+
+
+def test_cli_spec_describes_outcome_parity_without_input_identity() -> None:
+    text = CLI_SPEC.read_text()
+
+    assert (
+        "Equivalent requests reach the mapped services and preserve observable "
+        "outcomes."
+    ) in " ".join(text.split())
+    assert "Equal inputs reach the same services" not in text
 
 
 def test_future_mcp_capabilities_remain_unnamed_until_admission() -> None:
