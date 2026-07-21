@@ -115,6 +115,23 @@ class ReportCatalog:
         limit: int,
     ) -> CatalogReportResult:
         """Validate parameters, then dispatch through the selected report kind."""
+        spec, validated = self.resolve_request(
+            report_id=report_id,
+            parameters=parameters,
+            limit=limit,
+        )
+        if isinstance(spec, ReportSpec):
+            return run_report(spec, db, max_rows=limit, **validated)
+        return spec.executor(db, validated, limit)
+
+    def resolve_request(
+        self,
+        *,
+        report_id: str,
+        parameters: Mapping[str, JsonValue],
+        limit: int,
+    ) -> tuple[RegisteredReport, dict[str, JsonValue]]:
+        """Resolve and validate one request without executing its report."""
         if limit < 0:
             raise UserError(
                 "Report limit must be non-negative.",
@@ -123,11 +140,9 @@ class ReportCatalog:
             )
         spec = self.resolve(report_id)
         validated = _validate_parameters(spec, parameters)
-        if isinstance(spec, ReportSpec):
-            return run_report(spec, db, max_rows=limit, **validated)
-        if spec.validator is not None:
+        if isinstance(spec, ServiceReportSpec) and spec.validator is not None:
             spec.validator(validated)
-        return spec.executor(db, validated, limit)
+        return spec, validated
 
 
 def _parameter_specs(spec: RegisteredReport) -> tuple[ParamSpec, ...]:

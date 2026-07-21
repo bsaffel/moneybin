@@ -38,3 +38,32 @@ class ExportRequest:
     format: ExportFormat
     redaction_mode: RedactionMode
     compress_zip: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReportExportReceipt:
+    """Catalog report metadata retained beside one prepared snapshot."""
+
+    report_id: str
+    parameters: Mapping[str, object]
+    parameter_classes: Mapping[str, str]
+    sql: str
+    lineage: tuple[str, ...]
+    output_classes: Mapping[str, str]
+    freshness: Mapping[str, object] | None
+    graduation_eligibility: bool | None
+    semantics: Mapping[str, object]
+
+    def as_mapping(self) -> dict[str, object]:
+        """Return metadata for the snapshot's deep-freezing receipt boundary."""
+        return {
+            "report_id": self.report_id,
+            "parameters": dict(self.parameters),
+            "parameter_classes": dict(self.parameter_classes),
+            "sql": self.sql,
+            "lineage": self.lineage,
+            "output_classes": dict(self.output_classes),
+            "freshness": self.freshness,
+            "graduation_eligibility": self.graduation_eligibility,
+            "semantics": dict(self.semantics),
+        }

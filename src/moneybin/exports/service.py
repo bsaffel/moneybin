@@ -3,22 +3,50 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import UTC, datetime
+from typing import cast
 
 from pydantic import JsonValue
 
 from moneybin.database import Database
-from moneybin.exports.models import RedactionMode
+from moneybin.errors import UserError
+from moneybin.exports.models import RedactionMode, ReportExportReceipt
 from moneybin.exports.redaction import apply_export_redaction
-from moneybin.exports.snapshot import PreparedExport, build_bundle_snapshot
+from moneybin.exports.snapshot import (
+    ARTIFACT_VERSION,
+    ExportSubject,
+    PreparedColumn,
+    PreparedExport,
+    PreparedTable,
+    ReportExportProvenance,
+    build_bundle_snapshot,
+    build_data_dictionary,
+    prepared_table_checksum,
+)
+from moneybin.reports._framework.catalog import (
+    ReportCatalog,
+    get_report_catalog,
+)
+from moneybin.reports._framework.contract import ReportSpec
+from moneybin.reports._framework.execute import (
+    execute_catalog_report,
+    redact_report_parameters,
+)
 
 
 class ExportService:
     """Prepare format-neutral exports from trusted semantic sources."""
 
-    def __init__(self, db: Database) -> None:
+    def __init__(
+        self,
+        db: Database,
+        *,
+        report_catalog: ReportCatalog | None = None,
+    ) -> None:
         """Bind the database used for canonical snapshot reads."""
         self._db = db
+        self._report_catalog = report_catalog
 
     def prepare_bundle(
         self,
@@ -37,5 +65,104 @@ class ExportService:
             self._db,
             profile=profile,
             created_at=datetime.now(UTC),
+        )
+        return apply_export_redaction(snapshot, redaction_mode)
+
+    def prepare_report(
+        self,
+        *,
+        profile: str,
+        report_id: str,
+        report_parameters: Mapping[str, JsonValue] | None = None,
+        max_rows: int,
+        redaction_mode: RedactionMode = "redacted",
+    ) -> PreparedExport:
+        """Prepare exactly one catalog report under one output policy."""
+        catalog = self._report_catalog or get_report_catalog()
+        spec, validated = catalog.resolve_request(
+            report_id=report_id,
+            parameters=report_parameters or {},
+            limit=max_rows,
+        )
+        if not isinstance(spec, ReportSpec):
+            raise UserError(
+                "Report does not expose a catalog SQL runner.",
+                code="REPORT_EXPORT_UNSUPPORTED",
+                details={"report_id": spec.report_id},
+            )
+
+        execution = execute_catalog_report(
+            spec,
+            self._db,
+            max_rows=max_rows,
+            **validated,
+        )
+        columns = tuple(
+            PreparedColumn(
+                name=name,
+                duckdb_type=duckdb_type,
+                data_class=execution.output_classes[name],
+            )
+            for name, duckdb_type in zip(
+                execution.columns,
+                execution.column_types,
+                strict=True,
+            )
+        )
+        rows = tuple(
+            tuple(record[name] for name in execution.columns)
+            for record in execution.records
+        )
+        table = PreparedTable(
+            name=execution.report_id,
+            source=spec.view,
+            columns=columns,
+            rows=rows,
+            checksum_sha256=prepared_table_checksum(columns, rows),
+        )
+        parameter_classes = {
+            parameter.name: parameter.data_class.value for parameter in spec.params
+        }
+        snapshot_parameters: Mapping[str, object]
+        if redaction_mode == "redacted":
+            snapshot_parameters = redact_report_parameters(
+                spec,
+                execution.parameters,
+            )
+        else:
+            snapshot_parameters = execution.parameters
+        receipt = ReportExportReceipt(
+            report_id=execution.report_id,
+            parameters=snapshot_parameters,
+            parameter_classes=parameter_classes,
+            sql=execution.sql,
+            lineage=execution.provenance,
+            output_classes={
+                name: data_class.value
+                for name, data_class in execution.output_classes.items()
+            },
+            # The current ReportSpec exposes neither field. Keep that absence
+            # explicit instead of inferring verification state from provenance.
+            freshness=None,
+            graduation_eligibility=None,
+            semantics=cast(dict[str, object], asdict(execution.semantics)),
+        )
+        tables = (table,)
+        snapshot = PreparedExport(
+            artifact_version=ARTIFACT_VERSION,
+            profile=profile,
+            created_at=datetime.now(UTC),
+            subject=ExportSubject(
+                kind="report",
+                report_id=execution.report_id,
+                parameters=snapshot_parameters,
+            ),
+            redaction_mode="unredacted",
+            tables=tables,
+            data_dictionary=build_data_dictionary(tables),
+            provenance=ReportExportProvenance(
+                report_id=execution.report_id,
+                receipt=receipt.as_mapping(),
+            ),
         )
         return apply_export_redaction(snapshot, redaction_mode)
