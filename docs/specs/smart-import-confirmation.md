@@ -119,20 +119,18 @@ first, implementing this shared shape rather than a PDF-only one.
    not reconcile.
 6. **Known layouts reuse silently.** A recognized layout loads with no prompt
    (subject to the replay/validation guard, Requirement 9).
-7. **`import_confirm` is the confirm step.** It accepts the channel-appropriate payload —
-   `mapping={…}` / `accept=true` for tabular/gsheet, `recipe={…}, rows=[…]` for the PDF
-   bridge — validates it, saves the format, and loads. The CLI additionally accepts an
-   explicit human-owned tabular `--sign` override. `--confirm-sign` approves the inferred
-   `negative_is_income` inversion; `--sign negative_is_expense` rejects that inversion
-   and keeps the statement's printed signs. The two choices are mutually exclusive and
-   every recovery command replays the mapping, format-save, account identity, binding,
-   and metadata inputs because confirmation calls persist no partial state. It is the
-   terminal `_confirm` step of the propose→review→confirm workflow.
-8. **Override is partial-merge.** A supplied `mapping` overrides only the named
-   destination fields; unspecified fields fall back to the detected mapping. Validation
-   (reusing gsheet's `_validate_*_column_mapping`, generalized) rejects a mapping missing
-   a required destination field or naming a source column absent from the file, with a
-   message that names the offending field.
+7. **`import_confirm` is the confirm step.** It consumes an unchanged
+   `preview_id` and accepts only the staged-preview inputs: `account_bindings`,
+   `account_id`, `account_metadata`, `account_name`, `bridge_response`,
+   `confirmation_token`, and `save_format`. It validates, saves the format when
+   requested, and loads. The CLI additionally accepts an explicit human-owned
+   tabular `--sign` override. `--confirm-sign` approves the inferred
+   `negative_is_income` inversion; `--sign negative_is_expense` rejects that
+   inversion and keeps the statement's printed signs. It is the terminal
+   `_confirm` step of the propose→review→confirm workflow.
+8. **Staged previews are immutable.** A confirmation call cannot replace the
+   detected mapping or extraction. Correct a detection by creating a fresh
+   preview from the source file, then confirm that new `preview_id`.
 9. **A known format can still fail validation and re-surface.** Reuse, not just first
    contact, is guarded: tabular's running-balance / sign checks and PDF's balance
    reconciliation can fail on a recognized layout. On failure the import does not load
@@ -151,10 +149,9 @@ first, implementing this shared shape rather than a PDF-only one.
 11. **Recovery is a first-class, surfaced step.** Every confirmed new-format import
     returns `actions[]` with the concrete recovery paths: undo the data load
     (`import_revert <import_id>`), undo the format save / PDF recipe-version bump
-    (`system_audit_undo <operation_id>` per `data-recovery-contract.md`), and **re-map**
-    (re-call `import_confirm` with a corrected `mapping`). On a detection/transform
-    error, "re-run with an explicit mapping" is offered as the next action, never a dead
-    end (umbrella "graceful degradation").
+    (`system_audit_undo <operation_id>` per `data-recovery-contract.md`), and create a
+    fresh preview before a new confirmation. On a detection or transform error, the
+    source is previewed again rather than modifying a prior confirmation payload.
 
 ### Calibration
 
@@ -214,7 +211,7 @@ def resolve_or_confirm(
     *,
     confidence: Confidence,
     proposed: ProposedMapping | BridgePayload,
-    signal: Accept | Override | None,
+    human_approved: bool,
     self_accept_enabled: bool,  # calibration gate (Req 12)
     actor_kind: Literal["human", "agent"],
 ) -> Resolved | ConfirmationRequired: ...
@@ -227,16 +224,16 @@ flowchart TD
     G -- pass --> LOAD[load: tabular_transactions or seed]
     G -- "validation failed" --> RC
     B -- no --> RC[resolve_or_confirm]
-    RC --> D{signal present?}
-    D -- "accept / mapping" --> V{validate + tier allows?}
-    D -- none --> CR[ConfirmationRequired:\nproposed mapping / bridge payload\n+ Confidence + samples + actions]
+    RC --> D{human approval?}
+    D -- yes --> V{validate + tier allows?}
+    D -- no --> CR[ConfirmationRequired:\nproposed mapping / bridge payload\n+ Confidence + samples + actions]
     V -- ok --> SAVE[(save format:\ntabular_formats / pdf_formats / gsheet connection)]
     V -- "low or invalid" --> CR
     SAVE --> LOAD
     CR --> SURFACE{actor_kind}
     SURFACE -- human / CLI TTY --> PROMPT[interactive prompt: tier-shaped]
     SURFACE -- agent / MCP --> ENV[confirmation_required envelope + actions]
-    LOAD --> REC[actions: undo / re-map]
+    LOAD --> REC[actions: undo / fresh preview]
 ```
 
 - The known-layout lookup is the **channel's** job (tabular: header-signature match
@@ -245,14 +242,13 @@ flowchart TD
   `resolve_or_confirm`; the primitive is invoked only when a confirm decision is needed
   — an unknown layout, or a known layout whose validation guard failed (Req 9). It
   therefore takes no `is_known_layout` flag.
-- The validation-failure re-entry differs by channel in the `ConfirmationRequired` it
-  produces: PDF re-escalates to the bridge (per `smart-import-pdf.md`); tabular surfaces
-  the proposed mapping + the failing signal. Same diagram node, channel-specific payload.
-- `Resolved` carries the final mapping + saved-format reference; `ConfirmationRequired`
-  carries the proposed mapping/bridge payload, `Confidence`, and samples.
-- `ProposedMapping`, `BridgePayload`, `Accept`, `Override`, `Resolved`, and
-  `ConfirmationRequired` are defined at implementation; their shapes follow the payloads
-  described above (this is a design spec, not the type module).
+- Validation failure creates a fresh staged preview. PDF can re-escalate to the
+  bridge; tabular returns the new preview and its failing signal.
+- `Resolved` carries the confirmed result and saved-format reference;
+  `ConfirmationRequired` carries the proposed mapping/bridge payload,
+  `Confidence`, and samples.
+- `ProposedMapping`, `BridgePayload`, `Resolved`, and `ConfirmationRequired` are
+  defined at implementation; their shapes follow the payloads described above.
 - **Account-binding facet (M1S.4).** `ConfirmationRequired` carries a third,
   optional facet beyond the column mapping: `account_proposals` with
   `reason="account_confirmation"`. This covers two cases: (a) a source account
@@ -410,22 +406,20 @@ extractor, and tabular/gsheet adopt them in this spec's work.
 
 ## Testing Strategy
 
-- **Unit:** `tier_for` banding; `resolve_or_confirm` across the matrix (known/unknown ×
-  tier × signal × actor_kind × self_accept_enabled); partial-merge validation
-  (missing-required, unknown-source rejections).
+- **Unit:** `tier_for` banding; `resolve_or_confirm` across the matrix
+  (known/unknown × tier × human approval × actor_kind × self_accept_enabled).
 - **Calibration harness:** per-tier field-exact precision over the YAML corpus; a test
   asserts the chosen `T_high` meets the precision bar and that `self_accept_high`
   defaults off until it does.
 - **Channel integration:** tabular `medium` now gates (regression — was a wave-through);
   gsheet medium/low behavior unchanged under the shared bands; PDF bridge confirm via
   `import_confirm` persists the format and loads (faked agent response, no real LLM).
-- **Recovery:** confirmed import → `import_revert` removes rows; `system_audit_undo`
-  reverses the format save; re-map via second `import_confirm` re-pins cleanly.
-- **CLI/MCP parity:** the `confirmation_required` envelope is identical shape on both
-  surfaces; `--confirm` / `--mapping` reproduce the interactive accept/override. CLI
-  sign recovery proves both shell-safe alternatives preserve every public confirmation
-  input and reach the service as either the private human approval or an explicit
-  `sign` override; MCP never receives the latter public input.
+- **Recovery:** confirmed import → `import_revert` removes rows;
+  `system_audit_undo` reverses the format save; a fresh preview begins another
+  confirmation attempt.
+- **CLI/MCP parity:** both surfaces preserve the staged-preview confirmation
+  boundary. CLI keeps its explicit mapping flags; MCP confirms the immutable
+  preview and never accepts a public sign or mapping override.
 
 ## Out of Scope
 

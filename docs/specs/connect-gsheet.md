@@ -184,7 +184,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 flowchart TB
     subgraph CLI / MCP
         CLI["moneybin gsheet ..."]
-        MCP["gsheet_* tools"]
+        MCP["four Google Sheets workflow tools"]
     end
 
     subgraph "Service Layer (connectors/gsheet/)"

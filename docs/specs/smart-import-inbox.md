@@ -12,7 +12,9 @@ Give users a "drop a file here, then ask MoneyBin to import it" workflow that mi
 
 ## Background
 
-Today's import surface is path-based: `moneybin import file <path>` (CLI) and `import.file` (MCP). Both are correct and private — the LLM only sees the path string, never the file's contents. But two ergonomic gaps remain:
+Today's import surface is path-based: `moneybin import files <path>` (CLI) and
+`import_files(paths=[...])` (MCP). Both are correct and private — the LLM only
+sees the path string, never the file's contents. But two ergonomic gaps remain:
 
 - **Discoverability.** A new user has no obvious place to put a downloaded statement. They reach for chat-attachment upload, which exposes the entire file to the LLM (and the host's logs/cache) before any tool ever runs. The current docs don't push them toward a private alternative because there isn't a particularly natural one.
 - **Batch flow.** Importing five files means typing five paths or five chat turns. There's no "drain everything new" gesture that matches how users already think about sync folders.
@@ -82,7 +84,8 @@ Existing tables touched indirectly via `ImportService`:
 
 - `src/moneybin/config.py` — add `ImportSettings` submodel with `inbox_root: Path = Path.home() / "Documents" / "MoneyBin"`. Wire into `MoneyBinSettings`. The active-profile inbox path (`<inbox_root>/<profile>/`) is derived at access time, not stored, so a profile switch picks up the new path without restart.
 - `src/moneybin/cli/commands/import_cmd.py` — register the new subcommands under the existing `import` Typer group.
-- `src/moneybin/mcp/_registration.py` — register the two new tools.
+- `src/moneybin/mcp/_registration.py` — register `import_inbox_sync`; inbox
+  state remains a section of `import_status`.
 - `src/moneybin/metrics/registry.py` — add the two new metrics.
 - `docs/specs/INDEX.md` — add an entry under "Smart Import."
 - `README.md` — add a roadmap entry (📐) and a brief mention in the import section.
@@ -106,7 +109,9 @@ moneybin import inbox path       Print the configured inbox parent path
                                  (handy for shell composition).
 ```
 
-Output format follows `cli-ux-standards.md` (planned) and the existing `import file` command. `--output json` returns the same structure as the MCP envelope's `data` field.
+Output format follows `cli-ux-standards.md` (planned) and the existing `import
+files` command. `--output json` returns the same structure as the MCP envelope's
+`data` field.
 
 Example session:
 
@@ -180,15 +185,19 @@ Two new tools under the existing `import.*` namespace.
   dead end with `candidates: []`.
 - **Actions hints:** when any `account_confirmation` pending entries are returned: `"Some pending files need an account identity — run moneybin import confirm <pending-path> --accept --account-binding <source_key>=<account_id|new> (--accept ratifies the settled mapping; source_key + candidate accounts are in each pending entry's account_proposals, also mirrored in the .pending.yml sidecar), or move the file into inbox/<account-slug>/ and re-run import_inbox_sync."`
 
-### Pending inbox projection
+### Inbox status projection
 
 - **Sensitivity:** `low`
-- **Args:** none
-- **Behavior:** lists pending files in the inbox without moving them. Returns the same shape as `import_inbox_sync`, but every entry is in a fourth top-level array `would_process` (rather than `processed`/`failed`), and items carry a `predicted_outcome` field (`auto_detect`, `account_from_folder`, `would_fail:<error_code>`).
+- **Call:** `import_status(sections=["inbox"])`
+- **Behavior:** reads pending inbox state without moving files. The mutation is
+  `import_inbox_sync(refresh=...)`; the status projection is a section of
+  `import_status`, not a separate pending tool.
 
 ### Tool visibility
 
-Both tools live in the core `import` namespace and are visible at session connect (no `moneybin.discover` step). This matches existing `import.file` and is appropriate because importing files is one of the primary user goals.
+Both import capabilities live in the core `import` namespace and are visible at
+session connect (no `moneybin.discover` step). This matches `import_files` and is
+appropriate because importing files is one of the primary user goals.
 
 ## Testing Strategy
 

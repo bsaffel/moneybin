@@ -54,7 +54,7 @@ No schema changes. The spec leans on three existing columns/tables:
 - `tests/moneybin/test_mcp/test_import_files.py` — list-shape, per-file results, transforms_applied flag.
 - `tests/moneybin/test_mcp/test_system_status_transforms.py` — pending/last_apply_at semantics.
 - `tests/moneybin/test_cli/test_import_files_cli.py` — variadic, `--no-refresh`, `--output json` parity.
-- `tests/moneybin/test_cli/test_transform_json_output.py` — `--output json` parity for the five transform commands.
+- `tests/moneybin/test_cli/test_transform_json_output.py` — `--output json` parity for the transform CLI commands.
 - `tests/scenarios/test_scenario_import_dim_freshness.py` — regression test for the originating finding.
 - `tests/integration/test_schema_drift.py` — upgrade-path test: build SQLMesh-applied DB, drop a column, start server, assert `SchemaDriftError`.
 - `tests/moneybin/test_db_helpers_parity.py` — fixture-parity test: `EXPECTED_CORE_COLUMNS` matches `CORE_*_DDL` strings in `tests/moneybin/db_helpers.py`.
@@ -73,7 +73,7 @@ No schema changes. The spec leans on three existing columns/tables:
 - `src/moneybin/cli/commands/transform.py` — switch from inline `sqlmesh_context` blocks to `TransformService` calls; add `--output json` to each command using the standard envelope.
 - `src/moneybin/cli/commands/import_cmd.py` — rename leaf command, accept variadic paths, add `--no-refresh`.
 - `src/moneybin/metrics/registry.py` — add `IMPORT_BATCH_SIZE` histogram.
-- `docs/specs/moneybin-mcp.md` — §1530 status update (transform_* shipped); §import_* renamed entry.
+- `docs/specs/moneybin-mcp.md` — status update for the refresh-backed transform workflow and batch import entry.
 - `docs/specs/INDEX.md` — new row under MCP section, status `draft` → `ready` → `in-progress` → `implemented` across the lifecycle.
 - `docs/roadmap.md` — entry under the current milestone.
 - `docs/features.md` — MCP tools list + CLI list.
@@ -98,7 +98,6 @@ No schema changes. The spec leans on three existing columns/tables:
 moneybin import files PATHS...
   PATHS                              One or more files to import
   --no-refresh              Skip end-of-batch transform apply
-  --interactive                      Prompt for ambiguous account mappings
   -o, --output {text,json}           Output format (json mirrors MCP envelope)
   -q, --quiet                        Suppress informational output
 
@@ -120,7 +119,7 @@ moneybin transform restate           (unchanged; remains operator-territory)
 def import_files(
     paths: list[str],
     refresh: bool = True,
-    interactive: bool = False,
+    force: bool = False,
 ) -> ResponseEnvelope:
     """Import one or more files. Applies refresh once at the batch boundary."""
 
@@ -186,11 +185,11 @@ flowchart TD
 | Layer | Test file | Verifies |
 |---|---|---|
 | Unit | `test_services/test_transform_service.py` | `freshness()` returns correct pending/last_apply_at under controlled `dim_accounts.updated_at` and `import_log.completed_at`. Includes "dim_accounts schema missing" edge case. |
-| Integration | `test_services/test_transform_service.py` | `apply()`, `plan()`, `validate()`, `audit()` against a real SQLMesh context. `apply()` increments `MAX(dim_accounts.updated_at)`. |
+| Integration | `test_services/test_transform_service.py` | SQLMesh apply against a real context increments `MAX(dim_accounts.updated_at)`. |
 | Service | `test_services/test_import_service.py` (extended) | `import_files([good, bad, good])` returns 2 imported + 1 failed, transforms ran once, partial failures don't block apply. `refresh=False` skips. Empty-success skips. Transform-fails-after-import path. |
 | CLI | `test_cli/test_import_files_cli.py` | Variadic `import files a b c`, `--no-refresh`, `--output json` envelope matches MCP. |
-| CLI | `test_cli/test_transform_json_output.py` | `--output json` parity for the five transform commands. |
-| MCP | `test_mcp/test_transform_tools.py` | All five `transform_*` envelope shapes, sensitivities, error paths. |
+| CLI | `test_cli/test_transform_json_output.py` | `--output json` parity for the transform CLI commands. |
+| MCP | `test_mcp/test_transform_tools.py` | `refresh_run(steps=["transform"])` returns the refresh-backed apply envelope and error paths. |
 | MCP | `test_mcp/test_import_files.py` | List-shaped `paths`, per-file result rows, `transforms_applied` summary flag. |
 | MCP | `test_mcp/test_system_status_transforms.py` | Pending=true when raw is newer; pending=false after apply; action hint appears only when pending. |
 | Scenario | `tests/scenarios/test_scenario_import_dim_freshness.py` | **Regression guard for the finding.** Import N files, verify `MAX(dim_accounts.updated_at)` advances and all N accounts appear in `accounts`. |

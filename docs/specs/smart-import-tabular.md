@@ -927,9 +927,8 @@ flowchart TD
 ### Primary import command
 
 The primary command is `moneybin import files` (variadic — accepts one or more paths) —
-format-agnostic, handles all tabular formats through the same entry point. Renamed from
-`moneybin import file` (singular) as part of the transform handoff spec; see
-`smart-import-transform.md`.
+format-agnostic and handles all tabular formats through the same entry point. Its batch
+contract is described in `smart-import-transform.md`.
 
 ```bash
 # Happy path — format matches or detection succeeds
@@ -1194,6 +1193,7 @@ def import_status(
     sections: list[Literal["imports", "formats", "inbox"]] | None = None,
     limit: int = 100,
     import_id: str | None = None,
+    cursor: str | None = None,
 ) -> ResponseEnvelope:
     # sections=["imports"] is the import history projection; sections=["formats"]
     # is learned-format discovery; sections=["inbox"] is pending inbox state.

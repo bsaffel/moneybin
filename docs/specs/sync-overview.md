@@ -339,10 +339,14 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
-### Not exposed as MCP tools
+### MCP authentication lifecycle
 
-- **`login` / `logout`** — Requires browser interaction and credential handling. CLI-only. If not authenticated, MCP tools return an error directing the user to run `moneybin sync login`.
-- Provider-specific operations — all abstracted behind the provider-agnostic tools above.
+- Start device login with `sync_link(mode="login")`.
+- After the user completes the verification URL, advance that session with
+  `sync_status(auth_session_id=...)`.
+- Clear profile-scoped credentials with `sync_disconnect(mode="logout")`.
+- Provider-specific operations remain abstracted behind the provider-agnostic
+  tools above.
 
 ### Prompt
 
