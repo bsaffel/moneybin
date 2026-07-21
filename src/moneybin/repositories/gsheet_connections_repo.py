@@ -19,8 +19,10 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo, quote_ident
-from moneybin.tables import GSHEET_CONNECTIONS
+from moneybin.tables import EXPORT_DESTINATIONS, GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,18 @@ Status = Literal[
     "failed",
     "disconnected",
 ]
+
+
+class GSheetConnectionExportDestinationConflictError(UserError):
+    """Raised when an inbound connection would reuse an export workbook."""
+
+    def __init__(self) -> None:
+        """Build a user-safe workbook-role conflict."""
+        super().__init__(
+            "This spreadsheet is already configured as an export destination and "
+            "cannot also be an inbound connection.",
+            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+        )
 
 
 def _decode_row(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -147,6 +161,13 @@ class GSheetConnectionsRepo(BaseRepo):
         """Insert a new connection row + audit. Returns the generated id."""
         connection_id = uuid.uuid4().hex[:12]
         with self._transaction(in_outer_txn=in_outer_txn):
+            export_destination = self._db.execute(
+                f"SELECT 1 FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                "WHERE spreadsheet_id = ? LIMIT 1",
+                [spreadsheet_id],
+            ).fetchone()
+            if export_destination is not None:
+                raise GSheetConnectionExportDestinationConflictError()
             self._db.execute(
                 f"""
                 INSERT INTO {GSHEET_CONNECTIONS.full_name} (

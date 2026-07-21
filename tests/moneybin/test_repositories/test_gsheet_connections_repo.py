@@ -16,7 +16,11 @@ import pytest
 from prometheus_client import REGISTRY
 
 from moneybin.database import Database
-from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
+from moneybin.repositories.gsheet_connections_repo import (
+    GSheetConnectionExportDestinationConflictError,
+    GSheetConnectionsRepo,
+)
 
 
 def _insert_default(
@@ -122,6 +126,24 @@ def test_insert_writes_connection_and_audit_row(db: Database) -> None:
         {"repository": "gsheet_connections", "action": "gsheet_connection.insert"},
     )
     assert (after_metric or 0.0) - before_metric == 1.0
+
+
+def test_insert_rejects_workbook_already_configured_for_exports(db: Database) -> None:
+    """Outbound-first workbook setup cannot become an inbound connection later."""
+    ExportDestinationsRepo(db).set_sheets(
+        name="outbound workbook",
+        spreadsheet_id="outbound_sheet",
+        managed_tab_prefix="MoneyBin",
+        actor="cli",
+    )
+
+    with pytest.raises(GSheetConnectionExportDestinationConflictError):
+        _insert_default(GSheetConnectionsRepo(db), spreadsheet_id="outbound_sheet")
+
+    assert db.execute(
+        "SELECT COUNT(*) FROM app.gsheet_connections WHERE spreadsheet_id = ?",
+        ["outbound_sheet"],
+    ).fetchone() == (0,)
 
 
 # ---------------------------------------------------------------------------

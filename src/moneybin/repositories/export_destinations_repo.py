@@ -36,6 +36,10 @@ _FULL_ROW_COLUMNS = (
 
 type ExportDestinationResolution = ExportDestination | AmbiguousEntity | MissingEntity
 
+_DERIVED_LOCAL_EXPORTS_CANDIDATE = EntityCandidate(
+    entity_id="local:exports", display_name="local:exports"
+)
+
 
 class ExportDestinationSpreadsheetConflictError(UserError):
     """Raised when a workbook is already configured for inbound Sheets pulls."""
@@ -231,7 +235,10 @@ class ExportDestinationsRepo(BaseRepo):
         spreadsheet_id: str | None,
     ) -> None:
         """Reject reserved targets and workbook role conflicts before mutation."""
-        if name.casefold() == "local:exports":
+        reservation = resolve_entity_reference(
+            name, (_DERIVED_LOCAL_EXPORTS_CANDIDATE,)
+        )
+        if isinstance(reservation, ResolvedEntity):
             raise ReservedExportDestinationError()
         if kind != "sheets":
             return

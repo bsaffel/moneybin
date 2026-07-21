@@ -193,20 +193,24 @@ def test_set_sheets_rejects_an_inbound_connection_workbook(
 
 
 @pytest.mark.parametrize("kind", ["local", "sheets"])
+@pytest.mark.parametrize(
+    "name",
+    ["local:exports", " local:exports ", " LOCAL:EXPORTS ", "local\uff1aexports"],
+)
 def test_set_rejects_the_reserved_derived_local_exports_destination(
-    repo: ExportDestinationsRepo, kind: str
+    repo: ExportDestinationsRepo, kind: str, name: str
 ) -> None:
-    """The built-in local:exports target is derived, never persisted."""
+    """Normalized variants of local:exports cannot impersonate the derived target."""
     with pytest.raises(ReservedExportDestinationError):
         if kind == "local":
             repo.set_local(
-                name="local:exports",
+                name=name,
                 local_path=Path("visible/exports"),
                 actor="cli",
             )
         else:
             repo.set_sheets(
-                name="local:exports",
+                name=name,
                 spreadsheet_id="sheet_789",
                 managed_tab_prefix="MoneyBin",
                 actor="cli",
