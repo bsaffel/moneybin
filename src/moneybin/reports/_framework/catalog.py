@@ -29,7 +29,12 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
     ReportSpec,
 )
-from moneybin.reports._framework.execute import CatalogReportResult, run_report
+from moneybin.reports._framework.execute import (
+    CatalogReportExecution,
+    CatalogReportResult,
+    execute_catalog_report,
+    redact_catalog_execution,
+)
 
 _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
@@ -46,7 +51,7 @@ class ServiceReportSpec:
     semantics: ReportSemantics
     classes: Mapping[str, DataClass]
     examples: tuple[str, ...]
-    executor: Callable[[Database, Mapping[str, JsonValue], int], CatalogReportResult]
+    executor: Callable[[Database, Mapping[str, JsonValue], int], CatalogReportExecution]
     validator: Callable[[Mapping[str, JsonValue]], None] | None = None
 
     def __post_init__(self) -> None:
@@ -115,14 +120,38 @@ class ReportCatalog:
         limit: int,
     ) -> CatalogReportResult:
         """Validate parameters, then dispatch through the selected report kind."""
+        spec, execution = self.execute_raw(
+            db,
+            report_id=report_id,
+            parameters=parameters,
+            limit=limit,
+        )
+        return redact_catalog_execution(spec, execution)
+
+    def execute_raw(
+        self,
+        db: Database,
+        *,
+        report_id: str,
+        parameters: Mapping[str, JsonValue],
+        limit: int,
+    ) -> tuple[RegisteredReport, CatalogReportExecution]:
+        """Validate and execute one report without terminal redaction."""
         spec, validated = self.resolve_request(
             report_id=report_id,
             parameters=parameters,
             limit=limit,
         )
         if isinstance(spec, ReportSpec):
-            return run_report(spec, db, max_rows=limit, **validated)
-        return spec.executor(db, validated, limit)
+            execution = execute_catalog_report(
+                spec,
+                db,
+                max_rows=limit,
+                **validated,
+            )
+        else:
+            execution = spec.executor(db, validated, limit)
+        return spec, execution
 
     def resolve_request(
         self,

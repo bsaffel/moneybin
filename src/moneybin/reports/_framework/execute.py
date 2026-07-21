@@ -95,7 +95,7 @@ class CatalogReportExecution:
 
     report_id: str
     parameters: Mapping[str, JsonValue]
-    sql: str
+    sql: str | None
     records: list[dict[str, Any]]
     columns: list[str]
     column_types: list[str]
@@ -176,10 +176,10 @@ def build_catalog_result(
     period: str | None = None,
 ) -> CatalogReportResult:
     """Redact and truncate tabular rows using the shared report rules."""
-    execution = _build_catalog_execution(
+    execution = build_catalog_execution(
         spec,
         parameters=parameters,
-        sql="",
+        sql=None,
         records=records,
         columns=columns,
         column_types=[],
@@ -187,14 +187,14 @@ def build_catalog_result(
         actions=actions,
         period=period,
     )
-    return _redact_catalog_execution(spec, execution)
+    return redact_catalog_execution(spec, execution)
 
 
-def _build_catalog_execution(
+def build_catalog_execution(
     spec: _CatalogSpec,
     *,
     parameters: Mapping[str, JsonValue],
-    sql: str,
+    sql: str | None,
     records: list[dict[str, Any]],
     columns: list[str],
     column_types: list[str],
@@ -228,7 +228,7 @@ def _build_catalog_execution(
     )
 
 
-def _redact_catalog_execution(
+def redact_catalog_execution(
     spec: _CatalogSpec,
     execution: CatalogReportExecution,
 ) -> CatalogReportResult:
@@ -269,7 +269,7 @@ def execute_catalog_report(
     ]
     rows = cursor.fetchmany(max_rows + 1)
     records = [dict(zip(columns, row, strict=False)) for row in rows]
-    return _build_catalog_execution(
+    return build_catalog_execution(
         spec,
         parameters=cast(Mapping[str, JsonValue], params),
         sql=rq.sql,
@@ -291,4 +291,4 @@ def run_report(
     via the report's view, and masks CRITICAL columns before returning.
     """
     execution = execute_catalog_report(spec, db, max_rows=max_rows, **params)
-    return _redact_catalog_execution(spec, execution)
+    return redact_catalog_execution(spec, execution)

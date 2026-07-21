@@ -10,7 +10,6 @@ from typing import cast
 from pydantic import JsonValue
 
 from moneybin.database import Database
-from moneybin.errors import UserError
 from moneybin.exports.models import RedactionMode, ReportExportReceipt
 from moneybin.exports.redaction import apply_export_redaction
 from moneybin.exports.snapshot import (
@@ -29,10 +28,8 @@ from moneybin.reports._framework.catalog import (
     get_report_catalog,
 )
 from moneybin.reports._framework.contract import ReportSpec
-from moneybin.reports._framework.execute import (
-    execute_catalog_report,
-    redact_report_parameters,
-)
+from moneybin.reports._framework.execute import redact_report_parameters
+from moneybin.tables import TableRef
 
 
 class ExportService:
@@ -79,23 +76,11 @@ class ExportService:
     ) -> PreparedExport:
         """Prepare exactly one catalog report under one output policy."""
         catalog = self._report_catalog or get_report_catalog()
-        spec, validated = catalog.resolve_request(
+        spec, execution = catalog.execute_raw(
+            self._db,
             report_id=report_id,
             parameters=report_parameters or {},
             limit=max_rows,
-        )
-        if not isinstance(spec, ReportSpec):
-            raise UserError(
-                "Report does not expose a catalog SQL runner.",
-                code="REPORT_EXPORT_UNSUPPORTED",
-                details={"report_id": spec.report_id},
-            )
-
-        execution = execute_catalog_report(
-            spec,
-            self._db,
-            max_rows=max_rows,
-            **validated,
         )
         columns = tuple(
             PreparedColumn(
@@ -113,15 +98,21 @@ class ExportService:
             tuple(record[name] for name in execution.columns)
             for record in execution.records
         )
+        source = (
+            spec.view
+            if isinstance(spec, ReportSpec)
+            else _service_report_source(spec.name, execution.provenance)
+        )
         table = PreparedTable(
             name=execution.report_id,
-            source=spec.view,
+            source=source,
             columns=columns,
             rows=rows,
             checksum_sha256=prepared_table_checksum(columns, rows),
         )
+        parameters = spec.params if isinstance(spec, ReportSpec) else spec.parameters
         parameter_classes = {
-            parameter.name: parameter.data_class.value for parameter in spec.params
+            parameter.name: parameter.data_class.value for parameter in parameters
         }
         snapshot_parameters: Mapping[str, object]
         if redaction_mode == "redacted":
@@ -166,3 +157,12 @@ class ExportService:
             ),
         )
         return apply_export_redaction(snapshot, redaction_mode)
+
+
+def _service_report_source(name: str, provenance: tuple[str, ...]) -> TableRef:
+    """Return the service report's declared report-level provenance source."""
+    if provenance:
+        parts = provenance[0].split(".", maxsplit=1)
+        if len(parts) == 2:
+            return TableRef(parts[0], parts[1])
+    return TableRef("reports", name)

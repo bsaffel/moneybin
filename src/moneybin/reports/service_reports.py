@@ -19,8 +19,8 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
 )
 from moneybin.reports._framework.execute import (
-    CatalogReportResult,
-    build_catalog_result,
+    CatalogReportExecution,
+    build_catalog_execution,
 )
 from moneybin.services.networth_service import NetworthService
 
@@ -202,7 +202,7 @@ def _execute_networth(
     db: Database,
     parameters: Mapping[str, JsonValue],
     limit: int,
-) -> CatalogReportResult:
+) -> CatalogReportExecution:
     params = dict(parameters)
     as_of = params["as_of"]
     account_ids = params["account_ids"]
@@ -241,11 +241,22 @@ def _execute_networth(
             }
         ]
 
-    return build_catalog_result(
+    return build_catalog_execution(
         NETWORTH_REPORT,
         parameters=params,
         records=rows,
         columns=[column.name for column in _SNAPSHOT_COLUMNS],
+        column_types=[
+            "DATE",
+            "DECIMAL(18,2)",
+            "DECIMAL(18,2)",
+            "DECIMAL(18,2)",
+            "BIGINT",
+            "VARCHAR",
+            "VARCHAR",
+            "DECIMAL(18,2)",
+            "VARCHAR",
+        ],
         max_rows=limit,
         actions=[
             "Run reports(report_id='core:networth_history', "
@@ -260,6 +271,7 @@ def _execute_networth(
             if snapshot.balance_date is not None
             else None
         ),
+        sql=None,
     )
 
 
@@ -267,7 +279,7 @@ def _execute_networth_history(
     db: Database,
     parameters: Mapping[str, JsonValue],
     limit: int,
-) -> CatalogReportResult:
+) -> CatalogReportExecution:
     params = dict(parameters)
     from_date = date.fromisoformat(str(params["from_date"]))
     to_date = date.fromisoformat(str(params["to_date"]))
@@ -282,11 +294,12 @@ def _execute_networth_history(
         }
         for point in payload.points
     ]
-    return build_catalog_result(
+    return build_catalog_execution(
         NETWORTH_HISTORY_REPORT,
         parameters=params,
         records=rows,
         columns=[column.name for column in _HISTORY_COLUMNS],
+        column_types=["DATE", "DECIMAL(18,2)", "DECIMAL(18,2)", "DOUBLE"],
         max_rows=limit,
         actions=[
             "Run reports(report_id='core:networth') for a single-date account breakdown",
@@ -295,6 +308,7 @@ def _execute_networth_history(
             "'interval': 'weekly'}) for finer resolution",
         ],
         period=f"{from_date.isoformat()} to {to_date.isoformat()} ({interval})",
+        sql=None,
     )
 
 

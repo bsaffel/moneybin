@@ -47,7 +47,7 @@ class ReportExportReceipt:
     report_id: str
     parameters: Mapping[str, object]
     parameter_classes: Mapping[str, str]
-    sql: str
+    sql: str | None
     lineage: tuple[str, ...]
     output_classes: Mapping[str, str]
     freshness: Mapping[str, object] | None

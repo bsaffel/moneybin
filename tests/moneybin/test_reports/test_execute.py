@@ -91,6 +91,7 @@ def test_execute_catalog_report_exposes_raw_execution_before_public_redaction(
 
     assert raw.report_id == "test:summary"
     assert raw.parameters == {"top": 1}
+    assert raw.sql is not None
     assert raw.sql.startswith("SELECT account_id, amount, txn_count")
     assert raw.columns == ["account_id", "amount", "txn_count"]
     assert raw.column_types == ["VARCHAR", "DECIMAL(38,2)", "BIGINT"]

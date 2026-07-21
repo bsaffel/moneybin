@@ -3,19 +3,30 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from decimal import Decimal
 
 import pytest
+from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
-import moneybin.exports.service as export_service
+import moneybin.reports._framework.catalog as report_catalog
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.exports.service import ExportService
 from moneybin.exports.snapshot import PreparedExport
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.catalog import ReportCatalog
-from moneybin.reports._framework.contract import ReportQuery, ReportSpec
+from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ParamSpec,
+    ReportQuery,
+    ReportSpec,
+)
+from moneybin.reports._framework.execute import (
+    CatalogReportExecution,
+    build_catalog_execution,
+)
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
@@ -101,7 +112,7 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
     mocker: MockerFixture,
 ) -> None:
     service = _service(db)
-    execute_spy = mocker.spy(export_service, "execute_catalog_report")
+    execute_spy = mocker.spy(report_catalog, "execute_catalog_report")
 
     snapshot = service.prepare_report(
         profile="test",
@@ -238,3 +249,86 @@ def test_prepare_report_uses_catalog_error_for_invalid_limit(db: Database) -> No
         )
 
     assert exc_info.value.code == "REPORT_LIMIT_INVALID"
+
+
+def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
+    db: Database,
+) -> None:
+    calls = 0
+
+    def executor(
+        database: Database,  # noqa: ARG001  # service contract handle
+        parameters: Mapping[str, JsonValue],
+        limit: int,
+    ) -> CatalogReportExecution:
+        nonlocal calls
+        calls += 1
+        return build_catalog_execution(
+            spec,
+            parameters=parameters,
+            records=[{"account_number": parameters["account_number"]}],
+            columns=["account_number"],
+            column_types=["VARCHAR"],
+            max_rows=limit,
+            actions=["reports.inspect"],
+            period="all time",
+            sql=None,
+        )
+
+    spec = ServiceReportSpec(
+        report_id="test:service_export",
+        name="service_export",
+        description="Synthetic service-backed export.",
+        parameters=(
+            ParamSpec(
+                "account_number",
+                str,
+                "acct_11112222",
+                False,
+                "Institution account number.",
+                DataClass.ACCOUNT_IDENTIFIER,
+            ),
+        ),
+        columns=(
+            OutputColumn(
+                "account_number",
+                "Institution account number.",
+                DataClass.ACCOUNT_IDENTIFIER,
+            ),
+        ),
+        semantics=TEST_SEMANTICS,
+        classes={"account_number": DataClass.ACCOUNT_IDENTIFIER},
+        examples=(),
+        executor=executor,
+    )
+    service = ExportService(db, report_catalog=ReportCatalog((spec,)))
+
+    redacted = service.prepare_report(
+        profile="test",
+        report_id="test:service_export",
+        report_parameters={},
+        max_rows=10,
+    )
+    assert calls == 1
+    assert _first_row(redacted)["account_number"] == "****2222"
+    assert redacted.manifest["provenance"]["receipt"]["sql"] is None  # type: ignore[index]
+
+    unredacted = service.prepare_report(
+        profile="test",
+        report_id="test:service_export",
+        report_parameters={},
+        max_rows=10,
+        redaction_mode="unredacted",
+    )
+    assert calls == 2
+    assert _first_row(unredacted)["account_number"] == "acct_11112222"
+
+    with pytest.raises(UserError) as exc_info:
+        service.prepare_report(
+            profile="test",
+            report_id="test:service_export",
+            report_parameters={"unknown": 1},
+            max_rows=10,
+        )
+    assert exc_info.value.code == "REPORT_PARAMETER_UNKNOWN"
+    assert calls == 2

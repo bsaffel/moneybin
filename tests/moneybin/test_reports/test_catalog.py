@@ -40,7 +40,9 @@ from moneybin.reports._framework.contract import (
     ReportSpec,
 )
 from moneybin.reports._framework.execute import (
+    CatalogReportExecution,
     CatalogReportResult,
+    build_catalog_execution,
     build_catalog_result,
 )
 from moneybin.reports._framework.registry import (
@@ -418,9 +420,18 @@ def test_sql_report_dispatch_returns_catalog_result_with_defaults() -> None:
 
 
 def test_service_report_dispatch_uses_same_result_contract() -> None:
-    expected = cast(CatalogReportResult, object())
-    executor = MagicMock(return_value=expected)
+    executor = MagicMock()
     service_report = _service_report(executor)
+    execution = build_catalog_execution(
+        service_report,
+        parameters={"year": 2026},
+        records=[{"value": 7}],
+        columns=["value"],
+        column_types=["BIGINT"],
+        max_rows=25,
+        sql=None,
+    )
+    executor.return_value = execution
     catalog = ReportCatalog((service_report,))
     db = MagicMock(spec=Database)
 
@@ -431,7 +442,8 @@ def test_service_report_dispatch_uses_same_result_contract() -> None:
         limit=25,
     )
 
-    assert result is expected
+    assert result.records == [{"value": 7}]
+    assert result.report_id == "retirement:summary"
     executor.assert_called_once_with(
         cast(Database, db),
         {"year": 2026},
@@ -457,14 +469,16 @@ def test_sensitive_mapping_parameter_metadata_is_summarized_without_keys(
         db: Database,  # noqa: ARG001  # contract handle
         parameters: Mapping[str, JsonValue],
         limit: int,
-    ) -> CatalogReportResult:
+    ) -> CatalogReportExecution:
         dispatched.update(parameters)
-        return build_catalog_result(
+        return build_catalog_execution(
             spec,
             parameters=parameters,
             records=[{"value": 1}],
             columns=["value"],
+            column_types=["BIGINT"],
             max_rows=limit,
+            sql=None,
         )
 
     spec = ServiceReportSpec(

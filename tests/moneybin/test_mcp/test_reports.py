@@ -25,8 +25,9 @@ from moneybin.reports._framework.contract import (
     ReportSemantics,
 )
 from moneybin.reports._framework.execute import (
+    CatalogReportExecution,
     CatalogReportResult,
-    build_catalog_result,
+    build_catalog_execution,
 )
 from moneybin.reports._framework.registry import register_generic_reports_tool
 
@@ -60,8 +61,8 @@ def _transport_report() -> ServiceReportSpec:
         db: Database,  # noqa: ARG001  # contract handle
         parameters: Mapping[str, JsonValue],
         limit: int,
-    ) -> CatalogReportResult:
-        return build_catalog_result(
+    ) -> CatalogReportExecution:
+        return build_catalog_execution(
             spec,
             parameters=parameters,
             records=[
@@ -77,9 +78,11 @@ def _transport_report() -> ServiceReportSpec:
                 },
             ],
             columns=[column.name for column in _COLUMNS],
+            column_types=["DATE", "DECIMAL(18,2)", "VARCHAR"],
             max_rows=limit,
             actions=["Inspect another registered report."],
             period="2026-07-01 to 2026-07-02",
+            sql=None,
         )
 
     spec = ServiceReportSpec(
