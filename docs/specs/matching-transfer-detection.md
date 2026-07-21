@@ -1,6 +1,8 @@
 # Transfer Detection
 
-> Last updated: 2026-05-17 — CLI commands relocated to `moneybin transactions matches *` (PR #159); MCP names aligned to `transactions_matches_*` (phantom namespace per `moneybin-mcp.md` §17); `core.bridge_transfers` materialized as SQLMesh VIEW.
+> Last updated: 2026-07-21 — MCP matching uses the standard `reviews` and
+> `reviews_decide` contracts; CLI commands remain under `moneybin transactions matches *`;
+> `core.bridge_transfers` is materialized as a SQLMesh VIEW.
 > Status: implemented
 > Parent: [`matching-overview.md`](matching-overview.md) (pillar B)
 > Companions: [`matching-same-record-dedup.md`](matching-same-record-dedup.md) (sibling spec, pillars A+C), [`categorization-overview.md`](categorization-overview.md) (independent axis), `CLAUDE.md` "Architecture: Data Layers", `.claude/rules/database.md` (column naming, model prefixes)
@@ -295,7 +297,9 @@ Designed alongside CLI. Implementation may be sequenced after CLI, but the data 
 
 ### Tools
 
-Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" — no `transactions_matches_*` tool is registered yet. Transfer detection reuses the same MCP tools as same-record dedup with `match_type` filtering. No new tools needed; names follow the `transactions_matches_*` prefix defined in `moneybin-mcp.md` §6:
+Transfer detection reuses the same standard review operations as same-record
+dedup. `reviews(kind="matches", status="pending")` returns the queue; its rows
+identify the match type. No separate transfer tool or filter is admitted:
 
 | Tool | Transfer usage |
 |---|---|

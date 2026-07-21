@@ -324,7 +324,7 @@ signal reliability:
      *future* imports.
    - **≥1 candidate** → write one `pending` `account_link_decisions` row per
      candidate, surfaced for confirmation: at first contact via the import-confirm
-     seam (Decision 7) when interactive, else the `accounts_links` review queue.
+     seam (Decision 7) when interactive, else the account-link review queue.
      **Never auto-merge on `institution+last4` or name** (Plaid's mask≠number
      warning + last4-collision risk — two distinct WF accounts could share `4267`).
 
@@ -441,12 +441,13 @@ follow-ups (not blocking): hardening the CSV per-source content hash (drop
 `description`; `identifiers.md` territory) and the alias-chain-collapse rule
 across successive merges.
 
-## Decision 5 — Surfaces: `accounts_links_*` + top-level `review`
+## Decision 5 — Surfaces: account-link review + the standard review projection
 
 The review queue reads `app.account_link_decisions` (the proposals); the object
 the user reviews is "a proposed account link," so it lives under the `accounts`
-noun, **mirroring `transactions_matches_*`** so the match-review mental model
-transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
+noun. The standard review projection keeps that same match-review mental model
+without adding a domain-specific MCP identity (`surface-design.md`; `identifiers.md`
+Guard-2 free-text resolution):
 
 | Operation | CLI | MCP |
 |---|---|---|
@@ -456,13 +457,14 @@ transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
 | Decision history | `accounts links history` | `reviews(kind="account_links", status="history")` |
 | Run resolution over unlinked accounts (backfill) | `accounts links run` | `refresh_run(steps=["identity"])` |
 
-- **Decide step takes a merge target.** Mirrors the matches review *pattern*
-  (list → decide → undo) but not its exact signature: a provisional account has
-  *N* candidate proposals, where a transaction match is pairwise. `…set(decision_id,
-  target_account_id=Y)` accepts the proposal naming `Y` (re-points the
-  provisional's mapping onto `Y`, auto-rejects siblings); `target_account_id=None`
-  confirms **standalone**. The envelope, sensitivity tier (low — `ref_value`
-  masked/omitted), and `actions[]` follow `mcp.md`.
+- **Decide step takes a merge target.** A provisional account has *N* candidate
+  proposals, where a transaction match is pairwise. Each
+  `identity_links_decide` item is
+  `{kind: "account_link", decision_id, decision, target_id}`: `decision="accept"`
+  requires `target_id` and re-points the provisional mapping onto that candidate,
+  auto-rejecting siblings; `decision="reject"` forbids `target_id`. The envelope,
+  sensitivity tier (low — `ref_value` masked/omitted), and `actions[]` follow
+  `mcp.md`.
 - **Status lifecycle.** `account_links`: `accepted` (live) / `reversed` (undone).
   `account_link_decisions`: `pending` (awaiting review) → `accepted` (merged onto
   the named candidate) / `rejected` (declined pairing — not re-proposed) /
@@ -474,11 +476,12 @@ transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
 - **Orientation → promote to a top-level `review`.** The former transaction-only
   MCP review path / `transactions review` (CLI) aggregates the two *transaction* queues
   (matches + categorize) via `ReviewService`. Generalize it to a domain-neutral
-  **`review`** (CLI `moneybin review`, MCP `review`) aggregating **all** queues —
-  matches, categorize, **account-links**, future — so a single "what needs my
+  CLI `moneybin review` plus MCP `reviews(kind="summary")`, aggregating **all**
+  queues — matches, categorize, **account-links**, future — so a single "what needs my
   attention?" sweep can't silently miss the account-link backlog. Keep
-  the former MCP path / `transactions review` as a **deprecated alias for one
-  minor release** (`design-principles.md` CLI/MCP evolution). `ReviewService`
+  the former transaction-only path / `transactions review` as a **deprecated
+  CLI alias for one minor release** (`design-principles.md` CLI/MCP evolution).
+  `ReviewService`
   gains `account_links_pending` in its count.
 
 ## Decision 6 — AX: a stable non-PII handle to pin account identity
@@ -526,7 +529,7 @@ flowchart TD
     D -->|one or more| PROPOSE[Write pending decisions; surface for confirm]
     PROPOSE --> E{Interactive / first contact?}
     E -->|human, or agent| CONFIRM[import_confirm: merge into candidate, or keep standalone]
-    E -->|deferred / non-interactive| QUEUE[accounts_links pending queue]
+    E -->|deferred / non-interactive| QUEUE[account-link pending queue]
     ADOPT --> REMEMBER[Accepted mapping remembered]
     AUTO --> REMEMBER
     STANDALONE --> REMEMBER
@@ -553,7 +556,7 @@ display_name, confidence, signal}]}`) plus `actions[]`. The agent (a) returns an
 using the Decision-6 handle; (b) self-accepts **only a strong-confirmer adoption**
 when `self_accept` is enabled for its `actor_kind` (both defined in M1H,
 [`smart-import-confirmation.md`](smart-import-confirmation.md) §"Agent autonomy &
-recovery"); or (c) leaves proposals for the `accounts_links` queue. The agent
+recovery"); or (c) leaves proposals for the account-link queue. The agent
 never disambiguates a masked `****4267`.
 
 **Fallback candidates at the gate (decision support, not auto-merge).** The
@@ -602,7 +605,7 @@ name, currency from a Tiller column / OFX `CURDEF`) pre-fill the confirm; the us
 adjusts. Capturing `last_four` + institution here is also what makes the
 candidate pass (Decision 3) able to find this account on a *later* import.
 
-**Catch-all.** The post-hoc `accounts_links` review queue (Decision 5) handles
+**Catch-all.** The post-hoc account-link review queue (Decision 5) handles
 everything that bypassed the confirm — agent-deferred proposals, non-interactive/
 inbox imports, links later found wrong. Confirm-at-import is primary; the queue is
 the safety net.

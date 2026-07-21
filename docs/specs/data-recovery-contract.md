@@ -42,7 +42,9 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 3. **Doctor failures don't point at recoveries.** "FK integrity failed on these 5 transaction IDs" leaves the agent guessing whether to revert an import, edit the account_id, or treat the orphan as intentional.
 4. **Self-healing is absent.** When `import_revert` cascades and leaves orphan `app.transaction_categories` rows, those accumulate forever. No refresh-time cleanup.
 5. **Refresh crashes silently.** Matcher and categorizer failures log at DEBUG (`followups.md:71`); the import looks healthy while dupes silently accumulate. No surface to detect partial-pipeline failure.
-6. **Matching unreachable from MCP.** Agents diagnosing duplicate transactions can't act — `transactions_matches_*` is CLI-only.
+6. **Matching unreachable from MCP.** This pre-cutover gap is closed by
+   `reviews(kind="matches", status="pending")` and
+   `reviews_decide(decisions=[...])`.
 7. **No "regret" surface.** Even with Phase 1 audit_log data, there's no agent-callable enumeration of recent mutations. The agent can't surface "you changed these 5 things in the last hour, want to undo any?" without raw SQL access.
 8. **No project rule.** Each future spec re-invents how errors should hint at recovery, what self-heal is allowed, what counts as an audit-with-recipe vs untyped failure.
 
@@ -112,14 +114,23 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     Plus indexes on `(operation_id)` and `(occurred_at DESC, operation_id)`. The service-layer mutation context manager (introduced in this spec) sets `operation_id` once at the start of a tool call; every audit row written during that call inherits it. Self-heal recipes use the same mechanism with `operation_id='op_self_heal_<recipe>_<uuid4_hex>'` and `actor='system:self_heal'`.
 
-5. **Audit-log undo consumer.** Three new MCP tools (with CLI parity):
+5. **Audit-log undo consumer.** The standard MCP audit contract plus its
+   dedicated undo operation (with CLI parity):
 
     - **`system_audit_undo(operation_id)`** — push consumer. Reads all audit rows for the operation, computes per-row inverse (insert→delete, update→update-to-before_value, delete→insert), wraps in a transaction, writes new audit rows with `is_undo=True` and `undoes_operation_id`, returns summary with the new operation_id (so the undo itself is undoable). Errors:
         - `undo_operation_not_found` — bad operation_id. `recovery_actions` lists `system_audit(view="history")` to enumerate valid ids.
         - `undo_already_undone` — an undo already reversed this op. `recovery_actions` suggests undoing the undo, `confidence=suggested`.
         - `undo_cascade_blocked` — a later operation modified the same `(target_table, target_id)`. `recovery_actions` lists blocker operation_ids with `system_audit_undo` calls in reverse chronological order.
-    - **`system_audit_history(domain?, since?, actor?, limit=50, include_undone=False)`** — pull surface. Returns recent operations grouped by `operation_id`. Each entry includes the tool, arguments, actor, timestamp, tables touched, row count, `can_undo` bool, `undo_blocked_by: list[operation_id] | None`, and a `recovery_actions` list (always one `system_audit_undo` call).
-    - **`system_audit_get(operation_id)`** — single-entity detail. Returns full `before_value` / `after_value` for every audit row in the operation, letting agents pre-check what an undo would change without executing.
+    - **`system_audit(view="history", limit=..., cursor=...)`** — pull surface.
+      Returns recent operations grouped by `operation_id`. Each entry includes the
+      tool, arguments, actor, timestamp, tables touched, row count, `can_undo`,
+      `undo_blocked_by`, and a `recovery_actions` list (always one
+      `system_audit_undo` call).
+    - **`system_audit(view="detail", operation_id=...)`** — single-operation
+      detail. It returns full `before_value` / `after_value` for every audit row
+      in the operation, letting agents pre-check what an undo would change
+      without executing. `audit_id` is the alternate detail selector for one
+      event chain; it cannot be combined with `operation_id`.
 
 6. **Block-don't-cascade undo.** `system_audit_undo` does NOT auto-cascade. When later operations touch the same rows, it returns `undo_cascade_blocked` with blockers in `recovery_actions`. The agent walks the chain explicitly. No `system_audit_undo_cascade` tool in Phase 1; revisit if agent UX shows the walk is too verbose.
 
@@ -138,11 +149,11 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
 
     | Audit | Recipe output |
     |-------|---------------|
-    | `fct_transactions_fk_integrity` | (1) `accounts_get(account_id=<orphan>)` — investigate; (2) `import_revert(import_id=<source>)` if orphan from bad import. `confidence=suggested` |
+    | `fct_transactions_fk_integrity` | (1) `accounts(view="detail", reference=<orphan>)` — investigate; (2) `import_revert(import_id=<source>)` if orphan from bad import. `confidence=suggested` |
     | `fct_transactions_sign_convention` | (1) `import_revert(import_id=<source>)` per affected txn. `confidence=suggested` |
-    | `bridge_transfers_balanced` | (1) `transactions_matches_set(match_id, status="rejected")` to reject the bad transfer match; (2) `transactions_get(transaction_id)` to investigate. `confidence=suggested` |
+    | `bridge_transfers_balanced` | (1) `reviews_decide(decisions=[{"kind":"match", "decision_id":..., "decision":"reject"}])` to reject the bad transfer match; (2) `transactions(text=...)` to investigate. `confidence=suggested` |
     | `categorization_coverage` (warn) | (1) `transactions_categorize_run(methods=["rules","merchants"])`. `confidence=certain` |
-    | `dedup_reconciliation` (fail) | (1) `refresh_run(steps=["match"])` to re-apply matching when a recorded decision didn't collapse its rows; (2) `system_doctor(verbose=True)` to inspect the raw/core count delta. `confidence=suggested` |
+    | `dedup_reconciliation` (fail) | (1) `refresh_run(steps=["match"])` to re-apply matching when a recorded decision didn't collapse its rows; (2) `system_status(sections=["doctor"], detail="full")` to inspect the raw/core count delta. `confidence=suggested` |
     | `orphan_app_state` (new) | (1) `transactions_annotate(requests=[{"kind":"note_delete","note_id":...}, ...])` per orphan note and/or empty `tags_set` requests per orphan transaction. `confidence=certain` |
 
 8. **Self-heal safelist.** Five active recipes run at refresh time. Each MUST satisfy all five criteria:
@@ -207,9 +218,27 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     | `reviews_decide(decisions=[...])` | 1b (accept/reject one decision) | `moneybin transactions matches set` |
     | `reviews(kind="matches", status="history")` | 5 (time-series) | `moneybin transactions matches history` |
 
-    `refresh_run` and the history projection mirror the existing CLI. `reviews(kind="matches", status="pending")` lists pending match proposals (pair ids + confidence, no amounts or descriptions). `reviews_decide(decisions=[...])` is the non-interactive surface: today accept/reject lives only in the interactive `transactions review --type matches` queue, so agents cannot reach it. Each decision accepts or rejects one `match_id` (`status ∈ {accepted, rejected}`). Rejecting an already-accepted match errors with a recovery action pointing at `system_audit_undo` (the M1L audit-log undo consumer); until it ships, the CLI `moneybin transactions matches undo` is the manual interim route named in the action's rationale. There is no `match_group_id`/`primary` write surface — `match_group_id` is a derived prep-layer column (the connected-component group key in `int_transactions__matched`), and dedup collapses each group by field-level source-priority merge (`int_transactions__merged`), so no single physical row is "primary."
+    `refresh_run` and the history projection mirror the existing CLI.
+    `reviews(kind="matches", status="pending")` lists pending match proposals
+    (pair IDs + confidence, no amounts or descriptions).
+    `reviews_decide(decisions=[...])` is the non-interactive surface: today
+    accept/reject lives only in the interactive `transactions review --type
+    matches` queue, so agents cannot reach it. Each item is
+    `{kind: "match", decision_id, decision}`, where `decision` is `"accept"`
+    or `"reject"`. Rejecting an already-accepted match errors with a recovery
+    action pointing at `system_audit_undo` (the M1L audit-log undo consumer);
+    until it ships, the CLI `moneybin transactions matches undo` is the manual
+    interim route named in the action's rationale. There is no
+    `match_group_id`/`primary` write surface — `match_group_id` is a derived
+    prep-layer column (the connected-component group key in
+    `int_transactions__matched`), and dedup collapses each group by field-level
+    source-priority merge (`int_transactions__merged`), so no single physical
+    row is "primary."
 
-    No `transactions_matches_undo` MCP tool. `app.match_decisions` is protected by Invariant 10 → audit_log → `system_audit_undo`. The existing CLI `moneybin transactions matches undo` migrates to call `system_audit_undo` internally.
+    No dedicated match-undo MCP tool. `app.match_decisions` is protected by
+    Invariant 10 → audit_log → `system_audit_undo`. The existing CLI
+    `moneybin transactions matches undo` migrates to call `system_audit_undo`
+    internally.
 
 11. **Project rule.** A new always-loaded workflow rule lands at `.claude/rules/data-recovery.md`. It codifies:
 
@@ -275,7 +304,7 @@ No other schema changes. The pre-image in `before_value` (full row, per Phase 1 
 flowchart TB
     subgraph Surfaces[Failure Surfaces]
         Err["MCP/CLI tool error"]
-        Aud["system_doctor audit failure"]
+        Aud["doctor-section audit failure"]
         Ref["refresh_run partial crash"]
     end
 
@@ -285,11 +314,11 @@ flowchart TB
 
     subgraph Discovery[Discovery Mechanisms]
         Push["Push: structured actions on failures"]
-        Pull["Pull: system_audit_history"]
+        Pull["Pull: system_audit(view=history)"]
     end
 
     subgraph Mechanisms[Recovery Mechanisms]
-        ExTool["Existing inverse tool<br/>(categories_delete, accounts_set, ...)"]
+        ExTool["Existing target-state tool<br/>(taxonomy_set, accounts_set, ...)"]
         Undo["system_audit_undo(operation_id)"]
         Revert["import_revert + re-import"]
         Heal["Self-heal at refresh<br/>(5-recipe safelist)"]
@@ -474,9 +503,8 @@ Deviations from the design as written, with rationale:
   history entries carry `actions[]` (distinct verbs) rather than the spec's
   `tool`/`arguments` fields, plus structured `can_undo` / `undo_blocked_by` and
   the pre-built `recovery_actions[]` (the `system_audit_undo` call for the entry's
-  state — the same structured shape the error envelope carries).
-  `include_undone` toggles visibility of the undo operations themselves
-  (`is_undo=TRUE`).
+  state — the same structured shape the error envelope carries). The current
+  history projection accepts only `view`, `limit`, and `cursor`.
 - **`transactions matches undo` not migrated.** Re-pointing that command at
   `system_audit_undo` stays PR 5 work (it keys on `match_id`, not `operation_id`).
 - **Service-level integration coverage** lives in `test_undo_service.py` (real DB,

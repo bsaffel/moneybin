@@ -36,7 +36,7 @@ Related specs and docs:
 2. **Plaid Parity metadata fields:** `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`. These mirror Plaid's account object structure so future Plaid sync (`sync-plaid.md`) can populate them automatically.
 3. **Lifecycle flags:** `archived` (BOOLEAN, default FALSE) and `include_in_net_worth` (BOOLEAN, default TRUE).
 4. **Archive cascades, unarchive does not restore.** Setting `archived = TRUE` automatically sets `include_in_net_worth = FALSE` in the same write. Setting `archived = FALSE` does NOT touch `include_in_net_worth` — the user must re-include explicitly. Rationale: archive expresses "this account is retired," and forcing the user to also flip the net worth flag is a footgun; restoring it on unarchive would silently re-include accounts the user might have intentionally excluded for unrelated reasons.
-5. **Default list hides archived accounts.** `accounts list` (and `accounts`) omit accounts with `archived = TRUE`. `--include-archived` (CLI) and `include_archived: true` (MCP) reveal them with an explicit annotation.
+5. **Default list hides archived accounts.** `accounts list` (and `accounts(view="list")`) omit accounts with `archived = TRUE`. `--include-archived` (CLI) and `include_closed: true` (MCP) reveal them with an explicit annotation.
 6. **Open vocabulary for `account_subtype` and `holder_category` with soft validation.** Any string accepted at the SQL layer. The service maintains a canonical Plaid list and warns on non-canonical values:
    - **CLI:** interactive `[y/N]` prompt in TTY mode; `--yes` skips. Suggestions for near-misses ("did you mean 'checking'?").
    - **MCP:** write always succeeds; response envelope includes a `warnings: [...]` array with field, message, and suggestion. The agent decides whether to retry.
@@ -274,7 +274,7 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 ### Tier 5 — MCP integration (`tests/e2e/test_e2e_mcp.py`)
 
 - `accounts` returns the resolved view including `display_name`.
-- `accounts` with `redacted: true` omits `last_four` and `credit_limit`; sensitivity tier downgrades to `low`.
+- `accounts(view="list")` accepts only the documented list inputs: `include_closed`, `limit`, and `cursor`.
 - `accounts_set` with non-canonical `account_subtype` returns `warnings` field; write succeeds.
 - `accounts(view="summary")` returns the aggregate shape; no per-account leakage.
 

@@ -1,6 +1,7 @@
 # Transaction Matching — Overview
 
-> Last updated: 2026-05-17 — refreshed CLI/MCP surface references to align with `transactions matches` command path (PR #159) and `transactions_matches_*` phantom namespace (per `moneybin-mcp.md` §17).
+> Last updated: 2026-07-21 — MCP matching references use the standard `reviews`
+> and `reviews_decide` contracts; CLI commands remain under `transactions matches`.
 > Status: Implemented — both v1 pillars shipped (same-record dedup PR #43/#46, transfer detection PR #47). Umbrella doc for the transaction-matching initiative. Child specs listed in [Pillars](#the-three-pillars) are written separately.
 > Companions: [`smart-import-overview.md`](smart-import-overview.md) (peer initiative), [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) (audit log shared), `CLAUDE.md` "Architecture: Data Layers"
 
