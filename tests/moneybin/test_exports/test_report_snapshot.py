@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -15,6 +16,10 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.exports.service import ExportService
 from moneybin.exports.snapshot import PreparedExport
+from moneybin.privacy.payloads.networth import (
+    NetWorthHistoryPayload,
+    NetWorthHistoryPoint,
+)
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
 from moneybin.reports._framework.contract import (
@@ -28,6 +33,7 @@ from moneybin.reports._framework.execute import (
     build_catalog_execution,
 )
 from moneybin.reports._framework.introspect import build_spec
+from moneybin.reports.service_reports import NETWORTH_HISTORY_REPORT
 from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
@@ -332,3 +338,64 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
         )
     assert exc_info.value.code == "REPORT_PARAMETER_UNKNOWN"
     assert calls == 2
+
+
+def test_networth_history_export_retains_native_values_with_truthful_types(
+    db: Database,
+    mocker: MockerFixture,
+) -> None:
+    history = mocker.patch(
+        "moneybin.reports.service_reports.NetworthService.history",
+        return_value=NetWorthHistoryPayload(
+            points=[
+                NetWorthHistoryPoint(
+                    period="2026-07-01",
+                    net_worth=Decimal("1000.12345678"),
+                    change_abs=Decimal("100.75308643"),
+                    change_pct=Decimal("0.100740651234567890"),
+                )
+            ]
+        ),
+    )
+
+    snapshot = ExportService(
+        db,
+        report_catalog=ReportCatalog((NETWORTH_HISTORY_REPORT,)),
+    ).prepare_report(
+        profile="test",
+        report_id="core:networth_history",
+        report_parameters={
+            "from_date": "2026-07-01",
+            "to_date": "2026-07-31",
+        },
+        max_rows=10,
+        redaction_mode="unredacted",
+    )
+
+    history.assert_called_once_with(
+        date(2026, 7, 1),
+        date(2026, 7, 31),
+        interval="monthly",
+    )
+    table = snapshot.tables[0]
+    assert [(column.name, column.duckdb_type) for column in table.columns] == [
+        ("period", "VARCHAR"),
+        ("net_worth", "DECIMAL(12,8)"),
+        ("change_abs", "DECIMAL(11,8)"),
+        ("change_pct", "DECIMAL(18,18)"),
+    ]
+    assert table.rows == (
+        (
+            "2026-07-01",
+            Decimal("1000.12345678"),
+            Decimal("100.75308643"),
+            Decimal("0.100740651234567890"),
+        ),
+    )
+    manifest_columns = snapshot.manifest["tables"][0]["columns"]  # type: ignore[index]
+    assert [column["duckdb_type"] for column in manifest_columns] == [  # type: ignore[index]
+        "VARCHAR",
+        "DECIMAL(12,8)",
+        "DECIMAL(11,8)",
+        "DECIMAL(18,18)",
+    ]

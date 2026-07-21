@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date
+from decimal import Decimal
 from typing import Literal, cast
 
 from pydantic import JsonValue
@@ -294,12 +295,18 @@ def _execute_networth_history(
         }
         for point in payload.points
     ]
+    column_types = [
+        "VARCHAR",
+        _decimal_column_type(rows, "net_worth", fallback="DECIMAL(38,2)"),
+        _decimal_column_type(rows, "change_abs", fallback="DECIMAL(38,2)"),
+        _decimal_column_type(rows, "change_pct", fallback="DOUBLE"),
+    ]
     return build_catalog_execution(
         NETWORTH_HISTORY_REPORT,
         parameters=params,
         records=rows,
         columns=[column.name for column in _HISTORY_COLUMNS],
-        column_types=["DATE", "DECIMAL(18,2)", "DECIMAL(18,2)", "DOUBLE"],
+        column_types=column_types,
         max_rows=limit,
         actions=[
             "Run reports(report_id='core:networth') for a single-date account breakdown",
@@ -310,6 +317,32 @@ def _execute_networth_history(
         period=f"{from_date.isoformat()} to {to_date.isoformat()} ({interval})",
         sql=None,
     )
+
+
+def _decimal_column_type(
+    rows: Sequence[Mapping[str, object]],
+    column: str,
+    *,
+    fallback: str,
+) -> str:
+    """Describe retained Decimal values without narrowing their scale."""
+    values = [row[column] for row in rows if row[column] is not None]
+    if not values or not all(isinstance(value, Decimal) for value in values):
+        return fallback
+
+    decimals = cast(list[Decimal], values)
+    scale = max(max(-cast(int, value.as_tuple().exponent), 0) for value in decimals)
+    integer_digits = max(
+        max(
+            len(value.as_tuple().digits) + cast(int, value.as_tuple().exponent),
+            0,
+        )
+        for value in decimals
+    )
+    precision = max(integer_digits + scale, 1)
+    if precision > 38:
+        raise ValueError(f"{column} exceeds DuckDB DECIMAL(38) precision")
+    return f"DECIMAL({precision},{scale})"
 
 
 NETWORTH_REPORT = ServiceReportSpec(
