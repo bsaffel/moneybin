@@ -593,6 +593,27 @@ A PR proposing an `outputSchema` must additionally name:
 The initial standard registry has zero admitted output schemas. Advertising one
 without this record is a contract failure.
 
+### Documentation closure
+
+Current-facing public documentation derives MCP names and counts from
+`STANDARD_TOOL_NAMES` and the executable capability map. README, guides,
+references, active specs, architecture documents, and contributor rules must
+describe the operating registry and its coarse selectors. A retired callback
+name is replaced with the standard operation and the selector that reaches the
+same outcome; a generic migration claim is not enough.
+
+Historical counts and retired names remain only where removing them would
+damage the record: changelog entries, accepted ADRs, archived specs, and frozen
+regression fixtures. These locations must identify the material as historical.
+No other public document may present or repeat the retired surface.
+
+Documentation changed with this contract uses the ledger-grade voice from
+`.claude/rules/documentation.md`: exact numbers, present-tense claims, named
+limitations, sentence-case headings, and no marketing or compliance cadence.
+A documentation contract test scans nonhistorical public Markdown and fails on
+retired counts or tool names. The allowlist is path-based and limited to the
+four historical record classes above.
+
 ## Evaluation contract
 
 ### Baselines
