@@ -135,6 +135,30 @@ is given). None of this asks the user for classification: the classes are still
 derived, and declaring `year: int` is inherent to writing `= $year`, not extra
 privacy work R2 pushed onto them.
 
+##### A stored `default` above LOW tier is refused; the parameter is required instead
+
+`default` is the one `ParamSpec` field that leaves the machine without a row
+being read. `_parameter_schema` copies it verbatim into the published parameter
+schema for any non-required parameter (`_framework/catalog.py`), and the catalog
+entry classes that whole schema `AGGREGATE` — LOW, unmasked
+(`privacy/payloads/reports.py`). For today's built-ins that is safe: their
+defaults are benign (`top=5`, `months=6`). This spec makes it unsafe, because R1
+lets a user declare a `default` and step 5 can derive that parameter's class up
+to CRITICAL — so a routing number pasted as a filter's default would be returned
+in the clear by a bare `reports` catalog listing, no execution required. The
+catalog already carries `parameter_classes`, so the class is known at the exact
+point the value is published unmasked; the gap is that nothing consults it.
+
+The fix is a save-time rule, not catalog masking: **a parameter whose derived
+class is above LOW tier may not carry a stored `default` — it is `required`.**
+A default masked to `'*****'` in the catalog is not a useful default anyway, so
+forbidding it costs nothing a user would want and keeps the sensitive value out
+of a LOW surface entirely rather than relying on a second masking pass to catch
+it there. This is the same fail-closed shape as the rest of R2: the safe state
+is enforced at the boundary where the value is declared, not audited downstream.
+The rule lives in the binder that already derives the class, so it cannot be
+skipped by a path that forgot to mask.
+
 #### `report_id` is namespaced, and the namespace is not decoration
 
 `ReportSpec.__post_init__` rejects any `report_id` that does not match
@@ -356,11 +380,18 @@ reproduction against DuckDB 1.5.4:
   the identical query bound as `CAST($d AS DATE)` describes cleanly — and column
   names still derive from projection *structure*, not parameter *values*, so the
   names returned match a value-bound run. A placeholder whose declared type still
-  cannot bind (an exotic case: the same name used in two type-incompatible
-  positions) does not crash the save — the `BinderException` is caught and its
-  columns record as unresolvable, the same non-blocking outcome an unresolvable
-  *column* already produces, fail-closed to masked. R2's invariant holds: a valid
-  read-only SELECT always saves.
+  cannot bind is the residual case, and it is a genuine authoring error, not a
+  valid query the pipeline must absorb: it means one placeholder sits in two
+  positions demanding incompatible types, so no single declared `annotation`
+  satisfies both. This branch cannot degrade per-column — a query-level
+  `BinderException` returns *no* `DESCRIBE` rows, so there are no column names to
+  mark unresolvable, and inventing them from sqlglot projections would reopen the
+  exact `COUNT(*)`-bridging gap step 6 exists to close. So the save is
+  **rejected**, with an error naming the placeholder and its conflicting
+  positions. R2's invariant is scoped by this rather than broken: a valid
+  read-only SELECT *whose every placeholder has one consistent type* always
+  saves — and a placeholder with no consistent type is not such a query. Saying
+  that plainly beats asserting a soft-fail with no mechanism behind it.
 - `DESCRIBE` returns one row per output column — that is the point of the step —
   and executes no user rows. Its **type** column is not trustworthy under NULL
   binding (`SELECT amount * $f` describes as `INTEGER`, not `DECIMAL`), so
@@ -456,17 +487,35 @@ SQLMesh-built, so a column added or retyped there runs no migration either.
 `SchemaSnapshot.version` reads `MAX(version) FROM app.schema_migrations` and is
 consequently blind to every input above — it must not be used as the drift key.
 
-Instead, `class_fingerprint` is a hash over two things: the sorted
-`(schema, table, column, DataClass)` tuples for **the tables this query reads**,
-and a **`DERIVATION_VERSION`** constant bumped whenever **any function the
-persisted map depends on** changes how it classifies — `resolve_output_classes`
-*and* the `_classes_by_result_column` bridging step 6 calls load-bearing. The
-scope is the pipeline, not one function: a change to how sqlglot projection
-names reconcile against DuckDB result names moves no tuple and touches no
-classifier, so scoping the constant to `resolve_output_classes` alone would
-leave every saved report on the `Match` branch serving output under the old
-bridging behaviour. That is the same stale-authority failure one function to
-the left — and step 6 is where M2P.1's over-redaction bug actually lived.
+Instead, `class_fingerprint` is a hash over three things: the sorted
+`(schema, table, column, DataClass)` tuples for **the tables this query reads**;
+the `(DataClass, tier, mask_strength)` triples for **every class in the map and
+in the report's `class_downgrades`**; and a **`DERIVATION_VERSION`** constant
+bumped whenever **any function the persisted map depends on** changes how it
+classifies — `resolve_output_classes` *and* the `_classes_by_result_column`
+bridging step 6 calls load-bearing. The scope is the pipeline, not one function:
+a change to how sqlglot projection names reconcile against DuckDB result names
+moves no tuple and touches no classifier, so scoping the constant to
+`resolve_output_classes` alone would leave every saved report on the `Match`
+branch serving output under the old bridging behaviour. That is the same
+stale-authority failure one function to the left — and step 6 is where M2P.1's
+over-redaction bug actually lived.
+
+The tier/mask-strength triples are the second input for a reason a downgrade
+makes sharp. A `class_downgrades` approval is not an assertion about a
+`DataClass` name; it is an assertion about the *tier and transform* that name
+carried when the approval was granted — R5 admits it only when `tier(to)` falls
+below `tier(from)` and `mask_strength` does not rise. That policy lives in the
+`CLASSIFICATION` registry (`DataClass → (Tier, mask_strength)`), a data table,
+not in any classifier *function*. So if `TXN_AMOUNT` began masking under an
+unchanged classification, every stored map would keep its `DataClass` names,
+every tuple would hold, `DERIVATION_VERSION` would not move — and a downgrade
+approved against the old, weaker policy would go on serving the weaker class
+with no revalidation. Hashing the triples closes that: a policy shift moves the
+fingerprint, forces the `Mismatch` branch, and re-checks the downgrade against
+current policy. Without them the fingerprint guards the classification of a
+`DataClass` but not what that `DataClass` means, which is the half a downgrade
+actually turns on.
 
 The version term is not ceremony. The tuples describe derivation's *inputs*; a
 change to the classifier itself moves no tuple, so a fix that raises a computed
@@ -602,7 +651,7 @@ explicit drop list and no shipped MCP tool carries the suffix. The CLI keeps
 `set` / `delete` as separate subcommands — CLI discoverability is cheap
 (`--help` navigation costs no context window), so the surfaces map to the same
 capability through the same service without requiring name equality, which is
-the parity `.claude/rules/cli.md` asks for.
+the capability symmetry `.claude/rules/surface-design.md` asks for.
 
 The catalog excludes archived reports by default; `include_archived` (CLI
 `--archived`) widens it. Each entry carries a `tier` field.
@@ -737,12 +786,18 @@ and distribution a repo artifact gets and a database row does not.
 ### R6 — The verify surface (absorbs M2I)
 
 `reports_explain(handle, params=None)` returns, for any tier. `handle` resolves
-by identifiers.md Guard 2's order — an exact `report_id` first, then a name —
-so a report whose name is contested by a registry collision (R5) stays
-inspectable by its stable `report_id`, which is the identity the
-collision-recovery text promises. The same resolution applies to
-`reports_reclassify`; only the human-facing catalog and run paths key on name
-alone, because a name a user cannot type is not a handle they have.
+by the shared reference contract's order — an exact `report_id` first, then an
+exact name (`.claude/rules/mcp.md` "Entity resolution") — so a report whose name
+is contested by a registry collision (R5) stays inspectable by its stable
+`report_id`. Every handle-taking operation resolves the same way, on both
+surfaces: `reports_reclassify`, the MCP `reports` tool (whose parameter is
+already `report_id`), and the CLI's `reports run` / `explain` / `reclassify`,
+which accept a `report_id` wherever they accept a name. This is what actually
+delivers the collision-recovery promise — a contested name has an unambiguous
+`report_id` escape hatch on every path a human or agent might take, not only the
+inspect path. The catalog *displays* names because that is what a user reads;
+resolution accepts either because a name a user cannot currently type still has
+an id they can.
 
 For any tier, `reports_explain` returns:
 
