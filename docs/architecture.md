@@ -95,7 +95,7 @@ Surface symmetry (same nouns, different verb position):
 | List accounts | `moneybin accounts list` | `accounts` |
 | Net worth report | `moneybin reports networth` | `reports(report_id=...)` |
 | Refresh the pipeline | `moneybin refresh` | `refresh_run` |
-| Confirm a match | `moneybin transactions matches confirm <id>` | `transactions_matches_confirm` |
+| Confirm a match | `moneybin transactions matches confirm <id>` | `reviews_decide(decisions=[{"kind": "match", "decision_id": "<id>", "decision": "accept"}])` |
 
 Parity is functional, not nominal — same outcomes reachable on both surfaces, not 1:1 name matching. The capability map is at [`docs/specs/moneybin-capabilities.md`](specs/moneybin-capabilities.md).
 
