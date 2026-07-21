@@ -6,10 +6,18 @@ import json
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 
 from moneybin.database import Database
-from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
+from moneybin.exports.models import ExportDestination
+from moneybin.repositories.export_destinations_repo import (
+    ExportDestinationSpreadsheetConflictError,
+    ExportDestinationsRepo,
+    ReservedExportDestinationError,
+)
+from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.services.entity_reference import AmbiguousEntity, MissingEntity
 from moneybin.sql.migrations.V041__create_app_export_destinations import migrate
 from tests.moneybin.migration_helpers import run_migration
 
@@ -52,7 +60,7 @@ def test_set_local_lists_and_resolves_exact_references(
     assert listed[0].managed_tab_prefix is None
     assert repo.resolve(destination_id) == listed[0]
     assert repo.resolve("monthly-export") == listed[0]
-    assert repo.resolve("monthly") is None
+    assert repo.resolve("monthly") == MissingEntity(reference="monthly")
 
     audit = _audit_rows_for(db, destination_id)
     assert len(audit) == 1
@@ -82,7 +90,7 @@ def test_set_sheets_writes_complete_destination_and_one_audit_row(
     assert destination_id is not None
 
     destination = repo.resolve("planning-workbook")
-    assert destination is not None
+    assert isinstance(destination, ExportDestination)
     assert destination.kind == "sheets"
     assert destination.local_path is None
     assert destination.spreadsheet_id == "sheet_123"
@@ -112,7 +120,7 @@ def test_set_replaces_a_destination_kind_with_one_paired_audit_row(
     assert updated.target_id == created.target_id
 
     destination = repo.resolve("finance")
-    assert destination is not None
+    assert isinstance(destination, ExportDestination)
     assert destination.kind == "sheets"
     assert destination.local_path is None
 
@@ -140,7 +148,7 @@ def test_remove_deletes_configuration_only_and_emits_one_audit_row(
     removed = repo.remove("removable", actor="cli")
     assert removed is not None
     assert removed.target_id == destination_id
-    assert repo.resolve("removable") is None
+    assert repo.resolve("removable") == MissingEntity(reference="removable")
     assert visible_dir.is_dir()
 
     audit = _audit_rows_for(db, destination_id)
@@ -148,3 +156,128 @@ def test_remove_deletes_configuration_only_and_emits_one_audit_row(
     assert audit[-1][0] == "export_destination.remove"
     assert json.loads(audit[-1][4])["name"] == "removable"
     assert audit[-1][5] is None
+
+
+def test_set_sheets_rejects_an_inbound_connection_workbook(
+    db: Database, repo: ExportDestinationsRepo
+) -> None:
+    """The same workbook cannot be both inbound connection and export target."""
+    GSheetConnectionsRepo(db).insert(
+        spreadsheet_id="inbound_sheet",
+        sheet_gid=0,
+        sheet_name="Transactions",
+        workbook_name="Inbound ledger",
+        adapter="transactions",
+        alias=None,
+        account_id=None,
+        account_name=None,
+        column_mapping={"Date": "transaction_date"},
+        header_signature=["Date"],
+        date_format=None,
+        sign_convention=None,
+        number_format=None,
+        skip_rows=0,
+        skip_trailing_patterns=None,
+        actor="cli",
+    )
+
+    with pytest.raises(ExportDestinationSpreadsheetConflictError):
+        repo.set_sheets(
+            name="outbound",
+            spreadsheet_id="inbound_sheet",
+            managed_tab_prefix="MoneyBin",
+            actor="cli",
+        )
+
+    assert repo.list() == []
+
+
+@pytest.mark.parametrize("kind", ["local", "sheets"])
+def test_set_rejects_the_reserved_derived_local_exports_destination(
+    repo: ExportDestinationsRepo, kind: str
+) -> None:
+    """The built-in local:exports target is derived, never persisted."""
+    with pytest.raises(ReservedExportDestinationError):
+        if kind == "local":
+            repo.set_local(
+                name="local:exports",
+                local_path=Path("visible/exports"),
+                actor="cli",
+            )
+        else:
+            repo.set_sheets(
+                name="local:exports",
+                spreadsheet_id="sheet_789",
+                managed_tab_prefix="MoneyBin",
+                actor="cli",
+            )
+
+
+def test_resolve_prefers_id_then_exact_name_then_normalized_name(
+    repo: ExportDestinationsRepo,
+) -> None:
+    """Resolution uses the shared deterministic entity-reference ladder."""
+    id_owner = repo.set_local(
+        name="first destination",
+        local_path=Path("visible/first"),
+        actor="cli",
+    )
+    destination_id = id_owner.target_id
+    assert destination_id is not None
+    repo.set_local(
+        name=destination_id,
+        local_path=Path("visible/name-collision"),
+        actor="cli",
+    )
+    named = repo.set_local(
+        name="Monthly Exports",
+        local_path=Path("visible/monthly"),
+        actor="cli",
+    )
+
+    id_result = repo.resolve(destination_id)
+    exact_result = repo.resolve("MONTHLY EXPORTS")
+    normalized_result = repo.resolve("  monthly\u3000exports  ")
+    assert isinstance(id_result, ExportDestination)
+    assert isinstance(exact_result, ExportDestination)
+    assert isinstance(normalized_result, ExportDestination)
+    assert id_result.destination_id == destination_id
+    assert exact_result.destination_id == named.target_id
+    assert normalized_result.destination_id == named.target_id
+
+
+def test_resolve_returns_structured_ambiguity_for_normalized_name_collisions(
+    repo: ExportDestinationsRepo,
+) -> None:
+    """Normalized matches never choose an arbitrary first destination."""
+    first = repo.set_local(
+        name=" Checking ",
+        local_path=Path("visible/first"),
+        actor="cli",
+    )
+    second = repo.set_local(
+        name="checking  ",
+        local_path=Path("visible/second"),
+        actor="cli",
+    )
+
+    result = repo.resolve("checking")
+    assert isinstance(result, AmbiguousEntity)
+    assert first.target_id is not None
+    assert second.target_id is not None
+    assert result.candidate_ids == tuple(sorted([first.target_id, second.target_id]))
+
+
+def test_repository_table_rejects_invalid_destination_shapes(
+    db: Database, repo: ExportDestinationsRepo
+) -> None:
+    """Repository callers retain the migration's database-backed shape guard."""
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            """
+            INSERT INTO app.export_destinations (
+                destination_id, name, kind, spreadsheet_id
+            ) VALUES (?, ?, ?, ?)
+            """,
+            ["destination99", "bad-shape", "sheets", "sheet_999"],
+        )

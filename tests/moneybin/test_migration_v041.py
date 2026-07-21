@@ -82,6 +82,26 @@ def test_v041_creates_export_destinations(db: Database) -> None:
             ["destination04", "invalid", "local"],
         )
 
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            """
+            INSERT INTO app.export_destinations (
+                destination_id, name, kind, spreadsheet_id
+            ) VALUES (?, ?, ?, ?)
+            """,
+            ["destination05", "incomplete-sheets", "sheets", "sheet_456"],
+        )
+
+    with pytest.raises(duckdb.ConstraintException):
+        db.execute(
+            """
+            INSERT INTO app.export_destinations (
+                destination_id, name, kind, local_path
+            ) VALUES (?, ?, ?, ?)
+            """,
+            ["destination06", "unknown-kind", "drive", "visible/drive"],
+        )
+
 
 def test_v041_is_idempotent(db: Database) -> None:
     """Fresh installs and migration upgrades may both invoke the DDL."""

@@ -7,10 +7,19 @@ import uuid
 from pathlib import Path
 from typing import Any, cast
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.exports.models import DestinationKind, ExportDestination
 from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.services.audit_service import AuditEvent
-from moneybin.tables import EXPORT_DESTINATIONS
+from moneybin.services.entity_reference import (
+    AmbiguousEntity,
+    EntityCandidate,
+    MissingEntity,
+    ResolvedEntity,
+    resolve_entity_reference,
+)
+from moneybin.tables import EXPORT_DESTINATIONS, GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +33,31 @@ _FULL_ROW_COLUMNS = (
     "created_at",
     "updated_at",
 )
+
+type ExportDestinationResolution = ExportDestination | AmbiguousEntity | MissingEntity
+
+
+class ExportDestinationSpreadsheetConflictError(UserError):
+    """Raised when a workbook is already configured for inbound Sheets pulls."""
+
+    def __init__(self) -> None:
+        """Build a user-safe workbook-role conflict."""
+        super().__init__(
+            "This spreadsheet is already configured as an inbound connection and "
+            "cannot also be an export destination.",
+            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+        )
+
+
+class ReservedExportDestinationError(UserError):
+    """Raised when callers try to persist the derived local:exports target."""
+
+    def __init__(self) -> None:
+        """Build a user-safe reserved-destination error."""
+        super().__init__(
+            "local:exports is a built-in derived destination and cannot be saved.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
 
 
 def _decode_destination(row: dict[str, Any]) -> ExportDestination:
@@ -56,31 +90,36 @@ class ExportDestinationsRepo(BaseRepo):
     def _fetch_by_name(self, name: str) -> dict[str, Any] | None:
         return self._fetch_one(EXPORT_DESTINATIONS, _FULL_ROW_COLUMNS, "name", name)
 
-    def list(self) -> list[ExportDestination]:
-        """Return saved destinations in stable user-facing name order."""
+    def _list_full_rows(self) -> list[dict[str, Any]]:
         columns = ", ".join(quote_ident(column) for column in _FULL_ROW_COLUMNS)
         rows = self._db.execute(
             f"SELECT {columns} FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + allowlisted columns
             "ORDER BY name ASC, destination_id ASC"
         ).fetchall()
-        return [
-            _decode_destination(dict(zip(_FULL_ROW_COLUMNS, row, strict=True)))
-            for row in rows
-        ]
+        return [dict(zip(_FULL_ROW_COLUMNS, row, strict=True)) for row in rows]
 
-    def resolve(self, reference: str) -> ExportDestination | None:
-        """Resolve an exact destination id or exact name; never fuzzy-match."""
-        columns = ", ".join(quote_ident(column) for column in _FULL_ROW_COLUMNS)
-        rows = self._db.execute(
-            f"SELECT {columns} FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + allowlisted columns
-            "WHERE destination_id = ? OR name = ?",
-            [reference, reference],
-        ).fetchall()
-        if not rows:
-            return None
-        if len(rows) > 1:
-            raise ValueError("Destination reference is ambiguous")
-        return _decode_destination(dict(zip(_FULL_ROW_COLUMNS, rows[0], strict=True)))
+    def list(self) -> list[ExportDestination]:
+        """Return saved destinations in stable user-facing name order."""
+        return [_decode_destination(row) for row in self._list_full_rows()]
+
+    def resolve(self, reference: str) -> ExportDestinationResolution:
+        """Resolve by stable id, exact name, then unambiguous normalized name."""
+        rows = self._list_full_rows()
+        resolution = resolve_entity_reference(
+            reference,
+            (
+                EntityCandidate(
+                    entity_id=cast(str, row["destination_id"]),
+                    display_name=cast(str, row["name"]),
+                )
+                for row in rows
+            ),
+        )
+        if not isinstance(resolution, ResolvedEntity):
+            return resolution
+        return _decode_destination(
+            next(row for row in rows if row["destination_id"] == resolution.entity_id)
+        )
 
     def set_local(
         self,
@@ -139,6 +178,9 @@ class ExportDestinationsRepo(BaseRepo):
     ) -> AuditEvent:
         """Persist one complete kind-specific destination shape and audit it."""
         with self._transaction(in_outer_txn=in_outer_txn):
+            self._validate_destination(
+                name=name, kind=kind, spreadsheet_id=spreadsheet_id
+            )
             before = self._fetch_by_name(name)
             destination_id = (
                 cast(str, before["destination_id"])
@@ -181,6 +223,31 @@ class ExportDestinationsRepo(BaseRepo):
         )
         return event
 
+    def _validate_destination(
+        self,
+        *,
+        name: str,
+        kind: DestinationKind,
+        spreadsheet_id: str | None,
+    ) -> None:
+        """Reject reserved targets and workbook role conflicts before mutation."""
+        if name.casefold() == "local:exports":
+            raise ReservedExportDestinationError()
+        if kind != "sheets":
+            return
+        if spreadsheet_id is None:
+            raise UserError(
+                "A Sheets export destination requires a spreadsheet ID.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        conflict = self._db.execute(
+            f"SELECT 1 FROM {GSHEET_CONNECTIONS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE spreadsheet_id = ? LIMIT 1",
+            [spreadsheet_id],
+        ).fetchone()
+        if conflict is not None:
+            raise ExportDestinationSpreadsheetConflictError()
+
     def remove(
         self,
         reference: str,
@@ -191,7 +258,7 @@ class ExportDestinationsRepo(BaseRepo):
     ) -> AuditEvent | None:
         """Remove saved configuration only; never delete destination content."""
         destination = self.resolve(reference)
-        if destination is None:
+        if not isinstance(destination, ExportDestination):
             return None
         destination_id = destination.destination_id
         if destination_id is None:
