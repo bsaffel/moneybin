@@ -332,12 +332,10 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 
 | Tool | Description | Parameters |
 |---|---|---|
-| `sync_pull` | Trigger a bank data sync, wait for completion, load results; runs post-load refresh by default | `institution: str \| None`, `force: bool`, `refresh: bool` |
-| `sync_status` | Show connected institutions and health | None |
-| `sync_link` | Start bank link flow | `institution: str \| None`; returns session URL |
-| `sync_link_status` | Poll a link session for completion | `session_id: str` |
-| `sync_disconnect` | Remove a bank connection | `institution: str` |
-| `sync_schedule_set` / `sync_schedule_show` / `sync_schedule_remove` | Manage automated sync schedule (split per shape-3 verb convention) | `time: str` on `_set` (HH:MM) |
+| `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
+| `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
+| `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`; returns session URL or device credentials |
+| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `mode: "institution" \| "logout"` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
@@ -354,7 +352,7 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
 
 ### How synced data surfaces
 
-No sync-specific read tools needed. Once data is pulled and transformed, it flows through the existing core tables. All existing MCP tools (`transactions_review`, `reports_spending`, `accounts`, etc.) automatically include synced data via `source_type = '{provider}'` — the data warehouse doing its job.
+No additional sync-specific read tools are needed. Once data is pulled and transformed, it flows through the existing core tables and the standard query and report surface automatically includes synced data via `source_type = '{provider}'`.
 
 ---
 

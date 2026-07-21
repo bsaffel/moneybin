@@ -49,6 +49,8 @@ reach the ledger, everything downstream is existing machinery.
    are always a full snapshot; investment transactions are date-range queries
    with a server-owned watermark; there is no cursor) are server-internal per
    the "sync server is opaque" design principle.
+   MCP callers use `sync_pull`; `sync_status` remains the single status read
+   for connection health and link-session inspection.
 2. **Max-capture raw.** Four new tables — `raw.plaid_securities`,
    `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings`, and
    `raw.plaid_investment_holding_lots` (the per-lot `tax_lots[]` detail) —

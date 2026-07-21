@@ -48,7 +48,7 @@ The existing `~/.moneybin/` location is the older Unix dotdir form of platform c
 9. **Atomic file movement.** Each file is processed in three filesystem steps: source → staging path inside the destination directory → final destination. Movement uses `os.rename` (atomic on the same filesystem). A crash mid-import leaves the file either in `inbox/` (not yet moved), in a discoverable `staging-*` path inside `processed/` or `failed/`, or at its final destination — never partially written or duplicated. A startup recovery pass (run at the start of every sync) cleans up stale `staging-*` entries by reverting them to `inbox/`.
 10. **Out-of-scope on inbox/processed/failed boundaries.** Sync only acts on regular files directly inside `inbox/` (root) or directly inside `inbox/<single-subfolder>/`. Nested subfolders deeper than one level, symlinks, and hidden files (starting with `.`) are skipped with an `ignored` entry in the response. This rules out sync recursing into `processed/`, `failed/`, or accidentally following a symlink out of the home directory.
 11. **CLI surface.** `moneybin import inbox` drains the active profile's inbox. `moneybin import inbox list` previews without moving. `moneybin import inbox path` prints the active profile's inbox parent (`<inbox_root>/<profile>/`). All three live under the existing `import` group per `moneybin-cli.md` and respect the global `--profile` flag.
-12. **MCP surface.** `import_inbox_sync` drains. `import_inbox_pending` previews. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
+12. **MCP surface.** `import_inbox_sync` drains. `import_status(sections=["inbox"])` reads pending inbox state. Both are `low` sensitivity (return aggregate counts, filenames, and error codes — never file contents).
 
 ### Non-Functional
 
@@ -60,7 +60,7 @@ The existing `~/.moneybin/` location is the older Unix dotdir form of platform c
 
 ## Data Model
 
-No new database tables. The inbox is filesystem state; the database side is unchanged because each file's import path goes through the existing `ImportService.import_file()`.
+No new database tables. The inbox is filesystem state; the database side is unchanged because each file's import path goes through the existing batch import service.
 
 Existing tables touched indirectly via `ImportService`:
 
@@ -71,9 +71,9 @@ Existing tables touched indirectly via `ImportService`:
 
 ### Files to Create
 
-- `src/moneybin/services/inbox_service.py` — `InboxService` class encapsulating directory layout, locking, the recovery pass, file movement, and the sync/list operations. Calls `ImportService.import_file()` for each file. Returns a dataclass result (`InboxSyncResult`) with `processed`, `failed`, `skipped`, `ignored` lists.
+- `src/moneybin/services/inbox_service.py` — `InboxService` class encapsulating directory layout, locking, the recovery pass, file movement, and the sync/list operations. Calls the batch import service for each file. Returns a dataclass result (`InboxSyncResult`) with `processed`, `failed`, `skipped`, `ignored` lists.
 - `src/moneybin/cli/commands/import_inbox.py` — Typer subcommands `inbox`, `inbox list`, `inbox path` registered under the existing `import` group.
-- `src/moneybin/mcp/tools/import_inbox.py` — `import_inbox_sync` and `import_inbox_pending` MCP tools.
+- `src/moneybin/mcp/tools/import_inbox.py` — `import_inbox_sync`; pending state is projected by `import_status(sections=["inbox"])`.
 - `tests/services/test_inbox_service.py` — service-level unit + integration tests.
 - `tests/cli/test_import_inbox.py` — CLI subprocess tests.
 - `tests/mcp/test_import_inbox_tools.py` — MCP tool tests.
@@ -180,7 +180,7 @@ Two new tools under the existing `import.*` namespace.
   dead end with `candidates: []`.
 - **Actions hints:** when any `account_confirmation` pending entries are returned: `"Some pending files need an account identity — run moneybin import confirm <pending-path> --accept --account-binding <source_key>=<account_id|new> (--accept ratifies the settled mapping; source_key + candidate accounts are in each pending entry's account_proposals, also mirrored in the .pending.yml sidecar), or move the file into inbox/<account-slug>/ and re-run import_inbox_sync."`
 
-### `import_inbox_pending`
+### Pending inbox projection
 
 - **Sensitivity:** `low`
 - **Args:** none

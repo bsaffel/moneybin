@@ -209,7 +209,9 @@ AI-call audit rows live in the unified `app.audit_log` defined by [`transaction-
 | `consent_reference` | string | FK to the `app.ai_consent_grants` row that authorized the call. |
 | `user_initiated` | boolean | True for direct MCP queries; false for system-initiated calls (Smart Import). |
 
-The planned `privacy_audit` consumer surface (not yet registered; see `moneybin-mcp.md` §11) reads from `app.audit_log` filtered by `action='ai.external_call'` and projects `context_json` keys back into the original column names so callers see no API change. This is distinct from the shipped `privacy_log`, which reads the JSONL privacy-event stream.
+The audit consumer described here is not registered. The standard privacy log
+projection is `privacy(view="log")`; it reads JSONL privacy-event records rather
+than the `app.audit_log` rows described above.
 
 ### Why no payload storage
 
@@ -223,7 +225,7 @@ The `data_sent_hash` allows forensic verification ("was this specific payload se
 ### User interface
 
 - **CLI:** `moneybin privacy audit [--last N] [--feature X] [--backend Y] [--since DATE]`
-- **MCP:** planned `privacy_audit` tool with the same filter parameters (not yet registered; see `moneybin-mcp.md` §11)
+- **MCP:** `privacy(view="log")` for the cursor-paginated privacy-event stream.
 - **Example output:**
   ```
   2026-04-17 14:32:01 | tier 3 | smart_import_parse | anthropic/claude-sonnet-4-6
@@ -263,8 +265,8 @@ def search_transactions(query: str, limit: int) -> list[dict]: ...
 > **Ledger shipped; enforcement gate deferred.** The `app.ai_consent_grants`
 > table, `ConsentService` (grant/revoke/status/log), and the
 > `moneybin privacy grant/revoke/revoke-all/status/log` CLI commands and
-> `privacy_consent_grant`, `privacy_consent_revoke`, `privacy_status`,
-> `privacy_log` MCP tools shipped in PR 3. The degrade-to-aggregate
+> `privacy_consent_set` and `privacy` MCP tools ship the consent state-set and
+> read projections. The degrade-to-aggregate
 > enforcement gate described below lands when a consumer actively needs it
 > (hosted multi-user deployment or a direct cloud-AI feature). Always-on
 > CRITICAL masking shipped in PR 2 and is already enforced.
@@ -308,10 +310,15 @@ MCP tools prefer returning the minimum data needed to answer the query:
 
 ### MCP tools
 
-- `privacy_status` — returns active consents and backend info (per `moneybin-mcp.md` §11)
-- `privacy_consent_grant` — grant consent for a feature category; writes `app.ai_consent_grants` (per `moneybin-mcp.md` §11)
-- `privacy_consent_revoke` — revoke a consent by category; sets `revoked_at`, retains row (per `moneybin-mcp.md` §11)
-- `privacy_log` — query recent privacy-log events: consent grants/revokes and tool calls (per `moneybin-mcp.md` §11)
+- `privacy(view="status")` — returns active consents and backend info. Status
+  does not accept pagination overrides.
+- `privacy(view="log", limit=..., cursor=...)` — reads the exact,
+  cursor-paginated privacy-event stream.
+- `privacy_consent_set(categories=[...], state="granted", backend=..., mode=...)`
+  atomically declares grants for one or more feature categories.
+- `privacy_consent_set(categories=[...], state="revoked", backend=...,
+  confirmation_token=...)` revokes one or more categories. Revocation requires
+  payload-bound confirmation; `mode` is not valid for this state.
 
 ### Config override
 
