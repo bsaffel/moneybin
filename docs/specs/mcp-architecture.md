@@ -51,7 +51,10 @@ MoneyBin's position:
 - **Transactions come from sources** — files and connectors. Every transaction has provenance.
 - **Corrections are metadata** — when a source record is wrong, the fix is an override in the prep layer ("for this transaction_id, the canonical amount is $42.50"), not a counter-entry in a ledger. The correction travels with the transaction, is auditable, and doesn't create phantom records.
 - **Annotations enrich, they don't create** — tags, notes, and cash breakdowns are metadata on existing transactions. A $200 ATM withdrawal can be annotated with how the cash was spent, but the annotation doesn't create new transactions that double-count the withdrawal.
-- **No general-purpose `add_transaction`** — investment trades, manual adjustments, and other sourceless records wait for their domain-specific source (broker CSV import, Plaid Investments). Domain-specific recording tools may exist within their namespace (e.g., future `investments.record_trade`), but there is no generic transaction creation tool.
+- **No general-purpose transaction insertion surface** — investment trades,
+  manual adjustments, and other sourceless records use their admitted
+  domain-specific source or recording contract. Future MCP capabilities remain
+  unnamed until admission through the bounded registry.
 
 This philosophy is a deliberate product decision. MoneyBin is a data platform that imports and analyzes financial data, not a bookkeeping tool that records it manually.
 
@@ -196,20 +199,20 @@ For the consuming agent there is one surface, governed by one set of rules. The 
 ### Tool disclosure: full surface, taxonomy-led
 
 **Current registry.** The operating surface is one 45-tool standard registry.
-Generic clients receive every tool. Supported hosts may defer schemas from that
-same registry without reconnect, packs, or profiles; names, annotations,
-approvals, allowlists, and audit identity do not change. Reports are catalog
-entries behind `reports`, never tool slots. The deterministic contract passes,
-but promotion remains unready while context-budget and host-deferral evidence
-are `not_observed`.
+Generic clients receive every tool. Capable hosts may optionally defer schemas
+from that same registry without reconnect, packs, or profiles; names,
+annotations, approvals, allowlists, and audit identity do not change. Reports
+are catalog entries behind `reports`, never tool slots. The deterministic
+contract passes, but promotion remains unready while context-budget and
+host-deferral evidence are `not_observed`.
 
-> **Decision (2026-05-17, supersedes the 2026-05-10 "wired but disabled" stance):** Client-driven progressive disclosure is retired as a strategy. The full registered tool surface is visible at connect. Orientation is delivered through the FastMCP `instructions` field in the `initialize` response and through prefix-grouped tool names with crisp descriptions — both surfaces MoneyBin controls end-to-end. `moneybin_discover`, `MoneyBinSettings.mcp.progressive_disclosure`, and the `Visibility(False, tags={domain})` transforms have been removed. The `tags={domain}` markers on tools (still set via `@mcp_tool(domain=...)`) are kept as dormant metadata, in case a future first-party client (M3C Web UI, or anything driving the Anthropic API directly) can implement prompt-level schema injection in the style of Claude Code's `tool_search`.
+Server-driven progressive disclosure is not part of the operating contract.
+The full registered surface is visible at connect. Orientation uses the
+FastMCP `instructions` field, prefix-grouped names, crisp descriptions, and
+`actions[]` hints. ADR-016 records the superseded disclosure and pre-cutover
+registry history.
 
-> **Historical context (2026-07-15):** the former registry of 105 tools exceeded
-> Windsurf's ceiling. It is now the frozen byte/evaluation baseline; it is not
-> the live registry. M3K.2 selected the current 45-tool standard registry.
-
-#### Why retire client-driven disclosure
+#### Why server-driven disclosure stays absent
 
 `tools/list_changed` is part of the MCP spec, but client support is too uneven to design against — Claude Desktop is unreliable, VS Code Copilot and most generic MCP clients ignore it, and Claude Code's reliable handling is a property of the harness rather than the protocol. Building MoneyBin's disclosure story on a capability most clients lack means the agent silently never sees the extended tools because the client never re-fetches the list. That failure mode is worse than the soft cost of an above-sweet-spot tool count, because the soft cost is recoverable through three levers MoneyBin controls entirely:
 
@@ -217,24 +220,17 @@ are `not_observed`.
 2. **Prefix-grouped names + sharp descriptions.** The taxonomy *is* the discovery UI. A model that cannot pick the right tool from a well-named full surface will not be rescued by progressive disclosure either.
 3. **Surface discipline.** A tool may be registered only when its backing spec in `docs/specs/INDEX.md` reaches `in-progress` or `implemented`. No stubs on the public surface. Codified in `.claude/rules/mcp.md` "Surface change discipline".
 
-#### Historical pre-cutover tool namespaces
+#### Historical evidence
 
-| Namespace | Purpose |
-|---|---|
-| `accounts.*` | Account listing, balances, net worth |
-| `investments.*` | Ledger events, holdings, tax lots, realized gains, securities catalog |
-| `transactions.*` | Universal query, corrections, annotations, categorization (incl. rules, merchants, ML, auto-rule review), recurring |
-| `reports.*` | Cross-domain analytics: networth, spending, cashflow, financial health, budget vs actual |
-| `categories.*`, `merchants.*` | Taxonomy reference data |
-| `import.*`, `sync.*` | Data ingestion (files, providers) |
-| `system.*` | Orientation, data status, audit log, schema health |
-| `sql.*` | Read-only escape hatch |
-
-This table is an archival naming snapshot only. It does not describe the live
-registry, current admission policy, or current orientation surface; those are
-defined by the 45-tool standard registry and its governing scaling spec.
+ADR-016 and the archived MCP catalog preserve pre-cutover namespace and
+callback evidence. This active architecture defines only the operating
+registry and current admission policy.
 
 #### Design implications for new tools
+
+Future MCP capabilities remain unnamed until admission. Specs describe the
+capability and intent first; an admitted registry change supplies the public
+identifier.
 
 - Assume every registered tool is always visible to the agent. Its description, parameter schema, and namespace placement compete for the same finite attention budget as every other tool.
 - The description opens with distinct intent-specific selection guidance and
@@ -245,19 +241,12 @@ defined by the 45-tool standard registry and its governing scaling spec.
 - The `actions` array in response envelopes is the only remaining "what to call next" affordance. When a tool returns `actions`, those tools are already registered and callable — no discover step in between.
 - When proposing a new tool, ask: does the work it does justify ~50–150 tokens of permanent model attention forever? If not, fold it into an adjacent tool (a parameter, a `detail` level) or drop it.
 
-#### Why this is now being revisited
+#### Optional host-native deferral
 
-The original decision named two conditions that would warrant reopening:
-
-1. **Client convergence on reliable disclosure.** If `tools/list_changed` becomes universally honored across the major clients MoneyBin targets, the dormant tag metadata can be re-activated without re-architecting.
-2. **First-party MoneyBin client.** A MoneyBin-owned Web UI (M3C) or direct Anthropic API host could implement prompt-level schema injection in the style of Claude Code's `tool_search`. Worth re-evaluating once M3C is concrete.
-
-Universal `tools/list_changed` support has not arrived, so server-driven
-dynamic disclosure remains rejected. The revisit is instead triggered by a
-hard client ceiling and a third path that does not require server mutation:
-consolidate to one bounded standard registry, then let capable hosts defer
-schemas from that same registry. Generic clients receive it in full. The
-45-tool registry is operating; its promotion evidence remains incomplete.
+Capable hosts may defer schema injection from the same registry when they
+preserve the original names, annotations, allowlists, approvals, and audit
+identity. Generic clients always receive the complete registry. This optional
+host behavior does not create a second server mode or change availability.
 
 ### Multi-currency as a crosscutting concern
 
@@ -266,7 +255,9 @@ Multi-currency is not a tool domain. It surfaces as:
 - A **parameter** on existing tools (e.g., `detail` level that includes native currency alongside home-currency amounts).
 - **Response metadata** (`display_currency`, `native_currencies` — see section 4).
 - A **service-layer concern** (conversion at query time using cached exchange rates).
-- **Rate overrides** handled via the curation taxonomy (a per-transaction note / split / tag, or a manual reversing transaction via `transactions_create`) — `transactions_correct` was retired in favor of the curation tools per `transaction-curation.md`.
+- **Rate overrides** handled via the curation taxonomy: a per-transaction note,
+  split, tag, or a manual reversing transaction through
+  `transactions_create`, per `transaction-curation.md`.
 
 ---
 
@@ -756,7 +747,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | **Service layer formalization** | Explicit shared services consumed by both MCP and CLI, returning typed Python objects |
 | **Response envelope** | Consistent `{summary, data, actions}` shape across all tools |
 | **Sensitivity declarations** | Static per-tool sensitivity tier driving automatic privacy enforcement |
-| **Tool disclosure** | Full registered surface visible at connect; orientation via FastMCP `instructions` field and prefix-grouped taxonomy. Client-driven progressive disclosure (`tools/list_changed` + `moneybin_discover`) retired 2026-05-17 — see §3. |
+| **Tool disclosure** | Full registered surface visible at connect; orientation via FastMCP `instructions` field and prefix-grouped taxonomy. Optional host-native deferral uses the same registry — see §3. |
 
 ---
 
@@ -802,11 +793,12 @@ These decisions and their rationale should be documented in the 12-month plan.
   consent gate remains a deferred extension of that architecture.
 - **Tool count strategy (operating, promotion-pending).** The 45-tool standard
   registry is visible at connect with taxonomy-led discovery and stub gating.
-  Client-driven progressive disclosure remains retired. Generic clients receive
-  the complete registry; supported hosts may defer schemas from that same
-  registry without packs, profiles, or reconnect modes. Compatible projections,
-  target-state writes, batches, workflow umbrellas, and the generic `reports`
-  runner provide consolidation; materially different intent, safety,
-  authorization, sensitivity, confirmation, output, audit, or recovery
-  contracts keep separate identities. Promotion remains pending observed context
-  budget and host-native deferral evidence. See §3 and `.claude/rules/mcp.md`.
+  Server-driven progressive disclosure is absent. Generic clients receive the
+  complete registry; capable hosts may optionally defer schemas from that same
+  registry without packs, profiles, or reconnect modes. Compatible
+  projections, target-state writes, batches, workflow umbrellas, and the
+  generic `reports` runner provide consolidation; materially different intent,
+  safety, authorization, sensitivity, confirmation, output, audit, or recovery
+  contracts keep separate identities. Promotion remains pending observed
+  context budget and host-native deferral evidence. See §3 and
+  `.claude/rules/mcp.md`.

@@ -11,10 +11,13 @@
 ## Purpose
 
 This is the concrete current MCP contract. Generic clients receive the complete
-45-tool standard registry. Supported hosts may defer schemas from that same
-registry without reconnect, packs, or profiles; names, annotations, approvals,
-allowlists, and audit identity do not change. The previous per-tool catalog is
-archived at [`archived/moneybin-mcp-pre-cutover.md`](archived/moneybin-mcp-pre-cutover.md).
+45-tool standard registry. Capable hosts may optionally defer schemas from that
+same registry without reconnect, packs, or profiles; names, annotations,
+approvals, allowlists, and audit identity do not change. The previous per-tool
+catalog is archived at
+[`archived/moneybin-mcp-pre-cutover.md`](archived/moneybin-mcp-pre-cutover.md).
+Future MCP capabilities remain unnamed until admission through the bounded
+registry.
 
 ## Standard registry
 
@@ -123,7 +126,7 @@ Every tool returns canonical JSON text and equivalent structured content with a
 `summary`, `data`, and `actions` envelope. Amounts use the accounting
 convention (negative expense, positive income) unless the tool explicitly
 states a presentation override; currency-bearing responses name their currency
-in `summary.display_currency`. Initial registry tools advertise zero output
+in `summary.display_currency`. Current registry tools advertise zero output
 schemas. A future schema needs the consumer-driven admission record in the
 governing spec.
 

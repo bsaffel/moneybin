@@ -60,11 +60,11 @@ Naming: **noun = query** (`reports`, `accounts`, `transactions`), **verb =
 action** (`transactions_categorize_commit`, `refresh_run`). No CRUD naming.
 
 **Tool disclosure: one bounded standard registry.** Generic clients receive
-every registered standard tool at connect. Capable hosts may defer schemas from
-that same registry, but availability, names, annotations, allowlists,
-approvals, and audit identity remain unchanged. Do not add packs, profiles,
-reconnect modes, or a runtime discovery tool. Each tool must justify its
-serialized metadata and carrying weight. See
+every registered standard tool at connect. Capable hosts may optionally defer
+schemas from that same registry, but availability, names, annotations,
+allowlists, approvals, and audit identity remain unchanged. Do not add packs,
+profiles, reconnect modes, or a runtime discovery tool. Each tool must justify
+its serialized metadata and carrying weight. See
 [`mcp-tool-surface-scaling.md`](../../docs/specs/mcp-tool-surface-scaling.md).
 
 ## Response Envelope
@@ -240,10 +240,12 @@ must name its removal release. A report registers behind the single read-only
 `reports` catalog/runner and never adds an MCP tool.
 
 **Current registry.** The 45-tool standard registry is operating. Generic
-clients receive every tool; supported hosts may defer schemas from that same
-registry without reconnect, packs, or profiles. Reports never consume tool
-slots. The deterministic comparison passed, but promotion remains unready
-until context-budget and host-native-deferral evidence is observed.
+clients receive every tool; capable hosts may optionally defer schemas from
+that same registry without reconnect, packs, or profiles. Reports never
+consume tool slots. The deterministic comparison passed, but promotion remains
+unready until context-budget and host-native-deferral evidence is observed.
+Future MCP capabilities remain unnamed until admission through the bounded
+registry.
 
 **Admission sequence.** Before proposing a tool, try an existing projection,
 method, batch, declarative state, report entry, or workflow umbrella. The PR
@@ -266,7 +268,7 @@ results are no worse. Count reduction alone is insufficient.
 All seven answers are required for a future tool; reports enter the catalog
 instead of consuming a tool slot.
 
-**Output-schema admission.** The initial standard registry advertises zero
+**Output-schema admission.** The current standard registry advertises zero
 output schemas. A PR adding one must include the consuming client/integration,
 the concrete hydration or validation failure without it, exact per-tool and
 registry-wide byte deltas, representative compatibility tests, and a persisted

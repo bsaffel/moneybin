@@ -14,6 +14,8 @@ ROOT = Path(__file__).parents[3]
 SCALING_SPEC = ROOT / "docs/specs/mcp-tool-surface-scaling.md"
 ARCHITECTURE_SPEC = ROOT / "docs/specs/mcp-architecture.md"
 MCP_SPEC = ROOT / "docs/specs/moneybin-mcp.md"
+CLI_SPEC = ROOT / "docs/specs/moneybin-cli.md"
+CLIENT_COMPATIBILITY_SPEC = ROOT / "docs/specs/ai-client-compatibility.md"
 ARCHIVED_MCP_SPEC = ROOT / "docs/specs/archived/moneybin-mcp-pre-cutover.md"
 CAPABILITIES_SPEC = ROOT / "docs/specs/moneybin-capabilities.md"
 EXTENSIONS_SPEC = ROOT / "docs/specs/extension-contracts.md"
@@ -28,14 +30,15 @@ CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
 STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-45.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
-CURRENT_PUBLIC_ROOTS = (
-    ROOT / "README.md",
-    *sorted((ROOT / ".claude/rules").glob("*.md")),
-    *sorted((ROOT / "docs").rglob("*.md")),
-)
-HISTORICAL_PUBLIC_PREFIXES = (
-    ROOT / "docs/decisions",
-    ROOT / "docs/specs/archived",
+CURRENT_MCP_GOVERNANCE_DOCS = (
+    INDEX,
+    CLIENT_COMPATIBILITY_SPEC,
+    ARCHITECTURE_SPEC,
+    SCALING_SPEC,
+    CLI_SPEC,
+    MCP_SPEC,
+    MCP_RULE,
+    SURFACE_RULE,
 )
 RETIRED_COUNT_PATTERNS = (
     re.compile(
@@ -50,23 +53,24 @@ RETIRED_COUNT_PATTERNS = (
 INLINE_CODE_SPAN_PATTERN = re.compile(r"(?<!`)`([^`\n]+)`(?!`)")
 
 
-def _current_public_mcp_docs() -> tuple[Path, ...]:
-    return tuple(
-        path
-        for path in CURRENT_PUBLIC_ROOTS
-        if path.is_file()
-        and not any(prefix in path.parents for prefix in HISTORICAL_PUBLIC_PREFIXES)
-    )
-
-
-def _retired_mcp_code_spans(text: str, retired_names: set[str]) -> set[str]:
+def _retired_mcp_code_spans(
+    text: str,
+    retired_names: set[str],
+    current_names: frozenset[str] = frozenset(),
+) -> set[str]:
     retired_spans: set[str] = set()
     for span in INLINE_CODE_SPAN_PATTERN.findall(text):
         name, has_arguments, _ = span.partition("(")
         if name in retired_names and (not has_arguments or span.endswith(")")):
             retired_spans.add(span)
-        elif span.endswith("_*") and any(
-            retired_name.startswith(span[:-1]) for retired_name in retired_names
+        elif (
+            span.endswith("_*")
+            and any(
+                retired_name.startswith(span[:-1]) for retired_name in retired_names
+            )
+            and not any(
+                current_name.startswith(span[:-1]) for current_name in current_names
+            )
         ):
             retired_spans.add(span)
     return retired_spans
@@ -84,14 +88,17 @@ def test_documented_standard_names_match_runtime() -> None:
 
 def test_governing_spec_records_runtime_facts_without_promotion_claim() -> None:
     text = " ".join(SCALING_SPEC.read_text().split())
+    snapshot = json.loads(STANDARD_SNAPSHOT.read_text())
+    output_schema_count = sum(
+        tool["definition"].get("outputSchema") is not None for tool in snapshot["tools"]
+    )
+
+    assert output_schema_count == 0
 
     for fact in (
-        "45 tools",
-        "47,111 bytes",
-        "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
-        "90,734 bytes",
-        "ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79",
-        "-43,623 bytes (-48.1%)",
+        f"{snapshot['tool_count']} tools",
+        f"{snapshot['total_bytes']:,} bytes",
+        snapshot["sha256"],
         "zero advertised output schemas",
         "contract_passed: true",
         "promotion_ready: false",
@@ -101,6 +108,59 @@ def test_governing_spec_records_runtime_facts_without_promotion_claim() -> None:
         assert fact in text
     assert "**Status:** in-progress" in text
     assert "**Status:** implemented" not in text
+    assert "pre-cutover registry" in text
+    assert "ADR-016" in text
+
+
+def test_client_compatibility_records_current_windsurf_headroom() -> None:
+    text = " ".join(CLIENT_COMPATIBILITY_SPEC.read_text().split())
+    index_row = next(
+        line
+        for line in INDEX.read_text().splitlines()
+        if "[AI Client Compatibility & Distribution]" in line
+    )
+
+    for current_fact in (
+        "45 MoneyBin tools",
+        "100-active-tool",
+        "55 tool slots",
+    ):
+        assert current_fact in text
+        assert current_fact in index_row
+    assert "over the ceiling" not in index_row
+
+
+def test_cli_mcp_examples_use_coarse_operations_with_selectors() -> None:
+    text = CLI_SPEC.read_text()
+
+    for mapping in (
+        '`accounts get <id>` | `accounts(view="detail", reference=<id>)`',
+        '`accounts balance history` | `accounts_balances(view="history", reference=...)`',
+        '`reports networth` | `reports(report_id="core:networth")`',
+        '`transactions matches pending` | `reviews(kind="matches", status="pending")`',
+        "`transactions matches undo <id>` | `system_audit_undo(operation_id=<id>)`",
+        '`transactions matches run` | `refresh_run(steps=["match"])`',
+    ):
+        assert mapping in text
+    assert "MCP mirrors CLI exactly" not in text
+
+
+def test_future_mcp_capabilities_remain_unnamed_until_admission() -> None:
+    for path in (ARCHITECTURE_SPEC, MCP_SPEC, SCALING_SPEC, MCP_RULE, SURFACE_RULE):
+        text = " ".join(path.read_text().split())
+        assert "Future MCP capabilities remain unnamed until admission" in text, path
+
+    combined = "\n".join(
+        path.read_text()
+        for path in (ARCHITECTURE_SPEC, MCP_SPEC, SCALING_SPEC, MCP_RULE, SURFACE_RULE)
+    )
+    for speculative_name in (
+        "investments.record_trade",
+        "airtable_connect",
+        "smartsheet_connect",
+        "notion_connect",
+    ):
+        assert speculative_name not in combined
 
 
 def test_governance_describes_one_current_registry_and_future_admission() -> None:
@@ -235,7 +295,7 @@ def test_retired_mcp_code_spans_ignore_generic_inline_code() -> None:
     assert _retired_mcp_code_spans("`categories` and `*`", retired_names) == set()
 
 
-def test_current_public_docs_do_not_repeat_the_retired_mcp_surface() -> None:
+def test_current_mcp_governance_does_not_repeat_the_retired_surface() -> None:
     baseline = json.loads(BASELINE_SNAPSHOT.read_text())
     current = json.loads(STANDARD_SNAPSHOT.read_text())
     # One-word retired tool names overlap with preserved CLI command words.
@@ -246,10 +306,12 @@ def test_current_public_docs_do_not_repeat_the_retired_mcp_surface() -> None:
 
     violations: list[str] = []
 
-    for path in _current_public_mcp_docs():
+    for path in CURRENT_MCP_GOVERNANCE_DOCS:
         text = path.read_text()
         relative = path.relative_to(ROOT)
-        for span in sorted(_retired_mcp_code_spans(text, retired_names)):
+        for span in sorted(
+            _retired_mcp_code_spans(text, retired_names, STANDARD_TOOL_NAMES)
+        ):
             violations.append(f"{relative}: retired MCP identifier `{span}`")
         for pattern in RETIRED_COUNT_PATTERNS:
             if match := pattern.search(text):

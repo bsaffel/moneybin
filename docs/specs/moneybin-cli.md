@@ -47,7 +47,7 @@ The global `--profile` flag provides ephemeral override without changing the def
 
 `moneybin import files` and `moneybin sync pull` are the two ways data enters the system. Both automatically execute the full pipeline: load to raw, transform (SQLMesh), match (dedup + transfers), categorize. Users should never need to manually run pipeline stages in sequence.
 
-Individual commands (`transactions matches run`, `transactions categorize rules apply`, `transform apply`) exist for configuration, troubleshooting, and power-user control — not as steps in a manual pipeline. The user-intent umbrella is `moneybin refresh` (CLI peer of MCP `refresh_run`, per PR #173) — `refresh --step transform` is the always-visible caller for what was previously the standalone `transform_apply` MCP tool (removed; see `moneybin-mcp.md`).
+Individual commands (`transactions matches run`, `transactions categorize rules apply`, `transform apply`) exist for configuration, troubleshooting, and power-user control — not as steps in a manual pipeline. The user-intent umbrella is `moneybin refresh` (CLI peer of MCP `refresh_run`, per PR #173); `refresh --step transform` maps to `refresh_run(steps=["transform"])`.
 
 ### Entity groups own their workflows and aggregations
 
@@ -192,7 +192,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |                                    Default: full cascade. Steps execute in canonical
 |                                    order regardless of flag order. `--step transform`
 |                                    is the granular form formerly exposed as the
-|                                    standalone `transform_apply` MCP tool.
+|                                    `refresh_run(steps=["transform"])` MCP path.
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.
@@ -363,7 +363,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
 |   +-- cashflow                   -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
 |   +-- spending                   -- Spending by category [--from-month YYYY-MM] [--to-month YYYY-MM] [--category] [--compare]
-|   +-- recurring                  -- Recurring transactions [--min-confidence] [--status] [--cadence] (replaces removed `transactions_recurring_list` per #163)
+|   +-- recurring                  -- Recurring transactions [--min-confidence] [--status] [--cadence] via `reports(report_id="core:recurring")`
 |   +-- merchants                  -- Top merchants by spend [--top] [--sort]
 |   +-- uncategorized              -- Uncategorized transactions roll-up
 |   +-- large-transactions         -- Outlier amounts [--top] [--anomaly]
@@ -516,54 +516,63 @@ Dynamic per-package groups (pending [`extension-contracts.md`](extension-contrac
 
 ## Cross-Interface Taxonomy
 
-The same hierarchy expresses across CLI, MCP, and (future) HTTP. Each protocol encodes the hierarchy in its native idiom; the noun ordering is identical, only the verb position and separators differ.
+CLI and MCP share capability IDs, service operations, and observable outcomes.
+They do not require name or method equality. CLI subgroup nesting preserves
+human and operator discoverability; MCP uses coarse operations plus explicit
+selectors to preserve bounded agent context.
 
 ### The unified rule
 
-> Hierarchy is the entity path. Verb is the leaf action. Aggregations live with their entity. Workflows live with the entity they operate on. Reports are cross-cutting analytical views.
+> Start from the capability and user outcome. Give each surface the natural
+> shape for its caller while preserving service ownership and result semantics.
 
 ### Encoding per protocol
 
-| Protocol | Hierarchy | Verb position | Example |
-|---|---|---|---|
-| CLI | space-separated path | trailing word | `accounts balance assert <id> <date> <amt>` |
-| MCP | underscore prefix | trailing token | `accounts_balance_assert` |
-| HTTP | URL path | HTTP method + sub-path for non-CRUD | `POST /accounts/{id}/balances` |
+| Protocol | Shape | Example |
+|---|---|---|
+| CLI | Space-separated groups and leaf commands | `accounts balance history` |
+| MCP | Bounded operation with typed selectors | `accounts_balances(view="history", reference=...)` |
+| HTTP | URL path and HTTP method | `GET /accounts/{id}/balances` |
 
 ### Naming examples
 
 | Concept | CLI | MCP | HTTP |
 |---|---|---|---|
-| List accounts | `accounts list` | `accounts` | `GET /accounts` |
-| Show one account | `accounts get <id>` | `accounts_get` | `GET /accounts/{id}` |
-| Show current balances | `accounts balance show` | `accounts_balances` | `GET /accounts/balances` |
+| List accounts | `accounts list` | `accounts(view="list")` | `GET /accounts` |
+| Show one account | `accounts get <id>` | `accounts(view="detail", reference=<id>)` | `GET /accounts/{id}` |
+| Show current balances | `accounts balance show` | `accounts_balances(view="latest")` | `GET /accounts/balances` |
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
-| Balance history | `accounts balance history` | `accounts_balance_history` | `GET /accounts/{id}/balances/history` |
-| Net worth now | `reports networth` | `reports_networth` | `GET /reports/networth` |
-| Pending matches | `transactions matches pending` | `transactions_matches_pending` | `GET /transactions/matches/pending` |
-| Match history | `transactions matches history` | `transactions_matches_history` | `GET /transactions/matches` |
-| Undo a match | `transactions matches undo <id>` | `transactions_matches_undo` | `POST /transactions/matches/{id}/undo` |
-| Spending report | `reports spending` | `reports_spending` | `GET /reports/spending` |
+| Balance history | `accounts balance history` | `accounts_balances(view="history", reference=...)` | `GET /accounts/{id}/balances/history` |
+| Net worth now | `reports networth` | `reports(report_id="core:networth")` | `GET /reports/networth` |
+| Pending matches | `transactions matches pending` | `reviews(kind="matches", status="pending")` | `GET /transactions/matches/pending` |
+| Match history | `transactions matches history` | `reviews(kind="matches", status="history")` | `GET /transactions/matches` |
+| Undo a match | `transactions matches undo <id>` | `system_audit_undo(operation_id=<id>)` | `POST /transactions/matches/{id}/undo` |
+| Run matching | `transactions matches run` | `refresh_run(steps=["match"])` | `POST /refresh/match` |
+| Spending report | `reports spending` | `reports(report_id="core:spending")` | `GET /reports/spending` |
 
 ### Pluralization
 
-Pluralization is the one place clean symmetry breaks down — each protocol uses its own idiom:
+Each protocol uses its own idiom:
 
 | Protocol | Convention |
 |---|---|
 | CLI | Top-level groups plural (`accounts`, `transactions`, `reports`); sub-resource nouns named for the *concept* (singular for types: `balance`, `networth`; plural for relationship collections: `matches`); verbs always singular |
-| MCP | Mirrors CLI exactly (just swap spaces for underscores) |
+| MCP | Uses admitted domain nouns and operation verbs; compatible CLI leaves map through typed selectors |
 | HTTP | Standard REST: plural for collections (`/accounts/{id}/balances`), singular for single instances (`/accounts/{id}/balances/{date}`) |
 
-The structural symmetry (entity → sub-resource → action ordering) holds across all three. The asymmetry — `balance` (CLI/MCP) vs `balances` (REST sub-resource) — is documented and intentional. REST readers expect plural collection paths; CLI/MCP readers don't.
+Capability symmetry is executable rather than nominal. The checked outcome map
+owns the exact CLI paths and standard MCP operations.
 
 ### Why this rule
 
 Three justifications:
 
-1. **Learn-once-use-everywhere.** A user who knows `accounts balance list` already knows `accounts_balances` and `GET /accounts/balances`. Web UI navigation maps the same way. One mental model across four surfaces.
-2. **Discoverability scales with catalog.** As MoneyBin's MCP catalog grows beyond ~30 tools, prefix-clustered names (`accounts_balance_*`, `transactions_matches_*`) sort related operations together in `mcp list-tools` output, helping both humans and LLMs scan the surface.
-3. **Future HTTP is a free win.** When MoneyBin adds an HTTP layer (web UI backend, third-party integrations), the URL paths are already designed.
+1. **Outcome parity is testable.** Equal inputs reach the same services and
+   preserve observable results even when surface shapes differ.
+2. **CLI discoverability stays cheap.** Nested `--help` keeps surgical operator
+   controls available without spending MCP slots.
+3. **MCP selection stays bounded.** Coarse operations and selectors reduce
+   permanent metadata without erasing safety or recovery boundaries.
 
 ## Profile System
 
@@ -759,21 +768,22 @@ This is a hard cut. No aliases, no deprecation period. v1 paths break in the sam
 
 The `track` group is dissolved entirely.
 
-### MCP renames
+### MCP outcome mappings
 
-MCP tool names migrate to the path-prefix-verb-suffix convention. As with CLI, hard cut: rename in place, update tool registry, update any client configs that reference old names.
+The v2 CLI migration preserved command ergonomics while MCP moved to the
+bounded standard registry. The historical name-by-name cutover is preserved in
+ADR-016 and the archived MCP catalog. Current sibling mappings are:
 
-| v1 tool name | v2 tool name |
+| CLI paths | Standard MCP contract |
 |---|---|
-| `get_net_worth` | `accounts_networth_get` |
-| `get_net_worth_history` | `accounts_networth_history` |
-| `get_balances` | `accounts_balances` |
-| `get_balance_assertions` | `accounts_balance_assertions` |
-| (existing transaction tools) | `transactions_*` prefix |
-| (existing match tools) | `transactions_matches_*` prefix |
-| (existing categorize tools) | `transactions_categorize_*` prefix |
-
-Specific existing-tool renames are enumerated in `moneybin-mcp.md` as part of v2 implementation.
+| `accounts list/get/summary/resolve` | `accounts(view=..., reference=..., query=...)` |
+| `accounts balance show/history/list/reconcile` | `accounts_balances(view=..., reference=...)` |
+| `reports *` | `reports(report_id=..., parameters=...)` |
+| `transactions matches pending/history` | `reviews(kind="matches", status=...)` |
+| `transactions categorize pending` | `reviews(kind="categorization", status="pending")` |
+| `categories list`, `merchants list` | `taxonomy(view=...)` |
+| `transactions matches run` | `refresh_run(steps=["match"])` |
+| `transform apply` | `refresh_run(steps=["transform"])` |
 
 ## Migration Table (v0 → v1, historical)
 
@@ -831,12 +841,12 @@ Restructure-only. Move and rename existing commands to the new tree; rename MCP 
 | Add top-level `investments` group (placeholder; workflows owned by `investments-data-model.md`); supersedes the `accounts investments` stub | New CLI module |
 | Dissolve `track` group | Delete CLI module |
 | Add `reports` group with stubbed subcommands (`spending`, `cashflow`, `budget`) | New CLI module, all stubs |
-| Rename MCP tools to path-prefix-verb-suffix convention | Update tool registry, regenerate client configs via `mcp install` |
-| Collapse `transactions matches review` and `transactions categorize review` into unified `transactions review` (CLI). Add MCP `transactions_review` orientation tool | New CLI command + new MCP tool |
-| Rename `import_csv_preview` → `import_file_preview` (format-agnostic) | MCP tool rename + service method rename |
-| Expose `sync_*` to MCP (all except `sync_rotate_key`) — login, logout, connect, disconnect, pull, status, schedule_set/show/remove | New MCP tools wrapping existing CLI sync surface |
-| Expose `transform_*` to MCP (all except `transform_restate`) — status, plan, validate, audit, apply | New MCP tools wrapping existing CLI transform surface |
-| Update `moneybin-mcp.md` with new names + new MCP exposures | Doc edit |
+| Bind MCP tools to capability IDs and service outcomes | Update the standard registry and executable capability map |
+| Collapse `transactions matches review` and `transactions categorize review` into unified `transactions review` (CLI) | Map queue reads through `reviews(kind=..., status=...)` |
+| Make import preview format-agnostic | Map the CLI preview command through `import_preview(file_path=...)` |
+| Expose sync outcomes to MCP except secret-material and operator-only controls | Map through `sync_link`, `sync_status`, `sync_pull`, and `sync_disconnect` |
+| Keep transform plan/validate/audit/status as CLI operator controls | Map transform application through `refresh_run(steps=["transform"])` |
+| Update `moneybin-mcp.md` with current coarse contracts | Doc edit |
 | Update specs that reference v1 CLI paths | Doc edits across specs (see [Specs Requiring CLI Section Updates](#specs-requiring-cli-section-updates)) |
 
 Hard cut. v1 paths break in the same release. Tests, scripts, docs, and `mcp install` output all update together.
@@ -910,13 +920,13 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 
 | Spec | CLI change needed (v2) | MCP change needed (v2) |
 |---|---|---|
-| `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | `get_balances` → `accounts_balances`, etc. `get_net_worth` → `reports_networth`. |
-| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Asset MCP tools take `assets_*` prefix (path-prefix-verb-suffix per v2). |
-| `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Owns `accounts`, `accounts_get`, `accounts_set` (folds display_name / include / archive), `accounts_resolve`. |
-| `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Match-related tools take `transactions_matches_*` prefix |
-| `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Categorize workflow tools take `transactions_categorize_*` prefix; category and merchant CRUD become `categories_*` / `merchants_*` top-level |
-| `budget-tracking.md` | `track budget *` → `budget *`; the budget-vs-actual read command (`reports budget`) is de-registered pending the `reports.budget` view (M3C) and returns when the view ships | When MCP tools are added, follow new naming |
-| `moneybin-mcp.md` | n/a | Adopt path-prefix-verb-suffix convention; enumerate all existing tool renames |
+| `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | Use `accounts_balances(view=...)` for balances and `reports(report_id="core:networth")` for net worth. |
+| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Future MCP capabilities remain unnamed until bounded-registry admission. |
+| `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Use `accounts(view=...)` for reads and `accounts_set(...)` for settings. |
+| `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Use `reviews(kind="matches", status=...)`, `reviews_decide(...)`, `system_audit_undo(...)`, and `refresh_run(steps=["match"])`. |
+| `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Use the admitted categorization operations, `reviews(kind=...)`, and `taxonomy(view=...)` / `taxonomy_set(...)`. |
+| `budget-tracking.md` | `track budget *` → `budget *`; the budget-vs-actual read command (`reports budget`) is de-registered pending the `reports.budget` view (M3C) and returns when the view ships | Future MCP capabilities remain unnamed until bounded-registry admission. |
+| `moneybin-mcp.md` | n/a | Maintain the current registry and selectors; historical names stay in ADR-016 and the archived catalog. |
 | `observability.md` | No structural change. Verify command signatures match. | n/a |
 | `privacy-data-protection.md` | `db lock`/`unlock`/`rotate-key` already match. | n/a |
 | `database-migration.md` | Verify `db migrate apply/status` matches. | n/a |
@@ -990,8 +1000,8 @@ These were identified during design and should be added to the spec index:
 | Date | Version | Summary |
 |---|---|---|
 | 2026-07-19 | v2 audit | Executable capability/outcome parity replaces canonical-name parity. Added `accounts summary`; implemented the formerly-placeholder `categories list/create/set` and `merchants list/create` routes through `CategorizationService`; `sync logout` now clears both credentials and pending profile-scoped device-auth sessions. The MCP peers consolidate under `accounts`, `taxonomy`/`taxonomy_set`, and the existing sync quartet. |
-| 2026-07-04 | v2 audit | Added `transactions categorize improve-ai` — upgrades AI-guessed (`categorized_by='ai'`) transactions to confident Plaid `provider_native` categories via the category-source bridge (`>=MEDIUM` confidence gate); never overrides user, rule, or merchant categorizations. Ships alongside the matching MCP tool `transactions_categorize_improve_ai`. |
+| 2026-07-04 | v2 audit | Added `transactions categorize improve-ai` — upgrades AI-guessed (`categorized_by='ai'`) transactions to confident Plaid `provider_native` categories via the category-source bridge (`>=MEDIUM` confidence gate); never overrides user, rule, or merchant categorizations. Its MCP sibling is `transactions_categorize_run(operation="improve_ai")`. |
 | 2026-05-23 | v2 audit | Report auto-generation shipped: the six view-backed report commands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are now framework-generated from `@report` runners in `src/moneybin/reports/definitions/` (names + result shapes unchanged; flags auto-derive from runner param names, plus `--output`/`--quiet`). `cashflow`/`spending` bespoke `--from`/`--to` became `--from-month`/`--to-month`. `reports budget` (BudgetService-synthesized, no backing view) and `reports health` (unimplemented stub) were removed; `reports budget` returns when the `reports.budget` view lands. `networth`/`networth-history` stay hand-written. |
-| 2026-05-17 | v2 audit | Refreshed command tree to match shipped implementation. Notable shipped PRs reflected: #159 (noun-only read names), #163 (`reports recurring` replaces removed `transactions_recurring_list`), #164 (`accounts set` absorbs rename/include/archive/unarchive), #166 (`categories delete --force`), #167 (`categorize rules create + delete` parity), #171 (`categorize commit` rename + `categorize run` umbrella + `categorize assist`), #173 (`refresh` umbrella, `transform apply` operator-only). Renamed CLI commands documented: `accounts balance delete` → `accounts balance assertion-delete`; `db rotate-key` → `db key rotate`; `sync rotate-key` → `sync key rotate`; `import file` → `import files`; `matches log` → `matches history`. New top-level groups not previously enumerated: `privacy`, `synthetic`; new sub-groups: `transactions {notes, tags, splits, create, audit}`, `import {history, revert, preview, formats, inbox, labels}`, `db {info, backup, restore, key {show, rotate, export, import, verify}}`, `system {doctor, audit}`. Auto-rule workflow uses `accept` (not `confirm`) and adds `rules`. |
+| 2026-05-17 | v2 audit | Refreshed command tree to match shipped implementation. Notable shipped PRs reflected: #159 (noun-only MCP reads), #163 (`reports recurring` through the registered report catalog), #164 (`accounts set` absorbs rename/include/archive/unarchive), #166 (`categories delete --force`), #167 (`categorize rules create + delete` parity), #171 (`categorize commit`, `categorize run`, and `categorize assist`), #173 (`refresh` umbrella, `transform apply` operator-only). Renamed CLI commands documented: `accounts balance delete` → `accounts balance assertion-delete`; `db rotate-key` → `db key rotate`; `sync rotate-key` → `sync key rotate`; `import file` → `import files`; `matches log` → `matches history`. New top-level groups not previously enumerated: `privacy`, `synthetic`; new sub-groups: `transactions {notes, tags, splits, create, audit}`, `import {history, revert, preview, formats, inbox, labels}`, `db {info, backup, restore, key {show, rotate, export, import, verify}}`, `system {doctor, audit}`. Auto-rule workflow uses `accept` (not `confirm`) and adds `rules`. |
 | 2026-05-02 | v2 | Dissolved `track`; introduced entity groups (`accounts`, `transactions`); added `reports` group; unified taxonomy across CLI / MCP / future HTTP; renamed MCP tools to path-prefix-verb-suffix convention. Hard cut, no aliases. |
 | 2026-04-20 (orig) | v1 | Initial restructure: profile system, dissolved `config`/`data`, top-level `matches`/`categorize`/`track`. Implemented. |
