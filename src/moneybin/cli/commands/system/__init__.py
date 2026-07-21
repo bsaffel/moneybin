@@ -1,7 +1,6 @@
 """system — system and data status meta-view."""
 
 import logging
-from dataclasses import asdict
 
 import typer
 
@@ -48,29 +47,36 @@ def system_status(
 
     min_d, max_d = s.transactions_date_range
     if output == OutputFormat.JSON:
-        from moneybin.mcp.privacy import tier_to_sensitivity
-        from moneybin.privacy.introspection import derive_tier
-        from moneybin.privacy.payloads.system import ExportsStatus
+        from moneybin.privacy.payloads.system import (
+            SystemStatusCLIPayload,
+            SystemStatusExportDestination,
+        )
 
         render_or_json(
             build_envelope(
-                data={
-                    "accounts_count": s.accounts_count,
-                    "transactions_count": s.transactions_count,
-                    "transactions_date_range": [
+                data=SystemStatusCLIPayload(
+                    accounts_count=s.accounts_count,
+                    transactions_count=s.transactions_count,
+                    transactions_date_range=[
                         min_d.isoformat() if min_d else None,
                         max_d.isoformat() if max_d else None,
                     ],
-                    "last_import_at": s.last_import_at.isoformat()
-                    if s.last_import_at
-                    else None,
-                    "matches_pending": s.matches_pending,
-                    "categorize_pending": s.categorize_pending,
-                    "exports": [
-                        asdict(destination) for destination in exports.destinations
+                    last_import_at=(
+                        s.last_import_at.isoformat() if s.last_import_at else None
+                    ),
+                    matches_pending=s.matches_pending,
+                    categorize_pending=s.categorize_pending,
+                    exports=[
+                        SystemStatusExportDestination(
+                            name=destination.name,
+                            kind=destination.kind,
+                            ready=destination.ready,
+                            write_capable=destination.write_capable,
+                            reasons=list(destination.reasons),
+                        )
+                        for destination in exports.destinations
                     ],
-                },
-                sensitivity=tier_to_sensitivity(derive_tier(ExportsStatus)).value,
+                )
             ),
             output,
             cli_actor="system_status",

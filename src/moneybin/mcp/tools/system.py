@@ -705,6 +705,27 @@ async def _run_tool_body[T](
     return await asyncio.to_thread(body, *args, **kwargs)
 
 
+def _export_status_section() -> ExportsStatus:
+    """Load export readiness synchronously inside one database lifetime."""
+    from moneybin.database import get_database  # noqa: PLC0415
+    from moneybin.exports.service import ExportService  # noqa: PLC0415
+
+    with get_database(read_only=True) as db:
+        readiness = ExportService(db).status()
+    return ExportsStatus(
+        destinations=[
+            SystemStatusExportDestination(
+                name=item.name,
+                kind=item.kind,
+                ready=item.ready,
+                write_capable=item.write_capable,
+                reasons=list(item.reasons),
+            )
+            for item in readiness.destinations
+        ]
+    )
+
+
 def _audit_event_payload(event: Any) -> SystemAuditEventPayload:
     """Project one existing AuditService row into the classified wire row."""
     return SystemAuditEventPayload(
@@ -840,25 +861,7 @@ async def system_status_coarse(
                 return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(CategorizationStatus(statistics=response.data))
         elif section == "exports":
-            from moneybin.database import get_database  # noqa: PLC0415
-            from moneybin.exports.service import ExportService  # noqa: PLC0415
-
-            with get_database(read_only=True) as db:
-                readiness = ExportService(db).status()
-            selected.append(
-                ExportsStatus(
-                    destinations=[
-                        SystemStatusExportDestination(
-                            name=item.name,
-                            kind=item.kind,
-                            ready=item.ready,
-                            write_capable=item.write_capable,
-                            reasons=list(item.reasons),
-                        )
-                        for item in readiness.destinations
-                    ]
-                )
-            )
+            selected.append(await _run_tool_body(_export_status_section))
             continue
         else:
             raise ValueError("Unknown system status section.")

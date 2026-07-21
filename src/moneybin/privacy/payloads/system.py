@@ -374,6 +374,19 @@ class ExportsStatus(BaseModel):
     destinations: list[SystemStatusExportDestination]
 
 
+@dataclass(frozen=True, slots=True)
+class SystemStatusCLIPayload:
+    """Flat typed payload for the established ``system status`` CLI JSON shape."""
+
+    accounts_count: Annotated[int, DataClass.AGGREGATE]
+    transactions_count: Annotated[int, DataClass.AGGREGATE]
+    transactions_date_range: Annotated[list[str | None], DataClass.AGGREGATE]
+    last_import_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    matches_pending: Annotated[int, DataClass.AGGREGATE]
+    categorize_pending: Annotated[int, DataClass.AGGREGATE]
+    exports: list[SystemStatusExportDestination]
+
+
 SystemStatusSection = Annotated[
     OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus,
     Field(discriminator="kind"),

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import FastMCP
@@ -75,6 +78,62 @@ async def test_system_status_exports_uses_typed_privacy_safe_readiness(
     assert serialized["summary"]["sensitivity"] == "medium"
     assert "/private/export/path" not in str(serialized)
     assert "local-1" not in str(serialized)
+
+
+@pytest.mark.unit
+async def test_system_status_exports_yields_during_synchronous_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from moneybin.exports.service import ExportReadinessStatus, ExportService
+
+    loop_thread = threading.get_ident()
+    entered = threading.Event()
+    release = threading.Event()
+    yielded = threading.Event()
+    worker_threads: list[int] = []
+    lifecycle: list[str] = []
+    yielded_before_return: list[bool] = []
+
+    class DatabaseContext:
+        def __enter__(self) -> MagicMock:
+            worker_threads.append(threading.get_ident())
+            lifecycle.append("enter")
+            return MagicMock()
+
+        def __exit__(self, *_args: object) -> None:
+            lifecycle.append("exit")
+
+    def blocking_status(_service: ExportService) -> ExportReadinessStatus:
+        lifecycle.append("status")
+        entered.set()
+        release.wait(timeout=0.5)
+        yielded_before_return.append(yielded.is_set())
+        return ExportReadinessStatus(destinations=())
+
+    async def concurrent_tick() -> None:
+        while not entered.is_set():
+            await asyncio.sleep(0)
+        yielded.set()
+        release.set()
+
+    def fake_get_database(*, read_only: bool) -> DatabaseContext:  # noqa: ARG001
+        return DatabaseContext()
+
+    monkeypatch.setattr(
+        "moneybin.database.get_database",
+        fake_get_database,
+    )
+    monkeypatch.setattr(ExportService, "status", blocking_status)
+
+    status_task = asyncio.create_task(system_status_coarse(sections=["exports"]))
+    await concurrent_tick()
+    response = await status_task
+
+    assert response.error is None
+    assert yielded_before_return == [True]
+    assert len(worker_threads) == 1
+    assert worker_threads[0] != loop_thread
+    assert lifecycle == ["enter", "status", "exit"]
 
 
 def test_system_status_export_names_use_user_note_classification() -> None:

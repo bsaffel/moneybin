@@ -3,6 +3,7 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
@@ -59,6 +60,45 @@ def test_system_status_json_output(mock_get_db: MagicMock) -> None:
             "reasons": [],
         }
     ]
+
+
+@patch("moneybin.cli.commands.system.get_database")
+def test_system_status_json_uses_typed_privacy_and_redaction_path(
+    mock_get_db: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_db.execute.return_value.fetchone.return_value = (0, None, None)
+    captured_event: dict[str, object] = {}
+    redacted_payloads: list[object] = []
+
+    monkeypatch.setattr(
+        "moneybin.cli.output.write_privacy_event",
+        captured_event.update,
+    )
+
+    def always_active(_payload_type: object) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "moneybin.cli.output._has_active_transform",
+        always_active,
+    )
+
+    def capture_redaction(payload: object, consent: object) -> object:  # noqa: ARG001
+        redacted_payloads.append(payload)
+        return payload
+
+    monkeypatch.setattr("moneybin.cli.output.redact_typed", capture_redaction)
+
+    result = runner.invoke(app, ["system", "status", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert captured_event["sensitivity"] == "medium"
+    assert "user_note" in captured_event["classes_returned"]  # type: ignore[operator]
+    assert len(redacted_payloads) == 1
+    assert not isinstance(redacted_payloads[0], dict)
 
 
 @patch("moneybin.cli.commands.system.get_database")
