@@ -244,7 +244,7 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
     json.dumps(first.manifest["data_dictionary"])
 
 
-def test_snapshot_metadata_is_deeply_immutable_and_manifest_is_a_copy(
+def test_data_dictionary_and_manifest_are_json_safe_isolated_receipts(
     db: Database,
 ) -> None:
     _seed_bundle_rows(db)
@@ -253,12 +253,12 @@ def test_snapshot_metadata_is_deeply_immutable_and_manifest_is_a_copy(
     )
     original_manifest = copy.deepcopy(snapshot.manifest)
 
-    dictionary_tables = cast(tuple[object, ...], snapshot.data_dictionary["tables"])
-    first_dictionary_table = cast(dict[str, object], dictionary_tables[0])
-    with pytest.raises(TypeError):
-        first_dictionary_table["name"] = "corrupted"
-    with pytest.raises(AttributeError):
-        cast(list[object], snapshot.data_dictionary["tables"]).append("corrupted")
+    exposed_data_dictionary = snapshot.data_dictionary
+    original_data_dictionary = json.loads(json.dumps(exposed_data_dictionary))
+    dictionary_tables = cast(list[dict[str, object]], exposed_data_dictionary["tables"])
+    dictionary_columns = cast(list[dict[str, object]], dictionary_tables[0]["columns"])
+    dictionary_tables[0]["name"] = "corrupted"
+    dictionary_columns[0]["name"] = "corrupted"
 
     exposed_manifest = snapshot.manifest
     exposed_dictionary = cast(dict[str, object], exposed_manifest["data_dictionary"])
@@ -267,8 +267,9 @@ def test_snapshot_metadata_is_deeply_immutable_and_manifest_is_a_copy(
     exposed_tables[0]["name"] = "corrupted"
     exposed_columns[0]["name"] = "corrupted"
 
+    assert snapshot.data_dictionary == original_data_dictionary
+    assert snapshot.data_dictionary is not exposed_data_dictionary
     assert snapshot.manifest == original_manifest
-    assert first_dictionary_table["name"] == "accounts"
 
 
 @pytest.mark.parametrize(

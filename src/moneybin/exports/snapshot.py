@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
@@ -83,7 +83,7 @@ class PreparedTable:
     checksum_sha256: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class PreparedExport:
     """An immutable snapshot ready for any renderer."""
 
@@ -93,13 +93,44 @@ class PreparedExport:
     subject: ExportSubject
     redaction_mode: RedactionMode
     tables: tuple[PreparedTable, ...]
-    data_dictionary: Mapping[str, object]
+    _data_dictionary: Mapping[str, object] = field(repr=False)
     provenance: ReportExportProvenance | None
 
-    def __post_init__(self) -> None:
-        """Freeze nested metadata retained by the prepared snapshot."""
-        frozen = cast(Mapping[str, object], _freeze_metadata(self.data_dictionary))
-        object.__setattr__(self, "data_dictionary", frozen)
+    def __init__(
+        self,
+        artifact_version: int,
+        profile: str,
+        created_at: datetime,
+        subject: ExportSubject,
+        redaction_mode: RedactionMode,
+        tables: tuple[PreparedTable, ...],
+        data_dictionary: Mapping[str, object] | None = None,
+        provenance: ReportExportProvenance | None = None,
+        *,
+        _data_dictionary: Mapping[str, object] | None = None,
+    ) -> None:
+        """Freeze owned metadata while preserving the public constructor."""
+        if data_dictionary is None and _data_dictionary is None:
+            raise TypeError("data_dictionary is required")
+        if data_dictionary is not None and _data_dictionary is not None:
+            raise TypeError("provide data_dictionary only once")
+        source_dictionary = (
+            data_dictionary if data_dictionary is not None else _data_dictionary
+        )
+        frozen = cast(Mapping[str, object], _freeze_metadata(source_dictionary))
+        object.__setattr__(self, "artifact_version", artifact_version)
+        object.__setattr__(self, "profile", profile)
+        object.__setattr__(self, "created_at", created_at)
+        object.__setattr__(self, "subject", subject)
+        object.__setattr__(self, "redaction_mode", redaction_mode)
+        object.__setattr__(self, "tables", tables)
+        object.__setattr__(self, "_data_dictionary", frozen)
+        object.__setattr__(self, "provenance", provenance)
+
+    @property
+    def data_dictionary(self) -> dict[str, object]:
+        """Return a fresh JSON-safe standalone data-dictionary receipt."""
+        return cast(dict[str, object], _json_safe(self._data_dictionary))
 
     @property
     def manifest(self) -> dict[str, object]:
@@ -127,7 +158,7 @@ class PreparedExport:
                 }
                 for table in self.tables
             ],
-            "data_dictionary": _json_safe(self.data_dictionary),
+            "data_dictionary": self.data_dictionary,
             "provenance": _json_safe(self.provenance),
         }
 
