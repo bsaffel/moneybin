@@ -313,7 +313,7 @@ No data migration is required — existing merchants retain their `raw_pattern` 
 > **Shipped via PRs #155, #171, #174.** All seven planned steps landed. The original step-by-step plan and file-modification checklist are retired as historical noise; the shipped artifacts are:
 >
 > - **Categorization package** at `src/moneybin/services/categorization/` (PR #155 split): `__init__.py` (facade), `assist.py` (`RedactedTransaction`, `categorize_assist`), `matcher.py` (`_match_text`, `_match_exemplar`, `_fetch_merchants`), `applier.py` (`write_categorization`, commit pipeline), `orchestrator.py` (exemplar accumulation, `categorize_pending`), `queries.py` (shared SQL), `_shared.py` (`MatchType`, `priority_case_sql`, `match_shape_case_sql`).
-> - **MCP tools** at `src/moneybin/mcp/tools/transactions_categorize.py`: `transactions_categorize_commit` calls `categorize_pending()` post-commit; `transactions_categorize_run` is the umbrella; `transactions_categorize_rules_set(rules=[...])` declares rule target state and may request reapplication.
+> - **MCP tools** at `src/moneybin/mcp/tools/transactions_categorize.py`: `transactions_categorize_commit` calls `categorize_pending()` post-commit; `transactions_categorize_rules_set(rules=[...])` declares rule target state; callers invoke `transactions_categorize_run(methods=["rules"])` separately when immediate reapplication is required.
 > - **Schema migration** `V008__user_merchants_exemplars.py` added `exemplars VARCHAR[]` and dropped NOT NULL from `raw_pattern`.
 > - **`category_id` FK columns** added in V014 (PR #174) alongside `category`/`subcategory` on `app.user_merchants` / `app.transaction_categories` / `app.transaction_splits` — dual-write phase pending Phase 2 drop.
 
