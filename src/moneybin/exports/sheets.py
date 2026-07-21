@@ -73,7 +73,9 @@ class SheetsExportPublisher:
         """Stage, validate, and atomically promote one latest-state snapshot."""
         spreadsheet_id, prefix = _validate_destination(destination)
         self._reject_inbound_collision(spreadsheet_id)
-        metadata = self._sheets.get_workbook_metadata(spreadsheet_id)
+        metadata = self._sheets.get_workbook_metadata(
+            spreadsheet_id, require_write=True
+        )
         run_id = _available_run_id(snapshot, prefix, metadata.sheets)
         replacements = _managed_replacements(
             metadata.sheets,
@@ -123,7 +125,9 @@ class SheetsExportPublisher:
             )
             self._sheets.write_sheet_values(spreadsheet_id, writes)
             for identity, item in zip(staged, planned, strict=True):
-                actual = self._sheets.read_sheet_values(spreadsheet_id, identity.name)
+                actual = self._sheets.read_sheet_values(
+                    spreadsheet_id, identity.name, require_write=True
+                )
                 _validate_values(actual, item.values)
 
             renames = tuple(
@@ -158,7 +162,9 @@ class SheetsExportPublisher:
     ) -> tuple[SheetInfo, ...]:
         """Reconcile only exact, ownership-marked tabs after ambiguous create."""
         try:
-            metadata = self._sheets.get_workbook_metadata(spreadsheet_id)
+            metadata = self._sheets.get_workbook_metadata(
+                spreadsheet_id, require_write=True
+            )
         except GSheetError:
             return ()
         return tuple(

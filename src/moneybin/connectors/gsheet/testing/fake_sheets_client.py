@@ -81,7 +81,9 @@ class TestSheetsClient:
         raise KeyError(f"No tab with gid={gid} in workbook {spreadsheet_id}")
 
     # SheetsAPI Protocol --------------------------------------------------
-    def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
+    def get_workbook_metadata(
+        self, spreadsheet_id: str, *, require_write: bool = False
+    ) -> WorkbookMetadata:
         """Return registered workbook metadata or raise unreachable."""
         self._maybe_raise("metadata")
         wb = self._workbooks.get(spreadsheet_id)
@@ -102,7 +104,11 @@ class TestSheetsClient:
         )
 
     def read_sheet_values(
-        self, spreadsheet_id: str, sheet_name: str
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        *,
+        require_write: bool = False,
     ) -> list[list[str]]:
         """Return rows for the named tab, headers first."""
         self._maybe_raise("read")

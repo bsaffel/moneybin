@@ -418,6 +418,36 @@ def test_sheets_client_maps_malformed_successful_create_response_to_typed_error(
         client.create_sheets("ss1", (SheetCreate("MB Staging run", 1, 1, 42, "MB"),))
 
 
+@pytest.mark.parametrize(
+    ("returned_title", "returned_gid"),
+    [("User Notes", 42), ("MB Staging run", 7)],
+)
+def test_sheets_client_rejects_create_identity_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    returned_title: str,
+    returned_gid: int,
+) -> None:
+    service = MagicMock()
+    service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {
+        "replies": [
+            {
+                "addSheet": {
+                    "properties": {
+                        "title": returned_title,
+                        "sheetId": returned_gid,
+                    }
+                }
+            },
+            {"createDeveloperMetadata": {"developerMetadata": {"metadataId": 9}}},
+        ]
+    }
+    client = SheetsClient(oauth=MagicMock())
+    monkeypatch.setattr(client, "_build_service", MagicMock(return_value=service))
+
+    with pytest.raises(GSheetAPIError, match="invalid create response"):
+        client.create_sheets("ss1", (SheetCreate("MB Staging run", 1, 1, 42, "MB"),))
+
+
 def test_sheets_client_reads_only_exact_document_visible_ownership_marker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -93,12 +93,18 @@ class OAuthCredentialsProvider(Protocol):
 class SheetsAPI(Protocol):
     """Interface implemented by both `SheetsClient` and `TestSheetsClient`."""
 
-    def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
+    def get_workbook_metadata(
+        self, spreadsheet_id: str, *, require_write: bool = False
+    ) -> WorkbookMetadata:
         """Fetch workbook title and per-tab metadata."""
         ...
 
     def read_sheet_values(
-        self, spreadsheet_id: str, sheet_name: str
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        *,
+        require_write: bool = False,
     ) -> list[list[str]]:
         """Read all cell values from one tab as rows of strings."""
         ...
@@ -155,10 +161,12 @@ class SheetsClient:
         # _build_service that changes between calls).
         self._cached_services: dict[bool, tuple[str, Any]] = {}
 
-    def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
+    def get_workbook_metadata(
+        self, spreadsheet_id: str, *, require_write: bool = False
+    ) -> WorkbookMetadata:
         """Fetch workbook title and per-tab metadata."""
         try:
-            service = self._build_service(require_write=False)
+            service = self._build_service(require_write=require_write)
             meta = (
                 service
                 .spreadsheets()
@@ -181,11 +189,15 @@ class SheetsClient:
         return WorkbookMetadata(title=meta["properties"]["title"], sheets=sheets)
 
     def read_sheet_values(
-        self, spreadsheet_id: str, sheet_name: str
+        self,
+        spreadsheet_id: str,
+        sheet_name: str,
+        *,
+        require_write: bool = False,
     ) -> list[list[str]]:
         """Read all cell values from a single tab as rows of strings."""
         try:
-            service = self._build_service(require_write=False)
+            service = self._build_service(require_write=require_write)
             result = (
                 service
                 .spreadsheets()
@@ -240,8 +252,13 @@ class SheetsClient:
             service = self._build_service(require_write=True)
             # Official request contracts (request bodies kept exact here):
             # https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/batchUpdate
-            # create: {"requests":[{"addSheet":{"properties":{"title":...,
-            #   "gridProperties":{"rowCount":...,"columnCount":...}}}}]}
+            # https://developers.google.com/workspace/sheets/api/reference/rest/v4/spreadsheets/request#CreateDeveloperMetadataRequest
+            # create: {"requests":[
+            #   {"addSheet":{"properties":{"title":...,"sheetId":...,
+            #     "gridProperties":{"rowCount":...,"columnCount":...}}}},
+            #   {"createDeveloperMetadata":{"developerMetadata":{
+            #     "metadataKey":"moneybin.managed_prefix","metadataValue":...,
+            #     "location":{"sheetId":...},"visibility":"DOCUMENT"}}}]}
             # promote: {"requests":[{"deleteSheet":{"sheetId":...}},
             #   {"updateSheetProperties":{"properties":{"sheetId":...,
             #   "title":...},"fields":"title"}}]}
@@ -278,9 +295,16 @@ class SheetsClient:
                 gid = properties["sheetId"]
                 if not isinstance(gid, (int, str)):
                     raise TypeError("invalid sheet ID")
+                name = properties["title"]
+                if not isinstance(name, str):
+                    raise TypeError("invalid sheet title")
+                if name != sheet.name or (
+                    sheet.gid is not None and int(gid) != sheet.gid
+                ):
+                    raise ValueError("mismatched sheet identity")
                 identities.append(
                     SheetIdentity(
-                        name=str(properties["title"]),
+                        name=name,
                         gid=int(gid),
                         managed_prefix=sheet.managed_prefix,
                     )

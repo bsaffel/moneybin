@@ -248,7 +248,9 @@ class GSheetPullService:
         last_exc: GSheetRateLimitError | None = None
         for attempt in range(_RETRY_MAX):
             try:
-                meta = self._sheets.get_workbook_metadata(conn.spreadsheet_id)
+                meta = self._sheets.get_workbook_metadata(
+                    conn.spreadsheet_id, require_write=False
+                )
                 sheet = next((s for s in meta.sheets if s.gid == conn.sheet_gid), None)
                 if sheet is None:
                     # str(exc) reaches logger.exception in pull_connection;
@@ -258,7 +260,9 @@ class GSheetPullService:
                         "Sheet tab is no longer present in the workbook "
                         "(deleted or renamed beyond gid resolution)."
                     )
-                return self._sheets.read_sheet_values(conn.spreadsheet_id, sheet.name)
+                return self._sheets.read_sheet_values(
+                    conn.spreadsheet_id, sheet.name, require_write=False
+                )
             except GSheetRateLimitError as exc:
                 last_exc = exc
                 time.sleep(_RETRY_BACKOFF_BASE**attempt)

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import unicodedata
-from typing import Never
+from typing import Any, Never
+from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.connectors.gsheet.errors import GSheetAPIError, GSheetAuthError
+from moneybin.connectors.gsheet.sheets_api import SheetsClient, WorkbookMetadata
 from moneybin.connectors.gsheet.testing.fake_oauth_client import TestOAuthClient
 from moneybin.connectors.gsheet.testing.fake_sheets_client import (
     FakeSheetTab,
@@ -109,6 +111,48 @@ def test_successful_publish_stages_validates_and_atomically_promotes(
     assert receipt.row_counts == {"activity": 2}
 
 
+def test_publish_uses_write_capability_for_output_metadata_and_validation(
+    db: Database,
+) -> None:
+    class WriteOnlyOutputSheets(TestSheetsClient):
+        def get_workbook_metadata(
+            self, spreadsheet_id: str, *, require_write: bool = False
+        ) -> WorkbookMetadata:
+            if not require_write:
+                raise GSheetAuthError("read-only grant is intentionally absent")
+            return super().get_workbook_metadata(spreadsheet_id)
+
+        def read_sheet_values(
+            self,
+            spreadsheet_id: str,
+            sheet_name: str,
+            *,
+            require_write: bool = False,
+        ) -> list[list[str]]:
+            if not require_write:
+                raise GSheetAuthError("read-only grant is intentionally absent")
+            return super().read_sheet_values(spreadsheet_id, sheet_name)
+
+    client = WriteOnlyOutputSheets()
+    client.register_workbook("output-sheet", FakeWorkbook("Output"))
+    oauth = TestOAuthClient(authorized=False)
+    ExportService(db).set_sheets_destination(
+        name="dashboard",
+        spreadsheet_id="output-sheet",
+        managed_tab_prefix="MB",
+        actor="test",
+        oauth_client=oauth,
+    )
+    destination = ExportDestinationsRepo(db).resolve("dashboard")
+    assert isinstance(destination, ExportDestination)
+    publisher = SheetsExportPublisher(db=db, sheets_client=client)
+
+    receipt = publisher.publish(make_snapshot(), destination)
+
+    assert oauth.authorize_require_write == [True]
+    assert receipt.sheets_identity == "MB:20260721T184233Z"
+
+
 def test_report_publication_cannot_select_or_replace_bundle_tabs(
     db: Database,
 ) -> None:
@@ -201,6 +245,67 @@ def test_ambiguous_create_recovers_only_exact_owned_staging_ids(
     assert recovered
     assert exc_info.value.details == {"staging_sheet_ids": sorted(recovered)}
     assert 7 not in recovered
+    assert [operation for operation, _ in client.requests] == ["create"]
+
+
+def test_mismatched_create_response_reconciles_without_touching_user_tab(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = MagicMock()
+    spreadsheets = service.spreadsheets.return_value
+    created_tabs: list[dict[str, Any]] = []
+
+    def execute_metadata() -> dict[str, Any]:
+        user_tab = {
+            "properties": {
+                "title": "User Notes",
+                "sheetId": 7,
+                "gridProperties": {"rowCount": 1, "columnCount": 1},
+            }
+        }
+        return {
+            "properties": {"title": "Output"},
+            "sheets": [user_tab, *created_tabs],
+        }
+
+    def execute_create() -> dict[str, Any]:
+        requests = spreadsheets.batchUpdate.call_args.kwargs["body"]["requests"]
+        replies: list[dict[str, Any]] = []
+        for index in range(0, len(requests), 2):
+            properties = requests[index]["addSheet"]["properties"]
+            created_tabs.append({
+                "properties": properties,
+                "developerMetadata": [
+                    {
+                        "metadataKey": "moneybin.managed_prefix",
+                        "metadataValue": "MB",
+                        "visibility": "DOCUMENT",
+                    }
+                ],
+            })
+            replies.extend([
+                {"addSheet": {"properties": dict(properties)}},
+                {"createDeveloperMetadata": {"developerMetadata": {}}},
+            ])
+        replies[0] = {"addSheet": {"properties": {"title": "User Notes", "sheetId": 7}}}
+        return {"replies": replies}
+
+    spreadsheets.get.return_value.execute.side_effect = execute_metadata
+    spreadsheets.batchUpdate.return_value.execute.side_effect = execute_create
+    client = SheetsClient(oauth=TestOAuthClient(write_authorized=True))
+    monkeypatch.setattr(client, "_build_service", MagicMock(return_value=service))
+
+    with pytest.raises(SheetsPublishError) as exc_info:
+        SheetsExportPublisher(db=db, sheets_client=client).publish(
+            make_snapshot(), _destination()
+        )
+
+    recovered = {int(tab["properties"]["sheetId"]) for tab in created_tabs}
+    assert exc_info.value.details == {"staging_sheet_ids": sorted(recovered)}
+    assert 7 not in recovered
+    assert spreadsheets.batchUpdate.call_count == 1
+    assert spreadsheets.values.return_value.batchUpdate.call_count == 0
+    assert spreadsheets.values.return_value.get.call_count == 0
 
 
 def test_write_failure_preserves_old_visible_tabs_and_reports_new_staging(
