@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import stat
+from dataclasses import replace
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -19,6 +23,10 @@ from tests.moneybin.test_exports.test_renderers import make_snapshot
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+def _digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize(
@@ -60,7 +68,11 @@ def test_publish_creates_an_exact_restrictive_timestamped_bundle(
         for path in receipt.artifact_path.rglob("*")
         if path.is_file()
     )
-    assert set(receipt.checksums) == {f"tables/activity.{extension}"}
+    assert receipt.checksums == {
+        path.relative_to(receipt.artifact_path).as_posix(): _digest(path)
+        for path in receipt.artifact_path.rglob("*")
+        if path.is_file()
+    }
 
 
 def test_publish_never_overwrites_a_successful_collision(tmp_path: Path) -> None:
@@ -104,6 +116,93 @@ def test_tampered_staging_bundle_is_not_published_or_left_behind(
     assert not list(exports_root.glob(".staging-*"))
 
 
+def test_snapshot_manifest_tamper_is_not_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exports_root = tmp_path / "exports"
+    original = local_delivery.render_csv
+
+    def render_then_tamper(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        manifest_path = rendered.path / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["profile"] = "other"
+        manifest["subject"] = {"kind": "report", "report_id": "other"}
+        manifest["provenance"] = {"report_id": "other", "receipt": {}}
+        manifest_path.write_text(json.dumps(manifest))
+        return rendered
+
+    monkeypatch.setattr(local_delivery, "render_csv", render_then_tamper)
+
+    with pytest.raises(ValueError, match="manifest"):
+        LocalExportPublisher(exports_root).publish(
+            make_snapshot(report=True), format="csv", compress_zip=False
+        )
+
+    assert not list(exports_root.glob("export-*"))
+
+
+def test_internally_consistent_dictionary_tamper_is_not_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exports_root = tmp_path / "exports"
+    original = local_delivery.render_csv
+
+    def render_then_tamper(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        manifest_path = rendered.path / "manifest.json"
+        dictionary_path = rendered.path / "data-dictionary.json"
+        manifest = json.loads(manifest_path.read_text())
+        dictionary = json.loads(dictionary_path.read_text())
+        dictionary["tables"][0]["source"] = "reports.other"
+        manifest["data_dictionary"] = dictionary
+        manifest_path.write_text(json.dumps(manifest))
+        dictionary_path.write_text(json.dumps(dictionary))
+        return rendered
+
+    monkeypatch.setattr(local_delivery, "render_csv", render_then_tamper)
+
+    with pytest.raises(ValueError, match="dictionary"):
+        LocalExportPublisher(exports_root).publish(
+            make_snapshot(), format="csv", compress_zip=False
+        )
+
+    assert not list(exports_root.glob("export-*"))
+
+
+def test_receipt_uses_independently_verified_bytes_not_renderer_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = local_delivery.render_csv
+
+    def render_with_false_receipt(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        return replace(rendered, file_checksums={"unverified": "0" * 64})
+
+    monkeypatch.setattr(local_delivery, "render_csv", render_with_false_receipt)
+
+    receipt = LocalExportPublisher(tmp_path / "exports").publish(
+        make_snapshot(), format="csv", compress_zip=False
+    )
+
+    assert receipt.artifact_path is not None
+    assert "unverified" not in receipt.checksums
+    assert receipt.checksums == {
+        path.relative_to(receipt.artifact_path).as_posix(): _digest(path)
+        for path in receipt.artifact_path.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_zip_is_an_additional_complete_validated_bundle(tmp_path: Path) -> None:
     receipt = LocalExportPublisher(tmp_path / "exports").publish(
         make_snapshot(), format="csv", compress_zip=True
@@ -123,6 +222,34 @@ def test_zip_is_an_additional_complete_validated_bundle(tmp_path: Path) -> None:
         }
         for member in archive.namelist():
             assert archive.read(member) == (receipt.artifact_path / member).read_bytes()
+    assert receipt.checksums["archive.zip"] == _digest(receipt.compressed_artifact_path)
+
+
+def test_zip_rename_failure_rolls_back_only_this_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exports_root = tmp_path / "exports"
+    publisher = LocalExportPublisher(exports_root)
+    existing = publisher.publish(make_snapshot(), format="csv", compress_zip=False)
+    original_rename = Path.rename
+
+    def fail_zip_rename(path: Path, target: Path) -> Path:
+        if path.name == "artifact.zip":
+            raise OSError("injected ZIP rename failure")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_zip_rename)
+
+    with pytest.raises(OSError, match="injected ZIP"):
+        publisher.publish(make_snapshot(), format="csv", compress_zip=True)
+
+    assert existing.artifact_path is not None
+    assert existing.artifact_path.exists()
+    assert {path.name for path in exports_root.glob("export-*")} == {
+        "export-20260721T184233Z"
+    }
+    assert not list(exports_root.glob(".staging-*"))
 
 
 def test_xlsx_rejects_zip_before_creating_staging(tmp_path: Path) -> None:
@@ -163,6 +290,34 @@ def test_tampered_xlsx_data_is_not_published(
     assert not list(exports_root.glob(".staging-*"))
 
 
+def test_tampered_xlsx_metadata_is_not_published(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exports_root = tmp_path / "exports"
+    original = local_delivery.render_xlsx
+
+    def render_then_tamper(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        rendered = original(snapshot, staging_root)
+        workbook = load_workbook(rendered.path)
+        manifest = json.loads(workbook["MoneyBin Manifest"]["A2"].value)
+        manifest["redaction_mode"] = "unredacted"
+        workbook["MoneyBin Manifest"]["A2"] = json.dumps(manifest)
+        workbook.save(rendered.path)
+        return rendered
+
+    monkeypatch.setattr(local_delivery, "render_xlsx", render_then_tamper)
+
+    with pytest.raises(ValueError, match="manifest"):
+        LocalExportPublisher(exports_root).publish(
+            make_snapshot(report=True), format="xlsx", compress_zip=False
+        )
+
+    assert not list(exports_root.glob("export-*"))
+
+
 def test_xlsx_publishes_one_restrictive_timestamped_workbook(tmp_path: Path) -> None:
     receipt = LocalExportPublisher(tmp_path / "exports").publish(
         make_snapshot(), format="xlsx", compress_zip=False
@@ -172,4 +327,29 @@ def test_xlsx_publishes_one_restrictive_timestamped_workbook(tmp_path: Path) -> 
     assert receipt.artifact_path.name == "export-20260721T184233Z.xlsx"
     assert receipt.artifact_path.is_file()
     assert _mode(receipt.artifact_path) == 0o600
-    assert set(receipt.checksums) == {"export.xlsx"}
+    assert receipt.checksums == {"export.xlsx": _digest(receipt.artifact_path)}
+
+
+def test_outer_staging_mode_is_exact_under_restrictive_umask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_modes: list[int] = []
+    original = local_delivery.render_csv
+
+    def inspect_stage_then_render(
+        snapshot: PreparedExport, staging_root: Path
+    ) -> RenderedArtifact:
+        observed_modes.append(_mode(staging_root.parent))
+        return original(snapshot, staging_root)
+
+    monkeypatch.setattr(local_delivery, "render_csv", inspect_stage_then_render)
+    previous_umask = os.umask(0o777)
+    try:
+        LocalExportPublisher(tmp_path / "exports").publish(
+            make_snapshot(), format="csv", compress_zip=False
+        )
+    finally:
+        os.umask(previous_umask)
+
+    assert observed_modes == [0o700]

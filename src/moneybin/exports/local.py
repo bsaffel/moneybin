@@ -18,14 +18,18 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import duckdb
 from openpyxl import load_workbook
 
-from moneybin.exports.manifest import LocalExportFormat
+from moneybin.exports.manifest import (
+    LocalExportFormat,
+    build_local_manifest,
+    bundle_table_path,
+)
 from moneybin.exports.models import ExportDestination, ExportReceipt
 from moneybin.exports.renderers import (
-    RenderedArtifact,
     normalize_tabular_cell,
     render_csv,
     render_parquet,
     render_xlsx,
+    workbook_worksheet_names,
 )
 from moneybin.exports.snapshot import PreparedExport
 
@@ -65,19 +69,22 @@ class LocalExportPublisher:
         self._create_exports_root()
         staging_root = self._exports_root / f".staging-{uuid4()}"
         staging_root.mkdir(mode=0o700)
+        staging_root.chmod(0o700)
         try:
-            rendered = self._render(snapshot, format, staging_root)
+            artifact_path = self._render(snapshot, format, staging_root)
             if format == "xlsx":
-                validate_xlsx(rendered, snapshot)
+                verified_checksums = validate_xlsx(artifact_path, snapshot)
             else:
-                validate_bundle(rendered, format)
-            _apply_restrictive_modes(rendered.path)
+                verified_checksums = validate_bundle(artifact_path, snapshot, format)
+            _apply_restrictive_modes(artifact_path)
 
             zip_path = None
             if compress_zip:
                 zip_path = staging_root / "artifact.zip"
-                _write_zip(rendered.path, zip_path)
-                validate_zip(rendered.path, zip_path)
+                _write_zip(artifact_path, zip_path)
+                verified_checksums["archive.zip"] = validate_zip(
+                    artifact_path, zip_path
+                )
                 zip_path.chmod(0o600)
 
             with _publication_lock(self._exports_root):
@@ -90,12 +97,18 @@ class LocalExportPublisher:
                     final_path = self._exports_root / f"{stem}.xlsx"
                 else:
                     final_path = self._exports_root / stem
-                rendered.path.rename(final_path)
-
                 final_zip = None
-                if zip_path is not None:
-                    final_zip = self._exports_root / f"{stem}.zip"
-                    zip_path.rename(final_zip)
+                published_primary = False
+                try:
+                    artifact_path.rename(final_path)
+                    published_primary = True
+                    if zip_path is not None:
+                        final_zip = self._exports_root / f"{stem}.zip"
+                        zip_path.rename(final_zip)
+                except Exception:
+                    if published_primary:
+                        _remove_owned_artifact(final_path)
+                    raise
 
             return ExportReceipt(
                 subject=snapshot.subject.as_manifest(),
@@ -114,7 +127,7 @@ class LocalExportPublisher:
                 ),
                 sheets_identity=None,
                 row_counts={table.name: len(table.rows) for table in snapshot.tables},
-                checksums=dict(rendered.file_checksums),
+                checksums=verified_checksums,
                 recovery_actions=(),
             )
         finally:
@@ -134,12 +147,17 @@ class LocalExportPublisher:
         snapshot: PreparedExport,
         format: LocalExportFormat,
         staging_root: Path,
-    ) -> RenderedArtifact:
+    ) -> Path:
         if format == "csv":
-            return render_csv(snapshot, staging_root / "artifact")
+            artifact_path = staging_root / "artifact"
+            render_csv(snapshot, artifact_path)
+            return artifact_path
         if format == "parquet":
-            return render_parquet(snapshot, staging_root / "artifact")
-        return render_xlsx(snapshot, staging_root)
+            artifact_path = staging_root / "artifact"
+            render_parquet(snapshot, artifact_path)
+            return artifact_path
+        render_xlsx(snapshot, staging_root)
+        return staging_root / "export.xlsx"
 
     def _available_stem(
         self,
@@ -161,80 +179,118 @@ class LocalExportPublisher:
 
 
 def validate_bundle(
-    rendered: RenderedArtifact,
+    root: Path,
+    snapshot: PreparedExport,
     format: Literal["csv", "parquet"],
-) -> None:
+) -> dict[str, str]:
     """Independently validate emitted bundle bytes and receipt records."""
-    root = rendered.path
     manifest = _read_json_object(root / "manifest.json")
     dictionary = _read_json_object(root / "data-dictionary.json")
-    if manifest.get("format") != format:
-        raise ValueError("export manifest format does not match rendered bundle")
-    if manifest.get("data_dictionary") != dictionary:
-        raise ValueError("export data dictionary does not match manifest")
+    if dictionary != snapshot.data_dictionary:
+        raise ValueError("export data dictionary does not match prepared snapshot")
 
-    tables = cast(list[dict[str, object]], manifest.get("tables"))
-    expected_files = {
-        cast(str, table["file"]): cast(str, table["file_checksum_sha256"])
-        for table in tables
+    table_paths = {
+        table.name: bundle_table_path(table.name, format) for table in snapshot.tables
     }
-    checksum_records = _read_checksum_records(root / "checksums.sha256")
-    if checksum_records != expected_files:
-        raise ValueError("export checksum records do not match manifest")
-
     actual_paths = {
         path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
     }
-    if actual_paths != _BUNDLE_SIDECARS | set(expected_files):
+    if actual_paths != _BUNDLE_SIDECARS | set(table_paths.values()):
         raise ValueError("export bundle contains missing or unexpected files")
 
-    table_by_file = {cast(str, table["file"]): table for table in tables}
-    for relative_path, expected_digest in expected_files.items():
+    table_files: dict[str, tuple[str, str]] = {}
+    checksum_records: dict[str, str] = {}
+    emitted_checksum_records = _read_checksum_records(root / "checksums.sha256")
+    for table in snapshot.tables:
+        relative_path = table_paths[table.name]
         artifact_path = _safe_bundle_path(root, relative_path)
-        if _file_digest(artifact_path) != expected_digest:
+        digest = _file_digest(artifact_path)
+        table_files[table.name] = (relative_path, digest)
+        checksum_records[relative_path] = digest
+        if emitted_checksum_records.get(relative_path) != digest:
             raise ValueError("export table checksum validation failed")
-        expected_rows = cast(int, table_by_file[relative_path]["row_count"])
-        if _table_row_count(artifact_path, format) != expected_rows:
+        if _table_row_count(artifact_path, format) != len(table.rows):
             raise ValueError("export table row count validation failed")
 
+    expected_manifest = build_local_manifest(
+        snapshot,
+        format=format,
+        table_files=table_files,
+    )
+    if manifest != expected_manifest:
+        raise ValueError("export manifest does not match prepared snapshot")
+    if emitted_checksum_records != checksum_records:
+        raise ValueError("export checksum records do not match validated bytes")
+    return {
+        path.relative_to(root).as_posix(): _file_digest(path)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
-def validate_xlsx(rendered: RenderedArtifact, snapshot: PreparedExport) -> None:
+
+def validate_xlsx(path: Path, snapshot: PreparedExport) -> dict[str, str]:
     """Read the workbook back and validate its visible data and receipts."""
-    workbook = load_workbook(rendered.path, read_only=True, data_only=True)
-    if "MoneyBin Manifest" not in workbook.sheetnames:
-        raise ValueError("XLSX manifest sheet is missing")
-    if "MoneyBin Data Dictionary" not in workbook.sheetnames:
-        raise ValueError("XLSX data dictionary sheet is missing")
-    manifest = json.loads(workbook["MoneyBin Manifest"]["A2"].value)
-    dictionary = json.loads(workbook["MoneyBin Data Dictionary"]["A2"].value)
-    if manifest.get("format") != "xlsx" or dictionary != snapshot.data_dictionary:
-        raise ValueError("XLSX receipt validation failed")
+    worksheets = workbook_worksheet_names(snapshot)
+    workbook = load_workbook(path, read_only=True, data_only=False)
+    try:
+        expected_sheet_names = [
+            *(worksheets[table.name] for table in snapshot.tables),
+            "MoneyBin Manifest",
+            "MoneyBin Data Dictionary",
+        ]
+        if workbook.sheetnames != expected_sheet_names:
+            raise ValueError("XLSX worksheet names do not match prepared snapshot")
+        if any(
+            workbook[name].sheet_state != "visible" for name in expected_sheet_names
+        ):
+            raise ValueError("XLSX worksheets must all be visible")
 
-    tables = cast(list[dict[str, object]], manifest.get("tables"))
-    if len(tables) != len(snapshot.tables):
-        raise ValueError("XLSX table count validation failed")
-    for table_manifest, prepared_table in zip(tables, snapshot.tables, strict=True):
-        sheet_name = cast(str, table_manifest["worksheet"])
-        if sheet_name not in workbook.sheetnames:
-            raise ValueError("XLSX data sheet is missing")
-        sheet = workbook[sheet_name]
-        headers = tuple(cell.value for cell in next(sheet.iter_rows(max_row=1)))
-        if headers != tuple(column.name for column in prepared_table.columns):
-            raise ValueError("XLSX column validation failed")
-        if sheet.max_row - 1 != len(prepared_table.rows):
-            raise ValueError("XLSX row count validation failed")
-        actual_rows = tuple(sheet.iter_rows(min_row=2, values_only=True))
-        expected_rows = tuple(
-            tuple(normalize_tabular_cell(value) for value in row)
-            for row in prepared_table.rows
+        manifest = _parse_xlsx_json(workbook["MoneyBin Manifest"]["A2"].value)
+        dictionary = _parse_xlsx_json(workbook["MoneyBin Data Dictionary"]["A2"].value)
+        if dictionary != snapshot.data_dictionary:
+            raise ValueError("XLSX data dictionary does not match prepared snapshot")
+        expected_manifest = build_local_manifest(
+            snapshot,
+            format="xlsx",
+            worksheets=worksheets,
         )
-        if actual_rows != expected_rows:
-            raise ValueError("XLSX cell validation failed")
-        if table_manifest["checksum_sha256"] != prepared_table.checksum_sha256:
-            raise ValueError("XLSX semantic checksum validation failed")
+        if manifest != expected_manifest:
+            raise ValueError("XLSX manifest does not match prepared snapshot")
+
+        for prepared_table in snapshot.tables:
+            sheet = workbook[worksheets[prepared_table.name]]
+            header_cells = next(sheet.iter_rows(max_row=1))
+            headers = tuple(cell.value for cell in header_cells)
+            if headers != tuple(column.name for column in prepared_table.columns):
+                raise ValueError("XLSX column validation failed")
+            if sheet.max_row - 1 != len(prepared_table.rows):
+                raise ValueError("XLSX row count validation failed")
+            actual_rows = tuple(sheet.iter_rows(min_row=2, values_only=True))
+            expected_rows = tuple(
+                tuple(normalize_tabular_cell(value) for value in row)
+                for row in prepared_table.rows
+            )
+            if actual_rows != expected_rows:
+                raise ValueError("XLSX cell validation failed")
+            for row_index, row in enumerate((headers, *actual_rows), start=1):
+                for column_index, value in enumerate(row, start=1):
+                    if isinstance(value, str) and value.startswith((
+                        "=",
+                        "+",
+                        "-",
+                        "@",
+                    )):
+                        cell = sheet.cell(row=row_index, column=column_index)
+                        if cell.data_type != "s":
+                            raise ValueError(
+                                "XLSX formula-leading value is not literal text"
+                            )
+    finally:
+        workbook.close()
+    return {"export.xlsx": _file_digest(path)}
 
 
-def validate_zip(bundle_root: Path, zip_path: Path) -> None:
+def validate_zip(bundle_root: Path, zip_path: Path) -> str:
     """Verify every archived byte against the already validated bundle."""
     expected = {
         path.relative_to(bundle_root).as_posix(): _file_digest(path)
@@ -247,6 +303,7 @@ def validate_zip(bundle_root: Path, zip_path: Path) -> None:
         for name, digest in expected.items():
             if hashlib.sha256(archive.read(name)).hexdigest() != digest:
                 raise ValueError("ZIP member checksum validation failed")
+    return _file_digest(zip_path)
 
 
 def _write_zip(bundle_root: Path, zip_path: Path) -> None:
@@ -254,6 +311,13 @@ def _write_zip(bundle_root: Path, zip_path: Path) -> None:
         for path in sorted(bundle_root.rglob("*")):
             if path.is_file():
                 archive.write(path, path.relative_to(bundle_root).as_posix())
+
+
+def _remove_owned_artifact(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
 
 
 @contextmanager
@@ -308,6 +372,15 @@ def _read_json_object(path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("export JSON receipt must be an object")
     return cast(dict[str, object], value)
+
+
+def _parse_xlsx_json(value: object) -> dict[str, object]:
+    if not isinstance(value, str):
+        raise ValueError("XLSX JSON receipt cell must contain text")
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise ValueError("XLSX JSON receipt must be an object")
+    return cast(dict[str, object], parsed)
 
 
 def _file_digest(path: Path) -> str:

@@ -13,20 +13,28 @@ from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import cast
-from urllib.parse import quote
 from uuid import UUID
 
 import duckdb
 import pyarrow as pa
 from openpyxl import Workbook
+from openpyxl.worksheet.worksheet import Worksheet
 from sqlglot import exp, parse_one
 
-from moneybin.exports.manifest import LocalExportFormat, build_local_manifest
+from moneybin.exports.manifest import (
+    CSV_ENCODING,
+    LocalExportFormat,
+    build_local_manifest,
+    bundle_table_path,
+)
 from moneybin.exports.snapshot import PreparedExport, PreparedTable
 
 _MANIFEST_SHEET = "MoneyBin Manifest"
 _DICTIONARY_SHEET = "MoneyBin Data Dictionary"
 _INVALID_SHEET_CHARACTERS = re.compile(r"[\\/*?:\[\]]")
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+type TabularCell = bool | int | float | str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,17 +65,18 @@ def render_xlsx(snapshot: PreparedExport, staging_root: Path) -> RenderedArtifac
     if active_sheet is None:
         raise RuntimeError("new XLSX workbook has no active sheet")
     workbook.remove(active_sheet)
-    used_sheet_names = {_MANIFEST_SHEET, _DICTIONARY_SHEET}
-    worksheets: dict[str, str] = {}
+    worksheets = workbook_worksheet_names(snapshot)
 
     for table in snapshot.tables:
-        sheet_name = _worksheet_name(table.name, used_sheet_names)
-        used_sheet_names.add(sheet_name)
-        worksheets[table.name] = sheet_name
+        sheet_name = worksheets[table.name]
         sheet = workbook.create_sheet(sheet_name)
-        sheet.append([column.name for column in table.columns])
-        for row in table.rows:
-            sheet.append([normalize_tabular_cell(value) for value in row])
+        _write_xlsx_row(sheet, 1, [column.name for column in table.columns])
+        for row_index, row in enumerate(table.rows, start=2):
+            _write_xlsx_row(
+                sheet,
+                row_index,
+                [normalize_tabular_cell(value) for value in row],
+            )
 
     manifest = build_local_manifest(
         snapshot,
@@ -101,14 +110,16 @@ def _render_bundle(
     if format == "xlsx":
         raise ValueError("XLSX is a workbook, not a directory bundle")
     staging_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    staging_root.chmod(0o700)
     tables_root = staging_root / "tables"
     tables_root.mkdir(mode=0o700)
+    tables_root.chmod(0o700)
     table_files: dict[str, Path] = {}
     relative_files: dict[str, tuple[str, str]] = {}
 
     for table in snapshot.tables:
-        filename = f"{_filename_stem(table.name)}.{format}"
-        table_path = tables_root / filename
+        relative_path = bundle_table_path(table.name, format)
+        table_path = staging_root.joinpath(*Path(relative_path).parts)
         if table_path.exists():
             raise ValueError("prepared table names produce duplicate artifact paths")
         if format == "csv":
@@ -117,7 +128,6 @@ def _render_bundle(
             _write_parquet(table, table_path)
         table_path.chmod(0o600)
         digest = _file_digest(table_path)
-        relative_path = table_path.relative_to(staging_root).as_posix()
         table_files[table.name] = table_path
         relative_files[table.name] = (relative_path, digest)
 
@@ -146,7 +156,7 @@ def _render_bundle(
 def _write_csv(table: PreparedTable, path: Path) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(column.name for column in table.columns)
+        writer.writerow(_csv_payload_cell(column.name) for column in table.columns)
         writer.writerows(
             [_csv_payload_cell(value) for value in row] for row in table.rows
         )
@@ -181,15 +191,34 @@ def _validated_duckdb_type(value: str) -> str:
 
 def _csv_payload_cell(value: object) -> object:
     if value is None:
-        return r"\N"
+        return CSV_ENCODING["null"]
     if isinstance(value, Mapping):
         return _json_text(_payload_json_safe(cast(Mapping[object, object], value)))
     if isinstance(value, (list, tuple)):
         return _json_text(_payload_json_safe(cast(Sequence[object], value)))
-    return normalize_tabular_cell(value)
+    normalized = normalize_tabular_cell(value)
+    if isinstance(value, str) and value.startswith(
+        tuple(cast(list[str], CSV_ENCODING["escaped_prefixes"]))
+    ):
+        return f"{CSV_ENCODING['escape']}{normalized}"
+    return normalized
 
 
-def normalize_tabular_cell(value: object) -> object:
+def decode_csv_cell(value: str | None) -> str | None:
+    """Decode one CSV v1 text cell after DuckDB applies the null marker."""
+    if value is None or value == CSV_ENCODING["null"]:
+        return None
+    escape = cast(str, CSV_ENCODING["escape"])
+    escaped_prefixes = tuple(cast(list[str], CSV_ENCODING["escaped_prefixes"]))
+    if value.startswith(escape):
+        decoded = value[len(escape) :]
+        if not decoded.startswith(escaped_prefixes):
+            raise ValueError("CSV cell contains an invalid escape sequence")
+        return decoded
+    return value
+
+
+def normalize_tabular_cell(value: object) -> TabularCell:
     """Normalize a prepared cell for lossless text-oriented payloads."""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -236,20 +265,35 @@ def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _filename_stem(name: str) -> str:
-    encoded = quote(name, safe="-_.")
-    if encoded in {"", ".", ".."}:
-        raise ValueError("prepared table name cannot be represented safely")
-    return encoded
+def workbook_worksheet_names(snapshot: PreparedExport) -> dict[str, str]:
+    """Return deterministic Excel-safe names with case-insensitive uniqueness."""
+    used = {_MANIFEST_SHEET.casefold(), _DICTIONARY_SHEET.casefold()}
+    worksheets: dict[str, str] = {}
+    for table in snapshot.tables:
+        sheet_name = _worksheet_name(table.name, used)
+        used.add(sheet_name.casefold())
+        worksheets[table.name] = sheet_name
+    return worksheets
 
 
-def _worksheet_name(name: str, used: set[str]) -> str:
+def _worksheet_name(name: str, used_casefolded: set[str]) -> str:
     base = _INVALID_SHEET_CHARACTERS.sub("_", name).strip("'") or "Table"
     base = base[:31]
     candidate = base
     suffix = 2
-    while candidate in used:
+    while candidate.casefold() in used_casefolded:
         marker = f"-{suffix}"
         candidate = f"{base[: 31 - len(marker)]}{marker}"
         suffix += 1
     return candidate
+
+
+def _write_xlsx_row(
+    sheet: Worksheet,
+    row: int,
+    values: Sequence[TabularCell],
+) -> None:
+    for column, value in enumerate(values, start=1):
+        cell = sheet.cell(row=row, column=column, value=value)
+        if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
+            cell.data_type = "s"

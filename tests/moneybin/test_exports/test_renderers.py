@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -11,7 +12,12 @@ from pathlib import Path
 import duckdb
 from openpyxl import load_workbook
 
-from moneybin.exports.renderers import render_csv, render_parquet, render_xlsx
+from moneybin.exports.renderers import (
+    decode_csv_cell,
+    render_csv,
+    render_parquet,
+    render_xlsx,
+)
 from moneybin.exports.snapshot import (
     ExportSubject,
     PreparedColumn,
@@ -74,6 +80,36 @@ def make_snapshot(*, report: bool = False) -> PreparedExport:
     )
 
 
+def make_text_snapshot(
+    values: Sequence[str | None],
+    *,
+    column_name: str = "note",
+    table_names: Sequence[str] = ("activity",),
+) -> PreparedExport:
+    columns = (PreparedColumn(column_name, "VARCHAR", DataClass.DESCRIPTION),)
+    rows = tuple((value,) for value in values)
+    tables = tuple(
+        PreparedTable(
+            name=name,
+            source=TableRef("reports", f"table_{index}"),
+            columns=columns,
+            rows=rows,
+            checksum_sha256=prepared_table_checksum(columns, rows),
+        )
+        for index, name in enumerate(table_names)
+    )
+    return PreparedExport(
+        artifact_version=1,
+        profile="personal",
+        created_at=datetime(2026, 7, 21, 18, 42, 33, tzinfo=UTC),
+        subject=ExportSubject(kind="bundle"),
+        redaction_mode="redacted",
+        tables=tables,
+        data_dictionary=build_data_dictionary(tables),
+        provenance=None,
+    )
+
+
 def test_csv_round_trips_typed_values_through_duckdb(tmp_path: Path) -> None:
     rendered = render_csv(make_snapshot(), tmp_path / "bundle")
 
@@ -98,6 +134,59 @@ def test_csv_round_trips_typed_values_through_duckdb(tmp_path: Path) -> None:
         "note",
     ]
     assert relation.fetchall() == list(make_snapshot().tables[0].rows)
+
+
+def test_csv_null_escape_and_formula_contract_round_trips_losslessly(
+    tmp_path: Path,
+) -> None:
+    values = (None, r"\N", r"\escape", "=SUM(A1:A2)", "+cmd", "-cmd", "@cmd")
+    rendered = render_csv(make_text_snapshot(values), tmp_path / "bundle")
+
+    relation = duckdb.read_csv(
+        str(rendered.table_files["activity"]),
+        header=True,
+        columns={"note": "VARCHAR"},
+        na_values=r"\N",
+    )
+    encoded = [row[0] for row in relation.fetchall()]
+    decoded = [decode_csv_cell(value) for value in encoded]
+    manifest = json.loads((rendered.path / "manifest.json").read_text())
+
+    assert encoded == [
+        None,
+        r"\\N",
+        r"\\escape",
+        r"\=SUM(A1:A2)",
+        r"\+cmd",
+        r"\-cmd",
+        r"\@cmd",
+    ]
+    assert decoded == list(values)
+    assert manifest["csv_encoding"] == {
+        "scheme": "moneybin.csv-cell",
+        "version": 1,
+        "null": r"\N",
+        "escape": "\\",
+        "escaped_prefixes": ["\\", "=", "+", "-", "@"],
+    }
+
+
+def test_csv_formula_leading_header_uses_the_reversible_escape_contract(
+    tmp_path: Path,
+) -> None:
+    rendered = render_csv(
+        make_text_snapshot(("value",), column_name="=formula"),
+        tmp_path / "bundle",
+    )
+
+    relation = duckdb.read_csv(
+        str(rendered.table_files["activity"]),
+        header=True,
+        all_varchar=True,
+    )
+
+    assert relation.columns == [r"\=formula"]
+    assert decode_csv_cell(relation.columns[0]) == "=formula"
 
 
 def test_parquet_round_trips_native_typed_values_through_duckdb(
@@ -181,3 +270,37 @@ def test_xlsx_contains_data_and_visible_receipt_sheets(tmp_path: Path) -> None:
         make_snapshot().tables[0].checksum_sha256
     )
     assert dictionary == make_snapshot().data_dictionary
+
+
+def test_xlsx_formula_leading_strings_remain_exact_literal_text(tmp_path: Path) -> None:
+    values = ("=SUM(A1:A2)", "+cmd", "-cmd", "@cmd")
+    rendered = render_xlsx(make_text_snapshot(values), tmp_path)
+
+    workbook = load_workbook(rendered.path, data_only=False)
+    cells = list(workbook["activity"]["A"])[1:]
+
+    assert [cell.value for cell in cells] == list(values)
+    assert [cell.data_type for cell in cells] == ["s", "s", "s", "s"]
+
+
+def test_xlsx_worksheet_names_avoid_case_insensitive_and_receipt_collisions(
+    tmp_path: Path,
+) -> None:
+    snapshot = make_text_snapshot(
+        ("value",),
+        table_names=("activity", "ACTIVITY", "MoneyBin Manifest"),
+    )
+
+    rendered = render_xlsx(snapshot, tmp_path)
+    workbook = load_workbook(rendered.path, data_only=True)
+
+    assert workbook.sheetnames == [
+        "activity",
+        "ACTIVITY-2",
+        "MoneyBin Manifest-2",
+        "MoneyBin Manifest",
+        "MoneyBin Data Dictionary",
+    ]
+    assert len({name.casefold() for name in workbook.sheetnames}) == len(
+        workbook.sheetnames
+    )
