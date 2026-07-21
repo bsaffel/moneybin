@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-20 -->
 # Architecture
 
 This is the one-page distillation. The full reference — invariants, layer mechanics, the writer-coordination contract — lives in [`docs/specs/architecture-shared-primitives.md`](specs/architecture-shared-primitives.md). Read that when you need depth; read this when you need the shape.
@@ -47,7 +47,7 @@ Consumers read from `core` and `reports` only. Managed writes from MCP and CLI t
 | `prep` | Views | SQLMesh | SQLMesh core | Light cleaning, type casting, source-system unioning |
 | `core` | Tables + views | SQLMesh | All consumers (services, MCP, CLI, reports) | Canonical, deduplicated, multi-source. One table per real-world entity at its primary grain |
 | `app` | Tables | Services, managed-write MCP, migrations | Services + `core.dim_*` joins | User state and application metadata. Mutable; not derivable from `raw` |
-| `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports_*`, future HTTP | Curated presentation models, one per report surface. Read-only by design |
+| `reports` | Views | SQLMesh | CLI `reports *`, MCP `reports`, future HTTP | Curated presentation models, one per report surface. Read-only by design |
 | `meta` | Tables / views | SQLMesh | Reconciliation tooling, freshness probes | Cross-source provenance and pipeline metadata |
 | `seeds` | Tables | SQLMesh seeds (from CSV) | `prep`, `core`, services | Reference data shipped in-repo |
 | `synthetic` | Tables | `moneybin synthetic generate` | Scenario tests | Test scenario tables; excluded from production builds |
@@ -72,29 +72,28 @@ never rename or retype in place; deprecate-then-remove across two releases.
 
 ## Surfaces
 
+Query it three ways: the CLI, raw SQL, or a 45-tool MCP server for Claude,
+Cursor, VS Code, Gemini CLI, Codex, and other clients. Every surface reads the
+same tables.
+
 The CLI and MCP server are thin formatters around the service layer. The SQL layer carries the same contract: the `core.*` and `reports.*` models are the canonical data products, queryable via `moneybin db shell`, the `moneybin://schema` MCP resource, and the read-only SQL MCP tool.
 
-### MCP tools by domain
+### MCP registry
 
-The MCP server registers more than 100 tools across roughly a dozen domains. Full enumeration in [`docs/guides/mcp-server.md`](guides/mcp-server.md).
-
-| Domain | What it does | Representative tools |
-|---|---|---|
-| `accounts.*` | List, inspect, and resolve accounts across sources | `accounts`, `accounts_get`, `accounts_balances` |
-| `transactions.*` | Query and curate transactions; notes, tags, splits, manual entry | `transactions_get`, `transactions_review`, `transactions_create`, `transactions_notes_add`, `transactions_tags_set`, `transactions_splits_set` |
-| `transactions.categorize.*` | Categorization: rules, LLM-assist, commit, auto-review | `transactions_categorize_assist`, `transactions_categorize_commit`, `transactions_categorize_run`, `transactions_categorize_rules` |
-| `reports.*` | Pre-built analytical views | `reports_networth`, `reports_cashflow`, `reports_spending`, `reports_recurring`, `reports_uncategorized` |
-| `refresh` | Run the matching → SQLMesh apply → categorization cascade | `refresh_run` (single umbrella) |
-| `sync.*` | Pull from upstream providers (Plaid) and the inbox | `sync_pull`, `sync_link`, `import_inbox_sync` |
-| `merchants.*` | Manage merchant identities | `merchants`, `merchants_create` |
-| `sql` | Read-only DuckDB query against the interface set | `sql_query` |
+The MCP server exposes one 45-tool standard registry across 11 domains over
+stdio. The generic `reports` catalog and runner lists and executes registered
+reports; reports do not consume additional tool slots. Supported hosts may defer
+schemas from that same registry without changing its tool names, approvals,
+allowlists, annotations, or audit identity. The registry advertises zero output
+schemas. Full enumeration is in
+[`docs/guides/mcp-server.md`](guides/mcp-server.md).
 
 Surface symmetry (same nouns, different verb position):
 
 | Capability | CLI | MCP |
 |---|---|---|
 | List accounts | `moneybin accounts list` | `accounts` |
-| Net worth report | `moneybin reports networth` | `reports_networth` |
+| Net worth report | `moneybin reports networth` | `reports(report_id=...)` |
 | Refresh the pipeline | `moneybin refresh` | `refresh_run` |
 | Confirm a match | `moneybin transactions matches confirm <id>` | `transactions_matches_confirm` |
 

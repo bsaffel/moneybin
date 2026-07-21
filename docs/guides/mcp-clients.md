@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-20 -->
 # Configuring MCP Clients
 
 MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
@@ -163,7 +163,7 @@ moneybin mcp install --client windsurf -y
 
 > **MoneyBin’s 45-tool registry fits Windsurf’s limit.** Cascade holds a maximum
 > of **100 tools at any one time**, across *all* connected MCP servers. MoneyBin
-> uses 45 of those slots, so other servers still share the remaining budget.
+> uses 45 slots and leaves 55 slots before other servers.
 > Windsurf gives no warning when the combined total crosses the limit; disable
 > unused servers in **Settings → MCP Servers** if your overall configuration
 > exceeds 100.

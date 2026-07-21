@@ -51,7 +51,7 @@ two failure modes to avoid are equally bad — marketing cadence (superlatives,
 - **Numbers first.** Every claim that can carry a checkable number does
   ("eight clients", "within $0.01") — never a bare adjective ("powerful",
   "seamless"). If the number would go stale fast, use a bounded one
-  ("more than 100 tools").
+  ("eight supported clients").
 - **No global hedges.** Never "pre-v1, expect roughness" disclaimers. A
   limitation is a scoped fact plus the next action ("Windows is untested";
   "consent gating is designed but not yet enforced"). One qualifier per
