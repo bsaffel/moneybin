@@ -5,8 +5,9 @@
 This spec defines parity between MoneyBin's two active user surfaces. Parity
 means that the CLI and the 45-tool standard registry can produce the same
 durable user outcome. It does not require similar command or tool names.
-Generic clients and supported deferred-loading hosts use that same registry;
-deferral never creates a second capability surface.
+Generic clients receive the full registry; a capable host may optionally defer
+schemas from that same registry. Observed host-native deferral evidence remains
+absent, and deferral never creates a second capability surface.
 
 The checked source of truth is
 [`tests/fixtures/mcp_capabilities/outcome-map.json`](../../tests/fixtures/mcp_capabilities/outcome-map.json).

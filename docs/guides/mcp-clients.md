@@ -75,12 +75,13 @@ The MCP transport is local-only and the MoneyBin server itself does not phone ho
 ## Bounded tool surface
 
 MoneyBin exposes one **45-tool standard registry**. Generic clients receive all
-45 tools. A supported host may defer schemas from that same registry to reduce
-prompt cost, without reconnect, packs, or profiles; tool names, approvals,
-allowlists, annotations, and audit identity do not change. Reports are catalog
-entries behind `reports`, not additional tool slots. The initial registry
-advertises zero output schemas; a future schema or tool must pass the admission
-record in [`mcp-tool-surface-scaling.md`](../specs/mcp-tool-surface-scaling.md).
+45 tools. A capable host may optionally defer schemas from that same registry
+to reduce prompt cost, without reconnect, packs, or profiles; tool names,
+approvals, allowlists, annotations, and audit identity do not change. Observed
+host-native deferral evidence remains absent. Reports are catalog entries behind
+`reports`, not additional tool slots. The initial registry advertises zero
+output schemas; a future schema or tool must pass the admission record in
+[`mcp-tool-surface-scaling.md`](../specs/mcp-tool-surface-scaling.md).
 
 ## Per-client setup
 

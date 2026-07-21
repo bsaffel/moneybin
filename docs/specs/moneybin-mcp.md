@@ -167,8 +167,9 @@ standard names above and lead with `system_status` when orientation is needed.
 
 ### Resources
 
-`moneybin://schema` is the one registered ambient resource for privacy-safe
-read-only SQL; it does not create a discovery, pack, or profile mode.
+`moneybin://schema` is the one registered, client-requested resource for
+privacy-safe read-only SQL; it does not create a discovery, pack, or profile
+mode.
 
 ## Capability parity and exemptions
 

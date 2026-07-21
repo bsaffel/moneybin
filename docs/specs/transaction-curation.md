@@ -528,7 +528,7 @@ consume an MCP tool slot.
 | Tool | Sensitivity | Shape |
 |---|---|---|
 | `transactions_create` | maximum `low` | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
-| `transactions_annotate` | dynamic; maximum `low` | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename` |
+| `transactions_annotate` | static `low` | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename`; the destructive-confirmation decision varies by request |
 | `import_labels_set` | maximum `medium` | `(import_id, labels: list[str]) → list[str]` — declarative |
 | `system_audit` | dynamic; maximum `high` | `view="events" | "history" | "detail"`, with `limit` and `cursor` for lists. `view="detail"` requires exactly one of `audit_id` or `operation_id`; list views reject both identifiers. |
 | (read tools) | — | Dropped — curation data is on `core.fct_transactions` LIST/STRUCT columns; LLM uses SQL via `moneybin://schema` |
@@ -572,9 +572,9 @@ Pure prompt content; no schema work. These two prompts wrap the curation-specifi
 
 ### Privacy and sensitivity
 
-- Curation tools use the registry's declared maximum and dynamic sensitivity
-  rules. Destructive `transactions_annotate` branches require payload-bound
-  confirmation.
+- Curation writes use static sensitivity derived from their typed responses.
+  `transactions_annotate` is `low`; only its destructive-confirmation decision
+  varies by request, and destructive branches require payload-bound confirmation.
 - `system_audit` classifies dynamically up to `high`.
 - Critical fields are masked in responses and sanitized from logs. Global
   consent enforcement is deferred, so this spec does not promise an automatic
