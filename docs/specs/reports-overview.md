@@ -219,14 +219,17 @@ enumerate the *exposed* set.
 
 - ~~**Is a bespoke-tool report a permanent sanctioned category, or a migration
   state?**~~ — **migration state; the migration landed in the MCP surface
-  consolidation.** `@report` no longer couples declaring a contract with
-  generating a tool: every report, `net_worth` included, is a `ReportSpec`
-  reached by `report_id` through the single `reports` catalog/runner, and
-  reports consume no tool slots. The `NetworthService` backing survives as a
-  runner; what disappeared is its hand-written tool identity, and with it the
-  collision that made the category look permanent. Generation-required was
-  indeed the dominant population — M2P.2 and M2P.3 now inherit the same access
-  path as the built-in rather than a second one.
+  consolidation.** The decorator no longer couples declaring a contract with
+  generating a tool: every report is reached by `report_id` through the single
+  `reports` catalog/runner and consumes no tool slot. `net_worth` is a
+  `ServiceReportSpec` — an `executor` over `NetworthService`, not a `ReportSpec`
+  with a SQL `runner` (`reports-dynamic.md` R6 keeps the two kinds distinct, and
+  `reports_explain` returns declared provenance for the service-backed one since
+  it has no query). That backing survives; what disappeared is its hand-written
+  tool identity, and with it the collision that made the category look
+  permanent. Generation-required was indeed the dominant population — M2P.2 and
+  M2P.3 now inherit the same access path as the built-in rather than a second
+  one.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
 - ~~**Dynamic reports over floored columns**~~ — **scoped out in B, decided in

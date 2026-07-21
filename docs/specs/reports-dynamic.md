@@ -97,7 +97,7 @@ New protected `app.*` table, paired per convention across
 | `name` | `VARCHAR NOT NULL UNIQUE` | Slug; resolved to `report_id` at the service boundary |
 | `description` | `VARCHAR` | Agent-visible summary |
 | `query_sql` | `VARCHAR NOT NULL` | Stored SQL with `$name` placeholders (R8) |
-| `params` | `JSON NOT NULL DEFAULT '[]'` | Declared `ParamSpec` list, bound by name; each carries a `DataClass` derived at save, absent = `UNRESOLVED` (R9) |
+| `params` | `JSON NOT NULL DEFAULT '[]'` | Declared `ParamSpec` list (below); `data_class` derived at save, absent = `UNRESOLVED` (R9) |
 | `classes` | `JSON NOT NULL` | Derived map, keyed by DuckDB result column name |
 | `semantics` | `JSON NOT NULL` | `ReportSemantics` fields, explicitly-unknown for a user query (below) |
 | `class_downgrades` | `JSON NOT NULL DEFAULT '{}'` | D5 downgrades, `{column: {from, to, reason}}` — `from` is the derived class the downgrade was approved against (R4) |
@@ -116,6 +116,25 @@ one `_run_app_audit_coverage(USER_REPORTS, "report_id")` call.
 `report_id` before touching the repo, per identifiers.md Guard 2. `report_id` is
 the audit target and the stable identity across renames.
 
+#### The stored `ParamSpec` fields are declared, not introspected
+
+`ParamSpec` carries `name`, `annotation`, `default`, `required`, `help`, and
+`data_class` (`_framework/contract.py`). For a decorated report the first five
+are introspected from the runner's signature; a user report has no signature to
+read, so they are supplied in the `params` JSON at save — this is declaration,
+which the Non-goals forbid *inferring*, not a thing forbidden to state. Only
+`data_class` is derived (step 5), never declared, so that a user cannot widen
+their own masking floor by asserting a class.
+
+`annotation` is the load-bearing one: it is both the type R5's binder coerces
+each value to and the type step 6's typed-NULL `DESCRIBE` casts to. A parameter
+with no declared `annotation` defaults to `str` — a query parameter is text
+until its author says otherwise — and `default`/`required`/`help` follow the
+same declared-or-defaulted rule (`required` is true exactly when no `default`
+is given). None of this asks the user for classification: the classes are still
+derived, and declaring `year: int` is inherent to writing `= $year`, not extra
+privacy work R2 pushed onto them.
+
 #### `report_id` is namespaced, and the namespace is not decoration
 
 `ReportSpec.__post_init__` rejects any `report_id` that does not match
@@ -132,12 +151,24 @@ time. `user:3f9c2d81b4e0` fails the pattern; `user:r3f9c2d81b4e` passes. A mint
 helper owns this so no call site re-derives it, and its test asserts the
 letter-led property directly rather than sampling a few generated ids.
 
-#### `columns` and `semantics` are required fields, and only one of them is free
+#### The required no-default fields, and how the constructor produces each
 
-`ReportSpec` declares `columns: tuple[OutputColumn, ...]` and
-`semantics: ReportSemantics` with **no defaults**
-(`_framework/contract.py`), so the second constructor must produce both or it
-cannot build a spec at all. They are not equally hard.
+`ReportSpec` has four required fields with no default that the second
+constructor must produce: `runner`, `classes`, `columns`, and `semantics`
+(`_framework/contract.py`). `classes` is the derived map this whole spec is
+about. The other three are not equally hard.
+
+`runner` is the executable mechanism, and it is a synthesized closure, not a
+stored artifact. `Runner = Callable[..., ReportQuery]`, and `run_report` calls
+exactly `spec.runner(db, **params)` to get the query (`_framework/execute.py`).
+For a user report the constructor closes over the stored `query_sql` and the
+declared `params`: the closure binds each keyword argument by name into the
+`$name` placeholders and returns `ReportQuery(sql=query_sql, params=[…])`. This
+is the concrete meaning of "second constructor, not second pattern" — the
+stored row becomes the same callable a decorator produces, so everything
+downstream of `ReportSpec` (redaction, envelope, provenance) runs unchanged and
+unaware of which constructor built the spec. R8 defines the by-name binding this
+closure performs.
 
 `columns` is free. `__post_init__` compares `columns` against `classes` on name
 and `data_class` only — `OutputColumn.description` is unconstrained — so the
@@ -309,13 +340,27 @@ downstream can address by name, so this refuses at save rather than becoming a
 named risk: the alternative is masking that is correct only by the accident of
 projection order.
 
-Two verified properties of step 6, both required for it to work:
+Two properties of step 6, both required for it to work — the first corrected by
+reproduction against DuckDB 1.5.4:
 
 - DuckDB raises `InvalidInputException` on `DESCRIBE` of a query with unbound
-  parameters, for both `$name` and `?` styles. Binding NULL is sufficient and
-  safe: a SELECT list's column names derive from projection *structure*, not
-  parameter *values*, so NULL-bound and value-bound `DESCRIBE` return identical
-  names.
+  parameters, so every placeholder must be bound before the `DESCRIBE`. A
+  **bare** NULL is not a safe binding: DuckDB's overload resolver cannot choose a
+  candidate for an overloaded builtin applied to an untyped NULL and raises
+  `BinderException`. `DESCRIBE SELECT date_part('year', $d)` with `$d` bound to
+  `None` fails on exactly the `date_part` / `date_trunc` / `extract` family a
+  filter as ordinary as `WHERE date_part('year', txn_date) = $year` uses — a
+  hard crash on a valid query, not one of R2's soft-fail paths. So step 6 binds a
+  **typed** NULL, `CAST(NULL AS <t>)`, where `<t>` is the DuckDB type of the
+  parameter's declared `annotation` (R1). The typed NULL resolves the overload —
+  the identical query bound as `CAST($d AS DATE)` describes cleanly — and column
+  names still derive from projection *structure*, not parameter *values*, so the
+  names returned match a value-bound run. A placeholder whose declared type still
+  cannot bind (an exotic case: the same name used in two type-incompatible
+  positions) does not crash the save — the `BinderException` is caught and its
+  columns record as unresolvable, the same non-blocking outcome an unresolvable
+  *column* already produces, fail-closed to masked. R2's invariant holds: a valid
+  read-only SELECT always saves.
 - `DESCRIBE` returns one row per output column — that is the point of the step —
   and executes no user rows. Its **type** column is not trustworthy under NULL
   binding (`SELECT amount * $f` describes as `INTEGER`, not `DECIMAL`), so
@@ -691,7 +736,15 @@ and distribution a repo artifact gets and a database row does not.
 
 ### R6 — The verify surface (absorbs M2I)
 
-`reports_explain(name, params=None)` returns, for any tier:
+`reports_explain(handle, params=None)` returns, for any tier. `handle` resolves
+by identifiers.md Guard 2's order — an exact `report_id` first, then a name —
+so a report whose name is contested by a registry collision (R5) stays
+inspectable by its stable `report_id`, which is the identity the
+collision-recovery text promises. The same resolution applies to
+`reports_reclassify`; only the human-facing catalog and run paths key on name
+alone, because a name a user cannot type is not a handle they have.
+
+For any tier, `reports_explain` returns:
 
 - the SQL in both forms defined by [R9](#r9--provenance-renders-identically-across-tiers);
 - the resolved class map, per column, with provenance — which upstream column it
