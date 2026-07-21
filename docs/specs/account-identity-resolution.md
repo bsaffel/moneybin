@@ -473,14 +473,15 @@ Guard-2 free-text resolution):
   need review"* and point at the queue — exactly how `matches run` ends with *"Run
   review when ready."* The primary, least-astonishing discovery path: you're told
   the moment proposals are created.
-- **Orientation → promote to a top-level `review`.** The former transaction-only
-  MCP review path / `transactions review` (CLI) aggregates the two *transaction* queues
-  (matches + categorize) via `ReviewService`. Generalize it to a domain-neutral
-  CLI `moneybin review` plus MCP `reviews(kind="summary")`, aggregating **all**
+- **Orientation → promote to a top-level review surface.** The former
+  transaction-only CLI command `moneybin transactions review` aggregates the two
+  *transaction* queues (matches + categorize) via `ReviewService`. Generalize it
+  to a domain-neutral CLI `moneybin review` plus MCP
+  `reviews(kind="summary")`, aggregating **all**
   queues — matches, categorize, **account-links**, future — so a single "what needs my
   attention?" sweep can't silently miss the account-link backlog. Keep
-  the former transaction-only path / `transactions review` as a **deprecated
-  CLI alias for one minor release** (`design-principles.md` CLI/MCP evolution).
+  `moneybin transactions review` as a **deprecated CLI alias for one minor
+  release** (`design-principles.md` CLI/MCP evolution).
   `ReviewService`
   gains `account_links_pending` in its count.
 
@@ -856,8 +857,8 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   account metadata capture.
 - **M1S.5** — surfaces: account-link CLI commands plus `reviews`,
   `identity_links_decide`, and `refresh_run` for MCP; inline discovery on
-  import/sync, `review` orientation promotion (+ the former MCP review-path deprecation
-  alias).
+  import/sync, `moneybin review` orientation promotion (+ the deprecated CLI
+  `moneybin transactions review` alias).
 - **M1S.6** — scenario + the import-validation gate re-run.
 - **M1S.7** — **capture layer + capture contract (Decision 8):** derive
   `dim_accounts.last_four` (+ institution) per source (OFX `RIGHT(number,4)`,

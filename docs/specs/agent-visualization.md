@@ -42,7 +42,7 @@ No new envelope field in v1. Two existing levers carry rendering guidance:
 
 ### 3. Served visualization guide
 
-One orientation surface that teaches the driving agent how to visualize MoneyBin data well: sign convention and display flips, transfer exclusion, period semantics (`YYYY-MM`), which report pairs naturally with which chart shape, currency display (`summary.display_currency`). Surface candidates, settled at plan time: a section in the FastMCP `instructions` field (if it fits the ~150–300-token budget), a `system_*` read tool, or a `moneybin://visualization` resource **with a tool fallback** — critical guidance must be tool-reachable because MCP resources are not universally supported by clients.
+One orientation surface that teaches the driving agent how to visualize MoneyBin data well: sign convention and display flips, transfer exclusion, period semantics (`YYYY-MM`), which report pairs naturally with which chart shape, currency display (`summary.display_currency`). At plan time, choose between the FastMCP `instructions` field when the guide fits the ~150–300-token budget and a separately admitted tool or resource contract. This draft reserves no public identifier. Critical guidance must remain tool-reachable because MCP resources are not universally supported by clients.
 
 ## Non-Goals
 
@@ -53,7 +53,7 @@ One orientation surface that teaches the driving agent how to visualize MoneyBin
 ## Open questions
 
 1. Does a structured `summary.presentation` hint field earn its place, or do prose hints suffice? Start prose-only; revisit only on evidence agents misrender despite hints.
-2. Guide surface placement — `instructions` section vs. `system_*` tool vs. resource + tool fallback (see §3).
+2. Guide surface placement — `instructions` section vs. a separately admitted tool or resource with a tool fallback (see §3).
 3. Does CLI `--output json` need anything beyond automatic parity? (It inherits envelope changes through the shared service layer; expectation: no.)
 
 ## Relationship to existing specs

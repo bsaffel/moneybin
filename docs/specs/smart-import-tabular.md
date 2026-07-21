@@ -565,7 +565,7 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
   replaced with hyphens, stripped.
 - **Row number assignment:** 1-based source file line/row number.
 - **Running balance validation** (when `balance` column is mapped):
-  Balance columns are a powerful free validation signal that most importers ignore.
+  Balance columns provide a zero-cost validation signal present in many exports.
   When present, verify internal consistency by checking sequential balance deltas:
   `balance[n] - balance[n-1]` should equal `amount[n]` (within a rounding tolerance
   based on the detected number format: ±0.01 for 2-decimal currencies, ±0.001 for

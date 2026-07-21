@@ -527,10 +527,10 @@ consume an MCP tool slot.
 
 | Tool | Sensitivity | Shape |
 |---|---|---|
-| `transactions_create` | write | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
-| `transactions_annotate` | write | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename` |
-| `import_labels_set` | write | `(import_id, labels: list[str]) → list[str]` — declarative |
-| `system_audit` | medium | `view="events" | "history" | "detail"`, with `limit` and `cursor` for lists. `view="detail"` requires exactly one of `audit_id` or `operation_id`; list views reject both identifiers. |
+| `transactions_create` | maximum `low` | `(transactions: list[ManualEntryInput], 1 ≤ len ≤ 100) → list[ManualEntryResult]` — bulk, atomic, single `import_id` per call |
+| `transactions_annotate` | dynamic; maximum `low` | Atomic `requests` union: `note_add(transaction_id, text)`, `note_edit(note_id, text)`, `note_delete(note_id)`, declarative `tags_set` / `splits_set`, and global `tag_rename` |
+| `import_labels_set` | maximum `medium` | `(import_id, labels: list[str]) → list[str]` — declarative |
+| `system_audit` | dynamic; maximum `high` | `view="events" | "history" | "detail"`, with `limit` and `cursor` for lists. `view="detail"` requires exactly one of `audit_id` or `operation_id`; list views reject both identifiers. |
 | (read tools) | — | Dropped — curation data is on `core.fct_transactions` LIST/STRUCT columns; LLM uses SQL via `moneybin://schema` |
 
 **Why the read tools were cut:** after this spec ships, `notes`, `tags`, and `splits` are columns on `core.fct_transactions`. The LLM writes `SELECT notes, tags, splits FROM core.fct_transactions WHERE transaction_id = ?` via the schema catalog. Adding dedicated read tools would duplicate token surface without adding capability.
@@ -555,28 +555,30 @@ those lifecycle semantics without spending three registered tool slots.
 
 ### Resources
 
-| URI | Content | Sensitivity |
-|---|---|---|
-| `moneybin://recent-curation` | Last 50 audit events across any target. For "what did I touch this week?" ambient awareness. | medium |
-| `moneybin://uncategorized-queue` (extended) | Existing planned resource. This spec adds `notes`, `tags` to the per-row payload so the LLM can see prior curator context when proposing categorizations. | medium |
-| `moneybin://schema` (extended) | Existing resource. This spec registers new curation columns and tables: `core.fct_transactions.{notes, note_count, tags, tag_count, splits, split_count, has_splits}`, `core.fct_transaction_lines`, `app.transaction_notes`, `app.transaction_tags`, `app.transaction_splits`, `app.imports`, `app.audit_log`. Includes example queries demonstrating LIST/STRUCT use (`'tax:business' = ANY(tags)`, `UNNEST(notes)`, `note_count > 0` rather than `len(notes) > 0`). | low |
-
-Per `feedback_mcp_resources_not_universal.md`, resources are enhancement-only. Critical reads have a tool path: `system_audit` is the tool equivalent of `moneybin://recent-curation`. The schema catalog has its `sql_schema` tool mirror per `mcp-sql-discoverability.md`.
+The current resource registry contains `moneybin://schema`. This spec registers
+the curation columns and interface tables there, with LIST/STRUCT example
+queries. `sql_schema` mirrors the catalog for clients without resource support;
+`system_audit` and `reviews(kind="categorization", ...)` cover curation history
+and queue reads. No dedicated curation resource identities are registered.
 
 ### Prompts
 
 | Prompt | Purpose |
 |---|---|
-| `prompts/curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions` then one or more `transactions_annotate` batches. |
-| `prompts/review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit`. |
+| `curate_recent_transactions` | Walks the user through last-N-days transactions, surfacing untagged/unnoted rows and offering to add curator state. Calls `transactions` then one or more `transactions_annotate` batches. |
+| `review_curation_history` | Summarizes recent audit events ("In the last week, you re-tagged 12 transactions, added 4 splits, and labeled the Q1 batch."). Read-only. Calls `system_audit`. |
 
 Pure prompt content; no schema work. These two prompts wrap the curation-specific tools and remain in scope on their own merit (curator-segment ritual surfaces); the broader "monthly-ritual prompt set" idea was retired 2026-05-16 in favor of a tool-first `reports-anomaly-detection.md` (internal roadmap review).
 
 ### Privacy and sensitivity
 
-- All curation write tools (`transactions_create`, `transactions_annotate`, and `import_labels_set`) follow the existing write-tool confirmation convention per `mcp-architecture.md`.
-- Read tools surfacing row-level data (`system_audit` returning before/after JSON) inherit medium-sensitivity behavior: aggregate-only response without `mcp-data-sharing` consent, full data with consent.
-- Critical-tier fields (account numbers, full descriptions, amounts) embedded in audit `before_value` / `after_value` JSON follow the existing redaction rules — `SanitizedLogFormatter` handles log emission; the response itself returns full data when consent is granted, summary-only without.
+- Curation tools use the registry's declared maximum and dynamic sensitivity
+  rules. Destructive `transactions_annotate` branches require payload-bound
+  confirmation.
+- `system_audit` classifies dynamically up to `high`.
+- Critical fields are masked in responses and sanitized from logs. Global
+  consent enforcement is deferred, so this spec does not promise an automatic
+  aggregate-only response when consent is absent.
 
 ## Audit Emission Contract
 
@@ -631,10 +633,9 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 - `src/moneybin/cli/commands/transactions/` (package) — CLI commands for `moneybin transactions create`, `moneybin transactions notes`, `moneybin transactions tags`, `moneybin transactions splits`, and `moneybin transactions audit`. (Shipped as a package, not a flat module — each subgroup is its own file inside the package.)
 - `src/moneybin/cli/commands/system/` (package) — CLI commands for `moneybin system audit list` and `moneybin system audit show`.
 - `src/moneybin/cli/commands/import_/` (package) — CLI commands for `moneybin import labels add`, `moneybin import labels remove`, and `moneybin import labels list`.
-- `src/moneybin/mcp/tools/curation.py` — the 9 new MCP write/read tools
-- `src/moneybin/mcp/prompts/curate_recent_transactions.py`
-- `src/moneybin/mcp/prompts/review_curation_history.py`
-- `src/moneybin/mcp/resources/recent_curation.py`
+- `src/moneybin/mcp/tools/curation.py` — curation handlers for the registered umbrella tools
+- `src/moneybin/mcp/prompts.py` — `curate_recent_transactions` and
+  `review_curation_history` prompt registrations
 - `tests/scenarios/personas/curator.yaml` — new synthetic persona that adds notes, tags, and splits to ~30% of generated transactions; ground-truth fields document expected curation state
 - `tests/scenarios/scenario_manual_entry_dedup.yaml`
 - `tests/scenarios/scenario_manual_entry_auto_rule_training.yaml`
@@ -740,7 +741,11 @@ All four scenarios use the new `curator` persona where applicable.
 
 ### Tier 5 — MCP integration (`tests/e2e/test_e2e_mcp.py`)
 
-Existing test file extended to cover the curation MCP surface, 2 prompts, 1 new resource, and 2 extended resources: tool registration, response envelope shape, sensitivity-tier behavior (medium tools degrade without consent), `transactions_create`'s `pipeline_summary` in response, and declarative-set diff correctness for the `tags_set` variant of `transactions_annotate`.
+Existing test file extended to cover the curation MCP surface, two prompts, and
+the schema resource additions: tool registration, response envelope shape,
+dynamic sensitivity and masking, `transactions_create`'s `pipeline_summary` in
+response, and declarative-set diff correctness for the `tags_set` variant of
+`transactions_annotate`.
 
 ## Dependencies
 

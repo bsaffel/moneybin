@@ -185,7 +185,7 @@ view selectors. Account reads therefore share `accounts(view=...)`; the separate
 | `accounts(view="detail", reference=...)` | dynamic | Single-account detail. Returns full settings row + dim fields + last balance observation. |
 | `accounts(view="summary")` | dynamic | Aggregate rollup, no per-account rows. |
 
-### Write tools (sensitivity `medium`; require confirmation per MCP write-tool conventions)
+### Write tool (dynamic sensitivity; maximum `critical`)
 
 | Tool | Params | Returns |
 |---|---|---|

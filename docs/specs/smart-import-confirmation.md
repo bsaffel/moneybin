@@ -149,7 +149,7 @@ first, implementing this shared shape rather than a PDF-only one.
 11. **Recovery is a first-class, surfaced step.** Every confirmed new-format import
     returns `actions[]` with the concrete recovery paths: undo the data load
     (`import_revert(operation="revert_import", import_id=...)`), undo the format save / PDF recipe-version bump
-    (`system_audit_undo <operation_id>` per `data-recovery-contract.md`), and create a
+    (`system_audit_undo(operation_id=...)` per `data-recovery-contract.md`), and create a
     fresh preview before a new confirmation. On a detection or transform error, the
     source is previewed again rather than modifying a prior confirmation payload.
 

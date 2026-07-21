@@ -429,7 +429,7 @@ The client detects the server's encryption state from the response:
 | `application/json` | Parse JSON directly (v1 server) |
 | `application/age` | Decrypt with private key, then parse JSON (v2 server) |
 
-No client-side flag or configuration needed. A v2 client works seamlessly against both v1 and v2 servers.
+No client-side flag or configuration is needed. A v2 client reads both v1 JSON and v2 encrypted responses.
 
 ### Cryptographic algorithm selection
 
@@ -439,7 +439,7 @@ Selected for simplicity, auditability, and mature library support. X25519 is the
 
 **Known limitations:**
 
-- **Not quantum-resistant.** X25519 is vulnerable to Shor's algorithm on a sufficiently powerful quantum computer. The threat to personal financial data is not imminent, but the design must not preclude an upgrade.
+- **Not quantum-resistant.** X25519 is vulnerable to Shor's algorithm on a fault-tolerant quantum computer. The threat to personal financial data is not imminent, but the design must not preclude an upgrade.
 - **Not FIPS 140-3 compliant.** X25519 is not a NIST-approved curve. FIPS requires P-256, P-384, or P-521 for ECC. Argon2id (used for passphrase-based key protection) is also not FIPS-approved (FIPS requires PBKDF2 or HKDF). If MoneyBin ever pursues SOC 2 certification or serves regulated entities, these algorithms would need to be swapped.
 
 **Upgrade path: hybrid X25519 + ML-KEM (CRYSTALS-Kyber)**

@@ -75,7 +75,7 @@ Every tool returns this shape:
 {
   "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "USD"},
   "data": [ ... ],
-  "actions": ["Use spending_by_category for breakdown"]
+  "actions": ["Use reports(report_id=\"core:spending\") for the breakdown"]
 }
 ```
 

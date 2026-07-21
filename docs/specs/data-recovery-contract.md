@@ -31,7 +31,7 @@ Recoverability today is partial and inconsistent across domains:
 - **App-state mutations** — Invariant 10 Phase 1 (spec `app-integrity-invariant.md`, status `ready`) routes every mutation to `app.*` through a `*Repo` with full pre-image capture in `app.audit_log.before_value` and cascade threading via `parent_audit_id`. The undo *consumer* is deferred to Phase 2.
 - **Pipeline audits** — `system_status(sections=["doctor"], detail="full")` runs three SQLMesh named audits (FK integrity, sign convention, transfer balance) plus a categorization-coverage check, returns pass/fail/warn per audit, optionally with affected IDs.
 - **Error envelopes** — `UserError(message, code, hint, details)` carries machine-readable codes today, but the code taxonomy is undocumented and varies by domain. Success responses have an `actions: list[str]` array of navigational hints; error responses have nothing equivalent.
-- **Matches domain** — CRUD operations exist as CLI commands (`moneybin transactions matches run/review/undo/history`) with no MCP surface.
+- **Matches domain** — CLI commands remain under `moneybin transactions matches`; MCP discovery and decisions use `reviews`, `reviews_decide`, and `refresh_run`.
 
 ### Gaps that motivate this spec
 

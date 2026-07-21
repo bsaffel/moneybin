@@ -11,7 +11,7 @@ Five runtime components plus three cross-cutting concerns. The data they share i
 |---|---|---|---|
 | **Local DuckDB store** | Storage | One encrypted file per profile under `~/.moneybin/profiles/<name>/moneybin.duckdb`. Holds `raw → prep → core → reports` plus the `app.*` overlay. | [`database-security.md`](../guides/database-security.md), [`data-model.md`](data-model.md) |
 | **CLI** | Runtime (per-invocation) | Typer-based command surface (Typer is the argparse-style CLI framework); first-class agent peer to MCP. Every command supports `--output json` and returns the same response envelope as the matching MCP tool. | [`cli-reference.md`](../guides/cli-reference.md) |
-| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). One 45-tool standard registry spans 11 domains over stdio; the generic `reports` catalog and runner lists and executes registered reports. Supported hosts may defer schemas only from that same registry. The registry advertises zero output schemas. | [`mcp-server.md`](../guides/mcp-server.md) |
+| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). One 45-tool standard registry spans 11 domains over stdio; the generic `reports` catalog and runner lists and executes registered reports. Capable hosts may optionally defer schemas only from that same registry. The registry advertises zero output schemas. | [`mcp-server.md`](../guides/mcp-server.md) |
 | **SQLMesh pipeline** | Runtime (on-demand) | Compiles and runs the `raw → prep → core → reports` transformations. SQLMesh owns every write to `prep.*`, `core.*`, `reports.*`, `meta.*`, and `seeds.*`. | [`data-pipeline.md`](../guides/data-pipeline.md) |
 | **Sync client** | Runtime (on-demand) | Talks to `moneybin-sync` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
 | **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that enforces sensitivity tiers, redaction, and the read/write allowlist for every MCP call. DDL is rejected; managed writes target `app.*` and `raw.*` only. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
@@ -127,9 +127,9 @@ Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `r
 
 One 45-tool standard registry spans 11 domains over stdio. The generic `reports`
 catalog and runner lists and executes registered reports, so a new report does
-not add a tool slot. Supported hosts may defer schemas from that same registry
-without changing its tool names, approvals, allowlists, annotations, or audit
-identity. The registry advertises zero output schemas. Supported in eight clients
+not add a tool slot. Capable hosts may optionally defer schemas from that same
+registry without changing its tool names, approvals, allowlists, annotations,
+or audit identity. The registry advertises zero output schemas. Supported in eight clients
 — see [`mcp-clients.md`](../guides/mcp-clients.md). Every tool declares a
 sensitivity tier (`low` / `medium` / `high`); the middleware surfaces the tier in
 each response envelope. → [`mcp-server.md`](../guides/mcp-server.md)

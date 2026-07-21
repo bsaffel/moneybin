@@ -150,7 +150,11 @@ Source: 2026-05-16 CTO architecture review §2.2 + §3 leverage point #3, re-ver
 
 12. **No schema changes in Phase 1.** `app.audit_log` already has `before_value`, `after_value`, and `parent_audit_id` columns. The reversibility contract uses what's there. Phase 2 will add `revert_of_audit_id`; that schema migration ships with Phase 2. See [Data Model](#data-model).
 
-13. **Phase 2 (out of scope for this spec).** The `UndoService`, `revert(audit_event)` methods on each repository, the `moneybin undo` CLI group, and the `undo_*` MCP surface are explicitly deferred. The spec calls out the forward-compat contract Phase 1 must honor so that Phase 2 is a strictly additive feature.
+13. **Phase 2 (out of scope for this spec).** The undo consumer remained
+    deferred here and later shipped as `system_audit_undo` plus
+    `moneybin system audit undo`. This spec reserves no separate MCP family or
+    top-level CLI group. The forward-compat contract keeps that consumer
+    additive.
 
 ## Data Model
 
@@ -297,7 +301,11 @@ Per `.claude/rules/testing.md` test layers.
 
 ## Out of Scope
 
-- **Phase 2 — the undo consumer.** No `UndoService`, no `repository.revert(audit_event)`, no `moneybin undo {list,apply,session}` CLI surface, no `undo_*` MCP tools. The forward-compat data (full `before_value`, threaded `parent_audit_id`) is the entire Phase 1 contribution toward Phase 2.
+- **Phase 2 — the undo consumer.** The consumer implementation stayed outside
+  this spec. It later shipped through `system_audit_undo` and
+  `moneybin system audit undo`, without a separately named MCP family or
+  top-level CLI group. The forward-compat data (full `before_value`, threaded
+  `parent_audit_id`) is the entire Phase 1 contribution toward Phase 2.
 - **Cross-database / multi-tenant variants.** Phase 1 assumes the single-process, single-profile model documented in `architecture-shared-primitives.md` §Connection Lifecycle. Multi-tenant `app.*` integrity is an M3H concern and will revisit the contract then.
 - **Schema migration to add `revert_of_audit_id`.** Phase 2's schema change. Phase 1 does not write the column.
 - **Performance optimization of the doctor coverage check.** A sampled scan is fine for personal-volume profiles; if a future hosted-tier per-user check needs incremental verification, that's an M3H follow-up.

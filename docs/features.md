@@ -1,16 +1,16 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-21 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
 
-> Pre-v1. Capabilities below are shipped and exercised end-to-end. Anything in flight is called out under [What's planned](#whats-planned).
+Capabilities below are shipped and exercised end-to-end. Work that has not shipped is listed under [What's planned](#whats-planned).
 
 ## Data ingestion
 
 - **Smart tabular import** — CSV, TSV, Excel, Parquet, and Feather through one pipeline. Heuristic column detection, three-tier confidence model, multi-account support, and first-class migration profiles for Tiller, Mint, and YNAB (other tools' exports import via the generic detector). -> [Data import guide](guides/data-import.md)
 - **OFX / QFX / QBO import** — Same `import_log` infrastructure as tabular: re-import detection, `--force` override, institution-name auto-resolution, and batch revert via `moneybin import revert <id>`. OFX descriptions are HTML-entity-decoded at import. -> [Data import guide](guides/data-import.md)
 - **Cross-source account identity** — One real account = one canonical id even when it arrives from multiple sources (a `.qfx` statement and a `.csv` export of the same account). Strong signals (remembered binding, scoped account number, persistent token) adopt silently; a weak match (`institution`+`last4` / name) is surfaced, never silently merged. At import time an interactive run that hits an ambiguous account returns a confirmation you ratify with `import confirm --account-binding source_key=ACCOUNT_ID|new` (adopt an existing account, or mint a distinct one); agent / non-interactive imports load and queue the proposal for review instead. Collapsing twins lets cross-source transaction dedup fire. -> [Data import guide](guides/data-import.md)
-- **Cross-source merchant identity** — One real merchant = one canonical `merchant_id`, resolved by Plaid's stable `merchant_entity_id` before name matching. Strong signals (remembered binding, exact name) adopt silently; a fuzzy match is surfaced, never silently merged. Proposals queue under `merchants links pending` and are accepted or declined via `merchants links set`; `merchants links run` backfills over existing Plaid history. The top-level `review` orientation tool includes merchant-link proposals. -> [CLI reference](guides/cli-reference.md)
+- **Cross-source merchant identity** — One real merchant = one canonical `merchant_id`, resolved by Plaid's stable `merchant_entity_id` before name matching. Strong signals (remembered binding, exact name) adopt silently; a fuzzy match is surfaced, never silently merged. Proposals queue under `merchants links pending` and are accepted or declined via `merchants links set`; `merchants links run` backfills over existing Plaid history. The top-level `moneybin review` command includes merchant-link proposals. -> [CLI reference](guides/cli-reference.md)
 - **Plaid bank sync** — Connect accounts through Plaid Hosted Link via `moneybin-sync`, the Plaid integration backend you self-host. Cursor-based incremental sync by default; `--force` for a full re-fetch. Plaid data lands alongside OFX and CSV in the same canonical tables. Cash and credit-card accounts get full transaction history; investment, loan, mortgage, and HSA accounts load too, and their balances count toward net worth as soon as Plaid reports one. The same `sync pull` also pulls securities, investment transactions, and holdings straight into the investment ledger (see [Investments](#investments) below) — no separate command. -> [CLI reference](guides/cli-reference.md)
 - **Google Sheets sync** — Connect a Google Sheet as a live tabular source via direct OAuth (no shared client secret). Two adapters: `transactions` (Tiller-style ledgers participate in the full matching and categorization pipeline) and `seed` (any other sheet lands in `raw.gsheet_seeds` as JSON plus an auto-generated typed view, queryable via SQL and MCP). Every `moneybin refresh` re-pulls the latest sheet state; soft-delete preserves audit history; per-connection drift detection refuses pulls on structural change until you reconnect. -> [Google Sheets guide](guides/connect-gsheet.md)
 - **Batch imports** — `moneybin import files PATHS...` (and `import_files` on MCP) ingests multiple files in a single call; per-file failures don't abort the batch. -> [Data import guide](guides/data-import.md)
@@ -73,7 +73,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 Curated `reports.*` SQLMesh views back both the CLI and MCP surfaces. Same query, same envelope on both. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
 
-Each report is backed by a curated view and exposed identically on the CLI and MCP. A declarative **report framework** — one `@report` runner per report, from which the CLI command, MCP tool, parameter flags, and column masking are all derived — is in flight; it's what will let analysis packages and agents add new reports onto both surfaces from a single definition. See [Extensibility](#extensibility).
+Each report is backed by a curated view and one declarative `@report` definition. The framework derives its CLI command, `reports` catalog entry, parameters, and column masking from that definition. New reports extend the catalog without adding MCP tool slots. See [Extensibility](#extensibility).
 
 - **`reports.net_worth`** — Cross-account total with period-over-period change.
 - **`reports.cash_flow`** — Income vs spending by month.
@@ -85,7 +85,7 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 
 ## MCP server
 
-- **Wide tool catalog** — More than a hundred first-party tools across `accounts.*`, `transactions.*`, `reports.*`, `categorize.*`, `merchants.*`, `system.*`, `refresh`, `sync.*`, `transform.*`, and `import.*`. Full per-domain inventory: [MCP server guide](guides/mcp-server.md).
+- **Bounded tool registry** — One 45-tool standard registry spans 11 domains. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots. Full per-domain inventory: [MCP server guide](guides/mcp-server.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.
@@ -97,7 +97,7 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 - **Read-only SQL — privacy-safe on both surfaces** — `sql_query` (MCP) and `moneybin sql query` (CLI) run read-only `SELECT`/`WITH`/`DESCRIBE`/`SHOW`/`PRAGMA`/`EXPLAIN` against the `core` and `app` schemas, sharing one enforcement primitive: writes and file-access functions are blocked, and each output column is classified via sqlglot lineage so CRITICAL fields (account/routing numbers) are masked (`****<last4>`) — raw SQL is not a privacy bypass on either surface. App-state mutations (notes, tags, splits, rules) flow through dedicated tools, not raw SQL. (`moneybin db query`/`shell`/`ui` are raw, unmasked operator access.)
 - **MCP install across eight clients** — Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex (CLI / Desktop / IDE), and the ChatGPT desktop app (which hosts Codex and shares its config). `moneybin mcp install --client <name>` writes the client config. ChatGPT on the **web/mobile** cannot reach a local stdio server; remote MCP transport is planned on the [roadmap](roadmap.md). -> [MCP clients guide](guides/mcp-clients.md)
 - **First-run setup, in session** — Connect before creating a profile and MoneyBin sets itself up on the first tool call instead of failing. Elicitation-capable clients (e.g. Claude Desktop) are prompted for a profile name and the encrypted profile is created in place — no terminal step, no restart; tools-only clients get one clear message pointing at `moneybin profile create`. -> [MCP server guide](guides/mcp-server.md)
-- **Stability promise** — Pre-v1. Tool names and envelope fields may change before the v1 launch; the CHANGELOG records every rename, and removed tools stay as deprecation-aliased shims for one minor release.
+- **Pre-v1 contract record** — Tool and envelope changes are recorded in the CHANGELOG. The current docs and checked-in surface snapshot define the 45-tool registry; no deprecated MCP aliases are advertised.
 
 ## CLI
 

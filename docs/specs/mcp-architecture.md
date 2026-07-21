@@ -534,22 +534,26 @@ minimize sensitive data in their requested and summarized results.
 
 ### Resources
 
-MCP resources are read-only data endpoints that give the AI ambient context without requiring a tool call. They're loaded into context when the AI connects, not on demand.
+MCP resources are client-requested, read-only data endpoints. Clients do not
+universally surface or load them, so every critical capability needs a tool path.
 
 **Design principles:**
 
-1. **Ambient, not interactive.** Resources provide background context the AI needs to be helpful — schema information, configuration state, available accounts. They don't accept parameters or perform actions.
-2. **Small and stable.** Resources should be compact enough to load into context without waste. They change infrequently (account list, schema shape, privacy status).
-3. **Bootstrap the AI.** The right set of resources means the AI's first tool call is the right one. Without resources, the AI has to call `overview_status` before it can do anything useful.
+1. **Read-only, not interactive.** Resources provide reference context. They do
+   not perform actions.
+2. **Small and stable.** Resources stay compact enough for explicit client reads.
+3. **Tool-reachable.** A client that does not expose resources must retain the
+   same critical capability through a registered tool.
 
 **Resources:**
 
-| Resource | Content | Why ambient |
+| Resource | Content | Tool path |
 |---|---|---|
-| `moneybin://status` | Data freshness, row counts, date ranges per source, last import timestamp | Lets the AI know what data exists without a tool call |
-| `moneybin://accounts` | Account list with types, institutions, currencies | Lets the AI reference accounts by name, filter by type |
-| `moneybin://privacy` | Active consent grants, configured backend, consent mode | Lets the AI know what it can and can't do before hitting a consent wall |
-| `moneybin://schema` | Core table schemas with column descriptions | Lets the AI write accurate SQL in `sql_query` without calling `describe_table` first |
+| `moneybin://schema` | Core and selected app-interface table schemas, column descriptions, and example queries | `sql_schema(table=...)` |
+
+Status, account, and privacy state are exposed through `system_status`,
+`accounts`, and `privacy`; they do not have separate resource identities.
+Additional resources require a reviewed contract before they are named.
 
 **What's NOT a resource:** Anything that changes frequently (transaction lists, balance snapshots, budget status) or requires parameters (filtered queries). Those are tools.
 

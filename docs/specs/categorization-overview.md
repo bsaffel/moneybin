@@ -299,8 +299,8 @@ The categorization system starts cold — no rules, no merchant mappings, no ML 
 
 When users import data from competing tools (Mint, YNAB, Tiller, Monarch) via the
 [smart tabular importer](smart-import-tabular.md), source-provided categories are
-preserved in `raw.tabular_transactions.category`. These migrated categories are
-a powerful bootstrap signal:
+preserved in `raw.tabular_transactions.category`. These migrated categories
+supply three bootstrap inputs:
 
 1. **Direct rule seeding.** Each unique (merchant, category) pair in the migrated data
    becomes a candidate auto-rule. Import 3 years of Mint data where every Kroger

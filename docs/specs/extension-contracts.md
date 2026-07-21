@@ -16,8 +16,9 @@ surface designed with the same rigor as the MCP and CLI surfaces.
 This spec defines that contributor-facing surface: three extension types, their trust postures, their registration mechanisms, their quality progression, and the guided-contribution skills shipped alongside. Together they answer: *how does someone who wants to extend MoneyBin do so, cleanly and predictably?*
 
 The operating MCP surface is one 45-tool standard registry. Generic clients
-and supported deferred-loading hosts use the same registry; reports never
-consume tool slots because they extend the `reports` catalog instead. Any
+receive the full registry; capable hosts may optionally defer schemas from that
+same registry; reports never consume tool slots because they extend the
+`reports` catalog instead. Any
 future extension-owned tool follows the standard admission record before it
 can be named or enter the bounded registry. Package discovery does not reserve
 MCP identifiers or register MCP handlers by itself.

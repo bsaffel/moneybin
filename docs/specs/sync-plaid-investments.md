@@ -555,8 +555,9 @@ gains re-key onto the surviving security on the next transform. **Reject**
 keeps the minted security — the reviewer is asserting it genuinely is a
 distinct instrument — and records the declined pairing so the resolver never
 re-proposes it. **Undo** reverses. Sibling decisions for the same ref
-auto-reject on accept. Pending decisions surface through the domain-neutral
-`review` sweep as `security_links_pending`, mirroring `merchant_links_pending`.
+auto-reject on accept. Pending decisions surface through the domain-neutral CLI
+`moneybin review` sweep and MCP `reviews(kind="summary")` as
+`security_links_pending`, mirroring `merchant_links_pending`.
 
 **Accept must migrate specific-ID lot selections.** `app.lot_selections`
 references lots by `lot_id`, a content hash that **includes `security_id`**
@@ -1187,7 +1188,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
 | `src/moneybin/connectors/sync_models.py` | `PullResult`: carry the per-outcome security-resolution counts (adopted / auto-bound / proposed / minted / pending) in the pull envelope — resolution is a reported stage, not a silent side effect |
 | `src/moneybin/cli/commands/sync.py` | `sync pull` output: render those counts, naming the pending-decision command whenever an identity is awaiting review |
-| Review sweep (CLI `review` / MCP) | Add `security_links_pending` count |
+| Review sweep (CLI `moneybin review` / MCP `reviews(kind="summary")`) | Add `security_links_pending` count |
 
 Server-side work (moneybin-sync: consent already requested at link time;
 endpoints to fetch/assemble the three arrays) is tracked in that repo — the

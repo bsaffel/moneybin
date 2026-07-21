@@ -21,7 +21,7 @@ This spec adds auto-rule generation — pillar E from the [categorization umbrel
 - [archived/transaction-categorization.md](archived/transaction-categorization.md) — existing rule engine and merchant normalization
 - [app_categorization_rules.sql](../../src/moneybin/sql/schema/app_categorization_rules.sql) — existing rule schema with `created_by` column
 - [app_transaction_categories.sql](../../src/moneybin/sql/schema/app_transaction_categories.sql) — categorization output table
-- [app_merchants.sql](../../src/moneybin/sql/schema/app_merchants.sql) — merchant normalization mappings
+- [app_user_merchants.sql](../../src/moneybin/sql/schema/app_user_merchants.sql) — merchant normalization mappings
 
 ## Design Principles
 

@@ -65,7 +65,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 |---|---|---|
 | Eight models in v1, not fifteen | Hits the 6–10 range from the brief; every model independently demoable; future iterations add narrower models (income_sources, recurring-detail) | §Models |
 | `recurring_subscriptions` ships with `confidence` column (0.0–1.0) | A candidate generator has inherent uncertainty. Surfacing its score lets users and AI consumers apply their own thresholds rather than accepting a hidden classifier. | §Models §`reports.recurring_subscriptions` |
-| Wide-grain principle: prefer powerful views consumers can aggregate over narrow single-purpose ones | Drove `top_merchants → merchant_activity` (top-N is just `ORDER BY total_spend DESC LIMIT N` against the wider view) and `year_over_year_spending → spending_trend` (one model supports YoY, MoM, and 3-month-trailing comparisons). Future report specs apply the same lens. | §Models |
+| Wide-grain principle: prefer views consumers can aggregate over narrow single-purpose ones | Drove `top_merchants → merchant_activity` (top-N is just `ORDER BY total_spend DESC LIMIT N` against the wider view) and `year_over_year_spending → spending_trend` (one model supports YoY, MoM, and 3-month-trailing comparisons). Future report specs apply the same lens. | §Models |
 | `reports.net_worth` (with underscore), not `reports.networth` | Reintroduces space/underscore for readability. Overrides the gate spec's name; landed via [Migrations](#migrations) below. | §Migrations |
 | Sequenced before `moneybin-doctor.md` | Doctor's `balance_drift` traffic-light comes from `reports.balance_drift`. Recipe-library lands first; doctor reads the view. | §Sequencing |
 | Bundle `core.dim_categories` and `core.dim_merchants` migrations | Today `app.categories` and `app.merchants` are Python-built views exposed directly to consumers, violating the `architecture-shared-primitives.md` rule that consumers read only `core.*`/`reports.*`. The recipe library is already touching the `core/` SQLMesh layer, `TableRef`, and the schema-discoverability surface — bundling now avoids reopening the same surface twice. | §Migrations |
@@ -719,8 +719,9 @@ If gaps are discovered during implementation, file a follow-up to `testing-synth
 This spec ships before [`moneybin-doctor.md`](moneybin-doctor.md) (next M0I spec):
 
 1. **PR 1 (this spec):** All eight `reports.*` views; the four migrations from §Migrations (gate-spec amendment, `core.agg_net_worth` → `reports.net_worth`, `app.categories` → `core.dim_categories`, `app.merchants` → `core.dim_merchants`); `schema.py`/`tables.py`/`seeds.py`/`schema_catalog.py` updates; the categorization-service merchant write-path fix; CLI subcommands; report-catalog entries; tests at all three layers.
-2. **PR 2 (doctor spec):** `moneybin system doctor` command and its future MCP
-   workflow, reading from the existing services and from `reports.balance_drift`.
+2. **PR 2 (doctor spec):** `moneybin system doctor` and
+   `system_status(sections=["doctor"], detail="full")`, reading from the existing
+   services and from `reports.balance_drift`.
 
 The two PRs can be reviewed in parallel once both specs are written, but PR 1 must merge first because PR 2's reconciliation traffic-light depends on `reports.balance_drift`. The bundled dim migrations land atomically with the rest of PR 1 — splitting them into a separate "architectural cleanup" PR was considered and rejected because it would re-open the same `tables.py` / `schema_catalog.py` / `seeds.py` surface twice.
 
