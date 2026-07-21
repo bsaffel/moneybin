@@ -1,6 +1,7 @@
 """system — system and data status meta-view."""
 
 import logging
+from dataclasses import asdict
 
 import typer
 
@@ -37,11 +38,13 @@ def system_status(
     quiet: bool = quiet_option,  # noqa: ARG001 — status is data-only; nothing to suppress
 ) -> None:
     """Show data inventory and pending review queue counts."""
+    from moneybin.exports.service import ExportService
     from moneybin.services.system_service import SystemService
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
             s = SystemService(db).status()
+            exports = ExportService(db).status()
 
     min_d, max_d = s.transactions_date_range
     if output == OutputFormat.JSON:
@@ -59,6 +62,9 @@ def system_status(
                     else None,
                     "matches_pending": s.matches_pending,
                     "categorize_pending": s.categorize_pending,
+                    "exports": [
+                        asdict(destination) for destination in exports.destinations
+                    ],
                 },
                 sensitivity="low",
             ),
@@ -75,3 +81,9 @@ def system_status(
     typer.echo(f"Last import: {s.last_import_at or 'never'}")
     typer.echo(f"Matches pending: {s.matches_pending}")
     typer.echo(f"Uncategorized: {s.categorize_pending}")
+    for destination in exports.destinations:
+        state = "ready" if destination.ready else "not ready"
+        typer.echo(
+            f"Export {destination.name} ({destination.kind}): {state}; "
+            f"write capable: {destination.write_capable}"
+        )

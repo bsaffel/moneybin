@@ -171,7 +171,7 @@ async def test_live_standard_read_selectors_render_exactly() -> None:
     assert_literal_values(
         status.inputSchema["properties"]["sections"]["anyOf"][0],
         ("items",),
-        {"overview", "doctor", "categorization"},
+        {"overview", "doctor", "categorization", "exports"},
     )
     import_status = await listed_tool(mcp, "import_status")
     assert_literal_values(
@@ -240,7 +240,7 @@ async def test_system_coarse_tools_render_schema_contract() -> None:
     assert_literal_values(
         sections_schema,
         ("items",),
-        {"overview", "doctor", "categorization"},
+        {"overview", "doctor", "categorization", "exports"},
     )
     assert_literal_values(
         status.inputSchema,
@@ -254,7 +254,7 @@ async def test_system_coarse_tools_render_schema_contract() -> None:
     )
 
 
-@pytest.mark.parametrize("section", ["overview", "doctor", "categorization"])
+@pytest.mark.parametrize("section", ["overview", "doctor", "categorization", "exports"])
 async def test_system_status_coarse_transport_variants(
     section: str,
     mcp_db: object,

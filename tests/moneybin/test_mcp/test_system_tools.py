@@ -23,7 +23,7 @@ from tests.moneybin.test_mcp.schema_assertions import (
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
 
-@pytest.mark.parametrize("section", ["overview", "doctor", "categorization"])
+@pytest.mark.parametrize("section", ["overview", "doctor", "categorization", "exports"])
 async def test_system_status_coarse_dispatches_each_section(section: str) -> None:
     response = await system_status_coarse(sections=[section])  # pyright: ignore[reportArgumentType]
 
@@ -37,7 +37,43 @@ async def test_system_status_coarse_defaults_to_fixed_section_order() -> None:
         "overview",
         "doctor",
         "categorization",
+        "exports",
     ]
+
+
+async def test_system_status_exports_uses_typed_privacy_safe_readiness(
+    mcp_db: object,
+) -> None:
+    from moneybin.database import get_database
+
+    with get_database(read_only=False) as db:
+        db.execute(
+            """
+            INSERT INTO app.export_destinations (
+                destination_id, name, kind, local_path, spreadsheet_id,
+                managed_tab_prefix, created_at, updated_at
+            ) VALUES (
+                'local-1', 'archive', 'local', '/private/export/path', NULL, NULL,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+    response = await system_status_coarse(sections=["exports"])
+
+    section = response.data.sections[0]
+    assert section.kind == "exports"
+    assert [
+        (item.name, item.kind, item.ready, item.write_capable)
+        for item in section.destinations
+    ] == [
+        ("local:exports", "local", True, True),
+        ("archive", "local", True, True),
+    ]
+    serialized = response.to_dict()
+    assert serialized["summary"]["sensitivity"] == "low"
+    assert "/private/export/path" not in str(serialized)
+    assert "local-1" not in str(serialized)
 
 
 async def test_system_status_coarse_rejects_explicit_empty_sections() -> None:

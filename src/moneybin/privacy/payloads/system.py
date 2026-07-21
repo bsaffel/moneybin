@@ -353,8 +353,29 @@ class CategorizationStatus(BaseModel):
     statistics: CategorizeStatsPayload | CategorizeStatsWithAutoPayload
 
 
+class SystemStatusExportDestination(BaseModel):
+    """Privacy-safe readiness for one configured export destination."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: Annotated[str, DataClass.RECORD_ID]
+    kind: Annotated[Literal["local", "sheets"], DataClass.TXN_TYPE]
+    ready: Annotated[bool, DataClass.TXN_TYPE]
+    write_capable: Annotated[bool, DataClass.TXN_TYPE]
+    reasons: Annotated[list[str], DataClass.TXN_TYPE]
+
+
+class ExportsStatus(BaseModel):
+    """Export destination readiness inside sectioned system status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["exports"] = "exports"
+    destinations: list[SystemStatusExportDestination]
+
+
 SystemStatusSection = Annotated[
-    OverviewStatus | DoctorStatus | CategorizationStatus,
+    OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus,
     Field(discriminator="kind"),
 ]
 

@@ -33,6 +33,7 @@ from moneybin.privacy.payloads.system import (
     AuditHistory,
     CategorizationStatus,
     DoctorStatus,
+    ExportsStatus,
     InvariantResultPayload,
     OverviewStatus,
     RecoveryActionPayload,
@@ -49,6 +50,7 @@ from moneybin.privacy.payloads.system import (
     SystemStatusCategorizationInfo,
     SystemStatusCoarsePayload,
     SystemStatusDatabaseConnectionsInfo,
+    SystemStatusExportDestination,
     SystemStatusGsheetInfo,
     SystemStatusGsheetRow,
     SystemStatusMatchesInfo,
@@ -795,7 +797,8 @@ def _audit_list_actions(
     read_only=False,
 )
 async def system_status_coarse(
-    sections: list[Literal["overview", "doctor", "categorization"]] | None = None,
+    sections: list[Literal["overview", "doctor", "categorization", "exports"]]
+    | None = None,
     detail: Literal["summary", "full"] = "summary",
 ) -> ResponseEnvelope[SystemStatusCoarsePayload]:
     """Return selected system overview, integrity, and categorization sections."""
@@ -804,14 +807,18 @@ async def system_status_coarse(
     )
 
     requested = (
-        ["overview", "doctor", "categorization"] if sections is None else sections
+        ["overview", "doctor", "categorization", "exports"]
+        if sections is None
+        else sections
     )
     if not requested:
         raise ValueError("At least one system status section is required.")
     if len(set(requested)) != len(requested):
         raise ValueError("System status sections must not contain duplicates.")
 
-    selected: list[OverviewStatus | DoctorStatus | CategorizationStatus] = []
+    selected: list[
+        OverviewStatus | DoctorStatus | CategorizationStatus | ExportsStatus
+    ] = []
     actions: list[str] = []
     degraded_reasons: list[str] = []
     for section in requested:
@@ -825,13 +832,34 @@ async def system_status_coarse(
             if response.error is not None:
                 return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(DoctorStatus(doctor=response.data))
-        else:
+        elif section == "categorization":
             response = await _run_tool_body(
                 transactions_categorize_stats, include_auto=detail == "full"
             )
             if response.error is not None:
                 return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(CategorizationStatus(statistics=response.data))
+        else:
+            from moneybin.database import get_database  # noqa: PLC0415
+            from moneybin.exports.service import ExportService  # noqa: PLC0415
+
+            with get_database(read_only=True) as db:
+                readiness = ExportService(db).status()
+            selected.append(
+                ExportsStatus(
+                    destinations=[
+                        SystemStatusExportDestination(
+                            name=item.name,
+                            kind=item.kind,
+                            ready=item.ready,
+                            write_capable=item.write_capable,
+                            reasons=list(item.reasons),
+                        )
+                        for item in readiness.destinations
+                    ]
+                )
+            )
+            continue
         actions.extend(response.actions)
         if response.summary.degraded:
             reason = response.summary.degraded_reason
@@ -1031,8 +1059,10 @@ def register_system_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         system_status_coarse,
         "system_status",
-        "Return selected operator status sections: overview inventory, integrity "
-        "doctor checks, and categorization coverage. detail='full' deepens the "
+        "Return selected operator status sections. Sections cover overview "
+        "inventory, integrity doctor checks, categorization coverage, and export "
+        "readiness. "
+        "detail='full' deepens the "
         "doctor scan and includes auto-categorization health.",
         privacy_actor="system_status",
     )

@@ -31,6 +31,8 @@ def test_system_status_text_output(mock_get_db: MagicMock) -> None:
     assert "transactions" in out
     assert "matches pending" in out
     assert "uncategorized" in out
+    assert "local:exports" in out
+    assert "ready" in out
 
 
 @patch("moneybin.cli.commands.system.get_database")
@@ -47,3 +49,12 @@ def test_system_status_json_output(mock_get_db: MagicMock) -> None:
     assert "transactions_count" in payload
     assert "matches_pending" in payload
     assert "categorize_pending" in payload
+    assert payload["exports"] == [
+        {
+            "name": "local:exports",
+            "kind": "local",
+            "ready": True,
+            "write_capable": True,
+            "reasons": [],
+        }
+    ]
