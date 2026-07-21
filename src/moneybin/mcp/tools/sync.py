@@ -2,33 +2,49 @@
 
 Per docs/specs/2026-05-13-plaid-sync-design.md Section 11.
 
-Excluded from MCP (CLI-only): sync_login, sync_logout (browser interaction +
-credential handling). sync_key_rotate (Phase 3 stub; passphrase material is
-CLI-only by convention).
+Device authentication is a nonblocking variant of sync_link + sync_status;
+logout is the credential-state variant of sync_disconnect. sync_key_rotate
+remains CLI-only because it handles passphrase material.
 """
 
 from __future__ import annotations
 
-import logging
+import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
-from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastmcp import FastMCP
 
+from moneybin.config import get_settings
 from moneybin.errors import UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.sync import (
+    SyncAuthView,
     SyncConnectionRow,
-    SyncDisconnectPayload,
+    SyncDisconnectCoarsePayload,
+    SyncGlobalStatusView,
+    SyncInstitutionDisconnectView,
+    SyncInstitutionLinkView,
+    SyncLinkCoarsePayload,
     SyncLinkPayload,
     SyncLinkStatusPayload,
+    SyncLogoutView,
     SyncPullInstitutionRow,
     SyncPullPayload,
+    SyncSessionStatusView,
+    SyncStatusCoarsePayload,
     SyncStatusPayload,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import (
     ResponseEnvelope,
     build_envelope,
@@ -36,9 +52,7 @@ from moneybin.protocol.envelope import (
 )
 
 if TYPE_CHECKING:
-    from moneybin.connectors.sync_models import PullResult
-
-logger = logging.getLogger(__name__)
+    from moneybin.connectors.sync_models import ConnectedInstitution, PullResult
 
 
 def _build_sync_client() -> Any:
@@ -65,6 +79,13 @@ def _build_sync_client() -> Any:
     return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
 
 
+def _build_sync_auth_service() -> Any:
+    """Construct profile-scoped nonblocking authentication orchestration."""
+    from moneybin.connectors.sync_auth import SyncAuthService  # noqa: PLC0415
+
+    return SyncAuthService(client=_build_sync_client())
+
+
 @contextmanager
 def _build_sync_service() -> Generator[Any, None, None]:
     """Context manager yielding a SyncService with active Database connection."""
@@ -78,7 +99,6 @@ def _build_sync_service() -> Generator[Any, None, None]:
         yield SyncService(client=client, db=db, loader=loader)
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_pull(
     institution: str | None = None, force: bool = False, refresh: bool = True
 ) -> ResponseEnvelope[SyncPullPayload]:
@@ -172,7 +192,7 @@ def _pull_actions(result: PullResult) -> list[str]:
     if awaiting:
         actions.append(
             f"{awaiting} security identity(ies) await review — use "
-            "investments_securities_links_pending to see them "
+            "reviews(kind='security_links') to see them "
             "(unresolved securities are dropped from cost basis)."
         )
     if result.investment_source_overlap_accounts:
@@ -180,13 +200,12 @@ def _pull_actions(result: PullResult) -> list[str]:
             f"{len(result.investment_source_overlap_accounts)} account(s) have "
             "both manual and Plaid investment history — lots and gains "
             "double-count until one source is chosen per account "
-            "(see system_doctor)."
+            "(see system_status(sections=['doctor']))."
         )
     actions.append("Use sync_status to see connection health going forward.")
     return actions
 
 
-@mcp_tool()
 def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     """Connected institutions, last-sync times, and error-state guidance."""
     with _build_sync_service() as service:
@@ -207,7 +226,6 @@ def sync_status() -> ResponseEnvelope[SyncStatusPayload]:
     return build_envelope(data=SyncStatusPayload(connections=rows), actions=[])
 
 
-@mcp_tool(read_only=False, idempotent=False, open_world=True)
 def sync_link(
     institution: str | None = None,
 ) -> ResponseEnvelope[SyncLinkPayload]:
@@ -255,14 +273,13 @@ def sync_link(
         ),
         actions=[
             "Present link_url to the user and ask them to complete the connection in their browser.",
-            "After they confirm completion, call sync_link_status with session_id to verify.",
+            "After confirmation, call sync_status with session_id to verify.",
             "Once verified, call sync_pull to fetch transactions.",
             "Session expires at the expiration timestamp — beyond that, start a new link flow.",
         ],
     )
 
 
-@mcp_tool()
 def sync_link_status(
     session_id: str,
 ) -> ResponseEnvelope[SyncLinkStatusPayload]:
@@ -298,51 +315,178 @@ def sync_link_status(
     )
 
 
-# Deprecated aliases — will be removed in the next minor release. The decorator
-# does not accept a `deprecated=` flag; the description string + warning log
-# carry the deprecation signal. Call sync_link.__wrapped__ (the raw undecorated
-# function) so the alias's own @mcp_tool wrapper handles audit/timeout once —
-# otherwise the canonical tool's decorator fires a second time per call.
+@mcp_tool(
+    read_only=False,
+    idempotent=True,
+    open_world=True,
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.MEDIUM,
+)
+def sync_status_coarse(
+    session_id: str | None = None,
+    auth_session_id: str | None = None,
+) -> ResponseEnvelope[SyncStatusCoarsePayload]:
+    """Read connection health, a link session, or advance one auth session."""
+    if session_id is not None and auth_session_id is not None:
+        raise UserError(
+            "session_id and auth_session_id select different status modes.",
+            code="SYNC_STATUS_MODE_CONFLICT",
+        )
+    if auth_session_id is not None:
+        result = _build_sync_auth_service().status(auth_session_id)
+        data: SyncStatusCoarsePayload = SyncAuthView(
+            auth_session_id=result.auth_session_id,
+            status=result.status,
+            user_code=result.user_code,
+            verification_url=result.verification_url,
+            expiration=result.expiration,
+            replayed=result.replayed,
+            error_code=result.error_code,
+        )
+        if result.status == "pending":
+            actions = [
+                "Ask the user to complete the verification URL, then call "
+                f"sync_status(auth_session_id='{result.auth_session_id}') again."
+            ]
+        elif result.status == "authenticated":
+            actions = ["Use sync_link to connect an institution."]
+        elif result.status in {"denied", "expired"}:
+            actions = ["Use sync_link(mode='login') to start a new auth session."]
+        else:
+            actions = [
+                "The sync provider could not be reached. Retry this exact "
+                "auth_session_id; terminal states are idempotent."
+            ]
+    elif session_id is None:
+        response = sync_status()
+        data = SyncGlobalStatusView(connections=response.data.connections)
+        actions = list(response.actions)
+    else:
+        response = sync_link_status(session_id=session_id)
+        data = SyncSessionStatusView(
+            session_id=response.data.session_id,
+            status=response.data.status,
+            provider_item_id=response.data.provider_item_id,
+            institution_name=response.data.institution_name,
+            error=response.data.error,
+            expiration=response.data.expiration,
+        )
+        actions = list(response.actions)
+    classes = extract_data_classes(type(data))
+    tier = max(data_class.tier for data_class in classes)
+    return cast(
+        ResponseEnvelope[SyncStatusCoarsePayload],
+        build_envelope(
+            data=redact_typed(data, None),
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+
+
 @mcp_tool(read_only=False, idempotent=False, open_world=True)
-def sync_connect(
+def sync_link_coarse(
     institution: str | None = None,
-) -> ResponseEnvelope[SyncLinkPayload]:
-    """Deprecated alias for `sync_link`. Will be removed in the next minor release."""
-    logger.warning(
-        "MCP tool `sync_connect` is deprecated; use `sync_link`. "
-        "The alias will be removed in the next minor release."
-    )
-    result = sync_link.__wrapped__(institution=institution)  # type: ignore[attr-defined]
-    # Surface the deprecation in the response too (logger.warning never reaches
-    # the agent; envelope is frozen → dataclasses.replace).
-    return replace(
-        result,
+    mode: Literal["institution", "login"] = "institution",
+) -> ResponseEnvelope[SyncLinkCoarsePayload]:
+    """Start an institution-link or nonblocking device-login session."""
+    if mode == "login":
+        if institution is not None:
+            raise UserError(
+                "institution is valid only when mode='institution'.",
+                code="SYNC_LINK_MODE_CONFLICT",
+            )
+        result = _build_sync_auth_service().begin()
+        data: SyncLinkCoarsePayload = SyncAuthView(
+            auth_session_id=result.auth_session_id,
+            status=result.status,
+            user_code=result.user_code,
+            verification_url=result.verification_url,
+            expiration=result.expiration,
+            replayed=result.replayed,
+            error_code=result.error_code,
+        )
+        return build_envelope(
+            data=data,
+            actions=[
+                "Present verification_url and user_code to the user.",
+                f"Then call sync_status(auth_session_id='{result.auth_session_id}') "
+                "after the user completes authorization.",
+            ],
+        )
+    response = sync_link(institution=institution)
+    if response.error is not None:
+        return cast(ResponseEnvelope[SyncLinkCoarsePayload], response)
+    return build_envelope(
+        data=SyncInstitutionLinkView(
+            session_id=response.data.session_id,
+            link_url=response.data.link_url,
+            expiration=response.data.expiration,
+        ),
         actions=[
-            "DEPRECATED: `sync_connect` is an alias for `sync_link`, removed "
-            "next minor release — switch to `sync_link`.",
-            *result.actions,
+            "Present link_url to the user and ask them to complete the browser flow.",
+            f"Then call sync_status(session_id='{response.data.session_id}') to "
+            "check completion.",
         ],
     )
 
 
-@mcp_tool()
-def sync_connect_status(
-    session_id: str,
-) -> ResponseEnvelope[SyncLinkStatusPayload]:
-    """Deprecated alias for `sync_link_status`. Will be removed in the next minor release."""
-    logger.warning(
-        "MCP tool `sync_connect_status` is deprecated; use `sync_link_status`. "
-        "The alias will be removed in the next minor release."
+@mcp_tool(read_only=False, idempotent=False, open_world=True)
+def sync_pull_coarse(
+    institution: str | None = None,
+) -> ResponseEnvelope[SyncPullPayload]:
+    """Pull while keeping recovery actions inside the isolated cohort."""
+    return sync_pull(institution=institution)
+
+
+def _sync_disconnect_binding(
+    institution: str,
+    connection: ConnectedInstitution,
+) -> ConfirmationBinding:
+    """Bind confirmation to one exact live remote institution connection."""
+    return ConfirmationBinding(
+        arguments={
+            "institution": institution.casefold(),
+            "mode": "institution",
+            "institution_name": connection.institution_name,
+            "provider": connection.provider,
+            "status": connection.status,
+        },
+        resolved_ids=(connection.id, connection.provider_item_id),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="sync_disconnect_institution",
+        blast_radius={"institutions": 1},
     )
-    result = sync_link_status.__wrapped__(session_id=session_id)  # type: ignore[attr-defined]
-    return replace(
-        result,
-        actions=[
-            "DEPRECATED: `sync_connect_status` is an alias for "
-            "`sync_link_status`, removed next minor release — switch to it.",
-            *result.actions,
-        ],
-    )
+
+
+def _sync_logout() -> Any:
+    """Run blocking credential cleanup outside the MCP event loop."""
+    return _build_sync_auth_service().logout()
+
+
+def _plan_sync_disconnect(institution: str) -> ConnectedInstitution:
+    """Resolve one live disconnect target outside the MCP event loop."""
+    with _build_sync_service() as service:
+        return service.plan_disconnect(institution=institution)
+
+
+def _disconnect_sync_confirmed(
+    institution: str,
+    grant: ConfirmationGrant,
+) -> ConnectedInstitution:
+    """Re-resolve, verify, and delete one connection outside the event loop."""
+
+    def verify(live: ConnectedInstitution) -> None:
+        grant.verify(_sync_disconnect_binding(institution, live))
+
+    with _build_sync_service() as service:
+        return service.disconnect_confirmed(
+            institution=institution,
+            verify=verify,
+        )
 
 
 @mcp_tool(
@@ -350,84 +494,104 @@ def sync_connect_status(
     destructive=True,
     idempotent=False,
     open_world=True,
+    timeout_seconds=180.0,
 )
-def sync_disconnect(institution: str) -> ResponseEnvelope[SyncDisconnectPayload]:
-    """Remove a bank connection on moneybin-sync. Permanent — no revert path.
+async def sync_disconnect(
+    institution: str | None = None,
+    mode: Literal["institution", "logout"] = "institution",
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
+    """Disconnect an institution or clear scoped sync credentials.
 
-    Local pulled transactions are preserved in raw.plaid_* and core.fct_transactions;
-    the institution simply stops appearing in sync_status and can no longer be
-    sync_pull'd. No local app.* state is mutated — connection state lives on the
-    server per design Section 4.
+    Institution disconnect is permanent on moneybin-sync; local pulled rows
+    remain. Logout clears profile-scoped credentials and pending auth sessions
+    but is recoverable through ``sync_link(mode="login")``.
     """
-    with _build_sync_service() as service:
-        service.disconnect(institution=institution)
+    if mode == "logout":
+        if institution is not None:
+            raise UserError(
+                "institution is valid only when mode='institution'.",
+                code="SYNC_DISCONNECT_MODE_CONFLICT",
+            )
+        if confirmation_token is not None:
+            raise UserError(
+                "confirmation_token is valid only when mode='institution'.",
+                code="SYNC_CONFIRMATION_NOT_ALLOWED",
+            )
+        result = await asyncio.to_thread(_sync_logout)
+        return build_envelope(
+            data=SyncLogoutView(
+                status=result.status,
+                cleared_auth_sessions=result.cleared_auth_sessions,
+            ),
+            actions=[
+                "Use sync_link(mode='login') to authenticate this profile again.",
+            ],
+        )
+    if institution is None:
+        raise UserError(
+            "institution is required when mode='institution'.",
+            code="SYNC_INSTITUTION_REQUIRED",
+        )
+    binding: ConfirmationBinding | None = None
+    if confirmation_token is None:
+        plan = await asyncio.to_thread(_plan_sync_disconnect, institution)
+        binding = _sync_disconnect_binding(institution, plan)
+    grant: ConfirmationGrant = await grant_confirmation_or_raise(
+        binding=binding,
+        message=(
+            "Permanently disconnect this exact institution from future syncs? "
+            "Previously pulled local rows remain."
+        ),
+        confirmation_token=confirmation_token,
+    )
+
+    disconnected = await asyncio.to_thread(
+        _disconnect_sync_confirmed,
+        institution,
+        grant,
+    )
     return build_envelope(
-        data=SyncDisconnectPayload(status="disconnected", institution=institution),
-        actions=[],
+        data=SyncInstitutionDisconnectView(
+            status="disconnected",
+            institution=disconnected.institution_name or institution,
+        ),
+        actions=["Use sync_status to inspect remaining institution connections."],
     )
 
 
-SYNC_REVIEW_PROMPT = """\
-Review my MoneyBin sync state and flag anything that needs attention.
-
-Use these tools (in order):
-1. sync_status — list connected institutions with last sync time, status, and any error guidance.
-2. spending_summary detail=summary — optional, for context on recent transaction volume per institution.
-
-Report concisely (bulleted, single paragraph if everything is healthy):
-
-- **Errors:** any institutions with status='error' and the specific re-auth or reconnect action — quote the exact command from the actions hint.
-- **Stale data:** any institution whose last_sync is more than 7 days ago, even if status='active'. Suggest running `moneybin sync pull`.
-- **Anomalies:** institutions whose recent sync transaction counts are dramatically lower than typical volume (use spending_summary as a rough yardstick — a checking account that's been returning ~30/week suddenly returning 0 is worth flagging).
-- **Recommended next action:** one specific command, or "no action needed."
-
-Do not include account numbers, balances, individual transaction descriptions, or merchant names. Stick to counts, dates, status codes, and institution names.
-"""
-
-
-def register_sync_prompts(mcp: FastMCP) -> None:
-    """Register sync-related FastMCP prompts."""
-
-    @mcp.prompt(
-        name="sync_review", description="Review sync health and suggest next steps."
-    )
-    def _sync_review() -> str:  # type: ignore[reportUnusedFunction]
-        return SYNC_REVIEW_PROMPT
+def register_sync_workflow_tools(mcp: FastMCP) -> None:
+    """Register the standard four-boundary sync workflow."""
+    for callback, name, description in (
+        (
+            sync_link_coarse,
+            "sync_link",
+            "Start a hosted institution-link or nonblocking device-login session. "
+            "Returned link_url and user_code values are sensitive one-time "
+            "credentials; present them to the user, but never include them in "
+            "logs or summaries.",
+        ),
+        (
+            sync_status_coarse,
+            "sync_status",
+            "Read global health, one link session, or advance one device-login session.",
+        ),
+        (sync_pull_coarse, "sync_pull", "Pull connected financial data."),
+        (
+            sync_disconnect,
+            "sync_disconnect",
+            "Disconnect one institution or clear profile-scoped sync credentials.",
+        ),
+    ):
+        register(
+            mcp,
+            callback,
+            name,
+            description,
+            privacy_actor=name,
+        )
 
 
 def register_sync_tools(mcp: FastMCP) -> None:
-    """Register all sync namespace tools with the FastMCP server."""
-    for fn, desc in [
-        (
-            sync_link,
-            "Link a bank account via Plaid — returns a URL the user opens in their browser. link_url is a sensitive one-time credential.",
-        ),
-        (sync_link_status, "Poll a sync_link session for completion."),
-        (sync_disconnect, "Remove a bank connection."),
-        (
-            sync_pull,
-            "Pull transactions, accounts, balances, and investment data. Amounts "
-            "use MoneyBin convention (negative = expense). A pull can partially "
-            "fail while still returning: security_resolution_error means this "
-            "pull's investment transactions were not attributed to securities "
-            "(cost basis incomplete until retried) and transforms_error means "
-            "core.* is stale — surface both to the user rather than reporting a "
-            "clean sync. Mutation surface: writes raw.plaid_*, and resolves "
-            "security identity on every pull — binding a security to the catalog "
-            "(app.security_links), minting a provisional one it has never seen "
-            "(app.securities), or filing an ambiguous match for human review "
-            "(app.security_link_decisions). Review what it filed with "
-            "investments_securities_links_pending; reverse a binding with "
-            "system_audit_undo(operation_id).",
-        ),
-        (sync_status, "Connected institutions, last-sync times, and errors."),
-        (
-            sync_connect,
-            "Deprecated alias for sync_link. Will be removed in the next minor release.",
-        ),
-        (
-            sync_connect_status,
-            "Deprecated alias for sync_link_status. Will be removed in the next minor release.",
-        ),
-    ]:
-        register(mcp, fn, fn.__name__, desc)
+    """Register the standard mediated-sync workflow."""
+    register_sync_workflow_tools(mcp)

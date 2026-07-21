@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    report,
+)
 from moneybin.reports.definitions._shared import SPENDING_COMPARES, resolve_window
 from moneybin.tables import REPORTS_SPENDING_TREND
 
 
 @report(
+    report_id="core:spending",
     name="spending",
     view=REPORTS_SPENDING_TREND,
     classes={
@@ -25,6 +31,80 @@ from moneybin.tables import REPORTS_SPENDING_TREND
         "yoy_pct": DataClass.AGGREGATE,
         "trailing_3mo_avg": DataClass.TXN_AMOUNT,
     },
+    parameter_classes={
+        "from_month": DataClass.TXN_DATE,
+        "to_month": DataClass.TXN_DATE,
+        "category": DataClass.CATEGORY,
+        "compare": DataClass.TXN_TYPE,
+    },
+    columns=(
+        OutputColumn("year_month", "Calendar month as YYYY-MM.", DataClass.TXN_DATE),
+        OutputColumn("category", "Spending category.", DataClass.CATEGORY),
+        OutputColumn(
+            "total_spend",
+            "Absolute outflow in the month and category.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn("txn_count", "Outflow transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "prev_month_spend",
+            "Spend in the previous calendar month.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "mom_delta",
+            "Current spend minus previous-month spend.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "mom_pct",
+            "Month-over-month delta divided by previous-month spend.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "prev_year_spend",
+            "Spend in the same calendar month one year earlier.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "yoy_delta",
+            "Current spend minus same-month prior-year spend.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn(
+            "yoy_pct",
+            "Year-over-year delta divided by prior-year spend.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "trailing_3mo_avg",
+            "Rolling three-month average ending in the current month.",
+            DataClass.TXN_AMOUNT,
+        ),
+    ),
+    semantics=ReportSemantics(
+        unit="currency",
+        currency="summary.display_currency",
+        sign="spend is positive absolute outflow; deltas are current minus comparison",
+        kind="flow",
+        valuation_basis="transaction amount",
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        time_basis=(
+            "inclusive eligible-data calendar-month period with zero-filled missing "
+            "category-months"
+        ),
+        denominator=(
+            "previous-month spend for mom_pct; prior-year spend for yoy_pct; "
+            "available calendar months up to three for trailing_3mo_avg, including "
+            "zero-spend months"
+        ),
+        comparison_window=(
+            "previous calendar month, same calendar month one year earlier, and "
+            "trailing three calendar months including current month"
+        ),
+        exclusions=("transfers", "archived accounts", "non-outflows"),
+        provenance=("reports.spending_trend",),
+    ),
     class_downgrades={
         "mom_pct": "ratio of two already-declared TXN_AMOUNT columns "
         "(total_spend / prev_month_spend); a percentage change reveals no "
@@ -46,8 +126,9 @@ def spending_trend(
 
     Defaults to the last 12 calendar months when both bounds are omitted. YoY
     columns come from the underlying view (all history), so narrowing the window
-    does not null out yoy_pct. Amounts use the accounting convention (negative =
-    expense, positive = income) in the currency named by summary.display_currency.
+    does not null out yoy_pct. Spending amounts are positive absolute outflows;
+    comparison deltas are current spend minus comparison-period spend. Monetary
+    values use the currency named by summary.display_currency.
 
     Args:
         db: Open read-only database connection.
@@ -58,15 +139,19 @@ def spending_trend(
             returns all three comparison columns regardless.
 
     Examples:
-        reports_spending(category="Groceries")
-        reports_spending(from_month="2023-01", to_month="2023-12")
+        reports(report_id="core:spending", parameters={"category": "Groceries"})
+        reports(report_id="core:spending", parameters={"from_month": "2023-01", "to_month": "2023-12"})
     """
     # Validate so agents see the allowed values and can't pass arbitrary strings;
     # the view returns all three comparison columns regardless, so `compare` has
     # no effect on the SQL below (caller-side intent only — the raise is reachable).
     if compare not in SPENDING_COMPARES:
         raise ValueError(f"Unknown compare: {compare}")
-    from_month, to_month, period, hint = resolve_window(from_month, to_month)
+    from_month, to_month, period, hint = resolve_window(
+        from_month,
+        to_month,
+        report_id="core:spending",
+    )
 
     sql = f"""
         SELECT year_month, category, total_spend, txn_count,
@@ -89,9 +174,10 @@ def spending_trend(
     sql += " ORDER BY year_month, total_spend DESC"
 
     actions = [
-        "Filter to one category with category='<name>' (see categories)",
-        "Use reports_cashflow for inflow/outflow/net (includes income)",
-        "Use reports_recurring to find subscription-like patterns",
+        "Run reports(report_id='core:spending', "
+        "parameters={'category': '<name>'}) to filter to one category",
+        "Run reports(report_id='core:cashflow') for inflow, outflow, and net",
+        "Run reports(report_id='core:recurring') for recurring charge patterns",
     ]
     if hint:
         actions.insert(0, hint)

@@ -8,6 +8,17 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
+from moneybin.mcp.write_contracts import (
+    AnnotationRequest,
+    NoteAdd,
+    NoteDelete,
+    NoteEdit,
+    SplitsSet,
+    SplitTarget,
+    TagRename,
+    TagsSet,
+)
 from moneybin.services._validators import InvalidSlugError
 from moneybin.services.audit_service import AuditService
 from moneybin.services.transaction_service import (
@@ -85,6 +96,451 @@ class TestEmptyResults:
         assert isinstance(result, TransactionGetResult)
         assert result.transactions == []
         assert result.next_cursor is None
+
+
+class TestAnnotationBatches:
+    """Tests for atomic declarative transaction annotation batches."""
+
+    @pytest.mark.unit
+    def test_apply_annotations_preflights_before_mutating_any_target(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        with pytest.raises(UserError, match="transaction reference"):
+            service.apply_annotations(
+                [
+                    NoteAdd(kind="note_add", transaction_id="T1", text="trip"),
+                    TagsSet(kind="tags_set", transaction_id="UNKNOWN", tags=["x"]),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_batch",
+            )
+
+        assert service.list_notes("T1") == []
+        assert service.list_tags("T1") == []
+        audit_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE operation_id = ?",
+            ["op_annotation_batch"],
+        ).fetchone()
+        assert audit_count == (0,)
+
+    @pytest.mark.unit
+    def test_apply_annotations_allows_empty_splits_to_clear_target_state(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_split("T1", Decimal("-50"), actor="mcp")
+
+        result = service.apply_annotations(
+            [SplitsSet(kind="splits_set", transaction_id="T1", splits=[])],
+            actor="mcp",
+            operation_id="op_annotation_clear_splits",
+        )
+
+        assert result.outcomes[0].changed is True
+        assert service.list_splits("T1") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_clears_existing_orphan_note_and_tags(
+        self, transaction_db: Database
+    ) -> None:
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_notes
+                (note_id, transaction_id, text, author)
+            VALUES ('orphan_note', 'MISSING', 'old', 'test')
+            """
+        )
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_tags
+                (transaction_id, tag, applied_by)
+            VALUES ('MISSING', 'old', 'test')
+            """
+        )
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                NoteDelete(kind="note_delete", note_id="orphan_note"),
+                TagsSet(kind="tags_set", transaction_id="MISSING", tags=[]),
+            ],
+            actor="mcp",
+            operation_id="op_orphan_cleanup",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [True, True]
+        assert service.list_notes("MISSING") == []
+        assert service.list_tags("MISSING") == []
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "annotation_request",
+        [
+            NoteAdd(kind="note_add", transaction_id="MISSING", text="new"),
+            TagsSet(kind="tags_set", transaction_id="MISSING", tags=["new"]),
+        ],
+    )
+    def test_apply_annotations_rejects_creating_orphan_state(
+        self,
+        transaction_db: Database,
+        annotation_request: AnnotationRequest,
+    ) -> None:
+        with pytest.raises(UserError) as exc:
+            TransactionService(transaction_db).apply_annotations(
+                [annotation_request],
+                actor="mcp",
+                operation_id="op_orphan_create",
+            )
+
+        assert exc.value.code == "TRANSACTION_REFERENCE_NOT_FOUND"
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_unknown_note_delete(
+        self, transaction_db: Database
+    ) -> None:
+        with pytest.raises(UserError) as exc:
+            TransactionService(transaction_db).apply_annotations(
+                [NoteDelete(kind="note_delete", note_id="MISSING")],
+                actor="mcp",
+                operation_id="op_orphan_missing",
+            )
+
+        assert exc.value.code == "NOTE_REFERENCE_NOT_FOUND"
+
+    @pytest.mark.unit
+    def test_note_add_preserves_thread_and_returns_created_note_id(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        first = service.add_note("T1", "first", actor="test")
+        second = service.add_note("T1", "second", actor="test")
+
+        result = service.apply_annotations(
+            [NoteAdd(kind="note_add", transaction_id="T1", text="third")],
+            actor="mcp",
+            operation_id="op_note_add",
+        )
+
+        notes = service.list_notes("T1")
+        assert [note.text for note in notes] == ["first", "second", "third"]
+        assert [note.note_id for note in notes[:2]] == [first.note_id, second.note_id]
+        assert result.outcomes[0].target_ids == (notes[2].note_id,)
+
+    @pytest.mark.unit
+    def test_note_edit_preserves_sibling_and_note_identity(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        first = service.add_note("T1", "first", actor="test")
+        sibling = service.add_note("T1", "sibling", actor="test")
+
+        result = service.apply_annotations(
+            [NoteEdit(kind="note_edit", note_id=first.note_id, text="edited")],
+            actor="mcp",
+            operation_id="op_note_edit",
+        )
+
+        notes = service.list_notes("T1")
+        assert [(note.note_id, note.text) for note in notes] == [
+            (first.note_id, "edited"),
+            (sibling.note_id, "sibling"),
+        ]
+        assert result.outcomes[0].target_ids == (first.note_id,)
+
+    @pytest.mark.unit
+    def test_note_delete_removes_only_addressed_note(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        deleted = service.add_note("T1", "delete me", actor="test")
+        sibling = service.add_note("T1", "keep me", actor="test")
+
+        service.apply_annotations(
+            [NoteDelete(kind="note_delete", note_id=deleted.note_id)],
+            actor="mcp",
+            operation_id="op_note_delete",
+        )
+
+        assert [(note.note_id, note.text) for note in service.list_notes("T1")] == [
+            (sibling.note_id, "keep me")
+        ]
+
+    @pytest.mark.unit
+    def test_multiple_note_adds_to_one_transaction_are_composable(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                NoteAdd(kind="note_add", transaction_id="T1", text="first"),
+                NoteAdd(kind="note_add", transaction_id="T1", text="second"),
+            ],
+            actor="mcp",
+            operation_id="op_note_adds",
+        )
+
+        notes_by_id = {note.note_id: note.text for note in service.list_notes("T1")}
+        outcome_ids = [outcome.target_ids[0] for outcome in result.outcomes]
+        assert [notes_by_id[note_id] for note_id in outcome_ids] == [
+            "first",
+            "second",
+        ]
+        assert len(set(outcome_ids)) == 2
+
+    @pytest.mark.unit
+    def test_overlapping_note_mutations_are_rejected_before_write(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        note = service.add_note("T1", "original", actor="test")
+
+        with pytest.raises(UserError) as exc:
+            service.apply_annotations(
+                [
+                    NoteEdit(kind="note_edit", note_id=note.note_id, text="edited"),
+                    NoteDelete(kind="note_delete", note_id=note.note_id),
+                ],
+                actor="mcp",
+                operation_id="op_note_overlap",
+            )
+
+        assert exc.value.code == "mutation_invalid_input"
+        assert service.list_notes("T1")[0].text == "original"
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_empty_and_all_noop_batches(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        with pytest.raises(UserError) as empty:
+            service.apply_annotations(
+                [], actor="mcp", operation_id="op_annotation_empty"
+            )
+        assert empty.value.code == "mutation_nothing_to_do"
+
+        with pytest.raises(UserError) as noop:
+            service.apply_annotations(
+                [TagsSet(kind="tags_set", transaction_id="T1", tags=[])],
+                actor="mcp",
+                operation_id="op_annotation_noop",
+            )
+        assert noop.value.code == "mutation_nothing_to_do"
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_composed_tag_targets(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagsSet(kind="tags_set", transaction_id="T1", tags=["travel"]),
+                    TagRename(kind="tag_rename", old_name="food", new_name="dining"),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_overlap",
+            )
+        assert service.list_tags("T1") == ["food"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_allows_noop_rename_before_independent_tag_set(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                TagRename(kind="tag_rename", old_name="food", new_name="dining"),
+                TagsSet(kind="tags_set", transaction_id="T1", tags=["dining"]),
+            ],
+            actor="mcp",
+            operation_id="op_annotation_noop_rename",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [False, True]
+        assert service.list_tags("T1") == ["dining"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_tag_set_that_creates_later_rename_source(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagsSet(kind="tags_set", transaction_id="T1", tags=["food"]),
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="food",
+                        new_name="dining",
+                    ),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_created_rename_source",
+            )
+
+        assert service.list_tags("T1") == []
+        assert (
+            AuditService(transaction_db).events_for_operation(
+                "op_annotation_created_rename_source"
+            )
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_rename_chain_resolved_from_initial_state(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="food",
+                        new_name="dining",
+                    ),
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="dining",
+                        new_name="travel",
+                    ),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_rename_chain",
+            )
+
+        assert service.list_tags("T1") == ["food"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_rename_before_dependent_tag_set(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        with pytest.raises(UserError, match="overlap"):
+            service.apply_annotations(
+                [
+                    TagRename(
+                        kind="tag_rename",
+                        old_name="food",
+                        new_name="dining",
+                    ),
+                    TagsSet(
+                        kind="tags_set",
+                        transaction_id="T1",
+                        tags=["dining", "travel"],
+                    ),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_rename_then_tags",
+            )
+
+        assert service.list_tags("T1") == ["food"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_allows_tag_set_unrelated_to_later_rename_effect(
+        self, transaction_db: Database
+    ) -> None:
+        service = TransactionService(transaction_db)
+        service.add_tags("T1", ["food"], actor="mcp")
+
+        result = service.apply_annotations(
+            [
+                TagsSet(
+                    kind="tags_set",
+                    transaction_id="T1",
+                    tags=["food", "travel"],
+                ),
+                TagRename(
+                    kind="tag_rename",
+                    old_name="food",
+                    new_name="dining",
+                ),
+            ],
+            actor="mcp",
+            operation_id="op_annotation_unrelated_tag_effect",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [True, True]
+        assert service.list_tags("T1") == ["dining", "travel"]
+
+    @pytest.mark.unit
+    def test_apply_annotations_rolls_back_base_exception(
+        self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        service = TransactionService(transaction_db)
+
+        def interrupt(**_kwargs: object) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            service._tags_repo,  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            "add",
+            interrupt,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            service.apply_annotations(
+                [
+                    NoteAdd(kind="note_add", transaction_id="T1", text="trip"),
+                    TagsSet(kind="tags_set", transaction_id="T2", tags=["travel"]),
+                ],
+                actor="mcp",
+                operation_id="op_annotation_interrupt",
+            )
+        assert service.list_notes("T1") == []
+        assert (
+            AuditService(transaction_db).events_for_operation("op_annotation_interrupt")
+            == []
+        )
+
+    @pytest.mark.unit
+    def test_apply_annotations_repairs_canonical_split_category_id(
+        self, transaction_db: Database
+    ) -> None:
+        from tests.moneybin.db_helpers import seed_categories_view
+
+        seed_categories_view(transaction_db)
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_splits (
+                split_id, transaction_id, amount, category, subcategory,
+                category_id, note, ord, created_by
+            ) VALUES ('split_old', 'T1', -50, 'Food & Drink', NULL,
+                      NULL, NULL, 0, 'test')
+            """
+        )
+
+        result = TransactionService(transaction_db).apply_annotations(
+            [
+                SplitsSet(
+                    kind="splits_set",
+                    transaction_id="T1",
+                    splits=[
+                        SplitTarget(amount=Decimal("-50"), category="Food & Drink")
+                    ],
+                )
+            ],
+            actor="mcp",
+            operation_id="op_annotation_category_repair",
+        )
+
+        assert result.outcomes[0].changed is True
+        row = transaction_db.conn.execute(
+            "SELECT category_id FROM app.transaction_splits WHERE transaction_id = ?",
+            ["T1"],
+        ).fetchone()
+        assert row == ("FND",)
 
 
 class TestNotes:
@@ -406,6 +862,21 @@ class TestTags:
             assert "foo" not in txn_service.list_tags(txn_id)
 
     @pytest.mark.unit
+    def test_granular_rename_preserves_no_row_parent_marker(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+    ) -> None:
+        result = txn_service.rename_tag("missing", "new", actor="cli")
+
+        assert result.row_count == 0
+        assert result.parent_audit_id
+        chain = audit_service.chain_for(result.parent_audit_id)
+        assert len(chain) == 1
+        assert chain[0].action == "tag.rename"
+        assert chain[0].after_value == {"new_tag": "new", "row_count": 0}
+
+    @pytest.mark.unit
     def test_list_distinct_tags_counts_applications(
         self, txn_service: TransactionService
     ) -> None:
@@ -637,6 +1108,52 @@ class TestSplits:
             )
         listed = txn_service.list_splits(sample_transaction_id)
         assert [(s.amount, s.category) for s in listed] == [(Decimal("-10.00"), "Keep")]
+
+    @pytest.mark.unit
+    def test_set_splits_preserves_legacy_adapter_inputs(
+        self,
+        txn_service: TransactionService,
+        sample_transaction_id: str,
+    ) -> None:
+        result = txn_service.set_splits(
+            sample_transaction_id,
+            [
+                {
+                    "amount": Decimal("0.001"),
+                    "subcategory": "orphan-child",
+                    "legacy_extra": "ignored",
+                }
+            ],
+            actor="mcp",
+        )
+
+        assert len(result) == 1
+        assert result[0].amount == Decimal("0.00")
+        assert result[0].category is None
+        assert result[0].subcategory == "orphan-child"
+
+    @pytest.mark.unit
+    def test_set_splits_reinserts_identical_state_with_new_ids_and_audits(
+        self,
+        txn_service: TransactionService,
+        audit_service: AuditService,
+        sample_transaction_id: str,
+    ) -> None:
+        target = [{"amount": Decimal("-50.00"), "category": "Legacy"}]
+        first = txn_service.set_splits(sample_transaction_id, target, actor="mcp")
+        add_count = len(audit_service.list_events(action_pattern="split.add"))
+        remove_count = len(audit_service.list_events(action_pattern="split.remove"))
+
+        second = txn_service.set_splits(sample_transaction_id, target, actor="mcp")
+
+        assert second[0].split_id != first[0].split_id
+        assert (
+            len(audit_service.list_events(action_pattern="split.add")) == add_count + 1
+        )
+        assert (
+            len(audit_service.list_events(action_pattern="split.remove"))
+            == remove_count + 1
+        )
 
     @pytest.mark.unit
     def test_splits_balance_returns_signed_residual(

@@ -29,6 +29,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
+    IMPORT_PREVIEWS,
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
@@ -318,6 +319,11 @@ class DoctorService:
                 full=full,
             ),
             self._run_app_audit_coverage(IMPORTS, "import_id", full=full),
+            self._run_app_audit_coverage(
+                IMPORT_PREVIEWS,
+                "preview_id",
+                full=full,
+            ),
             self._run_app_audit_coverage(PDF_FORMATS, "name", full=full),
             self._run_app_audit_coverage(
                 ACCOUNT_LINKS,
@@ -611,7 +617,7 @@ class DoctorService:
         ``affected_ids`` are emitted with prefixes so the doctor recipe can
         dispatch to the right MCP tool without re-querying:
 
-        - ``note:<note_id>`` → one note per row (each note has its own PK)
+        - ``note:<note_id>`` → one row per orphan note, deleted by stable id
         - ``tag:<transaction_id>`` → one row per orphan transaction (tags are
           cleared wholesale per transaction; multiple tag rows on the same
           orphan transaction collapse to one affected_id)

@@ -18,24 +18,37 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
+from unittest.mock import patch
 
 import pytest
 from fastmcp import FastMCP
 
 from moneybin.database import get_database
+from moneybin.mcp.pagination import encode_keyset_cursor
 from moneybin.mcp.tools.investments import (
-    investments,
-    investments_gains,
-    investments_holdings,
-    investments_lots,
+    investments_coarse,
     investments_lots_select,
     investments_record,
     investments_securities,
     investments_securities_set,
+    register_investment_coarse_reads,
     register_investments_tools,
 )
 from moneybin.repositories.securities_repo import SecuritiesRepo
+from moneybin.services.investment_service import (
+    EventRow,
+    EventsResult,
+    GainsResult,
+    HoldingRow,
+    HoldingsResult,
+    InvestmentService,
+    LotRow,
+    LotsResult,
+    RealizedGainRow,
+    SecuritiesResult,
+    SecurityRow,
+)
 from tests.moneybin.db_helpers import create_core_dim_stub_views
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
@@ -95,151 +108,6 @@ def _insert_event(
         )
 
 
-def _insert_lot(
-    *,
-    lot_id: str,
-    account_id: str = _ACCOUNT,
-    security_id: str,
-    acquisition_date: date = date(2024, 1, 15),
-    remaining_quantity: Decimal = Decimal("10"),
-    cost_basis_remaining: Decimal = Decimal("1500.00"),
-    is_open: bool = True,
-    basis_incomplete: bool = False,
-) -> None:
-    with get_database(read_only=False) as db:
-        db.execute(
-            """
-            INSERT INTO core.fct_investment_lots
-                (lot_id, account_id, security_id, acquisition_date, acquisition_type,
-                 original_quantity, remaining_quantity, cost_basis_total,
-                 cost_basis_remaining, cost_basis_method, currency_code, is_open,
-                 basis_incomplete)
-            VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', 'USD', ?, ?)
-            """,  # noqa: S608  # test fixture insert, static SQL
-            [
-                lot_id,
-                account_id,
-                security_id,
-                acquisition_date,
-                remaining_quantity,
-                remaining_quantity,
-                cost_basis_remaining,
-                cost_basis_remaining,
-                is_open,
-                basis_incomplete,
-            ],
-        )
-
-
-def _insert_gain(
-    *,
-    realized_gain_id: str,
-    account_id: str = _ACCOUNT,
-    security_id: str,
-    disposal_txn_id: str = "sell_1",
-    lot_id: str = "lot_a",
-    disposal_date: date = date(2024, 6, 12),
-    proceeds: Decimal = Decimal("950.00"),
-    cost_basis: Decimal = Decimal("750.00"),
-    gain_loss: Decimal = Decimal("200.00"),
-    term: str = "long",
-    basis_incomplete: bool = False,
-) -> None:
-    with get_database(read_only=False) as db:
-        db.execute(
-            """
-            INSERT INTO core.fct_realized_gains
-                (realized_gain_id, account_id, security_id, disposal_txn_id, lot_id,
-                 quantity, acquisition_date, disposal_date, proceeds, cost_basis,
-                 gain_loss, term, cost_basis_method, basis_incomplete, currency_code)
-            VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, 'USD')
-            """,  # noqa: S608  # test fixture insert, static SQL
-            [
-                realized_gain_id,
-                account_id,
-                security_id,
-                disposal_txn_id,
-                lot_id,
-                disposal_date,
-                proceeds,
-                cost_basis,
-                gain_loss,
-                term,
-                basis_incomplete,
-            ],
-        )
-
-
-class _Holding(NamedTuple):
-    """One ``core.dim_holdings`` fixture row (valuation defaults to unpriced)."""
-
-    account_id: str
-    security_id: str
-    quantity: str = "10"
-    cost_basis: str = "1000.00"
-    average_cost: str | None = "100.00"
-    currency_code: str = "USD"
-    market_value: str | None = None
-    unrealized_gain: str | None = None
-    price_date: str | None = None
-    price_source: str | None = None
-    days_since_observed: str | None = None
-    valuation_status: str = "unpriced"
-
-
-def _replace_holdings_view(rows: list[_Holding]) -> None:
-    """Override the empty core.dim_holdings stub with literal test rows.
-
-    Mirrors ``test_investment_service.py``'s helper of the same name — values
-    are literal test data, not user input (security.md's test-fixture
-    exception).
-    """
-    parts: list[str] = []
-    for h in rows:
-        avg_sql = (
-            "CAST(NULL AS DECIMAL(28,10))"
-            if h.average_cost is None
-            else f"{h.average_cost}::DECIMAL(28,10)"
-        )
-        mv_sql = (
-            "CAST(NULL AS DECIMAL(18,2))"
-            if h.market_value is None
-            else f"{h.market_value}::DECIMAL(18,2)"
-        )
-        ug_sql = (
-            "CAST(NULL AS DECIMAL(18,2))"
-            if h.unrealized_gain is None
-            else f"{h.unrealized_gain}::DECIMAL(18,2)"
-        )
-        pd_sql = (
-            "CAST(NULL AS DATE)" if h.price_date is None else f"DATE '{h.price_date}'"
-        )
-        ps_sql = (
-            "CAST(NULL AS VARCHAR)" if h.price_source is None else f"'{h.price_source}'"
-        )
-        dso_sql = (
-            "CAST(NULL AS INT)"
-            if h.days_since_observed is None
-            else f"{h.days_since_observed}::INT"
-        )
-        parts.append(
-            f"SELECT '{h.account_id}' AS account_id, "
-            f"'{h.security_id}' AS security_id, "
-            f"{h.quantity}::DECIMAL(28,10) AS quantity, "
-            f"{h.cost_basis}::DECIMAL(18,2) AS cost_basis, "
-            f"{avg_sql} AS average_cost, '{h.currency_code}' AS currency_code, "
-            f"{mv_sql} AS market_value, {ug_sql} AS unrealized_gain, "
-            f"{pd_sql} AS price_date, {ps_sql} AS price_source, "
-            f"{dso_sql} AS days_since_observed, "
-            f"'{h.valuation_status}' AS valuation_status"
-        )
-    select_sql = " UNION ALL ".join(parts)
-    with get_database(read_only=False) as db:
-        db.execute(  # noqa: S608  # test fixture view, literal test data only
-            f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
-        )
-
-
 def _count_raw_investment_rows() -> int:
     """Count rows in raw.manual_investment_transactions (the record write target)."""
     with get_database(read_only=True) as db:
@@ -248,6 +116,149 @@ def _count_raw_investment_rows() -> int:
         ).fetchone()
     assert row is not None
     return int(row[0])
+
+
+InvestmentView = Literal["events", "holdings", "lots", "gains", "securities"]
+
+
+def _investment_result(
+    view: InvestmentView,
+    ids: list[str],
+) -> EventsResult | HoldingsResult | LotsResult | GainsResult | SecuritiesResult:
+    """Build minimal service rows whose immutable pagination keys use ``ids``."""
+    if view == "events":
+        return EventsResult(
+            rows=[
+                EventRow(
+                    investment_transaction_id=row_id,
+                    account_id=_ACCOUNT,
+                    security_id=None,
+                    trade_date=date(2024, 1, 15),
+                    settlement_date=None,
+                    original_acquisition_date=None,
+                    type="buy",
+                    subtype=None,
+                    event_group_id=None,
+                    quantity=Decimal("1"),
+                    price=Decimal("1"),
+                    amount=Decimal("-1"),
+                    fees=None,
+                    currency_code="USD",
+                    description=None,
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    if view == "holdings":
+        return HoldingsResult(
+            rows=[
+                HoldingRow(
+                    account_id=row_id,
+                    security_id="security",
+                    quantity=Decimal("1"),
+                    cost_basis=Decimal("1"),
+                    average_cost=Decimal("1"),
+                    currency_code="USD",
+                    market_value=None,
+                    unrealized_gain=None,
+                    price_date=None,
+                    price_source=None,
+                    days_since_observed=None,
+                    valuation_status="unpriced",
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    if view == "lots":
+        return LotsResult(
+            rows=[
+                LotRow(
+                    lot_id=row_id,
+                    account_id=_ACCOUNT,
+                    security_id="security",
+                    acquisition_date=date(2024, 1, 15),
+                    acquisition_type="buy",
+                    original_quantity=Decimal("1"),
+                    remaining_quantity=Decimal("1"),
+                    cost_basis_total=Decimal("1"),
+                    cost_basis_remaining=Decimal("1"),
+                    cost_basis_method="fifo",
+                    currency_code="USD",
+                    is_open=True,
+                    basis_incomplete=False,
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    if view == "gains":
+        return GainsResult(
+            rows=[
+                RealizedGainRow(
+                    realized_gain_id=row_id,
+                    account_id=_ACCOUNT,
+                    security_id="security",
+                    disposal_txn_id=f"disposal-{row_id}",
+                    lot_id=f"lot-{row_id}",
+                    quantity=Decimal("1"),
+                    acquisition_date=date(2024, 1, 1),
+                    disposal_date=date(2024, 1, 15),
+                    proceeds=Decimal("2"),
+                    cost_basis=Decimal("1"),
+                    gain_loss=Decimal("1"),
+                    term="short",
+                    cost_basis_method="fifo",
+                    basis_incomplete=False,
+                    currency_code="USD",
+                )
+                for row_id in ids
+            ],
+            warnings=[],
+        )
+    return SecuritiesResult(
+        rows=[
+            SecurityRow(
+                security_id=row_id,
+                name=row_id,
+                security_type="equity",
+                ticker=None,
+                exchange=None,
+                cusip=None,
+                isin=None,
+                figi=None,
+                coingecko_id=None,
+                is_cash_equivalent=False,
+                currency_code="USD",
+            )
+            for row_id in ids
+        ],
+        warnings=[],
+    )
+
+
+def _investment_method(view: InvestmentView) -> str:
+    """Return the service method backing one coarse investment view."""
+    return {
+        "events": "list_events",
+        "holdings": "holdings",
+        "lots": "lots",
+        "gains": "gains",
+        "securities": "list_securities",
+    }[view]
+
+
+def _investment_row_id(view: InvestmentView, row: object) -> str:
+    """Read the stable pagination id from one surfaced investment row."""
+    attribute = {
+        "events": "investment_transaction_id",
+        "holdings": "account_id",
+        "lots": "lot_id",
+        "gains": "realized_gain_id",
+        "securities": "security_id",
+    }[view]
+    return str(getattr(row, attribute))
 
 
 # ---------------------------------------------------------------------------
@@ -265,49 +276,17 @@ class TestRegistration:
         names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
         assert names == {
             "investments",
-            "investments_holdings",
-            "investments_lots",
-            "investments_gains",
-            "investments_securities",
             "investments_record",
             "investments_securities_set",
             "investments_lots_select",
-            "investments_securities_links_pending",
-            "investments_securities_links_set",
-            "investments_securities_links_history",
         }
 
     @pytest.mark.unit
-    async def test_holdings_description_explains_the_staleness_number(self) -> None:
-        """The description is the agent's only contract for the new field."""
+    async def test_coarse_registrar_registers_only_replacement(self) -> None:
         srv = FastMCP("test")
-        register_investments_tools(srv)
-        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        tool = next(t for t in tools if t.name == "investments_holdings")
-        assert tool.description is not None
-        assert "max_days_since_observed" in tool.description
-
-    @pytest.mark.unit
-    async def test_holdings_description_does_not_claim_display_currency(self) -> None:
-        """market_value is per-row, so the repo-wide currency line must not apply."""
-        srv = FastMCP("test")
-        register_investments_tools(srv)
-        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
-        holdings = next(t for t in tools if t.name == "investments_holdings")
-        assert holdings.description is not None
-        assert (
-            "Amounts are in the currency named by `summary.display_currency`"
-            not in holdings.description
-        )
-        assert "each row's own currency_code" in holdings.description
-        # Paired positive: the sibling tools still carry the repo-wide line, so
-        # this asserts a holdings-specific correction, not a global removal.
-        gains = next(t for t in tools if t.name == "investments_gains")
-        assert gains.description is not None
-        assert (
-            "Amounts are in the currency named by `summary.display_currency`"
-            in gains.description
-        )
+        register_investment_coarse_reads(srv)
+        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        assert names == {"investments"}
 
 
 # ---------------------------------------------------------------------------
@@ -315,319 +294,401 @@ class TestRegistration:
 # ---------------------------------------------------------------------------
 
 
-class TestInvestmentsLedger:
-    """Tests for the investments (ledger) MCP tool."""
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_coarse_views_are_typed(
+    view: str,
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
 
-    @pytest.mark.unit
-    async def test_returns_rows_with_high_sensitivity(self, mcp_db: Path) -> None:
-        """quantity/price/amount are TXN_AMOUNT (Tier.HIGH) -> derived 'high'."""
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_event(investment_transaction_id="evt_1", security_id=sec)
-        result = await investments()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        rows = parsed["data"]["rows"]
-        assert len(rows) == 1
-        assert rows[0]["investment_transaction_id"] == "evt_1"
-        assert rows[0]["account_id"] == _ACCOUNT
-        assert parsed["data"]["warnings"] == []
+    response = await investments_coarse(view=view)  # pyright: ignore[reportArgumentType]
 
-    @pytest.mark.unit
-    async def test_filters_by_type(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_event(investment_transaction_id="evt_buy", security_id=sec, type_="buy")
-        _insert_event(
-            investment_transaction_id="evt_sell",
-            security_id=sec,
-            type_="sell",
-            quantity=Decimal("-5"),
-            amount=Decimal("750.00"),
+    assert response.data.kind == view
+
+
+@pytest.mark.parametrize(
+    ("view", "arguments", "code"),
+    [
+        (
+            "holdings",
+            {"start": date(2024, 1, 1)},
+            "INVESTMENT_DATES_NOT_ALLOWED",
+        ),
+        ("lots", {"end": date(2024, 12, 31)}, "INVESTMENT_DATES_NOT_ALLOWED"),
+        ("events", {"open_only": False}, "INVESTMENT_OPEN_ONLY_NOT_ALLOWED"),
+        ("securities", {"account": _ACCOUNT}, "INVESTMENT_ACCOUNT_NOT_ALLOWED"),
+    ],
+)
+async def test_investment_coarse_rejects_unused_arguments(
+    view: str,
+    arguments: dict[str, object],
+    code: str,
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+
+    response = await investments_coarse(  # pyright: ignore[reportArgumentType]
+        view=view,
+        **arguments,
+    )
+
+    assert response.error is not None
+    assert response.error.code == code
+
+
+async def test_investment_coarse_paginates_with_exact_counts(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+    _insert_event(
+        investment_transaction_id="evt_2",
+        security_id=sec,
+        trade_date=date(2024, 1, 15),
+    )
+
+    first = await investments_coarse(
+        view="events",
+        account=_ACCOUNT,
+        security="AAPL",
+        start=date(2024, 1, 1),
+        end=date(2024, 12, 31),
+        limit=1,
+    )
+    second = await investments_coarse(
+        view="events",
+        account=_ACCOUNT,
+        security="AAPL",
+        start=date(2024, 1, 1),
+        end=date(2024, 12, 31),
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert first.summary.total_count == 2
+    assert first.summary.returned_count == 1
+    assert first.summary.has_more is True
+    assert first.next_cursor is not None
+    assert second.summary.total_count == 2
+    assert second.summary.returned_count == 1
+    assert second.summary.has_more is False
+    assert second.next_cursor is None
+    assert [
+        first.data.rows[0].investment_transaction_id,
+        second.data.rows[0].investment_transaction_id,
+    ] == ["evt_1", "evt_2"]
+    continuation = next(
+        action for action in first.actions if action.startswith("Continue with ")
+    )
+    for argument in (
+        "view='events'",
+        f"account={_ACCOUNT!r}",
+        "security='AAPL'",
+        "start='2024-01-01'",
+        "end='2024-12-31'",
+        "limit=1",
+        f"cursor={first.next_cursor!r}",
+    ):
+        assert argument in continuation
+
+
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_continuation_survives_first_page_removal(
+    view: InvestmentView,
+) -> None:
+    with patch.object(
+        InvestmentService,
+        _investment_method(view),
+        side_effect=[
+            _investment_result(view, ["item-b", "item-c"]),
+            _investment_result(view, ["item-c"]),
+        ],
+    ):
+        first = await investments_coarse(view=view, limit=1)
+        second = await investments_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
         )
-        result = await investments(type_filter="sell")
-        rows = result.to_dict()["data"]["rows"]
-        assert [r["investment_transaction_id"] for r in rows] == ["evt_sell"]
 
-    @pytest.mark.unit
-    async def test_unknown_account_ref_returns_standard_error_envelope(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        result = await investments(account="does-not-exist")
-        parsed = result.to_dict()
-        assert parsed["status"] == "error"
+    assert [
+        _investment_row_id(view, first.data.rows[0]),
+        _investment_row_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
 
 
-class TestInvestmentsHoldings:
-    """Tests for the investments_holdings MCP tool."""
-
-    @pytest.mark.unit
-    async def test_empty_result_is_high_sensitivity_and_unwarned(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        result = await investments_holdings()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        assert parsed["data"]["warnings"] == []
-
-    @pytest.mark.unit
-    async def test_returns_seeded_rows_with_valuation(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _replace_holdings_view([
-            _Holding(
-                _ACCOUNT,
-                sec,
-                quantity="15",
-                cost_basis="2475.00",
-                average_cost="165.00",
-                market_value="2700.00",
-                unrealized_gain="225.00",
-                price_date="2026-07-15",
-                price_source="plaid",
-                days_since_observed="0",
-                valuation_status="valued",
-            ),
-        ])
-        result = await investments_holdings()
-        parsed = result.to_dict()
-        rows = parsed["data"]["rows"]
-        assert len(rows) == 1
-        assert rows[0]["quantity"] == 15.0
-        assert rows[0]["cost_basis"] == 2475.0
-        # Pillar C: the agent sees the value, not a "no price feed" caveat.
-        assert rows[0]["market_value"] == 2700.0
-        assert rows[0]["unrealized_gain"] == 225.0
-        assert rows[0]["valuation_status"] == "valued"
-        assert parsed["data"]["warnings"] == []
-
-    @pytest.mark.unit
-    async def test_withheld_row_reports_null_value_and_a_counted_warning(
-        self, mcp_db: Path
-    ) -> None:
-        """A withheld position must not surface as zero — null plus a count."""
-        _seed_investment_core()
-        sec = _add_security()
-        _replace_holdings_view([
-            _Holding(_ACCOUNT, sec, valuation_status="withheld"),
-        ])
-        result = await investments_holdings()
-        parsed = result.to_dict()
-        assert parsed["data"]["rows"][0]["market_value"] is None
-        assert parsed["data"]["rows"][0]["unrealized_gain"] is None
-        assert "1" in parsed["data"]["warnings"][0]
-
-    @pytest.mark.unit
-    async def test_stale_portfolio_discloses_its_age_not_a_warning(
-        self, mcp_db: Path
-    ) -> None:
-        """A four-month-old close publishes its age; no warning is raised."""
-        _seed_investment_core()
-        sec = _add_security()
-        _replace_holdings_view([
-            _Holding(
-                _ACCOUNT,
-                sec,
-                market_value="2700.00",
-                unrealized_gain="225.00",
-                price_date="2026-03-02",
-                price_source="plaid",
-                days_since_observed="135",
-                valuation_status="carried_forward",
-            ),
-        ])
-        result = await investments_holdings()
-        parsed = result.to_dict()
-        assert parsed["data"]["max_days_since_observed"] == 135
-        assert parsed["data"]["warnings"] == []
-
-    @pytest.mark.unit
-    async def test_max_days_since_observed_is_null_when_nothing_is_priced(
-        self, mcp_db: Path
-    ) -> None:
-        """Null, not 0 — a 0 would read as "every close is today's"."""
-        _seed_investment_core()
-        sec = _add_security()
-        _replace_holdings_view([
-            _Holding(_ACCOUNT, sec, valuation_status="unpriced"),
-        ])
-        result = await investments_holdings()
-        assert result.to_dict()["data"]["max_days_since_observed"] is None
-
-    @pytest.mark.unit
-    async def test_single_currency_portfolio_publishes_a_total(
-        self, mcp_db: Path
-    ) -> None:
-        """The common case: one currency, one summable total."""
-        _seed_investment_core()
-        sec_a = _add_security(security_id="sec_usd_a", ticker="AAA")
-        sec_b = _add_security(security_id="sec_usd_b", ticker="BBB")
-        _replace_holdings_view([
-            _Holding(
-                _ACCOUNT,
-                sec_a,
-                currency_code="USD",
-                market_value="1200.00",
-                unrealized_gain="200.00",
-                price_date="2026-07-15",
-                price_source="plaid",
-                days_since_observed="0",
-                valuation_status="valued",
-            ),
-            _Holding(
-                _ACCOUNT,
-                sec_b,
-                currency_code="USD",
-                market_value="800.00",
-                unrealized_gain="-200.00",
-                price_date="2026-07-15",
-                price_source="plaid",
-                days_since_observed="0",
-                valuation_status="valued",
-            ),
-        ])
-        result = await investments_holdings()
-        data = result.to_dict()["data"]
-        assert data["total_market_value"] == 2000.0
-        assert data["market_value_by_currency"] == {"USD": 2000.0}
-
-    @pytest.mark.unit
-    async def test_mixed_currency_portfolio_publishes_no_total(
-        self, mcp_db: Path
-    ) -> None:
-        """No single figure an agent could report as "the portfolio value"."""
-        _seed_investment_core()
-        sec_a = _add_security(security_id="sec_usd", ticker="AAA")
-        sec_b = _add_security(security_id="sec_eur", ticker="BBB")
-        _replace_holdings_view([
-            _Holding(
-                _ACCOUNT,
-                sec_a,
-                currency_code="USD",
-                market_value="1200.00",
-                unrealized_gain="200.00",
-                price_date="2026-07-15",
-                price_source="plaid",
-                days_since_observed="0",
-                valuation_status="valued",
-            ),
-            _Holding(
-                _ACCOUNT,
-                sec_b,
-                currency_code="EUR",
-                market_value="900.00",
-                unrealized_gain="100.00",
-                price_date="2026-07-15",
-                price_source="plaid",
-                days_since_observed="0",
-                valuation_status="valued",
-            ),
-        ])
-        result = await investments_holdings()
-        data = result.to_dict()["data"]
-        assert data["total_market_value"] is None
-        assert data["market_value_by_currency"] == {"USD": 1200.0, "EUR": 900.0}
-
-
-class TestInvestmentsLots:
-    """Tests for the investments_lots MCP tool."""
-
-    @pytest.mark.unit
-    async def test_open_only_default_and_high_sensitivity(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_open", security_id=sec, is_open=True)
-        _insert_lot(
-            lot_id="lot_closed",
-            security_id=sec,
-            is_open=False,
-            remaining_quantity=Decimal("0"),
-            cost_basis_remaining=Decimal("0"),
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_continuation_excludes_prepended_row(
+    view: InvestmentView,
+) -> None:
+    with patch.object(
+        InvestmentService,
+        _investment_method(view),
+        side_effect=[
+            _investment_result(view, ["item-b", "item-c"]),
+            _investment_result(view, ["item-a", "item-b", "item-c"]),
+        ],
+    ):
+        first = await investments_coarse(view=view, limit=1)
+        second = await investments_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
         )
-        result = await investments_lots()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        assert [r["lot_id"] for r in parsed["data"]["rows"]] == ["lot_open"]
 
-    @pytest.mark.unit
-    async def test_open_only_false_returns_all(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_open", security_id=sec, is_open=True)
-        _insert_lot(
-            lot_id="lot_closed",
-            security_id=sec,
-            is_open=False,
-            remaining_quantity=Decimal("0"),
-            cost_basis_remaining=Decimal("0"),
+    assert [
+        _investment_row_id(view, first.data.rows[0]),
+        _investment_row_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert first.summary.total_count == 2
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
+
+
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_continuation_excludes_appended_row(
+    view: InvestmentView,
+) -> None:
+    with patch.object(
+        InvestmentService,
+        _investment_method(view),
+        side_effect=[
+            _investment_result(view, ["item-b", "item-c"]),
+            _investment_result(view, ["item-b", "item-c", "item-z"]),
+        ],
+    ):
+        first = await investments_coarse(view=view, limit=1)
+        second = await investments_coarse(
+            view=view,
+            limit=1,
+            cursor=first.next_cursor,
         )
-        result = await investments_lots(open_only=False)
-        rows = result.to_dict()["data"]["rows"]
-        assert {r["lot_id"] for r in rows} == {"lot_open", "lot_closed"}
 
-    @pytest.mark.unit
-    async def test_no_warning_when_all_lots_complete(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_1", security_id=sec, basis_incomplete=False)
-        result = await investments_lots()
-        parsed = result.to_dict()
-        assert parsed["data"]["warnings"] == []
-
-    @pytest.mark.unit
-    async def test_basis_incomplete_field_and_warning_present(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_lot(lot_id="lot_complete", security_id=sec, basis_incomplete=False)
-        _insert_lot(lot_id="lot_incomplete", security_id=sec, basis_incomplete=True)
-        result = await investments_lots()
-        parsed = result.to_dict()
-        by_id = {r["lot_id"]: r for r in parsed["data"]["rows"]}
-        assert by_id["lot_complete"]["basis_incomplete"] is False
-        assert by_id["lot_incomplete"]["basis_incomplete"] is True
-        assert parsed["data"]["warnings"]
+    assert [
+        _investment_row_id(view, first.data.rows[0]),
+        _investment_row_id(view, second.data.rows[0]),
+    ] == ["item-b", "item-c"]
+    assert second.summary.total_count == 2
+    assert second.next_cursor is None
 
 
-class TestInvestmentsGains:
-    """Tests for the investments_gains MCP tool."""
+@pytest.mark.parametrize(
+    "view",
+    ["events", "holdings", "lots", "gains", "securities"],
+)
+async def test_investment_rejects_typed_key_shape_before_reading_live_rows(
+    view: InvestmentView,
+) -> None:
+    invalid_key = (1, 2) if view == "holdings" else (1,)
+    cursor = encode_keyset_cursor(
+        namespace="investments",
+        scope={
+            "account": None,
+            "end": None,
+            "open_only": True if view == "lots" else None,
+            "security": None,
+            "start": None,
+            "view": view,
+        },
+        snapshot=invalid_key,
+        after=invalid_key,
+        total=2,
+    )
 
-    @pytest.mark.unit
-    async def test_no_warning_when_all_rows_complete(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_gain(realized_gain_id="gain_1", security_id=sec, basis_incomplete=False)
-        result = await investments_gains()
-        parsed = result.to_dict()
-        assert parsed["summary"]["sensitivity"] == "high"
-        assert parsed["data"]["warnings"] == []
+    with patch.object(InvestmentService, _investment_method(view)) as read:
+        response = await investments_coarse(view=view, cursor=cursor)
 
-    @pytest.mark.unit
-    async def test_basis_incomplete_warning_present(self, mcp_db: Path) -> None:
-        _seed_investment_core()
-        sec = _add_security()
-        _insert_gain(
-            realized_gain_id="gain_complete", security_id=sec, basis_incomplete=False
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    read.assert_not_called()
+
+
+async def test_investment_rejects_cursor_after_beyond_high_water() -> None:
+    cursor = encode_keyset_cursor(
+        namespace="investments",
+        scope={
+            "account": None,
+            "end": None,
+            "open_only": None,
+            "security": None,
+            "start": None,
+            "view": "events",
+        },
+        snapshot=("item-b",),
+        after=("item-c",),
+        total=2,
+    )
+
+    with patch.object(InvestmentService, _investment_method("events")) as read:
+        response = await investments_coarse(view="events", cursor=cursor)
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+    read.assert_not_called()
+
+
+async def test_investment_coarse_cursor_is_bound_to_filters(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+    _insert_event(
+        investment_transaction_id="evt_2",
+        security_id=sec,
+        trade_date=date(2024, 1, 16),
+    )
+    first = await investments_coarse(view="events", limit=1)
+
+    response = await investments_coarse(
+        view="events",
+        start=date(2024, 1, 16),
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_cursor_is_validated_before_reference_data_access() -> None:
+    cursor = encode_keyset_cursor(
+        namespace="investments",
+        scope={
+            "account": "checking",
+            "end": None,
+            "open_only": None,
+            "security": None,
+            "start": None,
+            "view": "holdings",
+        },
+        snapshot=(1, 2),
+        after=(1, 2),
+        total=2,
+    )
+
+    with patch(
+        "moneybin.mcp.tools.investments.get_database",
+        side_effect=AssertionError("reference data accessed"),
+    ):
+        response = await investments_coarse(
+            view="holdings",
+            account="CHECKING",
+            cursor=cursor,
         )
-        _insert_gain(
-            realized_gain_id="gain_incomplete", security_id=sec, basis_incomplete=True
-        )
-        result = await investments_gains()
-        warnings = result.to_dict()["data"]["warnings"]
-        assert len(warnings) == 1
-        assert "1" in warnings[0]
-        assert "incomplete" in warnings[0]
 
-    @pytest.mark.unit
-    async def test_invalid_term_returns_standard_error_envelope(
-        self, mcp_db: Path
-    ) -> None:
-        _seed_investment_core()
-        result = await investments_gains(term="medium")
-        assert result.to_dict()["status"] == "error"
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_coarse_cursor_is_bound_to_view(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+    _insert_event(
+        investment_transaction_id="evt_2",
+        security_id=sec,
+        trade_date=date(2024, 1, 16),
+    )
+    first = await investments_coarse(view="events", limit=1)
+
+    response = await investments_coarse(
+        view="gains",
+        limit=1,
+        cursor=first.next_cursor,
+    )
+
+    assert response.error is not None
+    assert response.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_lots_open_only_matches_the_cli_selector(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security()
+    with get_database(read_only=False) as db:
+        db.executemany(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES (?, ?, ?, '2024-01-15', 'buy', 10, ?, 1500, ?, 'fifo',
+                    'USD', ?, FALSE)
+            """,
+            [
+                ["lot_open", _ACCOUNT, sec, Decimal("10"), Decimal("1500"), True],
+                ["lot_closed", _ACCOUNT, sec, Decimal("0"), Decimal("0"), False],
+            ],
+        )
+
+    open_lots = await investments_coarse(view="lots", open_only=True)
+    all_lots = await investments_coarse(view="lots", open_only=False, limit=1)
+
+    assert [row.lot_id for row in open_lots.data.rows] == ["lot_open"]
+    assert all_lots.summary.total_count == 2
+    assert all_lots.next_cursor is not None
+    assert "open_only=False" in all_lots.actions[-1]
+
+    reused = await investments_coarse(
+        view="lots",
+        open_only=True,
+        limit=1,
+        cursor=all_lots.next_cursor,
+    )
+    assert reused.error is not None
+    assert reused.error.code == "INVESTMENT_CURSOR_INVALID"
+
+
+async def test_investment_coarse_returns_sanitized_ambiguity(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    _add_security(security_id="sec_a", name="Shared Fund", ticker=None)
+    _add_security(security_id="sec_b", name="Shared Fund", ticker=None)
+
+    response = await investments_coarse(
+        view="events",
+        security="Shared Fund",
+    )
+
+    assert response.error is not None
+    assert response.error.code == "ENTITY_REFERENCE_AMBIGUOUS"
+    assert response.error.details == {"candidate_ids": ["sec_a", "sec_b"]}
+    assert "Shared Fund" not in response.error.message
+
+
+async def test_investment_coarse_binds_resolved_security_id(
+    mcp_db: Path,
+) -> None:
+    _seed_investment_core()
+    sec = _add_security(security_id="sec_1", name="Indexed Fund", ticker="IDX")
+    _insert_event(investment_transaction_id="evt_1", security_id=sec)
+
+    response = await investments_coarse(view="events", security="Indexed   Fund")
+
+    assert response.error is None
+    assert [row.investment_transaction_id for row in response.data.rows] == ["evt_1"]
 
 
 class TestInvestmentsSecurities:
@@ -638,7 +699,7 @@ class TestInvestmentsSecurities:
         """No BALANCE/TXN_AMOUNT fields on the catalog -> derived 'low'."""
         _seed_investment_core()
         _add_security(name="Apple Inc.", ticker="AAPL", security_type="equity")
-        result = await investments_securities()
+        result = investments_securities()
         parsed = result.to_dict()
         assert parsed["summary"]["sensitivity"] == "low"
         assert len(parsed["data"]["rows"]) == 1
@@ -658,7 +719,7 @@ class TestInvestmentsSecurities:
             ticker="VTSAX",
             security_type="mutual_fund",
         )
-        result = await investments_securities(security_type="mutual_fund")
+        result = investments_securities(security_type="mutual_fund")
         rows = result.to_dict()["data"]["rows"]
         assert [r["ticker"] for r in rows] == ["VTSAX"]
 
@@ -1164,3 +1225,271 @@ class TestInvestmentsLotsSelect:
         parsed = result.to_dict()
         assert parsed["status"] == "error"
         assert parsed["error"]["code"] == "mutation_invalid_input"
+
+
+# ---------------------------------------------------------------------------
+# Holdings valuation (Pillar C price feeds) — through the coarse read
+# ---------------------------------------------------------------------------
+
+
+class _Holding(NamedTuple):
+    """One ``core.dim_holdings`` fixture row (valuation defaults to unpriced)."""
+
+    account_id: str
+    security_id: str
+    quantity: str = "10"
+    cost_basis: str = "1000.00"
+    average_cost: str | None = "100.00"
+    currency_code: str = "USD"
+    market_value: str | None = None
+    unrealized_gain: str | None = None
+    price_date: str | None = None
+    price_source: str | None = None
+    days_since_observed: str | None = None
+    valuation_status: str = "unpriced"
+
+
+def _replace_holdings_view(rows: list[_Holding]) -> None:
+    """Override the empty core.dim_holdings stub with literal test rows.
+
+    Mirrors ``test_investment_service.py``'s helper of the same name — values
+    are literal test data, not user input (security.md's test-fixture
+    exception).
+    """
+    parts: list[str] = []
+    for h in rows:
+        avg_sql = (
+            "CAST(NULL AS DECIMAL(28,10))"
+            if h.average_cost is None
+            else f"{h.average_cost}::DECIMAL(28,10)"
+        )
+        mv_sql = (
+            "CAST(NULL AS DECIMAL(18,2))"
+            if h.market_value is None
+            else f"{h.market_value}::DECIMAL(18,2)"
+        )
+        ug_sql = (
+            "CAST(NULL AS DECIMAL(18,2))"
+            if h.unrealized_gain is None
+            else f"{h.unrealized_gain}::DECIMAL(18,2)"
+        )
+        pd_sql = (
+            "CAST(NULL AS DATE)" if h.price_date is None else f"DATE '{h.price_date}'"
+        )
+        ps_sql = (
+            "CAST(NULL AS VARCHAR)" if h.price_source is None else f"'{h.price_source}'"
+        )
+        dso_sql = (
+            "CAST(NULL AS INT)"
+            if h.days_since_observed is None
+            else f"{h.days_since_observed}::INT"
+        )
+        parts.append(
+            f"SELECT '{h.account_id}' AS account_id, "
+            f"'{h.security_id}' AS security_id, "
+            f"{h.quantity}::DECIMAL(28,10) AS quantity, "
+            f"{h.cost_basis}::DECIMAL(18,2) AS cost_basis, "
+            f"{avg_sql} AS average_cost, '{h.currency_code}' AS currency_code, "
+            f"{mv_sql} AS market_value, {ug_sql} AS unrealized_gain, "
+            f"{pd_sql} AS price_date, {ps_sql} AS price_source, "
+            f"{dso_sql} AS days_since_observed, "
+            f"'{h.valuation_status}' AS valuation_status"
+        )
+    select_sql = " UNION ALL ".join(parts)
+    with get_database(read_only=False) as db:
+        db.execute(  # noqa: S608  # test fixture view, literal test data only
+            f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
+        )
+
+
+class TestHoldingsValuation:
+    """Valuation semantics as the agent sees them via investments(view='holdings')."""
+
+    @pytest.mark.unit
+    async def test_empty_result_is_high_sensitivity_and_unwarned(
+        self, mcp_db: Path
+    ) -> None:
+        _seed_investment_core()
+        result = await investments_coarse(view="holdings")
+        parsed = result.to_dict()
+        assert parsed["summary"]["sensitivity"] == "high"
+        assert parsed["data"]["warnings"] == []
+
+    @pytest.mark.unit
+    async def test_returns_seeded_rows_with_valuation(self, mcp_db: Path) -> None:
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec,
+                quantity="15",
+                cost_basis="2475.00",
+                average_cost="165.00",
+                market_value="2700.00",
+                unrealized_gain="225.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        rows = result.data.rows
+        assert len(rows) == 1
+        assert rows[0].quantity == Decimal("15")
+        assert rows[0].cost_basis == Decimal("2475.00")
+        # Pillar C: the agent sees the value, not a "no price feed" caveat.
+        assert rows[0].market_value == Decimal("2700.00")
+        assert rows[0].unrealized_gain == Decimal("225.00")
+        assert rows[0].valuation_status == "valued"
+        assert result.data.warnings == []
+
+    @pytest.mark.unit
+    async def test_withheld_row_reports_null_value_and_a_counted_warning(
+        self, mcp_db: Path
+    ) -> None:
+        """A withheld position must not surface as zero — null plus a count."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([_Holding(_ACCOUNT, sec, valuation_status="withheld")])
+        result = await investments_coarse(view="holdings")
+        assert result.data.rows[0].market_value is None
+        assert result.data.rows[0].unrealized_gain is None
+        assert "1" in result.data.warnings[0]
+
+    @pytest.mark.unit
+    async def test_stale_portfolio_discloses_its_age_not_a_warning(
+        self, mcp_db: Path
+    ) -> None:
+        """A four-month-old close publishes its age; no warning is raised."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec,
+                market_value="2700.00",
+                unrealized_gain="225.00",
+                price_date="2026-03-02",
+                price_source="plaid",
+                days_since_observed="135",
+                valuation_status="carried_forward",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        assert result.data.max_days_since_observed == 135
+        assert result.data.warnings == []
+
+    @pytest.mark.unit
+    async def test_max_days_since_observed_is_null_when_nothing_is_priced(
+        self, mcp_db: Path
+    ) -> None:
+        """Null, not 0 — a 0 would read as "every close is today's"."""
+        _seed_investment_core()
+        sec = _add_security()
+        _replace_holdings_view([_Holding(_ACCOUNT, sec, valuation_status="unpriced")])
+        result = await investments_coarse(view="holdings")
+        assert result.data.max_days_since_observed is None
+
+    @pytest.mark.unit
+    async def test_single_currency_portfolio_publishes_a_total(
+        self, mcp_db: Path
+    ) -> None:
+        """The common case: one currency, one summable total."""
+        _seed_investment_core()
+        sec_a = _add_security(security_id="sec_usd_a", ticker="AAA")
+        sec_b = _add_security(security_id="sec_usd_b", ticker="BBB")
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec_a,
+                currency_code="USD",
+                market_value="1200.00",
+                unrealized_gain="200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+            _Holding(
+                _ACCOUNT,
+                sec_b,
+                currency_code="USD",
+                market_value="800.00",
+                unrealized_gain="-200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        assert result.data.total_market_value == Decimal("2000.00")
+        assert result.data.market_value_by_currency == {"USD": Decimal("2000.00")}
+
+    @pytest.mark.unit
+    async def test_mixed_currency_portfolio_publishes_no_total(
+        self, mcp_db: Path
+    ) -> None:
+        """No single figure an agent could report as "the portfolio value"."""
+        _seed_investment_core()
+        sec_a = _add_security(security_id="sec_usd", ticker="AAA")
+        sec_b = _add_security(security_id="sec_eur", ticker="BBB")
+        _replace_holdings_view([
+            _Holding(
+                _ACCOUNT,
+                sec_a,
+                currency_code="USD",
+                market_value="1200.00",
+                unrealized_gain="200.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+            _Holding(
+                _ACCOUNT,
+                sec_b,
+                currency_code="EUR",
+                market_value="900.00",
+                unrealized_gain="100.00",
+                price_date="2026-07-15",
+                price_source="plaid",
+                days_since_observed="0",
+                valuation_status="valued",
+            ),
+        ])
+        result = await investments_coarse(view="holdings")
+        assert result.data.total_market_value is None
+        assert result.data.market_value_by_currency == {
+            "USD": Decimal("1200.00"),
+            "EUR": Decimal("900.00"),
+        }
+
+
+class TestHoldingsDescription:
+    """The coarse `investments` description is the agent's only tool-time contract."""
+
+    @pytest.mark.unit
+    async def test_description_explains_the_staleness_number(self) -> None:
+        srv = FastMCP("test")
+        register_investment_coarse_reads(srv)
+        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tool = next(t for t in tools if t.name == "investments")
+        assert tool.description is not None
+        assert "max_days_since_observed" in tool.description
+
+    @pytest.mark.unit
+    async def test_description_scopes_currency_to_holdings_rows(self) -> None:
+        """market_value is per-row; the coarse currency line must carve holdings out."""
+        srv = FastMCP("test")
+        register_investment_coarse_reads(srv)
+        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tool = next(t for t in tools if t.name == "investments")
+        assert tool.description is not None
+        # display_currency still applies to the other four views...
+        assert "summary.display_currency" in tool.description
+        # ...but holdings is explicitly carved out as per-row currency.
+        assert "except holdings" in tool.description
+        assert "each row's" in tool.description

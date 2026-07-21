@@ -187,18 +187,16 @@ Full spec coverage: [`connect-gsheet.md`](../specs/connect-gsheet.md) §CLI Inte
 
 ## MCP surface
 
-Mirror of the CLI minus `gsheet_auth` (which requires browser interaction). All return the standard `ResponseEnvelope`.
+MCP reaches the same outcomes with the bounded standard surface. All calls return the standard `ResponseEnvelope`.
 
 | Tool | Purpose |
 |------|---------|
-| `gsheet_connect` | Connect a sheet (triggers browser-side OAuth on first call). |
+| `gsheet_connect` | Authenticate, connect a sheet, or re-establish a drifted connection with `connection_id=...`. |
 | `gsheet_pull` | Pull one or all healthy connections. |
-| `gsheet` | List all connections (noun-only collection read). |
-| `gsheet_status` | Detailed status snapshot. |
-| `gsheet_reconnect` | Re-establish column mapping after drift. |
-| `gsheet_disconnect` | Soft disconnect; `purge=True` for hard delete. |
+| `gsheet` | List connections (`view='connections'`) or inspect their health (`view='status'`). |
+| `gsheet_disconnect` | Set a connection disconnected, or use the explicitly confirmed absent state to purge it. |
 
-Drift responses populate `actions[]` with `gsheet_status` and `gsheet_reconnect` hints. Auth-expired responses point at `moneybin gsheet auth` since the operator-territory OAuth flow has no MCP equivalent.
+Drift responses populate `actions[]` with a `gsheet_connect(connection_id=...)` hint. Auth-expired responses direct callers to `gsheet_connect(force_reauth=true)`; the same tool covers authentication, new connections, and reconnects.
 
 ## Limitations
 

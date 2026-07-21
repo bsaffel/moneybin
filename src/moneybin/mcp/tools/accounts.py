@@ -17,24 +17,47 @@ Write tools (links):       accounts_links_set, accounts_links_run
 All tools delegate to AccountService / BalanceService / AccountLinksService — no
 business logic here. accounts links undo is deliberately NOT YET registered:
 deferred to the M1L audit-undo consumer.
+
+The granular callbacks named in ``_LEGACY_INTERNAL_CALLBACKS`` are internal
+helpers retained for standard-boundary composition and parity. They are never
+individually registered and remain undecorated; ``test_tool_surface_budget``
+guards against accidental publication.
 """
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import inspect
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import date as _date
 from decimal import Decimal
-from typing import Literal
+from functools import cmp_to_key
+from typing import Annotated, Any, Literal, cast
 
 from fastmcp import FastMCP
+from pydantic import Field, StrictBool
 
 from moneybin import error_codes
+from moneybin.config import get_settings
 from moneybin.database import get_database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
+from moneybin.mcp.confirmation import (
+    ConfirmationBinding,
+    ConfirmationGrant,
+    grant_confirmation_or_raise,
+)
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.elicitation import confirm_or_raise
+from moneybin.mcp.pagination import (
+    KeysetPosition,
+    compare_keyset,
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
+from moneybin.mcp.privacy import Sensitivity, tier_to_sensitivity
+from moneybin.mcp.write_contracts import FiniteDecimal
+from moneybin.privacy.introspection import extract_data_classes
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountLinksHistoryPayload,
@@ -43,8 +66,19 @@ from moneybin.privacy.payloads.accounts import (
     AccountLinksSetPayload,
     AccountListPayload,
     AccountResolvePayload,
+    AccountsBalancesAssertionsView,
+    AccountsBalancesCoarsePayload,
+    AccountsBalancesHistoryView,
+    AccountsBalancesLatestView,
+    AccountsBalancesReconcileView,
+    AccountsCoarsePayload,
+    AccountsDetailView,
     AccountSettingsPayload,
+    AccountsListView,
+    AccountsResolveView,
+    AccountsSummaryView,
     AccountSummaryStats,
+    BalanceAssertionStatePayload,
 )
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionDeletePayload,
@@ -52,17 +86,25 @@ from moneybin.privacy.payloads.balances import (
     BalanceAssertionPayload,
     BalanceObservationListPayload,
 )
+from moneybin.privacy.redaction import redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.account_links_service import (
+    AccountLinkAcceptImpact,
     AccountLinksService,
 )
 from moneybin.services.account_service import CLEAR, AccountService
-from moneybin.services.balance_service import BalanceService
+from moneybin.services.balance_service import BalanceAssertionSnapshot, BalanceService
+from moneybin.services.entity_reference import (
+    AmbiguousEntity,
+    EntityCandidate,
+    MissingEntity,
+    resolve_entity_reference,
+)
+from moneybin.services.mutation_context import current_operation_id
 
 # ─── Read tools (entity) ──────────────────────────────────────────────────
 
 
-@mcp_tool()
 def accounts(
     include_archived: bool = False, type_filter: str | None = None
 ) -> ResponseEnvelope[AccountListPayload]:
@@ -86,12 +128,11 @@ def accounts(
         data=result,
         actions=[
             "Use accounts_balances for current balances",
-            "Use reports_spending with a category filter to drill in by account",
+            "Use reports(report_id='core:spending') to drill into spending",
         ],
     )
 
 
-@mcp_tool()
 def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     """Single account record with full settings + dim record.
 
@@ -114,7 +155,6 @@ def accounts_get(account_id: str) -> ResponseEnvelope[AccountDetail]:
     return build_envelope(data=record)
 
 
-@mcp_tool()
 def accounts_summary() -> ResponseEnvelope[AccountSummaryStats]:
     """Aggregate account snapshot: counts only, no per-account data, no PII.
 
@@ -245,7 +285,6 @@ def accounts_set(
 # ─── Read tools (balance) ──────────────────────────────────────────────────
 
 
-@mcp_tool()
 def accounts_balances(
     account_ids: list[str] | None = None, as_of_date: str | None = None
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
@@ -263,7 +302,6 @@ def accounts_balances(
     return build_envelope(data=result)
 
 
-@mcp_tool()
 def accounts_balance_history(
     account_id: str, from_date: str | None = None, to_date: str | None = None
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
@@ -283,7 +321,6 @@ def accounts_balance_history(
     return build_envelope(data=result)
 
 
-@mcp_tool()
 def accounts_balance_reconcile(
     account_ids: list[str] | None = None, threshold: float = 0.01
 ) -> ResponseEnvelope[BalanceObservationListPayload]:
@@ -301,7 +338,6 @@ def accounts_balance_reconcile(
     return build_envelope(data=result)
 
 
-@mcp_tool()
 def accounts_balance_assertions(
     account_id: str | None = None,
 ) -> ResponseEnvelope[BalanceAssertionListPayload]:
@@ -318,7 +354,6 @@ def accounts_balance_assertions(
 # ─── Write tools (balance) ──────────────────────────────────────────────────
 
 
-@mcp_tool(read_only=False)
 def accounts_balance_assert(
     account_id: str, assertion_date: str, balance: float, notes: str | None = None
 ) -> ResponseEnvelope[BalanceAssertionPayload]:
@@ -343,7 +378,6 @@ def accounts_balance_assert(
     return build_envelope(data=result)
 
 
-@mcp_tool(read_only=False, destructive=True)
 def accounts_balance_assertion_delete(
     account_id: str, assertion_date: str
 ) -> ResponseEnvelope[BalanceAssertionDeletePayload]:
@@ -366,7 +400,6 @@ def accounts_balance_assertion_delete(
 # ─── Resolution (free-text → account_id) ───────────────────────────────────
 
 
-@mcp_tool()
 def accounts_resolve(
     query: str, limit: int = 5
 ) -> ResponseEnvelope[AccountResolvePayload]:
@@ -387,8 +420,14 @@ def accounts_resolve(
     cutoff used by the tabular importer) emits an action hint suggesting the
     agent verify with the user.
     """
-    from moneybin.config import get_settings
+    return _resolve_accounts(query=query, limit=limit)
 
+
+def _resolve_accounts(
+    query: str,
+    limit: int | None,
+) -> ResponseEnvelope[AccountResolvePayload]:
+    """Resolve account candidates for both legacy and coarse read surfaces."""
     with get_database(read_only=True) as db:
         payload = AccountService(db).resolve(query=query, limit=limit)
     threshold = get_settings().providers.tabular.account_match_threshold
@@ -407,7 +446,6 @@ def accounts_resolve(
 # ─── Review tools (links) ──────────────────────────────────────────────────
 
 
-@mcp_tool(domain="links")
 def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     """List pending account-link decisions, grouped by provisional account.
 
@@ -434,11 +472,10 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
         data=payload,
         total_count=n_pending,
         actions=[
-            "Use accounts_links_set(decision_id, action='accept', "
-            "target_account_id=<candidate_account_id>) to merge — the user is "
-            "prompted to confirm the merge before anything is written",
-            "Use accounts_links_set(decision_id, action='reject') to keep the "
-            "provisional account as its own canonical account",
+            "Use identity_links_decide with kind='account_link', decision='accept', "
+            "decision_id, and target_id to merge after confirmation",
+            "Use identity_links_decide with kind='account_link', decision='reject', "
+            "and decision_id to keep the provisional account standalone",
         ],
     )
 
@@ -454,32 +491,61 @@ class _AccountMergeProposal:
     candidate_display_name: str
     confidence: float | None
     signal: str | None
-
-
-def _account_cli_equivalent(decision_id: str, target_account_id: str) -> str:
-    return f"moneybin accounts links set {decision_id} --into {target_account_id}"
+    blast_radius: dict[str, int]
 
 
 def _load_pending_account_proposal(decision_id: str) -> _AccountMergeProposal:
     """Read the decision out of the live review queue, or raise if it isn't there."""
     with get_database(read_only=True) as db:
-        groups = AccountLinksService(db, actor="mcp").pending()
-    for group in groups:
-        for candidate in group.candidates:
-            if candidate.decision_id == decision_id:
-                return _AccountMergeProposal(
-                    decision_id=decision_id,
-                    provisional_account_id=group.provisional_account_id,
-                    provisional_display_name=group.provisional_display_name,
-                    candidate_account_id=candidate.candidate_account_id,
-                    candidate_display_name=candidate.candidate_display_name,
-                    confidence=candidate.confidence,
-                    signal=candidate.signal,
-                )
+        service = AccountLinksService(db, actor="mcp")
+        groups = service.pending()
+        for group in groups:
+            for candidate in group.candidates:
+                if candidate.decision_id == decision_id:
+                    impact = service.accept_impact(
+                        decision_id,
+                        target_account_id=candidate.candidate_account_id,
+                    )
+                    return _AccountMergeProposal(
+                        decision_id=decision_id,
+                        provisional_account_id=group.provisional_account_id,
+                        provisional_display_name=group.provisional_display_name,
+                        candidate_account_id=candidate.candidate_account_id,
+                        candidate_display_name=candidate.candidate_display_name,
+                        confidence=candidate.confidence,
+                        signal=candidate.signal,
+                        blast_radius=impact.blast_radius,
+                    )
     raise UserError(
         f"No pending account-link decision '{decision_id}'.",
-        code=error_codes.MUTATION_NOT_FOUND,
-        hint="List open decisions with accounts_links_pending.",
+        code=error_codes.MUTATION_NOTHING_TO_DO,
+        hint="List open decisions with reviews(kind='account_links').",
+    )
+
+
+def _account_link_binding(
+    *,
+    decision_id: str,
+    target_account_id: str,
+    provisional_account_id: str,
+    blast_radius: dict[str, int],
+) -> ConfirmationBinding:
+    """Bind approval to one exact live account merge."""
+    return ConfirmationBinding(
+        arguments={
+            "decision_id": decision_id,
+            "action": "accept",
+            "target_account_id": target_account_id,
+        },
+        resolved_ids=(
+            provisional_account_id,
+            target_account_id,
+        ),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="account_identity_merge",
+        blast_radius=blast_radius,
     )
 
 
@@ -511,12 +577,29 @@ def _account_confirm_message(p: _AccountMergeProposal) -> str:
     )
 
 
-def _apply_account_accept(decision_id: str, target_account_id: str) -> None:
+def _apply_account_accept(
+    decision_id: str,
+    target_account_id: str,
+    grant: ConfirmationGrant,
+) -> None:
     # decided_by="user" is truthful only on this path: a human just ratified the
     # merge through the elicitation gate above.
+    def verify(impact: AccountLinkAcceptImpact) -> None:
+        grant.verify(
+            _account_link_binding(
+                decision_id=decision_id,
+                target_account_id=target_account_id,
+                provisional_account_id=impact.provisional_account_id,
+                blast_radius=impact.blast_radius,
+            )
+        )
+
     with get_database(read_only=False) as db:
         AccountLinksService(db, actor="mcp").set(
-            decision_id, target_account_id=target_account_id, decided_by="user"
+            decision_id,
+            target_account_id=target_account_id,
+            decided_by="user",
+            verify_accept=verify,
         )
 
 
@@ -531,23 +614,11 @@ def _apply_account_reject(decision_id: str) -> None:
         )
 
 
-@mcp_tool(
-    domain="links",
-    read_only=False,
-    destructive=True,
-    idempotent=False,
-    # The accept path blocks on a human reading a merge confirmation (two
-    # accounts + the reason they're ambiguous). The 30s default would routinely
-    # fire first — and a cap that expires mid-decision means the user "accepts"
-    # into a coroutine that was already cancelled. Same headroom as
-    # investments_securities_links_set. Timing out is still safe (nothing is
-    # written), just confusing.
-    timeout_seconds=180.0,
-)
 async def accounts_links_set(
     decision_id: str,
     action: Literal["accept", "reject"],
     target_account_id: str | None = None,
+    confirmation_token: str | None = None,
 ) -> ResponseEnvelope[AccountLinksSetPayload]:
     """Accept (merge) or standalone-reject one pending account-link decision.
 
@@ -557,12 +628,11 @@ async def accounts_links_set(
     - `action="accept"` + `target_account_id=<the decision's own
       candidate_account_id>` MERGES. This REQUIRES explicit human confirmation:
       the tool prompts the user through an MCP elicitation naming both accounts
-      and the matching signal, and merges only if they agree. On a client that
-      cannot prompt (no elicitation capability), accept HARD-FAILS with
-      mutation_confirmation_required and points at the CLI — an agent cannot
-      accept a merge on its own, at any confidence. `target_account_id` is also
-      a confirming safety check: it must equal the decision's own candidate, so
-      a mistyped or stale decision_id cannot merge into the wrong account.
+      and the matching signal, and merges only if they agree. A client that
+      cannot prompt receives mutation_confirmation_required with a short-lived,
+      payload-bound token for an exact retry. `target_account_id` is also a
+      confirming safety check: it must equal the decision's own candidate, so a
+      mistyped or stale decision_id cannot merge into the wrong account.
       Mismatched, empty, or missing `target_account_id` raises
       mutation_invalid_input — it is never treated as a reject.
     - `action="reject"` (pass no `target_account_id`) STANDALONE-REJECTS — the
@@ -587,6 +657,8 @@ async def accounts_links_set(
         target_account_id: With action="accept", the candidate account_id to
             merge into — must equal the decision's own candidate_account_id.
             Invalid with action="reject".
+        confirmation_token: Opaque payload-bound token returned to clients that
+            cannot elicit. Used only with action="accept".
     """
     if action not in ("accept", "reject"):
         raise UserError(
@@ -607,42 +679,57 @@ async def accounts_links_set(
     else:
         if not target_account_id:
             raise UserError(
-                "action='accept' requires 'target_account_id' = the decision's "
-                "own candidate_account_id (see accounts_links_pending). An empty "
+                "action='accept' requires 'target_account_id' = the target_id "
+                "shown by reviews(kind='account_links'). An empty "
                 "'target_account_id' is not a reject — pass action='reject' for "
                 "that.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        proposal = await asyncio.to_thread(_load_pending_account_proposal, decision_id)
-        if target_account_id != proposal.candidate_account_id:
-            # Refuse BEFORE prompting: a doomed merge must not cost the user a
-            # confirmation. The service re-checks this; this is the boundary copy.
-            raise UserError(
-                f"'target_account_id' does not match decision '{decision_id}' — "
-                "it must be that decision's own candidate_account_id.",
-                code=error_codes.MUTATION_INVALID_INPUT,
-                hint="Re-read the decision with accounts_links_pending.",
+        if confirmation_token is None:
+            proposal = await asyncio.to_thread(
+                _load_pending_account_proposal, decision_id
             )
-        await confirm_or_raise(
-            _account_confirm_message(proposal),
-            subject="This merge",
-            unchanged=f"decision '{decision_id}' is still pending",
-            cli_equivalent=_account_cli_equivalent(decision_id, target_account_id),
-            details={"decision_id": decision_id},
+            if target_account_id != proposal.candidate_account_id:
+                # Refuse BEFORE prompting: a doomed merge must not cost the user a
+                # confirmation. The service re-checks this; this is the boundary copy.
+                raise UserError(
+                    f"'target_account_id' does not match decision '{decision_id}' — "
+                    "it must be the target_id shown by reviews(kind='account_links').",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint="Re-read the decision with reviews(kind='account_links').",
+                )
+            binding = _account_link_binding(
+                decision_id=decision_id,
+                target_account_id=target_account_id,
+                provisional_account_id=proposal.provisional_account_id,
+                blast_radius=proposal.blast_radius,
+            )
+            message = _account_confirm_message(proposal)
+        else:
+            binding = None
+            message = ""
+        grant = await grant_confirmation_or_raise(
+            binding=binding,
+            message=message,
+            confirmation_token=confirmation_token,
         )
-        await asyncio.to_thread(_apply_account_accept, decision_id, target_account_id)
+        await asyncio.to_thread(
+            _apply_account_accept,
+            decision_id,
+            target_account_id,
+            grant,
+        )
         status = "accepted"
     return build_envelope(
         data=AccountLinksSetPayload(decision_id=decision_id, status=status),
         actions=[
-            "Use accounts_links_pending to review remaining pending decisions",
+            "Use reviews(kind='account_links') for remaining pending decisions",
             "Reverse this decision with system_audit_undo(operation_id) — find "
             "the operation_id with system_audit",
         ],
     )
 
 
-@mcp_tool(domain="links")
 def accounts_links_history(
     limit: int = 50,
 ) -> ResponseEnvelope[AccountLinksHistoryPayload]:
@@ -656,11 +743,10 @@ def accounts_links_history(
     payload = AccountLinksHistoryPayload.from_rows(rows)
     return build_envelope(
         data=payload,
-        actions=["Use accounts_links_pending for the active review queue"],
+        actions=["Use reviews(kind='account_links') for the active review queue"],
     )
 
 
-@mcp_tool(domain="links", read_only=False)
 def accounts_links_run() -> ResponseEnvelope[AccountLinksRunPayload]:
     """Backfill account-link proposals for existing accounts in core.dim_accounts.
 
@@ -684,36 +770,858 @@ def accounts_links_run() -> ResponseEnvelope[AccountLinksRunPayload]:
         new_proposals = AccountLinksService(db, actor="mcp").run()
     return build_envelope(
         data=AccountLinksRunPayload(new_proposals=new_proposals),
-        actions=["Use accounts_links_pending to review the proposed merges"],
+        actions=["Use reviews(kind='account_links') to review proposed merges"],
+    )
+
+
+# ─── Standard coarse reads ────────────────────────────────────────────────
+
+
+async def _run_account_read[T](
+    callback: Callable[..., T],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> T:
+    """Delegate to an existing read body without a second privacy audit."""
+    body = cast(Callable[..., T], inspect.unwrap(callback))
+    return await asyncio.to_thread(body, *args, **kwargs)
+
+
+def _coarse_envelope[T](
+    data: T,
+    *,
+    contract_type: type[Any],
+    total_count: int,
+    returned_count: int,
+    next_cursor: str | None = None,
+    period: str | None = None,
+    display_currency: str = "USD",
+    actions: list[str] | None = None,
+    has_more: bool | None = None,
+) -> ResponseEnvelope[T]:
+    """Build and redact a dynamically classified account-read envelope."""
+    classes = extract_data_classes(contract_type)
+    tier = max(data_class.tier for data_class in classes)
+    redacted = cast(T, redact_typed(data, None))
+    envelope = cast(
+        ResponseEnvelope[T],
+        build_envelope(
+            data=redacted,
+            sensitivity=cast(Any, tier_to_sensitivity(tier).value),
+            total_count=total_count,
+            returned_count=returned_count,
+            next_cursor=next_cursor,
+            period=period,
+            display_currency=display_currency,
+            actions=actions,
+            classes_returned=sorted(data_class.value for data_class in classes),
+        ),
+    )
+    return replace(
+        envelope,
+        summary=replace(
+            envelope.summary,
+            has_more=next_cursor is not None if has_more is None else has_more,
+        ),
+    )
+
+
+def _coarse_position(
+    cursor: str | None,
+    *,
+    tool: Literal["accounts", "accounts_balances"],
+    view: str,
+    filters: dict[str, object],
+    key_size: int,
+) -> KeysetPosition | None:
+    """Decode one scope-bound cursor and validate its string key shape."""
+    if cursor is None:
+        return None
+    code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
+    try:
+        position = decode_keyset_cursor(
+            cursor,
+            namespace=tool,
+            scope={"filters": filters, "view": view},
+        )
+    except ValueError as exc:
+        raise UserError("Invalid pagination cursor.", code=code) from exc
+    if (
+        len(position.snapshot) != key_size
+        or len(position.after) != key_size
+        or not all(
+            type(value) is str for value in (*position.snapshot, *position.after)
+        )
+    ):
+        raise UserError("Invalid pagination cursor.", code=code)
+    return position
+
+
+def _keyset_page[T](
+    rows: list[T],
+    *,
+    tool: Literal["accounts", "accounts_balances"],
+    view: str,
+    limit: int,
+    position: KeysetPosition | None,
+    filters: dict[str, object],
+    key: Callable[[T], tuple[str, ...]],
+    directions: tuple[Literal["asc", "desc"], ...],
+) -> tuple[list[T], str | None, int]:
+    """Page immutable keys behind the cursor's first-page prepend boundary."""
+    code = "ACCOUNT_CURSOR_INVALID" if tool == "accounts" else "BALANCE_CURSOR_INVALID"
+
+    def compare_rows(left: T, right: T) -> int:
+        return compare_keyset(key(left), key(right), directions)
+
+    ordered = sorted(rows, key=cmp_to_key(compare_rows))
+    if position is None:
+        if not ordered:
+            return [], None, 0
+        snapshot = key(ordered[0])
+        eligible = ordered
+        total_count = len(ordered)
+    else:
+        snapshot = cast(tuple[str, ...], position.snapshot)
+        after = cast(tuple[str, ...], position.after)
+        try:
+            if compare_keyset(after, snapshot, directions) < 0:
+                raise ValueError("continuation precedes snapshot")
+            eligible = [
+                row
+                for row in ordered
+                if compare_keyset(key(row), snapshot, directions) >= 0
+                and compare_keyset(key(row), after, directions) > 0
+            ]
+        except ValueError as exc:
+            raise UserError("Invalid pagination cursor.", code=code) from exc
+        total_count = position.total
+
+    page = eligible[:limit]
+    if len(eligible) <= limit or not page:
+        return page, None, total_count
+    next_cursor = encode_keyset_cursor(
+        namespace=tool,
+        scope={"filters": filters, "view": view},
+        snapshot=snapshot,
+        after=key(page[-1]),
+        total=total_count,
+    )
+    return page, next_cursor, total_count
+
+
+def _account_candidates(payload: AccountListPayload) -> list[EntityCandidate]:
+    """Project account rows into the shared deterministic resolver contract."""
+    candidates: list[EntityCandidate] = []
+    for account in payload.rows:
+        display_name = account.display_name or account.account_id
+        aliases = tuple(
+            dict.fromkeys(
+                value
+                for value in (
+                    account.institution_name,
+                    account.account_type,
+                    account.account_subtype,
+                )
+                if value is not None and value != display_name
+            )
+        )
+        candidates.append(
+            EntityCandidate(
+                entity_id=account.account_id,
+                display_name=display_name,
+                aliases=aliases,
+            )
+        )
+    return candidates
+
+
+async def _resolve_account_reference(
+    reference: str,
+    *,
+    include_closed: bool,
+) -> str:
+    """Resolve a user-facing account reference through the shared ladder."""
+    response = await _run_account_read(
+        accounts,
+        include_archived=True,
+        type_filter=None,
+    )
+    for account in response.data.rows:
+        if account.account_id == reference:
+            return account.account_id
+    candidates = _account_candidates(
+        AccountListPayload(
+            rows=[
+                account
+                for account in response.data.rows
+                if include_closed or not account.archived
+            ]
+        )
+    )
+    resolution = resolve_entity_reference(
+        reference,
+        candidates,
+    )
+    if isinstance(resolution, AmbiguousEntity):
+        raise UserError(
+            "The account reference matches multiple accounts.",
+            code="ENTITY_REFERENCE_AMBIGUOUS",
+            details={"candidate_ids": list(resolution.candidate_ids)},
+        )
+    if isinstance(resolution, MissingEntity):
+        raise UserError(
+            "The account reference did not match an account.",
+            code="ENTITY_REFERENCE_NOT_FOUND",
+            details={"candidate_ids": []},
+        )
+    return resolution.entity_id
+
+
+def _account_actions(
+    actions: list[str],
+    *,
+    limit: int,
+    next_cursor: str | None,
+    include_closed: bool = False,
+) -> list[str]:
+    """Preserve legacy hints and add an account-list continuation."""
+    selected = list(actions)
+    if next_cursor is not None:
+        selected.append(
+            f"Continue with accounts(view='list', "
+            f"include_closed={include_closed!r}, limit={limit}, "
+            f"cursor='{next_cursor}')"
+        )
+    return list(dict.fromkeys(selected))
+
+
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
+async def accounts_coarse(
+    view: Literal["list", "detail", "summary", "resolve"] = "list",
+    reference: str | None = None,
+    query: str | None = None,
+    include_closed: StrictBool = False,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[AccountsCoarsePayload]:
+    """List, inspect, summarize, or resolve accounts through one read contract."""
+    if view in ("list", "summary"):
+        if reference is not None:
+            raise UserError(
+                "reference is not valid for this account view.",
+                code="ACCOUNT_REFERENCE_NOT_ALLOWED",
+            )
+        if query is not None:
+            raise UserError(
+                "query is not valid for this account view.",
+                code="ACCOUNT_QUERY_NOT_ALLOWED",
+            )
+    elif view == "detail":
+        if reference is None:
+            raise UserError(
+                "Account detail requires a reference.",
+                code="ACCOUNT_REFERENCE_REQUIRED",
+            )
+        if query is not None:
+            raise UserError(
+                "query is not valid for account detail.",
+                code="ACCOUNT_QUERY_NOT_ALLOWED",
+            )
+    else:
+        if query is None:
+            raise UserError(
+                "Account resolution requires a query.",
+                code="ACCOUNT_QUERY_REQUIRED",
+            )
+        if reference is not None:
+            raise UserError(
+                "reference is not valid for account resolution.",
+                code="ACCOUNT_REFERENCE_NOT_ALLOWED",
+            )
+
+    if view in ("detail", "summary", "resolve") and cursor is not None:
+        raise UserError(
+            "This account view does not accept a pagination cursor.",
+            code="ACCOUNT_CURSOR_NOT_ALLOWED",
+        )
+    if view in ("summary", "resolve") and include_closed:
+        raise UserError(
+            "include_closed is not valid for this account view.",
+            code="ACCOUNT_INCLUDE_CLOSED_NOT_ALLOWED",
+        )
+    if view in ("detail", "summary") and limit != 100:
+        raise UserError(
+            "limit is not valid for this account view.",
+            code="ACCOUNT_LIMIT_NOT_ALLOWED",
+        )
+
+    if view == "list":
+        filters: dict[str, object] = {"include_closed": bool(include_closed)}
+        position = _coarse_position(
+            cursor,
+            tool="accounts",
+            view="list",
+            filters=filters,
+            key_size=1,
+        )
+        response = await _run_account_read(
+            accounts,
+            include_archived=bool(include_closed),
+            type_filter=None,
+        )
+        page, next_cursor, total_count = _keyset_page(
+            response.data.rows,
+            tool="accounts",
+            view="list",
+            limit=limit,
+            position=position,
+            filters=filters,
+            key=lambda row: (row.account_id,),
+            directions=("asc",),
+        )
+        payload = AccountsListView(rows=page)
+        return _coarse_envelope(
+            payload,
+            contract_type=AccountsListView,
+            total_count=total_count,
+            returned_count=len(page),
+            next_cursor=next_cursor,
+            display_currency=response.summary.display_currency,
+            actions=_account_actions(
+                response.actions,
+                limit=limit,
+                next_cursor=next_cursor,
+                include_closed=bool(include_closed),
+            ),
+        )
+
+    if view == "detail":
+        account_id = await _resolve_account_reference(
+            cast(str, reference),
+            include_closed=bool(include_closed),
+        )
+        response = await _run_account_read(accounts_get, account_id)
+        payload = AccountsDetailView(account=response.data)
+        return _coarse_envelope(
+            payload,
+            contract_type=AccountsDetailView,
+            total_count=response.summary.total_count,
+            returned_count=response.summary.returned_count,
+            display_currency=response.summary.display_currency,
+            actions=response.actions,
+        )
+
+    if view == "summary":
+        response = await _run_account_read(accounts_summary)
+        payload = AccountsSummaryView(summary=response.data)
+        return _coarse_envelope(
+            payload,
+            contract_type=AccountsSummaryView,
+            total_count=response.summary.total_count,
+            returned_count=response.summary.returned_count,
+            display_currency=response.summary.display_currency,
+            actions=response.actions,
+        )
+
+    response = await _run_account_read(
+        _resolve_accounts,
+        query=cast(str, query),
+        limit=None,
+    )
+    total_count = len(response.data.matches)
+    page = response.data.matches[:limit]
+    has_more = total_count > len(page)
+    actions = list(response.actions)
+    if has_more:
+        actions.append(
+            "Refine the account query or increase limit to inspect more candidates."
+        )
+    payload = AccountsResolveView(matches=page)
+    return _coarse_envelope(
+        payload,
+        contract_type=AccountsResolveView,
+        total_count=total_count,
+        returned_count=len(page),
+        has_more=has_more,
+        display_currency=response.summary.display_currency,
+        actions=actions,
+    )
+
+
+def _history_period(start: _date | None, end: _date | None) -> str | None:
+    """Render the selected history window in envelope metadata."""
+    if start is not None and end is not None:
+        return f"{start.isoformat()} to {end.isoformat()}"
+    if start is not None:
+        return f"from {start.isoformat()}"
+    if end is not None:
+        return f"through {end.isoformat()}"
+    return None
+
+
+def _balance_actions(
+    actions: list[str],
+    *,
+    view: Literal["latest", "history", "assertions", "reconcile"],
+    limit: int,
+    next_cursor: str | None,
+    reference: str | None,
+    start: _date | None,
+    end: _date | None,
+    as_of: _date | None,
+    threshold: Decimal | None,
+) -> list[str]:
+    """Preserve balance hints and add a public continuation hint."""
+    selected = list(actions)
+    if next_cursor is not None:
+        arguments = [f"view='{view}'"]
+        if reference is not None:
+            arguments.append(f"reference={reference!r}")
+        if start is not None:
+            arguments.append(f"start={start.isoformat()!r}")
+        if end is not None:
+            arguments.append(f"end={end.isoformat()!r}")
+        if as_of is not None:
+            arguments.append(f"as_of={as_of.isoformat()!r}")
+        if threshold is not None:
+            arguments.append(f"threshold={threshold}")
+        arguments.extend((f"limit={limit}", f"cursor='{next_cursor}'"))
+        selected.append(f"Continue with accounts_balances({', '.join(arguments)})")
+    return list(dict.fromkeys(selected))
+
+
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+async def accounts_balances_coarse(
+    view: Literal["latest", "history", "assertions", "reconcile"] = "latest",
+    reference: str | None = None,
+    start: _date | None = None,
+    end: _date | None = None,
+    as_of: _date | None = None,
+    threshold: Annotated[FiniteDecimal, Field(ge=0)] | None = None,
+    limit: Annotated[int, Field(strict=True, ge=1)] = 100,
+    cursor: str | None = None,
+) -> ResponseEnvelope[AccountsBalancesCoarsePayload]:
+    """Return balances, history, assertions, or reconciliation deltas."""
+    if view != "history" and (start is not None or end is not None):
+        raise UserError(
+            "start and end are only valid for balance history.",
+            code="BALANCE_DATES_NOT_ALLOWED",
+        )
+    if view != "latest" and as_of is not None:
+        raise UserError(
+            "as_of is only valid for latest balances.",
+            code="BALANCE_AS_OF_NOT_ALLOWED",
+        )
+    if view != "reconcile" and threshold is not None:
+        raise UserError(
+            "threshold is only valid for balance reconciliation.",
+            code="BALANCE_THRESHOLD_NOT_ALLOWED",
+        )
+    if view == "history" and reference is None:
+        raise UserError(
+            "Balance history requires an account reference.",
+            code="ACCOUNT_REFERENCE_REQUIRED",
+        )
+    if start is not None and end is not None and start > end:
+        raise UserError(
+            "Balance history start must not be after end.",
+            code="BALANCE_DATE_RANGE_INVALID",
+        )
+
+    filters: dict[str, object] = {
+        "as_of": as_of.isoformat() if as_of is not None else None,
+        "end": end.isoformat() if end is not None else None,
+        "reference": reference.casefold().strip() if reference is not None else None,
+        "start": start.isoformat() if start is not None else None,
+        "threshold": str(threshold) if threshold is not None else None,
+    }
+    key_size = 1 if view == "latest" else 2
+    position = _coarse_position(
+        cursor,
+        tool="accounts_balances",
+        view=view,
+        filters=filters,
+        key_size=key_size,
+    )
+    account_id = (
+        await _resolve_account_reference(reference, include_closed=True)
+        if reference is not None
+        else None
+    )
+
+    if view == "latest":
+        response = await _run_account_read(
+            accounts_balances,
+            account_ids=[account_id] if account_id is not None else None,
+            as_of_date=as_of.isoformat() if as_of is not None else None,
+        )
+        page, next_cursor, total_count = _keyset_page(
+            response.data.observations,
+            tool="accounts_balances",
+            view="latest",
+            limit=limit,
+            position=position,
+            filters=filters,
+            key=lambda row: (row.account_id,),
+            directions=("asc",),
+        )
+        payload = AccountsBalancesLatestView(observations=page)
+        contract_type = AccountsBalancesLatestView
+    elif view == "history":
+        response = await _run_account_read(
+            accounts_balance_history,
+            cast(str, account_id),
+            from_date=start.isoformat() if start is not None else None,
+            to_date=end.isoformat() if end is not None else None,
+        )
+        page, next_cursor, total_count = _keyset_page(
+            response.data.observations,
+            tool="accounts_balances",
+            view="history",
+            limit=limit,
+            position=position,
+            filters=filters,
+            key=lambda row: (row.balance_date.isoformat(), row.account_id),
+            directions=("asc", "asc"),
+        )
+        payload = AccountsBalancesHistoryView(observations=page)
+        contract_type = AccountsBalancesHistoryView
+    elif view == "assertions":
+        response = await _run_account_read(
+            accounts_balance_assertions,
+            account_id,
+        )
+        page, next_cursor, total_count = _keyset_page(
+            response.data.assertions,
+            tool="accounts_balances",
+            view="assertions",
+            limit=limit,
+            position=position,
+            filters=filters,
+            key=lambda row: (row.account_id, row.assertion_date.isoformat()),
+            directions=("asc", "desc"),
+        )
+        payload = AccountsBalancesAssertionsView(assertions=page)
+        contract_type = AccountsBalancesAssertionsView
+    else:
+        response = await _run_account_read(
+            accounts_balance_reconcile,
+            account_ids=[account_id] if account_id is not None else None,
+            threshold=threshold if threshold is not None else Decimal("0.01"),
+        )
+        page, next_cursor, total_count = _keyset_page(
+            response.data.observations,
+            tool="accounts_balances",
+            view="reconcile",
+            limit=limit,
+            position=position,
+            filters=filters,
+            key=lambda row: (row.account_id, row.balance_date.isoformat()),
+            directions=("asc", "desc"),
+        )
+        payload = AccountsBalancesReconcileView(observations=page)
+        contract_type = AccountsBalancesReconcileView
+
+    return _coarse_envelope(
+        payload,
+        contract_type=contract_type,
+        total_count=total_count,
+        returned_count=len(page),
+        next_cursor=next_cursor,
+        period=_history_period(start, end) if view == "history" else None,
+        display_currency=response.summary.display_currency,
+        actions=_balance_actions(
+            response.actions,
+            view=view,
+            limit=limit,
+            next_cursor=next_cursor,
+            reference=reference,
+            start=start,
+            end=end,
+            as_of=as_of,
+            threshold=threshold,
+        ),
+    )
+
+
+def register_accounts_coarse_reads(mcp: FastMCP) -> None:
+    """Register the standard account reads."""
+    register(
+        mcp,
+        accounts_coarse,
+        "accounts",
+        "List accounts, inspect one deterministic reference, summarize the "
+        "portfolio, or return resolution candidates. Amounts are in "
+        "the currency named by summary.display_currency.",
+        privacy_actor="accounts",
+    )
+    register(
+        mcp,
+        accounts_balances_coarse,
+        "accounts_balances",
+        "Return balances by date, history, assertions, or reconciliation deltas. "
+        "Resolve one account by reference; amounts are positions in "
+        "summary.display_currency.",
+        privacy_actor="accounts_balances",
+    )
+
+
+# ─── Standard coarse writes ───────────────────────────────────────────────
+
+
+_BALANCE_ASSERTION_MAX = Decimal("9999999999999999.99")
+
+BalanceAmount = Annotated[
+    FiniteDecimal,
+    Field(
+        ge=-_BALANCE_ASSERTION_MAX,
+        le=_BALANCE_ASSERTION_MAX,
+        max_digits=18,
+        decimal_places=2,
+    ),
+]
+
+
+def _load_balance_assertion_snapshot(
+    account_id: str,
+    as_of: _date,
+) -> BalanceAssertionSnapshot | None:
+    """Load one assertion without retaining a read connection."""
+    with get_database(read_only=True) as db:
+        return BalanceService(db).get_assertion_snapshot(account_id, as_of)
+
+
+def _balance_assertion_remove_binding(
+    snapshot: BalanceAssertionSnapshot,
+) -> ConfirmationBinding:
+    """Bind approval to the exact live assertion about to be removed."""
+    return ConfirmationBinding(
+        arguments={
+            "account_id": snapshot.account_id,
+            "as_of": snapshot.assertion_date.isoformat(),
+            "state": "absent",
+            "assertion": {
+                "amount": str(snapshot.balance),
+                "notes": snapshot.notes,
+                "created_at": snapshot.created_at,
+                "updated_at": snapshot.updated_at,
+            },
+        },
+        resolved_ids=(snapshot.account_id, snapshot.assertion_date.isoformat()),
+        actor="mcp",
+        profile=get_settings().profile,
+        authorization_context="local-profile",
+        operation_kind="balance_assertion_remove",
+        blast_radius={"assertions": 1},
+    )
+
+
+def _assert_balance_present(
+    account_id: str,
+    as_of: _date,
+    amount: Decimal,
+) -> Literal["present", "absent"]:
+    """Upsert an assertion unless its amount already matches the target."""
+    with get_database(read_only=False) as db:
+        service = BalanceService(db)
+        prior = service.get_assertion(account_id, as_of)
+        if prior is not None and prior.balance == amount:
+            raise UserError(
+                "The balance assertion already matches the requested state.",
+                code=error_codes.MUTATION_NOTHING_TO_DO,
+            )
+        service.assert_balance(
+            account_id=account_id,
+            assertion_date=as_of,
+            balance=amount,
+            notes=prior.notes if prior is not None else None,
+            actor="mcp",
+        )
+    return "present" if prior is not None else "absent"
+
+
+def _remove_balance_assertion(
+    account_id: str,
+    as_of: _date,
+    grant: ConfirmationGrant,
+) -> None:
+    """Recompute, verify, and remove one assertion in one transaction."""
+
+    def verify(assertion: BalanceAssertionSnapshot) -> None:
+        grant.verify(_balance_assertion_remove_binding(assertion))
+
+    with get_database(read_only=False) as db:
+        removed = BalanceService(db).delete_assertion(
+            account_id,
+            as_of,
+            actor="mcp",
+            verify=verify,
+        )
+    if not removed:
+        raise UserError(
+            "The balance assertion is already absent.",
+            code=error_codes.MUTATION_NOTHING_TO_DO,
+        )
+
+
+@mcp_tool(read_only=False, destructive=True, idempotent=True)
+async def accounts_balance_assert_coarse(
+    account: str,
+    as_of: _date,
+    state: Literal["present", "absent"] = "present",
+    amount: BalanceAmount | None = None,
+    confirmation_token: str | None = None,
+) -> ResponseEnvelope[BalanceAssertionStatePayload]:
+    """Declare one resolved account's balance assertion present or absent."""
+    if state == "present" and amount is None:
+        raise UserError(
+            "state='present' requires amount.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if state == "absent" and amount is not None:
+        raise UserError(
+            "amount is only valid with state='present'.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    if state == "present" and confirmation_token is not None:
+        raise UserError(
+            "confirmation_token is only valid with state='absent'.",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+
+    account_id = await _resolve_account_reference(account, include_closed=True)
+    if state == "present":
+        prior_state = await asyncio.to_thread(
+            _assert_balance_present,
+            account_id,
+            as_of,
+            cast(Decimal, amount),
+        )
+    else:
+        if confirmation_token is None:
+            snapshot = await asyncio.to_thread(
+                _load_balance_assertion_snapshot,
+                account_id,
+                as_of,
+            )
+            if snapshot is None:
+                raise UserError(
+                    "The balance assertion is already absent.",
+                    code=error_codes.MUTATION_NOTHING_TO_DO,
+                )
+            binding = _balance_assertion_remove_binding(snapshot)
+            message = (
+                "Remove the manual balance assertion for account "
+                f"{account_id} on {as_of.isoformat()}? This hard-deletes the "
+                "assertion; recover it with system_audit_undo(operation_id)."
+            )
+        else:
+            binding = None
+            message = ""
+        grant = await grant_confirmation_or_raise(
+            binding=binding,
+            message=message,
+            confirmation_token=confirmation_token,
+        )
+        await asyncio.to_thread(
+            _remove_balance_assertion,
+            account_id,
+            as_of,
+            grant,
+        )
+        prior_state = "present"
+
+    operation_id = current_operation_id()
+    return build_envelope(
+        data=BalanceAssertionStatePayload(
+            account_id=account_id,
+            as_of=as_of,
+            prior_state=prior_state,
+            state=state,
+            operation_id=operation_id,
+        ),
+        recovery_actions=[
+            RecoveryAction(
+                tool="system_audit",
+                arguments={"view": "detail", "operation_id": operation_id},
+                rationale="Inspect the exact mutation and its undoability.",
+                confidence="suggested",
+                idempotent=True,
+            ),
+            RecoveryAction(
+                tool="system_audit_undo",
+                arguments={"operation_id": operation_id},
+                rationale="Reverse this balance assertion mutation.",
+                confidence="certain",
+                idempotent=False,
+            ),
+        ],
+    )
+
+
+def register_accounts_coarse_writes(mcp: FastMCP) -> None:
+    """Register the standard declarative balance assertion write."""
+    register(
+        mcp,
+        accounts_balance_assert_coarse,
+        "accounts_balance_assert",
+        "Declare a manual balance assertion present or absent for one resolved "
+        "account and date. Present requires amount and upserts "
+        "app.balance_assertions; absent forbids amount, requires exact "
+        "payload-bound confirmation, and hard-deletes the assertion. Repeat an "
+        "unchanged target state returns mutation_nothing_to_do. Reverse a "
+        "mutation with system_audit_undo(operation_id). Amounts are positions "
+        "in the currency named by summary.display_currency.",
+        privacy_actor="accounts_balance_assert",
+        input_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"state": {"const": "absent"}},
+                        "required": ["state"],
+                    },
+                    "then": {
+                        "not": {"anyOf": [{"required": ["amount"]}]},
+                    },
+                    "else": {
+                        "required": ["amount"],
+                        "properties": {
+                            "amount": {"not": {"type": "null"}},
+                        },
+                        "not": {
+                            "anyOf": [{"required": ["confirmation_token"]}],
+                        },
+                    },
+                }
+            ]
+        },
     )
 
 
 # ─── Registration ──────────────────────────────────────────────────────────
 
+_LEGACY_INTERNAL_CALLBACKS = (
+    accounts,
+    accounts_get,
+    accounts_summary,
+    accounts_balances,
+    accounts_balance_history,
+    accounts_balance_reconcile,
+    accounts_balance_assertions,
+    accounts_balance_assert,
+    accounts_balance_assertion_delete,
+    accounts_resolve,
+    accounts_links_pending,
+    accounts_links_set,
+    accounts_links_history,
+)
+
 
 def register_accounts_tools(mcp: FastMCP) -> None:
-    """Register all v2 accounts namespace tools with the FastMCP server."""
-    register(
-        mcp,
-        accounts,
-        "accounts",
-        "List accounts (default hides archived; supports type filter and redacted mode). "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        accounts_get,
-        "accounts_get",
-        "Get one account's full settings + dim record. Raises a not_found error "
-        "(code infra_not_found) if the account doesn't exist. "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        accounts_summary,
-        "accounts_summary",
-        "Aggregate account snapshot — counts by type/subtype, archived, excluded, recent activity.",
-    )
+    """Register the standard account read and write boundaries."""
+    register_accounts_coarse_reads(mcp)
     register(
         mcp,
         accounts_set,
@@ -732,113 +1640,4 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "values (no built-in undo). "
         "Amounts are in the currency named by `summary.display_currency`.",
     )
-    register(
-        mcp,
-        accounts_balances,
-        "accounts_balances",
-        "Latest balance per account from fct_balances_daily (or as-of a date). "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        accounts_balance_history,
-        "accounts_balance_history",
-        "Per-account balance history (daily series with carry-forward + reconciliation deltas). "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        accounts_balance_reconcile,
-        "accounts_balance_reconcile",
-        "Threshold-filtered list of days where computed balance differs from asserted by more than `threshold`. "
-        "Returns one row per (account, day) with the magnitude of the delta. Use when you want to find magnitude-level mismatches. "
-        "Amounts use the accounting convention; currency named by summary.display_currency.",
-    )
-    register(
-        mcp,
-        accounts_balance_assertions,
-        "accounts_balance_assertions",
-        "List user-entered balance assertions. "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        accounts_balance_assert,
-        "accounts_balance_assert",
-        "Record an asserted balance for an account on a specific date. "
-        "Used to reconcile against external statements when sync data is "
-        "incomplete or wrong. "
-        "Upsert semantics by (account_id, assertion_date) natural key — "
-        "calling twice for the same date updates the existing assertion. "
-        "Writes app.balance_assertions; remove with accounts_balance_assertion_delete (permanent — no undo). "
-        "Amounts are in the currency named by `summary.display_currency`.",
-    )
-    register(
-        mcp,
-        accounts_balance_assertion_delete,
-        "accounts_balance_assertion_delete",
-        "Delete a manual balance assertion. "
-        "Hard-deletes from app.balance_assertions — permanent, no revert; re-create with accounts_balance_assert.",
-    )
-    register(
-        mcp,
-        accounts_resolve,
-        "accounts_resolve",
-        "Resolve a free-text account reference (e.g., 'my Chase account', "
-        "'checking') to an account_id. Returns ranked candidates with "
-        "confidence scores. Use this before tools that require an account_id "
-        "when you only have a natural-language reference.",
-    )
-    register(
-        mcp,
-        accounts_links_pending,
-        "accounts_links_pending",
-        "List pending account-link decisions grouped by provisional account. "
-        "Returns the review queue of provisional accounts (recently imported, "
-        "not yet confirmed canonical) with candidate merge proposals. Each "
-        "candidate carries decision_id, account_id, display name, confidence "
-        "score, and the match signal (institution_last4 or name). ref_value "
-        "(raw native reference, which can be a full account number) is never "
-        "included. Use accounts_links_set to accept or standalone-reject each group. "
-        "Run accounts_links_run first to backfill proposals for pre-existing accounts.",
-    )
-    register(
-        mcp,
-        accounts_links_run,
-        "accounts_links_run",
-        "Backfill account-link proposals for accounts already in core.dim_accounts "
-        "that have no pending proposal yet (e.g. cross-source twins imported separately). "
-        "Writes pending app.account_link_decisions rows; skips pairs already proposed "
-        "or decided in either direction. Returns data.new_proposals (count of new pending "
-        "decisions written). Mutation surface: writes app.account_link_decisions; "
-        "revert via app.audit_log (no undo tool yet). "
-        "Review results with accounts_links_pending.",
-    )
-    register(
-        mcp,
-        accounts_links_set,
-        "accounts_links_set",
-        "Accept (merge) or standalone-reject one pending account-link decision. "
-        "action='accept' + target_account_id=<the decision's own "
-        "candidate_account_id> MERGES: it prompts the user to confirm (MCP "
-        "elicitation naming both accounts and the match signal) and merges only "
-        "on their explicit agreement — a merge fuses two accounts' transaction "
-        "histories and balances, so the agent cannot accept one on its own. On a "
-        "client without elicitation, accept fails with "
-        "mutation_confirmation_required and names the CLI equivalent. "
-        "target_account_id must equal the decision's own candidate (mismatched, "
-        "empty, or missing target_account_id raises mutation_invalid_input — it "
-        "is NEVER read as a reject). action='reject' (no target_account_id) keeps "
-        "the provisional as its own canonical account and rejects every pending "
-        "decision for it. Writes app.account_link_decisions + app.account_links; "
-        "reverse with system_audit_undo(operation_id). Discover pending decisions "
-        "with accounts_links_pending.",
-    )
-    register(
-        mcp,
-        accounts_links_history,
-        "accounts_links_history",
-        "Recent account-link decisions (all statuses), newest first. "
-        "Read-only. Filter by limit. Use accounts_links_pending for the "
-        "active review queue.",
-    )
+    register_accounts_coarse_writes(mcp)

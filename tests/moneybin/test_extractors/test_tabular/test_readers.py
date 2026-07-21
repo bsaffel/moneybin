@@ -6,7 +6,11 @@ import polars as pl
 import pytest
 
 from moneybin.extractors.tabular.format_detector import FormatInfo
-from moneybin.extractors.tabular.readers import read_file
+from moneybin.extractors.tabular.readers import (
+    _detect_header,  # pyright: ignore[reportPrivateUsage]
+    _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
+    read_file,
+)
 
 
 def _write_csv(path: Path, content: str) -> Path:
@@ -26,6 +30,59 @@ class TestCSVReader:
         result = read_file(f, info)
         assert len(result.df) == 1
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
+
+    def test_unicode_separator_does_not_change_physical_header_index(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Polars skip_rows and header detection count the same physical rows."""
+        path = tmp_path / "unicode-separator.csv"
+        source_bytes = (
+            "Statement\u2028continued\n"
+            "Date,Description,Amount\n"
+            "2026-07-01,Coffee,-4.50\n"
+        ).encode()
+        path.write_bytes(source_bytes)
+        info = FormatInfo(
+            file_type="csv",
+            delimiter=",",
+            encoding="utf-8",
+            file_size=len(source_bytes),
+        )
+
+        result = read_file(path, info, source_bytes=source_bytes)
+
+        assert result.skip_rows == 1
+        assert result.df["Description"].to_list() == ["Coffee"]
+
+    @pytest.mark.parametrize("use_source_bytes", [False, True])
+    def test_header_helpers_split_bare_cr_but_not_unicode_separators(
+        self,
+        tmp_path: Path,
+        use_source_bytes: bool,
+    ) -> None:
+        source_bytes = (
+            "Statement\u0085and\u2028continued\r"
+            "Date,Description,Amount\r"
+            "2026-07-01,Coffee,-4.50\r"
+        ).encode()
+        path = tmp_path / "bare-cr.csv"
+        path.write_bytes(source_bytes)
+        materialized = source_bytes if use_source_bytes else None
+
+        assert _detect_header(
+            path,
+            "utf-8",
+            ",",
+            source_bytes=materialized,
+        ) == (1, True)
+        assert _row_looks_like_data_at(
+            path,
+            "utf-8",
+            ",",
+            2,
+            source_bytes=materialized,
+        )
 
     def test_skip_preamble_rows(self, tmp_path: Path) -> None:
         f = _write_csv(

@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-07-18 -->
 # CLI Reference
 
-MoneyBin's CLI and MCP server drive the same service layer, with parity as the contract — **functional, not nominal**: the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions_get`), and a few operations lag on one side (`categories create`/`set` and `merchants create` are MCP-only today; the per-capability map in [`moneybin-capabilities.md`](../specs/moneybin-capabilities.md) tracks the gaps). Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
+MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
 
@@ -296,7 +296,7 @@ Categorization workflow. Engines: deterministic rules + merchant mappings (local
 | `transactions categorize stats` | Categorization coverage summary (total / categorized / pct / by-source breakdown). | — |
 | `transactions categorize rules list` | List active categorization rules. | — |
 | `transactions categorize rules create <name>` | Create a rule (single or `--from-file <path>` for batch). | `--pattern`, `--match-type {exact,contains,regex}`, `--category`, `--subcategory`, `--priority`, `--reapply` |
-| `transactions categorize rules apply` | Re-apply active rules to existing transactions. | `--reapply` |
+| `transactions categorize rules apply` | Apply only active rules to uncategorized transactions. | — |
 | `transactions categorize rules delete <rule-id>` | Delete a rule. | `--reapply` |
 | `transactions categorize auto review` | List pending auto-rule proposals with sample transactions. | `--limit` |
 | `transactions categorize auto accept <proposal-id>` | Accept one auto-rule proposal. | `--all` |

@@ -11,6 +11,7 @@ from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import ReportQuery, ReportSpec
 from moneybin.tables import TableRef
+from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 
 def _stub_runner(db: Database) -> ReportQuery:  # noqa: ARG001 — contract handle, unused
@@ -19,11 +20,14 @@ def _stub_runner(db: Database) -> ReportQuery:  # noqa: ARG001 — contract hand
 
 def _spec(classes: Mapping[str, DataClass]) -> ReportSpec:
     return ReportSpec(
+        report_id="test:t",
         name="t",
         description="t",
         view=TableRef("reports", "t"),
         runner=_stub_runner,
         classes=classes,
+        columns=output_columns(classes),
+        semantics=TEST_SEMANTICS,
     )
 
 

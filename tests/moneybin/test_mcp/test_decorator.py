@@ -7,8 +7,11 @@ from unittest.mock import patch
 import pytest
 
 from moneybin import error_codes
-from moneybin.mcp.decorator import mcp_tool
+from moneybin.errors import UserError
+from moneybin.mcp.decorator import internal_envelope_adapter, mcp_tool
 from moneybin.mcp.privacy import Sensitivity, log_tool_call
+from moneybin.privacy.introspection import PrivacyContractError
+from moneybin.privacy.payloads.accounts import AccountListPayload
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 
 
@@ -52,10 +55,18 @@ class TestMCPToolDecorator:
     """Tests for the @mcp_tool decorator."""
 
     @pytest.mark.unit
-    def test_decorator_sets_sensitivity_attribute(self) -> None:
-        """dynamic_classification=True tools default to HIGH sensitivity."""
+    def test_decorator_does_not_attach_output_schema(self) -> None:
+        @mcp_tool()
+        def sample() -> ResponseEnvelope[AccountListPayload]:  # type: ignore[return]
+            ...
 
-        @mcp_tool(dynamic_classification=True)
+        assert not hasattr(sample, "_mcp_output_schema")
+
+    @pytest.mark.unit
+    def test_decorator_sets_sensitivity_attribute(self) -> None:
+        """Dynamic tools expose their declared HIGH maximum sensitivity."""
+
+        @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
         def my_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -63,7 +74,7 @@ class TestMCPToolDecorator:
 
     @pytest.mark.unit
     def test_decorator_preserves_function_name(self) -> None:
-        @mcp_tool(dynamic_classification=True)
+        @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
         def reports_spending_summary() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -72,7 +83,7 @@ class TestMCPToolDecorator:
     @pytest.mark.unit
     async def test_decorator_calls_log_tool_call(self) -> None:
 
-        @mcp_tool(dynamic_classification=True)
+        @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
         def my_tool() -> ResponseEnvelope[Any]:
             return ResponseEnvelope(
                 summary=SummaryMeta(total_count=0, returned_count=0),
@@ -90,7 +101,11 @@ class TestMCPToolDecorator:
     def test_decorator_supports_domain(self) -> None:
         """The mcp_tool decorator carries the domain string as an attribute."""
 
-        @mcp_tool(dynamic_classification=True, domain="categorize")
+        @mcp_tool(
+            dynamic_classification=True,
+            maximum_sensitivity=Sensitivity.HIGH,
+            domain="categorize",
+        )
         def example_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -100,7 +115,7 @@ class TestMCPToolDecorator:
     def test_decorator_default_domain_is_none(self) -> None:
         """Tools without an explicit domain are core tools (always visible)."""
 
-        @mcp_tool(dynamic_classification=True)
+        @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
         def example_tool() -> ResponseEnvelope[Any]:  # type: ignore[return]
             ...
 
@@ -110,7 +125,7 @@ class TestMCPToolDecorator:
     async def test_decorator_returns_response_envelope(self) -> None:
         """When a tool returns a ResponseEnvelope, the decorator returns it directly."""
 
-        @mcp_tool(dynamic_classification=True)
+        @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
         def my_tool() -> ResponseEnvelope[Any]:
             return ResponseEnvelope(
                 summary=SummaryMeta(total_count=1, returned_count=1),
@@ -123,23 +138,50 @@ class TestMCPToolDecorator:
         assert result.data == [{"value": 42}]  # pyright: ignore[reportUnknownMemberType]
 
     @pytest.mark.unit
-    async def test_decorator_raises_type_error_for_non_envelope(self) -> None:
-        """Tools that return non-ResponseEnvelope raise TypeError."""
-        import pytest
+    def test_decorator_rejects_non_envelope_return_annotation(self) -> None:
+        """Tools must declare a parameterized response envelope."""
 
-        @mcp_tool(dynamic_classification=True)
-        def my_tool() -> str:  # type: ignore[return]
-            return "plain string result"  # type: ignore[return-value]
+        def my_tool() -> str:
+            return "plain string result"
 
-        with pytest.raises(TypeError, match="expected ResponseEnvelope"):
-            await my_tool()
+        with pytest.raises(
+            PrivacyContractError, match=r"return type must be ResponseEnvelope\[T\]"
+        ):
+            mcp_tool(
+                dynamic_classification=True,
+                maximum_sensitivity=Sensitivity.HIGH,
+            )(my_tool)
+
+
+@pytest.mark.unit
+async def test_internal_envelope_adapter_is_not_public_tool_metadata() -> None:
+    """Internal helpers stay awaitable without becoming MCP registry candidates."""
+
+    @internal_envelope_adapter(sensitivity=Sensitivity.MEDIUM)
+    def helper(*, fail: bool = False) -> ResponseEnvelope[Any]:
+        if fail:
+            raise UserError("declined", code="DECLINED")
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=1, returned_count=1),
+            data=[{"value": 42}],
+        )
+
+    assert not any(name.startswith("_mcp_") for name in vars(helper))
+
+    success = await helper()
+    assert success.summary.sensitivity == "medium"
+
+    failure = await helper(fail=True)
+    assert failure.error is not None
+    assert failure.error.code == "DECLINED"
+    assert failure.summary.sensitivity == "low"
 
 
 @pytest.mark.unit
 def test_mcp_tool_default_annotations() -> None:
     """Defaults: read_only=True, destructive=False, idempotent=True, open_world=False."""
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def example() -> ResponseEnvelope[Any]:  # type: ignore[return]
         ...
 
@@ -253,6 +295,7 @@ def test_mcp_tool_explicit_annotations() -> None:
 
     @mcp_tool(
         dynamic_classification=True,
+        maximum_sensitivity=Sensitivity.HIGH,
         read_only=False,
         destructive=True,
         idempotent=False,
@@ -273,7 +316,11 @@ async def test_max_items_under_cap_passes() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(dynamic_classification=True, max_items=10)
+    @mcp_tool(
+        dynamic_classification=True,
+        maximum_sensitivity=Sensitivity.HIGH,
+        max_items=10,
+    )
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -288,7 +335,11 @@ async def test_max_items_over_cap_returns_error() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(dynamic_classification=True, max_items=2)
+    @mcp_tool(
+        dynamic_classification=True,
+        maximum_sensitivity=Sensitivity.HIGH,
+        max_items=2,
+    )
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -307,7 +358,11 @@ async def test_max_items_empty_list_passes() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(dynamic_classification=True, max_items=2)
+    @mcp_tool(
+        dynamic_classification=True,
+        maximum_sensitivity=Sensitivity.HIGH,
+        max_items=2,
+    )
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -321,7 +376,11 @@ async def test_max_items_disabled_with_none() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(dynamic_classification=True, max_items=None)
+    @mcp_tool(
+        dynamic_classification=True,
+        maximum_sensitivity=Sensitivity.HIGH,
+        max_items=None,
+    )
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -338,7 +397,7 @@ async def test_max_items_default_inherits_settings(
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def fn(items: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"count": len(items)})
 
@@ -358,7 +417,11 @@ async def test_max_items_multiple_list_params_each_capped() -> None:
     from moneybin.mcp.decorator import mcp_tool
     from moneybin.protocol.envelope import build_envelope
 
-    @mcp_tool(dynamic_classification=True, max_items=2)
+    @mcp_tool(
+        dynamic_classification=True,
+        maximum_sensitivity=Sensitivity.HIGH,
+        max_items=2,
+    )
     def fn(accept: list[str], reject: list[str]) -> ResponseEnvelope[Any]:
         return build_envelope(data={"a": len(accept), "r": len(reject)})
 
@@ -379,6 +442,7 @@ async def test_register_emits_tool_annotations() -> None:
 
     @mcp_tool(
         dynamic_classification=True,
+        maximum_sensitivity=Sensitivity.HIGH,
         read_only=False,
         destructive=True,
         idempotent=False,
@@ -396,3 +460,167 @@ async def test_register_emits_tool_annotations() -> None:
     assert write.annotations.destructiveHint is True
     assert write.annotations.idempotentHint is False
     assert write.annotations.openWorldHint is False
+
+
+@pytest.mark.unit
+async def test_register_input_schema_extra_is_opt_in_and_validated() -> None:
+    """A schema overlay changes only the explicitly enhanced registration."""
+    from fastmcp import FastMCP
+
+    from moneybin.mcp._registration import register
+    from moneybin.protocol.envelope import build_envelope
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    def state_tool(
+        state: str = "present",
+        amount: float | None = None,
+    ) -> ResponseEnvelope[Any]:
+        return build_envelope(data={"state": state, "amount": amount})
+
+    base = FastMCP("base")
+    enhanced = FastMCP("enhanced")
+    register(base, state_tool, "state_tool", "Base schema.")
+    register(
+        enhanced,
+        state_tool,
+        "state_tool",
+        "Enhanced schema.",
+        input_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"state": {"const": "present"}},
+                        "required": ["state"],
+                    },
+                    "then": {"required": ["amount"]},
+                }
+            ]
+        },
+    )
+
+    base_tool = (await base._list_tools())[0]  # pyright: ignore[reportPrivateUsage]
+    enhanced_tool = (
+        await enhanced._list_tools()  # pyright: ignore[reportPrivateUsage]
+    )[0]
+    assert "allOf" not in base_tool.parameters
+    assert enhanced_tool.parameters == base_tool.parameters | {
+        "allOf": [
+            {
+                "if": {
+                    "properties": {"state": {"const": "present"}},
+                    "required": ["state"],
+                },
+                "then": {"required": ["amount"]},
+            }
+        ]
+    }
+
+    invalid = FastMCP("invalid")
+    with pytest.raises(ValueError, match="unknown parameter"):
+        register(
+            invalid,
+            state_tool,
+            "state_tool",
+            "Invalid schema.",
+            input_schema_extra={"allOf": [{"then": {"required": ["missing"]}}]},
+        )
+    with pytest.raises(ValueError, match="cannot replace"):
+        register(
+            invalid,
+            state_tool,
+            "state_tool",
+            "Invalid schema.",
+            input_schema_extra={"properties": {}},
+        )
+
+
+@pytest.mark.unit
+async def test_register_privacy_actor_override_preserves_default_actor() -> None:
+    """An explicit public actor changes only that registration's provenance."""
+    from fastmcp import Client, FastMCP
+
+    from moneybin.mcp._registration import register
+    from moneybin.protocol.envelope import build_envelope
+
+    captured: list[dict[str, Any]] = []
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    def internal_default() -> ResponseEnvelope[Any]:
+        return build_envelope(
+            data={"ok": True},
+            classes_returned=["txn_type"],
+        )
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    def internal_replacement() -> ResponseEnvelope[Any]:
+        return build_envelope(
+            data={"ok": True},
+            classes_returned=["txn_type"],
+        )
+
+    mcp = FastMCP("privacy-actor")
+    register(mcp, internal_default, "public_default", "Default provenance.")
+    register(
+        mcp,
+        internal_replacement,
+        "public_replacement",
+        "Replacement provenance.",
+        privacy_actor="public_replacement",
+    )
+
+    with patch(
+        "moneybin.mcp.decorator.write_privacy_event",
+        captured.append,
+    ):
+        async with Client(mcp) as client:
+            await client.call_tool("public_default", {})
+            await client.call_tool("public_replacement", {})
+
+    assert [event["actor"] for event in captured] == [
+        "mcp.internal_default",
+        "mcp.public_replacement",
+    ]
+
+
+@pytest.mark.unit
+async def test_registered_result_uses_one_canonical_wire_value() -> None:
+    """Text and structured content use the same serialized envelope."""
+    import json
+    from decimal import Decimal
+
+    from fastmcp import Client, FastMCP
+    from mcp.types import TextContent
+
+    from moneybin.errors import RecoveryAction
+    from moneybin.mcp._registration import register
+
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+    def decimal_tool() -> ResponseEnvelope[Any]:
+        return ResponseEnvelope(
+            summary=SummaryMeta(total_count=1, returned_count=1),
+            data=[{"amount": Decimal("12.34")}],
+            recovery_actions=[
+                RecoveryAction(
+                    tool="sql_query",
+                    arguments={"query": "SELECT 1"},
+                    rationale="Retry the read.",
+                    confidence="suggested",
+                    idempotent=True,
+                )
+            ],
+        )
+
+    mcp = FastMCP("wire-contract")
+    register(mcp, decimal_tool, "decimal_tool", "Return a Decimal amount.")
+
+    async with Client(mcp) as client:
+        result = await client.call_tool("decimal_tool", {})
+
+    text = next(
+        block.text for block in result.content if isinstance(block, TextContent)
+    )
+    structured_content = result.structured_content
+    assert structured_content is not None
+    assert json.loads(text) == structured_content
+    assert structured_content["data"][0]["amount"] == 12.34
+    assert structured_content["recovery_actions"][0]["tool"] == "sql_query"

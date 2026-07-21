@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ReportQuery, report
+from moneybin.reports._framework.contract import (
+    OutputColumn,
+    ReportQuery,
+    ReportSemantics,
+    report,
+)
 from moneybin.reports.definitions._shared import DRIFT_STATUSES, validate_date
 from moneybin.services.account_service import AccountService
 from moneybin.tables import REPORTS_BALANCE_DRIFT
 
 
 @report(
+    report_id="core:balance_drift",
     name="balance_drift",
     view=REPORTS_BALANCE_DRIFT,
     classes={
-        "account_id": DataClass.ACCOUNT_IDENTIFIER,
+        "account_id": DataClass.RECORD_ID,
         # dim_accounts.display_name (user-authored) → USER_NOTE; not the bank's
         # official_name (INSTITUTION) nor gsheet_connections.account_name.
         "account_name": DataClass.USER_NOTE,
@@ -31,6 +37,68 @@ from moneybin.tables import REPORTS_BALANCE_DRIFT
         "days_since_assertion": DataClass.TXN_DATE,
         "status": DataClass.TXN_TYPE,
     },
+    parameter_classes={
+        "account": DataClass.ACCOUNT_IDENTIFIER,
+        "status": DataClass.TXN_TYPE,
+        "since": DataClass.TXN_DATE,
+    },
+    columns=(
+        OutputColumn("account_id", "Owning account identifier.", DataClass.RECORD_ID),
+        OutputColumn("account_name", "Account display name.", DataClass.USER_NOTE),
+        OutputColumn(
+            "assertion_date", "User-asserted balance date.", DataClass.TXN_DATE
+        ),
+        OutputColumn(
+            "asserted_balance",
+            "User-entered balance as of assertion_date.",
+            DataClass.BALANCE,
+        ),
+        OutputColumn(
+            "computed_balance",
+            "Independent transaction-derived position as of assertion_date.",
+            DataClass.BALANCE,
+        ),
+        OutputColumn(
+            "drift",
+            "Asserted balance minus computed balance.",
+            DataClass.TXN_AMOUNT,
+        ),
+        OutputColumn("drift_abs", "Absolute balance drift.", DataClass.TXN_AMOUNT),
+        OutputColumn(
+            "drift_pct",
+            "Drift divided by asserted balance.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
+            "days_since_assertion",
+            "Days from assertion_date through current date.",
+            DataClass.TXN_DATE,
+        ),
+        OutputColumn("status", "Reconciliation status bucket.", DataClass.TXN_TYPE),
+    ),
+    semantics=ReportSemantics(
+        unit="currency",
+        currency="summary.display_currency",
+        sign="drift is asserted balance minus computed balance; drift_abs is unsigned",
+        kind="position",
+        valuation_basis=(
+            "transaction-derived position reconstructed from daily balance minus "
+            "reconciliation_delta"
+        ),
+        fx_basis="no FX conversion in v1; assumes single-currency inputs",
+        time_basis=(
+            "asserted and transaction-derived positions compared as of "
+            "assertion_date; freshness measured from assertion_date through "
+            "current date"
+        ),
+        denominator="asserted_balance for drift_pct; null when asserted balance is zero",
+        comparison_window=(
+            "asserted position versus independent transaction-derived position on "
+            "assertion_date"
+        ),
+        exclusions=("archived accounts",),
+        provenance=("reports.balance_drift",),
+    ),
     class_downgrades={
         "drift_pct": "ratio of two already-declared BALANCE columns "
         "(drift / asserted_balance); a percentage reveals no absolute "
@@ -48,8 +116,8 @@ def balance_drift(
 ) -> ReportQuery:
     """Balance reconciliation drift: asserted vs computed, one row per assertion.
 
-    Amounts use the accounting convention (negative = expense, positive =
-    income) in the currency named by summary.display_currency.
+    Balances are positions in summary.display_currency. Drift is asserted balance
+    minus the independent transaction-derived position for assertion_date.
 
     Args:
         db: Open read-only database connection.
@@ -59,8 +127,8 @@ def balance_drift(
         since: ISO date; only assertions on or after.
 
     Examples:
-        reports_balance_drift(status="drift")
-        reports_balance_drift(account="Checking")
+        reports(report_id="core:balance_drift", parameters={"status": "drift"})
+        reports(report_id="core:balance_drift", parameters={"account": "Checking"})
     """
     if status not in DRIFT_STATUSES:
         raise ValueError(f"Unknown status: {status}")
@@ -90,7 +158,9 @@ def balance_drift(
     sql += " ORDER BY drift_abs DESC"
 
     actions = [
-        "Filter to one account with account='<name or id>'",
-        "Narrow to flagged rows with status='drift' (also: warning, clean, no-data)",
+        "Rerun reports(report_id='core:balance_drift', "
+        "parameters={'account': '<name or id>'}) to filter to one account",
+        "Rerun reports(report_id='core:balance_drift', "
+        "parameters={'status': 'drift'}) to show drift rows",
     ]
     return ReportQuery(sql, params, actions=actions)

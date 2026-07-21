@@ -41,8 +41,10 @@ from moneybin.connectors.sync_errors import (
 from moneybin.connectors.sync_models import (
     AuthToken,
     ConnectedInstitution,
+    DeviceAuthorizationChallenge,
     LinkInitiateResponse,
     LinkStatusResponse,
+    LoginPollResult,
     SyncAckResponse,
     SyncDataResponse,
     SyncTriggerResponse,
@@ -214,12 +216,8 @@ class SyncClient:
 
     # ------------------------------ Login ------------------------------
 
-    def login(self, *, open_browser: bool = True) -> None:
-        """Device Authorization Flow (RFC 8628).
-
-        Displays user_code + verification URL on stderr, optionally opens the
-        browser, then polls for the access token. Stores token + refresh token.
-        """
+    def begin_login(self) -> DeviceAuthorizationChallenge:
+        """Begin RFC 8628 device authorization without polling or opening a browser."""
         try:
             code_resp = self._client.post("/auth/device/code")
         except httpx.RequestError as e:
@@ -227,57 +225,62 @@ class SyncClient:
                 f"sync server unreachable at {self._server_url}: {e}"
             ) from e
         code_resp.raise_for_status()
-        code_data = code_resp.json()
-        user_code = code_data["user_code"]
-        uri = code_data["verification_uri_complete"]
-        interval = float(code_data.get("interval", 5))
-        device_code = code_data["device_code"]
+        return DeviceAuthorizationChallenge.model_validate(code_resp.json())
 
+    def poll_login(self, device_code: str) -> LoginPollResult:
+        """Poll device authorization once and persist tokens only on completion."""
+        token_body: dict[str, str] = {"device_code": device_code}
+        if self._profile_id:
+            token_body["profile_id"] = self._profile_id
+        try:
+            poll = self._client.post("/auth/device/token", json=token_body)
+        except httpx.RequestError as e:
+            raise SyncAPIError(
+                f"sync server unreachable at {self._server_url}: {e}"
+            ) from e
+        if poll.status_code == 200:
+            token = AuthToken.model_validate(poll.json())
+            self._store_tokens(
+                access_token=token.access_token,
+                refresh_token=token.refresh_token,
+            )
+            return LoginPollResult(status="authenticated")
+        if poll.status_code == 202:
+            status = poll.json().get("status")
+            if status in {"pending", "slow_down"}:
+                return LoginPollResult(status=status)
+            raise SyncAPIError(f"unexpected 202 status: {status}")
+        if poll.status_code == 403:
+            raise SyncAuthError("user denied device authorization")
+        if poll.status_code == 400:
+            raise SyncAuthError("device code expired or invalid; restart login")
+        raise SyncAPIError(
+            f"unexpected status {poll.status_code} from /auth/device/token"
+        )
+
+    def login(self, *, open_browser: bool = True) -> None:
+        """Run the blocking CLI wrapper over the nonblocking device flow."""
+        challenge = self.begin_login()
+        uri = challenge.verification_uri_complete or challenge.verification_uri
+        if uri is None:  # pragma: no cover — validated by the response model
+            raise SyncAPIError("device authorization response omitted verification URI")
         print(f"To sign in, visit: {uri}", file=sys.stderr)  # noqa: T201
-        print(f"Code: {user_code}", file=sys.stderr)  # noqa: T201
+        print(f"Code: {challenge.user_code}", file=sys.stderr)  # noqa: T201
         if open_browser:
             try:
                 webbrowser.open(uri)
             except webbrowser.Error:
                 pass  # fall through; URL already printed
 
-        # Send profile_id only when set, so the request to a legacy server (no
-        # such field) is byte-for-byte unchanged. The broker namespaces the JWT
-        # subject per profile when present.
-        token_body: dict[str, str] = {"device_code": device_code}
-        if self._profile_id:
-            token_body["profile_id"] = self._profile_id
-
+        interval = challenge.interval
+        device_code = challenge.device_code.get_secret_value()
         while True:
             self._sleep(interval)
-            try:
-                poll = self._client.post("/auth/device/token", json=token_body)
-            except httpx.RequestError as e:
-                raise SyncAPIError(
-                    f"sync server unreachable at {self._server_url}: {e}"
-                ) from e
-            if poll.status_code == 200:
-                token = AuthToken.model_validate(poll.json())
-                self._store_tokens(
-                    access_token=token.access_token,
-                    refresh_token=token.refresh_token,
-                )
+            result = self.poll_login(device_code)
+            if result.status == "authenticated":
                 return
-            if poll.status_code == 202:
-                status = poll.json().get("status")
-                if status == "slow_down":
-                    interval += 5.0  # RFC 8628 §3.5
-                    continue
-                if status == "pending":
-                    continue
-                raise SyncAPIError(f"unexpected 202 status: {status}")
-            if poll.status_code == 403:
-                raise SyncAuthError("user denied device authorization")
-            if poll.status_code == 400:
-                raise SyncAuthError("device code expired or invalid; restart login")
-            raise SyncAPIError(
-                f"unexpected status {poll.status_code} from /auth/device/token"
-            )
+            if result.status == "slow_down":
+                interval += 5.0  # RFC 8628 §3.5
 
     # ------------------------------ Authed transport ------------------------------
 

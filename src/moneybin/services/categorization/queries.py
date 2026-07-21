@@ -25,6 +25,7 @@ from moneybin.privacy.payloads.categories import (
     MerchantsPayload,
 )
 from moneybin.privacy.payloads.categorize import (
+    CategorizationRuleSnapshot,
     CategorizeRulesPayload,
     CategorizeStatsPayload,
     RuleRow,
@@ -161,7 +162,7 @@ class CategorizationQueries:
                        min_amount, max_amount, account_id,
                        category, subcategory, priority, is_active
                 FROM {CATEGORIZATION_RULES.full_name}
-                ORDER BY priority ASC, created_at ASC
+                ORDER BY priority ASC, created_at ASC, rule_id ASC
                 """
             ).fetchall()
         except duckdb.CatalogException:
@@ -185,6 +186,45 @@ class CategorizationQueries:
                 for r in rows
             ]
         )
+
+    def list_rule_snapshots(self, *, active: bool) -> list[CategorizationRuleSnapshot]:
+        """List exact current rule states with a stable final identity key."""
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT rule_id, name, merchant_pattern, match_type,
+                       min_amount, max_amount, account_id,
+                       category, subcategory, category_id, priority, is_active,
+                       created_by, created_at, updated_at
+                FROM {CATEGORIZATION_RULES.full_name}
+                WHERE is_active = ?
+                ORDER BY priority ASC, created_at ASC, rule_id ASC
+                """,  # noqa: S608  # TableRef + parameterized value
+                [active],
+            ).fetchall()
+        except duckdb.CatalogException:
+            return []
+
+        return [
+            CategorizationRuleSnapshot(
+                rule_id=str(row[0]),
+                name=row[1],
+                merchant_pattern=row[2],
+                match_type=row[3],
+                min_amount=row[4],
+                max_amount=row[5],
+                account_id=row[6],
+                category=row[7],
+                subcategory=row[8],
+                category_id=row[9],
+                priority=int(row[10]) if row[10] is not None else None,
+                is_active=bool(row[11]) if row[11] is not None else None,
+                created_by=row[12],
+                created_at=row[13].isoformat() if row[13] is not None else None,
+                updated_at=row[14].isoformat() if row[14] is not None else None,
+            )
+            for row in rows
+        ]
 
     def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""
@@ -217,7 +257,7 @@ class CategorizationQueries:
     def list_uncategorized_transactions(
         self,
         *,
-        limit: int,
+        limit: int | None,
         sort: Literal["date", "impact"] = "date",
         min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
@@ -241,7 +281,11 @@ class CategorizationQueries:
         if sort not in {"date", "impact"}:
             raise ValueError(f"Unknown sort: {sort!r}; expected 'date' or 'impact'")
 
-        order = "priority_score DESC" if sort == "impact" else "txn_date DESC"
+        order = (
+            "priority_score DESC, transaction_id ASC"
+            if sort == "impact"
+            else "txn_date DESC, transaction_id ASC"
+        )
         sql = f"""
             SELECT transaction_id, account_id, account_name, txn_date, amount,
                    description, merchant_id, merchant_normalized, age_days,
@@ -253,8 +297,10 @@ class CategorizationQueries:
         if account_id is not None:
             sql += " AND account_id = ?"
             params.append(account_id)
-        sql += f" ORDER BY {order} LIMIT ?"  # noqa: S608  # order from allowlisted set
-        params.append(limit)
+        sql += f" ORDER BY {order}"  # noqa: S608  # order from allowlisted set
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
 
         try:
             result = self._db.execute(sql, params)
@@ -277,6 +323,23 @@ class CategorizationQueries:
         for row in result_rows:
             row["pending_transfer_match"] = row["transaction_id"] in pending_matches
         return result_rows
+
+    def list_categorization_history(self) -> list[dict[str, Any]]:
+        """Return persisted transaction-category decisions in stable newest-first order."""
+        try:
+            result = self._db.execute(
+                f"""
+                SELECT transaction_id, category, subcategory, category_id,
+                       categorized_at, categorized_by, merchant_id, confidence,
+                       rule_id, source_type
+                FROM {TRANSACTION_CATEGORIES.full_name}
+                ORDER BY categorized_at DESC NULLS LAST, transaction_id DESC
+                """  # noqa: S608  # TableRef constant, no user values
+            )
+            columns = [desc[0] for desc in result.description]
+            return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+        except duckdb.CatalogException:
+            return []
 
     def _transactions_with_pending_matches(self) -> set[str]:
         """Return gold transaction_ids that have an unresolved match decision.

@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from moneybin.mcp.decorator import mcp_tool
+from moneybin.mcp.privacy import Sensitivity
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta
 from moneybin.services.mutation_context import current_operation_id
 
@@ -27,7 +28,7 @@ def _empty_envelope() -> ResponseEnvelope[Any]:
 async def test_one_call_groups_reads_under_one_operation_id() -> None:
     seen: list[str] = []
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def my_tool() -> ResponseEnvelope[Any]:
         # Two reads inside the sync body (run in a worker thread) must agree.
         seen.append(current_operation_id())
@@ -44,7 +45,7 @@ async def test_one_call_groups_reads_under_one_operation_id() -> None:
 async def test_separate_calls_get_distinct_operation_ids() -> None:
     seen: list[str] = []
 
-    @mcp_tool(dynamic_classification=True)
+    @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def my_tool() -> ResponseEnvelope[Any]:
         seen.append(current_operation_id())
         return _empty_envelope()

@@ -9,9 +9,16 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    SecretStr,
+    model_validator,
+)
 
 
 def _blank_to_none(value: object) -> object:
@@ -45,6 +52,29 @@ class AuthToken(BaseModel):
     refresh_token: str
     expires_in: int = Field(gt=0)
     token_type: Literal["Bearer"] = "Bearer"  # noqa: S105  # literal constant, not a hardcoded password
+
+
+class DeviceAuthorizationChallenge(BaseModel):
+    """Safe user challenge plus the secret device code retained by the client."""
+
+    device_code: SecretStr
+    user_code: str
+    verification_uri: str | None = None
+    verification_uri_complete: str | None = None
+    expires_in: int = Field(gt=0)
+    interval: float = Field(default=5.0, ge=0)
+
+    @model_validator(mode="after")
+    def _require_verification_uri(self) -> Self:
+        if self.verification_uri is None and self.verification_uri_complete is None:
+            raise ValueError("A verification URI is required")
+        return self
+
+
+class LoginPollResult(BaseModel):
+    """One nonblocking device-authorization poll outcome."""
+
+    status: Literal["pending", "slow_down", "authenticated"]
 
 
 class LinkInitiateResponse(BaseModel):

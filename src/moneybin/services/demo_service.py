@@ -338,6 +338,13 @@ class DemoService:
             failing_names = [r.name for r in report.invariants if r.status == "fail"]
             snapshot = NetworthService(db).current()
 
+        if (
+            snapshot.net_worth is None
+            or snapshot.total_assets is None
+            or snapshot.total_liabilities is None
+        ):
+            raise DemoRefreshFailedError("net worth unavailable after refresh")
+
         # 9. Only now — a complete, successful run — make demo the persisted
         #    default so the next command lands on it. Report the profile we
         #    displaced: silently repointing every later command at `demo` is

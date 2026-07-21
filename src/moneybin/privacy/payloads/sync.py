@@ -20,7 +20,9 @@ Tier derivation summary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.taxonomy import DataClass
 
@@ -133,6 +135,38 @@ class SyncLinkPayload:
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+class SyncInstitutionLinkView(BaseModel):
+    """One mediated institution-link session."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
+    session_id: Annotated[str, DataClass.RECORD_ID]
+    link_url: Annotated[str, DataClass.DESCRIPTION]
+    expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+class SyncAuthView(BaseModel):
+    """One safe nonblocking device-auth session result."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["auth"], DataClass.TXN_TYPE] = "auth"
+    auth_session_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    user_code: Annotated[str | None, DataClass.DESCRIPTION]
+    verification_url: Annotated[str | None, DataClass.DESCRIPTION]
+    expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    replayed: Annotated[bool, DataClass.TXN_TYPE] = False
+    error_code: Annotated[str | None, DataClass.TXN_TYPE] = None
+
+
+SyncLinkCoarsePayload = Annotated[
+    SyncInstitutionLinkView | SyncAuthView,
+    Field(discriminator="kind"),
+]
+
+
 # ---------------------------------------------------------------------------
 # sync_link_status — link session status payload
 # ---------------------------------------------------------------------------
@@ -150,6 +184,35 @@ class SyncLinkStatusPayload:
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+class SyncGlobalStatusView(BaseModel):
+    """Global consolidated sync status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["global"], DataClass.TXN_TYPE] = "global"
+    connections: list[SyncConnectionRow]
+
+
+class SyncSessionStatusView(BaseModel):
+    """One consolidated link-session status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["session"], DataClass.TXN_TYPE] = "session"
+    session_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    provider_item_id: Annotated[str | None, DataClass.RECORD_ID]
+    institution_name: Annotated[str | None, DataClass.INSTITUTION]
+    error: Annotated[str | None, DataClass.DESCRIPTION]
+    expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+
+
+SyncStatusCoarsePayload = Annotated[
+    SyncGlobalStatusView | SyncSessionStatusView | SyncAuthView,
+    Field(discriminator="kind"),
+]
+
+
 # ---------------------------------------------------------------------------
 # sync_disconnect — disconnect result payload
 # ---------------------------------------------------------------------------
@@ -165,6 +228,32 @@ class SyncDisconnectPayload:
 
     status: Annotated[str, DataClass.TXN_TYPE]
     institution: Annotated[str, DataClass.INSTITUTION]
+
+
+class SyncInstitutionDisconnectView(BaseModel):
+    """Confirmation that one institution was disconnected."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["institution"], DataClass.TXN_TYPE] = "institution"
+    status: Annotated[Literal["disconnected"], DataClass.TXN_TYPE]
+    institution: Annotated[str, DataClass.INSTITUTION]
+
+
+class SyncLogoutView(BaseModel):
+    """Confirmation that scoped broker credentials were cleared."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["auth"], DataClass.TXN_TYPE] = "auth"
+    status: Annotated[Literal["logged_out"], DataClass.TXN_TYPE]
+    cleared_auth_sessions: Annotated[int, DataClass.AGGREGATE]
+
+
+SyncDisconnectCoarsePayload = Annotated[
+    SyncInstitutionDisconnectView | SyncLogoutView,
+    Field(discriminator="kind"),
+]
 
 
 # ---------------------------------------------------------------------------

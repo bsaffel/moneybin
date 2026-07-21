@@ -14,6 +14,7 @@ revert operation itself lives on the service, not here.
 import json
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Literal
 
 from moneybin.database import Database
@@ -36,6 +37,20 @@ logger = logging.getLogger(__name__)
 
 _SourceType = Literal[
     "csv", "tsv", "excel", "parquet", "feather", "pipe", "ofx", "manual", "pdf"
+]
+
+_IMPORT_HISTORY_COLUMNS = [
+    "import_id",
+    "source_file",
+    "source_type",
+    "source_origin",
+    "format_name",
+    "status",
+    "rows_imported",
+    "rows_rejected",
+    "detection_confidence",
+    "started_at",
+    "completed_at",
 ]
 
 
@@ -239,20 +254,111 @@ def get_import_history(
             [limit],
         ).fetchall()
 
-    columns = [
-        "import_id",
-        "source_file",
-        "source_type",
-        "source_origin",
-        "format_name",
-        "status",
-        "rows_imported",
-        "rows_rejected",
-        "detection_confidence",
-        "started_at",
-        "completed_at",
-    ]
-    return [dict(zip(columns, row, strict=True)) for row in rows]
+    return [dict(zip(_IMPORT_HISTORY_COLUMNS, row, strict=True)) for row in rows]
+
+
+@dataclass(frozen=True)
+class ImportHistoryPage:
+    """One keyset page bound to an immutable import-history high-water mark."""
+
+    records: list[dict[str, str | int | None]]
+    total_count: int
+    snapshot_started_at: str | None
+    snapshot_import_id: str | None
+    has_more: bool
+
+
+def get_import_history_page(
+    db: Database,
+    *,
+    limit: int,
+    snapshot_started_at: str | None = None,
+    snapshot_import_id: str | None = None,
+    after_started_at: str | None = None,
+    after_import_id: str | None = None,
+    snapshot_total: int | None = None,
+) -> ImportHistoryPage:
+    """Read one bounded ``started_at DESC, import_id DESC`` keyset page."""
+    if limit < 0:
+        raise ValueError("limit must be non-negative")
+    if (snapshot_started_at is None) != (snapshot_import_id is None):
+        raise ValueError("snapshot fields must be supplied together")
+    if (after_started_at is None) != (after_import_id is None):
+        raise ValueError("after fields must be supplied together")
+    if snapshot_total is not None and snapshot_total < 0:
+        raise ValueError("snapshot_total must be non-negative")
+
+    if snapshot_started_at is None:
+        head = db.execute(
+            f"""
+            SELECT started_at, import_id
+            FROM {IMPORT_LOG.full_name}
+            ORDER BY started_at DESC, import_id DESC
+            LIMIT 1
+            """  # noqa: S608  # TableRef constant
+        ).fetchone()
+        if head is None:
+            return ImportHistoryPage(
+                records=[],
+                total_count=0,
+                snapshot_started_at=None,
+                snapshot_import_id=None,
+                has_more=False,
+            )
+        snapshot_started_at = str(head[0])
+        snapshot_import_id = str(head[1])
+
+    if snapshot_total is None:
+        count_row = db.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {IMPORT_LOG.full_name}
+            WHERE started_at < CAST(? AS TIMESTAMP)
+               OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
+            """,  # noqa: S608  # TableRef constant + parameterized keyset bound
+            [snapshot_started_at, snapshot_started_at, snapshot_import_id],
+        ).fetchone()
+        snapshot_total = int(count_row[0]) if count_row is not None else 0
+
+    rows = db.execute(
+        f"""
+            SELECT import_id, source_file, source_type, source_origin,
+                   format_name, status, rows_imported, rows_rejected,
+                   detection_confidence, started_at, completed_at
+            FROM {IMPORT_LOG.full_name}
+            WHERE (
+                   started_at < CAST(? AS TIMESTAMP)
+               OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
+            )
+              AND (
+                   CAST(? AS TIMESTAMP) IS NULL
+                OR started_at < CAST(? AS TIMESTAMP)
+                OR (started_at = CAST(? AS TIMESTAMP) AND import_id < ?)
+              )
+            ORDER BY started_at DESC, import_id DESC
+            LIMIT ?
+            """,  # noqa: S608  # TableRef constant + parameterized snapshot head
+        [
+            snapshot_started_at,
+            snapshot_started_at,
+            snapshot_import_id,
+            after_started_at,
+            after_started_at,
+            after_started_at,
+            after_import_id,
+            limit + 1,
+        ],
+    ).fetchall()
+    page_rows = rows[:limit]
+    return ImportHistoryPage(
+        records=[
+            dict(zip(_IMPORT_HISTORY_COLUMNS, row, strict=True)) for row in page_rows
+        ],
+        total_count=snapshot_total,
+        snapshot_started_at=snapshot_started_at,
+        snapshot_import_id=snapshot_import_id,
+        has_more=len(rows) > limit,
+    )
 
 
 def find_existing_import(

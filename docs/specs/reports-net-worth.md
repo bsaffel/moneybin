@@ -240,10 +240,16 @@ Tool naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-su
 **`reports_networth`** — Current or historical net worth.
 - Params: `as_of_date` (optional DATE), `account_ids` (optional list of VARCHAR)
 - Returns: total net worth, total assets, total liabilities, per-account breakdown with balance and source, as-of date
+- No-data contract: if no position exists on or before the requested date,
+  `balance_date`, `net_worth`, `total_assets`, and `total_liabilities` are null;
+  `account_count` is `0` and the account breakdown is empty. A missing position is
+  never synthesized as a zero balance or assigned the current date.
 
 **`reports_networth_history`** — Net worth time series.
 - Params: `from_date` (DATE), `to_date` (DATE), `interval` (daily|weekly|monthly, default monthly)
 - Returns: time series with net worth, period-over-period change (absolute and percentage), account count
+- Each returned period uses its last resolved transaction-adjusted daily
+  position; periods without a position are omitted.
 
 **`accounts_balances`** — Current balance per account.
 - Params: `account_ids` (optional list), `as_of_date` (optional DATE)

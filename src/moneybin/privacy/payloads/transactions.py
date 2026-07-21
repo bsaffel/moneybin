@@ -58,10 +58,34 @@ class TransactionRow:
 
 @dataclass(frozen=True, slots=True)
 class TransactionGetPayload:
-    """Payload for transactions_get."""
+    """Operational transaction payload shared by live and dormant reads."""
 
     transactions: list[TransactionRow]
     next_cursor: Annotated[str | None, DataClass.AGGREGATE]
+
+
+# ---------------------------------------------------------------------------
+# transactions_annotate
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionAnnotationOutcome:
+    """One requested annotation mutation, retained in request order."""
+
+    kind: Annotated[str, DataClass.TXN_TYPE]
+    target_ids: Annotated[list[str], DataClass.RECORD_ID]
+    changed: Annotated[bool, DataClass.TXN_TYPE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionAnnotationBatchPayload:
+    """Payload for ``transactions_annotate`` — atomic annotation outcomes."""
+
+    applied_count: Annotated[int, DataClass.AGGREGATE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
+    outcomes: list[TransactionAnnotationOutcome]
 
 
 # ---------------------------------------------------------------------------

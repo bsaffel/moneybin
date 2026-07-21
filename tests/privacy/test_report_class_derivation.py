@@ -80,6 +80,13 @@ def test_balance_columns_derive_from_app_schema() -> None:
     assert drift["asserted_balance"] is DataClass.BALANCE
 
 
+def test_spending_trend_year_month_derives_from_transaction_date() -> None:
+    """Dense generated months retain the source transaction-date class."""
+    spending = derive_report_classes()[("reports", "spending_trend")]
+
+    assert spending["year_month"] is DataClass.TXN_DATE
+
+
 def test_derivation_never_falls_back_silently(tmp_path: Path) -> None:
     """Derivation must raise, not log-and-guess, on an unresolvable projection.
 

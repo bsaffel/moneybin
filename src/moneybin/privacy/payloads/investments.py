@@ -39,7 +39,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.taxonomy import DataClass
 
@@ -398,6 +400,83 @@ class InvestmentSecuritiesPayload:
             rows=[InvestmentSecurityRow.from_row(r) for r in result.rows],
             warnings=result.warnings,
         )
+
+
+# ---------------------------------------------------------------------------
+# Dormant coarse investment read
+# ---------------------------------------------------------------------------
+
+
+class InvestmentsEventsView(BaseModel):
+    """Paginated investment-ledger events."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["events"] = "events"
+    rows: list[InvestmentEventRow]
+    warnings: Annotated[list[str], DataClass.AGGREGATE]
+
+
+class InvestmentsHoldingsView(BaseModel):
+    """Paginated current positions with portfolio-level valuation.
+
+    The three portfolio fields mirror ``InvestmentHoldingsPayload``'s (same
+    classifications, same rationale). They are computed over the full position
+    set, so a paginated ``rows`` page does not change them.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["holdings"] = "holdings"
+    rows: list[InvestmentHoldingRow]
+    warnings: Annotated[list[str], DataClass.AGGREGATE]
+    max_days_since_observed: Annotated[
+        int | None, DataClass.TIMESTAMP_OBSERVABILITY
+    ] = None
+    total_market_value: Annotated[Decimal | None, DataClass.BALANCE] = None
+    market_value_by_currency: Annotated[dict[str, Decimal], DataClass.BALANCE] = Field(
+        default_factory=dict
+    )
+
+
+class InvestmentsLotsView(BaseModel):
+    """Paginated open tax lots."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["lots"] = "lots"
+    rows: list[InvestmentLotRow]
+    warnings: Annotated[list[str], DataClass.AGGREGATE]
+
+
+class InvestmentsGainsView(BaseModel):
+    """Paginated realized gains."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["gains"] = "gains"
+    rows: list[InvestmentGainRow]
+    warnings: Annotated[list[str], DataClass.AGGREGATE]
+
+
+class InvestmentsSecuritiesView(BaseModel):
+    """Paginated securities catalog."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["securities"] = "securities"
+    rows: list[InvestmentSecurityRow]
+    warnings: Annotated[list[str], DataClass.AGGREGATE]
+
+
+InvestmentsCoarsePayload = Annotated[
+    InvestmentsEventsView
+    | InvestmentsHoldingsView
+    | InvestmentsLotsView
+    | InvestmentsGainsView
+    | InvestmentsSecuritiesView,
+    Field(discriminator="kind"),
+]
 
 
 # ---------------------------------------------------------------------------

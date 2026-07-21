@@ -2,7 +2,7 @@
 
 "Refresh" means: update everything in the data warehouse based on the
 latest new data that loaders wrote to ``raw.*``. It is the operational
-verb that wraps three source-agnostic steps:
+verb that wraps four source-agnostic steps:
 
 1. **Cross-source matching** — :class:`TransactionMatcher` resolves
    identity across `source_type='ofx' | 'csv' | 'plaid' | ...` so the
@@ -15,13 +15,16 @@ verb that wraps three source-agnostic steps:
    applies user rules + merchant exemplars to uncategorized rows, with
    source-precedence enforcement so user-manual categories are never
    overwritten.
+4. **Identity backfill** — :class:`AccountLinksService` and
+   :class:`MerchantLinksService` generate reviewable identity proposals.
 
-Matching and categorization are best-effort: a stage failure never aborts
-the pipeline, so a partial run still leaves raw rows durable and core
-tables rebuilt. A real crash in either is surfaced (logged at ERROR and
-returned in ``RefreshResult.matching_error`` / ``categorization_error``);
-a missing-view precondition on first load is logged at DEBUG and not
-surfaced. Only SQLMesh apply failures set ``RefreshResult.error``.
+Matching, categorization, and identity backfill are best-effort: a stage
+failure never aborts the pipeline, so a partial run still leaves raw rows
+durable and core tables rebuilt. Matcher/categorizer crashes surface their
+error strings; identity failures surface only their fixed domain labels in
+``RefreshResult.identity_errors``. A missing-view precondition on first load
+is logged at DEBUG and not surfaced. Only SQLMesh apply failures set
+``RefreshResult.error``.
 
 Invoked by any service whose loaders wrote to ``raw.*``:
 ``ImportService`` (file imports), ``InboxService`` (inbox drain),
@@ -74,11 +77,11 @@ class RefreshResult:
 
     ``error`` describes the SQLMesh apply step — the only step that can
     hard-fail. ``matching_error`` / ``categorization_error`` surface real
-    crashes in the best-effort matcher / categorizer steps; a missing-view
-    precondition on first load (before SQLMesh apply built the views) is
-    NOT a crash and leaves them ``None``. ``self_heal_actions`` lists
-    self-heal recipes that ran (empty until the M2D self-heal safelist
-    lands).
+    crashes in the best-effort matcher / categorizer steps. ``identity_errors``
+    holds only failed identity domain labels. A missing-view precondition on
+    first load (before SQLMesh apply built the views) is NOT a crash and leaves
+    matcher/categorizer errors ``None``. ``self_heal_actions`` lists self-heal
+    recipes that ran (empty until the M2D self-heal safelist lands).
     """
 
     applied: bool
@@ -86,17 +89,19 @@ class RefreshResult:
     error: str | None = None
     matching_error: str | None = None
     categorization_error: str | None = None
+    identity_errors: tuple[str, ...] = field(default_factory=tuple)
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
     self_heal_actions: tuple[SelfHealRecord, ...] = field(default_factory=tuple)
 
 
-RefreshStep = Literal["gsheet", "match", "transform", "categorize"]
+RefreshStep = Literal["gsheet", "match", "transform", "categorize", "identity"]
 CANONICAL_STEPS: tuple[RefreshStep, ...] = (
     "gsheet",
     "match",
     "transform",
     "categorize",
+    "identity",
 )
 
 
@@ -111,16 +116,16 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
 
 
 def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
-    """Run the post-load pipeline: gsheet pull → matching → SQLMesh apply → categorization.
+    """Run the post-load pipeline through the identity backfill stage.
 
     When ``steps`` is None (default), the full cascade runs — same behavior
     as the pre-``steps`` signature, preserved for all existing callers.
 
     When ``steps`` is provided, only the named steps execute, in canonical
-    order (``gsheet`` → ``match`` → ``transform`` → ``categorize``) regardless of the
-    input list's order. Dependencies enforce the order: categorize reads
-    SQLMesh-built views, so running it after transform is mandatory; the
-    parameter cannot reorder this.
+    order (``gsheet`` → ``match`` → ``transform`` → ``categorize`` →
+    ``identity``) regardless of the input list's order. Dependencies enforce
+    the order: categorize reads SQLMesh-built views, so running it after
+    transform is mandatory; the parameter cannot reorder this.
 
     Skipping ``transform`` returns ``RefreshResult(applied=False,
     duration_seconds=None)`` without invoking the SQLMesh apply path —
@@ -129,8 +134,8 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
 
     Args:
         db: Database handle to run against.
-        steps: Subset of ``("gsheet", "match", "transform", "categorize")`` to run.
-            Defaults to all four when None.
+        steps: Subset of ``("gsheet", "match", "transform", "categorize",
+            "identity")`` to run. Defaults to every stage when None.
 
     Raises:
         UserError(code="UNKNOWN_REFRESH_STEP"): if any element of ``steps``
@@ -191,6 +196,7 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
 
     matching_error: str | None = None
     categorization_error: str | None = None
+    identity_errors: tuple[str, ...] = ()
     if "match" in requested:
         try:
             match_result = MatchingService(db).run()
@@ -216,11 +222,14 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
         # against whatever SQLMesh-built views are already on disk.
         if "categorize" in requested:
             categorization_error = _run_categorize_step(db)
+        if "identity" in requested:
+            identity_errors = _run_identity_step(db)
         return RefreshResult(
             applied=False,
             duration_seconds=None,
             matching_error=matching_error,
             categorization_error=categorization_error,
+            identity_errors=identity_errors,
         )
 
     apply_result = TransformService(db).apply()
@@ -237,12 +246,15 @@ def refresh(db: Database, *, steps: list[str] | None = None) -> RefreshResult:
 
     if "categorize" in requested:
         categorization_error = _run_categorize_step(db)
+    if "identity" in requested:
+        identity_errors = _run_identity_step(db)
 
     return RefreshResult(
         applied=True,
         duration_seconds=apply_result.duration_seconds,
         matching_error=matching_error,
         categorization_error=categorization_error,
+        identity_errors=identity_errors,
     )
 
 
@@ -350,3 +362,25 @@ def _run_categorize_step(db: Database) -> str | None:
     except Exception:  # noqa: BLE001 — informational post-step read; never fail refresh
         logger.debug("Auto-rule proposal stats unavailable", exc_info=True)
     return None
+
+
+def _run_identity_step(db: Database) -> tuple[str, ...]:
+    """Generate account and merchant identity proposals without aborting refresh."""
+    from moneybin.services.account_links_service import (  # noqa: PLC0415
+        AccountLinksService,
+    )
+    from moneybin.services.merchant_links_service import (  # noqa: PLC0415
+        MerchantLinksService,
+    )
+
+    errors: list[str] = []
+    for label, run in (
+        ("accounts", lambda: AccountLinksService(db).run()),
+        ("merchants", lambda: MerchantLinksService(db).run()),
+    ):
+        try:
+            run()
+        except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+            logger.error(f"{label} identity backfill failed: {type(exc).__name__}")
+            errors.append(label)
+    return tuple(errors)

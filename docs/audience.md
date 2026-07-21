@@ -41,8 +41,9 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 **Job to be done:** Ask "what did I spend on AWS last quarter?" inside the same chat window where they write code. Get back a real answer with SQL behind it, not a hosted vendor's summary — and when the built-in answer isn't enough, have the agent *build* the missing piece.
 
 **Why MoneyBin fits today:**
-- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (eight clients supported).
-- Every MCP tool has a CLI twin with `--output json` parity; the CLI is a first-class agent surface, not an afterthought.
+- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (nine clients supported).
+- MCP and CLI preserve capability and service-outcome parity without requiring
+  1:1 methods; `--output json` keeps the CLI a first-class agent surface.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
 - Built to be *extended* by the agent, not only queried. The schema and the import pipeline are stable surfaces an agent can build against today; a declarative report contract and the broader extension contract are in flight.
 

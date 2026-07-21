@@ -27,7 +27,10 @@ from moneybin.repositories.securities_repo import SecuritiesRepo
 from moneybin.repositories.security_link_decisions_repo import SecurityLinkDecisionsRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.mutation_context import operation
-from moneybin.services.security_links_service import SecurityLinksService
+from moneybin.services.security_links_service import (
+    SecurityLinkAcceptImpact,
+    SecurityLinksService,
+)
 from moneybin.services.undo_service import UndoService
 
 _REF_VALUE = "sec_1"
@@ -163,6 +166,90 @@ def merge_setup(db: Database) -> dict[str, str]:
         "provisional": provisional,
         "decision_id": event.target_id,
     }
+
+
+# ---------------------------------------------------------- accept impact
+
+
+def test_accept_impact_counts_every_row_the_merge_will_mutate(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    provisional = merge_setup["provisional"]
+    SecurityLinksRepo(db).insert(
+        security_id=provisional,
+        ref_kind="institution_security_id",
+        ref_value="ins_1|VTI",
+        source_type="plaid",
+        decided_by="auto",
+        actor="system",
+    )
+    sibling_target = _mint(db, name="Vanguard Total Market Index", created_by="user")
+    SecurityLinkDecisionsRepo(db).insert(
+        ref_kind=_REF_KIND,
+        ref_value=_REF_VALUE,
+        source_type="plaid",
+        candidate_security_id=sibling_target,
+        actor="system",
+    )
+    old_lot = _add_lot(db, security_id=provisional)
+    _add_disposal(db, "itx_sell", provisional)
+    LotSelectionsRepo(db).set_for_disposal(
+        investment_transaction_id="itx_sell",
+        selections=[(old_lot, Decimal("5"))],
+        actor="cli",
+    )
+    _add_manual_event(db, security_id=provisional)
+
+    impact = SecurityLinksService(db).accept_impact(
+        merge_setup["decision_id"],
+        into=merge_setup["survivor"],
+    )
+
+    assert impact.provisional_security_id == provisional
+    assert impact.candidate_security_id == merge_setup["survivor"]
+    assert impact.blast_radius == {
+        "securities": 2,
+        "security_links": 2,
+        "security_link_decisions": 2,
+        "lot_selections": 1,
+        "manual_investment_transactions": 1,
+    }
+
+
+def test_accept_verifier_receives_live_impact_and_failure_rolls_back(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    """Verification sees live merge state before any cascade write."""
+    verified = False
+
+    def refuse(impact: SecurityLinkAcceptImpact) -> None:
+        nonlocal verified
+        verified = True
+        assert impact.blast_radius == {
+            "securities": 2,
+            "security_links": 1,
+            "security_link_decisions": 1,
+            "lot_selections": 0,
+            "manual_investment_transactions": 0,
+        }
+        decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+        assert decision is not None and decision["status"] == "pending"
+        assert _accepted_binding(db) == merge_setup["provisional"]
+        assert _security_exists(db, merge_setup["provisional"])
+        raise UserError("Confirmation mismatch", code="mutation_confirmation_mismatch")
+
+    with pytest.raises(UserError, match="Confirmation mismatch"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"],
+            into=merge_setup["survivor"],
+            verify_accept=refuse,
+        )
+
+    assert verified
+    decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
+    assert decision is not None and decision["status"] == "pending"
+    assert _accepted_binding(db) == merge_setup["provisional"]
+    assert _security_exists(db, merge_setup["provisional"])
 
 
 # ---------------------------------------------------------------- accept

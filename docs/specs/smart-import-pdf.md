@@ -112,6 +112,12 @@ The only genuinely new code is **PDF → rows extraction + the routing decision.
 17. **Reversible imports.** PDF imports are logged to `raw.import_log` (each import gets an `import_id`) and are undoable, identical to tabular and OFX imports.
 18. **Inbox support.** PDFs dropped in the watched inbox folder import via the existing inbox flow; success/failure routing and YAML error sidecars are reused. (The inbox already references PDF in its messaging.) A PDF needing the bridge in a non-interactive inbox drain is routed to `failed/` with a "needs extraction" sidecar rather than blocking.
 19. **No silent failure.** Every import produces a visible outcome — loaded (to core or seed), pending-vetting, or declined — never "imported but wrong."
+19a. **Bounded MCP preview snapshots.** `import_preview` refuses a PDF larger
+than `ImportSettings.pdf_preview_size_limit_mb` (default 100 MB, configurable
+with `MONEYBIN_IMPORT___PDF_PREVIEW_SIZE_LIMIT_MB`) before materializing file
+content or inserting the encrypted snapshot. Capture reads no more than the
+preflight size plus one byte and rejects a file that changes before parsing,
+hashing, or persistence.
 
 ## Data Model
 

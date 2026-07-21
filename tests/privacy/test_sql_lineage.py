@@ -21,6 +21,8 @@ from moneybin.privacy.sql_lineage import (
     expand_star,
     get_current_schema_snapshot,
     is_data_query,
+    is_metadata_query,
+    is_multi_statement,
     parse_cached,
     reports_class_map,
     resolve_output_classes,
@@ -36,9 +38,29 @@ _CORPUS = yaml.safe_load(
 def test_parse_cached_returns_expression_and_caches() -> None:
     sql = "SELECT amount FROM core.fct_transactions"
     first = parse_cached(sql)
-    # Whitespace-normalized variant must hit the same cached object.
-    second = parse_cached("  SELECT   amount   FROM core.fct_transactions  ")
+    second = parse_cached("SELECT amount FROM core.fct_transactions")
     assert first is second
+
+
+def test_parse_cached_parses_the_text_the_database_executes() -> None:
+    """The cache must not rewrite the query on its way to the parser.
+
+    Callers classify ``parse_cached(sql)`` but execute ``sql`` itself, so any
+    normalization that changes how the text parses lets the two disagree.
+    Collapsing whitespace did exactly that in three ways, all of which let
+    unclassified SQL reach the caller (#346).
+    """
+    # A `--` comment ends at a newline. Collapse it and the smuggled second
+    # statement reads as comment text to the parser while DuckDB still runs it.
+    smuggled = "SELECT 1 AS a; -- note\nSELECT routing_number AS a FROM t"
+    assert is_multi_statement(parse_cached(smuggled))
+
+    # Whitespace inside a quoted identifier or a string literal is data, not
+    # formatting: rewriting it resolves a different column than DuckDB reads.
+    assert "routing  number" in parse_cached('SELECT "routing  number" FROM t').sql(
+        dialect="duckdb"
+    )
+    assert "a  b" in parse_cached("SELECT 'a  b' AS x").sql(dialect="duckdb")
 
 
 def test_parse_cached_raises_on_invalid_sql() -> None:
@@ -491,6 +513,25 @@ def test_is_data_query_separates_data_from_metadata() -> None:
     assert not is_data_query(parse_cached("SHOW TABLES"))
     assert not is_data_query(parse_cached("PRAGMA database_list"))
     assert not is_data_query(parse_cached("EXPLAIN SELECT 1"))
+
+
+def test_is_metadata_query_is_an_allowlist_not_a_fallback() -> None:
+    """Only the four metadata statement kinds are metadata — nothing else.
+
+    ``not is_data_query(...)`` is not a safe stand-in for "this is metadata":
+    the metadata path executes its string unclassified at LOW, so every
+    expression kind sqlglot invents that isn't a SELECT would land there and
+    return unredacted rows. That default-open reading is what let a top-level
+    ``EXCEPT`` (see ``is_data_query``) and a ``;``-separated ``Block`` through.
+    A tree that is neither data nor one of these four must answer False so
+    callers fail closed.
+    """
+    assert is_metadata_query(parse_cached("DESCRIBE core.fct_transactions"))
+    assert is_metadata_query(parse_cached("SHOW TABLES"))
+    assert is_metadata_query(parse_cached("PRAGMA database_list"))
+    assert is_metadata_query(parse_cached("EXPLAIN SELECT 1"))
+    assert not is_metadata_query(parse_cached("SELECT 1"))
+    assert not is_metadata_query(parse_cached("SELECT 1; SELECT 2"))
 
 
 @pytest.mark.parametrize("op", ["EXCEPT", "INTERSECT"])

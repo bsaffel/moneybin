@@ -166,6 +166,44 @@ def test_append_exemplar_raises_on_missing_row(db: Database) -> None:
     assert _audit_rows_for(db, "nope") == []
 
 
+def test_delete_and_delete_by_category_preserve_audited_before_images(
+    db: Database,
+) -> None:
+    repo = UserMerchantsRepo(db)
+
+    def insert(name: str, category_id: str) -> str:
+        event = repo.insert(
+            raw_pattern=name,
+            match_type="exact",
+            canonical_name=name,
+            category="Shopping",
+            subcategory=None,
+            category_id=category_id,
+            created_by="user",
+            exemplars=[],
+            actor="mcp",
+        )
+        assert event.target_id is not None
+        return event.target_id
+
+    one = insert("One", "cat_target")
+    two = insert("Two", "cat_target")
+    other = insert("Other", "cat_other")
+
+    repo.delete(one, actor="mcp")
+    events = repo.delete_by_category("cat_target", actor="mcp")
+
+    assert [event.target_id for event in events] == [two]
+    assert db.conn.execute(
+        "SELECT merchant_id FROM app.user_merchants ORDER BY merchant_id"
+    ).fetchall() == [(other,)]
+    for target_id in (one, two):
+        delete_audit = _audit_rows_for(db, target_id)[-1]
+        assert delete_audit[0] == "user_merchant.delete"
+        assert json.loads(delete_audit[4])["category_id"] == "cat_target"
+        assert delete_audit[5] is None
+
+
 # ---------------------------------------------------------------------------
 # Atomicity: audit failure rolls back the mutation
 # ---------------------------------------------------------------------------

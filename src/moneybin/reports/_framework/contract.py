@@ -9,9 +9,11 @@ CLI command, and ``TableRef`` wiring from that single definition. See
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Literal
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.tables import TableRef
@@ -20,6 +22,7 @@ from moneybin.tables import TableRef
 # parameterized SELECT to run. ``Any`` for the first arg avoids importing
 # Database here purely for a type alias.
 Runner = Callable[..., "ReportQuery"]
+_REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +46,8 @@ class ParamSpec:
 
     Maps 1:1 to an MCP-tool argument, a Typer ``--flag``, and the runner
     keyword argument. ``annotation`` is the resolved Python type;
-    ``required`` is true when the parameter has no default.
+    ``required`` is true when the parameter has no default; ``data_class``
+    controls redaction when the effective value is copied into result metadata.
     """
 
     name: str
@@ -51,6 +55,33 @@ class ParamSpec:
     default: Any
     required: bool
     help: str
+    data_class: DataClass
+
+
+@dataclass(frozen=True, slots=True)
+class OutputColumn:
+    """One named report output with its meaning and privacy class."""
+
+    name: str
+    description: str
+    data_class: DataClass
+
+
+@dataclass(frozen=True, slots=True)
+class ReportSemantics:
+    """Financial interpretation metadata for a report's metrics."""
+
+    unit: str
+    currency: str | None
+    sign: str
+    kind: Literal["position", "flow", "ratio", "count"]
+    valuation_basis: str | None
+    fx_basis: str | None
+    time_basis: str
+    denominator: str | None
+    comparison_window: str | None
+    exclusions: tuple[str, ...]
+    provenance: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +98,14 @@ class ReportSpec:
     this map; any column absent from it fails closed (see ``classify``).
     """
 
+    report_id: str
     name: str
     description: str
     view: TableRef
     runner: Runner
     classes: Mapping[str, DataClass]
+    columns: tuple[OutputColumn, ...]
+    semantics: ReportSemantics
     params: tuple[ParamSpec, ...] = ()
     examples: tuple[str, ...] = ()
     domain: str | None = None
@@ -80,22 +114,37 @@ class ReportSpec:
     for every downgrade; derivation over-classifies computed columns, and
     over-masking a BI surface is its own failure mode."""
 
-    @property
-    def mcp_tool_name(self) -> str:
-        """FastMCP tool name, e.g. ``reports_large_transactions``."""
-        return f"reports_{self.name}"
+    def __post_init__(self) -> None:
+        if _REPORT_ID.fullmatch(self.report_id) is None:
+            raise ValueError("report_id must use namespace:name")
+        declared = {column.name: column.data_class for column in self.columns}
+        if len(declared) != len(self.columns) or declared != dict(self.classes):
+            raise ValueError(
+                "columns and classes must declare the same output fields "
+                "with identical privacy classes"
+            )
+        object.__setattr__(self, "classes", MappingProxyType(dict(self.classes)))
 
     @property
     def cli_name(self) -> str:
         """Typer command name, e.g. ``large-transactions``."""
         return self.name.replace("_", "-")
 
+    @property
+    def parameters(self) -> tuple[ParamSpec, ...]:
+        """Unified catalog name for declared input parameters."""
+        return self.params
+
 
 def report(
     *,
+    report_id: str,
     name: str,
     view: TableRef,
     classes: Mapping[str, DataClass],
+    parameter_classes: Mapping[str, DataClass],
+    columns: tuple[OutputColumn, ...],
+    semantics: ReportSemantics,
     domain: str | None = None,
     class_downgrades: Mapping[str, str] | None = None,
 ) -> Callable[[Runner], Runner]:
@@ -105,6 +154,7 @@ def report(
     the runner itself is returned unchanged so it stays directly callable.
 
     Args:
+        report_id: Stable namespaced report identifier.
         name: Canonical report name (underscore form). The MCP tool is
             ``reports_<name>`` and the CLI command is ``<name>`` with
             underscores rendered as hyphens.
@@ -114,6 +164,10 @@ def report(
             undeclared column fails closed at redaction time. Declared (not
             lineage-derived) because the deployed SQLMesh view is a
             ``SELECT *`` pointer lineage can't classify (ADR-013).
+        parameter_classes: Exact runner-parameter→DataClass map used to redact
+            effective parameters before they enter result metadata.
+        columns: Ordered output column descriptions and privacy classes.
+        semantics: Financial interpretation metadata for the report metrics.
         domain: Optional MCP namespace tag.
         class_downgrades: Column → reason, for every column whose declared
             class sits below its CI-derived floor (``derive_report_classes``).
@@ -125,9 +179,13 @@ def report(
     def decorate(fn: Runner) -> Runner:
         fn._report_spec = build_spec(  # type: ignore[attr-defined]
             fn,
+            report_id=report_id,
             name=name,
             view=view,
             classes=classes,
+            parameter_classes=parameter_classes,
+            columns=columns,
+            semantics=semantics,
             domain=domain,
             class_downgrades=class_downgrades,
         )

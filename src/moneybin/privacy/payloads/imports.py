@@ -10,9 +10,9 @@ middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
 Tier derivation summary:
-  - ``ImportPerFileRow``           → Tier.MEDIUM (error = DESCRIPTION)
-  - ``ImportFilesPayload``         → Tier.MEDIUM (transforms_error = DESCRIPTION;
-                                     contains ImportPerFileRow list)
+  - ``ImportPerFileRow``           → Tier.CRITICAL (a PDF bridge confirmation can
+                                     contain raw statement account identifiers)
+  - ``ImportFilesPayload``         → Tier.CRITICAL (contains ImportPerFileRow list)
   - ``ImportFormatInfoPayload``    → Tier.LOW (file metadata only)
   - ``ImportPreviewPayload``       → Tier.MEDIUM (sample_values = DESCRIPTION —
                                      raw file content may contain PII)
@@ -31,13 +31,87 @@ Tier derivation summary:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, TypedDict
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.taxonomy import DataClass
 
 # ---------------------------------------------------------------------------
 # import_files — per-file result row
 # ---------------------------------------------------------------------------
+
+
+class ImportConfirmationBridgeTable(TypedDict, total=False):
+    """One raw bridge table inside an import-files confirmation proposal."""
+
+    page: Annotated[int, DataClass.AGGREGATE]
+    header: Annotated[list[str], DataClass.TXN_TYPE]
+    rows: list[list[Annotated[str, DataClass.DESCRIPTION]]]
+
+
+class ImportConfirmationBridgePayload(TypedDict, total=False):
+    """Typed PDF bridge content shared with the import-preview classification."""
+
+    transparency_notice: Annotated[str, DataClass.DESCRIPTION]
+    source_file: Annotated[str, DataClass.RECORD_ID]
+    document_text: Annotated[str, DataClass.DESCRIPTION]
+    tables_preview: list[ImportConfirmationBridgeTable]
+    fingerprint: Annotated[dict[str, Any], DataClass.DESCRIPTION]
+    request_kind: Annotated[str, DataClass.TXN_TYPE]
+    saved_recipe_for_re_derive: Annotated[
+        dict[str, Any] | None,
+        DataClass.DESCRIPTION,
+    ]
+
+
+class ImportConfirmationSignSample(TypedDict, total=False):
+    """One printed-versus-recorded row inside a sign proposal."""
+
+    description: Annotated[str, DataClass.DESCRIPTION]
+    as_printed: Annotated[str, DataClass.TXN_AMOUNT]
+    as_recorded: Annotated[str, DataClass.TXN_AMOUNT]
+
+
+class ImportConfirmationAccountCandidate(TypedDict, total=False):
+    """One existing-account candidate inside an import proposal."""
+
+    account_id: Annotated[str, DataClass.RECORD_ID]
+    display_name: Annotated[str, DataClass.USER_NOTE]
+    confidence: Annotated[float, DataClass.AGGREGATE]
+    signal: Annotated[str, DataClass.TXN_TYPE]
+
+
+class ImportConfirmationAccountProposal(TypedDict, total=False):
+    """One source-account resolution proposal."""
+
+    source_account_key: Annotated[str, DataClass.ACCOUNT_IDENTIFIER]
+    proposed_account_id: Annotated[str | None, DataClass.RECORD_ID]
+    is_new: Annotated[bool, DataClass.TXN_TYPE]
+    adopted_via: Annotated[str | None, DataClass.TXN_TYPE]
+    requires_confirm: Annotated[bool, DataClass.TXN_TYPE]
+    candidates: list[ImportConfirmationAccountCandidate]
+
+
+class ImportConfirmationPayload(TypedDict, total=False):
+    """Typed detector proposal carried by an ``import_files`` result row."""
+
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    error_message: Annotated[str, DataClass.DESCRIPTION]
+    proposed_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
+    samples: Annotated[dict[str, list[str]], DataClass.DESCRIPTION]
+    flagged: Annotated[list[str], DataClass.TXN_TYPE]
+    missing_required: Annotated[list[str], DataClass.TXN_TYPE]
+    unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
+    bridge_payload: ImportConfirmationBridgePayload | None
+    sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_prior_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
+    sign_sample_rows: list[ImportConfirmationSignSample]
+    account_proposals: list[ImportConfirmationAccountProposal]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,13 +128,10 @@ class ImportPerFileRow:
     # True when a saved `sign=` override replayed onto this PDF, bypassing the
     # credit-card marker detector for its format.
     sign_override_replayed: Annotated[bool, DataClass.TXN_TYPE] = False
-    # Populated only when status == "confirmation_required": detector
-    # proposal + samples + flagged + missing_required so the agent can
-    # call `import_confirm` per file. Sample values are row-shaped
-    # (DESCRIPTION / MEDIUM).
-    confirmation_payload: Annotated[dict[str, object] | None, DataClass.DESCRIPTION] = (
-        None
-    )
+    # Populated only when status == "confirmation_required": typed detector
+    # proposal + samples + flagged + missing_required so nested CRITICAL PDF
+    # bridge values receive the same redaction as import_preview.
+    confirmation_payload: ImportConfirmationPayload | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +197,137 @@ class ImportPreviewPayload:
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
 
 
+class ImportTabularPreviewCoarsePayload(BaseModel):
+    """Persisted tabular preview plus its confirmable trust-state handle."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["tabular"], DataClass.TXN_TYPE] = "tabular"
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    expires_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    file: Annotated[str, DataClass.RECORD_ID]
+    format: ImportFormatInfoPayload
+    mapping: Annotated[dict[str, Any], DataClass.TXN_TYPE]
+    confidence: Annotated[str | None, DataClass.AGGREGATE]
+    date_format: Annotated[str | None, DataClass.TXN_TYPE]
+    number_format: Annotated[str | None, DataClass.TXN_TYPE]
+    sign_convention: Annotated[str | None, DataClass.TXN_TYPE]
+    is_multi_account: Annotated[bool | None, DataClass.TXN_TYPE]
+    unmapped_columns: Annotated[list[str], DataClass.TXN_TYPE]
+    flagged_fields: Annotated[list[str], DataClass.TXN_TYPE]
+    sample_values: Annotated[dict[str, Any], DataClass.DESCRIPTION]
+    rows_read: Annotated[int, DataClass.AGGREGATE]
+    rows_skipped_trailing: Annotated[int, DataClass.AGGREGATE]
+    skip_rows: Annotated[int, DataClass.AGGREGATE]
+    has_header: Annotated[bool, DataClass.AGGREGATE]
+    rows_in_file: Annotated[int, DataClass.AGGREGATE]
+    header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
+
+
+class ImportBridgeTablePreview(BaseModel):
+    """One bridge table whose cells remain usable for recipe generation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: Annotated[int, DataClass.AGGREGATE]
+    header: Annotated[list[str], DataClass.TXN_TYPE]
+    rows: list[list[Annotated[str, DataClass.DESCRIPTION]]]
+
+
+class ImportBridgeStatementPayload(BaseModel):
+    """Raw PDF bridge request whose statement content must remain usable."""
+
+    model_config = ConfigDict(frozen=True)
+
+    transparency_notice: Annotated[str, DataClass.DESCRIPTION]
+    source_file: Annotated[str, DataClass.RECORD_ID]
+    document_text: Annotated[str, DataClass.DESCRIPTION]
+    tables_preview: list[ImportBridgeTablePreview]
+    fingerprint: Annotated[dict[str, Any], DataClass.DESCRIPTION]
+    request_kind: Annotated[str, DataClass.TXN_TYPE]
+    saved_recipe_for_re_derive: Annotated[
+        dict[str, Any] | None,
+        DataClass.DESCRIPTION,
+    ] = None
+
+
+class ImportPdfBridgePreviewPayload(BaseModel):
+    """Confirmable PDF bridge preview."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["pdf_bridge"], DataClass.TXN_TYPE] = "pdf_bridge"
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    expires_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    file: Annotated[str, DataClass.RECORD_ID]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    bridge_payload: ImportBridgeStatementPayload
+
+
+class ImportPdfDirectPreviewPayload(BaseModel):
+    """Deterministic or seed PDF preview routed directly to import_files."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[
+        Literal["pdf_deterministic", "pdf_seed"],
+        DataClass.TXN_TYPE,
+    ]
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    expires_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    file: Annotated[str, DataClass.RECORD_ID]
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    deterministic: Annotated[bool, DataClass.TXN_TYPE]
+    decision_reason: Annotated[str, DataClass.TXN_TYPE]
+    confidence: Annotated[float, DataClass.AGGREGATE]
+    row_count: Annotated[int, DataClass.AGGREGATE]
+    fingerprint: Annotated[dict[str, Any] | None, DataClass.DESCRIPTION]
+
+
+class ImportPdfSignSample(BaseModel):
+    """Printed-versus-recorded sign sample."""
+
+    model_config = ConfigDict(frozen=True)
+
+    description: Annotated[str, DataClass.DESCRIPTION]
+    as_printed: Annotated[str, DataClass.TXN_AMOUNT]
+    as_recorded: Annotated[str, DataClass.TXN_AMOUNT]
+
+
+class ImportPdfSignPreviewPayload(BaseModel):
+    """Human-confirmable credit-card sign inversion preview."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["pdf_sign"], DataClass.TXN_TYPE] = "pdf_sign"
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    expires_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    channel: Annotated[str, DataClass.TXN_TYPE]
+    file: Annotated[str, DataClass.RECORD_ID]
+    tier: Annotated[str, DataClass.AGGREGATE]
+    score: Annotated[float, DataClass.AGGREGATE]
+    reason: Annotated[str, DataClass.TXN_TYPE]
+    error_message: Annotated[str, DataClass.DESCRIPTION]
+    sign_convention: Annotated[str, DataClass.TXN_TYPE]
+    sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
+    sign_sample_rows: list[ImportPdfSignSample]
+
+
+ImportPreviewCoarsePayload = Annotated[
+    ImportTabularPreviewCoarsePayload
+    | ImportPdfBridgePreviewPayload
+    | ImportPdfDirectPreviewPayload
+    | ImportPdfSignPreviewPayload,
+    Field(discriminator="kind"),
+]
+
+
 # ---------------------------------------------------------------------------
 # import_status — top-level payload
 # ---------------------------------------------------------------------------
@@ -156,6 +358,15 @@ class ImportRevertPayload:
     import_id: Annotated[str, DataClass.RECORD_ID]
     status: Annotated[str, DataClass.TXN_TYPE]
     rows_deleted: Annotated[int | None, DataClass.AGGREGATE]
+
+
+@dataclass(frozen=True, slots=True)
+class ImportSavedFormatDeletePayload:
+    """Payload for audited user-saved format deletion via ``import_revert``."""
+
+    format_name: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[Literal["deleted"], DataClass.TXN_TYPE]
+    operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +454,55 @@ class ImportInboxPendingPayload:
 
 
 # ---------------------------------------------------------------------------
+# Dormant consolidated import_status — selected discriminated sections
+# ---------------------------------------------------------------------------
+
+
+class ImportStatusImportsSection(BaseModel):
+    """Paginated import-log rows inside the dormant consolidated status read."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["imports"], DataClass.TXN_TYPE] = "imports"
+    records: Annotated[list[dict[str, Any]], DataClass.AGGREGATE]
+
+
+class ImportStatusFormatsSection(BaseModel):
+    """Available tabular and PDF formats inside consolidated import status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["formats"], DataClass.TXN_TYPE] = "formats"
+    formats: list[ImportFormatRow]
+    pdf_formats: list[ImportPdfFormatRow] = Field(default_factory=list)
+
+
+class ImportStatusInboxSection(BaseModel):
+    """Pending inbox files inside consolidated import status."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["inbox"], DataClass.TXN_TYPE] = "inbox"
+    would_process: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
+    ignored: Annotated[list[dict[str, object]], DataClass.AGGREGATE]
+
+
+ImportStatusSection = Annotated[
+    ImportStatusImportsSection | ImportStatusFormatsSection | ImportStatusInboxSection,
+    Field(discriminator="kind"),
+]
+
+
+class ImportStatusCoarsePayload(BaseModel):
+    """Selected import status sections in deterministic request order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["sections"], DataClass.TXN_TYPE] = "sections"
+    sections: list[ImportStatusSection]
+
+
+# ---------------------------------------------------------------------------
 # import_labels_set — top-level payload (migrated from batch 4 stopgap)
 # ---------------------------------------------------------------------------
 
@@ -292,3 +552,75 @@ class ImportConfirmPayload:
     sample_values: Annotated[dict[str, Any], DataClass.DESCRIPTION]
     sign_correction_suggested: Annotated[bool, DataClass.TXN_TYPE] = False
     status: Annotated[str, DataClass.TXN_TYPE] = "imported"
+
+
+class ImportTabularConfirmCoarsePayload(BaseModel):
+    """Successful tabular preview confirmation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["tabular_complete"], DataClass.TXN_TYPE] = (
+        "tabular_complete"
+    )
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    import_id: Annotated[str, DataClass.RECORD_ID]
+    rows_loaded: Annotated[int, DataClass.AGGREGATE]
+    merged_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
+    status: Annotated[Literal["complete"], DataClass.TXN_TYPE] = "complete"
+    format_name: Annotated[str | None, DataClass.RECORD_ID] = None
+
+
+class ImportPdfBridgeAppliedPayload(BaseModel):
+    """Successful PDF bridge confirmation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["pdf_bridge_applied"], DataClass.TXN_TYPE] = (
+        "pdf_bridge_applied"
+    )
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    import_id: Annotated[str, DataClass.RECORD_ID]
+    rows_loaded: Annotated[int, DataClass.AGGREGATE]
+    merged_mapping: Annotated[dict[str, str], DataClass.TXN_TYPE]
+    status: Annotated[Literal["applied"], DataClass.TXN_TYPE] = "applied"
+    format_name: Annotated[str | None, DataClass.RECORD_ID]
+
+
+class ImportPdfSignAppliedPayload(BaseModel):
+    """Successful human-confirmed PDF sign inversion."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["pdf_sign_applied"], DataClass.TXN_TYPE] = (
+        "pdf_sign_applied"
+    )
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    import_id: Annotated[str, DataClass.RECORD_ID]
+    rows_loaded: Annotated[int, DataClass.AGGREGATE]
+    status: Annotated[Literal["applied"], DataClass.TXN_TYPE] = "applied"
+    format_name: Annotated[str | None, DataClass.RECORD_ID]
+
+
+class ImportPdfBridgeInvalidPayload(BaseModel):
+    """Retryable invalid PDF bridge response."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["pdf_bridge_invalid"], DataClass.TXN_TYPE] = (
+        "pdf_bridge_invalid"
+    )
+    preview_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[Literal["invalid"], DataClass.TXN_TYPE] = "invalid"
+    reject_reason: Annotated[str | None, DataClass.DESCRIPTION]
+    expected_row_count: Annotated[int, DataClass.AGGREGATE]
+    actual_row_count: Annotated[int, DataClass.AGGREGATE]
+    rows_diverged: Annotated[bool, DataClass.TXN_TYPE]
+
+
+ImportConfirmCoarsePayload = Annotated[
+    ImportTabularConfirmCoarsePayload
+    | ImportPdfBridgeAppliedPayload
+    | ImportPdfSignAppliedPayload
+    | ImportPdfBridgeInvalidPayload,
+    Field(discriminator="kind"),
+]

@@ -1953,11 +1953,11 @@ def formats_list(
         moneybin import formats list --type=tabular --output json
     """
     from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
 
     try:
         with get_database(read_only=True) as db:
-            all_formats, builtin = _load_all_formats(db)
-            pdf_formats = _load_pdf_formats(db)
+            all_formats, builtin, pdf_formats = ImportService(db).list_formats()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, builtin = _load_all_formats(None)
         pdf_formats = _load_pdf_formats(None)
@@ -2070,11 +2070,11 @@ def formats_show(
         moneybin import formats show chase_a1b2c3d4e5f6
     """
     from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
 
     try:
         with get_database(read_only=True) as db:
-            all_formats, _ = _load_all_formats(db)
-            pdf_formats_list = _load_pdf_formats(db)
+            all_formats, _, pdf_formats_list = ImportService(db).list_formats()
     except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
         all_formats, _ = _load_all_formats(None)
         pdf_formats_list = _load_pdf_formats(None)
@@ -2212,32 +2212,41 @@ def formats_delete(
         moneybin import formats delete my_custom_format
         moneybin import formats delete my_custom_format --yes
     """
+    from moneybin import error_codes
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database  # noqa: PLC0415 — deferred import
-    from moneybin.extractors.tabular.formats import (
-        delete_format_from_db,
-        load_builtin_formats,
-    )
+    from moneybin.errors import UserError
+    from moneybin.extractors.tabular.formats import load_builtin_formats
+    from moneybin.services.import_service import ImportService
 
-    # Check if it's a built-in format
-    builtin = load_builtin_formats()
-    if name in builtin:
+    if name in load_builtin_formats():
         logger.error(f"❌ {name!r} is a built-in format and cannot be deleted")
         raise typer.Exit(1)
 
-    if not yes:
-        confirmed = typer.confirm(f"Delete format {name!r}?")
-        if not confirmed:
-            logger.info("Delete cancelled")
-            raise typer.Exit(0)
-
     with handle_cli_errors():
-        with get_database(read_only=False) as db:
-            deleted = delete_format_from_db(db, name, actor="cli")
+        with get_database(read_only=True) as db:
+            reviewed_plan = ImportService(db).plan_saved_format_delete(name)
 
-    if not deleted:
-        logger.error(f"❌ Format {name!r} not found")
-        raise typer.Exit(1)
+        if not yes:
+            confirmed = typer.confirm(f"Delete format {name!r}?")
+            if not confirmed:
+                logger.info("Delete cancelled")
+                raise typer.Exit(0)
+
+        def verify(live_plan: object) -> None:
+            if live_plan != reviewed_plan:
+                raise UserError(
+                    "Saved format changed after confirmation; review and retry.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                )
+
+        with get_database(read_only=False) as db:
+            ImportService(db).delete_saved_format_confirmed(
+                name,
+                actor="cli",
+                verify=verify,
+            )
+
     logger.info(f"✅ Deleted format {name!r}")
 
 

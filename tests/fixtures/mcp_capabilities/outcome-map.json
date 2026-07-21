@@ -1,0 +1,446 @@
+[
+  {
+    "capability_id": "system.status",
+    "mcp_tools": ["system_status"],
+    "cli_commands": ["system status", "system doctor", "transactions categorize stats"],
+    "service_methods": ["moneybin.services.system_service.SystemService.status", "moneybin.services.doctor_service.DoctorService.run_all", "moneybin.services.categorization.CategorizationService.categorization_stats"],
+    "observable_outcomes": ["typed system section status, categorization coverage, and health-check result counts"],
+    "exemption": null
+  },
+  {
+    "capability_id": "system.audit.read",
+    "mcp_tools": ["system_audit"],
+    "cli_commands": ["system audit list", "system audit show", "system audit history", "system audit get", "transactions audit"],
+    "service_methods": ["moneybin.services.audit_service.AuditService.list_events", "moneybin.services.audit_service.AuditService.chain_for", "moneybin.services.undo_service.UndoService.history", "moneybin.services.undo_service.UndoService.get"],
+    "observable_outcomes": ["the same persisted audit operations, events, before/after state, and undoability"],
+    "exemption": null
+  },
+  {
+    "capability_id": "system.audit.undo",
+    "mcp_tools": ["system_audit_undo"],
+    "cli_commands": ["system audit undo", "transactions matches undo"],
+    "service_methods": ["moneybin.services.undo_service.UndoService.undo"],
+    "observable_outcomes": ["target operation is reversed once and the reversal is recorded in app.audit_log"],
+    "exemption": null
+  },
+  {
+    "capability_id": "reports.execute",
+    "mcp_tools": ["reports"],
+    "cli_commands": ["reports networth", "reports networth-history", "reports spending", "reports cashflow", "reports recurring", "reports merchants", "reports large-transactions", "reports balance-drift"],
+    "service_methods": ["moneybin.reports._framework.catalog.ReportCatalog.execute"],
+    "observable_outcomes": ["identical registered report rows, columns, truncation, and provenance for equal parameters"],
+    "exemption": null
+  },
+  {
+    "capability_id": "accounts.read",
+    "mcp_tools": ["accounts"],
+    "cli_commands": ["accounts list", "accounts get", "accounts summary", "accounts resolve"],
+    "service_methods": ["moneybin.services.account_service.AccountService.list_accounts", "moneybin.services.account_service.AccountService.get_account", "moneybin.services.account_service.AccountService.summary", "moneybin.services.account_service.AccountService.resolve"],
+    "observable_outcomes": ["identical account rows, detail, aggregate counts, and deterministic resolution candidates"],
+    "exemption": null
+  },
+  {
+    "capability_id": "accounts.settings.set",
+    "mcp_tools": ["accounts_set"],
+    "cli_commands": ["accounts set"],
+    "service_methods": ["moneybin.services.account_service.AccountService.settings_update"],
+    "observable_outcomes": ["app.account_settings reaches the requested fields and records one audited operation"],
+    "exemption": null
+  },
+  {
+    "capability_id": "accounts.balances.read",
+    "mcp_tools": ["accounts_balances"],
+    "cli_commands": ["accounts balance show", "accounts balance history", "accounts balance list", "accounts balance reconcile"],
+    "service_methods": ["moneybin.services.balance_service.BalanceService.current_balances", "moneybin.services.balance_service.BalanceService.history", "moneybin.services.balance_service.BalanceService.list_assertions", "moneybin.services.balance_service.BalanceService.reconcile"],
+    "observable_outcomes": ["identical latest and as-of observations, history rows, manual assertions, and threshold-filtered reconciliation deltas"],
+    "exemption": null
+  },
+  {
+    "capability_id": "accounts.balance.assert",
+    "mcp_tools": ["accounts_balance_assert"],
+    "cli_commands": ["accounts balance assert", "accounts balance assertion-delete"],
+    "service_methods": ["moneybin.services.balance_service.BalanceService.assert_balance", "moneybin.services.balance_service.BalanceService.delete_assertion"],
+    "observable_outcomes": ["the dated assertion is present or absent and its audit operation is recoverable"],
+    "exemption": null
+  },
+  {
+    "capability_id": "investments.read",
+    "mcp_tools": ["investments"],
+    "cli_commands": ["investments list", "investments holdings", "investments gains", "investments lots list", "investments securities list"],
+    "service_methods": ["moneybin.services.investment_service.InvestmentService.list_events", "moneybin.services.investment_service.InvestmentService.holdings", "moneybin.services.investment_service.InvestmentService.gains", "moneybin.services.investment_service.InvestmentService.lots", "moneybin.services.investment_service.InvestmentService.list_securities"],
+    "observable_outcomes": ["identical filtered ledger, holdings, gains, open or full lot history, and security-catalog rows"],
+    "exemption": null
+  },
+  {
+    "capability_id": "investments.record",
+    "mcp_tools": ["investments_record"],
+    "cli_commands": ["investments add"],
+    "service_methods": ["moneybin.services.investment_service.InvestmentService.record_events"],
+    "observable_outcomes": ["manual investment ledger rows and event groups are written with the same accounting values"],
+    "exemption": null
+  },
+  {
+    "capability_id": "investments.securities.set",
+    "mcp_tools": ["investments_securities_set"],
+    "cli_commands": ["investments securities add", "investments securities set"],
+    "service_methods": ["moneybin.services.investment_service.InvestmentService.upsert_security", "moneybin.services.investment_service.InvestmentService.set_security"],
+    "observable_outcomes": ["manual security catalog row reaches the same created or updated state"],
+    "exemption": null
+  },
+  {
+    "capability_id": "investments.lots.select",
+    "mcp_tools": ["investments_lots_select"],
+    "cli_commands": ["investments lots select"],
+    "service_methods": ["moneybin.services.investment_service.InvestmentService.select_lots"],
+    "observable_outcomes": ["specific-identification lot selections replace or clear the disposal allocation"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.read",
+    "mcp_tools": ["transactions"],
+    "cli_commands": ["transactions list", "transactions notes list", "transactions tags list", "transactions splits list"],
+    "service_methods": ["moneybin.services.transaction_service.TransactionService.query_operational", "moneybin.services.transaction_service.TransactionService.list_notes", "moneybin.services.transaction_service.TransactionService.list_tags", "moneybin.services.transaction_service.TransactionService.list_splits"],
+    "observable_outcomes": ["identical filtered transaction IDs, amounts, dates, categories, ordering, and continuation state"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.create",
+    "mcp_tools": ["transactions_create"],
+    "cli_commands": ["transactions create"],
+    "service_methods": ["moneybin.services.transaction_service.TransactionService.create_manual_batch"],
+    "observable_outcomes": ["manual transaction rows are written with equivalent amounts, dates, account IDs, and audit actor"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.annotate",
+    "mcp_tools": ["transactions_annotate"],
+    "cli_commands": ["transactions notes add", "transactions notes edit", "transactions notes delete", "transactions tags add", "transactions tags remove", "transactions tags rename", "transactions splits add", "transactions splits remove", "transactions splits clear"],
+    "service_methods": ["moneybin.services.transaction_service.TransactionService.apply_annotations", "moneybin.services.transaction_service.TransactionService.add_note", "moneybin.services.transaction_service.TransactionService.edit_note", "moneybin.services.transaction_service.TransactionService.delete_note", "moneybin.services.transaction_service.TransactionService.add_tags", "moneybin.services.transaction_service.TransactionService.remove_tags", "moneybin.services.transaction_service.TransactionService.rename_tag", "moneybin.services.transaction_service.TransactionService.add_split", "moneybin.services.transaction_service.TransactionService.remove_split", "moneybin.services.transaction_service.TransactionService.clear_splits"],
+    "observable_outcomes": ["app transaction notes, complete tag sets, and complete split sets match the requested target state and audit operation"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.categorize.assist",
+    "mcp_tools": ["transactions_categorize_assist"],
+    "cli_commands": ["transactions categorize assist", "transactions categorize export-uncategorized"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.categorize_assist"],
+    "observable_outcomes": ["the same PII-scrubbed uncategorized batch and structural matcher signals"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.categorize.commit",
+    "mcp_tools": ["transactions_categorize_commit"],
+    "cli_commands": ["transactions categorize commit", "transactions categorize commit-from-file"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.categorize_items"],
+    "observable_outcomes": ["accepted categorization decisions persist with identical category, subcategory, merchant, applied, skipped, and error counts"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.categorize.run",
+    "mcp_tools": ["transactions_categorize_run"],
+    "cli_commands": ["transactions categorize run", "transactions categorize improve-ai", "transactions categorize rules apply"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.categorize_run", "moneybin.services.categorization.CategorizationService.improve_ai_categories"],
+    "observable_outcomes": ["categorize mode reports applied counts by deterministic engine", "improve_ai mode upgrades only confident AI guesses and reports upgraded_count"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.categorize.rules.read",
+    "mcp_tools": ["transactions_categorize_rules"],
+    "cli_commands": ["transactions categorize rules list", "transactions categorize auto rules", "transactions categorize auto stats"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.list_rules", "moneybin.services.categorization.CategorizationService.list_rule_snapshots", "moneybin.services.categorization.CategorizationService.list_rule_history", "moneybin.services.auto_rule_service.AutoRuleService.list_active_rules", "moneybin.services.auto_rule_service.AutoRuleService.stats"],
+    "observable_outcomes": ["identical active, inactive, and audit-backed historical rule state"],
+    "exemption": null
+  },
+  {
+    "capability_id": "transactions.categorize.rules.set",
+    "mcp_tools": ["transactions_categorize_rules_set"],
+    "cli_commands": ["transactions categorize rules create", "transactions categorize rules delete"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.plan_rule_targets", "moneybin.services.categorization.CategorizationService.apply_rule_targets"],
+    "observable_outcomes": ["rule target states are applied atomically with duplicate/no-op handling and audited removal recovery"],
+    "exemption": null
+  },
+  {
+    "capability_id": "reviews.read",
+    "mcp_tools": ["reviews"],
+    "cli_commands": ["review", "transactions review", "transactions matches pending", "transactions matches history", "transactions categorize pending", "transactions categorize auto review", "accounts links pending", "accounts links history", "merchants links pending", "merchants links history", "investments securities links pending", "investments securities links history"],
+    "service_methods": ["moneybin.services.review_service.ReviewService.status", "moneybin.services.matching_service.MatchingService.get_log", "moneybin.services.categorization.CategorizationService.list_uncategorized_transactions", "moneybin.services.auto_rule_service.AutoRuleService.review", "moneybin.services.auto_rule_service.AutoRuleService.list_proposal_history"],
+    "observable_outcomes": ["pending queues preserve current IDs, statuses, counts, confidence, and auto-rule blast-radius fields", "auto-rule history preserves terminal proposal IDs, statuses, and promoted rule IDs"],
+    "exemption": null
+  },
+  {
+    "capability_id": "reviews.decide",
+    "mcp_tools": ["reviews_decide"],
+    "cli_commands": ["transactions matches set", "transactions categorize auto accept"],
+    "service_methods": ["moneybin.services.review_decisions_service.ReviewDecisionsService.apply_ordinary", "moneybin.services.auto_rule_service.AutoRuleService.accept", "moneybin.services.auto_rule_service.AutoRuleService.decide"],
+    "observable_outcomes": ["ordinary match or auto-rule decisions reach the same accepted/rejected state and audit operation", "auto-rule decisions preserve approved, rejected, skipped, newly-categorized, and rule-ID aggregate impact"],
+    "exemption": null
+  },
+  {
+    "capability_id": "identity.links.decide",
+    "mcp_tools": ["identity_links_decide"],
+    "cli_commands": ["accounts links set", "merchants links set", "investments securities links set"],
+    "service_methods": ["moneybin.services.review_decisions_service.ReviewDecisionsService.plan_identity", "moneybin.services.review_decisions_service.ReviewDecisionsService.apply_identity"],
+    "observable_outcomes": ["account, merchant, and security identity proposals reach the same accepted/rejected state with confirmed target IDs"],
+    "exemption": null
+  },
+  {
+    "capability_id": "taxonomy.read",
+    "mcp_tools": ["taxonomy"],
+    "cli_commands": ["categories list", "merchants list"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.get_all_categories", "moneybin.services.categorization.CategorizationService.list_merchants"],
+    "observable_outcomes": ["identical category and merchant taxonomy rows, active state, and usage"],
+    "exemption": null
+  },
+  {
+    "capability_id": "taxonomy.set",
+    "mcp_tools": ["taxonomy_set"],
+    "cli_commands": ["categories create", "categories set", "categories delete", "merchants create"],
+    "service_methods": ["moneybin.services.categorization.CategorizationService.plan_taxonomy_targets", "moneybin.services.categorization.CategorizationService.apply_taxonomy_targets", "moneybin.services.categorization.CategorizationService.create_category", "moneybin.services.categorization.CategorizationService.toggle_category", "moneybin.services.categorization.CategorizationService.delete_category", "moneybin.services.categorization.CategorizationService.create_merchant"],
+    "observable_outcomes": ["category and merchant target states are applied atomically with audited hard-delete recovery"],
+    "exemption": null
+  },
+  {
+    "capability_id": "import.files",
+    "mcp_tools": ["import_files"],
+    "cli_commands": ["import files"],
+    "service_methods": ["moneybin.services.import_service.ImportService.import_files"],
+    "observable_outcomes": ["the same files produce equivalent import terminal statuses, raw row counts, and confirmation gates"],
+    "exemption": null
+  },
+  {
+    "capability_id": "import.preview",
+    "mcp_tools": ["import_preview"],
+    "cli_commands": ["import preview"],
+    "service_methods": ["moneybin.services.import_service.ImportService.pdf_preview"],
+    "observable_outcomes": ["preview samples, detected mapping/sign evidence, and known format metadata are equivalent"],
+    "exemption": null
+  },
+  {
+    "capability_id": "import.confirm",
+    "mcp_tools": ["import_confirm"],
+    "cli_commands": ["import confirm"],
+    "service_methods": ["moneybin.services.import_service.ImportService.import_file", "moneybin.services.import_service.ImportService.apply_pdf_bridge_response"],
+    "observable_outcomes": ["ratified mapping, account binding, sign, or bridge response writes the expected import and raw rows"],
+    "exemption": null
+  },
+  {
+    "capability_id": "import.status",
+    "mcp_tools": ["import_status"],
+    "cli_commands": ["import status", "import history", "import inbox list", "import formats list", "import formats show"],
+    "service_methods": ["moneybin.loaders.import_log.get_import_history", "moneybin.loaders.import_log.get_import_history_page", "moneybin.services.import_service.ImportService.list_formats"],
+    "observable_outcomes": ["identical import IDs, terminal states, source types, row counts, labels, errors, and saved-format metadata"],
+    "exemption": null
+  },
+  {
+    "capability_id": "import.revert",
+    "mcp_tools": ["import_revert"],
+    "cli_commands": ["import revert", "import formats delete"],
+    "service_methods": ["moneybin.services.import_service.ImportService.revert", "moneybin.services.import_service.ImportService.plan_saved_format_delete", "moneybin.services.import_service.ImportService.delete_saved_format_confirmed"],
+    "observable_outcomes": ["the selected import's raw rows are removed and its status becomes reverted", "the exact confirmed user-saved format is audit-deleted with an undoable operation ID while built-ins remain immutable"],
+    "exemption": null
+  },
+  {
+    "capability_id": "import.inbox.sync",
+    "mcp_tools": ["import_inbox_sync"],
+    "cli_commands": ["import inbox"],
+    "service_methods": ["moneybin.services.inbox_service.InboxService.sync"],
+    "observable_outcomes": ["eligible inbox files reach processed, failed, or pending-confirmation locations with matching import counts"],
+    "exemption": null
+  },
+  {
+    "capability_id": "import.labels.set",
+    "mcp_tools": ["import_labels_set"],
+    "cli_commands": ["import labels add", "import labels remove", "import labels list"],
+    "service_methods": ["moneybin.services.import_service.ImportService.set_labels", "moneybin.services.import_service.ImportService.add_labels", "moneybin.services.import_service.ImportService.remove_labels", "moneybin.services.import_service.ImportService.list_labels", "moneybin.services.import_service.ImportService.list_distinct_labels"],
+    "observable_outcomes": ["the import's complete normalized label set and audit actor match"],
+    "exemption": null
+  },
+  {
+    "capability_id": "sync.link",
+    "mcp_tools": ["sync_link"],
+    "cli_commands": ["sync login", "sync link", "sync connect"],
+    "service_methods": ["moneybin.connectors.sync_auth.SyncAuthService.begin", "moneybin.connectors.sync_client.SyncClient.login", "moneybin.services.sync_service.SyncService.initiate_link"],
+    "observable_outcomes": ["login yields a scoped authenticated session without exposing tokens", "institution link yields the same hosted session ID, URL, and expiry"],
+    "exemption": null
+  },
+  {
+    "capability_id": "sync.status",
+    "mcp_tools": ["sync_status"],
+    "cli_commands": ["sync status", "sync link-status", "sync connect-status"],
+    "service_methods": ["moneybin.connectors.sync_auth.SyncAuthService.status", "moneybin.services.sync_service.SyncService.list_connections", "moneybin.connectors.sync_client.SyncClient.get_link_status"],
+    "observable_outcomes": ["auth polling reports pending/authenticated/denied/expired/provider_error idempotently", "connection and link-session status fields match"],
+    "exemption": null
+  },
+  {
+    "capability_id": "sync.pull",
+    "mcp_tools": ["sync_pull"],
+    "cli_commands": ["sync pull"],
+    "service_methods": ["moneybin.services.sync_service.SyncService.pull"],
+    "observable_outcomes": ["identical loaded/removed counts, per-institution statuses, raw rows, transform result, and security-resolution result"],
+    "exemption": null
+  },
+  {
+    "capability_id": "sync.disconnect",
+    "mcp_tools": ["sync_disconnect"],
+    "cli_commands": ["sync disconnect", "sync logout"],
+    "service_methods": ["moneybin.services.sync_service.SyncService.disconnect", "moneybin.connectors.sync_auth.SyncAuthService.logout", "moneybin.connectors.sync_client.SyncClient.logout"],
+    "observable_outcomes": ["institution mode removes the remote connection while preserving local rows", "logout clears profile-scoped tokens and pending auth sessions and is recoverable by login"],
+    "exemption": null
+  },
+  {
+    "capability_id": "gsheet.read",
+    "mcp_tools": ["gsheet"],
+    "cli_commands": ["gsheet list", "gsheet status"],
+    "service_methods": ["moneybin.connectors.gsheet.connection_service.GSheetConnectionService.list_connections", "moneybin.connectors.gsheet.connection_service.GSheetConnectionService.get"],
+    "observable_outcomes": ["identical connection IDs, adapter bindings, health, drift, and last-pull status"],
+    "exemption": null
+  },
+  {
+    "capability_id": "gsheet.connect",
+    "mcp_tools": ["gsheet_connect"],
+    "cli_commands": ["gsheet auth", "gsheet connect", "gsheet reconnect"],
+    "service_methods": ["moneybin.connectors.gsheet.connection_service.GSheetConnectionService.connect", "moneybin.connectors.gsheet.connection_service.GSheetConnectionService.reconnect"],
+    "observable_outcomes": ["OAuth, new binding, and reconnect modes reach the same connection state, mapping, sign gate, and initial-pull result"],
+    "exemption": null
+  },
+  {
+    "capability_id": "gsheet.pull",
+    "mcp_tools": ["gsheet_pull"],
+    "cli_commands": ["gsheet pull"],
+    "service_methods": ["moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_connection", "moneybin.connectors.gsheet.pull_service.GSheetPullService.pull_all_healthy"],
+    "observable_outcomes": ["identical per-connection pull status and raw rows loaded"],
+    "exemption": null
+  },
+  {
+    "capability_id": "gsheet.disconnect",
+    "mcp_tools": ["gsheet_disconnect"],
+    "cli_commands": ["gsheet disconnect"],
+    "service_methods": ["moneybin.connectors.gsheet.connection_service.GSheetConnectionService.disconnect", "moneybin.connectors.gsheet.connection_service.GSheetConnectionService.purge_confirmed"],
+    "observable_outcomes": ["soft disconnect preserves raw rows; confirmed absence removes the binding and its exact raw-row blast radius"],
+    "exemption": null
+  },
+  {
+    "capability_id": "privacy.read",
+    "mcp_tools": ["privacy"],
+    "cli_commands": ["privacy status", "privacy log"],
+    "service_methods": ["moneybin.services.consent_service.ConsentService.status", "moneybin.privacy.log.read_privacy_events"],
+    "observable_outcomes": ["identical effective consent state and privacy/audit event records"],
+    "exemption": null
+  },
+  {
+    "capability_id": "privacy.consent.set",
+    "mcp_tools": ["privacy_consent_set"],
+    "cli_commands": ["privacy grant", "privacy revoke", "privacy revoke-all"],
+    "service_methods": ["moneybin.services.consent_service.ConsentService.plan_targets", "moneybin.services.consent_service.ConsentService.apply_targets"],
+    "observable_outcomes": ["effective grants reach the requested target state and every mutation remains in the append-only consent/audit ledger"],
+    "exemption": null
+  },
+  {
+    "capability_id": "refresh.run",
+    "mcp_tools": ["refresh_run"],
+    "cli_commands": ["refresh", "transform apply", "transactions matches run", "transactions matches backfill", "accounts links run", "merchants links run"],
+    "service_methods": ["moneybin.services.refresh.refresh", "moneybin.services.matching_service.MatchingService.run", "moneybin.services.account_links_service.AccountLinksService.run", "moneybin.services.merchant_links_service.MerchantLinksService.run"],
+    "observable_outcomes": ["selected match/transform/categorize/identity stages report the same status/errors and create the same review proposals"],
+    "exemption": null
+  },
+  {
+    "capability_id": "sql.query",
+    "mcp_tools": ["sql_query"],
+    "cli_commands": ["sql query"],
+    "service_methods": ["moneybin.privacy.sql_query.execute_sql_query"],
+    "observable_outcomes": ["identical read-only rows, total count, classes, truncation, and CRITICAL masking"],
+    "exemption": null
+  },
+  {
+    "capability_id": "sql.schema",
+    "mcp_tools": ["sql_schema"],
+    "cli_commands": ["sql query"],
+    "service_methods": ["moneybin.services.schema_catalog.build_schema_doc"],
+    "observable_outcomes": ["the curated table/column catalog is queryable and agrees with live schema metadata"],
+    "exemption": null
+  },
+  {
+    "capability_id": "operator.secret-material",
+    "mcp_tools": [],
+    "cli_commands": ["db init", "db unlock", "db key show", "db key rotate", "db key export", "db key import", "db key verify"],
+    "service_methods": ["moneybin.secrets.SecretStore.get_key", "moneybin.secrets.SecretStore.set_key", "moneybin.secrets.SecretStore.delete_key"],
+    "observable_outcomes": ["database or sync key material is changed or verified without entering an LLM context"],
+    "exemption": {
+      "surface": "mcp",
+      "category": "secret-material",
+      "reason": "Passphrases, encryption keys, and key-derivation material must never transit the LLM context."
+    }
+  },
+  {
+    "capability_id": "operator.database-lifecycle",
+    "mcp_tools": [],
+    "cli_commands": ["db shell", "db ui", "db query", "db info", "db backup", "db restore", "db lock", "db ps", "db kill", "db migrate apply", "db migrate status"],
+    "service_methods": ["moneybin.database.Database.close"],
+    "observable_outcomes": ["physical operator can inspect, recover, migrate, or control the local encrypted database process"],
+    "exemption": {
+      "surface": "mcp",
+      "category": "operator-territory",
+      "reason": "The MCP server depends on an already-openable database; raw bypass, recovery, and process controls require physical operator presence."
+    }
+  },
+  {
+    "capability_id": "operator.server-profile-bootstrap",
+    "mcp_tools": [],
+    "cli_commands": ["mcp install", "mcp list-tools", "mcp list-prompts", "mcp serve", "mcp config", "mcp config path", "profile create", "profile list", "profile switch", "profile delete", "profile show", "profile set", "demo"],
+    "service_methods": ["moneybin.services.profile_service.ProfileService.create", "moneybin.services.demo_service.DemoService.run"],
+    "observable_outcomes": ["local profiles and MCP client/server bootstrapping are completed before a usable MCP session exists"],
+    "exemption": {
+      "surface": "mcp",
+      "category": "operator-territory",
+      "reason": "Profile and server bootstrapping must precede the MCP session they would otherwise need to invoke."
+    }
+  },
+  {
+    "capability_id": "operator.pipeline-debug",
+    "mcp_tools": [],
+    "cli_commands": ["transform plan", "transform seed", "transform status", "transform validate", "transform audit", "transform restate", "stats", "logs", "synthetic generate", "synthetic reset"],
+    "service_methods": ["moneybin.services.transform_service.TransformService.plan", "moneybin.services.transform_service.TransformService.status", "moneybin.services.transform_service.TransformService.validate", "moneybin.services.transform_service.TransformService.audit"],
+    "observable_outcomes": ["operator can inspect or surgically alter pipeline/developer state while user refresh outcomes remain under refresh_run"],
+    "exemption": {
+      "surface": "mcp",
+      "category": "granular-operator-debug",
+      "reason": "These are surgical SQLMesh, synthetic-data, metrics, and log controls; MCP exposes the complete refresh outcome rather than debugger stages."
+    }
+  },
+  {
+    "capability_id": "operator.import-local-layout",
+    "mcp_tools": [],
+    "cli_commands": ["import inbox path"],
+    "service_methods": ["moneybin.services.inbox_service.InboxService.ensure_layout"],
+    "observable_outcomes": ["a local operator can materialize and locate the profile inbox directory"],
+    "exemption": {
+      "surface": "mcp",
+      "category": "operator-territory",
+      "reason": "Local filesystem path discovery operates on physical profile layout rather than financial or protocol state."
+    }
+  },
+  {
+    "capability_id": "import.agent-pdf-bridge",
+    "mcp_tools": ["import_preview", "import_confirm"],
+    "cli_commands": [],
+    "service_methods": ["moneybin.services.import_service.ImportService.apply_pdf_bridge_response"],
+    "observable_outcomes": ["an MCP driving agent can submit an extraction recipe and reconciled rows without exposing protocol payload mechanics as a human CLI command"],
+    "exemption": {
+      "surface": "cli",
+      "category": "protocol-only",
+      "reason": "The bridge payload is a machine-to-machine extraction round trip; human CLI import retains preview and deterministic confirmation outcomes."
+    }
+  },
+  {
+    "capability_id": "privacy.local-redaction-debug",
+    "mcp_tools": [],
+    "cli_commands": ["privacy redact"],
+    "service_methods": ["moneybin.services._text.redact_for_llm"],
+    "observable_outcomes": ["a physical operator can inspect local redaction behavior on supplied text without sending that text through MCP"],
+    "exemption": {
+      "surface": "mcp",
+      "category": "granular-operator-debug",
+      "reason": "MCP applies redaction as protocol middleware; a raw redaction probe would expose the very input the operator is testing."
+    }
+  }
+]

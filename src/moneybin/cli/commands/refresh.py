@@ -1,7 +1,7 @@
 """Refresh command for MoneyBin CLI.
 
 CLI peer of the ``refresh_run`` MCP tool. Runs the post-load refresh
-pipeline (matching → SQLMesh apply → categorization) via
+pipeline (matching → SQLMesh apply → categorization → identity backfill) via
 ``moneybin.services.refresh.refresh()``. Idempotent — safe to retry
 after a failure.
 """
@@ -36,6 +36,7 @@ class RefreshStepChoice(StrEnum):
     MATCH = "match"
     TRANSFORM = "transform"
     CATEGORIZE = "categorize"
+    IDENTITY = "identity"
 
 
 def refresh_command(
@@ -46,19 +47,20 @@ def refresh_command(
         "--step",
         help=(
             "Limit the cascade to one or more steps "
-            "(repeatable; choose from match, transform, categorize). "
+            "(repeatable; choose from match, transform, categorize, identity). "
             "Default: full cascade. Steps always run in canonical order "
-            "(match → transform → categorize) regardless of flag order."
+            "(match → transform → categorize → identity) regardless of flag order."
         ),
     ),
 ) -> None:
-    """Run the post-load refresh pipeline: matching, SQLMesh apply, categorization.
+    """Run refresh: matching, SQLMesh apply, categorization, identity backfill.
 
     Single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent. Matching and categorization are best-effort: a real
     crash in either is surfaced (a ⚠️ warning here, `matching_error` /
     `categorization_error` + `recovery_actions` under `--output json`) but
-    does not fail the command — only a SQLMesh apply error exits non-zero.
+    does not fail the command. Identity failures expose only their domain in
+    `identity_errors`; only a SQLMesh apply error exits non-zero.
     """
     from moneybin.cli.output import render_or_json  # noqa: PLC0415
     from moneybin.database import get_database  # noqa: PLC0415
@@ -89,8 +91,12 @@ def refresh_command(
         logger.warning(f"⚠️  Matching step failed: {result.matching_error}")
     if result.categorization_error is not None:
         logger.warning(f"⚠️  Categorization step failed: {result.categorization_error}")
+    for domain in result.identity_errors:
+        logger.warning(f"⚠️  {domain.title()} identity backfill failed")
     has_step_error = (
-        result.matching_error is not None or result.categorization_error is not None
+        result.matching_error is not None
+        or result.categorization_error is not None
+        or bool(result.identity_errors)
     )
 
     if output == OutputFormat.JSON:

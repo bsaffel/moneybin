@@ -1,7 +1,7 @@
 """refresh_* tools — the always-visible umbrella over the refresh domain.
 
 Tool:
-    - refresh_run — match + SQLMesh apply + categorization (low sensitivity)
+    - refresh_run — match + SQLMesh apply + categorization + identity backfill
 
 Wraps :func:`moneybin.services.refresh.refresh`. Operators needing
 SQLMesh-step granularity can pass ``steps=["transform"]`` (the granular
@@ -27,21 +27,22 @@ from moneybin.services.refresh import RefreshStep, expand_steps, refresh
 def refresh_run(
     steps: list[RefreshStep] | None = None,
 ) -> ResponseEnvelope[RefreshRunPayload]:
-    """Run the post-load refresh pipeline: matching → SQLMesh apply → categorization.
+    """Run refresh: matching → SQLMesh apply → categorization → identity backfill.
 
     The single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent; safe to retry after a failure. Matching and
-    categorization are best-effort: a real crash in either does NOT fail the
-    call but is surfaced in the envelope as ``matching_error`` /
-    ``categorization_error`` plus structured ``recovery_actions`` (a targeted
-    ``refresh_run(steps=[...])`` retry and a ``system_doctor`` diagnostic).
-    Only a SQLMesh apply error sets the top-level ``error``. (A first-load
-    missing-view precondition is not a crash and leaves those fields unset.)
+    categorization are best-effort. Identity backfill is also best-effort per
+    domain: ``identity_errors`` contains only ``accounts`` and/or ``merchants``
+    when proposal generation fails, while successful domains point to their
+    ``reviews(kind=...)`` queue. Only a SQLMesh apply error sets the top-level
+    ``error``. (A first-load missing-view precondition is not a crash and
+    leaves matching/categorization fields unset.)
 
     Args:
-        steps: Subset of ``["gsheet", "match", "transform", "categorize"]``
+        steps: Subset of ``["gsheet", "match", "transform", "categorize",
+            "identity"]``
             to run. Defaults to None (full cascade). Steps execute in
-            canonical order (gsheet → match → transform → categorize)
+            canonical order (gsheet → match → transform → categorize → identity)
             regardless of input order; dependencies enforce it (categorize
             reads SQLMesh-built views). Pass ``["transform"]`` to run only
             SQLMesh apply.
@@ -65,23 +66,10 @@ def register_refresh_tools(mcp: FastMCP) -> None:
         mcp,
         refresh_run,
         "refresh_run",
-        "Run the post-load refresh pipeline: cross-source matching, "
-        "SQLMesh apply, deterministic categorization. The single "
-        "always-visible entry point for refreshing derived tables (core.* "
-        "and reports.*) from raw inputs. Idempotent — safe to retry. "
-        "Accepts optional steps (list of 'gsheet', 'match', 'transform', "
-        "'categorize') to scope which sub-operations execute; defaults to "
-        "the full cascade. "
-        "Steps execute in canonical order (gsheet → match → transform → "
-        "categorize) regardless of input order. "
-        "Best-effort steps (match, categorize) don't fail the call: a real "
-        "crash is surfaced as matching_error/categorization_error plus "
-        "recovery_actions (a targeted refresh_run retry and system_doctor). "
-        "Only SQLMesh apply errors set the top-level error. "
-        "Mutation surface: rebuilds core.* and reports.* views via SQLMesh "
-        "and writes app.transaction_categories for newly-matched rules. "
-        "No revert path; re-run after fixing inputs. "
-        "Symmetric with transactions_categorize_run(methods=...). "
-        "For SQLMesh-step granularity beyond apply, use the CLI: "
-        "`moneybin transform plan|validate|audit|status` (CLI-only operator tools).",
+        "Run the post-load refresh pipeline. By default it performs Google "
+        "Sheets pull, matching, SQLMesh apply, deterministic categorization, "
+        "and identity proposal backfill in canonical order. Pass steps to "
+        "select from gsheet, match, transform, categorize, and identity. "
+        "Rebuilds core.* and reports.* and may write app categorization or "
+        "identity-review state. No revert path; fix inputs and rerun.",
     )

@@ -14,7 +14,7 @@ without a circular dependency.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -52,6 +52,10 @@ from moneybin.privacy.payloads.categories import (
     MerchantsPayload as MerchantsPayload,
 )
 from moneybin.privacy.payloads.categorize import (
+    CategorizationRuleHistoryEvent,
+    CategorizationRuleSnapshot,
+)
+from moneybin.privacy.payloads.categorize import (
     CategorizeRulesPayload as CategorizeRulesPayload,
 )
 from moneybin.privacy.payloads.categorize import (
@@ -59,6 +63,9 @@ from moneybin.privacy.payloads.categorize import (
 )
 from moneybin.protocol.envelope import ResponseEnvelope as ResponseEnvelope
 from moneybin.protocol.envelope import build_envelope as build_envelope
+from moneybin.repositories.categorization_decisions_repo import (
+    CategorizationDecisionsRepo,
+)
 from moneybin.services._text import (
     build_match_inputs as build_match_inputs,
 )
@@ -108,9 +115,21 @@ from moneybin.services.categorization._shared import (
     validate_rule_items as validate_rule_items,
 )
 from moneybin.services.categorization.applier import (
+    CategoryStateTarget as CategoryStateTarget,
+)
+from moneybin.services.categorization.applier import (
     MatchApplier,
     RuleCreationResult,
+    RuleStateTarget,
+    RuleTargetPlan,
+    RuleTargetResult,
+    TaxonomyStateTarget,
+    TaxonomyTargetPlan,
+    TaxonomyTargetResult,
     WriteOutcome,
+)
+from moneybin.services.categorization.applier import (
+    MerchantStateTarget as MerchantStateTarget,
 )
 from moneybin.services.categorization.assist import (
     AssistBridge,
@@ -174,6 +193,7 @@ class CategorizationService:
         """
         self._audit = audit if audit is not None else AuditService(db)
         self._matcher = CategorizationMatcher(db)
+        self._review_decisions = CategorizationDecisionsRepo(db)
         self._applier = MatchApplier(db, audit=self._audit)
         self._assist = AssistBridge(db)
         self._queries = CategorizationQueries(db)
@@ -218,6 +238,93 @@ class CategorizationService:
             categorized_by=categorized_by,
             actor=actor,
         )
+
+    def apply_review_categorization_in_active_txn(
+        self,
+        transaction_id: str,
+        *,
+        category: str,
+        subcategory: str | None,
+        canonical_merchant_name: str | None,
+        match_text: str | None,
+        existing_merchant_id: str | None,
+        category_changed: bool,
+        merchant_changed: bool,
+        actor: str,
+    ) -> str | None:
+        """Apply one preflighted review categorization inside the caller's transaction."""
+        if category_changed:
+            self.set_category_in_active_txn(
+                transaction_id,
+                category=category,
+                subcategory=subcategory,
+                actor=actor,
+            )
+        if not merchant_changed or canonical_merchant_name is None or not match_text:
+            return existing_merchant_id
+        if existing_merchant_id is not None:
+            self._applier.append_exemplar(
+                existing_merchant_id,
+                match_text,
+                actor=actor,
+                in_outer_txn=True,
+            )
+            return existing_merchant_id
+        return self._applier.create_merchant_core(
+            None,
+            canonical_merchant_name,
+            match_type="oneOf",
+            category=category,
+            subcategory=subcategory,
+            created_by="ai",
+            exemplars=[match_text],
+            actor=actor,
+            in_outer_txn=True,
+        )
+
+    def find_review_merchant(
+        self,
+        canonical_name: str,
+        *,
+        category: str,
+        subcategory: str | None,
+    ) -> str | None:
+        """Resolve an existing exemplar merchant for review-decision preflight."""
+        return self._applier.find_merchant_by_canonical_name(
+            canonical_name,
+            category=category,
+            subcategory=subcategory,
+        )
+
+    def record_committed_review_merchants(
+        self,
+        *,
+        created_merchant_ids: tuple[str, ...],
+        touched_merchant_ids: tuple[str, ...],
+    ) -> None:
+        """Publish deferred review-merchant observability after commit."""
+        self._applier.record_committed_review_merchants(
+            created_merchant_ids=created_merchant_ids,
+            touched_merchant_ids=touched_merchant_ids,
+        )
+
+    def review_decision_for_transaction(
+        self,
+        transaction_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the canonical review decision for one transaction."""
+        return self._review_decisions.fetch_by_transaction_id(transaction_id)
+
+    def project_pending_review_attempts(
+        self,
+        transaction_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """Project versioned pending attempts for a transaction batch."""
+        return self._review_decisions.project_pending_attempts(transaction_ids)
+
+    def list_review_decision_history(self) -> list[dict[str, Any]]:
+        """Return preserved categorization proposal-attempt history."""
+        return self._review_decisions.history()
 
     def clear_category(self, transaction_id: str, *, actor: str) -> None:
         """Delete a transaction's category row and emit ``category.clear`` audit."""
@@ -352,6 +459,20 @@ class CategorizationService:
             self.categorize_pending()
         return deactivated
 
+    def plan_rule_targets(self, targets: Sequence[RuleStateTarget]) -> RuleTargetPlan:
+        """Preflight a complete categorization-rule target-state batch."""
+        return self._applier.plan_rule_targets(targets)
+
+    def apply_rule_targets(
+        self,
+        plan: RuleTargetPlan,
+        *,
+        actor: str,
+        verify: Callable[[RuleTargetPlan], None] | None = None,
+    ) -> list[RuleTargetResult]:
+        """Apply a preflighted rule batch atomically through audited repositories."""
+        return self._applier.apply_rule_targets(plan, actor=actor, verify=verify)
+
     # -- Category management --
 
     def create_category(
@@ -361,10 +482,35 @@ class CategorizationService:
         subcategory: str | None = None,
         description: str | None = None,
         actor: str = "system",
+        in_outer_txn: bool = False,
     ) -> str:
         """Create a custom user category (active by default)."""
         return self._applier.create_category(
-            category, subcategory=subcategory, description=description, actor=actor
+            category,
+            subcategory=subcategory,
+            description=description,
+            actor=actor,
+            in_outer_txn=in_outer_txn,
+        )
+
+    def plan_taxonomy_targets(
+        self, targets: Sequence[TaxonomyStateTarget]
+    ) -> TaxonomyTargetPlan:
+        """Preflight category and merchant target states."""
+        return self._applier.plan_taxonomy_targets(targets)
+
+    def apply_taxonomy_targets(
+        self,
+        targets: Sequence[TaxonomyStateTarget],
+        *,
+        actor: str,
+        verify: Callable[[TaxonomyTargetPlan], None] | None = None,
+    ) -> list[TaxonomyTargetResult]:
+        """Apply a taxonomy target-state batch atomically."""
+        return self._applier.apply_taxonomy_targets(
+            targets,
+            actor=actor,
+            verify=verify,
         )
 
     def toggle_category(
@@ -519,6 +665,67 @@ class CategorizationService:
         """List all categorization rules (active and inactive) ordered by priority."""
         return self._queries.list_rules()
 
+    def list_rule_snapshots(self, *, active: bool) -> list[CategorizationRuleSnapshot]:
+        """List exact current rule states in deterministic order."""
+        return self._queries.list_rule_snapshots(active=active)
+
+    def list_rule_history(self) -> list[CategorizationRuleHistoryEvent]:
+        """Project complete categorization-rule audit transitions."""
+        events = self._audit.list_events(
+            target_table="categorization_rules",
+            limit=None,
+        )
+        events.sort(key=lambda event: event.audit_id, reverse=True)
+        events.sort(key=lambda event: event.target_id or "")
+        events.sort(key=lambda event: event.occurred_at, reverse=True)
+        return [
+            CategorizationRuleHistoryEvent(
+                event_id=event.audit_id,
+                occurred_at=event.occurred_at,
+                operation_id=event.operation_id,
+                rule_id=event.target_id or "",
+                action=event.action,
+                prior=self._rule_history_snapshot(event.before_value, event.target_id),
+                current=self._rule_history_snapshot(event.after_value, event.target_id),
+            )
+            for event in events
+        ]
+
+    @staticmethod
+    def _rule_history_snapshot(
+        value: dict[str, Any] | None,
+        target_id: str | None,
+    ) -> CategorizationRuleSnapshot | None:
+        """Convert one lossless audit row image into a typed rule state."""
+        if value is None:
+            return None
+
+        def amount(name: str) -> Decimal | None:
+            raw = value.get(name)
+            return Decimal(str(raw)) if raw is not None else None
+
+        return CategorizationRuleSnapshot(
+            rule_id=str(value.get("rule_id") or target_id or ""),
+            name=value.get("name"),
+            merchant_pattern=value.get("merchant_pattern"),
+            match_type=value.get("match_type"),
+            min_amount=amount("min_amount"),
+            max_amount=amount("max_amount"),
+            account_id=value.get("account_id"),
+            category=value.get("category"),
+            subcategory=value.get("subcategory"),
+            category_id=value.get("category_id"),
+            priority=(
+                int(value["priority"]) if value.get("priority") is not None else None
+            ),
+            is_active=(
+                bool(value["is_active"]) if value.get("is_active") is not None else None
+            ),
+            created_by=value.get("created_by"),
+            created_at=value.get("created_at"),
+            updated_at=value.get("updated_at"),
+        )
+
     def list_merchants(self) -> MerchantsPayload:
         """List all merchant name mappings ordered by canonical name."""
         return self._queries.list_merchants()
@@ -526,7 +733,7 @@ class CategorizationService:
     def list_uncategorized_transactions(
         self,
         *,
-        limit: int,
+        limit: int | None,
         sort: Literal["date", "impact"] = "date",
         min_amount: Decimal = Decimal("0"),
         account_id: str | None = None,
@@ -543,6 +750,10 @@ class CategorizationService:
             min_amount=min_amount,
             account_id=account_id,
         )
+
+    def list_categorization_history(self) -> list[dict[str, Any]]:
+        """Return persisted transaction-category decisions newest first."""
+        return self._queries.list_categorization_history()
 
     def count_uncategorized(self) -> int:
         """Return the number of transactions without a category assignment."""

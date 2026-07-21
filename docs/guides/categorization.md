@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-05-17 -->
 # Categorization
 
-How MoneyBin categorizes transactions: deterministic rules and merchant mappings first, LLM-assist as the human helper for what's left, source precedence enforced on every write so your manual choices outrank automation. The same workflow is reachable from CLI (`moneybin transactions categorize ...`) and MCP (`transactions_categorize_*`) — pick whichever feels natural for the task.
+How MoneyBin categorizes transactions: deterministic rules and merchant mappings first, LLM-assist as the human helper for what's left, source precedence enforced on every write so your manual choices outrank automation. The same workflow is reachable from CLI (`moneybin transactions categorize ...`) and the bounded MCP categorization tools — pick whichever feels natural for the task.
 
 ## The model
 
@@ -35,7 +35,7 @@ The three tables you'll touch directly:
 | `app.user_merchants` | Per-merchant canonical name, exemplar set, and optional default category. Surfaced as `core.dim_merchants`. |
 | `app.transaction_categories` | The actual category assignment per `transaction_id`. Source-precedence enforced here. |
 
-Categories themselves live in `core.dim_categories` (seeded defaults plus user-created entries from `app.user_categories`). Manage them via `moneybin categories ...` / `categories_*` MCP tools — outside this guide's scope.
+Categories themselves live in `core.dim_categories` (seeded defaults plus user-created entries from `app.user_categories`). Manage them through `moneybin categories ...` or the MCP `taxonomy` and `taxonomy_set` tools — outside this guide's scope.
 
 ## What runs when
 
@@ -47,14 +47,14 @@ flowchart TD
     C -->|yes| D[transactions categorize assist<br/>returns PII-scrubbed batch]
     D --> E[LLM proposes<br/>category + merchant per row]
     E --> F[transactions categorize commit-from-file<br/>writes categorized_by='ai']
-    F --> G[Snowball: categorize_pending<br/>rules then merchant exemplars<br/>fan across remaining rows]
+    F --> G[Snowball: deterministic cascade<br/>rules then merchant exemplars<br/>fan across remaining rows]
     G --> C
 ```
 
 A few things worth pinning down:
 
-- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same pipeline: cross-source matching, SQLMesh transform, then `categorize_pending` (rules then merchants). Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
-- **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on `rules create` (or `reapply=true` on the MCP tool) and MoneyBin runs `categorize_pending` immediately after the insert.
+- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same pipeline: cross-source matching, SQLMesh transform, then rules and merchant matching. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
+- **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on the CLI `rules create`; MCP callers update the complete rule target state with `transactions_categorize_rules_set` and invoke `transactions_categorize_run` when they need an immediate run.
 - **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is sent, embedded account numbers are masked; an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
 - **`commit`, `commit-from-file`, and the MCP `transactions_categorize_commit` tool all write `categorized_by='ai'`** — see the Hazard callout above. This is by design: the LLM is a probabilistic proposer, and `ai`-source means "anything else can override this," which is the right default for a guess.
 
@@ -74,7 +74,7 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 | `rules list` | Lists active rules in priority order. |
 | `rules create` | Single rule: `NAME --pattern X --category Y [--match-type contains\|exact\|regex] [--priority N] [--min-amount/--max-amount] [--account-id ID]`. Batch: `--from-file rules.json`. `--reapply` re-evaluates uncategorized rows. |
 | `rules delete <rule_id>` | Soft-deletes a rule (`is_active=false`). `--reapply` strips categorizations the rule wrote and re-evaluates those rows against remaining matchers. |
-| `rules apply` | Runs the same `categorize_pending` cascade as `run` with default methods. |
+| `rules apply` | Runs only active rules, equivalent to `run --methods rules`. Merchant and provider-native passes are not invoked. |
 | `auto review` | Lists pending auto-rule proposals with sample transactions and trigger counts. |
 | `auto accept` | Batch-accept/reject proposals: `--accept <id>...`, `--reject <id>...`, `--accept-all`, `--reject-all`. Explicit rejects override `--accept-all`. |
 | `auto stats` | Counts: active auto-rules, pending proposals, transactions auto-ruled. |
@@ -84,21 +84,15 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 
 ### MCP
 
-The MCP equivalent is `transactions_categorize_*` (underscore-joined).
+MCP uses the bounded standard surface rather than one tool for every CLI subcommand.
 
-| Tool | Sensitivity | Writes |
-|---|---|---|
-| `transactions_categorize_assist` | medium | read-only |
-| `transactions_categorize_pending` | medium | read-only |
-| `transactions_categorize_stats` | low | read-only |
-| `transactions_categorize_rules` | low | read-only |
-| `transactions_categorize_commit` | medium | ⚠️ writes `ai`-source; see [Hazard](#the-model). Accepts `canonical_merchant_name` per item (CLI strips this — MCP retains it). |
-| `transactions_categorize_rules_create` | low | `app.categorization_rules` |
-| `transactions_categorize_rules_delete` | low | `app.categorization_rules` (soft) |
-| `transactions_categorize_run` | medium | `app.transaction_categories` |
-| `transactions_categorize_auto_review` | medium | read-only |
-| `transactions_categorize_auto_accept` | medium | `app.categorization_rules`, `app.transaction_categories` |
-| `transactions_categorize_auto_stats` | low | read-only |
+| Tool | Purpose |
+|---|---|
+| `transactions_categorize_assist` | Return PII-scrubbed candidates for a human or model to propose. |
+| `transactions_categorize_commit` | Commit reviewed categorizations. It accepts `canonical_merchant_name` per item (the CLI strips this field). |
+| `transactions_categorize_rules` | Inspect the current or historical categorization-rule projection. |
+| `transactions_categorize_rules_set` | Set the complete reviewed rule target state. |
+| `transactions_categorize_run` | Run the deterministic categorization engines. |
 
 Every tool returns the standard response envelope (`summary`, `data`, `actions`). `summary.display_currency` carries the currency for any amount-bearing data; amounts follow the accounting convention (negative = expense, positive = income; transfers exempt).
 
@@ -118,7 +112,7 @@ Every tool returns the standard response envelope (`summary`, `data`, `actions`)
    moneybin transactions categorize commit-from-file proposals.json
    ```
    Writes the categorizations as `ai`-source (review the Hazard above before doing this for curated historical data). For each row that proposes a merchant identity, MoneyBin accumulates an exemplar on `app.user_merchants` so the next import covers the same pattern automatically — see [Merchant exemplars](#merchant-exemplars-and-the-snowball).
-7. **Snowball.** After the batch commits, `categorize_pending` runs once over remaining uncategorized rows: any rule, auto-rule, or merchant exemplar (including ones created in this batch) gets a chance to apply. Categorize one `PAYPAL INST XFER` for YouTube and every other identical PayPal-for-YouTube row picks up the category in the same session.
+7. **Snowball.** After the batch commits, the deterministic cascade runs once over remaining uncategorized rows: any rule, auto-rule, or merchant exemplar (including ones created in this batch) gets a chance to apply. Categorize one `PAYPAL INST XFER` for YouTube and every other identical PayPal-for-YouTube row picks up the category in the same session.
 8. **Promote patterns to rules.** Over time MoneyBin watches your manual categorizations and proposes auto-rules (broad patterns it inferred from your edits). Review with `moneybin transactions categorize auto review` and accept the good ones with `... auto accept --accept <id>` (or `--accept-all`). Accepted proposals become active rules at `categorized_by='auto_rule'` and apply on every subsequent refresh — they also promote your data out of `ai`-source on the rows they cover.
 
 ## Migrating curated categories
@@ -129,7 +123,7 @@ If you're moving from Tiller, Beancount, hledger, Mint exports, or another tool 
    ```bash
    moneybin transactions categorize rules create --from-file rules.json --reapply
    ```
-   `--reapply` immediately runs `categorize_pending` so the rules retroactively cover all matching uncategorized rows.
+   `--reapply` immediately runs the deterministic cascade so the rules retroactively cover all matching uncategorized rows.
 
 2. **Commit through `commit-from-file` as a stepping stone, then promote.** Acceptable if you understand the trade-off: the commit lands as `ai`-source (overwritable). Then over your next few sessions, the auto-rule proposer surfaces patterns it inferred from those categorizations; accepting them at `auto review` promotes the data to `auto_rule`-source. Anything still on `ai`-source after a few cycles is genuinely one-off — author a rule for it manually or leave it.
 
@@ -209,7 +203,7 @@ A top-level JSON array. Each item:
 - **`commit-from-file` re-runs.** Re-running the same `proposals.json` is safe: each row attempts a write at `ai`-priority. The first run lands; the second run finds an existing row already at `ai`-priority and the SQL precedence guard (`<=`) lets it overwrite with identical values — no new exemplars accrue because the merchant accumulator only creates a new merchant or appends a new exemplar when the row's `match_text` isn't already covered (`list_distinct(list_append(...))`). Net effect: idempotent.
 - **Re-running after a higher-source write has happened.** If a rule or `user` write covered a row between two `commit-from-file` runs, the second `ai` write is rejected and surfaces as a per-row `lower_priority_source` skip — no overwrite, no error. See [Error taxonomy](#error-taxonomy).
 - **`rules create` dedup.** Active rules are deduped by `(merchant_pattern, match_type, min_amount, max_amount, account_id, category, subcategory)`; `name` and `priority` are metadata. Retrying the same payload returns the existing `rule_id` and creates no new rows. The result envelope reports `created`, `existing`, and `skipped` separately.
-- **`run` / `rules apply` re-invocation.** Both call `categorize_pending`. Idempotent against a stable database: a second run with no new uncategorized rows writes nothing.
+- **`run` / `rules apply` re-invocation.** `run` executes its selected deterministic engines; `rules apply` executes only rules. Both are idempotent against a stable database: a second run with no new uncategorized rows writes nothing.
 
 ## Error taxonomy
 
@@ -258,20 +252,20 @@ moneybin transactions categorize rules create "Spotify subscription" \
 
 **Match outcome.** The first rule that matches in priority order wins. Tie-break for equal `priority` is `created_at ASC` — older rules win ties. Rules write `categorized_by='rule'` (or `auto_rule` for system-promoted rules); the source-precedence guard means a rule write can replace `auto_rule`, `migration`, `ml`, `plaid`, and `ai` writes, but never a `user` edit.
 
-**Soft delete.** `rules delete` sets `is_active=false`; the row stays in the table. `--reapply` additionally strips categorizations the rule wrote (`categorized_by IN ('rule', 'auto_rule')` with this `rule_id`) and re-runs `categorize_pending` so the affected rows fall back to other matchers. Higher-precedence writes (`user`, `migration`, etc.) that happen to reference this `rule_id` are left intact.
+**Soft delete.** `rules delete` sets `is_active=false`; the row stays in the table. `--reapply` additionally strips categorizations the rule wrote (`categorized_by IN ('rule', 'auto_rule')` with this `rule_id`) and re-runs the deterministic cascade so the affected rows fall back to other matchers. Higher-precedence writes (`user`, `migration`, etc.) that happen to reference this `rule_id` are left intact.
 
 ## Merchant exemplars and the snowball
 
 When the MCP `transactions_categorize_commit` tool processes a row with `canonical_merchant_name='Google YouTube'`, MoneyBin creates a merchant in `app.user_merchants` with that name and stores the row's exact normalized `match_text` as a `oneOf` exemplar. Subsequent rows whose `match_text` equals one of that merchant's exemplars match immediately — set membership, no pattern needed. (The CLI `commit` and `commit-from-file` strip `canonical_merchant_name` at the boundary today, so this auto-merchant path is MCP-only. Future work tracked as a follow-up.)
 
-The snowball is the cumulative effect: each session creates merchants and accumulates exemplars; the post-commit `categorize_pending` sweep applies them to remaining uncategorized rows in the same batch; the next import gets categorized at refresh time before you ever see it. By the third or fourth import, the LLM is meaningfully less involved.
+The snowball is the cumulative effect: each session creates merchants and accumulates exemplars; the post-commit deterministic cascade applies them to remaining uncategorized rows in the same batch; the next import gets categorized at refresh time before you ever see it. By the third or fourth import, the LLM is meaningfully less involved.
 
 Two design choices that matter:
 
 1. **Exact exemplars, not inferred patterns.** Categorizing one `PAYPAL INST XFER` row for YouTube does not category-stamp every other PayPal row — only rows whose normalized `match_text` matches one of the exemplars. If you want a broad pattern like "everything containing COSTCO is Groceries," author it as a rule explicitly. Rules are a user choice; exemplars are evidence.
 2. **Multiple rows under one canonical name merge.** When several rows in the same batch share a `canonical_merchant_name`, they accumulate exemplars on the same merchant rather than spawning per-row merchants.
 
-**Inspecting and pruning.** `moneybin transactions categorize auto stats` reports active auto-rule and exemplar counts. There is no first-class "list exemplars" or "remove this exemplar from a merchant" CLI today — to surgically remove a bad exemplar you either edit `app.user_merchants` directly via `moneybin db query` (advanced) or hard-delete the merchant and re-categorize the affected rows. A `merchants_*` curation surface is planned.
+**Inspecting and pruning.** `moneybin transactions categorize auto stats` reports active auto-rule and exemplar counts. There is no first-class "list exemplars" or "remove this exemplar from a merchant" CLI today — to surgically remove a bad exemplar you either edit `app.user_merchants` directly via `moneybin db query` (advanced) or hard-delete the merchant and re-categorize the affected rows. Merchant-specific MCP curation is not currently admitted to the standard registry.
 
 ## LLM-assist in depth
 
@@ -321,7 +315,7 @@ There is no `categorize revert` command today. To investigate or undo a batch:
 - **ML-based categorization.** The `ml` source slot exists in the precedence ladder and the `transactions categorize ml {status,train,apply}` commands are registered, but they're stubs today — invoking any of them returns a not-implemented notice. A local model would slot in between `migration` and `plaid` in the precedence ladder.
 - **Bulk-import-as-user CLI.** See [Migrating curated categories](#migrating-curated-categories). The service method exists; the CLI/MCP entry point doesn't.
 - **CLI parity for `canonical_merchant_name`.** The CLI `commit` and `commit-from-file` strip the key today; only the MCP `transactions_categorize_commit` tool routes it through to the exemplar accumulator.
-- **Merchant exemplar inspection / pruning.** A `merchants_*` curation surface (list, remove exemplar, hard-delete) is planned.
+- **Merchant exemplar inspection / pruning.** Merchant-specific curation (list, remove exemplar, hard-delete) is planned; it is not a current MCP tool.
 - **Audit-based revert.** No `categorize revert` or `commit-from-file --undo`; bulk paths are also audit-silent, so an "undo last batch" tool would need both audit coverage and a revert primitive.
 - **Category-rename cascades** beyond the FK-resolved view path. Renaming a category surfaces immediately on read because `core.dim_categories` resolves through the FK, but the text snapshots on writer tables aren't rewritten yet.
 - **Cross-row pattern conditions.** Rules today match per-row. Rules that consider sequences (e.g., "this transaction is a refund of an earlier one") would need a new condition primitive.

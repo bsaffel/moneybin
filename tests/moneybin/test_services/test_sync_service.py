@@ -650,6 +650,56 @@ def test_disconnect_resolves_institution_and_calls_client(
     mock_client.disconnect.assert_called_once_with("conn_uuid")
 
 
+def test_disconnect_confirmed_verifies_live_connection_before_client_delete(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    connection = ConnectedInstitution(
+        id="conn_uuid",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_client.list_institutions.return_value = [connection]
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    verified: list[ConnectedInstitution] = []
+
+    def verify(live: ConnectedInstitution) -> None:
+        mock_client.disconnect.assert_not_called()
+        verified.append(live)
+
+    result = service.disconnect_confirmed(institution="Chase", verify=verify)
+
+    assert result == connection
+    assert verified == [connection]
+    mock_client.disconnect.assert_called_once_with("conn_uuid")
+
+
+def test_disconnect_confirmed_does_not_delete_when_live_verification_fails(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    mock_client.list_institutions.return_value = [
+        ConnectedInstitution(
+            id="conn_uuid",
+            provider_item_id="item_a",
+            provider="plaid",
+            institution_name="Chase",
+            status="active",
+            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+        ),
+    ]
+    service = SyncService(client=mock_client, db=db, loader=loader)
+
+    def refuse(_: ConnectedInstitution) -> None:
+        raise ValueError("confirmation mismatch")
+
+    with pytest.raises(ValueError, match="confirmation mismatch"):
+        service.disconnect_confirmed(institution="Chase", verify=refuse)
+
+    mock_client.disconnect.assert_not_called()
+
+
 def test_disconnect_unknown_institution_raises(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
