@@ -98,7 +98,7 @@ When a user categorizes a transaction, the system identifies the pattern and pro
 - **Pattern extraction:** Merchant-first — use the canonical merchant name when a `merchant_id` exists, fall back to `normalize_description()` cleanup otherwise. Reuses the existing description normalization code.
 - **Proposal lifecycle:** `pending` → `approved` (promoted to `app.categorization_rules` with `created_by='auto_rule'`, `priority=200`) or `rejected` or `superseded` (when the user corrects the category).
 - **Correction handling:** Single user overrides don't affect the rule. After `auto_rule_override_threshold` (default 2) overrides, the rule is deactivated and a new proposal is created with the corrected category.
-- **UX:** Proposals accumulate silently. `transactions_categorize_commit` response includes a `rules_proposed` count and review hint. User reviews in batch via `transactions_categorize_auto_review` and `transactions_categorize_auto_accept`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
+- **UX:** Proposals accumulate silently. `transactions_categorize_commit` response includes a `rules_proposed` count and review hint. Users read the batch through `reviews(kind="auto_rules", status="pending")` and decide it through `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": "...", "decision": "accept"}])`. Approved rules take effect immediately against existing uncategorized transactions (synchronous promotion).
 - **Conflicting categorizations:** Amount/account-aware rule proposals are deferred to future enhancements (see Future Directions).
 
 ---
@@ -276,7 +276,7 @@ Every categorization is traceable to its origin. No black boxes.
 
 ### System-level statistics
 
-`transactions_categorize_stats` extended with auto-rule and ML breakdowns:
+`system_status(sections=["categorization"])` returns the categorization summary with auto-rule and ML breakdowns:
 
 - Total/categorized/uncategorized counts with percentage
 - Breakdown by `categorized_by` source

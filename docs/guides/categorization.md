@@ -93,8 +93,28 @@ MCP uses the bounded standard surface rather than one tool for every CLI subcomm
 | `transactions_categorize_rules` | Inspect the current or historical categorization-rule projection. |
 | `transactions_categorize_rules_set` | Set the complete reviewed rule target state. |
 | `transactions_categorize_run` | Run the deterministic categorization engines. |
+| `system_status` | Return categorization coverage and queue counts with `sections=["categorization"]`. |
+| `reviews` | Read the pending categorization or auto-rule queue with `kind="categorization"` or `kind="auto_rules"`. |
+| `reviews_decide` | Accept or reject reviewed categorization and auto-rule proposals in one `decisions` batch. |
+| `taxonomy` / `taxonomy_set` | Read or declare category and merchant target state with `view="categories"` or `view="merchants"`. |
 
 Every tool returns the standard response envelope (`summary`, `data`, `actions`). `summary.display_currency` carries the currency for any amount-bearing data; amounts follow the accounting convention (negative = expense, positive = income; transfers exempt).
+
+For rule lifecycle writes, use one discriminated `rules` batch. Create or update
+with `{"kind": "rule", "state": "present", "rule_id": ..., "matcher":
+{"type": "contains", "value": "..."}, "category": "...", "priority": 200}`;
+omit `rule_id` for a new rule. Disable with `{"kind": "rule", "state":
+"inactive", "rule_id": ...}` and remove with `{"kind": "rule", "state":
+"absent", "rule_id": ...}`. Read the relevant projection first through
+`transactions_categorize_rules(view="active" | "inactive" | "history")`.
+
+Taxonomy writes follow the same target-state discipline: `taxonomy_set` accepts
+category items with `kind="category"` and `state="present" | "inactive" |
+"absent"`, and merchant items with `kind="merchant"` and `state="present" |
+"absent"`. Transaction notes, tags, splits, and tag renames share
+`transactions_annotate(requests=[...])`; each request has a `kind` of
+`note_add`, `note_edit`, `note_delete`, `tags_set`, `splits_set`, or
+`tag_rename`.
 
 ## A typical session
 

@@ -71,11 +71,11 @@ When write volume is low (e.g., import labels — once per batch, rarely edited)
 **The service layer is the source of truth for capability. CLI and MCP call into the same methods but expose different verb vocabularies to match how each surface is used.**
 
 - **CLI: imperative verbs** (`add`/`remove`/`edit`/`delete`/`clear`). Humans think procedurally; fine-grained ops compose into curator workflows. Example: `transactions tags add txn_x foo`, then `transactions tags remove txn_x bar`.
-- **MCP: declarative state-setters** (`*_set`) when the operation's semantic is "make state look like this." LLMs reason about target states more reliably than diffs. Example: `transactions_tags_set(transaction_id=x, tags=["foo","baz"])` — the service computes the diff and applies it.
+- **MCP: declarative state-setters** (`*_set`) when the operation's semantic is "make state look like this." LLMs reason about target states more reliably than diffs. Example: `transactions_annotate(requests=[{"kind": "tags_set", "transaction_id": "x", "tags": ["foo", "baz"]}])` — the service computes the diff and applies it.
 - **Symmetry contract**: any capability reachable from one surface is reachable from the other. The translation lives in the service layer, not in surface-specific business logic.
 - **When NOT to declarative-set**: when individual ops have distinct semantics that don't collapse into a target-state representation. Notes (`add`/`edit`/`delete` operate on individual `note_id`s with separate audit semantics) keep imperative verbs in both CLI and MCP.
 
-An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups) was completed for `moneybin-mcp.md` v2. Account-management toggles consolidated into `accounts_set` (rename/include/archive/unarchive folded with a cascade rule). `categories_toggle` renamed to `categories_set` in the 2026-05-17 vocabulary sweep — verb-only change; no consolidation needed.
+An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups) was completed for `moneybin-mcp.md` v2. Account-management toggles consolidate into `accounts_set` (rename/include/archive/unarchive folded with a cascade rule). Category target state is declared through `taxonomy_set(items=[...])`.
 
 ## Requirements
 
@@ -513,7 +513,7 @@ Three-verb surface. Labels on `app.imports.labels` (LIST(VARCHAR)). Browsing pas
 
 ### Function naming
 
-Per `feedback_cli_function_naming.md` and `.claude/rules/cli.md`: Typer subgroup commands follow `<group>_<verb>`. Examples: `transactions_create`, `transactions_notes_add`, `transactions_notes_edit`, `transactions_tags_add`, `transactions_tags_rename`, `transactions_splits_add`, `transactions_audit`, `system_audit_list`, `system_audit_show`, `import_labels_add`, `import_labels_list`.
+Per `feedback_cli_function_naming.md` and `.claude/rules/cli.md`, Typer subgroup commands use the imperative CLI form. Examples: `moneybin transactions create`, `moneybin transactions notes add`, `moneybin transactions notes edit`, `moneybin transactions tags add`, `moneybin transactions tags rename`, `moneybin transactions splits add`, `moneybin transactions audit`, `moneybin system audit list`, `moneybin system audit show`, `moneybin import labels add`, and `moneybin import labels list`.
 
 ## MCP Interface
 
@@ -574,7 +574,7 @@ Pure prompt content; no schema work. These two prompts wrap the curation-specifi
 
 ### Privacy and sensitivity
 
-- All write tools (`transactions_*` and `import_labels_set`) follow the existing write-tool confirmation convention per `mcp-architecture.md`.
+- All curation write tools (`transactions_create`, `transactions_annotate`, and `import_labels_set`) follow the existing write-tool confirmation convention per `mcp-architecture.md`.
 - Read tools surfacing row-level data (`system_audit` returning before/after JSON) inherit medium-sensitivity behavior: aggregate-only response without `mcp-data-sharing` consent, full data with consent.
 - Critical-tier fields (account numbers, full descriptions, amounts) embedded in audit `before_value` / `after_value` JSON follow the existing redaction rules — `SanitizedLogFormatter` handles log emission; the response itself returns full data when consent is granted, summary-only without.
 
@@ -628,9 +628,9 @@ These edits to sibling specs are required follow-ups. They are **NOT** included 
 - `src/moneybin/sqlmesh/models/prep/stg_manual__transactions.sql` — staging view feeding `int_transactions__unioned`
 - `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` — split-expanded grain
 - `src/moneybin/services/audit_service.py` — `AuditService.record_audit_event`, query methods
-- `src/moneybin/cli/commands/transactions/` (package) — `transactions_create`, `transactions_notes_*`, `transactions_tags_*`, `transactions_splits_*`, `transactions_audit`. (Shipped as a package, not a flat module — each subgroup is its own file inside the package.)
-- `src/moneybin/cli/commands/system/` (package) — `system_audit_list`, `system_audit_show`.
-- `src/moneybin/cli/commands/import_/` (package) — `import_labels_add`, `import_labels_remove`, `import_labels_list`.
+- `src/moneybin/cli/commands/transactions/` (package) — CLI commands for `moneybin transactions create`, `moneybin transactions notes`, `moneybin transactions tags`, `moneybin transactions splits`, and `moneybin transactions audit`. (Shipped as a package, not a flat module — each subgroup is its own file inside the package.)
+- `src/moneybin/cli/commands/system/` (package) — CLI commands for `moneybin system audit list` and `moneybin system audit show`.
+- `src/moneybin/cli/commands/import_/` (package) — CLI commands for `moneybin import labels add`, `moneybin import labels remove`, and `moneybin import labels list`.
 - `src/moneybin/mcp/tools/curation.py` — the 9 new MCP write/read tools
 - `src/moneybin/mcp/prompts/curate_recent_transactions.py`
 - `src/moneybin/mcp/prompts/review_curation_history.py`
@@ -740,7 +740,7 @@ All four scenarios use the new `curator` persona where applicable.
 
 ### Tier 5 — MCP integration (`tests/e2e/test_e2e_mcp.py`)
 
-Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resource, and 2 extended resources: tool registration, response envelope shape, sensitivity-tier behavior (medium tools degrade without consent), `transactions_create`'s `pipeline_summary` in response, declarative-set diff correctness for `transactions_tags_set`.
+Existing test file extended to cover the curation MCP surface, 2 prompts, 1 new resource, and 2 extended resources: tool registration, response envelope shape, sensitivity-tier behavior (medium tools degrade without consent), `transactions_create`'s `pipeline_summary` in response, and declarative-set diff correctness for the `tags_set` variant of `transactions_annotate`.
 
 ## Dependencies
 
@@ -765,6 +765,6 @@ Existing test file extended to cover the 9 new MCP tools, 2 prompts, 1 new resou
 
 ### Follow-ups
 
-- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. The MCP-vocabulary audit pass for v2 closed: account-management toggles folded into `accounts_set`; `categories_toggle` renamed to `categories_set` (verb-only, no consolidation needed).
+- This spec establishes the curation storage/presentation pattern + CLI-imperative/MCP-declarative vocabulary contract for `architecture-shared-primitives.md` to lift. The MCP-vocabulary audit pass for v2 closed: account-management toggles fold into `accounts_set`; category target state is declared through `taxonomy_set(items=[...])`.
 - Future `mcp-ux-standards.md` (in `moneybin-cli.md`'s "Future Specs to Add") lifts the declarative-set principle from this spec's §Architectural Pattern.
 - Future `architecture-shared-primitives.md` formalizes the `app.*` schema layer in `AGENTS.md` and the LIST/STRUCT presentation pattern in `.claude/rules/database.md`.

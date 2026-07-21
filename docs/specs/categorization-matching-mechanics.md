@@ -225,7 +225,7 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 
 ### Reporting: the `merchant_map` stats bucket
 
-`categorized_by='rule'` is written by both the rule engine and merchant-pattern matching — the merchant-matcher path deliberately stamps `'rule'` rather than a distinct persisted value, so machine writes don't leak into the auto-rule override-detection query (`AutoRuleService.check_overrides`, which counts `'user'`/`'ai'` rows as human corrections). `transactions_categorize_stats`'s `by_source` breakdown splits these back apart for reporting only: a row is bucketed as `merchant_map` when `categorized_by='rule' AND rule_id IS NULL AND merchant_id IS NOT NULL`, and as `rule` otherwise, so the counts reconcile with `transactions_categorize_rules`' active rule list. The persisted `categorized_by` column is untouched — this is a read-time reclassification, not a new priority tier or a new `SOURCE_PRIORITY` value.
+`categorized_by='rule'` is written by both the rule engine and merchant-pattern matching — the merchant-matcher path deliberately stamps `'rule'` rather than a distinct persisted value, so machine writes don't leak into the auto-rule override-detection query (`AutoRuleService.check_overrides`, which counts `'user'`/`'ai'` rows as human corrections). `system_status(sections=["categorization"])` splits these back apart in its `by_source` breakdown for reporting only: a row is bucketed as `merchant_map` when `categorized_by='rule' AND rule_id IS NULL AND merchant_id IS NOT NULL`, and as `rule` otherwise, so the counts reconcile with `transactions_categorize_rules(view="active")`. The persisted `categorized_by` column is untouched — this is a read-time reclassification, not a new priority tier or a new `SOURCE_PRIORITY` value.
 
 ## Apply order
 
@@ -235,8 +235,8 @@ This is the entire locking primitive. No separate `app.locked_categorizations` t
 |---|---|---|
 | Import completes | `import_service.py` (existing) | All uncategorized rows from the import |
 | Rules CLI command | `cli/commands/transactions/categorize/rules.py` (existing) | All uncategorized rows |
-| **`transactions_categorize_commit` commits a batch** | `transactions_categorize_commit` MCP tool (renamed from `_apply` per PR #171) | All still-uncategorized rows |
-| **Edit op with `reapply=True`** | rule create/delete operations (`transactions_categorize_rules_create` / `_delete`) | Rows matching the edited entity |
+| **`transactions_categorize_commit` commits a batch** | `transactions_categorize_commit` MCP tool | All still-uncategorized rows |
+| **Edit op with `reapply=True`** | rule target-state changes in `transactions_categorize_rules_set(rules=[...])` | Rows matching the edited entity |
 | **Categorize cascade** | `transactions_categorize_run(methods=[...])` umbrella (PR #171) — canonical `["rules","merchants"]` routes through `categorize_pending()`'s shared-scan path; non-canonical orders fall through to per-method invocations | All still-uncategorized rows |
 
 The third row is the snowball fix. After the LLM-assist batch's writes commit, `categorize_pending()` runs once. New merchants and rules from the batch fan out to remaining uncategorized rows in the same dataset. The next `categorize_assist` call sees only what's still genuinely uncategorized.
@@ -311,7 +311,7 @@ No data migration is required — existing merchants retain their `raw_pattern` 
 > **Shipped via PRs #155, #171, #174.** All seven planned steps landed. The original step-by-step plan and file-modification checklist are retired as historical noise; the shipped artifacts are:
 >
 > - **Categorization package** at `src/moneybin/services/categorization/` (PR #155 split): `__init__.py` (facade), `assist.py` (`RedactedTransaction`, `categorize_assist`), `matcher.py` (`_match_text`, `_match_exemplar`, `_fetch_merchants`), `applier.py` (`write_categorization`, commit pipeline), `orchestrator.py` (exemplar accumulation, `categorize_pending`), `queries.py` (shared SQL), `_shared.py` (`MatchType`, `priority_case_sql`, `match_shape_case_sql`).
-> - **MCP tools** at `src/moneybin/mcp/tools/transactions_categorize.py`: `transactions_categorize_commit` (renamed from `_apply` in PR #171) calls `categorize_pending()` post-commit; `transactions_categorize_run` umbrella; `transactions_categorize_rules_create` / `_delete` accept `reapply`.
+> - **MCP tools** at `src/moneybin/mcp/tools/transactions_categorize.py`: `transactions_categorize_commit` calls `categorize_pending()` post-commit; `transactions_categorize_run` is the umbrella; `transactions_categorize_rules_set(rules=[...])` declares rule target state and may request reapplication.
 > - **Schema migration** `V008__user_merchants_exemplars.py` added `exemplars VARCHAR[]` and dropped NOT NULL from `raw_pattern`.
 > - **`category_id` FK columns** added in V014 (PR #174) alongside `category`/`subcategory` on `app.user_merchants` / `app.transaction_categories` / `app.transaction_splits` — dual-write phase pending Phase 2 drop.
 

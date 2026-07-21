@@ -319,8 +319,8 @@ Shipped alongside PR 2 middleware as a separate PR. Adds:
   `DataClass.DESCRIPTION` (MEDIUM). Rationale: the column contains
   fixed system prose — the consent prompt text the user saw. The taxonomy
   has no non-sensitive-text class; DESCRIPTION is the conservative choice.
-  The field is intentionally **omitted from `privacy_status` and `privacy_log`
-  read payloads** so those tools remain LOW-tier — `grant_prompt` lives only
+  The field is intentionally **omitted from `privacy(view="status")` and
+  `privacy(view="log")` read payloads** so those projections remain LOW-tier — `grant_prompt` lives only
   in the database for audit traceability, not on the wire.
 
 ### What is unchanged by PR 3
@@ -463,10 +463,10 @@ post-middleware assertion at `tests/scenarios/test_privacy_middleware_perf.py`.
 
 | Tool / command | Service method | Tier | Shape |
 |---|---|---|---|
-| `transactions_get` | `TransactionService.get(limit=100)` | medium | ~100-row list |
-| `reports_spending` | `SpendingService.by_category()` | low | aggregate |
+| `transactions` | `TransactionService.get(limit=100)` | medium | ~100-row list |
+| `reports(report_id=...)` | `SpendingService.by_category()` | low | aggregate |
 | `accounts` | `AccountService.list_accounts()` | medium | ~4-row list (CRITICAL fields) |
-| `reports_budget` (removed) | `BudgetService.status()` | low | aggregate + per-budget rows — tool removed (synthesized from `BudgetService`, not a `reports.*` view); re-registers via the report framework when M3C ships a `reports.budget` view |
-| `reports_networth_history` | `NetworthService.history()` | medium | time-series |
+| Budget reporting (not registered) | `BudgetService.status()` | low | aggregate + per-budget rows — synthesized from `BudgetService`, not a `reports.*` view; it registers through the report framework when M3C ships a `reports.budget` view |
+| `reports(report_id=...)` | `NetworthService.history()` | medium | time-series |
 
 Concrete numbers are populated by Phase 9 after the post-middleware run.

@@ -184,8 +184,8 @@ User-level stickiness is handled by the existing priority ladder:
 ## Requirements
 
 1. New MCP tool `transactions_categorize_assist` returns redacted uncategorized transactions with candidate categories. Sensitivity `medium`. Consent gate `mcp-data-sharing`.
-2. `transactions_categorize_commit` (renamed from `transactions_categorize_bulk_apply` in PR #171). CLI parity `moneybin transactions categorize commit`.
-3. `transactions_categorize_auto_accept` (renamed from `transactions_categorize_auto_confirm`; `approve` parameter renamed to `accept`). CLI parity `moneybin transactions categorize auto accept`.
+2. `transactions_categorize_commit`. CLI parity `moneybin transactions categorize commit`.
+3. `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": ..., "decision": "accept" | "reject"}])` decides auto-rule proposals. CLI parity remains `moneybin transactions categorize auto accept`.
 4. New MCP tool returns invalid-category errors with structured `did_you_mean` field listing closest valid categories (Levenshtein/substring match).
 5. New CLI commands: `moneybin transactions categorize export-uncategorized`, `moneybin transactions categorize commit-from-file`, `moneybin privacy redact`. JSON I/O via stdin/stdout, Unix conventions.
 6. New `redact_for_llm()` function in `src/moneybin/services/_text.py` strips card last-fours, emails, phones, P2P recipient names from descriptions. Type-enforced via `RedactedTransaction` dataclass that excludes amount/date/account fields.
@@ -263,7 +263,7 @@ After every import, the categorization pipeline reports its uncategorized count.
 | Tool | Purpose | Sensitivity | Direction of data |
 |---|---|---|---|
 | `transactions_categorize_assist` | Returns redacted uncategorized transactions + candidate categories | `medium` | MoneyBin → LLM |
-| `transactions_categorize_commit` (renamed from `_bulk_apply`) | Applies user-confirmed categorizations | `low` | LLM → MoneyBin |
+| `transactions_categorize_commit` | Applies user-confirmed categorizations | `low` | LLM → MoneyBin |
 
 The propose/commit split is conceptual. `categorize_assist` returns proposals; `categorize_commit` commits them. Two single-purpose tools, each with a clear privacy profile.
 
@@ -442,7 +442,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 
 ## Implementation Plan
 
-> **Implementation Plan (historical record — superseded 2026-05-15).** The original plan provisioned seed merchant CSVs (`src/moneybin/sqlmesh/models/seeds/merchants_{global,us,ca}.*`), the `app.merchant_overrides` schema, and view assembly that unioned seeds into `app.merchants`. Those artifacts shipped, were never populated, and were retired in the seed-removal cleanup. The remaining infrastructure (`app.user_merchants` schema, `redact_for_llm`, `transactions_categorize_assist`, the rename to `categorize_commit` / `auto_accept`, the CLI bridge) is in place. The lists below are kept for traceability of what shipped, not as a forward plan.
+> **Implementation Plan (historical record — superseded 2026-05-15).** The original plan provisioned seed merchant CSVs (`src/moneybin/sqlmesh/models/seeds/merchants_{global,us,ca}.*`), the `app.merchant_overrides` schema, and view assembly that unioned seeds into `app.merchants`. Those artifacts shipped, were never populated, and were retired in the seed-removal cleanup. The remaining `app.user_merchants` schema, LLM redaction boundary, categorization tools, and CLI bridge are in place. The lists below are kept for traceability of what shipped, not as a forward plan.
 
 ### Files to Create
 
@@ -480,9 +480,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 - `src/moneybin/schema.py` — add new schema files to load order
 - `src/moneybin/database.py` — add migration step (move `app.merchants` rows to `app.user_merchants`, drop old table, create view)
 - `src/moneybin/mcp/tools/transactions_categorize.py`
-  - Rename `transactions_categorize_bulk_apply` → `transactions_categorize_commit`
-  - Rename `transactions_categorize_auto_confirm` → `transactions_categorize_auto_accept`; rename `approve` parameter → `accept`
-  - Register new `transactions_categorize_assist` tool
+  - Register `transactions_categorize_commit`, `transactions_categorize_assist`, and consolidated review decisions through `reviews_decide`
 - `src/moneybin/mcp/server.py` — update `FastMCP(instructions=...)` with first-run hint guidance
 - `src/moneybin/cli/commands/transactions/categorize/__init__.py` — wire new commands; rename `bulk` → `commit`
 - `src/moneybin/config.py` — add new categorization settings (`assist_*`, ML training weights)
@@ -499,7 +497,7 @@ User-facing: `moneybin privacy audit --tool transactions_categorize_assist`.
 - **Drop synthetic training data and pre-trained baseline ML model** from overview spec. The LLM-assist workflow + auto-rule snowball covers cold-start better; the ML pillar's value is learning user-specific patterns from organic data, not synthetic warm-up.
 - **Drop seed merchant catalogs (2026-05-15 amendment).** The 2100-entry catalog never matched real cold-start pain (bank-bill-pay strings dominate checking data); LLM-assist + auto-rules cover the same ground without maintenance burden. `app.merchants` is retired in favor of `core.dim_merchants`, a thin view over `app.user_merchants`.
 - **Type-enforced PII redaction.** `RedactedTransaction` dataclass excludes amount/date/account fields; tool return type makes leakage a compile-time impossibility.
-- **No backwards compatibility shim for renames.** Existing tests and callers update in the same PR. CLI rename `categorize_bulk_apply` → `categorize_commit`, MCP rename (`transactions_categorize_bulk_apply` → `transactions_categorize_commit` per PR #171), and `auto_confirm` → `auto_accept` (with `approve` → `accept` parameter) all happen together.
+- **No backwards compatibility shim.** Existing tests and callers use the current categorization CLI commands and MCP tools in the same PR.
 
 ## CLI Interface
 
@@ -564,17 +562,11 @@ New tool:
 |---|---|---|---|---|
 | `transactions_categorize_assist` | `medium` | `limit: int = 100`, `account_filter: list[str] \| None`, `date_range: {start, end} \| None` | List of `RedactedTransaction` + candidate categories per item | `mcp-data-sharing` |
 
-Renamed:
+The pending auto-rule queue is `reviews(kind="auto_rules", status="pending")`.
+Its decision is `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": ..., "decision": "accept" | "reject"}])`.
+The `approve` framing remains reserved for a rule *promotion* outcome, not an MCP parameter.
 
-| From | To | Notes |
-|---|---|---|
-| `transactions_categorize_bulk_apply` | `transactions_categorize_commit` | Drops redundant `_bulk_apply` suffix; aligned with shape-3 `_commit` verb (PR #171). |
-| `transactions_categorize_auto_confirm` | `transactions_categorize_auto_accept` | Aligns with proposal-acceptance vocabulary |
-| `approve` parameter on auto-accept | `accept` parameter | Same semantic shift |
-
-The `approve` framing is preserved for rule *promotion* (when an accepted proposal becomes an active rule).
-
-Both new and renamed tools live under the `categorize.*` namespace per `mcp.md`. The namespace is visible at connect alongside all other registered tools — client-driven progressive disclosure (and its `moneybin_discover` meta-tool) was retired 2026-05-17; see [`mcp-architecture.md`](mcp-architecture.md) §3 "Tool disclosure: full surface, taxonomy-led". The agent reaches `transactions_categorize_assist` directly when uncategorized transactions exist (surfaced via `system_status` and via the `import_inbox_sync` envelope's `actions[]` hint).
+The categorization tools live under the `categorize.*` namespace per `mcp.md`. The namespace is visible at connect alongside all other registered tools — client-driven progressive disclosure (and its `moneybin_discover` meta-tool) was retired 2026-05-17; see [`mcp-architecture.md`](mcp-architecture.md) §3 "Tool disclosure: full surface, taxonomy-led". The agent reaches `transactions_categorize_assist` directly when uncategorized transactions exist (surfaced via `system_status` and via the `import_inbox_sync` envelope's `actions[]` hint).
 
 ## Forward compatibility
 

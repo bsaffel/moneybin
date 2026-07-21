@@ -140,7 +140,7 @@ To guard against this, the description/memo fallback path checks the invented pa
 
 This floor applies **only to machine-invented patterns** from the description/memo fallback. A user-authored `app.user_merchants.raw_pattern` is never touched — the guard protects the inference, not the human's own judgment.
 
-The floor is implemented once (`_shared.is_unselective_contains`) and shared by two call sites: this pattern-extraction step (`AutoRuleService._invented_match_type`) and direct rule creation via `transactions_categorize_rules_create` / `moneybin transactions categorize rules create` (`MatchApplier.create_rules_core`) — an agent or user creating a rule directly is refused the same short `contains` pattern unless it passes `allow_broad=True`. See [`moneybin-mcp.md`](moneybin-mcp.md) §`transactions_categorize_rules_create`.
+The floor is implemented once (`_shared.is_unselective_contains`) and shared by two call sites: this pattern-extraction step (`AutoRuleService._invented_match_type`) and direct rule authoring through `transactions_categorize_rules_set(rules=[...])` / `moneybin transactions categorize rules create` (`MatchApplier.create_rules_core`). An agent or user creating a rule directly is refused the same short `contains` pattern. The MCP item declares `kind="rule"`, `state="present"`, a `matcher`, category, and priority.
 
 ### Deduplication
 
@@ -154,9 +154,9 @@ The floor is implemented once (`_shared.is_unselective_contains`) and shared by 
 
 `trigger_count` (how many times a proposal was reinforced) is evidence of user intent, not a bound on the rule's actual reach — a pattern extracted from one transaction can still match hundreds of others already in the ledger. The review and promotion surfaces close that gap:
 
-- **`estimated_match_count`.** Every proposal returned by `transactions_categorize_auto_review` (MCP) / `moneybin transactions categorize auto review` (CLI) carries `estimated_match_count` — how many transactions the proposed pattern would actually match today, computed with the live matcher's own predicate (not an approximation).
+- **`estimated_match_count`.** Every proposal returned by `reviews(kind="auto_rules", status="pending")` (MCP) / `moneybin transactions categorize auto review` (CLI) carries `estimated_match_count` — how many transactions the proposed pattern would actually match today, computed with the live matcher's own predicate (not an approximation).
 - **`is_broad`.** `True` when the blast radius is disproportionate to the evidence behind it: `estimated_match_count` exceeds both an absolute floor (`auto_rule_broad_match_min`, default 20) and `auto_rule_broad_match_factor` (default 10) times `trigger_count`. A proposal with thin evidence (`trigger_count = 1`) that would already match 25 transactions is flagged; a proposal reinforced 30 times that matches 25 transactions is not — the guard only fires when the reach outruns what the user has actually confirmed.
-- **`allow_broad` override.** A proposal flagged `is_broad` cannot be promoted via `transactions_categorize_auto_accept` / `moneybin transactions categorize auto accept` without an explicit `allow_broad=True`. Without it, the proposal is skipped (counted in the response's `skipped`, not `accepted`) rather than silently promoted. The CLI review table marks broad proposals with a `⚠️  BROAD, requires --allow-broad to accept` warning line.
+- **`allow_broad` override.** A proposal flagged `is_broad` cannot be promoted via `reviews_decide(decisions=[{"kind": "auto_rule", ...}])` / `moneybin transactions categorize auto accept` without an explicit `allow_broad=True` on that decision item. Without it, the proposal is skipped (counted in the response's `skipped`, not `accepted`) rather than silently promoted. The CLI review table marks broad proposals with a `⚠️  BROAD, requires --allow-broad to accept` warning line.
 
 `allow_broad` is a deliberate opt-in per "Magic stays visible" (`.claude/rules/design-principles.md`): the system surfaces its own uncertainty about a proposal's reach instead of promoting it silently, and the human (or an agent acting on explicit instruction) has to say so before a wide-reaching rule goes active.
 
@@ -191,7 +191,7 @@ The hook is lightweight: one SELECT each against rules, merchants, and proposals
 | Command | Description |
 |---|---|
 | `moneybin transactions categorize auto review` | Table of pending proposals with sample transactions, trigger counts, pattern details, and blast-radius (`estimated_match_count`, flagged `⚠️  BROAD` when `is_broad`) |
-| `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...]` | Batch accept/reject proposals (renamed from `confirm` / `--approve` in PR #171) |
+| `moneybin transactions categorize auto accept --accept <id> [<id>...] --reject <id> [<id>...]` | Batch accept/reject proposals |
 | `moneybin transactions categorize auto accept --accept-all` | Accept all pending proposals |
 | `moneybin transactions categorize auto accept --reject-all` | Reject all pending proposals |
 | `moneybin transactions categorize auto accept ... --allow-broad` | Required to promote a proposal flagged `is_broad`; see Blast-Radius Review |
@@ -230,9 +230,9 @@ Imported 120 transactions from chase_checking.csv
 
 | Tool | Type | Description |
 |---|---|---|
-| `transactions_categorize_auto_review` | Read | List pending proposals with sample transactions, trigger counts, pattern details, and blast-radius (`estimated_match_count`, `is_broad`) |
-| `transactions_categorize_auto_accept` | Write | Batch accept/reject proposals by ID. Accepted proposals are promoted to active rules. `allow_broad=True` is required to promote a proposal flagged `is_broad` — see Blast-Radius Review. (Renamed from `_auto_confirm` in PR #171.) |
-| `transactions_categorize_auto_stats` | Read | Auto-rule health: active count, proposal count, override rate, top-performing rules by match count |
+| `reviews` | Read | List pending proposals with `kind="auto_rules"` and `status="pending"`, including samples, trigger counts, pattern details, and blast-radius (`estimated_match_count`, `is_broad`). |
+| `reviews_decide` | Write | Batch accept/reject proposal IDs with `decisions=[{"kind": "auto_rule", "decision_id": "...", "decision": "accept", "allow_broad": false}]` or a `decision="reject"` item. Accepted proposals are promoted to active rules. `allow_broad=True` is required to promote a proposal flagged `is_broad`; see Blast-Radius Review. |
+| `system_status` | Read | Categorization counts with `sections=["categorization"]`, including the auto-rule queue summary. |
 
 ### Prompt
 
@@ -249,12 +249,12 @@ sequenceDiagram
     participant Sys as MoneyBin
 
     User->>AI: Show me proposed rules
-    AI->>Sys: transactions_categorize_auto_review()
+    AI->>Sys: reviews(kind="auto_rules", status="pending")
     Sys-->>AI: 8 pending rules with samples
     AI->>User: 8 patterns found:<br/>1. STARBUCKS -> Coffee (3 matches)<br/>2. AMAZON -> Shopping (5 matches)...
     User->>AI: Accept all except #4,<br/>that should be Groceries
-    AI->>Sys: transactions_categorize_auto_accept(<br/>accept x7, reject x1)
-    AI->>Sys: transactions_categorize_rules_create(<br/>corrected #4 as Groceries)
+    AI->>Sys: reviews_decide(decisions=[<br/>{kind: auto_rule, decision_id: ID, decision: accept} x7,<br/>{kind: auto_rule, decision_id: ID, decision: reject}])
+    AI->>Sys: transactions_categorize_rules_set(rules=[<br/>{kind: rule, state: present,<br/>category: Groceries, ...}])
     Sys-->>AI: 7 accepted, 1 rejected, 1 created
     AI->>User: 7 rules activated,<br/>1 corrected to Groceries.<br/>Next import will auto-categorize<br/>these patterns.
 ```
