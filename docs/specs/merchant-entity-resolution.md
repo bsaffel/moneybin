@@ -246,11 +246,11 @@ noun. CLI + MCP for parity (functional, not nominal).
 
 | Operation | CLI | MCP |
 |---|---|---|
-| List pending link proposals (grouped by provider id) | `merchants links pending` | `merchants_links_pending` |
-| Resolve one — bind to a candidate, or mint **new** | `merchants links set <id> --into <merchant_id>` / `--new` | `merchants_links_set(decision_id, action="accept", target_merchant_id=…)` — the bind is gated by an MCP elicitation (no agent self-accept) / `merchants_links_set(decision_id, action="reject")` |
+| List pending link proposals (grouped by provider id) | `merchants links pending` | `reviews(kind="merchant_links", status="pending")` |
+| Resolve one — bind to a candidate, or mint **new** | `merchants links set <id> --into <merchant_id>` / `--new` | `identity_links_decide(decisions=[...])` — an accepted bind is gated by an MCP elicitation (no agent self-accept); reject decisions do not prompt |
 | Reverse a prior decision | `merchants links undo <id>` | (CLI-only, matching `matches undo` / `accounts links undo`) — **deferred to M1L** (audit-undo consumer) |
-| Decision history | `merchants links history` | `merchants_links_history` |
-| Run resolution / backfill over unbound ids | `merchants links run` | `merchants_links_run` |
+| Decision history | `merchants links history` | `reviews(kind="merchant_links", status="history")` |
+| Run resolution / backfill over unbound ids | `merchants links run` | `refresh_run(steps=["identity"])` |
 
 - **`…set(decision_id, target_merchant_id=Y)`** binds the id to merchant `Y`
   (Y must equal the decision's own `candidate_merchant_id` — a confirming safety
@@ -328,7 +328,8 @@ Per [`observability.md`](observability.md) and `metrics/registry.py`, mirroring
 the `ACCOUNT_LINK_*` family:
 
 - `MERCHANT_LINK_REVIEW_PENDING` (gauge) — distinct provider ids with `pending`
-  decisions; refreshed at the resolver's propose pass and on `merchants_links_set`
+  decisions; refreshed at the resolver's propose pass and on
+  `identity_links_decide(decisions=[...])`
   accept/reject (kept honest in both directions, like
   `refresh_account_link_pending_gauge`).
 - `MERCHANT_RESOLUTION_OUTCOME_TOTAL` (counter, label `outcome ∈

@@ -26,7 +26,7 @@ The metadata schema mirrors **Plaid's account model** (Plaid Parity), so when [`
 Related specs and docs:
 - [`reports-net-worth.md`](reports-net-worth.md) — consumes `app.account_settings.include_in_net_worth` and `archived` for `agg_net_worth`; ships bundled with this spec
 - [`moneybin-cli.md`](moneybin-cli.md) v2 — defines the `accounts` top-level group; this spec extends with the unified `accounts set` (moneybin-cli.md amendment landed alongside)
-- [`moneybin-mcp.md`](moneybin-mcp.md) v2 — `accounts` / `accounts_get` already enumerated; this spec adds the entity-mutation tools and `accounts_summary`
+- [`moneybin-mcp.md`](moneybin-mcp.md) — `accounts` owns the `detail` and `summary` read projections; this spec adds the entity-mutation contract in `accounts_set`
 - [`privacy-data-protection.md`](privacy-data-protection.md) — settings table encrypted at rest; `last_four` and `credit_limit` are PII-adjacent and require sensitivity-tier handling
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 
@@ -43,8 +43,8 @@ Related specs and docs:
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_subtype + …last_four`) → `institution_name + …last_four` when the account has no type → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`. The subtype is preferred over the canonical `account_type` because "checking" reads to a human where "depository" does not; a user override of `account_subtype` flows through to the rendered name.
 9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). Archiving cascades `--exclude` atomically; unarchiving does NOT auto-restore include. See [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags. (`--default-cost-basis-method` added by [`investments-data-model.md`](investments-data-model.md).)
-10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) plus three read tools (`accounts`, `accounts_get`, `accounts_summary`) and one resource (`accounts://summary`). The summary tool exists alongside the resource because many MCP clients don't render resources. The MCP-side boolean parameter for archive is `is_archived` (Pythonic prefix preferred for agent-facing names); the response data emits `archived` (the underlying dataclass field).
-11. **Sensitivity tiers:** `accounts_summary` is `low` (aggregates only). `accounts` defaults to `medium` because the response carries `last_four` and `credit_limit`; supports `redacted: true` to drop those fields and downgrade to `low`. `accounts_get` is `medium`. All write tools are `medium` and require confirmation per MCP write-tool conventions.
+10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) and one typed read tool: `accounts(view="list" | "detail" | "summary" | "resolve", ...)`. The `detail` projection requires `reference`; `summary` is aggregate-only. The MCP-side boolean parameter for archive is `include_closed` on the list view; the response data emits `archived` (the underlying dataclass field).
+11. **Sensitivity tiers:** `accounts(view="summary")` is aggregate-only. `accounts` dynamically classifies its selected projection. All write tools are dynamically classified; an archive or settings mutation retains its audit and confirmation contract.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
 13. **Idempotent settings writes.** `accounts set` always upserts into `app.account_settings`. Setting the same value twice is a no-op (no error).
 14. **PII handling for `last_four` and `credit_limit`.** `last_four` is a 4-digit string (validated `^[0-9]{4}$`). `credit_limit` is `DECIMAL(18,2)`. Neither flows through logger output (logger only records the `account_id` and the affected fields by name). The full account number never enters the system.
@@ -179,9 +179,9 @@ Naming follows [`moneybin-mcp.md`](moneybin-mcp.md) v2 (path-prefix-verb-suffix)
 
 | Tool | Sensitivity | Notes |
 |---|---|---|
-| `accounts` | `medium` (default) / `low` (with `redacted: true`) | Per-account rows. `redacted: true` drops `last_four` and `credit_limit` and downgrades to `low`. Optional params: `include_archived` (bool, default FALSE), `type` (filter), `redacted` (bool, default FALSE). |
-| `accounts_get` | `medium` | Single-account detail. Returns full settings row + dim fields + last balance observation. |
-| `accounts_summary` | `low` | Aggregate rollup, no per-account rows, no PII. Same data shape as the `accounts://summary` resource. |
+| `accounts(view="list")` | dynamic | Per-account rows. Optional inputs: `include_closed`, `limit`, and `cursor`. |
+| `accounts(view="detail", reference=...)` | dynamic | Single-account detail. Returns full settings row + dim fields + last balance observation. |
+| `accounts(view="summary")` | dynamic | Aggregate rollup, no per-account rows. |
 
 ### Write tools (sensitivity `medium`; require confirmation per MCP write-tool conventions)
 
@@ -206,9 +206,9 @@ The agent decides whether to retry the write with the suggestion, prompt the use
 
 ### Resource
 
-- `accounts://summary` — Same data shape as `accounts_summary`. Served as an MCP resource for clients that surface them. Both backed by the same service method (`AccountSettingsService.summary()`).
+- `accounts(view="summary")` — the aggregate account projection, backed by `AccountSettingsService.summary()`.
 
-### Aggregate shape (used by `accounts_summary` and `accounts://summary`)
+### Aggregate shape (used by `accounts(view="summary")`)
 
 ```json
 {
@@ -276,8 +276,7 @@ Synthetic persona with multiple account types. Hand-derived expectations:
 - `accounts` returns the resolved view including `display_name`.
 - `accounts` with `redacted: true` omits `last_four` and `credit_limit`; sensitivity tier downgrades to `low`.
 - `accounts_set` with non-canonical `account_subtype` returns `warnings` field; write succeeds.
-- `accounts_summary` returns the aggregate shape; no per-account leakage.
-- `accounts://summary` resource returns the same shape as `accounts_summary` tool (asserted via response equality).
+- `accounts(view="summary")` returns the aggregate shape; no per-account leakage.
 
 ## Dependencies
 
@@ -327,11 +326,10 @@ Tests:
 - `src/moneybin/cli/main.py` — register the new top-level `accounts` group; remove the legacy `track` registration if [`reports-net-worth.md`](reports-net-worth.md) hasn't already (the two specs split the cleanup)
 - `src/moneybin/cli/commands/stubs.py` — drop `track_app` and its sub-stubs (replaced by real `accounts` and `reports` groups; `recurring`, `investments`, `budget` stubs move to their v2 homes per `moneybin-cli.md` v2)
 - `src/moneybin/sqlmesh/models/core/dim_accounts.sql` — add `LEFT JOIN app.account_settings`; add the new columns per [Modified SQLMesh model](#modified-sqlmesh-model-coredim_accounts)
-- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_summary` and `accounts_set` (single write tool covering structural + behavioral fields after the Group 13 collapse); extend `accounts` with `redacted` param and revised sensitivity
-- `src/moneybin/mcp/resources/` — add `accounts://summary` resource
+- `src/moneybin/mcp/tools/__init__.py` (and per-tool registry) — register `accounts_set` (single write tool covering structural + behavioral fields after the Group 13 collapse); extend `accounts` with its typed read projections and revised sensitivity
 - `src/moneybin/protocol/sensitivity.py` (or equivalent) — register sensitivity tiers
 - `docs/specs/moneybin-cli.md` — amend the `accounts` subtree to describe the unified `accounts set` (folds in display_name, include/exclude, archive/unarchive)
-- `docs/specs/moneybin-mcp.md` — add `accounts_set` and `accounts_summary` to the surface tables (the Group 13 collapse leaves a single write tool)
+- `docs/specs/moneybin-mcp.md` — add `accounts_set` and the `accounts(view="summary")` projection to the surface tables (the Group 13 collapse leaves a single write tool)
 - `docs/specs/INDEX.md` — flip status to `in-progress` on entry; flip to `implemented` when shipped
 - `.claude/rules/database.md` — strengthen with a new rule: "core dimensions are the single source of truth for entity attributes — when app-layer metadata refines or overrides a dim, join it into the core dim model itself, never duplicate join logic in consumers." Cite this spec as the precedent.
 
@@ -343,7 +341,7 @@ Tests:
 4. **`core.dim_accounts` is the single source of truth.** No consumer joins `app.account_settings` directly. Codified in `.claude/rules/database.md` by this spec.
 5. **Open vocabulary for `account_subtype` / `holder_category` with soft validation.** Closed enums age badly; soft validation surfaces typos without blocking legitimate non-canonical values.
 6. **Soft validation differs by surface.** CLI: TTY prompt, `--yes` skips, non-TTY without `--yes` exits 2. MCP: writes succeed, warnings on the envelope.
-7. **`accounts_summary` exists alongside `accounts://summary` resource.** Many MCP clients don't surface resources; the tool form is universally accessible.
-8. **`accounts` defaults to `medium` sensitivity** because `last_four` and `credit_limit` are PII-adjacent. `redacted: true` downgrades to `low`.
+7. **`accounts(view="summary")` is universally accessible.** It is the aggregate projection of the account read contract.
+8. **`accounts` dynamically classifies the selected projection.** The detail projection can carry PII-adjacent account fields.
 9. **Account merge deferred.** v1 ships archive as the only lifecycle terminator. Merge requires recomputing consumer views of `account_id` and is not in scope.
 10. **Bundled landing with `reports-net-worth.md`.** Shared `accounts` namespace and `app.account_settings` cross-reference. See [`reports-net-worth.md` §Coordination](reports-net-worth.md#coordination-with-account-managementmd).

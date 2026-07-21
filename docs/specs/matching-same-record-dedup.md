@@ -295,16 +295,15 @@ Standard import commands gain matching output:
 
 ## MCP Interface
 
-Designed alongside CLI. Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" — the data model and `app.match_decisions` schema support MCP from day one, but no `transactions_matches_*` tool is registered yet. `transactions_review` returns aggregate counts only. These tools are shared with transfer detection (`matching-transfer-detection.md`) — a `match_type` filter distinguishes dedup from transfer proposals. Names follow the `transactions_matches_*` prefix defined in `moneybin-mcp.md` §6.
+Designed alongside CLI. The data model and `app.match_decisions` schema support MCP through the normalized review surface. `reviews(kind="matches", status="pending")` returns match proposals, and `reviews_decide(decisions=[...])` records an atomic decision batch. These operations are shared with transfer detection (`matching-transfer-detection.md`); callers inspect the returned match type to distinguish dedup from transfer proposals.
 
 | Tool | Type | Description |
 |---|---|---|
-| `transactions_matches_pending` | Read | List match proposals awaiting review. `match_type` filter for `dedup` or `transfer`. |
-| `transactions_matches_confirm` | Write | Accept one or more proposals by `match_ids`. |
-| `transactions_matches_reject` | Write | Reject one or more proposals by `match_ids`. `permanent` flag suppresses re-proposal. |
-| `transactions_matches_undo` | Write | Un-merge previously confirmed matches. |
-| `transactions_matches_log` | Read | Recent match decisions with signal breakdown. `match_type` and `decided_by` filters. |
-| `transactions_matches_run` | Write | Trigger the matching engine on-demand. |
+| `reviews(kind="matches", status="pending")` | Read | List match proposals awaiting review. Returned rows identify their dedup or transfer type. |
+| `reviews_decide(decisions=[...])` | Write | Accept or reject one atomic batch of proposals. |
+| `system_audit_undo(operation_id=...)` | Write | Reverse a previously accepted match operation. |
+| `reviews(kind="matches", status="history")` | Read | Recent match decisions with signal breakdown. |
+| `refresh_run(steps=["match"])` | Write | Trigger the matching engine on demand. |
 
 ### Prompt
 

@@ -299,11 +299,10 @@ Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" �
 
 | Tool | Transfer usage |
 |---|---|
-| `transactions_matches_pending` | `match_type='transfer'` filter. Returns both sides of each pair with signal breakdown. |
-| `transactions_matches_confirm` | Accepts `match_ids` regardless of type. |
-| `transactions_matches_reject` | Rejects `match_ids` regardless of type. |
-| `transactions_matches_undo` | Reverses previously accepted matches. |
-| `transactions_matches_log` | `match_type='transfer'` filter. Signal breakdown per entry. |
+| `reviews(kind="matches", status="pending")` | Returns both sides of each transfer candidate with its signal breakdown. |
+| `reviews_decide(decisions=[...])` | Accepts or rejects an atomic decision batch, regardless of match type. |
+| `system_audit_undo(operation_id=...)` | Reverses a previously accepted match operation. |
+| `reviews(kind="matches", status="history")` | Signal breakdown per prior decision. |
 
 ### Prompt
 
@@ -311,7 +310,7 @@ Currently a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker" �
 |---|---|
 | `review_matches` | "Help me review pending transaction matches. Show dedup and transfer proposals, explain why each was proposed, and let me accept or reject them." |
 
-The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `transactions_matches_confirm` / `transactions_matches_reject` as the user decides.
+The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `reviews_decide(decisions=[...])` as the user decides.
 
 ## Configuration
 

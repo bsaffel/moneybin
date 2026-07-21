@@ -129,8 +129,9 @@ moneybin accounts links set <decision_id> --standalone   # keep it as its own ac
 moneybin accounts links run                     # re-scan existing accounts for twins
 ```
 
-The agent path mirrors this: `accounts_links_pending`, `accounts_links_set`,
-`accounts_links_run`. The `review` command (`moneybin review --type
+The agent path uses `reviews(kind="account_links", status="pending")`,
+`identity_links_decide(decisions=[...])`, and `refresh_run(steps=["identity"])`.
+The `review` command (`moneybin review --type
 account-links`) shows the pending count across queues. **You decide every merge**
 — MoneyBin won't combine two accounts on a weak signal on its own.
 

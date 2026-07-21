@@ -450,11 +450,11 @@ transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
 
 | Operation | CLI | MCP |
 |---|---|---|
-| List pending link proposals (grouped by provisional account) | `accounts links pending` | `accounts_links_pending` |
-| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | `accounts_links_set(decision_id, action="accept", target_account_id=…)` — the merge is gated by an MCP elicitation (no agent self-accept) / `accounts_links_set(decision_id, action="reject")` |
+| List pending link proposals (grouped by provisional account) | `accounts links pending` | `reviews(kind="account_links", status="pending")` |
+| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | `identity_links_decide(decisions=[...])` — an accepted merge is gated by an MCP elicitation (no agent self-accept); reject decisions do not prompt |
 | Reverse a prior decision | `accounts links undo <id>` | (CLI-only, matching today's `matches undo`) |
-| Decision history | `accounts links history` | `accounts_links_history` |
-| Run resolution over unlinked accounts (backfill) | `accounts links run` | `accounts_links_run` |
+| Decision history | `accounts links history` | `reviews(kind="account_links", status="history")` |
+| Run resolution over unlinked accounts (backfill) | `accounts links run` | `refresh_run(steps=["identity"])` |
 
 - **Decide step takes a merge target.** Mirrors the matches review *pattern*
   (list → decide → undo) but not its exact signature: a provisional account has
@@ -471,13 +471,13 @@ transfers (`surface-design.md`; `identifiers.md` Guard-2 free-text resolution):
   need review"* and point at the queue — exactly how `matches run` ends with *"Run
   review when ready."* The primary, least-astonishing discovery path: you're told
   the moment proposals are created.
-- **Orientation → promote to a top-level `review`.** Today `transactions_review`
-  (MCP) / `transactions review` (CLI) aggregates the two *transaction* queues
+- **Orientation → promote to a top-level `review`.** The former transaction-only
+  MCP review path / `transactions review` (CLI) aggregates the two *transaction* queues
   (matches + categorize) via `ReviewService`. Generalize it to a domain-neutral
   **`review`** (CLI `moneybin review`, MCP `review`) aggregating **all** queues —
   matches, categorize, **account-links**, future — so a single "what needs my
   attention?" sweep can't silently miss the account-link backlog. Keep
-  `transactions_review` / `transactions review` as a **deprecated alias for one
+  the former MCP path / `transactions review` as a **deprecated alias for one
   minor release** (`design-principles.md` CLI/MCP evolution). `ReviewService`
   gains `account_links_pending` in its count.
 
@@ -487,7 +487,8 @@ The opaque canonical `account_id` **is** the agent-reachable, stable, non-PII
 handle the masked `****4267` could never be (the session's top AX finding: today
 there is no unmasked agent handle, and `****4267` is ambiguous across sources).
 
-- `accounts_resolve` / `accounts_get` return the canonical id; agents pass it to
+- `accounts(view="resolve", query=...)` / `accounts(view="detail", reference=...)`
+  return the canonical id; agents pass it to
   filters, `import_confirm`, and sync to pin identity deterministically.
 - **Privacy-taxonomy reclassification (required).** The opaque `account_id` must
   move from the PII-masked `ACCOUNT_IDENTIFIER` class to a **record-id tier** in
@@ -850,8 +851,9 @@ Per [`observability.md`](observability.md), mirror the `DEDUP_*` family
   `import_confirm` with the per-account binding facet (proposals + candidates +
   `account_bindings`); human confirm + agent self-accept/envelope paths; new-
   account metadata capture.
-- **M1S.5** — surfaces: `accounts_links_*` (CLI + MCP), inline discovery on
-  import/sync, `review` orientation promotion (+ `transactions_review` deprecation
+- **M1S.5** — surfaces: account-link CLI commands plus `reviews`,
+  `identity_links_decide`, and `refresh_run` for MCP; inline discovery on
+  import/sync, `review` orientation promotion (+ the former MCP review-path deprecation
   alias).
 - **M1S.6** — scenario + the import-validation gate re-run.
 - **M1S.7** — **capture layer + capture contract (Decision 8):** derive

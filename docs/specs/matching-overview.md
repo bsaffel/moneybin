@@ -82,7 +82,7 @@ Un-merge restores the previously separate gold rows and their individual provena
 ### Match review UX
 
 - **CLI** (v1, non-negotiable): `moneybin transactions review --type matches` — shows pending matches one at a time: `[a]ccept / [r]eject / [s]kip / [q]uit`. `moneybin transactions matches history` — shows recent decisions.
-- **MCP** (Phase 2): `transactions_matches_pending`, `transactions_matches_confirm`, `transactions_matches_reject` tools. Lets the AI surface review items conversationally. Currently CLI-only; the `transactions_matches.*` MCP surface is a phantom namespace per `moneybin-mcp.md` §17 "Dependency tracker".
+- **MCP:** `reviews(kind="matches", status="pending")` reads the queue and `reviews_decide(decisions=[...])` records accept or reject decisions. It lets the AI surface review items conversationally without a separate match namespace.
 - **Match log for audit** (v1, non-negotiable): `app.match_decisions` records every auto-merge and user decision with reasoning. Foundation of the "reversible" promise.
 
 ## In scope
