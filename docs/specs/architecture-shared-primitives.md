@@ -57,7 +57,7 @@ MoneyBin uses eight schemas under this spec — seven that exist today plus `rep
 | `app` | Tables | Services (write); migrations (DDL); managed-write MCP tools | SQLMesh `dim_*` models (joins for resolved views); services (reads) | flat tables named for the entity: `account_settings`, `transaction_notes`, `transaction_tags`, `match_decisions`, `categorization_rules`, `versions`, `schema_migrations`, `audit_log`, etc.; plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | User-state and application-managed metadata. **Mutable. Not derivable from raw.** Recovery is the responsibility of the `db backup` CLI surface, not the pipeline. |
 | `reports` | Views (typically) | SQLMesh transforms | CLI `reports *` commands; MCP `reports(report_id=..., parameters=...)`; future HTTP `/reports/*` | `<entity>` matching the CLI report name (`networth`, `spending`, `budget`, future `portfolio`, `cashflow`); plus `<pkg>_*` for analysis-package contributions per [extension-contracts.md](extension-contracts.md) | Curated presentation models, one per report surface. **Read-only by design.** Symmetric with the CLI/MCP `reports` namespace per `moneybin-cli.md` v2. |
 | `meta` | Tables / Views | SQLMesh transforms | Reconciliation tooling; provenance queries; freshness probes | `fct_<entity>_provenance` (today: `fct_transaction_provenance`); `fct_<entity>_lineage` reserved; `model_freshness` | Provenance and pipeline metadata. Cross-source row lineage (`fct_*_provenance`) and model-level freshness (`model_freshness`, wrapping SQLMesh state). |
-| `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `seeds.categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
+| `seeds` | Tables | SQLMesh seeds (from CSV) | SQLMesh transforms; services (read-only reference data) | `<entity>` (e.g., `categories`) | Reference data shipped in-repo. Rebuilt from CSV on `sqlmesh seed`. |
 | `synthetic` | Tables | Synthetic data generator (`moneybin synthetic generate`) | Scenario tests | `ground_truth`, persona-named tables | Test scenario tables created on demand. Excluded from production builds. |
 
 ### Layer Rules
@@ -197,7 +197,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 |---|---|---|---|
 | List accounts | `accounts list` | `accounts` | `GET /accounts` |
 | Net worth report | `reports networth` | `reports(report_id="core:networth", parameters={...})` | `GET /reports/networth` |
-| Decide a match | `transactions matches set <id> <status>` | `reviews_decide(decisions=[...])` | `POST /transactions/matches/{id}/decision` |
+| Decide a match | `transactions matches set <id> --status <accepted\|rejected>` | `reviews_decide(decisions=[...])` | `POST /transactions/matches/{id}/decision` |
 
 Same noun ordering across all three; only the verb position and separators differ. The architecture spec's job here is to point at the rule, not restate it.
 
