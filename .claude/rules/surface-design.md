@@ -35,11 +35,11 @@ Two sub-forms determined by the cardinality of the call's input.
 - **Form:** `<entity>_set(scope, full_state)` — typically a list or map.
 - **Delete handling:** by omission. NO paired `_delete` tool.
 - **Examples:**
-  - `investments_lots_select(disposal_txn_id, selections=[...])` — the full
+  - `investments_lots_select(disposal_txn_id=..., selections=[...])` — the full
     specific-identification lot selection for one disposal.
-  - `transactions_categorize_rules_set(targets=[...])` — confirmed rule target
+  - `transactions_categorize_rules_set(rules=[...])` — confirmed rule definition
     state as one auditable batch.
-  - `import_labels_set(import_id, labels=[...])`.
+  - `import_labels_set(import_id=..., labels=[...])`.
 
 **1b. Entity upsert / partial update.**
 
@@ -51,8 +51,8 @@ Two sub-forms determined by the cardinality of the call's input.
   static risk and confirms only the destructive validated branch. Use a paired
   `_delete` when those contracts materially differ.
 - **Examples:**
-  - `accounts_set(account_id, ...)` — partial update of one account's settings.
-  - `investments_securities_set(security_id, ...)` — create or update one
+  - `accounts_set(account_id=..., ...)` — partial update of one account's settings.
+  - `investments_securities_set(security_id=..., ...)` — create or update one
     securities-catalog entry.
 
 **Distinguishing 1a vs 1b at design time:**
@@ -87,8 +87,9 @@ and `note_delete` variants inside one registered tool.
 - **Test:** the operation is an event, not a state change. Has timing and side effects. Reversibility lives in an audit log, not in a paired "undo" tool.
 - **Form:** `<entity>_<verb>(...)`. The verb names what happens, not the entity's resulting state.
 - **Examples:**
-  - `import_files(paths, refresh, force)` — batch import event.
-  - `sync_pull(institution, force, refresh)` — pull from a connector.
+  - `import_files(paths=[...], refresh=..., force=...)` — batch import event.
+  - `sync_pull(institution=...)` — pull from a connector; the tool refreshes
+    automatically after changed raw state.
   - `refresh_run()` — execute the refresh pipeline.
 
 Batch tools with per-item error handling (`transactions_create`,

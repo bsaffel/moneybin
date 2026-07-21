@@ -28,8 +28,10 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 ## Design Philosophy
 
 1. **Import-first, not ledger-first.** No general-purpose `add_transaction` tool. Transactions come from sources (files, connectors). Corrections and annotations are metadata on source-imported records, not counter-entries.
-2. **Privacy by architecture.** Every tool declares a sensitivity tier (`low`,
-   `medium`, `high`). Classification and critical-field masking are wired;
+2. **Privacy by architecture.** MoneyBin uses four sensitivity tiers (`low`,
+   `medium`, `high`, `critical`). Static tools derive their maximum tier from
+   the typed response payload; projection-varying tools opt into dynamic
+   classification and declare a maximum. Critical-field masking is wired;
    **global consent enforcement is deferred**. Do not claim or depend on an
    automatic consent gate or degraded response until that gate ships.
 3. **Batch-first, composable.** Each tool is called once per turn with a complete result. Collection operations accept lists, not single items.
@@ -178,7 +180,13 @@ The `FastMCP(instructions=...)` argument in `src/moneybin/mcp/server.py` is the 
 
 ## Connection Model
 
-All tools use `get_database()` from `src/moneybin/database.py`. Each call returns a **fresh, short-lived connection** that the caller must close via the context manager (`with get_database(...) as db:`). Read-only tools pass `read_only=True` so they attach DuckDB in shared-read mode and do not hold the exclusive write lock. Write tools use the default `read_only=False`. See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
+Tools that touch DuckDB use `get_database()` from `src/moneybin/database.py`.
+Each call returns a **fresh, short-lived connection** that the caller closes via
+the context manager (`with get_database(...) as db:`). Read-only tools pass
+`read_only=True`; writes open `get_database(read_only=False)` explicitly. Sync authentication
+and other connector-only operations may not open DuckDB at all. See
+[`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md)
+and [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
 
 ## Data Access
 

@@ -92,9 +92,13 @@ domain and match it.
 2. **Build the service first.** Put the business logic in
    `src/moneybin/services/` returning a typed dataclass. The tool is a thin
    wrapper around the service.
-3. **Decorate the tool.** `@mcp_tool(sensitivity="<tier>", domain="<domain>", read_only=<bool>)`.
-   Sensitivity tiers and the response-envelope contract are in
-   [`.claude/rules/mcp.md`](.claude/rules/mcp.md).
+3. **Decorate the tool.** Start with
+   `@mcp_tool(domain="<domain>", read_only=<bool>)`. Static sensitivity is
+   derived from the typed response payload. Use `dynamic_classification=True`
+   with `maximum_sensitivity=<tier>` only when the returned projection varies
+   by request. A new registered name also needs admission against the bounded
+   registry, its governing spec, and the frozen surface snapshot. The full
+   contract is in [`.claude/rules/mcp.md`](.claude/rules/mcp.md).
 4. **Return a `ResponseEnvelope`.** Use the helpers in
    `src/moneybin/protocol/envelope.py`. Never return a bare dict.
 5. **Add a CLI peer.** Every MCP tool needs a CLI command that produces the

@@ -241,26 +241,23 @@ The `data_sent_hash` allows forensic verification ("was this specific payload se
 
 ## MCP field minimization
 
-The MCP server returns structured data to the AI host. This section defines how MCP tools minimize data exposure by default, keeping most interactions at tier 1 (no consent needed).
+The MCP server returns structured data to the AI host. This section defines how MCP tools minimize returned fields and classify the data they do expose.
 
 ### Tool-level sensitivity declarations
 
-Each MCP tool declares the maximum data sensitivity tier its response contains:
+Static MCP tools derive sensitivity from the data classes on their typed response
+payloads. Tools whose projection varies at runtime opt into dynamic classification
+and declare a maximum ceiling. For example,
+`reports` classifies dynamically because catalog and executed-report projections
+differ, while `transactions` is statically high. `accounts` and `reports` declare
+maximum critical because some validated views can carry critical fields before
+masking. Classification and critical-field masking are enforced now; global consent
+enforcement and automatic degraded responses remain deferred.
 
-```python
-@mcp_tool(sensitivity="low")  # tier 0/1 — aggregates only
-def get_spending_by_category(month: str) -> dict: ...
+High-sensitivity responses include financial amounts and balances. Critical fields
+remain masked independently of the deferred global-consent gate.
 
-
-@mcp_tool(sensitivity="medium")  # tier 2 — includes descriptions/amounts
-def search_transactions(query: str, limit: int) -> list[dict]: ...
-```
-
-- **Low-sensitivity tools** return aggregates: totals, counts, averages, category breakdowns. No individual transaction details. These work without tier-2 consent.
-- **Medium-sensitivity tools** return row-level data: transaction descriptions, amounts, dates. These require `mcp-data-sharing` consent before returning full results.
-- **High-sensitivity tools** (if any exist) return data that includes fields normally in the critical tier. These are exceptional and require explicit justification.
-
-### Response filtering
+### Response filtering (deferred)
 
 > **Ledger shipped; enforcement gate deferred.** The `app.ai_consent_grants`
 > table, `ConsentService` (grant/revoke/status/log), and the
@@ -271,19 +268,16 @@ def search_transactions(query: str, limit: int) -> list[dict]: ...
 > (hosted multi-user deployment or a direct cloud-AI feature). Always-on
 > CRITICAL masking shipped in PR 2 and is already enforced.
 
-When a medium-sensitivity tool is called without tier-2 consent:
-- The tool returns a **degraded response**: aggregate summary instead of row-level data, plus a notice: *"Detailed transaction data requires data-sharing consent. Run `moneybin privacy grant mcp-data-sharing` to enable."*
-- The tool does NOT fail — it returns what it can within the current consent level.
-
-When tier-2 consent is granted:
-- Medium-sensitivity tools return full row-level data.
-- Critical-tier fields (account numbers, SSNs) remain masked in all responses regardless of consent — unless the backend is verified-local AND `LOCAL_UNMASK_CRITICAL` is enabled (see [Verified-local mode](#verified-local-mode)).
+The deferred target is for an ungranted medium/high request to return an
+aggregate response or refusal with a consent action, while a granted request
+returns the classified payload. This behavior is **not active today**.
+Critical-tier fields remain masked today independently of the consent ledger.
 
 ### Aggregation preference
 
 MCP tools prefer returning the minimum data needed to answer the query:
 - "How much did I spend on groceries?" → total (low sensitivity, no consent needed)
-- "Show me my grocery transactions" → row-level list (medium sensitivity, consent needed)
+- "Show me my grocery transactions" → row-level list (high sensitivity; future consent-policy target)
 - "What's my checking account number?" → masked `****1234` (critical fields always masked)
 
 ## Consent management
@@ -320,7 +314,7 @@ MCP tools prefer returning the minimum data needed to answer the query:
   confirmation_token=...)` revokes one or more categories. Revocation requires
   payload-bound confirmation; `mode` is not valid for this state.
 
-### Config override
+### Deferred config override
 
 For maximum-paranoia users:
 
@@ -328,7 +322,8 @@ For maximum-paranoia users:
 MONEYBIN_AI__CONSENT_POLICY=strict
 ```
 
-In `strict` mode, ALL AI calls (tier 2 and 3) require per-invocation consent. No persistence. Every call prompts. This is the "I trust nothing" escape hatch.
+This proposed `strict` mode would require per-invocation consent and disable
+persistence. It is a target contract, not a currently enforced configuration.
 
 ## Configuration model
 
@@ -392,9 +387,11 @@ MONEYBIN_AI__OLLAMA__MODEL=llama3
 
 When `default_backend` is `None` (the default), all AI-dependent features gracefully degrade: Smart Import falls back to heuristic-only; MCP tools return what they can without AI enrichment; ML categorization uses local scikit-learn only.
 
-## Verified-local mode
+## Verified-local mode (deferred target)
 
-When the configured AI backend is **verified-local** — meaning the `base_url` resolves to `localhost` / `127.0.0.1` / `::1` — MoneyBin operates in a mode that preserves the full "nothing leaves this machine" guarantee from the Local Only custody tier ([ADR-002](../decisions/002-privacy-tiers.md)) while still accessing AI-powered features.
+The following describes a deferred provider-policy target. MoneyBin does not
+currently change consent enforcement or critical masking based on a configured
+local backend.
 
 ### What changes in verified-local mode
 
@@ -416,7 +413,7 @@ A backend on `192.168.x.x` or a remote hostname is NOT verified-local — it's a
 
 ### Why this matters
 
-The privacy spec's mission is awareness and control, not restriction. When data genuinely never leaves the machine, consent gates add friction without providing value. Verified-local mode is the "complete local-only experience" for advanced users who run their own models — they get full AI features with zero external data flows, and the audit log confirms it.
+The target rationale is awareness and control, not restriction: once verified-local provider policy ships, data that genuinely never leaves the machine should not incur cloud-egress consent friction. Until then, this section defines intended behavior only; it is not an active masking or consent bypass.
 
 ## Open questions
 

@@ -63,13 +63,15 @@ Installing a non-default profile generates a distinct entry name (e.g. `MoneyBin
 
 ## Where data goes
 
-The MCP transport is local-only and the MoneyBin server itself does not phone home, but the **client** you connect to is almost certainly cloud-hosted. Be deliberate about which surface is which.
+The MCP transport is local-only and MoneyBin has no ambient telemetry or
+background egress, but the **client** you connect to is usually cloud-hosted.
+Explicit connector calls are the exception to the local default.
 
-- **`moneybin mcp serve` (the server side).** Makes no outbound network calls of its own — no telemetry, no update checks, no license pings, no merchant-enrichment fetches. It reads and writes only the local DuckDB profile. The egress posture is "zero by default."
+- **`moneybin mcp serve` (the server side).** Startup, local data tools, and idle sessions make no outbound calls. Explicit `sync_*` calls reach the opaque `moneybin-sync` API, and explicit `gsheet_*` calls reach Google OAuth/Sheets. There is no telemetry, update check, license ping, or enrichment lookup.
 
 - **The MCP client (Claude Desktop, Cursor, Codex, …).** Sends your prompt and the tool-result payloads MoneyBin returns to its own hosted LLM provider, per the client's privacy policy. When you ask "what did I spend on groceries?", the agent receives row-level transaction data from MoneyBin and forwards it upstream as ordinary tool-result context.
-- **Sensitivity tiers.** Every MoneyBin tool declares `low` / `medium` / `high` per [`mcp-server.md`](mcp-server.md). A consent gate that downgrades `medium`/`high` responses for cloud clients is planned. Until it lands, **treat anything you ask the agent as if you sent it directly to the model provider** — because effectively, you did.
-- **Other MoneyBin surfaces.** Plaid sync, OAuth, and any future hosted-server features do make outbound calls when you use them. Those flow through `moneybin-sync`, not the MCP server — see [`docs/reference/server-api-contract.md`](../reference/server-api-contract.md) for that contract.
+- **Sensitivity tiers.** MoneyBin uses `low` / `medium` / `high` / `critical` per [`mcp-server.md`](mcp-server.md). Static tools derive classification from typed payloads; projection-varying tools classify dynamically under a declared maximum. Critical fields are masked now. A consent gate for other sensitive responses is planned; until it lands, **treat anything you ask the agent as if you sent it directly to the model provider**.
+- **Other MoneyBin surfaces.** Plaid connector calls flow through `moneybin-sync`; Google Sheets uses its direct OAuth/API connector. Both are opt-in operations, not ambient server behavior. See [`docs/reference/server-api-contract.md`](../reference/server-api-contract.md).
 - **Local-LLM clients.** No first-class MCP-compatible local-LLM agent is shipping today (Ollama doesn't expose MCP; LM Studio's support is experimental). When one becomes stable, MoneyBin will connect to it the same way it connects to Claude Desktop — the server side doesn't care which LLM is on the other end of the stdio pipe.
 
 ## Bounded tool surface
@@ -79,8 +81,8 @@ MoneyBin exposes one **45-tool standard registry**. Generic clients receive all
 to reduce prompt cost, without reconnect, packs, or profiles; tool names,
 approvals, allowlists, annotations, and audit identity do not change. Observed
 host-native deferral evidence remains absent. Reports are catalog entries behind
-`reports`, not additional tool slots. The initial registry advertises zero
-output schemas; a future schema or tool must pass the admission record in
+`reports`, not additional tool slots. The current registry advertises zero output schemas;
+a future schema or tool must pass the admission record in
 [`mcp-tool-surface-scaling.md`](../specs/mcp-tool-surface-scaling.md).
 
 ## Per-client setup

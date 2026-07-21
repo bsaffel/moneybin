@@ -18,7 +18,7 @@ Close the agent-driven ingest loop. An agent (Claude Code, Codex CLI, MCP client
 
 1. `refresh_run(steps=["transform"])` returns the standard response envelope for an explicit SQLMesh apply. The CLI keeps `moneybin transform apply` as an operator entry point.
 2. `import_files` accepts `paths: list[str]`.
-3. `import_files` runs the refresh pipeline (matching + SQLMesh apply + categorization) once at end-of-batch by default via `services/refresh.py`. Caller opts out by passing `refresh=False`.
+3. `import_files` runs the full `gsheet → match → transform → categorize → identity` refresh pipeline once at end-of-batch by default via `services/refresh.py`. Caller opts out by passing `refresh=False`.
 4. Per-file failures inside an `import_files` call do not abort the batch. The refresh runs if at least one file succeeded; skipped if zero succeeded.
 5. If the refresh itself fails after successful imports, raw rows stay durable; the envelope reports `transforms_applied=false` with a generic error message and an action hint to retry.
 6. `import_inbox_sync` internally builds the discovered-file list and calls the same batch path. New `refresh` parameter on the MCP tool and `--no-refresh` flag on the CLI.
@@ -47,7 +47,7 @@ No schema changes. The spec leans on three existing columns/tables:
 ### Files to Create
 
 - `src/moneybin/services/transform_service.py` — `TransformService` with `freshness()` and `apply()` methods. Owns SQLMesh Context lifecycle for apply; `freshness()` deliberately bypasses Context to keep it cheap.
-- `src/moneybin/services/refresh.py` — `refresh()` umbrella that runs matching + `TransformService.apply()` + categorization in canonical order (PR #151). Re-exposed at the MCP layer as `refresh_run` (PR #165) with optional `steps=` scoping (PR #173).
+- `src/moneybin/services/refresh.py` — `refresh()` umbrella that runs `gsheet → match → transform → categorize → identity` in canonical order. Re-exposed at the MCP layer as `refresh_run` with optional `steps=` scoping.
 - `src/moneybin/mcp/tools/refresh.py` — `refresh_run` MCP tool wrapping the refresh umbrella (PR #165/#173).
 - `tests/moneybin/test_services/test_transform_service.py` — unit + integration tests for the new service.
 - `tests/moneybin/test_mcp/test_transform_tools.py` — envelope-shape and error-path tests for the refresh-backed MCP path.
@@ -115,7 +115,7 @@ moneybin transform restate           (unchanged; remains operator-territory)
 ## MCP Interface
 
 ```python
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False, idempotent=False)
 def import_files(
     paths: list[str],
     refresh: bool = True,
@@ -124,7 +124,7 @@ def import_files(
     """Import one or more files. Applies refresh once at the batch boundary."""
 
 
-@mcp_tool(sensitivity="medium", read_only=False)
+@mcp_tool(read_only=False)
 def refresh_run(steps: list[str] | None = None) -> ResponseEnvelope: ...
 
 

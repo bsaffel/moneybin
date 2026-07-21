@@ -369,9 +369,11 @@ the `ACCOUNT_LINK_*` family:
    uncategorized fetch.
 3. **Resolver ladder** — rung 0 in the merchant lookup; adopt / auto-bind / mint;
    bind-write through `MerchantLinksRepo`.
-4. **Review surface** — `merchants links *` CLI plus
-   `reviews(kind="merchant_links", status="pending" | "history")` and
-   `identity_links_decide(decisions=[...])` in MCP;
+4. **Review surface** — `merchants links *` CLI plus separate
+   `reviews(kind="merchant_links", status="pending")` and
+   `reviews(kind="merchant_links", status="history")` reads in MCP. Accept with
+   `identity_links_decide(decisions=[{"kind":"merchant_link","decision_id":"<id>","decision":"accept","target_id":"<merchant_id>"}])`;
+   reject with `identity_links_decide(decisions=[{"kind":"merchant_link","decision_id":"<id>","decision":"reject"}])`;
    `ReviewService` aggregation; inline-discovery hints.
 5. **Backfill** — idempotent harvest + conflict detection in the resolver's first
    pass.

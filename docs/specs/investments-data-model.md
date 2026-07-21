@@ -821,21 +821,10 @@ The **per-account default** cost-basis method is a field on `accounts_set`
 
 ### Response envelope
 
-Standard envelope from [`mcp-architecture.md`](mcp-architecture.md), e.g. for
-`investments(view="holdings")`:
-
-```json
-{
-  "summary": {
-    "total_count": 3,
-    "sensitivity": "high",
-    "display_currency": "USD",
-    "warnings": ["Market value/unrealized gain unavailable until price feeds ship"]
-  },
-  "data": [...],
-  "actions": ["Use investments(view='lots') for per-lot basis", "Use investments(view='gains') for realized gain/loss"]
-}
-```
+`investments(view="holdings")` returns the standard envelope from
+[`mcp-architecture.md`](mcp-architecture.md), with typed result rows and runtime
+warnings or next-action hints where applicable. The current registry advertises no
+output schema, so this spec does not freeze a JSON response object.
 
 ## Testing Strategy
 

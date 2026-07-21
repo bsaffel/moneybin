@@ -113,7 +113,7 @@ What does **not** enter the review queue:
 
 Every mutation to `app.match_decisions` and `app.balance_assertions` already routes through a repository (`MatchDecisionsRepo`, `BalanceAssertionsRepo` per [`app-integrity-invariant.md`](app-integrity-invariant.md) Phase 1) and emits a paired `app.audit_log` row inside the same DuckDB transaction. This satisfies Invariant 10 (`app.*` mutation routing) declared in [`architecture-shared-primitives.md`](architecture-shared-primitives.md) §Architecture Invariants.
 
-Per Invariant 11 (recoverability of mutations) introduced in [`data-recovery-contract.md`](data-recovery-contract.md) (in-progress, M1L): the universal `recovery_actions` envelope on every error, plus `system_audit_undo` and `system_audit(view="history" | "detail", ...)`, cover these tables. Accepting, rejecting, or reversing a match decision is an auditable, reversible operation. Inserting or deleting a balance assertion is an auditable, reversible operation.
+Per Invariant 11 (recoverability of mutations) introduced in [`data-recovery-contract.md`](data-recovery-contract.md) (in-progress, M1L): the universal `recovery_actions` envelope on every error, plus `system_audit(view="history")`, `system_audit(view="detail", operation_id=...)`, and `system_audit_undo(operation_id=...)`, cover these tables. Accepting, rejecting, or reversing a match decision is an auditable, reversible operation. Inserting or deleting a balance assertion is an auditable, reversible operation.
 
 **Future observation-curation work uses this infrastructure. There is no separate audit log, no separate undo surface, and no new repository for observations.**
 

@@ -801,13 +801,13 @@ Review my MoneyBin sync state and flag anything that needs attention.
 
 Use these tools (in order):
 1. sync_status — list connected institutions with last sync time, status, and any error guidance.
-2. spending_summary detail=summary — optional, for context on recent transaction volume per institution.
+2. `reports(report_id="core:spending")` — optional, for aggregate recent spending context.
 
 Report concisely (bulleted, single paragraph if everything is healthy):
 
 - **Errors:** any institutions with status='error' and the specific re-auth or reconnect action — quote the exact command from the actions hint.
 - **Stale data:** any institution whose last_sync is more than 7 days ago, even if status='active'. Suggest running `moneybin sync pull`.
-- **Anomalies:** institutions whose recent sync transaction counts are dramatically lower than typical volume (use spending_summary as a rough yardstick — a checking account that's been returning ~30/week suddenly returning 0 is worth flagging).
+- **Anomalies:** institutions whose recent sync transaction counts are dramatically lower than typical volume. The spending report is aggregate context only; it does not attribute volume to an institution.
 - **Recommended next action:** one specific command, or "no action needed."
 
 Do not include account numbers, balances, individual transaction descriptions, or merchant names. Stick to counts, dates, status codes, and institution names.

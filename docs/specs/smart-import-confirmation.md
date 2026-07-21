@@ -272,9 +272,9 @@ shapes or verbs.** The confirm flow uses the existing import tools plus
 
 | Tool / command | Shape | Role |
 |---|---|---|
-| `import_files(paths, …)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
-| `import_preview(file_path=...)` | Shape 5 (read-projection) | Read-only inspect: proposed mapping, `Confidence`, samples, unmapped columns. For PDF, also emits the bridge payload (IR / page image + extraction request). |
-| `import_confirm(preview_id, account_bindings?, account_id?, account_metadata?, account_name?, bridge_response?, confirmation_token?, save_format?)` | Shape 3, `_confirm` | Atomically consume an unchanged staged preview and import its file. Sign inversion remains human-owned through elicitation. |
+| `import_files(paths=[...], ...)` | Shape 3 (discrete event) | Entry + fast-path. Known layout → load. Unknown → `confirmation_required` (no data loaded) with `actions[]` → `import_confirm`. |
+| `import_preview(file_path=...)` | Shape 3 (staged preview) | Persists encrypted preview state while returning the proposed mapping, `Confidence`, samples, and unmapped columns. Its live annotation is `readOnlyHint=false` and `idempotentHint=false`. For PDF, it also emits the bridge payload (IR / page image + extraction request). |
+| `import_confirm(preview_id=..., ...)` | Shape 3, `_confirm` | Atomically consume an unchanged staged preview and import its file. Optional keyword fields include account bindings and metadata, bridge response, confirmation token, and format retention. Sign inversion remains human-owned through elicitation. |
 | `import_status(sections=["formats"])` | Shape 5 | List learned formats (tabular + pdf). |
 | `gsheet_connect` | `_connect` lifecycle | Its `connection_id` mode re-detects and reconnects a binding; its `url` mode creates one. Both retain inline `confirm_mapping` / `column_mapping` and share the confidence bands + `resolve_or_confirm` primitive underneath. |
 
@@ -312,11 +312,12 @@ etc. — stay in `smart-import-pdf.md`; the table above is the cross-channel con
 
 ## Data Model
 
-Mostly reuse — the confidence contract is a code-level type, not a table.
-
-- **No new tables.** Confirmation state lives in the existing learned-format stores:
-  `app.tabular_formats`, `app.pdf_formats` (created by the PDF spec), and the gsheet
-  connection row.
+The confidence contract is a code-level type, while staged confirmation is durable,
+encrypted state. `import_preview` writes metadata to `app.import_previews` and staged
+bytes to `raw.import_preview_snapshots`; this is why its live annotation is
+`readOnlyHint=false`. Preview issuance, consumption, and expiry are audit events, and
+unconsumed rows expire after the configured preview TTL. Learned formats continue to
+live in `app.tabular_formats`, `app.pdf_formats`, and the gsheet connection row.
 - **Possible additive column (deferred):** persisting the confidence score at save time
   on `app.tabular_formats` / `app.pdf_formats` (`detected_confidence DECIMAL`) would let
   `import_status(sections=["formats"])` show how a saved format was originally vetted. Out of scope for v1

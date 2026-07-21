@@ -70,7 +70,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / maximum medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
 | `import_files` | `force`, `paths`, `refresh` | Import files | Audited workflow / maximum critical / file-derived |
-| `import_preview` | `file_path` | Inspect an import before mutation | Read / dynamic / maximum critical / file-derived |
+| `import_preview` | `file_path` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / maximum critical / file-derived |
 | `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum medium / preview-derived |
 | `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / maximum medium / import-derived |
 | `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch | Audited recovery / maximum low |
@@ -138,7 +138,7 @@ and confirmation contracts.
 
 ## Coarse contracts and workflow boundaries
 
-- `reports(report_id, parameters, limit)` first returns the catalog without a
+- `reports(report_id=..., parameters=..., limit=...)` first returns the catalog without a
   report ID, then executes a selected report. New reports are catalog entries,
   never new tool slots.
 - `accounts`, `investments`, `transactions`, `reviews`, `taxonomy`, `privacy`,
@@ -151,7 +151,13 @@ and confirmation contracts.
   payload-bound `confirmation_token` and retry the same operation; both paths
   recompute and compare the live proposal inside the write transaction before
   importing. `import_status` and `import_revert` provide recovery.
-  `refresh_run` owns the bounded derived-state workflow.
+
+- `import_preview` persists encrypted metadata in `app.import_previews` and
+  staged bytes in `raw.import_preview_snapshots`. Preview issue, consume, and
+  expiry transitions are audit events; unused previews expire after the
+  configured TTL. Its `readOnlyHint=false` annotation reflects that retained
+  state even though it does not commit ledger rows.
+- `refresh_run` owns the bounded derived-state workflow.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 

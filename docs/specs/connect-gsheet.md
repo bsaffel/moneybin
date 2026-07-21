@@ -76,15 +76,15 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 3. **Detection at connect time.** Fetch sheet headers + sample rows, run `extractors/tabular/` Stages 1–3 (format detect, read, column mapping). Produce mapping + confidence tier.
 4. **Confirmation gate.** High confidence + `--yes` flag → auto-confirm. Low confidence → refuse with actionable error. Medium → interactive confirmation (CLI prompt; MCP returns mapping for caller to accept). An inferred `negative_is_income` is always a separate whole-ledger sign decision: CLI requires explicit `--sign`; MCP elicits a real human confirmation and never exposes an agent-settable sign override. The final mapping shape and convention must agree: a single `amount` column rejects `split_debit_credit`, while a resolved debit/credit pair rejects either single-column convention. Both mismatches fail before connection insert/update or pull. Confidence bands are aligned to `ImportSettings.confidence` (`T_high=0.90`, `T_med=0.70` defaults; configurable via `MONEYBIN_IMPORT___CONFIDENCE__T_HIGH` / `__T_MED`). Realized by [`smart-import-confirmation.md`](smart-import-confirmation.md).
 5. **Pin the detection result.** Only after all confirmation gates pass, save `column_mapping`, `header_signature`, `date_format`, `sign_convention`, `number_format`, `skip_rows`, `skip_trailing_patterns` to `app.gsheet_connections`. The pinned mapping is the contract for subsequent pulls.
-6. **Initial pull.** After save, trigger a normal pull (same path as subsequent pulls). Triggers end-of-pull refresh pipeline by default.
+6. **Initial pull.** After save, trigger a normal direct pull (same loader path as subsequent pulls). It loads raw data only; run the refresh cascade separately to rebuild derived state.
 7. **Reconnect** via `moneybin gsheet reconnect <id>` — re-runs detection against the sheet's current state, updates the pinned mapping if the user confirms, clears any drift state.
 8. **Disconnect** soft by default: `app.gsheet_connections.status='disconnected'`, raw rows retained for audit. `--purge` hard-deletes the connection row + all rows in `raw.tabular_transactions` with matching `source_origin`.
 9. **Re-authentication** via `moneybin gsheet auth` CLI or `gsheet_connect(force_reauth=True)` MCP — re-runs OAuth flow when the refresh token has been revoked. Both surfaces drive the same installed-app + PKCE flow inside the local process; tokens never leave SecretStore.
 
 ### Pull semantics
 
-10. **Pre-refresh hook.** `refresh_run(steps=["gsheet", "match", "transform", "categorize"])` is the new default — gsheet pulls first, then the rest of the pipeline operates on the updated raw data.
-11. **Explicit pull** via `moneybin gsheet pull [<id>]` (CLI) and `gsheet_pull(connection_id=None)` (MCP). With no ID → pulls all healthy connections. With ID → pulls one. By default runs end-of-pull refresh; `--no-refresh` disables (used when called as a sub-step of `refresh_run` to avoid recursion).
+10. **Pre-refresh hook.** The default is `gsheet → match → transform → categorize → identity` — gsheet pulls first, then the rest of the pipeline operates on the updated raw data.
+11. **Explicit pull** via `moneybin gsheet pull [<id>]` (CLI) and `gsheet_pull(connection_id=None)` (MCP). With no ID → pulls all healthy connections. With ID → pulls one. CLI pull refreshes downstream by default through `match → transform → categorize`; `--no-refresh` disables that follow-up. MCP `gsheet_pull` is pull-only; call `refresh_run(steps=["match", "transform", "categorize", "identity"])` separately when derived state must catch up. The `gsheet` stage inside unscoped `refresh_run()` uses the pull-only service directly and therefore does not recurse.
 12. **Per-connection isolation.** A failure on connection A does not block connection B or downstream refresh steps. Each pull writes its own `raw.import_log` row.
 13. **Live mirror with soft-delete.** Each pull computes the diff vs. the connection's currently-active rows. Rows in current pull but absent from active → INSERT OR REPLACE (or undelete via `deleted_from_source_at = NULL`). Rows previously active but absent from current pull → `UPDATE deleted_from_source_at = CURRENT_TIMESTAMP`.
 14. **`fct_transactions` reflects the current sheet.** `stg_tabular__transactions` filters `WHERE deleted_from_source_at IS NULL`. Reports, balances, and matching operate on live data automatically.
@@ -145,7 +145,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 
 ### Observability
 
-30. **`system_status` extension.** Add a `gsheet` block alongside the existing `transforms` block (PR #143/#151). Reports connection counts by status, last-pull-at, drift counts, and `actions[]` hints when state requires attention.
+30. **Connection-health projection.** `gsheet(view="status")` returns `data.kind="status"` with `data.connections[]`. Drift is surfaced through canonical top-level `actions` hints for inspection and re-detection; the live payload does not promise aggregate connection or drift counts.
 31. **Logging.** Every pull logs entry + exit. Drift, auth failures, and rate limits log at WARNING. Successful no-op pulls log at INFO. No financial PII in any log line per `privacy-data-protection.md`.
 32. **Metrics.** Per-connection pull duration, rows-inserted, rows-soft-deleted, rows-rejected, status transitions, drift count. Per `observability.md` instrumentation API.
 
@@ -161,9 +161,9 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
     - `status [<id>]`
 34. **MCP tools** mirror CLI capabilities through four workflow boundaries:
     - `gsheet_connect(...)` authenticates when neither selector is supplied, creates a binding with `url=...`, or reconnects a binding with `connection_id=...`; `force_reauth=True` re-runs OAuth.
-    - `gsheet_disconnect(connection_id, state="disconnected" | "absent", ...)` is a reversible disconnect or a confirmed permanent purge.
+    - `gsheet_disconnect(connection_id=..., state="disconnected")` is reversible; `gsheet_disconnect(connection_id=..., state="absent", ...)` is a confirmed permanent purge.
     - `gsheet_pull(connection_id=None)` pulls one connection or every healthy connection.
-    - `gsheet(view="connections" | "status", connection_id=None)` reads the collection or connection health; `connection_id` is valid only for the status view.
+    - `gsheet(view="connections")` reads the collection. `gsheet(view="status", connection_id=None)` reads connection health and may narrow to one connection.
 35. **Refresh-step parameter.** `refresh_run` accepts `"gsheet"` in `steps=[...]`. Default `steps` list includes `"gsheet"` so the magical default holds.
 36. **Audience layering.** `auth`, `connect`, `pull`, `list`, `status`, `reconnect`, `disconnect` are user-intent (promoted in `instructions`, surfaced in `actions[]` from other user-intent tools). `auth` is low-frequency in steady state but first-class in the onboarding flow — surfacing it via MCP makes agent-driven setup possible end-to-end.
 
@@ -340,7 +340,7 @@ flowchart LR
     I --> Z
 ```
 
-Default step list extends to `["gsheet", "match", "transform", "categorize"]`. Skipping is a `steps=[...]` choice.
+The default step list is `["gsheet", "match", "transform", "categorize", "identity"]`. Skipping is a `steps=[...]` choice.
 
 ---
 
@@ -535,7 +535,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 | `src/moneybin/sqlmesh/models/prep/stg_tabular__transactions.sql` | Add `WHERE deleted_from_source_at IS NULL` filter |
 | `src/moneybin/cli/__init__.py` | Register `gsheet` subgroup |
 | `src/moneybin/mcp/server.py` (or equivalent registry) | Register the four Google Sheets workflow tools |
-| `src/moneybin/mcp/system_status.py` | Add `gsheet` block to status response |
+| `src/moneybin/mcp/tools/gsheet.py` | Expose connection and status projections through `gsheet` |
 | `src/moneybin/config.py` | Add `MoneyBinSettings.gsheet.*` for OAuth client ID, redirect port range, etc. |
 | `src/moneybin/secrets.py` | Add constants for gsheet keyring keys |
 | `pyproject.toml` | Add `google-api-python-client`, `google-auth-oauthlib`, `google-auth` deps |
@@ -701,45 +701,13 @@ The authentication mode of `gsheet_connect` is local-MCP-only by design: it open
 
 Add a line to the MCP `instructions` describing the gsheet capability: *"Connect a Google Sheets ledger for live sync via `gsheet_connect`; pull updates via `gsheet_pull` (or wait for the next `refresh_run`)."*
 
-### `system_status` extension
+### Gsheet health projection
 
-```json
-{
-  "gsheet": {
-    "total_connections": 2,
-    "by_status": {
-      "healthy": 1, "drift_detected": 1, "auth_expired": 0,
-      "unreachable": 0, "rate_limited": 0, "disconnected": 0
-    },
-    "last_pull_at": "2026-05-19T14:32:01Z",
-    "needs_attention": [
-      {
-        "connection_id": "conn_e5f6g7h8",
-        "status": "drift_detected",
-        "workbook": "Personal Budget",
-        "sheet": "Expenses",
-        "reason": "Pinned header 'Amount' is missing from current sheet (now sees 'Amount (USD)')"
-      }
-    ],
-    "actions": [
-      {
-        "label": "View drift detail for conn_e5f6g7h8",
-        "tool": "gsheet",
-        "args": {"view": "status", "connection_id": "conn_e5f6g7h8"},
-        "cli": "moneybin gsheet status conn_e5f6g7h8"
-      },
-      {
-        "label": "Re-establish mapping for conn_e5f6g7h8",
-        "tool": "gsheet_connect",
-        "args": {"connection_id": "conn_e5f6g7h8"},
-        "cli": "moneybin gsheet reconnect conn_e5f6g7h8"
-      }
-    ]
-  }
-}
-```
-
-When `needs_attention` is empty, the `actions[]` array does not include gsheet hints — keeps the response envelope clean.
+Connection health is queried through `gsheet(view="status")`, optionally with
+`connection_id=...`; it is not a `system_status` block. The runtime envelope uses
+canonical top-level `actions` strings for drift inspection and re-detection hints.
+The current registry advertises no output schema, so this spec does not freeze an
+example response object.
 
 ---
 
@@ -951,8 +919,8 @@ Independent of M1G: no moneybin-sync dependency. Could ship before or after the 
 1. All 34 required test scenarios above pass in `make test`.
 2. `moneybin gsheet --help` documents all subcommands; each matches the spec's CLI Interface section.
 3. MCP `tools/list` includes the four Google Sheets workflow tools with descriptions; `instructions` field references the connect capability.
-4. `system_status` returns a `gsheet` block in both empty and `needs_attention` cases.
-5. `refresh_run` default steps include `"gsheet"`; per-step results include per-connection PullResults.
+4. `gsheet(view="status")` returns connection health in both empty and needs-attention cases.
+5. `refresh_run` default steps include `"gsheet"`; non-complete pulls emit a warning, and callers query per-connection health with `gsheet(view="status")`.
 6. A user can run the documented connect → pull → reports loop on a real Google Sheet (manual verification gate before declaring `implemented`).
 7. Documentation updates land: `docs/guides/connect-gsheet.md`, `docs/features.md` row, CHANGELOG `Added` bullet, roadmap M1F row, `INDEX.md` row in the new "Connect (Live External Sources)" section.
 8. `make check test` clean.

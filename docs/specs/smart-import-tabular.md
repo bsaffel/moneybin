@@ -961,7 +961,7 @@ moneybin import files workbook.xlsx --account-name "Savings" --sheet="Transactio
 # Direct account ID (bypass name matching)
 moneybin import files statement.csv --account-id chase-checking
 
-# Skip end-of-batch refresh pipeline (matching + SQLMesh apply + categorization)
+# Skip the default gsheet → match → transform → categorize → identity refresh
 moneybin import files statement.csv --account-name "Checking" --no-refresh
 ```
 

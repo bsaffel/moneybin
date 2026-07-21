@@ -22,8 +22,13 @@ Related code: `src/moneybin/mcp/` (tool registration and dispatch), `src/moneybi
 2. On timeout, the server attempts to interrupt the running DuckDB statement (`connection.interrupt()`) and force-close the connection, releasing any held write lock.
 3. The client receives a structured timeout response — not a hang, not a transport error. The envelope follows the standard MCP tool response shape: `{summary, data: null, actions: [], error: {kind: "timed_out", tool: "<name>", elapsed_s: <float>, timeout_s: <float>}}`.
 4. The server logs a single structured line per timeout including tool name, elapsed seconds, and configured cap. No PII or query payloads in the log.
-5. The next tool call after a timeout must succeed (assuming the underlying issue is transient) — i.e., no orphaned connection or transaction state survives the timeout path.
-6. The cap is global (one value applies to all tools). No per-tool overrides in this iteration.
+5. The timeout path resets the active DuckDB connection so the next call can
+   reopen cleanly. A synchronous body already running in a worker thread may
+   continue to natural return; timeout is not transactional cancellation.
+6. The configured cap defaults to 30 seconds. The decorator supports explicit,
+   code-reviewed per-tool overrides; the shipped 180-second overrides are
+   `gsheet_connect`, `gsheet_disconnect`, `sync_disconnect`,
+   `identity_links_decide`, `import_confirm`, and `import_revert`.
 7. Tools that already complete in well under the cap are unchanged in behavior; the timeout is invisible on the happy path.
 
 ## Data Model
@@ -47,10 +52,17 @@ No schema changes. One new configuration field:
 
 ### Key Decisions
 
-- **One global cap, not per-tool.** YAGNI: a single 30s value catches every realistic deadlock without a registry, decorators, or config sprawl. Promote to per-tool only if a specific tool proves it needs a different value.
+- **One configurable default with bounded overrides.** The 30-second setting
+  covers ordinary calls. Long-running connector, identity-decision, confirm,
+  and revert workflows opt into 180 seconds in their decorators; overrides are
+  code constants, not user-configurable registry sprawl.
 - **Cancellation must reach DuckDB.** Naive `asyncio.wait_for` cancels the future but leaves the worker thread running and the connection held. The dispatch layer must (a) hold a reference to the active `DuckDBPyConnection`, (b) call `interrupt()` on timeout, and (c) force-close the connection in a `finally` block so the lock is released even if `interrupt()` is a no-op for the current statement (e.g., mid-`COPY`).
 - **Connection-per-call as the cleanup fallback.** Each tool dispatch acquires a fresh connection from the connection manager. On timeout, that connection is closed, which aborts the transaction and releases the lock. Long-lived shared connections are not used in the MCP path.
-- **No background continuation.** A timed-out call does not silently keep running. The work is cancelled. If a tool legitimately needs longer than the cap (today, none should), it must be redesigned — e.g., `import_inbox_sync` decomposed into per-file calls. Background-job semantics are explicitly out of scope for this iteration.
+- **Worker-thread limitation is explicit.** `asyncio.timeout()` returns the
+  envelope and resets the connection, but cannot kill a synchronous Python
+  worker thread. That body can finish after the client receives the timeout.
+  Non-idempotent work that approaches its cap still needs decomposition;
+  background-job semantics remain out of scope.
 - **Logging stays low-cardinality.** Log tool name, elapsed seconds, configured cap. Do not log arguments — they may contain account IDs, search strings, or other sensitive context.
 
 ```mermaid
@@ -117,7 +129,9 @@ None. The timeout mechanism is data-agnostic; existing test fixtures are suffici
 
 ## Out of Scope
 
-- Per-tool timeout overrides.
+- User-configurable timeout policies or dynamic per-request overrides. The six
+  shipped decorator-level 180-second overrides are part of the current bounded
+  contract.
 - Background continuation or deferred-job semantics. No such MCP capability is
   registered today. If a future operation legitimately needs longer than the
   cap, its workflow remains unnamed until an explicit admission record is

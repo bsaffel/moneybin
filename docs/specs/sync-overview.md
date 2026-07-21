@@ -335,7 +335,7 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 | `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
 | `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
 | `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`; returns session URL or device credentials |
-| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `mode: "institution" \| "logout"` |
+| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `mode: "institution" \| "logout"`, `confirmation_token: str \| None` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
@@ -344,7 +344,11 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
 - Start device login with `sync_link(mode="login")`.
 - After the user completes the verification URL, advance that session with
   `sync_status(auth_session_id=...)`.
-- Clear profile-scoped credentials with `sync_disconnect(mode="logout")`.
+- Disconnecting an institution is a two-call confirmation flow. First call
+  `sync_disconnect(mode="institution", institution=<institution>)`; when it returns
+  `confirmation_required`, retry the same call with `confirmation_token=<token>`.
+- Clear profile-scoped credentials with `sync_disconnect(mode="logout")`. Logout
+  does not accept `institution` or `confirmation_token`.
 - Provider-specific operations remain abstracted behind the provider-agnostic
   tools above.
 
@@ -691,7 +695,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 - Plaid staging views and core model integration (see `sync-plaid.md`)
 - `app.sync_connections` table and health tracking
 - CLI commands: `login`, `logout`, `connect`, `disconnect`, `pull`, `status`
-- MCP tools: `sync.pull`, `sync.status`, `sync.connect`, `sync.disconnect`
+- MCP tools: `sync_pull`, `sync_status`, `sync_link`, `sync_disconnect`
 - MCP prompt: `sync_review`
 - Error handling with actionable guidance
 - Unit tests and SQL tests (no server dependency)
@@ -699,7 +703,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 ### Phase 2: Automation
 
 - `moneybin sync schedule set/show/remove` CLI commands
-- `sync.schedule` MCP tool
+- Scheduling remains CLI-only until a bounded MCP capability is separately admitted.
 - launchd (macOS) and cron (Linux) job generation
 - Logging configuration for unattended runs (rotate, size limit)
 - Schedule lifecycle management (idempotent set, clean remove)

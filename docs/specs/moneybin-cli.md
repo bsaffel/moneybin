@@ -186,9 +186,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--purge]                        Drops the seed view + deletes raw rows.
 |         [--yes / -y]                     Required for --purge in non-TTY contexts.
 |
-+-- refresh                        -- Run the post-load pipeline (match -> transform -> categorize)
++-- refresh                        -- Run gsheet -> match -> transform -> categorize -> identity
 |         [--step STEP]              Subset of canonical steps; repeatable.
-|                                    Choices: match, transform, categorize.
+|                                    Choices: match, transform, categorize, identity.
 |                                    Default: full cascade. Steps execute in canonical
 |                                    order regardless of flag order. `--step transform`
 |                                    is the granular form formerly exposed as the
@@ -468,7 +468,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- validate <path>            -- Run framework validators on an extension directory
 |                                     (manifest schema, capability-vs-SQL match, prefix discipline,
 |                                     Quality Scale claim, SQL compiles, prefix-collision check,
-|                                     extension test suite). CLI↔MCP parity: `extension_validate`.
+|                                     extension test suite). This remains a planned CLI authoring command;
+|                                     no MCP identity has been admitted for it.
 |
 +-- packages                       -- (planned, extension-contracts.md) Inspect registered analysis packages (operator)
     +-- info <name>                -- Show manifest, declared capabilities, Quality Scale tier, verification status
@@ -496,7 +497,7 @@ System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
 Data out:       export
-Pipeline:       refresh (post-load orchestration: match -> transform -> categorize)
+Pipeline:       refresh (gsheet -> match -> transform -> categorize -> identity)
 Mutation:       budget (target management; the vs-actual `reports budget` read command is de-registered pending the reports.budget view)
 Operational:    logs, stats
 Ad-hoc query:   sql (privacy-safe SQL; raw operator access is db query/shell/ui)
@@ -932,7 +933,7 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 | `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | Use `accounts_balances(view=...)` for balances and `reports(report_id="core:networth")` for net worth. |
 | `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Future MCP capabilities remain unnamed until bounded-registry admission. |
 | `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Use `accounts(view=...)` for reads and `accounts_set(...)` for settings. |
-| `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Use `reviews(kind="matches", status=...)`, `reviews_decide(...)`, locate the audit `operation_id` with `system_audit(view="history"|"events", ...)` before `system_audit_undo(...)`, and use `refresh_run(steps=["match"])`. |
+| `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Use `reviews(kind="matches", status="pending")` and `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])`. Locate an operation with `system_audit(view="history", ...)` or inspect events with `system_audit(view="events", ...)` before `system_audit_undo(operation_id=...)`; use `refresh_run(steps=["match"])` to rerun matching. |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Use the admitted categorization operations, `reviews(kind=...)`, and `taxonomy(view=...)` / `taxonomy_set(...)`. |
 | `budget-tracking.md` | `track budget *` → `budget *`; the budget-vs-actual read command (`reports budget`) is de-registered pending the `reports.budget` view (M3C) and returns when the view ships | Future MCP capabilities remain unnamed until bounded-registry admission. |
 | `moneybin-mcp.md` | n/a | Maintain the current registry and selectors; historical names stay in ADR-016 and the archived catalog. |

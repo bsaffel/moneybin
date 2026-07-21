@@ -119,7 +119,7 @@ The CLI has a few task-shaped overlaps; this section disambiguates the common on
 
 **"Refresh / transform / categorize run — which?"**
 
-- **`moneybin refresh`** — the right answer 99% of the time. Runs matching → SQLMesh apply → categorization in order; idempotent.
+- **`moneybin refresh`** — the right answer 99% of the time. Runs gsheet → match → transform → categorize → identity in order; idempotent.
 - **`transform <verb>`** — drop here only for SQLMesh-only operator work (debugging a model, restating a date range, validating SQL).
 - **`transactions categorize run`** — drop here only when you want to re-run categorization engines without touching transforms (e.g., after editing rules).
 
@@ -203,11 +203,11 @@ Pull transactions from external services through the moneybin-sync proxy. **`syn
 
 ## Refresh pipeline
 
-`refresh` is the always-visible umbrella entry point for the post-load pipeline: matching → SQLMesh apply → categorization. CLI peer of the `refresh_run` MCP tool.
+`refresh` is the always-visible umbrella entry point for the post-load pipeline: gsheet → match → transform → categorize → identity. CLI peer of the `refresh_run` MCP tool.
 
 | Command | Purpose | Key flags |
 |---|---|---|
-| `refresh` | Run the full cascade. Idempotent — safe to retry. Matching and categorization are best-effort; only SQLMesh apply errors fail the command. | `--step {match,transform,categorize}` (repeatable; default = full cascade) |
+| `refresh` | Run the full cascade. Idempotent — safe to retry. Matching, categorization, and identity are best-effort; only SQLMesh apply errors fail the command. | `--step {match,transform,categorize,identity}` (repeatable; default = full cascade; gsheet runs in the unscoped default) |
 
 The `transform` group below is the lower-level operator path. Reach for `refresh` first.
 

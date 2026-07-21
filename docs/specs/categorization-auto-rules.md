@@ -253,8 +253,8 @@ sequenceDiagram
     Sys-->>AI: 8 pending rules with samples
     AI->>User: 8 patterns found:<br/>1. STARBUCKS -> Coffee (3 matches)<br/>2. AMAZON -> Shopping (5 matches)...
     User->>AI: Accept all except #4,<br/>that should be Groceries
-    AI->>Sys: reviews_decide(decisions=[<br/>{kind: auto_rule, decision_id: ID, decision: accept} x7,<br/>{kind: auto_rule, decision_id: ID, decision: reject}])
-    AI->>Sys: transactions_categorize_rules_set(rules=[<br/>{kind: rule, state: present,<br/>category: Groceries, ...}])
+    AI->>Sys: reviews_decide(decisions=[...])
+    AI->>Sys: transactions_categorize_rules_set(rules=[...])
     Sys-->>AI: 7 accepted, 1 rejected, 1 created
     AI->>User: 7 rules activated,<br/>1 corrected to Groceries.<br/>Next import will auto-categorize<br/>these patterns.
 ```

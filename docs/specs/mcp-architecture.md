@@ -283,7 +283,7 @@ Tools that operate on collections accept and return lists in a single call. The 
 Turn 1: transactions_categorize_assist(limit=50)
         -> returns 50 redacted candidate transactions with descriptions, amounts, dates, suggested categories
 
-Turn 2: transactions_categorize_commit([{id: "tx_1", category: "groceries"}, {id: "tx_2", category: "dining"}, ...])
+Turn 2: transactions_categorize_commit(items=[...])
         -> applies all 50 categorizations, returns summary: {applied: 48, skipped: 2, errors: [...]}
 ```
 
@@ -305,8 +305,8 @@ Every tool returns a consistent envelope:
   },
   "data": [ ... ],
   "actions": [
-    "Use reports(report_id=\"core:spending\", parameters={...}) for a category breakdown",
-    "Use transactions(date_from=..., date_to=...) for row-level transactions in this window"
+    "Use reports(report_id=\"core:spending\") for a category breakdown",
+    "Use transactions(start=..., end=...) for row-level transactions in this window"
   ]
 }
 ```
@@ -422,7 +422,10 @@ The `detail` parameter controls response verbosity — `summary` returns aggrega
 
 ### Tool sensitivity declarations
 
-Every tool declares its **maximum data sensitivity** — the highest sensitivity tier that could appear in its full (non-degraded) response. This is a static property of the tool, not a runtime calculation.
+Every tool is classified through one of two live paths. Static tools derive a
+maximum sensitivity from the data classes on their typed response payload.
+Tools whose projection varies by request declare `dynamic_classification=True`,
+classify the returned payload, and advertise a `maximum_sensitivity` ceiling.
 
 Classification and critical-field masking are current behavior. The consent
 ledger is current, but **global consent enforcement is deferred**; the
@@ -431,21 +434,23 @@ response behavior.
 
 | Sensitivity | Data characteristics | Consent-enforcement target | Example tools |
 |---|---|---|---|
-| `low` | Aggregates, counts, category labels, structural metadata | None | `reports`, `system_status`, `accounts` |
-| `medium` | Row-level data: descriptions, amounts, dates, merchant names | `mcp-data-sharing` (tier-2, persistent) | `transactions`, `reviews`, `transactions_categorize_assist` |
-| `high` | Responses that include critical-tier fields (account numbers, routing numbers) — masked for cloud backends, unmaskable only in verified-local mode | `mcp-data-sharing` (tier-2) + masking invariant | `accounts` |
+| `low` | Counts and structural metadata | None | `system_status`; catalog mode of `reports` |
+| `medium` | User-authored labels or contextual records without financial amounts | Future policy-dependent gate | selected review and taxonomy projections |
+| `high` | Financial amounts, balances, descriptions, dates, or merchant data | Future `mcp-data-sharing` gate | `transactions` (static high); executed financial reports |
+| `critical` | Account/routing identifiers and equivalent direct identifiers | Always mask critical fields; future gate is additional | `accounts` (dynamic, maximum critical); `reports` (dynamic, maximum critical) |
 
 ### Target sensitivity behavior by tier (not yet enforced)
 
-| | `low` tool | `medium` tool (consented) | `medium` tool (not consented) | `high` tool (consented) | `high` tool (not consented) |
-|---|---|---|---|---|---|
-| Response | Full data | Row-level data, critical fields masked | Degraded to aggregates | Full data, critical fields masked unless verified-local + `LOCAL_UNMASK_CRITICAL` | Degraded to aggregates |
-| Audit logged | Yes | Yes | Yes (degraded) | Yes | Yes (degraded) |
+Today, classification is recorded and critical fields are masked, but the
+presence or absence of a consent grant does not change the response. The target
+policy would allow a granted request at its classified tier and degrade or
+refuse an ungranted medium/high/critical request. That target must not be used
+as an active runtime guarantee.
 
 ### Target consent/degradation flow through the middleware (not yet enforced)
 
 ```
-Tool declares: sensitivity = "medium"
+Tool returns a classified medium/high/critical payload
                     |
                     v
         +-- Consent granted? ------- Yes --> Full response
@@ -577,23 +582,37 @@ SPENDING = ReportSpec(
 )
 
 
-# MCP: one catalog/runner for every ReportSpec
-@mcp_tool(sensitivity="low")
+# MCP: one catalog/runner for every registered report
+@mcp_tool(
+    dynamic_classification=True,
+    maximum_sensitivity=Sensitivity.CRITICAL,
+    domain="reports",
+)
 def reports(
     report_id: str | None = None,
     parameters: dict[str, object] | None = None,
 ) -> ResponseEnvelope:
+    catalog = get_report_catalog()
+    if report_id is None:
+        return catalog_to_payload(catalog)
     with get_database(read_only=True) as db:
-        return ReportRegistry(db).catalog_or_execute(report_id, parameters)
+        return catalog.execute(
+            db,
+            report_id=report_id,
+            parameters=parameters or {},
+            limit=get_max_rows(),
+        )
 
 
 # CLI: one ergonomic command for this report
 @reports_app.command("spending")
 def reports_command(from_month: str | None = None) -> None:
     with get_database(read_only=True) as db:
-        result = ReportRegistry(db).execute(
-            "core:spending",
-            {"from_month": from_month},
+        result = get_report_catalog().execute(
+            db,
+            report_id="core:spending",
+            parameters={"from_month": from_month},
+            limit=get_max_rows(),
         )
     render_table(result.columns, result.rows)
 ```
@@ -785,7 +804,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | Spec | How it relates |
 |---|---|
 | [`privacy-and-ai-trust.md`](privacy-and-ai-trust.md) | Defines the privacy framework this spec consumes. MCP field minimization section references tool sensitivity declarations. |
-| [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure. Import tools in this spec's surface replace the prototype `import_file` tool. |
+| [`smart-import-overview.md`](smart-import-overview.md) | Pillar F (AI-assisted parsing) uses the same consent/audit infrastructure and the admitted import operations. |
 | [`matching-overview.md`](matching-overview.md) | Match-review outcomes use the admitted `reviews` and `identity_links_decide` contracts. Audit log is shared infrastructure. |
 | [`extension-contracts.md`](extension-contracts.md) | Defines how third-party Analysis Packages register admitted operations and standalone Reports register catalog entries through Python entry points (`moneybin.packages`). Names, namespaces, response envelopes, and registry budgets defined here are inherited by every extension. |
 
@@ -799,10 +818,11 @@ These decisions and their rationale should be documented in the 12-month plan.
   `review_curation_history`, and `sync_review`. Their current contracts are in
   [`moneybin-mcp.md`](moneybin-mcp.md).
 - **Service layer packaging.** All services live in `src/moneybin/services/` (flat directory, one file per service class). This directory already exists with `categorization_service.py` and `import_service.py`. New services (`spending_service.py`, `transaction_service.py`, etc.) follow the same pattern. Revisit if adding major new domains makes the flat structure unwieldy.
-- **Privacy middleware implementation.** Decorator-based
-  (`@mcp_tool(sensitivity="medium")`) with a middleware class for
-  classification, critical-field masking, and response filtering. The global
-  consent gate remains a deferred extension of that architecture.
+- **Privacy middleware implementation.** The `@mcp_tool` decorator derives
+  static classification from typed payloads; projection-varying tools use
+  `dynamic_classification=True` with a declared `maximum_sensitivity`.
+  Middleware applies critical-field masking and response validation. The
+  global consent gate remains a deferred extension of that architecture.
 - **Tool count strategy (operating, promotion-pending).** The 45-tool standard
   registry is visible at connect with taxonomy-led discovery and stub gating.
   Server-driven progressive disclosure is absent. Generic clients receive the

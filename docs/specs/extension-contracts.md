@@ -379,8 +379,8 @@ callers install a decorated runner explicitly through
 | Package reports | `<package>:<name>`; package CLI namespace | `assets:summary` |
 | Standalone report extensions | `<publisher-or-package>:<name>` | `community:seasonal_spending` |
 
-MCP calls `reports(report_id=..., parameters=...)` for every row above; for
-example, cash flow runs through
+Report rows use `reports(report_id=..., parameters=...)`; domain-operation rows
+such as `accounts` keep their domain tool. For example, cash flow runs through
 `reports(report_id="core:cashflow", parameters={"by": "account"})`.
 Report IDs are public contracts and must not collide. Registration may expose a
 short alias only when it resolves to exactly one stable ID.

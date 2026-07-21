@@ -41,7 +41,7 @@ Categories themselves live in `core.dim_categories` (seeded defaults plus user-c
 
 ```mermaid
 flowchart TD
-    A[Import / Plaid sync<br/>writes raw rows] --> B[moneybin refresh<br/>match + transform + categorize]
+    A[Import / Plaid sync<br/>writes raw rows] --> B[moneybin refresh<br/>gsheet + match + transform + categorize + identity]
     B --> C{rows still<br/>uncategorized?}
     C -->|no| END[done]
     C -->|yes| D[transactions categorize assist<br/>returns PII-scrubbed batch]
@@ -53,7 +53,7 @@ flowchart TD
 
 A few things worth pinning down:
 
-- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same pipeline: cross-source matching, SQLMesh transform, then rules and merchant matching. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
+- **`refresh` runs the deterministic cascade.** The `moneybin refresh` CLI and `refresh_run` MCP tool both invoke the same canonical pipeline: gsheet pull, cross-source matching, SQLMesh transform, categorization, then identity backfill. Imports and `sync pull` auto-refresh by default — you rarely call this by hand.
 - **Newly created rules apply on the next refresh.** Creating a rule does not retroactively categorize old rows unless you opt in. Pass `--reapply` on the CLI `rules create`; MCP callers update the complete rule target state with `transactions_categorize_rules_set` and invoke `transactions_categorize_run` when they need an immediate run.
 - **`transactions categorize assist` never writes.** It returns PII-scrubbed records — merchant text is sent, embedded account numbers are masked; an LLM (in your MCP host, or a separate pipeline you wire up) proposes categorizations; you review; then a separate commit call persists the decisions.
 - **`commit`, `commit-from-file`, and the MCP `transactions_categorize_commit` tool all write `categorized_by='ai'`** — see the Hazard callout above. This is by design: the LLM is a probabilistic proposer, and `ai`-source means "anything else can override this," which is the right default for a guess.
@@ -106,7 +106,9 @@ with `{"kind": "rule", "state": "present", "rule_id": ..., "matcher":
 omit `rule_id` for a new rule. Disable with `{"kind": "rule", "state":
 "inactive", "rule_id": ...}` and remove with `{"kind": "rule", "state":
 "absent", "rule_id": ...}`. Read the relevant projection first through
-`transactions_categorize_rules(view="active" | "inactive" | "history")`.
+`transactions_categorize_rules(view="active")`,
+`transactions_categorize_rules(view="inactive")`, or
+`transactions_categorize_rules(view="history")`.
 
 Taxonomy writes follow the same target-state discipline: `taxonomy_set` accepts
 category items with `kind="category"` and `state="present" | "inactive" |

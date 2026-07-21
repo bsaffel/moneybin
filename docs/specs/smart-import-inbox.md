@@ -146,7 +146,7 @@ projection of the existing `import_status` tool.
 ### `import_inbox_sync`
 
 - **Sensitivity:** `low` (returns counts, filenames, error codes; never file contents)
-- **Args:** `refresh: bool = True` — added in the transform handoff (PR #143/#151). When True, runs the post-load refresh pipeline (matching + SQLMesh apply + categorization) once after all files have been imported; pass False to defer.
+- **Args:** `refresh: bool = True` — when true, runs the default gsheet → match → transform → categorize → identity pipeline once after all files have been imported; pass false to defer.
 - **Behavior:** runs the same operation as `moneybin import inbox`.
 - **Response data:**
   ```json
@@ -196,8 +196,8 @@ projection of the existing `import_status` tool.
 
 ### Tool visibility
 
-Both import capabilities live in the core `import` namespace and are visible at
-session connect (no `moneybin.discover` step). This matches `import_files` and is
+Both import capabilities live in the standard registry and are visible at
+session connect without a discovery meta-tool step. This matches `import_files` and is
 appropriate because importing files is one of the primary user goals.
 
 ## Testing Strategy

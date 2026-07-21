@@ -463,10 +463,10 @@ post-middleware assertion at `tests/scenarios/test_privacy_middleware_perf.py`.
 
 | Tool / command | Service method | Tier | Shape |
 |---|---|---|---|
-| `transactions` | `TransactionService.get(limit=100)` | medium | ~100-row list |
-| `reports(report_id=...)` | `SpendingService.by_category()` | low | aggregate |
-| `accounts` | `AccountService.list_accounts()` | medium | ~4-row list (CRITICAL fields) |
+| `transactions` | `TransactionService.get(limit=100)` | high (static) | ~100-row list |
+| `reports(report_id="core:spending")` | `ReportCatalog.execute()` → `spending_trend` | high | transaction-amount aggregates |
+| `accounts` | `AccountService.list_accounts()` | dynamic; maximum critical | ~4-row list (critical fields masked) |
 | Budget reporting (not registered) | `BudgetService.status()` | low | aggregate + per-budget rows — synthesized from `BudgetService`, not a `reports.*` view; it registers through the report framework when M3C ships a `reports.budget` view |
-| `reports(report_id=...)` | `NetworthService.history()` | medium | time-series |
+| `reports(report_id="core:networth_history", parameters={"from_date":"2026-01-01","to_date":"2026-06-30"})` | `NetworthService.history()` | high | balance time-series |
 
 Concrete numbers are populated by Phase 9 after the post-middleware run.

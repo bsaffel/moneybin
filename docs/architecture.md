@@ -95,7 +95,7 @@ Surface symmetry (same nouns, different verb position):
 | List accounts | `moneybin accounts list` | `accounts` |
 | Net worth report | `moneybin reports networth` | `reports(report_id="core:networth", parameters={...})` |
 | Refresh the pipeline | `moneybin refresh` | `refresh_run` |
-| Decide a match | `moneybin transactions matches set <id> --status <accepted\|rejected>` | `reviews_decide(decisions=[{"kind": "match", "decision_id": "<id>", "decision": "<accept\|reject>"}])` |
+| Decide a match | `moneybin transactions matches set <id> --status accepted` | `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])`; use `"decision":"reject"` to reject |
 
 Parity is functional, not nominal — same outcomes reachable on both surfaces, not 1:1 name matching. The capability map is at [`docs/specs/moneybin-capabilities.md`](specs/moneybin-capabilities.md).
 
@@ -141,8 +141,8 @@ These are the contracts a consumer (MCP user, CLI driver, SQL writer) actually e
   }
   ```
 
-- **`TableRef`** — registry of schema-qualified table names with an `audience` tag (`"interface"` vs `"internal"`). Import `TableRef.FCT_TRANSACTIONS` rather than hard-coding `"core.fct_transactions"`. The `moneybin://schema` MCP resource derives from the interface set, so what you can query is what the agent sees.
-- **Sensitivity tiers** (`low` / `medium` / `high`) — every MCP tool declares its tier; the middleware uses it to classify responses, redact fields, record audit metadata, and cap dispatch at 30 seconds. Consent gating is designed but not yet enforced. `low` = aggregates and counts, `medium` = row-level data with merchants and amounts, `high` = account numbers and PII-adjacent fields. Tools you call were built with the `@mcp_tool(sensitivity=...)` decorator — you don't write one, but you see the tier in every response's `summary.sensitivity`.
+- **Table references** — `TableRef` values carry schema, name, and audience; named values such as `FCT_TRANSACTIONS` are module-level constants imported from `moneybin.tables`. The `moneybin://schema` MCP resource derives from the interface set, so what you can query is what the agent sees.
+- **Sensitivity tiers** (`low` / `medium` / `high` / `critical`) — static tools derive a maximum tier from their typed payload; projection-varying tools classify each response dynamically under a declared maximum. The middleware masks critical fields, records audit metadata, and applies a 30-second default dispatch cap, with explicit 180-second overrides for bounded long-running workflows. Global consent gating is not yet enforced.
 - **Privacy middleware** — read-only validation for the general SQL tool (DDL and writes are rejected); managed-write validation that allows `INSERT` / `UPDATE` / `DELETE` only on `app.*` and `raw.*`. See [`docs/specs/mcp-architecture.md`](specs/mcp-architecture.md).
 
 ## Internal invariants

@@ -20,7 +20,7 @@
 
 ## Goal
 
-Ship the first wave of `reports.*` SQLMesh views — eight curated, named, queryable presentation models that back the `moneybin reports *` CLI surface and the generic `reports(report_id=..., parameters=...)` MCP route. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)), and make MoneyBin's "show me the SQL" demo land: every number a user or AI sees has a named SQLMesh model file behind it that can be inspected, modified, and re-queried.
+Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).
 
 Bundle in three migrations that should ship alongside the inaugurating `reports.*` work:
 
@@ -63,7 +63,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 
 | Decision | Rationale | Where it lands |
 |---|---|---|
-| Eight models in v1, not fifteen | Hits the 6–10 range from the brief; every model independently demoable; future iterations add narrower models (income_sources, recurring-detail) | §Models |
+| Seven report views in v1, not fifteen | Hits the brief's bounded range; the original uncategorized candidate lives in `core.*` because it is an internal review queue | §Models |
 | `recurring_subscriptions` ships with `confidence` column (0.0–1.0) | A candidate generator has inherent uncertainty. Surfacing its score lets users and AI consumers apply their own thresholds rather than accepting a hidden classifier. | §Models §`reports.recurring_subscriptions` |
 | Wide-grain principle: prefer views consumers can aggregate over narrow single-purpose ones | Drove `top_merchants → merchant_activity` (top-N is just `ORDER BY total_spend DESC LIMIT N` against the wider view) and `year_over_year_spending → spending_trend` (one model supports YoY, MoM, and 3-month-trailing comparisons). Future report specs apply the same lens. | §Models |
 | `reports.net_worth` (with underscore), not `reports.networth` | Reintroduces space/underscore for readability. Overrides the gate spec's name; landed via [Migrations](#migrations) below. | §Migrations |
@@ -95,7 +95,9 @@ The pattern is small and uniform:
 
 ## Models
 
-Eight models in v1. Each section: purpose, grain, source, columns (with comments matching the SQL), CLI/MCP surface.
+Seven `reports.*` views shipped. The original eighth candidate,
+`uncategorized_queue`, is documented below for historical context but lives in
+`core.*` and is not a report route.
 
 ### `reports.net_worth`
 
@@ -405,7 +407,7 @@ classified under the generic tool's `critical` maximum.
 
 ## Data Model
 
-This spec creates **eight SQLMesh views** and **zero new tables**. The migration of `core.agg_net_worth` removes one existing view and replaces it with `reports.net_worth`.
+The shipped result is **seven `reports.*` SQLMesh views** and **zero new tables**. The migration of `core.agg_net_worth` removed one existing view and replaced it with `reports.net_worth`.
 
 ### Files to create
 
@@ -433,10 +435,10 @@ src/moneybin/sqlmesh/models/core/
 **Schema and registry:**
 - `src/moneybin/schema.py` — add `reports` to the schema list. Currently registers `raw, prep, core, app, meta, seeds, synthetic`; this spec adds the eighth.
 - `src/moneybin/tables.py` —
-  - Replace `TableRef.AGG_NET_WORTH` with `TableRef.REPORTS_NET_WORTH`.
+  - Replace the module-level `AGG_NET_WORTH` constant with `REPORTS_NET_WORTH`.
   - Repoint `CATEGORIES` from `("app", "categories")` to `("core", "dim_categories")`.
   - Repoint `MERCHANTS` from `("app", "merchants")` to `("core", "dim_merchants")`.
-  - Add `TableRef` constants for all eight new `reports.*` views with `audience = "interface"` so they appear in `moneybin://schema`.
+  - Add module-level `TableRef` constants for all seven `reports.*` views with `audience = "interface"` so they appear in `moneybin://schema`.
   - Drop the `# view: ...` comments above `CATEGORIES` and `MERCHANTS` (now self-evident from the `core.dim_*` schema).
 
 **Resolution layer (Python-built views retired):**
@@ -445,14 +447,14 @@ src/moneybin/sqlmesh/models/core/
 **Consumers:**
 - `src/moneybin/services/networth_service.py` — three SQL references update from `AGG_NET_WORTH` to `REPORTS_NET_WORTH`. No behavior change.
 - `src/moneybin/services/categorization/applier.py` — write path already routes to `INSERT INTO {USER_MERCHANTS.full_name}` (shipped). Existing read paths via `MERCHANTS` keep working (they auto-pick up `core.dim_merchants` via the constant). Same for any read-side `CATEGORIES.full_name` usages. Note: `CategorizationService` was split into a facade plus five collaborators under `src/moneybin/services/categorization/` in PR #155 — line numbers below refer to that layout.
-- `src/moneybin/services/schema_catalog.py` — swap `app.categories` and `app.merchants` interface entries for `core.dim_categories` and `core.dim_merchants`; extend with the eight new `reports.*` views and curated example queries (see [Schema Discoverability](#schema-discoverability)).
+- `src/moneybin/services/schema_catalog.py` — swap `app.categories` and `app.merchants` interface entries for `core.dim_categories` and `core.dim_merchants`; extend `EXAMPLES` for the seven `reports.*` views (see [Schema Discoverability](#schema-discoverability)).
 
 **Specs:**
 - `docs/specs/architecture-shared-primitives.md` — small text amendment per [Migration 1](#1-amendment-to-architecture-shared-primitivesmd).
 
 **CLI:**
 - The view-backed subcommands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners in `src/moneybin/reports/definitions/` and registered by `register_reports_cli(ALL_REPORTS, app)` in `src/moneybin/cli/commands/reports/__init__.py`. `networth` / `networth-history` stay hand-written. (`uncategorized_queue` is not a registered runner — no `reports uncategorized` command.)
-- The existing `categories list` and `merchants list` CLI commands are unaffected because they go through services that already use `TableRef.CATEGORIES`/`MERCHANTS`. After migration, those services read from `core.dim_*`.
+- The existing `categories list` and `merchants list` CLI commands are unaffected because their services use the module-level `CATEGORIES` / `MERCHANTS` constants. After migration, those constants resolve to `core.dim_*`.
 
 **MCP:**
 - The generic `reports` tool dispatches every registered report-catalog entry;
@@ -461,7 +463,7 @@ src/moneybin/sqlmesh/models/core/
 
 **Tests:**
 - Per-model SQLMesh audits (see [Testing Strategy](#testing-strategy)).
-- New scenario `tests/scenarios/reports_recipe_library/` for the eight `reports.*` views.
+- New scenario `tests/scenarios/reports_recipe_library/` for the seven `reports.*` views.
 - Update any tests that hard-coded `app.categories` or `app.merchants` schema-qualified names to use the `TableRef` constants instead — those constants now resolve to `core.dim_*`.
 
 ### Privacy middleware
@@ -470,11 +472,11 @@ The privacy middleware's managed-write validation enforces that writes target on
 
 ## Schema Discoverability
 
-The `moneybin://schema` MCP resource (`mcp-sql-discoverability.md`) currently exposes interface tables from `core.*` and select `app.*`. This spec extends it to include all eight `reports.*` views with full column comments and example queries.
+The `moneybin://schema` MCP resource (`mcp-sql-discoverability.md`) exposes the seven `reports.*` views with full column comments and example queries.
 
 Convention for `reports.*` example queries (per `mcp-sql-discoverability.md` patterns):
 
-- Each view's `TableRef` constant carries an `example_queries` list with 2-3 representative queries, surfaced verbatim in the MCP resource.
+- `services/schema_catalog.py::EXAMPLES` maps each module-level table constant to 2–3 representative queries surfaced by the MCP resource; `TableRef` itself carries only schema, name, and audience.
 - Example queries should demonstrate the wide-grain principle: a "total" rollup, a "by category" / "by account" drilldown, and a "ranked" pattern.
 - Format examples in canonical SQL (uppercase keywords, two-space indent) so AI consumers see the project's house style.
 
@@ -565,7 +567,7 @@ The gate spec uses `reports.networth` (no underscore) throughout. This spec uses
 
 The PR includes a small text edit to `architecture-shared-primitives.md` replacing `reports.networth` with `reports.net_worth` at all three sites (§Data Layer, §SQLMesh Layer Conventions, §Cascading Edits) and updating the §Cascading Edits paragraph to point ownership of the agg-net-worth migration at this spec:
 
-> **`core.agg_net_worth` → `reports.net_worth`.** New `reports` schema is added to `src/moneybin/schema.py`. The SQLMesh model at `src/moneybin/sqlmesh/models/core/agg_net_worth.sql` moves to `src/moneybin/sqlmesh/models/reports/net_worth.sql`. `TableRef.AGG_NET_WORTH` is replaced by `TableRef.REPORTS_NET_WORTH`. `NetworthService` updates its three SQL references. **This migration is owned by `reports-recipe-library.md`** (the inaugurating implementation of the `reports.*` schema) and lands as part of that spec's first PR.
+> **`core.agg_net_worth` → `reports.net_worth`.** New `reports` schema is added to `src/moneybin/schema.py`. The SQLMesh model at `src/moneybin/sqlmesh/models/core/agg_net_worth.sql` moves to `src/moneybin/sqlmesh/models/reports/net_worth.sql`. The module-level `AGG_NET_WORTH` constant is replaced by `REPORTS_NET_WORTH`. `NetworthService` updates its three SQL references. **This migration is owned by `reports-recipe-library.md`** (the inaugurating implementation of the `reports.*` schema) and lands as part of that spec's first PR.
 
 Not a redesign — a rename plus an ownership transfer of a deferred migration to the spec that actually executes it.
 
@@ -597,7 +599,7 @@ The view is a derivation (`seeds.categories ∪ app.user_categories \ app.catego
 - Create `src/moneybin/sqlmesh/models/core/dim_categories.sql` with the same SELECT body as today's `seeds.py`-built view. Model header: `MODEL (name core.dim_categories, kind VIEW);`.
 - The user-state tables (`app.user_categories`, `app.category_overrides`) **stay where they are** — they're mutable user state, not derivations. Only the resolution view moves.
 - `seeds.py:refresh_views()` drops its categories branch entirely. The merchants branch is handled by migration 4 below.
-- `TableRef.CATEGORIES` repoints from `("app", "categories")` to `("core", "dim_categories")`. The constant name stays the same so existing call sites (`{CATEGORIES.full_name}`) continue to work post-migration; only the resolved schema-qualified name changes.
+- The module-level `CATEGORIES` constant repoints from `("app", "categories")` to `("core", "dim_categories")`. The name stays the same so existing call sites (`{CATEGORIES.full_name}`) continue to work post-migration; only the resolved schema-qualified name changes.
 - `schema_catalog.py` swaps its `app.categories` interface entry for `core.dim_categories`. Example queries are updated.
 - `app.categories` view is dropped (no backward-compat alias — single-process local-first tool, all callers are in this PR's diff).
 
@@ -612,7 +614,7 @@ Same architectural fix as migration 3. The Python-built `app.merchants` view (in
 - Create `src/moneybin/sqlmesh/models/core/dim_merchants.sql` with the same SELECT body as today's `seeds.py`-built view. Same SQLMesh model shape as `dim_categories`.
 - User-state tables (`app.user_merchants`, `app.merchant_overrides`) stay in `app.*`.
 - `seeds.py:refresh_views()` drops its merchants branch (and at this point the function may be deletable entirely if no other view branches remain — the implementation will check).
-- `TableRef.MERCHANTS` repoints from `("app", "merchants")` to `("core", "dim_merchants")`.
+- The module-level `MERCHANTS` constant repoints from `("app", "merchants")` to `("core", "dim_merchants")`.
 - `schema_catalog.py` swaps its `app.merchants` interface entry for `core.dim_merchants`.
 - `app.merchants` view is dropped.
 
@@ -670,7 +672,7 @@ Specific audits per model:
 
 ### 2. Scenario tests
 
-Add a new scenario `tests/scenarios/reports_recipe_library/` exercising all eight models against the standard synthetic profile (see `testing-synthetic-data.md` for personas). Each model gets:
+Add a new scenario `tests/scenarios/reports_recipe_library/` exercising the seven report views against the standard synthetic profile (see `testing-synthetic-data.md` for personas). Each model gets:
 
 - A row-count assertion: "this model returns ≥ N rows for the standard profile"
 - A column-presence assertion: "every column in the spec exists in the materialized view"
@@ -718,7 +720,7 @@ If gaps are discovered during implementation, file a follow-up to `testing-synth
 
 This spec ships before [`moneybin-doctor.md`](moneybin-doctor.md) (next M0I spec):
 
-1. **PR 1 (this spec):** All eight `reports.*` views; the four migrations from §Migrations (gate-spec amendment, `core.agg_net_worth` → `reports.net_worth`, `app.categories` → `core.dim_categories`, `app.merchants` → `core.dim_merchants`); `schema.py`/`tables.py`/`seeds.py`/`schema_catalog.py` updates; the categorization-service merchant write-path fix; CLI subcommands; report-catalog entries; tests at all three layers.
+1. **PR 1 (this spec):** Seven `reports.*` views plus the internal `core.uncategorized_queue`; the four migrations from §Migrations; `schema.py`/`tables.py`/`seeds.py`/`schema_catalog.py` updates; CLI subcommands; eight report-catalog routes; tests at all three layers.
 2. **PR 2 (doctor spec):** `moneybin system doctor` and
    `system_status(sections=["doctor"], detail="full")`, reading from the existing
    services and from `reports.balance_drift`.
@@ -775,4 +777,4 @@ The two PRs can be reviewed in parallel once both specs are written, but PR 1 mu
 - `src/moneybin/sqlmesh/models/core/agg_net_worth.sql` — the model being migrated; same SELECT body lands in `src/moneybin/sqlmesh/models/reports/net_worth.sql`.
 - `src/moneybin/services/networth_service.py` — three SQL references update.
 - `src/moneybin/schema.py` — schema list extends from 7 to 8.
-- `src/moneybin/tables.py` — `TableRef` constants for the eight new views.
+- `src/moneybin/tables.py` — module-level `TableRef` constants for the seven report views.

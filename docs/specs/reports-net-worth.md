@@ -7,8 +7,8 @@ implemented
 > described below was migrated to `reports.net_worth` as part of
 > [`reports-recipe-library.md`](reports-recipe-library.md) (PR landing the
 > inaugurating `reports.*` schema). `NetworthService` reads from
-> `reports.net_worth`; `TableRef.AGG_NET_WORTH` was replaced by
-> `TableRef.REPORTS_NET_WORTH`. Original section text below preserved for
+> `reports.net_worth`; the module-level `AGG_NET_WORTH` constant was replaced by
+> `REPORTS_NET_WORTH`. Original section text below preserved for
 > historical context; the live model lives at
 > `src/moneybin/sqlmesh/models/reports/net_worth.sql`.
 
@@ -45,7 +45,7 @@ Related specs and docs:
 8. **Manual balance assertions:** Users can assert a known balance via `moneybin accounts balance assert <account_id> <date> <amount>`. Stored in `app.balance_assertions`. Serves as an authoritative observation alongside institution-provided balances.
 9. **No balance without an anchor:** Accounts with zero balance observations produce no `fct_balances_daily` rows. The system does not estimate an opening balance from transactions alone.
 10. **CLI commands:** `moneybin reports networth`, `moneybin reports networth-history`, `moneybin accounts balance show`, `moneybin accounts balance history`, `moneybin accounts balance assert`, `moneybin accounts balance list`, `moneybin accounts balance assertion-delete`, `moneybin accounts balance reconcile`. The `accounts` parent group is registered by [`account-management.md`](account-management.md); this spec contributes the `balance` sub-group.
-11. **MCP surface** (per [`moneybin-mcp.md`](moneybin-mcp.md)): `reports(report_id="core:networth" | "core:networth_history", parameters={...})`, `accounts_balances(view=...)`, and `accounts_balance_assert(state=...)`.
+11. **MCP surface** (per [`moneybin-mcp.md`](moneybin-mcp.md)): use `reports(report_id="core:networth")` for a snapshot and `reports(report_id="core:networth_history", parameters={"from_date":"2026-01-01","to_date":"2026-06-30","interval":"monthly"})` for history. History requires `from_date` and `to_date`; `interval` is optional. Balance operations use `accounts_balances(view=...)` and `accounts_balance_assert(account=..., as_of=..., state=...)`.
 12. **All commands support `--output json`** for non-interactive parity.
 13. **Cash-only v1.** Investment holdings and multi-currency conversion are future extensions (M1J and M1K respectively). Net worth v1 covers cash accounts only.
 

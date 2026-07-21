@@ -5,16 +5,16 @@ implemented
 
 > **Naming notes:**
 > - **2026-05-10:** Internal class and method names renamed as part of the de-bulking sweep — `BulkCategorizationResult` → `CategorizationResult`, `bulk_categorize` → `categorize_items`, `BulkCategorizationItem` → `CategorizationItem`, `BulkRecordingContext` → `RecordingContext`.
-> - **2026-05-15 (PR #171):** Public surface renamed — MCP tool `transactions_categorize_bulk_apply` → `transactions_categorize_commit`; CLI command `moneybin transactions categorize bulk` → `moneybin transactions categorize commit`. The shape-3 `_commit` verb (per `.claude/rules/surface-design.md`) replaces the bulk-suffixed names throughout this spec.
+> - **2026-05-15 (PR #171):** The public surface is MCP tool `transactions_categorize_commit` and CLI command `moneybin transactions categorize commit`. The shape-3 `_commit` verb follows `.claude/rules/surface-design.md`.
 > - **2026-05-17 (PR #155):** `CategorizationService` was split into a facade + collaborators under `src/moneybin/services/categorization/`; the prior single-file `categorization_service.py` no longer exists. `CategorizationItem`, `CategorizationResult`, and `categorize_items()` are re-exported from the package `__init__.py`; `RecordingContext` lives in `src/moneybin/services/auto_rule_service.py`.
 
 ## Goal
 
-Add a `moneybin transactions categorize commit` CLI command (originally shipped as `categorize bulk`; renamed in PR #171) that mirrors the `transactions_categorize_commit` MCP tool (originally `transactions_categorize_bulk_apply`), and eliminate per-item duplicate DB lookups inside `CategorizationService.categorize_items` by threading a shared `RecordingContext` through `AutoRuleService.record_categorization`. Tighten the bulk-categorize input contract by replacing untyped dicts with a shared Pydantic model (`CategorizationItem`) validated at every boundary.
+Add a `moneybin transactions categorize commit` CLI command that mirrors the `transactions_categorize_commit` MCP tool, and eliminate per-item duplicate DB lookups inside `CategorizationService.categorize_items` by threading a shared `RecordingContext` through `AutoRuleService.record_categorization`. Tighten the bulk-categorize input contract by replacing untyped dicts with a shared Pydantic model (`CategorizationItem`) validated at every boundary.
 
 ## Background
 
-- `mcp-architecture.md` §5 (CLI Symmetry) requires every MCP tool to have a CLI equivalent. `transactions_categorize_commit` (then `transactions_categorize_bulk_apply`) was the largest remaining gap.
+- `mcp-architecture.md` §5 (CLI Symmetry) requires every MCP tool to have a CLI equivalent. `transactions_categorize_commit` was the largest remaining gap.
 - Tracked deferred work: a CLI commit command, caching of active-rule patterns and merchant pairs across the `categorize_items` loop, and removing the duplicate description SELECT.
 - Auto-rule learning is *triggered* by `categorize_items`. Without a CLI surface, there was no honest end-to-end CLI path through the auto-rule pipeline. `tests/e2e/test_e2e_workflows.py::TestAutoRulePipeline::test_import_then_promote_proposal` previously seeded `app.proposed_rules` via raw `db query` SQL as a workaround.
 - Today's hot path: `AutoRuleService.record_categorization` runs ~5 DB queries per item (description SELECT, rule-engine evaluation queries, merchants table SELECT) — many of which duplicate state the bulk loop already fetched.
@@ -118,7 +118,7 @@ Exit code: `0` if every item applied cleanly, `1` if any item failed parse, vali
 
 ## MCP Interface
 
-`transactions_categorize_commit` tool (renamed from `transactions_categorize_bulk_apply` in PR #171). Internally:
+`transactions_categorize_commit` tool. Internally:
 
 - Same `validate_items()` helper as the CLI; validation failures accumulate to `error_details`.
 - Result envelope: `{summary, data, actions}` with the `CategorizationResult` fields under `data`.

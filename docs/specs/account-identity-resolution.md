@@ -304,7 +304,7 @@ the transaction matcher's blocking → score → accept/review/reject. Ordered b
 signal reliability:
 
 0. **Explicit binding.** Caller pinned identity (`--account-id` /
-   `import_confirm(account_bindings=…)` / "import into account X") → **adopt** that
+   `import_confirm(preview_id=..., account_bindings=...)` / "import into account X") → **adopt** that
    canonical id, write/refresh the accepted `source_native` mapping. Deterministic
    override above all detection (Decision 6/7).
 1. **Strong-confirmer / idempotency pass.** Look up `accepted` `account_links` by
@@ -452,8 +452,8 @@ Guard-2 free-text resolution):
 | Operation | CLI | MCP |
 |---|---|---|
 | List pending link proposals (grouped by provisional account) | `accounts links pending` | `reviews(kind="account_links", status="pending")` |
-| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | `identity_links_decide(decisions=[...])` — an accepted merge is gated by an MCP elicitation (no agent self-accept); reject decisions do not prompt |
-| Reverse a prior decision | `accounts links undo <id>` | (CLI-only, matching today's `matches undo`) |
+| Resolve one — **merge** into a candidate, or keep **standalone** | `accounts links set <id> --into <account_id>` / `--standalone` | Accept with `identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"accept","target_id":"<account_id>"}])`; reject omits `target_id`. An accepted merge is gated by MCP elicitation; reject decisions do not prompt. |
+| Reverse a prior decision | `accounts links undo <id>` | Find the operation with `system_audit(view="history", limit=50)`, optionally inspect it with `system_audit(view="detail", operation_id=...)`, then call `system_audit_undo(operation_id=...)`. |
 | Decision history | `accounts links history` | `reviews(kind="account_links", status="history")` |
 | Run resolution over unlinked accounts (backfill) | `accounts links run` | `refresh_run(steps=["identity"])` |
 

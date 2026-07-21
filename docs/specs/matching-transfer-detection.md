@@ -304,17 +304,19 @@ identify the match type. No separate transfer tool or filter is admitted:
 | Tool | Transfer usage |
 |---|---|
 | `reviews(kind="matches", status="pending")` | Returns both sides of each transfer candidate with its signal breakdown. |
-| `reviews_decide(decisions=[...])` | Accepts or rejects an atomic decision batch, regardless of match type. |
+| `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])` | Accepts one transfer proposal. |
+| `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"reject"}])` | Rejects one transfer proposal. |
 | `system_audit_undo(operation_id=...)` | Reverses a previously accepted match operation. |
 | `reviews(kind="matches", status="history")` | Signal breakdown per prior decision. |
 
-### Prompt
+### Agent flow
 
-| Prompt | Purpose |
-|---|---|
-| `review_matches` | "Help me review pending transaction matches. Show dedup and transfer proposals, explain why each was proposed, and let me accept or reject them." |
-
-The AI can walk the user through the review queue conversationally — showing both sides of transfer pairs, explaining signal scores, and calling `reviews_decide(decisions=[...])` as the user decides.
+No dedicated match-review prompt is registered. The AI can walk the user
+through the review queue conversationally: read
+`reviews(kind="matches", status="pending")`, show both sides of each transfer
+pair and explain its signals, then issue one of the exact `reviews_decide`
+requests above. Prior decisions come from
+`reviews(kind="matches", status="history")`.
 
 ## Configuration
 

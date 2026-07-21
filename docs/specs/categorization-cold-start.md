@@ -183,9 +183,9 @@ User-level stickiness is handled by the existing priority ladder:
 
 ## Requirements
 
-1. New MCP tool `transactions_categorize_assist` returns redacted uncategorized transactions with candidate categories. Sensitivity `medium`. Consent gate `mcp-data-sharing`.
+1. `transactions_categorize_assist` returns redacted uncategorized transactions with candidate categories. Its live classification is derived from the typed payload. A future global-consent policy may gate it with `mcp-data-sharing`; no such response gate is active today.
 2. `transactions_categorize_commit`. CLI parity `moneybin transactions categorize commit`.
-3. `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": ..., "decision": "accept" | "reject"}])` decides auto-rule proposals. CLI parity remains `moneybin transactions categorize auto accept`.
+3. `reviews_decide(decisions=[{"kind":"auto_rule","decision_id":"<id>","decision":"accept"}])` accepts an auto-rule proposal; the equivalent reject call uses `"decision":"reject"`. CLI parity remains `moneybin transactions categorize auto accept`.
 4. New MCP tool returns invalid-category errors with structured `did_you_mean` field listing closest valid categories (Levenshtein/substring match).
 5. New CLI commands: `moneybin transactions categorize export-uncategorized`, `moneybin transactions categorize commit-from-file`, `moneybin privacy redact`. JSON I/O via stdin/stdout, Unix conventions.
 6. New `redact_for_llm()` function in `src/moneybin/services/_text.py` strips card last-fours, emails, phones, P2P recipient names from descriptions. Type-enforced via `RedactedTransaction` dataclass that excludes amount/date/account fields.
@@ -287,7 +287,7 @@ sequenceDiagram
     Note over L: LLM reviews; user sees redacted descriptions in client UI
     L->>U: Here are my proposals (grouped by merchant)
     U->>L: Accept all
-    L->>M: transactions_categorize_commit(items=[{txn_id, category, subcategory, categorized_by='ai'}, ...])
+    L->>M: transactions_categorize_commit(items=[...])
     M->>DB: Write transaction_categories, create merchants, fire auto-rule learning
     M-->>L: Applied 42; created 18 merchants; 14 auto-rule proposals generated
     L->>U: Done. 14 new rule proposals — review them?
@@ -563,7 +563,7 @@ New tool:
 | `transactions_categorize_assist` | `medium` | `limit: int = 100`, `account_filter: list[str] \| None`, `date_range: {start, end} \| None` | List of `RedactedTransaction` + candidate categories per item | `mcp-data-sharing` |
 
 The pending auto-rule queue is `reviews(kind="auto_rules", status="pending")`.
-Its decision is `reviews_decide(decisions=[{"kind": "auto_rule", "decision_id": ..., "decision": "accept" | "reject"}])`.
+Accept with `reviews_decide(decisions=[{"kind":"auto_rule","decision_id":"<id>","decision":"accept"}])`; reject with the same object using `"decision":"reject"`.
 The `approve` framing remains reserved for a rule *promotion* outcome, not an MCP parameter.
 
 The standard registry is visible at connect alongside all other registered

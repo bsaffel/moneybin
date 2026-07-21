@@ -36,15 +36,15 @@ Related specs and docs:
 2. **Plaid Parity metadata fields:** `display_name`, `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`. These mirror Plaid's account object structure so future Plaid sync (`sync-plaid.md`) can populate them automatically.
 3. **Lifecycle flags:** `archived` (BOOLEAN, default FALSE) and `include_in_net_worth` (BOOLEAN, default TRUE).
 4. **Archive cascades, unarchive does not restore.** Setting `archived = TRUE` automatically sets `include_in_net_worth = FALSE` in the same write. Setting `archived = FALSE` does NOT touch `include_in_net_worth` — the user must re-include explicitly. Rationale: archive expresses "this account is retired," and forcing the user to also flip the net worth flag is a footgun; restoring it on unarchive would silently re-include accounts the user might have intentionally excluded for unrelated reasons.
-5. **Default list hides archived accounts.** `accounts list` (and `accounts(view="list")`) omit accounts with `archived = TRUE`. `--include-archived` (CLI) and `include_closed: true` (MCP) reveal them with an explicit annotation.
+5. **Default reads hide archived accounts.** `accounts list` and `accounts(view="list")` omit accounts with `archived = TRUE`; detail lookup does the same by default. `--include-archived` (CLI) and `include_closed=true` (MCP) reveal them for list or detail reads. The contract is explicit: include_closed is a read filter only; archive changes flow through `accounts_set(is_archived=...)`.
 6. **Open vocabulary for `account_subtype` and `holder_category` with soft validation.** Any string accepted at the SQL layer. The service maintains a canonical Plaid list and warns on non-canonical values:
    - **CLI:** interactive `[y/N]` prompt in TTY mode; `--yes` skips. Suggestions for near-misses ("did you mean 'checking'?").
-   - **MCP:** write always succeeds; response envelope includes a `warnings: [...]` array with field, message, and suggestion. The agent decides whether to retry.
+   - **MCP:** write always succeeds; the response payload carries a `list[str]` at `data.warnings`. The agent decides whether to retry.
 7. **`core.dim_accounts` is the single source of truth.** The dim model joins `app.account_settings` directly so `display_name`, `archived`, `include_in_net_worth`, and the metadata fields are always available to consumers without per-consumer join logic. This pattern is codified into [`.claude/rules/database.md`](#) by this spec — see [Files to Modify](#files-to-modify).
 8. **Display name resolution chain:** `app.account_settings.display_name` → derived default (`institution_name + account_subtype + …last_four`) → `institution_name + …last_four` when the account has no type → bare `account_id`. First non-empty wins. Materialized inside `core.dim_accounts.display_name`. The subtype is preferred over the canonical `account_type` because "checking" reads to a human where "depository" does not; a user override of `account_subtype` flows through to the rendered name.
 9. **CLI surface:** a single `accounts set` command is the partial-update entry point for every settings field. Structural metadata (`--official-name`, `--last-four`, `--subtype`, `--holder-category`, `--currency`, `--credit-limit`, `--default-cost-basis-method`, plus `--clear-FIELD` for each) sits alongside behavioral flags (`--display-name`, `--include/--exclude`, `--archive/--unarchive`). Archiving cascades `--exclude` atomically; unarchiving does NOT auto-restore include. See [CLI Interface](#cli-interface). The formerly-separate `accounts rename`, `accounts include`, `accounts archive`, `accounts unarchive` commands are folded into `accounts set` flags. (`--default-cost-basis-method` added by [`investments-data-model.md`](investments-data-model.md).)
-10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) and one typed read tool: `accounts(view="list" | "detail" | "summary" | "resolve", ...)`. The `detail` projection requires `reference`; `summary` is aggregate-only. The MCP-side boolean parameter for archive is `include_closed` on the list view; the response data emits `archived` (the underlying dataclass field).
-11. **Sensitivity tiers:** `accounts(view="summary")` is aggregate-only. `accounts` dynamically classifies its selected projection. All write tools are dynamically classified; an archive or settings mutation retains its audit and confirmation contract.
+10. **MCP surface:** mirrors CLI — one write tool (`accounts_set`) and one typed read tool. Use `accounts(view="list")`, `accounts(view="detail", reference=...)`, `accounts(view="summary")`, or `accounts(view="resolve", query=...)`. Detail requires `reference`; resolve requires `query`; summary is aggregate-only. `include_closed` applies to list and detail reads, never mutates state, and response data emits `archived`.
+11. **Sensitivity tiers:** `accounts(view="summary")` is aggregate-only. `accounts` dynamically classifies its selected projection. `accounts_set` is statically classified with maximum sensitivity `critical`; its mutations remain audited.
 12. **All commands support `--output json`** and the standard read-only flags (`-o`, `-q`) per `.claude/rules/cli.md`.
 13. **Idempotent settings writes.** `accounts set` always upserts into `app.account_settings`. Setting the same value twice is a no-op (no error).
 14. **PII handling for `last_four` and `credit_limit`.** `last_four` is a 4-digit string (validated `^[0-9]{4}$`). `credit_limit` is `DECIMAL(18,2)`. Neither flows through logger output (logger only records the `account_id` and the affected fields by name). The full account number never enters the system.
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
 );
 ```
 
-**Length and format constraints (enforced in `AccountSettingsService` at the service boundary, not via SQL CHECK constraints):**
+**Length and format constraints (enforced in `AccountService` at the service boundary, not via SQL CHECK constraints):**
 
 | Field | Constraint |
 |---|---|
@@ -187,28 +187,21 @@ view selectors. Account reads therefore share `accounts(view=...)`; the separate
 
 ### Write tool (static sensitivity; maximum `critical`)
 
-| Tool | Params | Returns |
+| Tool | Params | Runtime payload |
 |---|---|---|
-| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `default_cost_basis_method` (added by [`investments-data-model.md`](investments-data-model.md); `fifo`/`hifo`/`specific`/`average`). Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived=True` cascades `include_in_net_worth=False` atomically; unarchive does NOT auto-restore include. | updated settings row + optional `warnings: [...]`; data includes `cascaded_include_in_net_worth: false` when `is_archived=True` was the cause. Response data emits `archived` (not `is_archived`) as the field name. |
+| `accounts_set` | `account_id`; behavioral: `display_name`, `include_in_net_worth` (bool), `is_archived` (bool); structural: `official_name`, `last_four`, `account_subtype`, `holder_category`, `currency_code`, `credit_limit`, `default_cost_basis_method` (added by [`investments-data-model.md`](investments-data-model.md); `fifo`/`hifo`/`specific`/`average`). Pass `None` to leave unchanged; include the field name in `clear_fields` to clear (text fields only — booleans are not clearable). `is_archived=True` cascades `include_in_net_worth=False` atomically; unarchive does NOT auto-restore include. | Updated settings in `data`, including `data.warnings` as `list[str]`; `cascaded_include_in_net_worth: false` appears when `is_archived=True` caused the cascade. Data emits `archived`, not `is_archived`. The current registry advertises no output schema. |
 
 ### Soft-validation in MCP
 
-No TTY, no prompt. Write always succeeds. Response envelope includes a `warnings: [...]` array on the standard `ResponseEnvelope`:
+No TTY, no prompt. Write always succeeds. Human-readable warning messages are
+embedded in `data.warnings` as `list[str]`; they are not a top-level envelope field.
+The agent decides whether to retry, prompt the user, or proceed. Forcing the write
+to fail would block legitimate non-canonical values (HSA, FSA, custom
+institution-specific subtypes).
 
-```json
-{
-  "data": { "account_id": "...", "account_subtype": "chequing", ... },
-  "warnings": [
-    { "field": "account_subtype", "message": "'chequing' is not a known Plaid subtype", "suggestion": "checking" }
-  ]
-}
-```
+### Aggregate projection
 
-The agent decides whether to retry the write with the suggestion, prompt the user, or proceed. Forcing the write to fail would block legitimate non-canonical values (HSA, FSA, custom institution-specific subtypes).
-
-### Resource
-
-- `accounts(view="summary")` — the aggregate account projection, backed by `AccountSettingsService.summary()`.
+- `accounts(view="summary")` — the aggregate account projection, backed by `AccountService.summary()`.
 
 ### Aggregate shape (used by `accounts(view="summary")`)
 

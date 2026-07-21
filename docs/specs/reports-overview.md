@@ -7,7 +7,7 @@
 > Type: Umbrella
 > Last updated: 2026-07-18 — initial umbrella. Captures the design decisions
 > from the post-#330 reports-surface brainstorm.
-> Companions: [`reports-recipe-library.md`](reports-recipe-library.md) (the eight
+> Companions: [`reports-recipe-library.md`](reports-recipe-library.md) (the seven
 > shipped built-in views), [`reports-net-worth.md`](reports-net-worth.md)
 > (`NetworthService`-backed exception), [`extension-contracts.md`](extension-contracts.md)
 > (report contract, Quality Scale, `/moneybin-create-report`),
@@ -65,7 +65,7 @@ definition. That single contract is what makes the three tiers uniform.
 | **Dynamic** | a query | `app.*` (user state) | Instant creation from a question; full runtime CRUD |
 | **Materialized** | a SQLMesh `reports.*` view + `@report` runner | the repo / an installed package | **Distribution** (a shareable, installable artifact) and **eligibility for automation** (see below) |
 
-> **What "materialized" does and does not mean today.** All eight shipped
+> **What "materialized" does and does not mean today.** All seven shipped
 > `reports.*` models are `kind VIEW` — evaluated at query time, precomputing
 > nothing. Materialization's concrete benefit *today* is distribution: the
 > report becomes a versioned artifact that ships with the repo or a package.
@@ -200,7 +200,8 @@ should plausibly be higher than for a one-off query — resolve it in B.
 
 This umbrella exists because of a concrete failure. PR #330 opened `sql_query`
 to the whole `reports` schema while the declared-class safety net covered only
-6 of 8 deployed views (`net_worth` and `uncategorized_queue` were uncovered).
+6 of 7 deployed report views (`net_worth` was uncovered); the uncategorized
+queue is an internal `core.*` model, not a report.
 The uncovered columns fell through to `AGGREGATE` (LOW) — five genuinely
 HIGH-tier financial columns (`net_worth`/`total_assets`/`total_liabilities` on
 `net_worth`; `amount`/`priority_score` on `uncategorized_queue`) served at LOW.

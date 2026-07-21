@@ -3,10 +3,11 @@
 ## Status
 implemented
 
-> **Current MCP mapping.** Every registered tool acquires its own
-> `get_database(read_only=...)` connection. The classification rule (read vs.
-> write) is the source of truth, and the tables below use only the bounded
-> standard registry's current names.
+> **Current MCP mapping.** Tools that touch DuckDB acquire their own
+> `get_database(read_only=...)` connection. Connection mode follows the actual
+> database operation; MCP annotations separately describe observable behavior.
+> Some sync and authentication operations are server-backed and open no local
+> database connection.
 
 > **Required-kwarg hardening (PR #234).** `Database.__init__()` and `get_database()` now require `read_only` as a keyword-only argument; the prior `read_only: bool = False` default is removed. Every caller declares intent explicitly. Read-only enforcement at every read site is the trust boundary protected by this change — the SQL allowlists at MCP/CLI boundaries remain as defense-in-depth, but `ATTACH ... READ_ONLY` is the physical guard. The mechanism is the type system (no separate lint rule); pyright in `make check` fails any call site that omits the kwarg.
 
@@ -294,16 +295,26 @@ with Database(db_path, secret_store=store, no_auto_upgrade=False) as db:
 | `read_only=True` | Tool only SELECTs from `core.*`, `reports.*`, `app.*` |
 | `read_only=False` | Tool INSERTs/UPDATEs/DELETEs to `app.*` or `raw.*`, or runs import |
 
-**Read-only MCP tools** (representative)
+**Read-only database users** (representative)
 
 - `reports`, `accounts`, `accounts_balances`, and `investments`
 - `transactions`, `transactions_categorize_assist`,
   `transactions_categorize_rules`, `reviews`, and `taxonomy`
-- `import_preview`, `import_status`, `sync_status`, `gsheet`, and `privacy`
+- `import_status`, `gsheet`, and `privacy`
 - `system_status`, `system_audit`, `sql_query`, and `sql_schema`; `sql_query`
   accepts arbitrary SQL but enforces a read-only statement class and opens a
   read-only database connection
 - `mcp/resources.py`: the single current resource, `moneybin://schema`
+
+**Stateful operations that are not all ledger mutations**
+
+- `import_preview` has `readOnlyHint=false` and `idempotentHint=false`. It writes
+  encrypted metadata to `app.import_previews` and staged bytes to
+  `raw.import_preview_snapshots`; issue, consume, and expiry transitions are audit
+  events, and unused previews expire after the configured TTL.
+- `sync_status` is server-backed and does not require a local DuckDB connection.
+- `system_status` may combine database reads with local operational checks; its MCP
+  annotation is not a database-connection-mode declaration.
 
 **Write MCP tools** (representative)
 

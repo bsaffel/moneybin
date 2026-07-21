@@ -354,7 +354,7 @@ This is a future initiative with real privacy design work. The contribution pipe
 
 Explicitly deferred or owned elsewhere.
 
-- **Split transactions** — removed per import-first philosophy (see `mcp-architecture.md` section 9). The ATM-cash use case uses `transactions_annotate(requests=[{"kind": "splits_set", ...}])` without creating phantom records.
+- **Split transactions** — removed per import-first philosophy (see `mcp-architecture.md` section 9). The ATM-cash use case uses `transactions_annotate(requests=[...])` without creating phantom records.
 - **Transfer detection** — owned by `matching-overview.md`. Different concern (record identity, not labeling).
 - **Category taxonomy seed data** — Plaid PFCv2 seed is already implemented. This spec references it; it is not redesigned here.
 - **Taxonomy evolution** — category merge/rename with cascading updates to rules, merchants, and transaction_categories. Future direction (see below).

@@ -43,7 +43,7 @@ flowchart TD
 ```
 
 1. **Explicit binding.** You pinned the identity (`--account-id`,
-   `--account-name`, `import_confirm(account_bindings=…)`, or "import into account
+   `--account-name`, `import_confirm(preview_id=..., account_bindings=...)`, or "import into account
    X"). Adopted above all detection.
 2. **Strong key → silent auto-adopt.** A stable, upstream-assigned key that's
    already bound to an account: the source's own account key on a same-source
@@ -114,7 +114,7 @@ and it **never self-accepts** a weak match. Either way, you stay in control of
 account identity.
 
 The MCP equivalent is the same propose → confirm loop: `import_files` /
-`import_preview` return a confirmation, and `import_confirm(account_bindings=…)`
+`import_preview` return a confirmation, and `import_confirm(preview_id=..., account_bindings=...)`
 ratifies it.
 
 ## Cross-source twins found later: the review queue
@@ -129,8 +129,11 @@ moneybin accounts links set <decision_id> --standalone   # keep it as its own ac
 moneybin accounts links run                     # re-scan existing accounts for twins
 ```
 
-The agent path uses `reviews(kind="account_links", status="pending")`,
-`identity_links_decide(decisions=[...])`, and `refresh_run(steps=["identity"])`.
+The agent path uses `reviews(kind="account_links", status="pending")`. Accept with
+`identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"accept","target_id":"<account_id>"}])`
+or reject with
+`identity_links_decide(decisions=[{"kind":"account_link","decision_id":"<id>","decision":"reject"}])`,
+then run `refresh_run(steps=["identity"])`.
 The `review` command (`moneybin review --type
 account-links`) shows the pending count across queues. **You decide every merge**
 — MoneyBin won't combine two accounts on a weak signal on its own.

@@ -98,7 +98,7 @@ flowchart LR
 
 ### Schema reference: `TableRef`
 
-All schema-qualified names live in `src/moneybin/tables.py` as `TableRef` constants. Consumers import `TableRef.FCT_TRANSACTIONS` (etc.) rather than hardcoding `"core.fct_transactions"`. Each constant carries an `audience` field (`"interface"` or `"internal"`) — interface tables are exposed via the `moneybin://schema` MCP resource for AI consumers; internal tables are not.
+All schema-qualified names live in `src/moneybin/tables.py` as module-level `TableRef` constants. Consumers import `FCT_TRANSACTIONS` (etc.) rather than hardcoding `"core.fct_transactions"`. Each constant carries an `audience` field (`"interface"` or `"internal"`) — interface tables are exposed via the `moneybin://schema` MCP resource for AI consumers; internal tables are not.
 
 When adding a table, add a `TableRef` constant in the same change. Without one, the table is invisible to the curated schema resource and to any consumer that follows the allowlist convention.
 
@@ -183,7 +183,7 @@ The same shape covers both. A read-only service (e.g., `NetworthService`) only r
 
 ## MCP/CLI/SQL Symmetry
 
-MoneyBin exposes its data through three peer surfaces: the **MCP server** (AI consumers), the **CLI** (humans and CLI-driving agents like Claude Code, Codex, Gemini CLI), and the **SQL layer itself** (the `core.*` and `reports.*` SQLMesh models, queryable through `moneybin db shell`, the `moneybin://schema` MCP resource, and the read-only SQL query tool). All three are first-class consumer interfaces. None is an implementation detail.
+MoneyBin exposes its data through three peer surfaces: the **MCP server** (AI consumers), the **CLI** (humans and CLI-driving agents like Claude Code, Codex, Gemini CLI), and the **SQL layer itself** (the `core.*` and `reports.*` SQLMesh models, queryable through `moneybin db shell`, the `moneybin://schema` MCP resource, and the read-only SQL query tool). All three are first-class consumer interfaces. None is an implementation detail. Symmetry means equivalent observable outcomes and recovery paths, not nominal noun or signature parity.
 
 The CLI and MCP server are thin formatters around the service layer; neither contains business logic. The SQL layer carries an equivalent contract — the SQLMesh models *are* the canonical data products, named for the concepts callers reason about, not for their implementation. See [§SQLMesh Layer Conventions](#sqlmesh-layer-conventions) for the polish requirements that make this work; they are the SQL-surface equivalent of the MCP tool taxonomy and CLI command tree.
 
@@ -197,18 +197,18 @@ Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 |---|---|---|---|
 | List accounts | `accounts list` | `accounts` | `GET /accounts` |
 | Net worth report | `reports networth` | `reports(report_id="core:networth", parameters={...})` | `GET /reports/networth` |
-| Decide a match | `transactions matches set <id> --status <accepted\|rejected>` | `reviews_decide(decisions=[...])` | `POST /transactions/matches/{id}/decision` |
+| Decide a match | `transactions matches set <id> --status accepted` | `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])` | `POST /transactions/matches/{id}/decision` |
 
-Same noun ordering across all three; only the verb position and separators differ. The architecture spec's job here is to point at the rule, not restate it.
+Each surface uses its native operation shape while preserving the same result. The architecture spec's job here is to point at the rule, not force identical spelling.
 
 ### The three primitives
 
-1. **`@mcp_tool(sensitivity=...)`** decorates every MCP tool. Accepts `sensitivity` (`"low"` / `"medium"` / `"high"`) and optional `domain` (for progressive disclosure). Wraps the tool body in: privacy logging (`log_tool_call`), the 30s timeout guard, classified-exception → error-envelope conversion, and a final guard that the body returned a `ResponseEnvelope`. Source: `src/moneybin/mcp/decorator.py`.
+1. **`@mcp_tool(...)`** decorates every MCP tool. Privacy sensitivity is derived from the typed response contract; dynamic tools declare `dynamic_classification=True` and a maximum. The decorator also records protocol annotations (`read_only`, `destructive`, `idempotent`, `open_world`), applies timeout and collection guards, logs privacy metadata, converts classified exceptions to error envelopes, and verifies `ResponseEnvelope` output. Optional `domain` metadata is grouping metadata only: domain metadata does not control disclosure. Source: `src/moneybin/mcp/decorator.py`.
 
 2. **`ResponseEnvelope`** is the common response shape across MCP tools and CLI `--output json`. Fields: `summary` (counts, truncation flag, sensitivity tier, display currency), `data` (list of records or single dict), `actions` (next-step hints), and optional `error` (classified `UserError`). Decimal values serialize as JSON numbers — `_DecimalEncoder.default()` returns `float(o)`, which is safe because float64's ~15.95 significant digits comfortably cover personal-finance magnitudes (the docstring on the encoder spells this out). Source: `src/moneybin/protocol/envelope.py`. Constructors: `build_envelope()`, `build_error_envelope()`, `not_implemented_envelope()`.
 
 3. **Privacy middleware** (`src/moneybin/mcp/privacy.py`) provides:
-   - **Sensitivity tiers** — declared by every tool via the decorator. Per [`mcp-architecture.md`](mcp-architecture.md) §5, `low` requires no consent, `medium` requires `mcp-data-sharing` consent and degrades to aggregates without it, `high` requires consent + cloud masking. (V1 only logs; full consent enforcement lands in the privacy framework specs.)
+   - **Sensitivity tiers** — derived from typed result fields or computed per call by explicitly dynamic tools. Classification and critical-field masking are active; global consent enforcement and automatic degraded responses remain deferred.
    - **Read-only validation** for the general SQL query tool: rejects writes, file-access functions, URL literals, and quoted-path scans.
    - **Managed-write validation** for write tools: allows `INSERT`/`UPDATE`/`DELETE` only on `app.*` and `raw.*` schemas; rejects DDL outright (with a narrow exception for SQLMesh-issued `CREATE OR REPLACE TABLE core.*`).
 
@@ -217,6 +217,12 @@ Same noun ordering across all three; only the verb position and separators diffe
 Sensitivity tiers and the `ResponseEnvelope` are MoneyBin-specific primitives. They sit *alongside* — not in place of — the protocol-standard fields the MCP spec itself defines: tool `annotations` (`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`), `Prompts`, `Resources`, `Sampling`, `Roots`, `Elicitation`, progress notifications, and `tools/list_changed`. Clients (Claude Desktop, Codex, Gemini CLI) consume those standard fields for confirmation UI, capability negotiation, and context injection — they do not consume MoneyBin's tier model.
 
 **Every new tool, prompt, or resource must satisfy both layers.** The MoneyBin layer (sensitivity, envelope, exposure principle) is reviewed against this spec; the protocol layer is reviewed against the [protocol-standard capability coverage matrix in `moneybin-mcp.md`](moneybin-mcp.md#protocol-standard-capability-coverage-matrix). Reject changes that update one without the other. The intent is that no future protocol capability is silently overlooked or surface-shipped without explicit account.
+
+MoneyBin operates one **45-tool standard registry**. Generic clients receive that
+registry in full. A capable host may optionally defer schemas from the same registry,
+but it does not receive a second profile and `domain` metadata does not choose what is
+disclosed. New operations require the bounded-registry admission record before they
+receive a public identifier.
 
 ### MCP exposure principle
 
@@ -421,9 +427,9 @@ currency as formatting-only metadata.
 
 Two narrow naming changes rode along with this spec landing — both shipped. Retained for historical context.
 
-1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `src/moneybin/sqlmesh/models/reports/net_worth.sql`, `TableRef.REPORTS_NET_WORTH` is the canonical reference (`src/moneybin/tables.py`), and `NetworthService` reads from it. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation.
+1. **`core.agg_net_worth` → `reports.net_worth`.** Shipped via [`reports-recipe-library.md`](reports-recipe-library.md): the `reports` schema lives in `src/moneybin/schema.py`, the SQLMesh model is `src/moneybin/sqlmesh/models/reports/net_worth.sql`, the module-level `REPORTS_NET_WORTH` constant is the canonical reference, and `NetworthService` reads from it. Privacy middleware's `_WRITABLE_SCHEMAS` is unchanged — `reports.*` is read-only by design and never appears in managed-write validation.
 
-2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). Shipped: `TableRef.FCT_TRANSACTION_LINES` and `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` carry the new name.
+2. **`core.vw_transaction_lines` → `core.fct_transaction_lines`** in [`transaction-curation.md`](transaction-curation.md). Shipped: the module-level `FCT_TRANSACTION_LINES` constant and `src/moneybin/sqlmesh/models/core/fct_transaction_lines.sql` carry the new name.
 
 3. **AGENTS.md "Architecture: Data Layers" table** now includes `app` and `reports` rows and links here for the full layer reference. AGENTS.md stays the at-a-glance orientation; this spec is the canonical reference.
 

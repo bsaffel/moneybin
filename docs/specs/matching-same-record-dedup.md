@@ -296,21 +296,23 @@ Standard import commands gain matching output:
 
 ## MCP Interface
 
-Designed alongside CLI. The data model and `app.match_decisions` schema support MCP through the normalized review surface. `reviews(kind="matches", status="pending")` returns match proposals, and `reviews_decide(decisions=[...])` records an atomic decision batch. These operations are shared with transfer detection (`matching-transfer-detection.md`); callers inspect the returned match type to distinguish dedup from transfer proposals.
+Designed alongside CLI. The data model and `app.match_decisions` schema support MCP through the normalized review surface. `reviews(kind="matches", status="pending")` returns match proposals, and `reviews_decide` records an atomic decision batch. These operations are shared with transfer detection (`matching-transfer-detection.md`); callers inspect the returned match type to distinguish dedup from transfer proposals.
 
 | Tool | Type | Description |
 |---|---|---|
 | `reviews(kind="matches", status="pending")` | Read | List match proposals awaiting review. Returned rows identify their dedup or transfer type. |
-| `reviews_decide(decisions=[...])` | Write | Accept or reject one atomic batch of proposals. |
+| `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])` | Write | Accept one proposal. |
+| `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"reject"}])` | Write | Reject one proposal. |
 | `system_audit_undo(operation_id=...)` | Write | Reverse a previously accepted match operation. |
 | `reviews(kind="matches", status="history")` | Read | Recent match decisions with signal breakdown. |
 | `refresh_run(steps=["match"])` | Write | Trigger the matching engine on demand. |
 
-### Prompt
+### Agent flow
 
-| Prompt | Purpose |
-|---|---|
-| `review_matches` | "Help me review pending transaction matches. Show dedup and transfer proposals, explain why each was proposed, and let me accept or reject them." |
+No dedicated match-review prompt is registered. An agent reads pending
+proposals with `reviews(kind="matches", status="pending")`, applies an exact
+`reviews_decide` request from the table above, and checks prior decisions with
+`reviews(kind="matches", status="history")`.
 
 ## Configuration
 
