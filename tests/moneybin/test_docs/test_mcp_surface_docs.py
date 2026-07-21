@@ -28,7 +28,34 @@ CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
 STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-45.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
-PUBLIC_MCP_GUIDES = (*sorted((ROOT / "docs/guides").rglob("*.md")),)
+CURRENT_PUBLIC_ROOTS = (
+    ROOT / "README.md",
+    *sorted((ROOT / ".claude/rules").glob("*.md")),
+    *sorted((ROOT / "docs").rglob("*.md")),
+)
+HISTORICAL_PUBLIC_PREFIXES = (
+    ROOT / "docs/decisions",
+    ROOT / "docs/specs/archived",
+)
+RETIRED_COUNT_PATTERNS = (
+    re.compile(
+        r"(?:~|\b(?:about|approximately|around)\s+)?"
+        r"105(?:-|\s+(?:registered\s+)?)tools?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bmore than 100 tools\b", re.IGNORECASE),
+    re.compile(r"\bour 105\b", re.IGNORECASE),
+    re.compile(r"\btotal_count:\s*105\b", re.IGNORECASE),
+)
+
+
+def _current_public_mcp_docs() -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path in CURRENT_PUBLIC_ROOTS
+        if path.is_file()
+        and not any(prefix in path.parents for prefix in HISTORICAL_PUBLIC_PREFIXES)
+    )
 
 
 def test_documented_standard_names_match_runtime() -> None:
@@ -108,6 +135,12 @@ def test_runtime_mcp_modules_do_not_point_to_removed_spec_sections() -> None:
 
 
 def test_changelog_records_prelaunch_surface_cutover() -> None:
+    assert CHANGELOG.exists()
+    assert ADR.exists()
+    assert ARCHIVED_MCP_SPEC.exists()
+    assert BASELINE_SNAPSHOT.exists()
+    assert STANDARD_SNAPSHOT.exists()
+
     text = CHANGELOG.read_text()
 
     assert "45-tool standard registry" in text
@@ -164,7 +197,7 @@ def test_active_governance_does_not_teach_legacy_registry_names() -> None:
             assert term not in text, f"{path}: {term}"
 
 
-def test_public_mcp_guides_do_not_teach_retired_tool_names() -> None:
+def test_current_public_docs_do_not_repeat_the_retired_mcp_surface() -> None:
     baseline = json.loads(BASELINE_SNAPSHOT.read_text())
     current = json.loads(STANDARD_SNAPSHOT.read_text())
     # One-word retired tool names overlap with preserved CLI command words.
@@ -173,12 +206,19 @@ def test_public_mcp_guides_do_not_teach_retired_tool_names() -> None:
         tool["name"] for tool in baseline["tools"] if "_" in tool["name"]
     } - {tool["name"] for tool in current["tools"]}
 
-    for path in PUBLIC_MCP_GUIDES:
+    violations: list[str] = []
+
+    for path in _current_public_mcp_docs():
         text = path.read_text()
-        taught = {
-            name for name in retired_names if re.search(rf"`{re.escape(name)}`", text)
-        }
-        assert not taught, f"{path}: retired MCP tools {sorted(taught)}"
+        relative = path.relative_to(ROOT)
+        for name in sorted(retired_names):
+            if f"`{name}`" in text:
+                violations.append(f"{relative}: retired MCP identifier `{name}`")
+        for pattern in RETIRED_COUNT_PATTERNS:
+            if match := pattern.search(text):
+                violations.append(f"{relative}: retired count {match.group()!r}")
+
+    assert not violations, "\n".join(violations)
 
 
 def test_mcp_spec_is_current_and_archives_the_pre_cutover_catalog() -> None:
