@@ -31,7 +31,7 @@ class ExportService:
         """Prepare the closed canonical bundle under one per-run output policy."""
         if report_id is not None:
             raise ValueError("bundle exports cannot include a report id")
-        if report_parameters:
+        if report_parameters is not None:
             raise ValueError("bundle exports cannot include report parameters")
         snapshot = build_bundle_snapshot(
             self._db,

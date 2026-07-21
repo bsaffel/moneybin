@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import UTC, date
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
 from moneybin.database import Database
+from moneybin.exports.catalog import BUNDLE_TABLES
 from moneybin.exports.service import ExportService
+from moneybin.tables import (
+    BRIDGE_TRANSFERS,
+    CATEGORIES,
+    DIM_ACCOUNTS,
+    DIM_HOLDINGS,
+    DIM_SECURITIES,
+    FCT_BALANCES,
+    FCT_BALANCES_DAILY,
+    FCT_INVESTMENT_LOTS,
+    FCT_INVESTMENT_TRANSACTIONS,
+    FCT_REALIZED_GAINS,
+    FCT_TRANSACTION_LINES,
+    FCT_TRANSACTIONS,
+    MERCHANTS,
+)
 from tests.moneybin.db_helpers import create_core_dim_stub_views, create_core_tables
 
 EXPECTED_TABLES = [
@@ -52,6 +70,24 @@ def _seed_bundle_rows(db: Database) -> None:
     )
     db.execute(
         """
+        INSERT INTO core.dim_accounts (
+            account_id, routing_number, account_type, institution_name,
+            source_type, source_file, display_name, currency_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "account-0",
+            "026009593",
+            "depository",
+            "Earlier Bank",
+            "ofx",
+            "earlier.ofx",
+            "Earlier",
+            "USD",
+        ],
+    )
+    db.execute(
+        """
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
             amount_absolute, description, memo, currency_code, source_type,
@@ -72,6 +108,74 @@ def _seed_bundle_rows(db: Database) -> None:
             False,
         ],
     )
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, description, memo, currency_code, source_type,
+            source_count, has_splits
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "transaction-0",
+            "account-0",
+            date(2026, 7, 19),
+            Decimal("20.00"),
+            Decimal("20.00"),
+            "Earlier transaction",
+            "seeded second",
+            "USD",
+            "ofx",
+            1,
+            False,
+        ],
+    )
+
+
+def test_bundle_catalog_is_the_exact_ordered_portability_contract() -> None:
+    assert [(table.name, table.source, table.order_by) for table in BUNDLE_TABLES] == [
+        ("accounts", DIM_ACCOUNTS, ("account_id",)),
+        (
+            "transactions",
+            FCT_TRANSACTIONS,
+            ("transaction_date", "transaction_id"),
+        ),
+        (
+            "transaction_lines",
+            FCT_TRANSACTION_LINES,
+            ("transaction_date", "transaction_id", "line_id"),
+        ),
+        ("transfers", BRIDGE_TRANSFERS, ("transfer_id",)),
+        (
+            "balances",
+            FCT_BALANCES,
+            ("balance_date", "account_id", "source_type", "source_ref"),
+        ),
+        (
+            "balances_daily",
+            FCT_BALANCES_DAILY,
+            ("balance_date", "account_id"),
+        ),
+        ("categories", CATEGORIES, ("category_id",)),
+        ("merchants", MERCHANTS, ("merchant_id",)),
+        ("securities", DIM_SECURITIES, ("security_id",)),
+        (
+            "investment_transactions",
+            FCT_INVESTMENT_TRANSACTIONS,
+            ("trade_date", "investment_transaction_id"),
+        ),
+        (
+            "investment_lots",
+            FCT_INVESTMENT_LOTS,
+            ("acquisition_date", "lot_id"),
+        ),
+        (
+            "realized_gains",
+            FCT_REALIZED_GAINS,
+            ("disposal_date", "realized_gain_id"),
+        ),
+        ("holdings", DIM_HOLDINGS, ("account_id", "security_id")),
+    ]
 
 
 def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
@@ -96,10 +200,29 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
     )
 
     transactions = next(table for table in first.tables if table.name == "transactions")
+    accounts = next(table for table in first.tables if table.name == "accounts")
+    account_id_index = next(
+        index
+        for index, column in enumerate(accounts.columns)
+        if column.name == "account_id"
+    )
+    transaction_id_index = next(
+        index
+        for index, column in enumerate(transactions.columns)
+        if column.name == "transaction_id"
+    )
+    assert [row[account_id_index] for row in accounts.rows] == [
+        "account-0",
+        "account-1",
+    ]
+    assert [row[transaction_id_index] for row in transactions.rows] == [
+        "transaction-0",
+        "transaction-1",
+    ]
     row = dict(
         zip(
             (column.name for column in transactions.columns),
-            transactions.rows[0],
+            transactions.rows[1],
             strict=True,
         )
     )
@@ -118,13 +241,41 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
         for table in first.tables
     )
     json.dumps(first.manifest)
-    json.dumps(first.data_dictionary)
+    json.dumps(first.manifest["data_dictionary"])
+
+
+def test_snapshot_metadata_is_deeply_immutable_and_manifest_is_a_copy(
+    db: Database,
+) -> None:
+    _seed_bundle_rows(db)
+    snapshot = ExportService(db).prepare_bundle(
+        profile="test", redaction_mode="unredacted"
+    )
+    original_manifest = copy.deepcopy(snapshot.manifest)
+
+    dictionary_tables = cast(tuple[object, ...], snapshot.data_dictionary["tables"])
+    first_dictionary_table = cast(dict[str, object], dictionary_tables[0])
+    with pytest.raises(TypeError):
+        first_dictionary_table["name"] = "corrupted"
+    with pytest.raises(AttributeError):
+        cast(list[object], snapshot.data_dictionary["tables"]).append("corrupted")
+
+    exposed_manifest = snapshot.manifest
+    exposed_dictionary = cast(dict[str, object], exposed_manifest["data_dictionary"])
+    exposed_tables = cast(list[dict[str, object]], exposed_dictionary["tables"])
+    exposed_columns = cast(list[dict[str, object]], exposed_tables[0]["columns"])
+    exposed_tables[0]["name"] = "corrupted"
+    exposed_columns[0]["name"] = "corrupted"
+
+    assert snapshot.manifest == original_manifest
+    assert first_dictionary_table["name"] == "accounts"
 
 
 @pytest.mark.parametrize(
     ("report_id", "report_parameters", "message"),
     [
         ("net-worth", None, "report id"),
+        (None, {}, "report parameters"),
         (None, {"month": "2026-07"}, "report parameters"),
     ],
 )

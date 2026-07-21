@@ -10,6 +10,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
@@ -33,6 +34,12 @@ class ExportSubject:
     report_id: str | None = None
     parameters: Mapping[str, object] | None = None
 
+    def __post_init__(self) -> None:
+        """Freeze nested report parameters owned by the subject."""
+        if self.parameters is not None:
+            frozen = cast(Mapping[str, object], _freeze_metadata(self.parameters))
+            object.__setattr__(self, "parameters", frozen)
+
     def as_manifest(self) -> dict[str, object]:
         """Return the subject's JSON-safe manifest representation."""
         result: dict[str, object] = {"kind": self.kind}
@@ -49,6 +56,11 @@ class ReportExportProvenance:
 
     report_id: str
     receipt: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        """Freeze nested report receipt metadata."""
+        frozen = cast(Mapping[str, object], _freeze_metadata(self.receipt))
+        object.__setattr__(self, "receipt", frozen)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +96,11 @@ class PreparedExport:
     data_dictionary: Mapping[str, object]
     provenance: ReportExportProvenance | None
 
+    def __post_init__(self) -> None:
+        """Freeze nested metadata retained by the prepared snapshot."""
+        frozen = cast(Mapping[str, object], _freeze_metadata(self.data_dictionary))
+        object.__setattr__(self, "data_dictionary", frozen)
+
     @property
     def manifest(self) -> dict[str, object]:
         """Return the JSON-safe receipt for this prepared snapshot."""
@@ -110,7 +127,7 @@ class PreparedExport:
                 }
                 for table in self.tables
             ],
-            "data_dictionary": self.data_dictionary,
+            "data_dictionary": _json_safe(self.data_dictionary),
             "provenance": _json_safe(self.provenance),
         }
 
@@ -231,3 +248,16 @@ def _json_safe(value: object) -> object:
     if isinstance(value, ReportExportProvenance):
         return {"report_id": value.report_id, "receipt": _json_safe(value.receipt)}
     raise TypeError(f"Unsupported export metadata value: {type(value).__name__}")
+
+
+def _freeze_metadata(value: object) -> object:
+    """Recursively freeze snapshot-owned mappings and sequences."""
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        return MappingProxyType({
+            str(key): _freeze_metadata(item) for key, item in mapping.items()
+        })
+    if isinstance(value, (list, tuple)):
+        sequence = cast(list[object] | tuple[object, ...], value)
+        return tuple(_freeze_metadata(item) for item in sequence)
+    return value
