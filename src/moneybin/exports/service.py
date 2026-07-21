@@ -181,6 +181,11 @@ class ExportService:
             raise ValueError("Unsupported export destination kind")
         if request.redaction_mode not in _REDACTION_MODES:
             raise ValueError("Unsupported export redaction mode")
+        destination_reasons = _destination_validation_reasons(request.destination)
+        if destination_reasons:
+            raise ValueError(
+                "Invalid export destination: " + ", ".join(destination_reasons)
+            )
         if request.subject_kind == "bundle":
             if request.report_id is not None:
                 raise ValueError("bundle exports cannot include a report id")
@@ -191,21 +196,9 @@ class ExportService:
 
         destination = request.destination
         if destination.kind == "local":
-            if (
-                destination.local_path is None
-                or destination.spreadsheet_id is not None
-                or destination.managed_tab_prefix is not None
-            ):
-                raise ValueError("Invalid local export destination")
             if request.format == "sheets":
                 raise ValueError("Local destinations do not support Sheets format")
         else:
-            if (
-                destination.local_path is not None
-                or destination.spreadsheet_id is None
-                or destination.managed_tab_prefix is None
-            ):
-                raise ValueError("Invalid Sheets export destination")
             if request.format != "sheets":
                 raise ValueError("Sheets destinations use the native Sheets format")
             if request.compress_zip:
@@ -233,7 +226,6 @@ class ExportService:
         sheets_authorization: _SheetsReadiness | None = None,
     ) -> ExportReadinessStatus:
         """Return destination readiness without target identities or locations."""
-        from moneybin.exports.sheets import validate_managed_tab_prefix  # noqa: PLC0415
         from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
             ExportDestinationSpreadsheetConflictError,
             ExportDestinationsRepo,
@@ -266,29 +258,10 @@ class ExportService:
             )
         ]
         for destination in stored:
-            reasons: list[str] = []
-            if not destination.name.strip():
-                reasons.append("invalid_destination_name")
+            reasons = list(_destination_validation_reasons(destination))
             if destination.kind == "local":
-                if (
-                    destination.local_path is None
-                    or destination.spreadsheet_id is not None
-                    or destination.managed_tab_prefix is not None
-                ):
-                    reasons.append("invalid_destination_configuration")
                 write_capable = not reasons
             else:
-                if (
-                    destination.local_path is not None
-                    or not destination.spreadsheet_id
-                    or not destination.managed_tab_prefix
-                ):
-                    reasons.append("invalid_destination_configuration")
-                else:
-                    try:
-                        validate_managed_tab_prefix(destination.managed_tab_prefix)
-                    except ValueError:
-                        reasons.append("invalid_managed_tab_prefix")
                 if destination.spreadsheet_id:
                     try:
                         repo.assert_not_inbound_connection(destination.spreadsheet_id)
@@ -458,6 +431,37 @@ def _service_report_source(name: str, provenance: tuple[str, ...]) -> TableRef:
         if len(parts) == 2:
             return TableRef(parts[0], parts[1])
     return TableRef("reports", name)
+
+
+def _destination_validation_reasons(
+    destination: ExportDestination,
+) -> tuple[str, ...]:
+    """Return fixed structural reason codes shared by run and status."""
+    from moneybin.exports.sheets import validate_managed_tab_prefix  # noqa: PLC0415
+
+    reasons: list[str] = []
+    if not destination.name.strip():
+        reasons.append("invalid_destination_name")
+    if destination.kind == "local":
+        if (
+            destination.local_path is None
+            or destination.spreadsheet_id is not None
+            or destination.managed_tab_prefix is not None
+        ):
+            reasons.append("invalid_destination_configuration")
+    elif destination.kind == "sheets":
+        if destination.local_path is not None or not destination.spreadsheet_id:
+            reasons.append("invalid_destination_configuration")
+        if destination.managed_tab_prefix is None:
+            reasons.append("invalid_destination_configuration")
+        else:
+            try:
+                validate_managed_tab_prefix(destination.managed_tab_prefix)
+            except ValueError:
+                reasons.append("invalid_managed_tab_prefix")
+    else:
+        reasons.append("invalid_destination_configuration")
+    return tuple(reasons)
 
 
 def _bounded_label(value: object, allowed: frozenset[str]) -> str:

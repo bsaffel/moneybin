@@ -39,6 +39,7 @@ async def test_system_status_coarse_defaults_to_fixed_section_order() -> None:
         "categorization",
         "exports",
     ]
+    assert response.summary.sensitivity == "medium"
 
 
 async def test_system_status_exports_uses_typed_privacy_safe_readiness(
@@ -71,9 +72,26 @@ async def test_system_status_exports_uses_typed_privacy_safe_readiness(
         ("archive", "local", True, True),
     ]
     serialized = response.to_dict()
-    assert serialized["summary"]["sensitivity"] == "low"
+    assert serialized["summary"]["sensitivity"] == "medium"
     assert "/private/export/path" not in str(serialized)
     assert "local-1" not in str(serialized)
+
+
+def test_system_status_export_names_use_user_note_classification() -> None:
+    from moneybin.privacy.introspection import extract_data_classes
+    from moneybin.privacy.payloads.system import ExportsStatus
+    from moneybin.privacy.taxonomy import DataClass
+
+    assert DataClass.USER_NOTE in extract_data_classes(ExportsStatus)
+
+
+async def test_system_status_coarse_rejects_unknown_section() -> None:
+    response = await system_status_coarse(
+        sections=["unknown"],  # pyright: ignore[reportArgumentType]
+    )
+
+    assert response.error is not None
+    assert response.error.code == "infra_invalid_input"
 
 
 async def test_system_status_coarse_rejects_explicit_empty_sections() -> None:

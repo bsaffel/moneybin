@@ -275,6 +275,7 @@ async def test_system_status_coarse_transport_variants(
     ("name", "arguments", "sensitivity"),
     [
         ("system_status", {"sections": ["overview"]}, "low"),
+        ("system_status", {"sections": ["exports"]}, "medium"),
         ("system_status", {"sections": []}, "low"),
         ("system_audit", {"view": "events"}, "high"),
         ("system_audit", {"view": "detail"}, "low"),

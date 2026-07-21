@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -238,6 +238,24 @@ def test_run_prepares_and_publishes_one_sheets_report(
         _request(destination_kind="sheets", compress_zip=True),
         _request(destination_kind="local", format="sheets"),
         _request(destination_kind="local", format="xlsx", compress_zip=True),
+        replace(
+            _request(),
+            destination=replace(_destination("local"), name="   "),
+        ),
+        replace(
+            _request(destination_kind="sheets"),
+            destination=replace(
+                _destination("sheets"),
+                managed_tab_prefix="",
+            ),
+        ),
+        replace(
+            _request(destination_kind="sheets"),
+            destination=replace(
+                _destination("sheets"),
+                managed_tab_prefix="bad*prefix",
+            ),
+        ),
     ],
 )
 @patch("moneybin.config.get_settings")
@@ -279,6 +297,9 @@ def test_status_projects_destination_readiness_without_target_identifiers(
             ('local-1', 'archive', 'local', '/private/export/path', NULL, NULL,
              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
             ('sheets-1', 'dashboard', 'sheets', NULL, 'private-sheet-id', 'MB',
+             CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+            ('sheets-2', 'broken-dashboard', 'sheets', NULL,
+             'other-private-sheet-id', '',
              CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """
     )
@@ -305,21 +326,28 @@ def test_status_projects_destination_readiness_without_target_identifiers(
     assert [item.name for item in result.destinations] == [
         "local:exports",
         "archive",
+        "broken-dashboard",
         "dashboard",
     ]
     assert [item.kind for item in result.destinations] == [
         "local",
         "local",
         "sheets",
+        "sheets",
     ]
     assert result.destinations[0].ready is True
     assert result.destinations[0].write_capable is True
-    assert result.destinations[2].ready is False
-    assert result.destinations[2].write_capable is False
+    assert result.destinations[3].ready is False
+    assert result.destinations[3].write_capable is False
     assert result.destinations[2].reasons == (
+        "invalid_managed_tab_prefix",
+        "sheets_write_authorization_required",
+    )
+    assert result.destinations[3].reasons == (
         "inbound_connection_collision",
         "sheets_write_authorization_required",
     )
     serialized = asdict(result)
     assert "private-sheet-id" not in str(serialized)
+    assert "other-private-sheet-id" not in str(serialized)
     assert "/private/export/path" not in str(serialized)

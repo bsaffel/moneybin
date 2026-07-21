@@ -839,7 +839,7 @@ async def system_status_coarse(
             if response.error is not None:
                 return cast(ResponseEnvelope[SystemStatusCoarsePayload], response)
             selected.append(CategorizationStatus(statistics=response.data))
-        else:
+        elif section == "exports":
             from moneybin.database import get_database  # noqa: PLC0415
             from moneybin.exports.service import ExportService  # noqa: PLC0415
 
@@ -860,6 +860,8 @@ async def system_status_coarse(
                 )
             )
             continue
+        else:
+            raise ValueError("Unknown system status section.")
         actions.extend(response.actions)
         if response.summary.degraded:
             reason = response.summary.degraded_reason

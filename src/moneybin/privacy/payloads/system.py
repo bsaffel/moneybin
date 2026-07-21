@@ -358,7 +358,7 @@ class SystemStatusExportDestination(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    name: Annotated[str, DataClass.RECORD_ID]
+    name: Annotated[str, DataClass.USER_NOTE]
     kind: Annotated[Literal["local", "sheets"], DataClass.TXN_TYPE]
     ready: Annotated[bool, DataClass.TXN_TYPE]
     write_capable: Annotated[bool, DataClass.TXN_TYPE]

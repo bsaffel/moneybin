@@ -48,6 +48,10 @@ def system_status(
 
     min_d, max_d = s.transactions_date_range
     if output == OutputFormat.JSON:
+        from moneybin.mcp.privacy import tier_to_sensitivity
+        from moneybin.privacy.introspection import derive_tier
+        from moneybin.privacy.payloads.system import ExportsStatus
+
         render_or_json(
             build_envelope(
                 data={
@@ -66,7 +70,7 @@ def system_status(
                         asdict(destination) for destination in exports.destinations
                     ],
                 },
-                sensitivity="low",
+                sensitivity=tier_to_sensitivity(derive_tier(ExportsStatus)).value,
             ),
             output,
             cli_actor="system_status",
@@ -83,7 +87,10 @@ def system_status(
     typer.echo(f"Uncategorized: {s.categorize_pending}")
     for destination in exports.destinations:
         state = "ready" if destination.ready else "not ready"
-        typer.echo(
+        line = (
             f"Export {destination.name} ({destination.kind}): {state}; "
             f"write capable: {destination.write_capable}"
         )
+        if destination.reasons:
+            line = f"{line}; reasons: {', '.join(destination.reasons)}"
+        typer.echo(line)

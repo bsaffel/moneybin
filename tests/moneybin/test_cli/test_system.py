@@ -44,6 +44,7 @@ def test_system_status_json_output(mock_get_db: MagicMock) -> None:
     result = runner.invoke(app, ["system", "status", "--output", "json"])
     assert result.exit_code == 0
     envelope = json.loads(result.stdout)
+    assert envelope["summary"]["sensitivity"] == "medium"
     payload = envelope["data"]
     assert "accounts_count" in payload
     assert "transactions_count" in payload
@@ -57,4 +58,51 @@ def test_system_status_json_output(mock_get_db: MagicMock) -> None:
             "write_capable": True,
             "reasons": [],
         }
+    ]
+
+
+@patch("moneybin.cli.commands.system.get_database")
+def test_system_status_text_and_json_share_export_readiness_reasons(
+    mock_get_db: MagicMock,
+) -> None:
+    from moneybin.exports.service import (
+        ExportDestinationReadiness,
+        ExportReadinessStatus,
+    )
+
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_db.execute.return_value.fetchone.return_value = (0, None, None)
+    readiness = ExportReadinessStatus(
+        destinations=(
+            ExportDestinationReadiness(
+                name="dashboard",
+                kind="sheets",
+                ready=False,
+                write_capable=False,
+                reasons=(
+                    "invalid_managed_tab_prefix",
+                    "sheets_write_authorization_required",
+                ),
+            ),
+        )
+    )
+
+    with patch(
+        "moneybin.exports.service.ExportService.status",
+        return_value=readiness,
+    ):
+        text_result = runner.invoke(app, ["system", "status"])
+        json_result = runner.invoke(
+            app,
+            ["system", "status", "--output", "json"],
+        )
+
+    assert text_result.exit_code == 0
+    assert "invalid_managed_tab_prefix" in text_result.stdout
+    assert "sheets_write_authorization_required" in text_result.stdout
+    payload = json.loads(json_result.stdout)["data"]
+    assert payload["exports"][0]["reasons"] == [
+        "invalid_managed_tab_prefix",
+        "sheets_write_authorization_required",
     ]
