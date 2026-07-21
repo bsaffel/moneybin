@@ -12,6 +12,7 @@ from moneybin.connectors.gsheet.errors import (
     GSheetUnreachableError,
 )
 from moneybin.connectors.gsheet.sheets_api import (
+    MANAGED_SHEET_METADATA_KEY,
     SheetCreate,
     SheetIdentity,
     SheetRename,
@@ -175,7 +176,16 @@ def test_fake_create_write_and_promote_are_captured_and_use_stable_ids() -> None
     )
 
     created = client.create_sheets(
-        "ss1", (SheetCreate(name="MB Staging run data", row_count=2, col_count=2),)
+        "ss1",
+        (
+            SheetCreate(
+                name="MB Staging run data",
+                row_count=2,
+                col_count=2,
+                gid=42,
+                managed_prefix="MB",
+            ),
+        ),
     )
     client.write_sheet_values(
         "ss1",
@@ -209,7 +219,13 @@ def test_fake_promotion_deletes_only_explicit_sheet_identity() -> None:
             title="WB",
             tabs=[
                 FakeSheetTab(name="User Notes", gid=1, headers=["Note"], rows=[]),
-                FakeSheetTab(name="MB Bundle old data", gid=2, headers=["A"], rows=[]),
+                FakeSheetTab(
+                    name="MB Bundle old data",
+                    gid=2,
+                    headers=["A"],
+                    rows=[],
+                    managed_prefix="MB",
+                ),
                 FakeSheetTab(
                     name="MB Report old report", gid=3, headers=["A"], rows=[]
                 ),
@@ -217,14 +233,23 @@ def test_fake_promotion_deletes_only_explicit_sheet_identity() -> None:
         ),
     )
     staged = client.create_sheets(
-        "ss1", (SheetCreate(name="MB Staging run data", row_count=1, col_count=1),)
+        "ss1",
+        (
+            SheetCreate(
+                name="MB Staging run data",
+                row_count=1,
+                col_count=1,
+                gid=42,
+                managed_prefix="MB",
+            ),
+        ),
     )[0]
 
     client.promote_sheets(
         "ss1",
         managed_prefix="MB",
         renames=(SheetRename(sheet=staged, new_name="MB Bundle run data"),),
-        deletes=(SheetIdentity(name="MB Bundle old data", gid=2),),
+        deletes=(SheetIdentity(name="MB Bundle old data", gid=2, managed_prefix="MB"),),
     )
 
     names = [sheet.name for sheet in client.get_workbook_metadata("ss1").sheets]
@@ -331,6 +356,99 @@ def test_sheets_client_create_uses_documented_batch_update_shape(
     assert result == (SheetIdentity(name="MB Staging run data", gid=42),)
 
 
+def test_sheets_client_create_atomically_marks_managed_sheet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = MagicMock()
+    service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {
+        "replies": [
+            {
+                "addSheet": {
+                    "properties": {
+                        "title": "MB Staging run data",
+                        "sheetId": 42,
+                    }
+                }
+            },
+            {"createDeveloperMetadata": {"developerMetadata": {"metadataId": 9}}},
+        ]
+    }
+    client = SheetsClient(oauth=MagicMock())
+    monkeypatch.setattr(client, "_build_service", MagicMock(return_value=service))
+
+    result = client.create_sheets(
+        "ss1",
+        (
+            SheetCreate(
+                name="MB Staging run data",
+                row_count=3,
+                col_count=2,
+                gid=42,
+                managed_prefix="MB",
+            ),
+        ),
+    )
+
+    body = service.spreadsheets.return_value.batchUpdate.call_args.kwargs["body"]
+    assert body["requests"][0]["addSheet"]["properties"]["sheetId"] == 42
+    assert body["requests"][1] == {
+        "createDeveloperMetadata": {
+            "developerMetadata": {
+                "metadataKey": MANAGED_SHEET_METADATA_KEY,
+                "metadataValue": "MB",
+                "location": {"sheetId": 42},
+                "visibility": "DOCUMENT",
+            }
+        }
+    }
+    assert result == (SheetIdentity("MB Staging run data", 42, "MB"),)
+
+
+def test_sheets_client_maps_malformed_successful_create_response_to_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = MagicMock()
+    service.spreadsheets.return_value.batchUpdate.return_value.execute.return_value = {
+        "replies": None
+    }
+    client = SheetsClient(oauth=MagicMock())
+    monkeypatch.setattr(client, "_build_service", MagicMock(return_value=service))
+
+    with pytest.raises(GSheetAPIError, match="invalid create response"):
+        client.create_sheets("ss1", (SheetCreate("MB Staging run", 1, 1, 42, "MB"),))
+
+
+def test_sheets_client_reads_only_exact_document_visible_ownership_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = MagicMock()
+    service.spreadsheets.return_value.get.return_value.execute.return_value = {
+        "properties": {"title": "Output"},
+        "sheets": [
+            {
+                "properties": {
+                    "title": "MB Bundle run data",
+                    "sheetId": 42,
+                    "gridProperties": {"rowCount": 3, "columnCount": 2},
+                },
+                "developerMetadata": [
+                    {
+                        "metadataKey": MANAGED_SHEET_METADATA_KEY,
+                        "metadataValue": "MB",
+                        "visibility": "DOCUMENT",
+                    }
+                ],
+            }
+        ],
+    }
+    client = SheetsClient(oauth=MagicMock())
+    monkeypatch.setattr(client, "_build_service", MagicMock(return_value=service))
+
+    metadata = client.get_workbook_metadata("ss1")
+
+    assert metadata.sheets[0].managed_prefix == "MB"
+
+
 def test_sheets_client_values_batch_update_uses_rectangular_value_ranges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -377,10 +495,10 @@ def test_sheets_client_promote_uses_atomic_delete_then_rename_batch(
     client.promote_sheets(
         "ss1",
         managed_prefix="MB",
-        deletes=(SheetIdentity("MB Bundle old data", 4),),
+        deletes=(SheetIdentity("MB Bundle old data", 4, "MB"),),
         renames=(
             SheetRename(
-                sheet=SheetIdentity("MB Staging run data", 42),
+                sheet=SheetIdentity("MB Staging run data", 42, "MB"),
                 new_name="MB Bundle run data",
             ),
         ),

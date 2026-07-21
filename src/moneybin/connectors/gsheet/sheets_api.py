@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from moneybin.connectors.gsheet.errors import (
     GSheetAPIError,
@@ -21,6 +21,8 @@ from moneybin.connectors.gsheet.errors import (
 
 logger = logging.getLogger(__name__)
 
+MANAGED_SHEET_METADATA_KEY = "moneybin.managed_prefix"
+
 
 @dataclass(frozen=True)
 class SheetInfo:
@@ -30,6 +32,7 @@ class SheetInfo:
     gid: int
     row_count: int
     col_count: int
+    managed_prefix: str | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class SheetIdentity:
 
     name: str
     gid: int
+    managed_prefix: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +59,8 @@ class SheetCreate:
     name: str
     row_count: int
     col_count: int
+    gid: int | None = None
+    managed_prefix: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,8 +153,7 @@ class SheetsClient:
         # pull_all_healthy with N connections that's 2N rebuilds per
         # refresh. Rebuild only when the token rotates (the only input to
         # _build_service that changes between calls).
-        self._cached_service: Any = None
-        self._cached_token: str | None = None
+        self._cached_services: dict[bool, tuple[str, Any]] = {}
 
     def get_workbook_metadata(self, spreadsheet_id: str) -> WorkbookMetadata:
         """Fetch workbook title and per-tab metadata."""
@@ -169,6 +174,7 @@ class SheetsClient:
                 gid=s["properties"]["sheetId"],
                 row_count=s["properties"]["gridProperties"]["rowCount"],
                 col_count=s["properties"]["gridProperties"]["columnCount"],
+                managed_prefix=_managed_prefix(s.get("developerMetadata", [])),
             )
             for s in meta["sheets"]
         )
@@ -204,22 +210,32 @@ class SheetsClient:
             return ()
         if any(sheet.row_count < 1 or sheet.col_count < 1 for sheet in sheets):
             raise ValueError("created sheets require positive grid dimensions")
-        body = {
-            "requests": [
-                {
-                    "addSheet": {
-                        "properties": {
-                            "title": sheet.name,
-                            "gridProperties": {
-                                "rowCount": sheet.row_count,
-                                "columnCount": sheet.col_count,
-                            },
+        requests: list[dict[str, object]] = []
+        for sheet in sheets:
+            properties: dict[str, object] = {
+                "title": sheet.name,
+                "gridProperties": {
+                    "rowCount": sheet.row_count,
+                    "columnCount": sheet.col_count,
+                },
+            }
+            if sheet.gid is not None:
+                properties["sheetId"] = sheet.gid
+            requests.append({"addSheet": {"properties": properties}})
+            if sheet.managed_prefix is not None:
+                if sheet.gid is None:
+                    raise ValueError("managed sheets require a preassigned sheet ID")
+                requests.append({
+                    "createDeveloperMetadata": {
+                        "developerMetadata": {
+                            "metadataKey": MANAGED_SHEET_METADATA_KEY,
+                            "metadataValue": sheet.managed_prefix,
+                            "location": {"sheetId": sheet.gid},
+                            "visibility": "DOCUMENT",
                         }
                     }
-                }
-                for sheet in sheets
-            ]
-        }
+                })
+        body = {"requests": requests}
         try:
             service = self._build_service(require_write=True)
             # Official request contracts (request bodies kept exact here):
@@ -242,18 +258,36 @@ class SheetsClient:
             )
         except Exception as exc:
             raise _map_error(exc) from exc
-        replies = response.get("replies", [])
-        if len(replies) != len(sheets):
-            raise GSheetAPIError("Google Sheets returned an invalid create response")
         try:
-            return tuple(
-                SheetIdentity(
-                    name=str(reply["addSheet"]["properties"]["title"]),
-                    gid=int(reply["addSheet"]["properties"]["sheetId"]),
+            if not isinstance(response, dict):
+                raise TypeError("invalid create response")
+            response_map = cast(dict[str, object], response)
+            replies_value = response_map.get("replies", [])
+            if not isinstance(replies_value, list):
+                raise TypeError("invalid create replies")
+            reply_objects = cast(list[object], replies_value)
+            if len(reply_objects) != len(requests) or any(
+                not isinstance(reply, dict) for reply in reply_objects
+            ):
+                raise TypeError("invalid create replies")
+            replies = cast(list[dict[str, Any]], reply_objects)
+            identities: list[SheetIdentity] = []
+            reply_index = 0
+            for sheet in sheets:
+                properties = replies[reply_index]["addSheet"]["properties"]
+                gid = properties["sheetId"]
+                if not isinstance(gid, (int, str)):
+                    raise TypeError("invalid sheet ID")
+                identities.append(
+                    SheetIdentity(
+                        name=str(properties["title"]),
+                        gid=int(gid),
+                        managed_prefix=sheet.managed_prefix,
+                    )
                 )
-                for reply in replies
-            )
-        except (KeyError, TypeError, ValueError) as exc:
+                reply_index += 2 if sheet.managed_prefix is not None else 1
+            return tuple(identities)
+        except (IndexError, KeyError, TypeError, ValueError) as exc:
             raise GSheetAPIError(
                 "Google Sheets returned an invalid create response"
             ) from exc
@@ -306,7 +340,9 @@ class SheetsClient:
         identities = (*deletes, *(rename.sheet for rename in renames))
         promoted_names = tuple(rename.new_name for rename in renames)
         if not managed_prefix or any(
-            not sheet.name.startswith(namespace) for sheet in identities
+            not sheet.name.startswith(namespace)
+            or sheet.managed_prefix != managed_prefix
+            for sheet in identities
         ):
             raise ValueError("promotion identities must be in the managed namespace")
         if any(not name.startswith(namespace) for name in promoted_names):
@@ -354,8 +390,9 @@ class SheetsClient:
         from googleapiclient.discovery import build  # noqa: PLC0415
 
         token = self._oauth.get_access_token(require_write=require_write)
-        if self._cached_service is not None and token == self._cached_token:
-            return self._cached_service
+        cached = self._cached_services.get(require_write)
+        if cached is not None and token == cached[0]:
+            return cached[1]
 
         creds = Credentials(token=token)
         timeout = self._timeout_seconds
@@ -372,9 +409,22 @@ class SheetsClient:
             http=httplib2.Http(timeout=timeout),
         )
         service = build("sheets", "v4", http=http_with_timeout, cache_discovery=False)
-        self._cached_service = service
-        self._cached_token = token
+        self._cached_services[require_write] = (token, service)
         return service
+
+
+def _managed_prefix(metadata: list[dict[str, object]]) -> str | None:
+    """Return the single valid MoneyBin ownership marker for a tab."""
+    values: set[str] = set()
+    for item in metadata:
+        value = item.get("metadataValue")
+        if (
+            item.get("metadataKey") == MANAGED_SHEET_METADATA_KEY
+            and item.get("visibility") == "DOCUMENT"
+            and isinstance(value, str)
+        ):
+            values.add(value)
+    return next(iter(values)) if len(values) == 1 else None
 
 
 def _rectangular_width(values: tuple[tuple[object, ...], ...]) -> int:

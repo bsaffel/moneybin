@@ -132,6 +132,16 @@ class GSheetConnectionsRepo(BaseRepo):
             decode=_decode_row,
         )
 
+    def assert_not_export_destination(self, spreadsheet_id: str) -> None:
+        """Reject a workbook already assigned to the output role."""
+        conflict = self._db.execute(
+            f"SELECT 1 FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE spreadsheet_id = ? LIMIT 1",
+            [spreadsheet_id],
+        ).fetchone()
+        if conflict is not None:
+            raise GSheetConnectionExportDestinationConflictError()
+
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
@@ -161,13 +171,7 @@ class GSheetConnectionsRepo(BaseRepo):
         """Insert a new connection row + audit. Returns the generated id."""
         connection_id = uuid.uuid4().hex[:12]
         with self._transaction(in_outer_txn=in_outer_txn):
-            export_destination = self._db.execute(
-                f"SELECT 1 FROM {EXPORT_DESTINATIONS.full_name} "  # noqa: S608  # TableRef + parameterized value
-                "WHERE spreadsheet_id = ? LIMIT 1",
-                [spreadsheet_id],
-            ).fetchone()
-            if export_destination is not None:
-                raise GSheetConnectionExportDestinationConflictError()
+            self.assert_not_export_destination(spreadsheet_id)
             self._db.execute(
                 f"""
                 INSERT INTO {GSHEET_CONNECTIONS.full_name} (

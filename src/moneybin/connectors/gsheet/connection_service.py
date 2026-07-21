@@ -249,13 +249,13 @@ class GSheetConnectionService:
 
     def connect(self, req: ConnectionRequest, *, actor: str = "cli") -> ConnectResult:
         """Detect, persist, and optionally pull the initial snapshot."""
-        if not self._oauth.is_authorized(require_write=False):
-            self._oauth.authorize(require_write=False)
-
         try:
             spreadsheet_id, gid = parse_sheet_url(req.url)
         except ValueError as exc:
             raise GSheetError(f"Invalid Google Sheets URL: {exc}") from exc
+        self._repo.assert_not_export_destination(spreadsheet_id)
+        if not self._oauth.is_authorized(require_write=False):
+            self._oauth.authorize(require_write=False)
         meta = self._sheets.get_workbook_metadata(spreadsheet_id)
         sheet = next((s for s in meta.sheets if s.gid == gid), None)
         if sheet is None:

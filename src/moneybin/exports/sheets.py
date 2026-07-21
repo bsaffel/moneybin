@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Protocol
@@ -22,7 +23,6 @@ from moneybin.database import Database
 from moneybin.exports.models import ExportDestination, ExportReceipt
 from moneybin.exports.renderers import normalize_tabular_cell
 from moneybin.exports.snapshot import PreparedExport, PreparedTable
-from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
 
 _MAX_SHEET_TITLE_LENGTH = 100
 _MAX_MANAGED_PREFIX_LENGTH = 40
@@ -75,18 +75,46 @@ class SheetsExportPublisher:
         self._reject_inbound_collision(spreadsheet_id)
         metadata = self._sheets.get_workbook_metadata(spreadsheet_id)
         run_id = _available_run_id(snapshot, prefix, metadata.sheets)
-        planned = _planned_sheets(snapshot, prefix, run_id)
-        creates = tuple(
-            SheetCreate(
-                name=item.staging_name,
-                row_count=max(1, len(item.values)),
-                col_count=max(1, len(item.values[0]) if item.values else 0),
-            )
-            for item in planned
+        replacements = _managed_replacements(
+            metadata.sheets,
+            prefix=prefix,
+            subject_kind=snapshot.subject.kind,
         )
-        staged = self._sheets.create_sheets(spreadsheet_id, creates)
+        reserved_names = {
+            _normalized_title(sheet.name)
+            for sheet in metadata.sheets
+            if sheet.gid not in {identity.gid for identity in replacements}
+        }
+        planned = _planned_sheets(snapshot, prefix, run_id, reserved_names)
+        used_gids = {sheet.gid for sheet in metadata.sheets}
+        creates: list[SheetCreate] = []
+        for item in planned:
+            gid = _available_sheet_gid(item.staging_name, used_gids)
+            used_gids.add(gid)
+            creates.append(
+                SheetCreate(
+                    name=item.staging_name,
+                    row_count=max(1, len(item.values)),
+                    col_count=max(1, len(item.values[0]) if item.values else 0),
+                    gid=gid,
+                    managed_prefix=prefix,
+                )
+            )
+        try:
+            staged = self._sheets.create_sheets(spreadsheet_id, tuple(creates))
+        except GSheetError as exc:
+            recovered = self._recover_created_sheets(
+                spreadsheet_id,
+                prefix=prefix,
+                staging_names={item.staging_name for item in planned},
+            )
+            raise SheetsPublishError(
+                staging_sheet_ids=tuple(sheet.gid for sheet in recovered)
+            ) from exc
         if len(staged) != len(planned):
-            raise GSheetAPIError("Google Sheets returned incomplete staging identities")
+            raise SheetsPublishError(
+                staging_sheet_ids=tuple(sheet.gid for sheet in staged)
+            )
 
         try:
             writes = tuple(
@@ -98,11 +126,6 @@ class SheetsExportPublisher:
                 actual = self._sheets.read_sheet_values(spreadsheet_id, identity.name)
                 _validate_values(actual, item.values)
 
-            deletes = _managed_replacements(
-                metadata.sheets,
-                prefix=prefix,
-                subject_kind=snapshot.subject.kind,
-            )
             renames = tuple(
                 SheetRename(sheet=identity, new_name=item.visible_name)
                 for identity, item in zip(staged, planned, strict=True)
@@ -111,7 +134,7 @@ class SheetsExportPublisher:
                 spreadsheet_id,
                 managed_prefix=prefix,
                 renames=renames,
-                deletes=deletes,
+                deletes=replacements,
             )
         except GSheetError as exc:
             raise SheetsPublishError(
@@ -130,16 +153,27 @@ class SheetsExportPublisher:
             recovery_actions=(),
         )
 
+    def _recover_created_sheets(
+        self, spreadsheet_id: str, *, prefix: str, staging_names: set[str]
+    ) -> tuple[SheetInfo, ...]:
+        """Reconcile only exact, ownership-marked tabs after ambiguous create."""
+        try:
+            metadata = self._sheets.get_workbook_metadata(spreadsheet_id)
+        except GSheetError:
+            return ()
+        return tuple(
+            sheet
+            for sheet in metadata.sheets
+            if sheet.name in staging_names and sheet.managed_prefix == prefix
+        )
+
     def _reject_inbound_collision(self, spreadsheet_id: str) -> None:
         """Reject every inbound/output workbook overlap before API access."""
-        if any(
-            row["spreadsheet_id"] == spreadsheet_id
-            for row in GSheetConnectionsRepo(self._db).list_all()
-        ):
-            raise ValueError(
-                "A Google Sheets export destination cannot also be an inbound "
-                "spreadsheet."
-            )
+        from moneybin.repositories.export_destinations_repo import (
+            ExportDestinationsRepo,
+        )
+
+        ExportDestinationsRepo(self._db).assert_not_inbound_connection(spreadsheet_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,9 +216,10 @@ def _available_run_id(
     base = snapshot.created_at.strftime("%Y%m%dT%H%M%SZ")
     candidate = base
     suffix = 2
-    names = {sheet.name for sheet in sheets}
+    names = {_normalized_title(sheet.name) for sheet in sheets}
     while any(
-        name.startswith(f"{prefix} ") and f" {candidate} " in f" {name} "
+        name.startswith(_normalized_title(f"{prefix} "))
+        and f" {_normalized_title(candidate)} " in f" {name} "
         for name in names
     ):
         candidate = f"{base}-{suffix}"
@@ -193,16 +228,22 @@ def _available_run_id(
 
 
 def _planned_sheets(
-    snapshot: PreparedExport, prefix: str, run_id: str
+    snapshot: PreparedExport,
+    prefix: str,
+    run_id: str,
+    reserved_names: set[str] | None = None,
 ) -> tuple[_PlannedSheet, ...]:
     kind = "Bundle" if snapshot.subject.kind == "bundle" else "Report"
     result: list[_PlannedSheet] = []
+    used_names = set(reserved_names or ())
     for table in snapshot.tables:
         subject = table.name
         if snapshot.subject.kind == "report" and snapshot.subject.report_id is not None:
             subject = snapshot.subject.report_id
-        visible = _managed_title(prefix, kind, run_id, subject)
-        staging = _managed_title(prefix, "Staging", run_id, kind, subject)
+        visible = _unique_managed_title(used_names, prefix, kind, run_id, subject)
+        staging = _unique_managed_title(
+            used_names, prefix, "Staging", run_id, kind, subject
+        )
         result.append(_PlannedSheet(staging, visible, _table_values(table)))
 
     manifest = deepcopy(snapshot.manifest)
@@ -212,15 +253,15 @@ def _planned_sheets(
     dictionary_values = (("JSON",), (_json_text(snapshot.data_dictionary),))
     result.append(
         _PlannedSheet(
-            _managed_title(prefix, "Staging", run_id, "Manifest"),
-            _managed_title(prefix, "Manifest"),
+            _unique_managed_title(used_names, prefix, "Staging", run_id, "Manifest"),
+            _unique_managed_title(used_names, prefix, "Manifest"),
             manifest_values,
         )
     )
     result.append(
         _PlannedSheet(
-            _managed_title(prefix, "Staging", run_id, "Dictionary"),
-            _managed_title(prefix, "Dictionary"),
+            _unique_managed_title(used_names, prefix, "Staging", run_id, "Dictionary"),
+            _unique_managed_title(used_names, prefix, "Dictionary"),
             dictionary_values,
         )
     )
@@ -247,17 +288,50 @@ def _managed_title(prefix: str, *segments: str) -> str:
     return f"{title[: _MAX_SHEET_TITLE_LENGTH - len(digest) - 1]}-{digest}"
 
 
+def _unique_managed_title(used: set[str], prefix: str, *segments: str) -> str:
+    """Return a valid title unique under Sheets' Unicode/case semantics."""
+    base = _managed_title(prefix, *segments)
+    title = base
+    attempt = 1
+    while _normalized_title(title) in used:
+        digest = hashlib.sha256(f"{base}\x1f{attempt}".encode()).hexdigest()[:8]
+        title = f"{base[: _MAX_SHEET_TITLE_LENGTH - 9]}-{digest}"
+        attempt += 1
+    used.add(_normalized_title(title))
+    return title
+
+
+def _normalized_title(name: str) -> str:
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
+def _available_sheet_gid(name: str, used: set[int]) -> int:
+    candidate = int.from_bytes(hashlib.sha256(name.encode("utf-8")).digest()[:4])
+    candidate &= 0x7FFFFFFF
+    while candidate in used:
+        candidate = (candidate + 1) & 0x7FFFFFFF
+    return candidate
+
+
 def _managed_replacements(
     sheets: tuple[SheetInfo, ...], *, prefix: str, subject_kind: str
 ) -> tuple[SheetIdentity, ...]:
     subject_namespace = (
         f"{prefix} Bundle " if subject_kind == "bundle" else f"{prefix} Report "
     )
-    exact_metadata = {f"{prefix} Manifest", f"{prefix} Dictionary"}
+    metadata_namespaces = (f"{prefix} Manifest", f"{prefix} Dictionary")
     return tuple(
-        SheetIdentity(name=sheet.name, gid=sheet.gid)
+        SheetIdentity(
+            name=sheet.name,
+            gid=sheet.gid,
+            managed_prefix=sheet.managed_prefix,
+        )
         for sheet in sheets
-        if sheet.name.startswith(subject_namespace) or sheet.name in exact_metadata
+        if sheet.managed_prefix == prefix
+        and (
+            sheet.name.startswith(subject_namespace)
+            or sheet.name.startswith(metadata_namespaces)
+        )
     )
 
 

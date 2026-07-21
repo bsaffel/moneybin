@@ -24,6 +24,9 @@ _ENV_PREFIX = "MONEYBIN_"
 GSHEET_REFRESH_TOKEN_KEY = "gsheet:refresh_token"  # noqa: S105  # keyring lookup name, not a secret value
 GSHEET_ACCESS_TOKEN_KEY = "gsheet:access_token"  # noqa: S105  # keyring lookup name, not a secret value
 GSHEET_ACCESS_TOKEN_EXPIRES_KEY = "gsheet:access_token_expires_at"  # noqa: S105  # keyring lookup name, not a secret value
+GSHEET_WRITE_REFRESH_TOKEN_KEY = "gsheet:write_refresh_token"  # noqa: S105  # keyring lookup name, not a secret value
+GSHEET_WRITE_ACCESS_TOKEN_KEY = "gsheet:write_access_token"  # noqa: S105  # keyring lookup name, not a secret value
+GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY = "gsheet:write_access_token_expires_at"  # noqa: S105  # keyring lookup name, not a secret value
 
 
 def _resolve_service_name(profile: str | None) -> str:

@@ -102,6 +102,16 @@ class ExportDestinationsRepo(BaseRepo):
         ).fetchall()
         return [dict(zip(_FULL_ROW_COLUMNS, row, strict=True)) for row in rows]
 
+    def assert_not_inbound_connection(self, spreadsheet_id: str) -> None:
+        """Reject a workbook already assigned to the inbound role."""
+        conflict = self._db.execute(
+            f"SELECT 1 FROM {GSHEET_CONNECTIONS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            "WHERE spreadsheet_id = ? LIMIT 1",
+            [spreadsheet_id],
+        ).fetchone()
+        if conflict is not None:
+            raise ExportDestinationSpreadsheetConflictError()
+
     def list(self) -> list[ExportDestination]:
         """Return saved destinations in stable user-facing name order."""
         return [_decode_destination(row) for row in self._list_full_rows()]
@@ -247,13 +257,7 @@ class ExportDestinationsRepo(BaseRepo):
                 "A Sheets export destination requires a spreadsheet ID.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        conflict = self._db.execute(
-            f"SELECT 1 FROM {GSHEET_CONNECTIONS.full_name} "  # noqa: S608  # TableRef + parameterized value
-            "WHERE spreadsheet_id = ? LIMIT 1",
-            [spreadsheet_id],
-        ).fetchone()
-        if conflict is not None:
-            raise ExportDestinationSpreadsheetConflictError()
+        self.assert_not_inbound_connection(spreadsheet_id)
 
     def remove(
         self,

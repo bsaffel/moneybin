@@ -66,10 +66,12 @@ class ExportService:
         )
 
         prefix = validate_managed_tab_prefix(managed_tab_prefix)
+        repo = ExportDestinationsRepo(self._db)
+        repo.assert_not_inbound_connection(spreadsheet_id)
         grant = oauth_client.authorize(require_write=True)
         if not grant.can_write:
             raise GSheetAuthError("Google Sheets write authorization was not granted")
-        return ExportDestinationsRepo(self._db).set_sheets(
+        return repo.set_sheets(
             name=name,
             spreadsheet_id=spreadsheet_id,
             managed_tab_prefix=prefix,

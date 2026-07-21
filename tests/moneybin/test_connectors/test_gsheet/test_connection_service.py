@@ -25,6 +25,10 @@ from moneybin.connectors.gsheet.testing.fake_sheets_client import (
 )
 from moneybin.database import Database
 from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
+from moneybin.repositories.gsheet_connections_repo import (
+    GSheetConnectionExportDestinationConflictError,
+)
 
 
 def _confirmation_count(outcome: str) -> float:
@@ -46,6 +50,31 @@ def _make_service(
     sheets = TestSheetsClient()
     svc = GSheetConnectionService(db=db, sheets_client=sheets, oauth_client=oauth)
     return svc, sheets, oauth
+
+
+def test_connect_rejects_export_overlap_before_oauth_or_sheets_api(
+    in_memory_db: Database,
+) -> None:
+    ExportDestinationsRepo(in_memory_db).set_sheets(
+        name="dashboard",
+        spreadsheet_id="ss-output",
+        managed_tab_prefix="MB",
+        actor="test",
+    )
+    service, sheets, oauth = _make_service(in_memory_db)
+    oauth.revoke()
+    sheets.inject_error_for("metadata", AssertionError("API must not be called"))
+
+    with pytest.raises(
+        GSheetConnectionExportDestinationConflictError, match="export destination"
+    ):
+        service.connect(
+            ConnectionRequest(
+                url="https://docs.google.com/spreadsheets/d/ss-output/edit#gid=0"
+            )
+        )
+
+    assert oauth.authorize_called == 0
 
 
 def _tiller_workbook() -> FakeWorkbook:

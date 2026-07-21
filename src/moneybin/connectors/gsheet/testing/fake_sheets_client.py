@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 
 from moneybin.connectors.gsheet.errors import GSheetUnreachableError
@@ -23,6 +24,7 @@ class FakeSheetTab:
     gid: int
     headers: list[str]
     rows: list[list[str]]
+    managed_prefix: str | None = None
 
 
 @dataclass
@@ -93,6 +95,7 @@ class TestSheetsClient:
                     gid=t.gid,
                     row_count=len(t.rows) + 1,
                     col_count=len(t.headers),
+                    managed_prefix=t.managed_prefix,
                 )
                 for t in wb.tabs
             ),
@@ -117,19 +120,28 @@ class TestSheetsClient:
         """Create tabs atomically with deterministic fake IDs."""
         self._maybe_raise("create")
         workbook = self._require_workbook(spreadsheet_id)
-        existing_names = {tab.name for tab in workbook.tabs}
+        existing_names = {_normalized_title(tab.name) for tab in workbook.tabs}
         requested_names = [sheet.name for sheet in sheets]
-        if len(set(requested_names)) != len(
+        normalized_requested = {_normalized_title(name) for name in requested_names}
+        if len(normalized_requested) != len(
             requested_names
-        ) or existing_names.intersection(requested_names):
+        ) or existing_names.intersection(normalized_requested):
             raise GSheetUnreachableError("Duplicate sheet name")
-        next_gid = max((tab.gid for tab in workbook.tabs), default=-1) + 1
         identities: list[SheetIdentity] = []
-        for offset, sheet in enumerate(sheets):
-            gid = next_gid + offset
-            workbook.tabs.append(FakeSheetTab(sheet.name, gid, [], []))
-            identities.append(SheetIdentity(sheet.name, gid))
+        used_gids = {tab.gid for tab in workbook.tabs}
+        next_gid = max(used_gids, default=-1) + 1
+        for sheet in sheets:
+            gid = sheet.gid if sheet.gid is not None else next_gid
+            if gid in used_gids:
+                raise GSheetUnreachableError("Duplicate sheet ID")
+            used_gids.add(gid)
+            next_gid = max(next_gid, gid + 1)
+            workbook.tabs.append(
+                FakeSheetTab(sheet.name, gid, [], [], sheet.managed_prefix)
+            )
+            identities.append(SheetIdentity(sheet.name, gid, sheet.managed_prefix))
         self.requests.append(("create", tuple(requested_names)))
+        self._maybe_raise("create_after")
         return tuple(identities)
 
     def write_sheet_values(
@@ -165,6 +177,7 @@ class TestSheetsClient:
         namespace = f"{managed_prefix} "
         if not managed_prefix or any(
             not sheet.name.startswith(namespace)
+            or sheet.managed_prefix != managed_prefix
             for sheet in (*deletes, *(rename.sheet for rename in renames))
         ):
             raise ValueError("promotion identities must be in the managed namespace")
@@ -178,7 +191,7 @@ class TestSheetsClient:
         renamed_gids = {tab.gid for tab in rename_tabs}
         final_names = [tab.name for tab in remaining if tab.gid not in renamed_gids]
         final_names.extend(rename.new_name for rename in renames)
-        if len(final_names) != len(set(final_names)):
+        if len(final_names) != len({_normalized_title(name) for name in final_names}):
             raise GSheetUnreachableError("Duplicate promoted sheet name")
         workbook.tabs = [tab for tab in workbook.tabs if tab.gid not in delete_gids]
         for tab, rename in zip(rename_tabs, renames, strict=True):
@@ -210,3 +223,7 @@ class TestSheetsClient:
         exc = self._errors_by_operation.pop(operation, None)
         if exc is not None:
             raise exc
+
+
+def _normalized_title(name: str) -> str:
+    return unicodedata.normalize("NFKC", name).casefold()

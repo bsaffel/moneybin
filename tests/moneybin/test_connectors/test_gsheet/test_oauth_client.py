@@ -13,6 +13,7 @@ from moneybin.connectors.gsheet.oauth_client import (
     GOOGLE_SHEETS_READ_SCOPE,
     GOOGLE_SHEETS_WRITE_SCOPE,
     GSHEET_GRANTED_SCOPES_KEY,
+    GSHEET_WRITE_GRANTED_SCOPES_KEY,
     GoogleOAuthClient,
 )
 from moneybin.connectors.gsheet.sheets_api import OAuthCredentialsProvider
@@ -21,6 +22,9 @@ from moneybin.secrets import (
     GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
     GSHEET_ACCESS_TOKEN_KEY,
     GSHEET_REFRESH_TOKEN_KEY,
+    GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY,
+    GSHEET_WRITE_ACCESS_TOKEN_KEY,
+    GSHEET_WRITE_REFRESH_TOKEN_KEY,
     SecretNotFoundError,
 )
 
@@ -170,8 +174,12 @@ def test_google_oauth_revoke_deletes_all_grant_keys() -> None:
         GSHEET_ACCESS_TOKEN_KEY,
         GSHEET_ACCESS_TOKEN_EXPIRES_KEY,
         GSHEET_GRANTED_SCOPES_KEY,
+        GSHEET_WRITE_REFRESH_TOKEN_KEY,
+        GSHEET_WRITE_ACCESS_TOKEN_KEY,
+        GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY,
+        GSHEET_WRITE_GRANTED_SCOPES_KEY,
     }
-    assert store.delete_key.call_count == 4
+    assert store.delete_key.call_count == 8
 
 
 def test_google_oauth_revoke_survives_missing_keys() -> None:
@@ -180,7 +188,7 @@ def test_google_oauth_revoke_survives_missing_keys() -> None:
     client = GoogleOAuthClient(store, _make_settings())
     # Should not raise even when every key is already gone.
     client.revoke()
-    assert store.delete_key.call_count == 4
+    assert store.delete_key.call_count == 8
 
 
 def test_google_oauth_cached_read_token_is_rejected_for_write() -> None:
@@ -197,18 +205,24 @@ def test_google_oauth_cached_read_token_is_rejected_for_write() -> None:
         client.get_access_token(require_write=True)
 
 
-def test_google_oauth_write_grant_can_serve_read_and_write_tokens() -> None:
+def test_google_oauth_write_grant_never_serves_a_read_request() -> None:
     future = int(time.time()) + 3600
     store = _store_with({
-        GSHEET_REFRESH_TOKEN_KEY: "write-refresh",
-        GSHEET_ACCESS_TOKEN_KEY: "write-access",
+        GSHEET_REFRESH_TOKEN_KEY: "read-refresh",
+        GSHEET_ACCESS_TOKEN_KEY: "read-access",
         GSHEET_ACCESS_TOKEN_EXPIRES_KEY: str(future),
-        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_WRITE_SCOPE,
+        GSHEET_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_READ_SCOPE,
+        GSHEET_WRITE_REFRESH_TOKEN_KEY: "write-refresh",
+        GSHEET_WRITE_ACCESS_TOKEN_KEY: "write-access",
+        GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY: str(future),
+        GSHEET_WRITE_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_WRITE_SCOPE,
     })
     client = GoogleOAuthClient(store, _make_settings())
 
-    assert client.get_access_token(require_write=False) == "write-access"
+    assert client.get_access_token(require_write=False) == "read-access"
     assert client.get_access_token(require_write=True) == "write-access"
+    read_names = [call.args[0] for call in store.get_key.call_args_list[:3]]
+    assert GSHEET_WRITE_ACCESS_TOKEN_KEY not in read_names
 
 
 def test_google_oauth_upgrade_retains_refresh_token_when_google_omits_replacement(
@@ -239,8 +253,16 @@ def test_google_oauth_upgrade_retains_refresh_token_when_google_omits_replacemen
     from_config.assert_called_once()
     assert from_config.call_args.args[1] == [GOOGLE_SHEETS_WRITE_SCOPE]
     assert flow.run_local_server.call_args.kwargs["include_granted_scopes"] == "true"
-    store.set_key.assert_any_call(GSHEET_REFRESH_TOKEN_KEY, "existing-read-refresh")
-    store.set_key.assert_any_call(GSHEET_GRANTED_SCOPES_KEY, GOOGLE_SHEETS_WRITE_SCOPE)
+    store.set_key.assert_any_call(
+        GSHEET_WRITE_REFRESH_TOKEN_KEY, "existing-read-refresh"
+    )
+    store.set_key.assert_any_call(
+        GSHEET_WRITE_GRANTED_SCOPES_KEY, GOOGLE_SHEETS_WRITE_SCOPE
+    )
+    assert not any(
+        call.args[0] == GSHEET_REFRESH_TOKEN_KEY
+        for call in store.set_key.call_args_list
+    )
 
 
 def test_google_oauth_write_upgrade_rejects_partial_scope_grant(
@@ -294,3 +316,36 @@ def test_google_oauth_get_access_token_refreshes_when_expired_token_no_client_id
     client = GoogleOAuthClient(store, _make_settings(client_id=""))
     with pytest.raises(GSheetAuthError, match="client ID is not configured"):
         client.get_access_token()
+
+
+def test_google_oauth_refresh_downgrade_clears_capability_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _store_with({
+        GSHEET_WRITE_REFRESH_TOKEN_KEY: "write-refresh",
+        GSHEET_WRITE_GRANTED_SCOPES_KEY: GOOGLE_SHEETS_WRITE_SCOPE,
+    })
+    creds = MagicMock()
+    creds.token = "downgraded-access"  # noqa: S105  # test credential
+    creds.expiry = None
+    creds.granted_scopes = [GOOGLE_SHEETS_READ_SCOPE]
+    creds.scopes = [GOOGLE_SHEETS_WRITE_SCOPE]
+    from google.oauth2 import credentials as credentials_module
+
+    monkeypatch.setattr(
+        credentials_module, "Credentials", MagicMock(return_value=creds)
+    )
+    client = GoogleOAuthClient(store, _make_settings())
+
+    with pytest.raises(GSheetAuthError, match="required Google Sheets scope"):
+        client.get_access_token(require_write=True)
+
+    store.delete_key.assert_any_call(GSHEET_WRITE_ACCESS_TOKEN_KEY)
+    store.delete_key.assert_any_call(GSHEET_WRITE_ACCESS_TOKEN_EXPIRES_KEY)
+    store.set_key.assert_any_call(
+        GSHEET_WRITE_GRANTED_SCOPES_KEY, GOOGLE_SHEETS_READ_SCOPE
+    )
+    assert not any(
+        call.args == (GSHEET_WRITE_ACCESS_TOKEN_KEY, "downgraded-access")
+        for call in store.set_key.call_args_list
+    )
