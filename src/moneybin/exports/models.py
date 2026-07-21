@@ -5,9 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import JsonValue
+
+if TYPE_CHECKING:
+    from moneybin.errors import RecoveryAction
 
 type ExportSubjectKind = Literal["bundle", "report"]
 type ExportFormat = Literal["csv", "parquet", "xlsx", "sheets"]
@@ -38,6 +41,21 @@ class ExportRequest:
     format: ExportFormat
     redaction_mode: RedactionMode
     compress_zip: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExportReceipt:
+    """One adapter-ready receipt for a completed export publication."""
+
+    subject: Mapping[str, object]
+    redaction_mode: RedactionMode
+    destination: ExportDestination
+    artifact_path: Path | None
+    compressed_artifact_path: Path | None
+    sheets_identity: str | None
+    row_counts: Mapping[str, int]
+    checksums: Mapping[str, str]
+    recovery_actions: tuple[RecoveryAction, ...]
 
 
 @dataclass(frozen=True, slots=True)
