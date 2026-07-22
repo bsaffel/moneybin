@@ -1,6 +1,6 @@
 # MoneyBin MCP
 
-> **Status:** in-progress — the 45-tool registry operates today; promotion is
+> **Status:** in-progress — the 47-tool registry operates today; promotion is
 > pending observed context-budget and host-native-deferral evidence.
 >
 > Companions: [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md)
@@ -11,7 +11,7 @@
 ## Purpose
 
 This is the concrete current MCP contract. Generic clients receive the complete
-45-tool standard registry. Supported hosts may defer schemas from that same
+47-tool standard registry. Supported hosts may defer schemas from that same
 registry without reconnect, packs, or profiles; names, annotations, approvals,
 allowlists, and audit identity do not change. The previous per-tool catalog is
 archived at [`archived/moneybin-mcp-pre-cutover.md`](archived/moneybin-mcp-pre-cutover.md).
@@ -30,11 +30,12 @@ archived at [`archived/moneybin-mcp-pre-cutover.md`](archived/moneybin-mcp-pre-c
 | Import | `import_files`, `import_preview`, `import_confirm`, `import_status`, `import_revert`, `import_inbox_sync`, `import_labels_set` |
 | Sync | `sync_link`, `sync_status`, `sync_pull`, `sync_disconnect`, `gsheet`, `gsheet_connect`, `gsheet_pull`, `gsheet_disconnect` |
 | Privacy | `privacy`, `privacy_consent_set` |
+| Exports | `export_run`, `exports_set` |
 | Platform | `refresh_run`, `sql_query`, `sql_schema` |
 
 ## Contract matrix
 
-The rendered **standard-45 snapshot** from `tools/list` is the canonical exact
+The rendered **standard-47 snapshot** from `tools/list` is the canonical exact
 input schema for every row below. This matrix is the stable selection guide: it
 names each tool, its primary selector or discriminator, its intent, and its
 safety family without duplicating FastMCP's drifting JSON schema.
@@ -83,6 +84,8 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `gsheet_disconnect` | `confirmation_token`, `connection_id`, `state` | Disconnect or purge a sheet binding | Destructive write / dynamic / maximum medium / connection-derived |
 | `privacy` | `cursor`, `limit`, `view` | Privacy and consent projection | Read / dynamic / maximum low / privacy-derived |
 | `privacy_consent_set` | `backend`, `categories`, `confirmation_token`, `mode`, `state` | Set consent state | Audited write / maximum low |
+| `export_run` | `destination`, `redaction_mode`, `subject` | Publish a bundle or registered report to a named destination | External delivery / dynamic / non-idempotent / maximum medium |
+| `exports_set` | `target` | Export-destination target state | Audited write / maximum medium |
 | `refresh_run` | `steps` | Refresh derived state | Audited workflow / maximum medium |
 | `sql_query` | `query` | Operator SQL escape hatch | Read / dynamic / maximum critical / query-derived |
 | `sql_schema` | `table` | Curated SQL schema | Read / dynamic / maximum critical / schema-derived |
@@ -181,7 +184,7 @@ secret material and hands-on operator territory; see
 `register_core_tools()` must exactly equal `STANDARD_TOOL_NAMES`; no hidden
 FastMCP aliases are allowed. Tests inventory the actual `tools/list` response,
 render coarse schemas, enforce description and metadata budgets, prove parity,
-and compare the deterministic 45-tool capture against the frozen baseline.
+and compare the deterministic 47-tool capture against the frozen baseline.
 
 The deterministic comparison passed, but `promotion_ready: false`: the context
 budget and host-native deferral are not observed. The governing spec and

@@ -862,6 +862,10 @@ async def system_status_coarse(
             selected.append(CategorizationStatus(statistics=response.data))
         elif section == "exports":
             selected.append(await _run_tool_body(_export_status_section))
+            actions.extend([
+                "Deliver a bundle or report with export_run.",
+                "Configure a named destination with exports_set.",
+            ])
             continue
         else:
             raise ValueError("Unknown system status section.")

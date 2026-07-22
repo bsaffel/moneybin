@@ -6,7 +6,6 @@ import json
 import sys
 import types
 import typing
-from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast, get_args, get_origin
@@ -81,51 +80,10 @@ def _destination_reference(value: str) -> tuple[str, str]:
 
 def _resolve_destination(reference: str, db: Any) -> ExportDestination:
     """Resolve one explicit destination reference without accepting paths."""
-    from moneybin import error_codes  # noqa: PLC0415
-    from moneybin.config import get_settings  # noqa: PLC0415
-    from moneybin.errors import UserError  # noqa: PLC0415
-    from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
-        ExportDestinationsRepo,
-    )
-    from moneybin.services.entity_reference import (  # noqa: PLC0415
-        AmbiguousEntity,
-        MissingEntity,
-    )
+    from moneybin.exports.service import ExportService  # noqa: PLC0415
 
-    kind, name = _destination_reference(reference)
-    if kind == "local" and name == "exports":
-        return ExportDestination(
-            destination_id=None,
-            name="local:exports",
-            kind="local",
-            local_path=get_settings().profile_exports_dir.expanduser().resolve(),
-            spreadsheet_id=None,
-            managed_tab_prefix=None,
-        )
-
-    resolved = ExportDestinationsRepo(db).resolve(name)
-    if isinstance(resolved, MissingEntity):
-        raise UserError(
-            "Export destination not found.",
-            code=error_codes.MUTATION_NOT_FOUND,
-        )
-    if isinstance(resolved, AmbiguousEntity):
-        raise UserError(
-            "Export destination reference is ambiguous.",
-            code=error_codes.MUTATION_AMBIGUOUS,
-            details={"candidate_ids": list(resolved.candidate_ids)},
-        )
-    if resolved.kind != kind:
-        raise UserError(
-            f"Export destination is configured as {resolved.kind}, not {kind}.",
-            code=error_codes.MUTATION_INVALID_INPUT,
-        )
-    if resolved.kind == "local" and resolved.local_path is not None:
-        return replace(
-            resolved,
-            local_path=resolved.local_path.expanduser().resolve(),
-        )
-    return resolved
+    _destination_reference(reference)
+    return ExportService(db).resolve_destination(reference)
 
 
 def _is_interactive_terminal() -> bool:

@@ -14,6 +14,7 @@ from mcp.types import TextContent
 from pydantic import TypeAdapter, ValidationError
 
 from moneybin.mcp.tools.accounts import BalanceAmount, register_accounts_coarse_writes
+from moneybin.mcp.tools.exports import register_export_tools
 from moneybin.mcp.tools.privacy import register_privacy_coarse_writes
 from moneybin.mcp.tools.taxonomy import register_taxonomy_coarse_writes
 from moneybin.mcp.tools.transactions import register_transaction_coarse_writes
@@ -53,6 +54,75 @@ from moneybin.vocabulary import CategorizationMatchType, ConsentFeatureCategory
 from .schema_assertions import call_tool_raw, isolated_server, listed_tool
 
 EVAL_CASES_PATH = Path(__file__).parents[2] / "fixtures/mcp_eval/cases.json"
+
+
+async def test_export_write_schemas_keep_event_and_target_state_separate() -> None:
+    mcp = isolated_server(register_export_tools)
+
+    export = await listed_tool(mcp, "export_run")
+    destinations = await listed_tool(mcp, "exports_set")
+
+    assert set(export.inputSchema["properties"]) == {
+        "subject",
+        "destination",
+        "redaction_mode",
+    }
+    assert set(destinations.inputSchema["properties"]) == {"target"}
+    assert "operation" not in json.dumps(export.inputSchema)
+    assert "action" not in json.dumps(destinations.inputSchema)
+    assert export.annotations is not None
+    assert export.annotations.idempotentHint is False
+    assert destinations.annotations is not None
+    assert destinations.annotations.idempotentHint is True
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        (
+            "export_run",
+            {
+                "subject": {"kind": "bundle", "report_id": "core:networth"},
+                "destination": {"kind": "local", "name": "exports"},
+                "redaction_mode": "redacted",
+            },
+        ),
+        (
+            "export_run",
+            {
+                "subject": {"kind": "bundle"},
+                "destination": {
+                    "kind": "sheets",
+                    "name": "dashboard",
+                    "format": "csv",
+                },
+                "redaction_mode": "redacted",
+            },
+        ),
+        (
+            "exports_set",
+            {
+                "target": {
+                    "kind": "local",
+                    "state": "absent",
+                    "name": "archive",
+                    "local_path": "/Users/test/archive",
+                }
+            },
+        ),
+    ],
+)
+async def test_export_write_schemas_reject_cross_variant_fields(
+    name: str,
+    arguments: dict[str, Any],
+) -> None:
+    response = await call_tool_raw(
+        isolated_server(register_export_tools),
+        name,
+        arguments,
+    )
+
+    assert response.isError is True
 
 
 def _variant_schema(schema: dict[str, Any], tag: str) -> dict[str, Any]:
@@ -1513,7 +1583,7 @@ def test_rule_schema_advertises_state_requirements_and_derived_name() -> None:
 def test_proposed_rule_fixture_uses_the_contract_target_state() -> None:
     cases = json.loads(EVAL_CASES_PATH.read_text())
     case = next(row for row in cases if row["id"] == "categorization-rule-and-review")
-    arguments = case["expectations"]["standard-45"]["calls"][0]["arguments"]
+    arguments = case["expectations"]["standard-47"]["calls"][0]["arguments"]
     target = arguments["rules"][0]
 
     assert target["state"] == "present"

@@ -28,7 +28,7 @@ mcp = FastMCP(
         """\
         MoneyBin is a local-first personal finance platform. All data lives in DuckDB on the user's machine.
 
-        Standard tools cover system, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
+        Standard tools cover system, reports, accounts, investments, transactions, reviews, taxonomy, import, sync, gsheet, exports, privacy, refresh, and sql. Names use domain_<sub>_verb with the verb last.
 
         Call system_status first to inspect available data, freshness, review queues, and whether derived core.* tables need refresh_run. Call reports() without a report_id to discover registered analytics, then pass a stable report_id and parameters to run one. sql_query is the privacy-safe read-only SQL escape hatch; use sql_schema for its curated schema.
 
@@ -211,6 +211,7 @@ def register_core_tools() -> None:
     from moneybin.mcp.prompts import register_prompts
     from moneybin.mcp.tools.accounts import register_accounts_tools
     from moneybin.mcp.tools.curation import register_curation_tools
+    from moneybin.mcp.tools.exports import register_export_tools
     from moneybin.mcp.tools.gsheet import register_gsheet_tools
     from moneybin.mcp.tools.import_tools import register_import_tools
     from moneybin.mcp.tools.investments import register_investments_tools
@@ -254,6 +255,7 @@ def register_core_tools() -> None:
     register_taxonomy_tools(mcp)
     register_import_tools(mcp)
     register_sync_tools(mcp)
+    register_export_tools(mcp)
     register_prompts(mcp)
 
     register_gsheet_tools(mcp)

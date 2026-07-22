@@ -1,6 +1,6 @@
 {
-  "sha256": "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
-  "tool_count": 45,
+  "sha256": "9b7bb6ec1b7d078de5e459fc0a0f4f231f489544e709f9e9cf229ec362e5da31",
+  "tool_count": 47,
   "tools": [
     {
       "annotation_bytes": 89,
@@ -493,6 +493,369 @@
       "other_bytes": 54,
       "output_schema_bytes": 0,
       "total_bytes": 1927
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": false,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Publish one canonical bundle or registered report to a named local or Sheets destination. This is one discrete delivery event, so retries may create another immutable local artifact. Redaction must be selected for this run; omission elicits redacted (default) versus unredacted and refuses when elicitation is unavailable. Returns receipt identity, row counts, output classes, and checksums. Writes no app.* state; recovery uses the returned artifact or Sheets receipt.",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "destination": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "One named local delivery target and its local-only options.",
+                  "properties": {
+                    "compression": {
+                      "anyOf": [
+                        {
+                          "const": "zip",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "format": {
+                      "default": "csv",
+                      "enum": [
+                        "csv",
+                        "parquet",
+                        "xlsx"
+                      ],
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "local",
+                      "type": "string"
+                    },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "One named Sheets delivery target with native format semantics.",
+                  "properties": {
+                    "kind": {
+                      "const": "sheets",
+                      "type": "string"
+                    },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "redaction_mode": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "redacted",
+                    "unredacted"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "subject": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "The closed canonical portability bundle.",
+                  "properties": {
+                    "kind": {
+                      "const": "bundle",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "One registered report and typed parameter binding.",
+                  "properties": {
+                    "kind": {
+                      "const": "report",
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "additionalProperties": {},
+                      "type": "object"
+                    },
+                    "report_id": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "report_id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "required": [
+            "subject",
+            "destination"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "exports"
+            ]
+          }
+        },
+        "name": "export_run"
+      },
+      "description_bytes": 469,
+      "input_schema_bytes": 1400,
+      "name": "export_run",
+      "other_bytes": 61,
+      "output_schema_bytes": 0,
+      "total_bytes": 2067
+    },
+    {
+      "annotation_bytes": 88,
+      "definition": {
+        "annotations": {
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": false
+        },
+        "description": "Assert one named export destination's local or Sheets target state. state='present' upserts the typed target; state='absent' removes only MoneyBin configuration and never deletes artifacts, workbooks, or tabs. Writes app.export_destinations through its audited repository; revert with system_audit_undo(operation_id). Read readiness with system_status(sections=['exports']).",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "target": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "else": {
+                        "not": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "local_path"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      "if": {
+                        "properties": {
+                          "state": {
+                            "const": "present"
+                          }
+                        },
+                        "required": [
+                          "state"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "local_path": {
+                            "not": {
+                              "type": "null"
+                            }
+                          }
+                        },
+                        "required": [
+                          "local_path"
+                        ]
+                      }
+                    }
+                  ],
+                  "description": "Present or absent target state for one named local destination.",
+                  "properties": {
+                    "kind": {
+                      "const": "local",
+                      "type": "string"
+                    },
+                    "local_path": {
+                      "anyOf": [
+                        {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "state": {
+                      "enum": [
+                        "present",
+                        "absent"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "state",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "allOf": [
+                    {
+                      "else": {
+                        "not": {
+                          "anyOf": [
+                            {
+                              "required": [
+                                "spreadsheet_id"
+                              ]
+                            },
+                            {
+                              "required": [
+                                "managed_tab_prefix"
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      "if": {
+                        "properties": {
+                          "state": {
+                            "const": "present"
+                          }
+                        },
+                        "required": [
+                          "state"
+                        ]
+                      },
+                      "then": {
+                        "properties": {
+                          "spreadsheet_id": {
+                            "not": {
+                              "type": "null"
+                            }
+                          }
+                        },
+                        "required": [
+                          "spreadsheet_id"
+                        ]
+                      }
+                    }
+                  ],
+                  "description": "Present or absent target state for one named Sheets destination.",
+                  "properties": {
+                    "kind": {
+                      "const": "sheets",
+                      "type": "string"
+                    },
+                    "managed_tab_prefix": {
+                      "anyOf": [
+                        {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "name": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "spreadsheet_id": {
+                      "anyOf": [
+                        {
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "state": {
+                      "enum": [
+                        "present",
+                        "absent"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "state",
+                    "name"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "type": "object"
+        },
+        "meta": {
+          "fastmcp": {
+            "tags": [
+              "exports"
+            ]
+          }
+        },
+        "name": "exports_set"
+      },
+      "description_bytes": 374,
+      "input_schema_bytes": 1502,
+      "name": "exports_set",
+      "other_bytes": 62,
+      "output_schema_bytes": 0,
+      "total_bytes": 2073
     },
     {
       "annotation_bytes": 89,
@@ -2971,7 +3334,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Return selected operator status sections: overview inventory, integrity doctor checks, and categorization coverage. detail='full' deepens the doctor scan and includes auto-categorization health.",
+        "description": "Return selected operator status sections. Sections cover overview inventory, integrity doctor checks, categorization coverage, and export readiness. detail='full' deepens the doctor scan and includes auto-categorization health.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2990,7 +3353,8 @@
                     "enum": [
                       "overview",
                       "doctor",
-                      "categorization"
+                      "categorization",
+                      "exports"
                     ],
                     "type": "string"
                   },
@@ -3012,12 +3376,12 @@
         },
         "name": "system_status"
       },
-      "description_bytes": 194,
-      "input_schema_bytes": 277,
+      "description_bytes": 227,
+      "input_schema_bytes": 287,
       "name": "system_status",
       "other_bytes": 55,
       "output_schema_bytes": 0,
-      "total_bytes": 663
+      "total_bytes": 706
     },
     {
       "annotation_bytes": 89,
@@ -4554,5 +4918,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 47111
+  "total_bytes": 51296
 }

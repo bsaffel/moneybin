@@ -7,6 +7,7 @@ import typer
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.mcp.surface import STANDARD_TOOL_COUNT
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import get_report_catalog
@@ -98,7 +99,7 @@ async def test_extension_report_joins_catalog_and_cli_without_mcp_growth() -> No
     after_tools = await listed_tools()
     after = {tool.name for tool in after_tools}
     assert after == before
-    assert len(after) == 45
+    assert len(after) == STANDARD_TOOL_COUNT
     assert all(tool.output_schema is None for tool in after_tools)
     assert "reports" in after
     assert "reports_forecast" not in after

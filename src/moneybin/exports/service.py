@@ -170,6 +170,64 @@ class ExportService:
                 perf_counter() - started_at
             )
 
+    def resolve_destination(self, reference: str) -> ExportDestination:
+        """Resolve one explicit kind:name reference without accepting a path."""
+        from moneybin import error_codes  # noqa: PLC0415
+        from moneybin.config import get_settings  # noqa: PLC0415
+        from moneybin.errors import UserError  # noqa: PLC0415
+        from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
+            ExportDestinationsRepo,
+        )
+        from moneybin.services.entity_reference import (  # noqa: PLC0415
+            AmbiguousEntity,
+            MissingEntity,
+        )
+
+        kind, separator, name = reference.partition(":")
+        if (
+            separator != ":"
+            or kind not in _DESTINATION_KINDS
+            or not name
+            or ":" in name
+        ):
+            raise UserError(
+                "Destination must be local:<name> or sheets:<name>.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if kind == "local" and name == "exports":
+            return ExportDestination(
+                destination_id=None,
+                name="local:exports",
+                kind="local",
+                local_path=get_settings().profile_exports_dir.expanduser().resolve(),
+                spreadsheet_id=None,
+                managed_tab_prefix=None,
+            )
+
+        resolved = ExportDestinationsRepo(self._db).resolve(name)
+        if isinstance(resolved, MissingEntity):
+            raise UserError(
+                "Export destination not found.",
+                code=error_codes.MUTATION_NOT_FOUND,
+            )
+        if isinstance(resolved, AmbiguousEntity):
+            raise UserError(
+                "Export destination reference is ambiguous.",
+                code=error_codes.MUTATION_AMBIGUOUS,
+                details={"candidate_ids": list(resolved.candidate_ids)},
+            )
+        if resolved.kind != kind:
+            raise UserError(
+                f"Export destination is configured as {resolved.kind}, not {kind}.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        if resolved.kind == "local" and resolved.local_path is not None:
+            return replace(
+                resolved,
+                local_path=resolved.local_path.expanduser().resolve(),
+            )
+        return resolved
+
     @staticmethod
     def _validate_request(request: ExportRequest) -> None:
         """Reject impossible typed-contract combinations before preparation."""
@@ -288,7 +346,7 @@ class ExportService:
         spreadsheet_id: str,
         managed_tab_prefix: str,
         actor: str,
-        oauth_client: SheetsAuthorization,
+        oauth_client: SheetsAuthorization | None = None,
     ) -> AuditEvent:
         """Validate, authorize, and persist one Sheets output destination."""
         from moneybin.connectors.gsheet.errors import GSheetAuthError  # noqa: PLC0415
@@ -297,10 +355,19 @@ class ExportService:
             ExportDestinationsRepo,
         )
 
+        client: SheetsAuthorization
+        if oauth_client is None:
+            from moneybin.connectors.gsheet.service_factory import (  # noqa: PLC0415
+                build_oauth_client,
+            )
+
+            client = build_oauth_client()
+        else:
+            client = oauth_client
         prefix = validate_managed_tab_prefix(managed_tab_prefix)
         repo = ExportDestinationsRepo(self._db)
         repo.assert_not_inbound_connection(spreadsheet_id)
-        grant = oauth_client.authorize(require_write=True)
+        grant = client.authorize(require_write=True)
         if not grant.can_write:
             raise GSheetAuthError("Google Sheets write authorization was not granted")
         return repo.set_sheets(

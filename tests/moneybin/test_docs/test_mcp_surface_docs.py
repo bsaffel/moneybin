@@ -26,7 +26,7 @@ PROMPTS = ROOT / "src/moneybin/mcp/prompts.py"
 CHANGELOG = ROOT / "CHANGELOG.md"
 CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
-STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-45.json"
+STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-47.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
 PUBLIC_MCP_GUIDES = (*sorted((ROOT / "docs/guides").rglob("*.md")),)
 
@@ -45,12 +45,12 @@ def test_governing_spec_records_runtime_facts_without_promotion_claim() -> None:
     text = " ".join(SCALING_SPEC.read_text().split())
 
     for fact in (
-        "45 tools",
-        "47,111 bytes",
-        "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
+        "47 tools",
+        "51,296 bytes",
+        "9b7bb6ec1b7d078de5e459fc0a0f4f231f489544e709f9e9cf229ec362e5da31",
         "90,734 bytes",
         "ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79",
-        "-43,623 bytes (-48.1%)",
+        "-39,438 bytes (-43.5%)",
         "zero advertised output schemas",
         "contract_passed: true",
         "promotion_ready: false",
@@ -76,7 +76,8 @@ def test_governance_describes_one_current_registry_and_future_admission() -> Non
         MCP_SERVER_GUIDE,
     ):
         text = " ".join(path.read_text().split())
-        assert "45-tool standard registry" in text, path
+        expected_count = 47 if path == MCP_SPEC else 45
+        assert f"{expected_count}-tool standard registry" in text, path
         assert "same registry" in text, path
 
     adr = " ".join(ADR.read_text().split())

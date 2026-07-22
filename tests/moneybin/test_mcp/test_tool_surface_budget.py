@@ -34,7 +34,7 @@ from moneybin.mcp.surface_inventory import SurfaceInventory
 
 FIXTURES_PATH = Path(__file__).parents[2] / "fixtures/mcp_surface"
 BASELINE_PATH = FIXTURES_PATH / "baseline-2026-07-17.json"
-STANDARD_PATH = FIXTURES_PATH / "standard-45.json"
+STANDARD_PATH = FIXTURES_PATH / "standard-47.json"
 
 _REPLACED_TOOL_NAME_COHORTS = {
     "system_status": frozenset({
@@ -127,7 +127,7 @@ _REPLACED_TOOL_NAME_COHORTS = {
 }
 
 _CANONICAL_CARRYING_WEIGHT_BYTES = {
-    "system_status": (663, 2_725),
+    "system_status": (706, 2_725),
     "system_audit": (746, 1_958),
     "accounts": (823, 2_240),
     "accounts_balances": (1_069, 2_786),
@@ -189,6 +189,8 @@ _STANDARD_CALLBACK_NAMES = {
     "gsheet_connect": "gsheet_connect_coarse",
     "gsheet_pull": "gsheet_pull_coarse",
     "gsheet_disconnect": "gsheet_disconnect_coarse",
+    "export_run": "export_run",
+    "exports_set": "exports_set",
     "privacy": "privacy_coarse",
     "privacy_consent_set": "privacy_consent_set_coarse",
     "refresh_run": "refresh_run",
@@ -387,11 +389,20 @@ def test_standard_surface_is_smaller_than_baseline() -> None:
     standard = _inventory_server_sync()
 
     assert baseline.total_bytes == 90_734
-    assert standard.tool_count == 45
+    assert standard.tool_count == 47
     assert standard.total_bytes < baseline.total_bytes
     assert {
         row.name for row in standard.tools if row.output_schema_bytes > 0
     } == ADMITTED_OUTPUT_SCHEMA_NAMES
+
+
+def test_current_and_planned_registry_exactly_fill_hard_limit() -> None:
+    """Task 8 uses two slots; three separately planned report tools use the rest."""
+    planned_dynamic_report_tools = 3
+
+    assert STANDARD_TOOL_COUNT == 47
+    assert {"export_run", "exports_set"} <= STANDARD_TOOL_NAMES
+    assert STANDARD_TOOL_COUNT + planned_dynamic_report_tools == HARD_TOOL_LIMIT
 
 
 @pytest.mark.integration

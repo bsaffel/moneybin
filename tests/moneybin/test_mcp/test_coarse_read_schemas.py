@@ -252,6 +252,9 @@ async def test_system_coarse_tools_render_schema_contract() -> None:
         ("properties", "view"),
         {"events", "history", "detail"},
     )
+    names = {tool.name for tool in await mcp._list_tools()}  # pyright: ignore[reportPrivateUsage]
+    assert "exports" not in names
+    assert {"system_status", "system_audit"} <= names
 
 
 @pytest.mark.parametrize("section", ["overview", "doctor", "categorization", "exports"])
