@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -35,6 +34,17 @@ def _local_destination(path: Path, *, name: str = "local:exports") -> ExportDest
     )
 
 
+def _sheets_destination(*, name: str = "dashboard") -> ExportDestination:
+    return ExportDestination(
+        destination_id="dst_sheet_1",
+        name=name,
+        kind="sheets",
+        local_path=None,
+        spreadsheet_id="sheet_abc",
+        managed_tab_prefix="MoneyBin",
+    )
+
+
 def _receipt(destination: ExportDestination, artifact: Path) -> ExportReceipt:
     return ExportReceipt(
         subject={"kind": "bundle"},
@@ -53,6 +63,21 @@ def _receipt(destination: ExportDestination, artifact: Path) -> ExportReceipt:
     )
 
 
+def _sheets_report_receipt(destination: ExportDestination) -> ExportReceipt:
+    return ExportReceipt(
+        subject={"kind": "report", "report_id": "core:networth", "parameters": {}},
+        redaction_mode="redacted",
+        destination=destination,
+        artifact_path=None,
+        compressed_artifact_path=None,
+        sheets_identity="MoneyBin:20260721T120000Z",
+        row_counts={"core:networth": 1},
+        output_classes={"core:networth": {"net_worth": "balance"}},
+        checksums={"core:networth": "sum123"},
+        recovery_actions=(),
+    )
+
+
 def _structured(response: Any) -> dict[str, Any]:
     text = next(
         block.text for block in response.content if isinstance(block, TextContent)
@@ -60,6 +85,22 @@ def _structured(response: Any) -> dict[str, Any]:
     assert response.structuredContent is not None
     assert json.loads(text) == response.structuredContent
     return response.structuredContent
+
+
+def _observable_delivery(data: dict[str, Any], request: Any) -> dict[str, Any]:
+    """Project stable parity fields without paths or timing."""
+    return {
+        "subject": data["subject"],
+        "destination": {
+            "kind": data["destination"]["kind"],
+            "name": data["destination"]["name"],
+        },
+        "redaction_mode": data["redaction_mode"],
+        "format": request.format,
+        "row_counts": data["row_counts"],
+        "checksums": data["checksums"],
+        "receipt_identity": data["sheets_identity"],
+    }
 
 
 async def test_export_tools_render_two_narrow_discriminated_contracts() -> None:
@@ -401,17 +442,58 @@ async def test_export_run_returns_sanitized_service_error(mcp_db: object) -> Non
     run.assert_not_called()
 
 
+@pytest.mark.parametrize("subject_kind", ["bundle", "report"])
 async def test_cli_and_mcp_export_receipts_have_same_observable_outcome(
+    subject_kind: str,
     tmp_path: Path,
     mcp_db: object,
 ) -> None:
     from moneybin.exports.service import ExportService
     from moneybin.mcp.tools.exports import register_export_tools
 
-    destination = _local_destination(tmp_path / "exports")
-    receipt = _receipt(destination, tmp_path / "exports" / "export-1")
-    settings = SimpleNamespace(profile_exports_dir=tmp_path / "exports")
-    requests: list[Any] = []
+    mcp_arguments: dict[str, Any]
+    if subject_kind == "bundle":
+        destination = _local_destination(tmp_path / "exports")
+        receipt = _receipt(destination, tmp_path / "exports" / "export-1")
+        cli_arguments = [
+            "export",
+            "bundle",
+            "--to",
+            "local:exports",
+            "--format",
+            "csv",
+            "--yes",
+            "--output",
+            "json",
+        ]
+        mcp_arguments = {
+            "subject": {"kind": "bundle"},
+            "destination": {"kind": "local", "name": "exports", "format": "csv"},
+            "redaction_mode": "redacted",
+        }
+    else:
+        destination = _sheets_destination()
+        receipt = _sheets_report_receipt(destination)
+        cli_arguments = [
+            "export",
+            "report",
+            "core:networth",
+            "--to",
+            "sheets:dashboard",
+            "--yes",
+            "--output",
+            "json",
+        ]
+        mcp_arguments = {
+            "subject": {
+                "kind": "report",
+                "report_id": "core:networth",
+                "parameters": {},
+            },
+            "destination": {"kind": "sheets", "name": "dashboard"},
+            "redaction_mode": "redacted",
+        }
+    requests: list[tuple[Any, str]] = []
 
     def run(request: Any, *, actor: str) -> ExportReceipt:
         requests.append((request, actor))
@@ -419,14 +501,11 @@ async def test_cli_and_mcp_export_receipts_have_same_observable_outcome(
 
     with (
         patch("moneybin.database.get_database") as cli_db,
-        patch("moneybin.config.get_settings", return_value=settings),
+        patch.object(ExportService, "resolve_destination", return_value=destination),
         patch.object(ExportService, "run", side_effect=run),
     ):
         cli_db.return_value.__enter__.return_value = MagicMock()
-        cli_result = CliRunner().invoke(
-            app,
-            ["export", "bundle", "--yes", "--output", "json"],
-        )
+        cli_result = CliRunner().invoke(app, cli_arguments)
     assert cli_result.exit_code == 0, cli_result.output
 
     with (
@@ -436,59 +515,69 @@ async def test_cli_and_mcp_export_receipts_have_same_observable_outcome(
         mcp_result = await call_tool_raw(
             isolated_server(register_export_tools),
             "export_run",
-            {
-                "subject": {"kind": "bundle"},
-                "destination": {"kind": "local", "name": "exports"},
-                "redaction_mode": "redacted",
-            },
+            mcp_arguments,
         )
 
     cli_data = json.loads(cli_result.stdout)["data"]
     mcp_data = _structured(mcp_result)["data"]
-    observed = {
-        "subject",
-        "redaction_mode",
-        "row_counts",
-        "checksums",
-        "sheets_identity",
-    }
-    assert {key: cli_data[key] for key in observed} == {
-        key: mcp_data[key] for key in observed
-    }
-    assert cli_data["destination"]["kind"] == mcp_data["destination"]["kind"]
-    assert cli_data["destination"]["name"] == mcp_data["destination"]["name"]
     cli_request, cli_actor = requests[0]
     mcp_request, mcp_actor = requests[1]
-    assert cli_request.subject_kind == mcp_request.subject_kind == "bundle"
-    assert cli_request.destination.kind == mcp_request.destination.kind == "local"
+    assert _observable_delivery(cli_data, cli_request) == _observable_delivery(
+        mcp_data,
+        mcp_request,
+    )
+    assert cli_request.subject_kind == mcp_request.subject_kind == subject_kind
     assert cli_request.redaction_mode == mcp_request.redaction_mode == "redacted"
-    assert cli_request.format == mcp_request.format == "csv"
+    if subject_kind == "report":
+        assert cli_data["sheets_identity"] == "MoneyBin:20260721T120000Z"
     assert (cli_actor, mcp_actor) == ("cli", "mcp")
 
 
+@pytest.mark.parametrize("subject_kind", ["bundle", "report"])
 async def test_cli_and_mcp_export_failures_are_equally_safe(
+    subject_kind: str,
     tmp_path: Path,
     mcp_db: object,
 ) -> None:
     from moneybin.exports.service import ExportService
     from moneybin.mcp.tools.exports import register_export_tools
 
-    destination = _local_destination(tmp_path / "exports")
-    settings = SimpleNamespace(profile_exports_dir=tmp_path / "exports")
+    mcp_arguments: dict[str, Any]
+    if subject_kind == "bundle":
+        destination = _local_destination(tmp_path / "exports")
+        cli_arguments = ["export", "bundle", "--yes", "--output", "json"]
+        mcp_arguments = {
+            "subject": {"kind": "bundle"},
+            "destination": {"kind": "local", "name": "exports"},
+            "redaction_mode": "redacted",
+        }
+    else:
+        destination = _sheets_destination()
+        cli_arguments = [
+            "export",
+            "report",
+            "core:networth",
+            "--to",
+            "sheets:dashboard",
+            "--yes",
+            "--output",
+            "json",
+        ]
+        mcp_arguments = {
+            "subject": {"kind": "report", "report_id": "core:networth"},
+            "destination": {"kind": "sheets", "name": "dashboard"},
+            "redaction_mode": "redacted",
+        }
     unsafe_detail = str(tmp_path / "private-ledger.csv")
     failure = UserError("Export could not be published.", code="EXPORT_FAILED")
 
     with (
         patch("moneybin.database.get_database") as cli_db,
-        patch("moneybin.config.get_settings", return_value=settings),
         patch.object(ExportService, "resolve_destination", return_value=destination),
         patch.object(ExportService, "run", side_effect=failure),
     ):
         cli_db.return_value.__enter__.return_value = MagicMock()
-        cli_result = CliRunner().invoke(
-            app,
-            ["export", "bundle", "--yes", "--output", "json"],
-        )
+        cli_result = CliRunner().invoke(app, cli_arguments)
 
     with (
         patch.object(ExportService, "resolve_destination", return_value=destination),
@@ -497,11 +586,7 @@ async def test_cli_and_mcp_export_failures_are_equally_safe(
         mcp_result = await call_tool_raw(
             isolated_server(register_export_tools),
             "export_run",
-            {
-                "subject": {"kind": "bundle"},
-                "destination": {"kind": "local", "name": "exports"},
-                "redaction_mode": "redacted",
-            },
+            mcp_arguments,
         )
 
     cli_error = json.loads(cli_result.stdout)["error"]

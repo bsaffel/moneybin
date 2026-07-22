@@ -22,7 +22,7 @@ have changed:
 4. Modern hosts increasingly support tool search or deferred schema loading
    without requiring server-side list mutation.
 5. A carrying-weight review found that MoneyBin can preserve capability parity
-   through the exact 45-tool intent-shaped standard registry.
+   through the exact 47-tool intent-shaped standard registry.
 6. A proposed 44-tool universal / 48-tool complete split hid too little to
    justify profiles, packs, reconnect behavior, and workflow-closure rules.
 7. A generic read-only report registry prevents every new report from adding a
@@ -85,16 +85,16 @@ service-layer contract, or CLI-first operator exemptions.
 
 ## Current evidence
 
-The operating contract is the 45-tool standard registry. Its deterministic
-comparison records 47,111 candidate metadata bytes, SHA-256
-`0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d`, against
+The operating contract is the 47-tool standard registry. Its deterministic
+comparison records 51,296 candidate metadata bytes, SHA-256
+`9b7bb6ec1b7d078de5e459fc0a0f4f231f489544e709f9e9cf229ec362e5da31`, against
 the 90,734-byte frozen baseline, SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`: a
--43,623-byte (-48.1%) delta. It advertises zero output schemas and has
+-39,438-byte (-43.5%) delta. It advertises zero output schemas and has
 `contract_passed: true`.
 
 This ADR remains **Proposed**. `promotion_ready: false`: context budget and
-host-native deferral are both `not_observed`. Generic clients receive all 45
+host-native deferral are both `not_observed`. Generic clients receive all 47
 tools, and supported hosts may defer schemas from that same registry without
 reconnect, packs, or profiles. Those not-observed facts prevent acceptance,
 not operation of the selected registry.
@@ -170,7 +170,7 @@ the explicit admission record.
 Promote this ADR to **Accepted** when:
 
 - the governing spec reaches `implemented`;
-- the exact 45-tool contract reconciles with live code;
+- the exact 47-tool contract reconciles with live code;
 - canonical structured transport and generic reports are proven;
 - the initial standard registry advertises zero output schemas, or every
   exception has an approved consumer-driven admission record;

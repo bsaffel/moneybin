@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastmcp.tools import FunctionTool
 
-from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+from moneybin.mcp.surface import STANDARD_TOOL_COUNT, STANDARD_TOOL_NAMES
 
 ROOT = Path(__file__).parents[3]
 SCALING_SPEC = ROOT / "docs/specs/mcp-tool-surface-scaling.md"
@@ -74,11 +74,13 @@ def test_governance_describes_one_current_registry_and_future_admission() -> Non
         SURFACE_RULE,
         CLIENT_GUIDE,
         MCP_SERVER_GUIDE,
+        RESOURCES,
     ):
         text = " ".join(path.read_text().split())
-        expected_count = 47 if path == MCP_SPEC else 45
-        assert f"{expected_count}-tool standard registry" in text, path
+        assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in text, path
         assert "same registry" in text, path
+        assert "45-tool standard registry" not in text, path
+        assert "standard-45" not in text, path
 
     adr = " ".join(ADR.read_text().split())
     rule = " ".join(MCP_RULE.read_text().split())
@@ -98,7 +100,7 @@ def test_current_mcp_guidance_uses_only_standard_tool_names() -> None:
     assert "accounts_balances" in prompt_text
     assert "accounts(view='balances')" not in prompt_text
     assert "sql_query" in resource_text
-    assert "45-tool standard registry" in resource_text
+    assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in resource_text
 
 
 def test_runtime_mcp_modules_do_not_point_to_removed_spec_sections() -> None:
@@ -122,7 +124,7 @@ def test_spec_index_describes_the_current_mcp_contract() -> None:
     )
 
     for current_fact in (
-        "45-tool standard registry",
+        f"{STANDARD_TOOL_COUNT}-tool standard registry",
         "seven prompts",
         "single `reports` catalog",
         "outcome parity",

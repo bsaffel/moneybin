@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-07-19 -->
 # MCP Server
 
-MoneyBin exposes one **45-tool standard registry** to every generic MCP client.
+MoneyBin exposes one **47-tool standard registry** to every generic MCP client.
 Supported hosts may defer schemas from that same registry to reduce prompt cost,
 but tool names, approvals, allowlists, annotations, and audit identity do not
 change. Reports are registered catalog entries behind the single `reports`
@@ -47,7 +47,7 @@ records, connector egress, and local-model use.
 
 ## Contract status
 
-The 45-tool registry is operating. It advertises zero output schemas and has
+The 47-tool registry is operating. It advertises zero output schemas and has
 passed its deterministic contract check, but promotion remains pending observed
 context-budget and host-native-deferral evidence. Do not add a tool, report
 slot, profile, pack, or reconnect mode without the admission record in the

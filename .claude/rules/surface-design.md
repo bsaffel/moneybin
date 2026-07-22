@@ -355,7 +355,7 @@ When adding or modifying a tool / command / endpoint:
 
 ## Registry budget
 
-The operating contract is one 45-tool standard registry. Generic clients and
+The operating contract is one 47-tool standard registry. Generic clients and
 supported deferred-loading hosts use the same registry, without reconnect,
 packs, or profiles; reports never consume tool slots. The deterministic
 comparison passed, but promotion remains unready until context-budget and

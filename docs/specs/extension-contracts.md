@@ -15,7 +15,7 @@ surface designed with the same rigor as the MCP and CLI surfaces.
 
 This spec defines that contributor-facing surface: three extension types, their trust postures, their registration mechanisms, their quality progression, and the guided-contribution skills shipped alongside. Together they answer: *how does someone who wants to extend MoneyBin do so, cleanly and predictably?*
 
-The operating MCP surface is one 45-tool standard registry. Generic clients
+The operating MCP surface is one 47-tool standard registry. Generic clients
 and supported deferred-loading hosts use the same registry; reports never
 consume tool slots because they extend the `reports` catalog instead. Any
 future extension-owned tool follows the standard admission record before it
@@ -312,7 +312,7 @@ A Report is a single decorated **Python runner** over a `reports.*` view. The ru
 > SQL-backed and service-backed reports share one internal catalog and result
 > contract. Core and explicitly installed extension reports receive ergonomic
 > CLI commands that execute by stable catalog ID. The active generic `reports`
-> MCP contract consumes that same union in the 45-tool standard registry. The
+> MCP contract consumes that same union in the 47-tool standard registry. The
 > invariant is permanent: adding a report changes catalog and CLI surfaces,
 > never MCP tool count.
 

@@ -239,7 +239,7 @@ superseded. Advertise zero deprecated aliases. A hidden compatibility alias
 must name its removal release. A report registers behind the single read-only
 `reports` catalog/runner and never adds an MCP tool.
 
-**Current registry.** The 45-tool standard registry is operating. Generic
+**Current registry.** The 47-tool standard registry is operating. Generic
 clients receive every tool; supported hosts may defer schemas from that same
 registry without reconnect, packs, or profiles. Reports never consume tool
 slots. The deterministic comparison passed, but promotion remains unready
