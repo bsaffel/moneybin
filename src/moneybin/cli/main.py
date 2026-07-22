@@ -24,6 +24,7 @@ from .commands import (
     categories,
     db,
     demo,
+    export,
     gsheet,
     import_cmd,
     investments,
@@ -46,9 +47,6 @@ from .commands import (
 )
 from .commands import (
     budget as budget_cmd,
-)
-from .commands.stubs import (
-    export_app,
 )
 from .utils import resolve_profile, stash_cli_flags
 
@@ -226,7 +224,7 @@ app.add_typer(
     name="sql",
     help="Privacy-safe ad-hoc SQL (lineage classification + CRITICAL masking)",
 )
-app.add_typer(export_app, name="export", help="Export data to external formats")
+app.add_typer(export.export_app, name="export", help="Export data to external formats")
 app.add_typer(
     mcp.app,
     name="mcp",

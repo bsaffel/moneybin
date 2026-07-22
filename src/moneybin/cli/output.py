@@ -30,8 +30,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 import typer
 
@@ -39,7 +40,15 @@ from moneybin.errors import UserError
 from moneybin.privacy.introspection import derive_tier, extract_data_classes
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
-from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
+from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.envelope import (
+    ResponseEnvelope,
+    build_envelope,
+    build_error_envelope,
+)
+
+if TYPE_CHECKING:
+    from moneybin.exports.models import ExportReceipt
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +93,50 @@ json_fields_option: str | None = typer.Option(
         "Available fields are documented in each command's --help text."
     ),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ExportDestinationOutput:
+    """Privacy-classified destination identity safe for CLI JSON output."""
+
+    destination_id: Annotated[str | None, DataClass.RECORD_ID]
+    name: Annotated[str, DataClass.USER_NOTE]
+    kind: Annotated[Literal["local", "sheets"], DataClass.TXN_TYPE]
+    local_path: Annotated[str | None, DataClass.USER_NOTE]
+
+
+@dataclass(frozen=True, slots=True)
+class ExportReceiptOutput:
+    """Typed transport projection of a completed export receipt."""
+
+    subject: Annotated[dict[str, object], DataClass.USER_NOTE]
+    redaction_mode: Annotated[Literal["redacted", "unredacted"], DataClass.TXN_TYPE]
+    destination: ExportDestinationOutput
+    artifact_path: Annotated[str | None, DataClass.USER_NOTE]
+    compressed_artifact_path: Annotated[str | None, DataClass.USER_NOTE]
+    sheets_identity: Annotated[str | None, DataClass.RECORD_ID]
+    row_counts: Annotated[dict[str, int], DataClass.AGGREGATE]
+    checksums: Annotated[dict[str, str], DataClass.RECORD_ID]
+
+
+@dataclass(frozen=True, slots=True)
+class ExportDestinationStatusOutput:
+    """One saved export destination without a Sheets source identity."""
+
+    destination_id: Annotated[str | None, DataClass.RECORD_ID]
+    name: Annotated[str, DataClass.USER_NOTE]
+    kind: Annotated[Literal["local", "sheets"], DataClass.TXN_TYPE]
+    local_path: Annotated[str | None, DataClass.USER_NOTE]
+    ready: Annotated[bool, DataClass.TXN_TYPE]
+    write_capable: Annotated[bool, DataClass.TXN_TYPE]
+    reasons: Annotated[list[str], DataClass.TXN_TYPE]
+
+
+@dataclass(frozen=True, slots=True)
+class ExportDestinationsOutput:
+    """Typed wrapper retaining destination privacy metadata in JSON mode."""
+
+    destinations: list[ExportDestinationStatusOutput]
 
 
 def render_or_json(
@@ -197,6 +250,63 @@ def render_or_json(
         )
 
     typer.echo(envelope.to_json())
+
+
+def render_export_receipt(
+    receipt: ExportReceipt,
+    output: OutputFormat,
+    *,
+    cli_actor: str,
+) -> None:
+    """Render one export receipt through the standard typed envelope path."""
+    payload = ExportReceiptOutput(
+        subject=dict(receipt.subject),
+        redaction_mode=receipt.redaction_mode,
+        destination=ExportDestinationOutput(
+            destination_id=receipt.destination.destination_id,
+            name=receipt.destination.name,
+            kind=receipt.destination.kind,
+            local_path=(
+                str(receipt.destination.local_path.resolve())
+                if receipt.destination.local_path is not None
+                else None
+            ),
+        ),
+        artifact_path=(
+            str(receipt.artifact_path.resolve())
+            if receipt.artifact_path is not None
+            else None
+        ),
+        compressed_artifact_path=(
+            str(receipt.compressed_artifact_path.resolve())
+            if receipt.compressed_artifact_path is not None
+            else None
+        ),
+        sheets_identity=receipt.sheets_identity,
+        row_counts=dict(receipt.row_counts),
+        checksums=dict(receipt.checksums),
+    )
+
+    def _render_text(_: ResponseEnvelope[Any]) -> None:
+        if payload.artifact_path is not None:
+            typer.echo(f"Exported artifact: {payload.artifact_path}")
+            if payload.compressed_artifact_path is not None:
+                typer.echo(f"Compressed artifact: {payload.compressed_artifact_path}")
+            return
+        typer.echo(
+            f"Exported to sheets:{payload.destination.name} "
+            f"(identity={payload.sheets_identity})"
+        )
+
+    render_or_json(
+        build_envelope(
+            data=payload,
+            recovery_actions=list(receipt.recovery_actions),
+        ),
+        output,
+        render_fn=_render_text,
+        cli_actor=cli_actor,
+    )
 
 
 def derive_log_sensitivity(payload_type: type, envelope_sensitivity: str) -> str:
