@@ -71,6 +71,7 @@ def _receipt(destination: ExportDestination) -> ExportReceipt:
         compressed_artifact_path=None,
         sheets_identity=None,
         row_counts={"accounts": 1},
+        output_classes={"accounts": {"account_id": "record_id"}},
         checksums={"accounts": "abc"},
         recovery_actions=(),
     )

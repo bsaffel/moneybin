@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
@@ -54,6 +55,10 @@ def _receipt(
         compressed_artifact_path=None,
         sheets_identity=("MoneyBin:20260721T120000Z" if artifact is None else None),
         row_counts={"accounts": 2, "transactions": 4},
+        output_classes={
+            "accounts": {"account_id": "record_id"},
+            "transactions": {"amount": "txn_amount"},
+        },
         checksums={"accounts": "abc123", "transactions": "def456"},
         recovery_actions=(),
     )
@@ -355,6 +360,10 @@ def test_export_json_is_a_typed_standard_envelope(tmp_path: Path) -> None:
     assert envelope["data"]["redaction_mode"] == "redacted"
     assert envelope["data"]["destination"]["name"] == "local:exports"
     assert envelope["data"]["artifact_path"] == str(artifact.resolve())
+    assert envelope["data"]["output_classes"] == {
+        "accounts": {"account_id": "record_id"},
+        "transactions": {"amount": "txn_amount"},
+    }
 
 
 def test_export_json_path_is_absolute_and_shell_inspectable(tmp_path: Path) -> None:
@@ -552,3 +561,40 @@ def test_export_service_errors_are_safe_stderr_with_nonzero_exit(
     assert result.stdout == ""
     assert str(destination.local_path) in result.stderr
     assert "Traceback" not in result.output
+
+
+def test_local_export_oserror_discloses_destination_without_logging_filename(
+    tmp_path: Path,
+) -> None:
+    destination_path = (tmp_path / "custom-destination").resolve()
+    failed_filename = destination_path / ".publish.lock"
+
+    def echo_log(message: str) -> None:
+        typer.echo(message, err=True)
+
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.config.get_settings",
+            return_value=_settings(destination_path),
+        ),
+        patch(
+            "moneybin.exports.service.ExportService.run",
+            side_effect=OSError(13, "Permission denied", failed_filename),
+        ),
+        patch(
+            "moneybin.cli.utils.logger.error",
+            side_effect=echo_log,
+        ) as log_error,
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["export", "bundle"])
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert f"Exporting to {destination_path}" in result.stderr
+    assert "Local export could not be published." in result.stderr
+    log_error.assert_called_once_with("❌ Local export could not be published.")
+    assert str(failed_filename) not in result.stderr
+    assert str(failed_filename) not in str(log_error.call_args)
+    assert "Permission denied" not in str(log_error.call_args)

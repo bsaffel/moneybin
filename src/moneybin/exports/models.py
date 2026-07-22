@@ -54,6 +54,7 @@ class ExportReceipt:
     compressed_artifact_path: Path | None
     sheets_identity: str | None
     row_counts: Mapping[str, int]
+    output_classes: Mapping[str, Mapping[str, str]]
     checksums: Mapping[str, str]
     recovery_actions: tuple[RecoveryAction, ...]
 

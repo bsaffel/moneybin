@@ -297,18 +297,29 @@ def _run_export(
                     f"(destination_id={destination.destination_id})",
                     err=True,
                 )
-            receipt = ExportService(db).run(
-                ExportRequest(
-                    subject_kind=subject_kind,
-                    report_id=report_id,
-                    report_parameters=report_parameters,
-                    destination=destination,
-                    format=selected_format,
-                    redaction_mode=redaction_mode,
-                    compress_zip=compress_zip,
-                ),
-                actor=_ACTOR,
-            )
+            try:
+                receipt = ExportService(db).run(
+                    ExportRequest(
+                        subject_kind=subject_kind,
+                        report_id=report_id,
+                        report_parameters=report_parameters,
+                        destination=destination,
+                        format=selected_format,
+                        redaction_mode=redaction_mode,
+                        compress_zip=compress_zip,
+                    ),
+                    actor=_ACTOR,
+                )
+            except OSError as exc:
+                if destination.kind != "local":
+                    raise
+                from moneybin import error_codes  # noqa: PLC0415
+                from moneybin.errors import UserError  # noqa: PLC0415
+
+                raise UserError(
+                    "Local export could not be published.",
+                    code=error_codes.INFRA_IO_ERROR,
+                ) from exc
     render_export_receipt(receipt, output, cli_actor=cli_actor)
 
 

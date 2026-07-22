@@ -116,6 +116,7 @@ class ExportReceiptOutput:
     compressed_artifact_path: Annotated[str | None, DataClass.USER_NOTE]
     sheets_identity: Annotated[str | None, DataClass.RECORD_ID]
     row_counts: Annotated[dict[str, int], DataClass.AGGREGATE]
+    output_classes: Annotated[dict[str, dict[str, str]], DataClass.AGGREGATE]
     checksums: Annotated[dict[str, str], DataClass.RECORD_ID]
 
 
@@ -284,6 +285,9 @@ def render_export_receipt(
         ),
         sheets_identity=receipt.sheets_identity,
         row_counts=dict(receipt.row_counts),
+        output_classes={
+            table: dict(classes) for table, classes in receipt.output_classes.items()
+        },
         checksums=dict(receipt.checksums),
     )
 

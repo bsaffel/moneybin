@@ -138,6 +138,12 @@ class LocalExportPublisher:
                 ),
                 sheets_identity=None,
                 row_counts={table.name: len(table.rows) for table in snapshot.tables},
+                output_classes={
+                    table.name: {
+                        column.name: column.data_class.value for column in table.columns
+                    }
+                    for table in snapshot.tables
+                },
                 checksums=verified_checksums,
                 recovery_actions=(),
             )

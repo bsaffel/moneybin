@@ -153,6 +153,12 @@ class SheetsExportPublisher:
             compressed_artifact_path=None,
             sheets_identity=f"{prefix}:{run_id}",
             row_counts={table.name: len(table.rows) for table in snapshot.tables},
+            output_classes={
+                table.name: {
+                    column.name: column.data_class.value for column in table.columns
+                }
+                for table in snapshot.tables
+            },
             checksums={table.name: table.checksum_sha256 for table in snapshot.tables},
             recovery_actions=(),
         )
