@@ -164,6 +164,25 @@ def test_current_surface_narratives_use_the_live_bounded_registry() -> None:
     assert "current 47-tool standard registry" in ai_client
 
 
+def test_chatgpt_desktop_support_is_documented_as_shipped_t1() -> None:
+    text = AI_CLIENT_SPEC.read_text()
+    row = next(
+        line
+        for line in text.splitlines()
+        if line.startswith("| ChatGPT desktop app (Codex host) |")
+    )
+
+    assert "`mcp install --client chatgpt-desktop` writes it" in row
+    assert "| **T1** |" in row
+    for stale_claim in (
+        "pending #315",
+        "Until #315 merges",
+        "manual-config only",
+        "still in `_NO_INSTALL_CLIENTS`",
+    ):
+        assert stale_claim not in text
+
+
 def test_active_105_tool_mentions_are_explicitly_historical() -> None:
     active_docs = (
         *sorted(

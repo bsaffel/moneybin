@@ -85,7 +85,7 @@ so the remaining capacity belongs to the user's combined MCP configuration.
 | Open WebUI | streamable-http (native ≥0.6.31); stdio via `mcpo` | admin config | T2 | Localhost streamable-http intersects our `--insecure` gate — document carefully |
 | Windsurf | stdio, streamable HTTP, SSE (OAuth on all) | `mcp_config.json`; in-app marketplace | **T2** | MoneyBin's current 47-tool standard registry fits its 100-active-tool combined cap. Document only; revisit when client momentum justifies release-gated support |
 | claude.ai web + mobile (custom connectors) | remote MCP (OAuth optional platform-side) | Settings → Connectors (Free capped at 1) | **T3** | M3D. Available on all plans incl. Free |
-| ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it (PR #315) | **T1** (pending #315) | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension. **Until #315 merges, `chatgpt-desktop` is manual-config only** (still in `_NO_INSTALL_CLIENTS` on `main`) |
+| ChatGPT desktop app (Codex host) | **stdio + streamable HTTP** | Settings → MCP servers → Add (STDIO); shares `~/.codex/config.toml`; `mcp install --client chatgpt-desktop` writes it | **T1** | Same local host as Codex — configure once, use in ChatGPT desktop + Codex CLI + IDE extension |
 | ChatGPT web (Developer Mode) | **remote-only** (HTTPS `/mcp`; SSE+streamable) | Developer Mode → add connector | **T3** | Web doesn't read local Codex config. **Mobile MCP support undocumented** (Jul 2026). Plus/Pro/Business/Enterprise/Edu; Free excluded. Write-tiering ambiguous — re-verify at M3D |
 | Cowork remote sessions | remote MCP via connectors | claude.ai connectors | **T3** | Same M3D unlock |
 | Claude Connectors Directory / ChatGPT Apps SDK (→ "Plugins") | hosted remote + review | vendor submission portals | **T3 (M3O)** | Both require org accounts + human review; see M3O |
@@ -127,11 +127,11 @@ Stale guidance found during the review; all are routine fixes:
    manual JSON as legacy (still supported). Rewrite the section; add the
    Cowork caveat (remote sessions never see local MCP; local sessions do) and
    the managed-org flags (`isLocalDevMcpEnabled`, `isDesktopExtensionEnabled`).
-2. **`mcp install --client chatgpt-desktop` should write the shared Codex TOML
-   config, not a remote-only disclaimer.** The ChatGPT desktop app hosts Codex
+2. **`mcp install --client chatgpt-desktop` writes the shared Codex TOML
+   config.** The ChatGPT desktop app hosts Codex
    and reads `~/.codex/config.toml` — the same file `mcp install --client codex`
    writes — so it takes an ordinary local stdio server (Settings → MCP servers →
-   Add → STDIO). Write that config, as **PR #315** implements. Only ChatGPT
+   Add → STDIO). This support shipped in **PR #315**. Only ChatGPT
    **web/mobile** is remote-only (needs M3D). *(Corrects an earlier draft of this
    spec that wrongly called all ChatGPT surfaces remote-only — its evidence was
    the Apps SDK / Developer Mode "apps in ChatGPT" path, a different feature from
