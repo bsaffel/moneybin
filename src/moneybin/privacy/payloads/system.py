@@ -4,16 +4,14 @@ Each field carries ``Annotated[T, DataClass.X]`` metadata so the Phase 6
 middleware can derive sensitivity via ``derive_tier`` without inspecting
 tool source code directly.
 
-These surfaces are all operator-territory (low-sensitivity infrastructure
-data only): model states, audit check results, pipeline counts, durations.
-No PII or financial amounts appear in any of these payloads.
+Export status includes user-supplied destination names and therefore derives
+Tier.MEDIUM. It excludes exported financial rows, destination paths,
+spreadsheet URLs, and workbook identifiers.
 
 Tier derivation summary:
-  All payloads in this module derive Tier.LOW — every field maps to
-  TXN_TYPE, AGGREGATE, TIMESTAMP_OBSERVABILITY, RECORD_ID, or DESCRIPTION.
-  DESCRIPTION is Tier.MEDIUM, but is used only for error/detail strings
-  (audit failure messages, validation error messages). Payloads that
-  include a DESCRIPTION field derive Tier.MEDIUM.
+  Payloads made only from TXN_TYPE, AGGREGATE, TIMESTAMP_OBSERVABILITY, and
+  RECORD_ID derive Tier.LOW. DESCRIPTION and USER_NOTE derive Tier.MEDIUM;
+  payloads that include either class inherit that tier.
 
   - ``TransformStatusPayload``      → Tier.LOW (RECORD_ID + TXN_TYPE + TIMESTAMP_OBSERVABILITY)
   - ``TransformPlanPayload``        → Tier.LOW (model name lists = RECORD_ID, bool = TXN_TYPE)
@@ -28,6 +26,8 @@ Tier derivation summary:
   - ``SystemStatusReader``          → Tier.LOW (RECORD_ID + TXN_TYPE)
   - ``SystemStatusDatabaseConnectionsInfo`` → Tier.LOW (composition only)
   - ``SystemStatusPayload``         → Tier.LOW (no DESCRIPTION fields)
+  - ``ExportsStatus``               → Tier.MEDIUM (destination name = USER_NOTE)
+  - ``SystemStatusCLIPayload``      → Tier.MEDIUM (exports include USER_NOTE)
   - ``InvariantResultPayload``      → Tier.MEDIUM (detail = DESCRIPTION, affected_ids = RECORD_ID)
   - ``SystemDoctorPayload``         → Tier.MEDIUM (via InvariantResultPayload)
   - ``RefreshRunPayload``           → Tier.MEDIUM (error = DESCRIPTION)

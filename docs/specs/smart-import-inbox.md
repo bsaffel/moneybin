@@ -26,7 +26,7 @@ MoneyBin already has an app-data home at `~/.moneybin/` (database, keys, logs, p
 | Concern | Location | Visibility | Job |
 |---|---|---|---|
 | App-internal state | `~/.moneybin/` (today) | Hidden | "Don't touch this." Database, encryption keys, logs, profile metadata. |
-| User-facing workspace | `~/Documents/MoneyBin/<profile>/` (this spec) | Visible | "This is yours." Inbox, processed history, failed-import sidecars, future exports/backups/reports. |
+| User-facing workspace | `~/Documents/MoneyBin/<profile>/` (this spec) | Visible | "This is yours." Inbox, processed history, failed-import sidecars, and export artifacts. |
 
 Hiding the inbox would defeat its purpose — users need to find it in Finder/Explorer to drop files into it. Putting app state in a visible folder would invite accidental modification of the database. The two homes serve genuinely different audiences (app vs. user) and should stay separate.
 

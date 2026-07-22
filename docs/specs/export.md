@@ -1,9 +1,9 @@
 # Export bundles and report delivery
 
 > Milestone **M1O**.
-> Status: draft
+> Status: implemented
 > Type: Feature
-> Last updated: 2026-07-21 — initial design.
+> Last updated: 2026-07-21 — implementation reconciled across CLI and MCP.
 > Companions: [`moneybin-cli.md`](moneybin-cli.md),
 > [`moneybin-mcp.md`](moneybin-mcp.md),
 > [`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md),
@@ -23,8 +23,9 @@ integrity checks.
 
 ## Background
 
-MoneyBin imports from files and live Sheets, but its current `export run`
-command is a reserved CLI stub. M1O closes the reciprocal data-exit path.
+MoneyBin imports from files and live Sheets. M1O closes the reciprocal data-exit
+path with canonical bundle and registered-report delivery on both the CLI and
+MCP surfaces.
 
 The user-facing workspace already has a deliberate split from encrypted app
 state: `~/Documents/MoneyBin/<profile>/` contains visible files; `~/.moneybin/`
@@ -55,17 +56,18 @@ same path without an export-specific integration.
 
 Every run chooses one subject:
 
-1. **Bundle** exports a closed catalog of canonical, interoperable semantic
-   tables: accounts, transactions, transaction lines, transfers, balances and
-   balance history, categories, merchants, securities, investment transactions,
-   investment lots, realized gains, and holdings. Transaction categories,
-   notes, tags, and splits travel in their canonical transaction and line
-   representations. The catalog is explicit in code; adding a new core table
-   does not silently change a user's portable artifact. It excludes raw source
-   copies, operational metadata, and app-internal state that has no portability
-   contract.
+1. **Bundle** exports a closed catalog of 13 canonical, interoperable semantic
+   tables: `accounts`, `transactions`, `transaction_lines`, `transfers`,
+   `balances`, `balances_daily`, `categories`, `merchants`, `securities`,
+   `investment_transactions`, `investment_lots`, `realized_gains`, and
+   `holdings`. Transaction categories, notes, tags, and splits travel in their
+   canonical transaction and line representations. The catalog is explicit in
+   code; adding a new core table does not silently change a user's portable
+   artifact. It excludes raw source copies, operational metadata, and
+   app-internal state that has no portability contract.
 2. **Report** exports exactly one named report and one resolved parameter set.
-   The report is found through the catalog and executed by its existing runner.
+   The report is found through the catalog and executes exactly once through
+   its existing runner, retaining the resulting provenance receipt.
 
 `bundle` is intentionally not named `all`: it does not promise a dump of every
 internal database table. `transactions` is intentionally not a top-level export
@@ -123,6 +125,9 @@ the existing configured inbox root:
 <inbox_root>/<profile>/exports/
 ```
 
+The default profile export path is
+`~/Documents/MoneyBin/<profile>/exports/`.
+
 With the default inbox root and profile `personal`, the resolved path is:
 
 ```text
@@ -165,8 +170,8 @@ name → unambiguous-normalized-name contract.
 
 ```text
 moneybin export destination list
-moneybin export destination add local external-drive <path>
-moneybin export destination add sheets finance-dashboard <url>
+moneybin export destination add local <name> <path>
+moneybin export destination add sheets <name> <url>
 moneybin export destination remove <name>
 ```
 
@@ -228,8 +233,9 @@ mode, checksums where applicable, and recovery actions on failure.
 
 ### R8 — MCP surface and parity
 
-MCP and CLI expose the same observable outcomes over the same services.
-MCP uses two new standard tools and an existing status read:
+MCP and CLI expose the same observable outcomes over the same services. The
+operating 47-tool standard registry uses exactly two export-specific tools and
+an existing status read:
 
 - `export_run` runs a bundle or report export after the caller supplies its
   destination, format, report parameters where applicable, and redaction
@@ -242,9 +248,9 @@ MCP uses two new standard tools and an existing status read:
 The split is deliberate. Reading destination status, configuring a destination,
 and writing exported data have different read/write, confirmation, and recovery
 contracts. A broad `export(operation=...)` tool would collapse those boundaries
-into a large union and violate the surface-design contract. With the planned
-dynamic-report tools, these two additions consume the 49th and 50th positions
-in the bounded MCP registry.
+into a large union and violate the surface-design contract. The registry remains
+at 47 tools under the 50-tool hard limit; reports extend the catalog behind the
+existing `reports` tool and consume no additional slots.
 
 The MCP tool and CLI both require a per-run redaction decision. A client that
 cannot elicit a human decision receives a structured refusal rather than an
@@ -310,24 +316,24 @@ locks at launch.
 | Renderers | Write prepared snapshots as CSV, Parquet, XLSX, or Sheets. |
 | Sheets output adapter | Write-scope OAuth, temporary managed tabs, promotion, recovery. |
 
-The renderer boundary is deliberately small because four renderers are planned.
-It centralizes the public artifact contract without introducing a general plugin
-system.
+The renderer boundary is deliberately small across the four implemented
+renderers. It centralizes the public artifact contract without introducing a
+general plugin system.
 
-### Files expected to change
+### Implemented locations
 
 - `src/moneybin/config.py` — derive the profile exports directory from the
   existing user-facing workspace root.
-- `src/moneybin/services/` and `src/moneybin/repositories/` — export service,
+- `src/moneybin/exports/` and `src/moneybin/repositories/` — export service,
   destination repository, artifact model, and renderers.
 - `src/moneybin/connectors/gsheet/` — explicit write-scope OAuth upgrade and
   output adapter; extend the fake Sheets client for staging/promotion tests.
-- `src/moneybin/cli/` — replace the export stub with the documented grammar.
+- `src/moneybin/cli/` — expose the documented export grammar.
 - `src/moneybin/mcp/` — register `export_run` and `exports_set`, extend
   `system_status`, capability map, and bounded-registry fixtures.
 - `src/moneybin/metrics/registry.py` — export counters and duration metrics.
-- `docs/` — CLI reference, Sheets guide, export guide, capability map, and
-  roadmap/index status when implementation starts.
+- `docs/` — CLI reference, MCP guide, export contract, capability map, roadmap,
+  feature snapshot, and release notes.
 
 ## Testing strategy
 
@@ -347,7 +353,8 @@ system.
    refusal, write-scope setup, managed-tab isolation, staging promotion, and
    preservation of the last successful snapshot on failure.
 7. **Surfaces:** exercise CLI and MCP capability parity, actual rendered MCP
-   schemas, confirmations, error envelopes, and the 50-tool registry ceiling.
+   schemas, confirmations, error envelopes, the 47-tool current registry, and
+   the 50-tool hard limit.
 
 ## Dependencies
 

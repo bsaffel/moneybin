@@ -132,10 +132,15 @@ class TestStubbedCommands:
         assert "get" in result.output
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
-    def test_export_stubbed(self, mock_profile: MagicMock) -> None:
-        """Export group exists."""
+    def test_export_group_exposes_delivery_commands(
+        self, mock_profile: MagicMock
+    ) -> None:
+        """Export group exposes the shipped delivery grammar."""
         result = runner.invoke(app, ["export", "--help"])
         assert result.exit_code == 0
+        assert "bundle" in result.output
+        assert "report" in result.output
+        assert "destination" in result.output
 
     @patch("moneybin.cli.utils.ensure_default_profile", return_value="test")
     def test_stats_stubbed(self, mock_profile: MagicMock) -> None:

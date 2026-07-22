@@ -155,6 +155,30 @@ and confirmation contracts.
 - `sql_query` is the read-only escape hatch and `sql_schema` explains the
   interface schema. They do not replace domain validation for writes.
 
+### Export delivery
+
+The 47-tool standard registry contains exactly two export-specific tools and
+stays below the 50-tool hard limit:
+
+- `export_run` publishes either the closed 13-table canonical bundle or one
+  catalog report to a named local or Sheets destination. Every call supplies
+  `redaction_mode`; omission elicits a choice where supported and otherwise
+  returns a structured refusal. `redacted` is the safe default, never a saved
+  destination preference.
+- `exports_set` asserts one named local or Sheets destination's typed target
+  state. It shares the same service/repository owners as
+  `moneybin export destination ...`; removing configuration never deletes
+  artifacts, workbooks, or tabs.
+- `system_status(sections=["exports"])` reports destination readiness through
+  the existing orientation tool, so status does not consume a third export
+  slot.
+
+Sheets destinations are output-only and cannot overlap an inbound `gsheet`
+connection. Publication replaces only MoneyBin-managed tabs after staging and
+validation; a failure preserves the latest known-good visible tabs. Local
+delivery publishes immutable CSV, Parquet, or XLSX artifacts, with ZIP limited
+to completed CSV and Parquet bundles.
+
 ## Prompts and resources
 
 Prompts are workflow guidance, not an alternate registry. They use only the

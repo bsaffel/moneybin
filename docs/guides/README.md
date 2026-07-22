@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-17 -->
+<!-- Last reviewed: 2026-07-21 -->
 # MoneyBin Guides
 
 How-to guides for MoneyBin. These walk you through specific tasks — import data, query SQL, configure profiles, run a headless install. For reference material (schemas, APIs), see [`docs/reference/`](../reference/). For the doc index, see [`docs/README.md`](../README.md).
@@ -20,6 +20,9 @@ Working with data that's already loaded — categorizing it, understanding the p
 - **[Categorization](categorization.md)** — Rules, merchant normalization, LLM-assist, source precedence, and bulk operations.
 - **[Data Pipeline](data-pipeline.md)** — The raw/staging/core/app/reports layers, which models live where, and where consumers should read from.
 - **[Direct SQL Access](sql-access.md)** — Connect to the encrypted DuckDB file from your own scripts and clients; the stable read-only surface.
+- **[Export data](cli-reference.md#export)** — Publish canonical CSV, Parquet,
+  XLSX, ZIP, or managed Google Sheets output with an explicit per-run redaction
+  choice.
 
 ## Operate and deploy
 

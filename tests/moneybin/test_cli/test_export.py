@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import subprocess  # noqa: S404  # shell-level artifact inspection is the contract
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -65,7 +67,11 @@ def _receipt(
 
 
 def _settings(exports_dir: Path) -> SimpleNamespace:
-    return SimpleNamespace(profile_exports_dir=exports_dir.resolve())
+    return SimpleNamespace(
+        profile="test",
+        profile_exports_dir=exports_dir.resolve(),
+        mcp=SimpleNamespace(max_rows=1_000),
+    )
 
 
 def test_export_help_exposes_the_public_command_grammar() -> None:
@@ -366,31 +372,47 @@ def test_export_json_is_a_typed_standard_envelope(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.integration
 def test_export_json_path_is_absolute_and_shell_inspectable(tmp_path: Path) -> None:
-    artifact = tmp_path / "exports" / "export-1"
-    artifact.mkdir(parents=True)
-    destination = _local_destination(tmp_path / "exports")
+    from tests.moneybin.test_exports.test_renderers import make_snapshot
 
     with (
         patch("moneybin.database.get_database") as get_database,
         patch(
-            "moneybin.config.get_settings", return_value=_settings(tmp_path / "exports")
+            "moneybin.config.get_settings",
+            return_value=_settings(tmp_path / "exports"),
         ),
         patch(
-            "moneybin.exports.service.ExportService.run",
-            return_value=_receipt(destination, artifact),
+            "moneybin.exports.service.ExportService.prepare_bundle",
+            return_value=make_snapshot(),
         ),
     ):
         get_database.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["export", "bundle", "--output", "json"])
 
+    assert result.exit_code == 0, result.output
     returned_path = Path(json.loads(result.stdout)["data"]["artifact_path"])
     inspected = subprocess.run(  # noqa: S603  # fixed executable, test-owned path
-        ["/bin/test", "-d", str(returned_path)],
+        [
+            sys.executable,
+            "-c",
+            (
+                "import csv,json,sys; "
+                "root=sys.argv[1]; "
+                "manifest=json.load(open(root + '/manifest.json')); "
+                "rows=list(csv.DictReader(open(root + '/tables/activity.csv'))); "
+                "print(json.dumps({'kind': manifest['subject']['kind'], "
+                "'rows': len(rows)}, sort_keys=True))"
+            ),
+            str(returned_path),
+        ],
+        capture_output=True,
         check=False,
+        text=True,
     )
     assert returned_path.is_absolute()
     assert inspected.returncode == 0
+    assert inspected.stdout == '{"kind": "bundle", "rows": 2}\n'
 
 
 def test_export_destination_list_hides_sheets_target_and_shows_local_absolute_path(

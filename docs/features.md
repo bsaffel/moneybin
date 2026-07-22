@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-21 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -83,9 +83,29 @@ Each report is backed by a curated view and exposed identically on the CLI and M
 - **`reports.large_transactions`** — Outlier filter for human review.
 - **`reports.balance_drift`** — Drift between asserted and computed balances.
 
+## Data export
+
+- **Canonical export delivery** — `moneybin export bundle` publishes a closed
+  13-table portability catalog to redacted CSV by default under
+  `~/Documents/MoneyBin/<profile>/exports/`. Local CSV and Parquet bundles carry
+  a manifest, checksums, and generated data dictionary; XLSX carries the same
+  contract in one workbook. Each local run is immutable, ZIP is limited to CSV
+  and Parquet, and `--unredacted` is an explicit per-run choice. `moneybin export
+  report <report-id>` executes one catalog report once and retains its parameters
+  and SQL provenance. Named local and output-only Sheets destinations are managed
+  under `moneybin export destination`; Sheets replaces only MoneyBin-managed
+  tabs and preserves the latest good state on failure. MCP exposes the same
+  outcomes through `export_run`, `exports_set`, and
+  `system_status(sections=["exports"])`. -> [CLI reference](guides/cli-reference.md)
+  · [MCP server guide](guides/mcp-server.md)
+
 ## MCP server
 
-- **Wide tool catalog** — More than a hundred first-party tools across `accounts.*`, `transactions.*`, `reports.*`, `categorize.*`, `merchants.*`, `system.*`, `refresh`, `sync.*`, `transform.*`, and `import.*`. Full per-domain inventory: [MCP server guide](guides/mcp-server.md).
+- **Bounded tool catalog** — One current 47-tool standard registry across
+  system, reports, accounts, investments, transactions, reviews, taxonomy,
+  import, sync, Sheets, exports, privacy, refresh, and SQL. Reports extend the
+  catalog without consuming tool slots; 50 tools is the hard limit. Full
+  inventory: [MCP server guide](guides/mcp-server.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.
@@ -131,7 +151,6 @@ MoneyBin is built on the assumption that you'll want to track your money your wa
 
 These are visible gaps a migrant or agent author will notice. See [Roadmap](roadmap.md) for the full milestone view.
 
-- **Plaintext export** — `moneybin export` (CSV / Excel / Sheets) for data exit.
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
 - **Investment price feeds and net-worth integration** — Market-valued holdings and unrealized gain/loss (needs a price feed) and folding investment positions into net worth. The ledger, tax lots, four-method cost basis, and realized gain/loss (1099-B surface) already shipped — see [Investments](#investments) above. Planned (core, not a package).
 - **Multi-currency** — Original currency is now captured correctly from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. A home-currency setting, display conversion, a guard against silently blending currencies in reports, and FX gain/loss are still planned.

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-18 -->
+<!-- Last reviewed: 2026-07-21 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -458,11 +458,37 @@ MCP server lifecycle and client install.
 
 ### `export`
 
-CSV / Excel / Sheets export. Group is reserved; commands ship with `export.md`.
+Publish a closed 13-table canonical bundle or one registered report. Local
+delivery defaults to redacted CSV under
+`~/Documents/MoneyBin/<profile>/exports/`; every completed local run is a new
+immutable artifact with a manifest, checksums, and data dictionary. Pass
+`--unredacted` affirmatively as an explicit per-run choice. Destination configuration never
+remembers a redaction choice, and `--yes` accepts only the redacted default.
 
-| Command | Purpose |
-|---|---|
-| `export run` 🚧 | Export financial data to a file (stub). |
+| Command | Purpose | Key flags |
+|---|---|---|
+| `moneybin export bundle` | Publish the canonical bundle. Defaults to CSV and `local:exports`. | `--format {csv,parquet,xlsx}`, `--to local:<name>\|sheets:<name>`, `--compress zip`, `--unredacted`, `-y, --yes`, `--output {text,json}` |
+| `moneybin export report <report-id>` | Execute one catalog report once, retain its parameters and SQL provenance, and publish that result. | Repeat `--param key=value`; delivery flags match `bundle`. |
+| `moneybin export destination list` | List the built-in and named destinations with readiness. | `--output {text,json}`, `--quiet` |
+| `moneybin export destination add local <name> <path>` | Add or replace a named local root. | — |
+| `moneybin export destination add sheets <name> <url>` | Add or replace an output-only workbook and request Sheets write authorization. | — |
+| `moneybin export destination remove <name>` | Remove configuration without deleting files, workbooks, or tabs. | — |
+
+CSV and Parquet are directory bundles. `--compress zip` publishes a ZIP beside
+the completed bundle; ZIP is the only compression format. XLSX is one workbook
+with data, manifest, and dictionary worksheets and rejects `--compress` because
+it is already a ZIP container. Sheets uses its native format and rejects both
+`--format` and `--compress`.
+
+Inbound and output Sheets are separate contracts. MoneyBin refuses a
+destination workbook already configured as a `gsheet` input, replaces only its
+own managed tabs after staging and validation, and preserves the latest good
+visible state if publication fails. Local artifacts retain history; Sheets is
+managed latest state.
+
+MCP reaches the same service outcomes through `export_run`, `exports_set`, and
+the existing `system_status(sections=["exports"])` readiness view. Command and
+tool names are intentionally not required to map 1:1.
 
 ## Diagnostics
 

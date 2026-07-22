@@ -312,7 +312,14 @@ A reasonable question from someone migrating off a service that died: what happe
 
 - **License.** MoneyBin is AGPL-3.0-or-later. The source is yours under that license — to read, modify, fork, and run privately or publicly. See [licensing](../licensing.md).
 - **Your encrypted database is portable.** The DuckDB file is openable by any DuckDB client with the encryption key — no MoneyBin process required. The schema is documented in [architecture](../architecture.md). If MoneyBin disappears tomorrow, you can `ATTACH` the database in `duckdb` CLI, supply the key, and `SELECT` your data.
-- **Plaintext export.** A turnkey "export everything to CSV" command is on the roadmap, not shipped. Until then: `moneybin db query --output csv "SELECT * FROM core.fct_transactions"` per table writes CSV to stdout, and the same pattern works for every other `core.*` and `app.*` table. The DuckDB CLI's `COPY ... TO 'file.csv' (HEADER, DELIMITER ',')` is the equivalent if you'd rather drive it directly.
+- **Plaintext export.** `moneybin export bundle` publishes the closed canonical
+  13-table catalog as redacted CSV under
+  `~/Documents/MoneyBin/<profile>/exports/` by default. Use `--unredacted` only
+  when the portable copy must retain every value. Export files are private to
+  the current user (`0600`, with `0700` directories), but they are plaintext:
+  protect, move, and delete them as deliberately as a bank statement. The
+  encrypted DuckDB file remains the complete recovery path for internal state
+  outside the portability catalog.
 - **Supply chain.** MoneyBin is solo-maintained today. Dependencies are pinned via `uv` with a checked-in `uv.lock`. There is no published PyPI release or container image at the time of this review — installation is from source. Release signing, reproducible builds, and container provenance are not in place yet; they will land alongside the first public release. The AGPL license means a fork is always possible regardless of what the upstream maintainer does next.
 
 For a side-by-side with hosted competitors on portability and exit, see [comparison](../comparison.md).

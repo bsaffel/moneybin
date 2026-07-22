@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Canonical bundle and registered-report export delivery (M1O).**
+  `moneybin export bundle` and `moneybin export report` publish redacted CSV by
+  default to immutable profile-scoped artifacts, with Parquet, XLSX, ZIP, named
+  local destinations, and output-only Google Sheets targets also supported.
+  `export_run`, `exports_set`, and `system_status(sections=["exports"])` expose
+  the same service outcomes to MCP; unredacted output is an explicit per-run
+  choice.
 - **An AI assistant can now resolve a credit-card PDF's sign inversion
   without you leaving the chat.** `import_preview(file_path=...)` followed by
   `import_confirm(preview_id=...)` shows you the statement's evidence and

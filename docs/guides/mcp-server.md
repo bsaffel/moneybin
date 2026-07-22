@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-07-19 -->
+<!-- Last reviewed: 2026-07-21 -->
 # MCP Server
 
 MoneyBin exposes one **47-tool standard registry** to every generic MCP client.
@@ -33,6 +33,26 @@ first. Use `reports` without a `report_id` to inspect the analytical catalog,
 then call `reports(report_id=..., parameters=...)` for a selected report.
 `sql_schema` and the `moneybin://schema` resource explain the curated
 read-only SQL surface; `sql_query` is the operator escape hatch.
+
+## Export data
+
+The 47-tool standard registry stays below the 50-tool hard limit and uses
+exactly two export-specific tools:
+
+- `export_run` publishes the closed 13-table canonical bundle or one registered
+  report to a named local or Google Sheets destination. Supply
+  `redaction_mode="redacted"` or `redaction_mode="unredacted"` on every run. If
+  the value is omitted, clients with elicitation ask; other clients receive a
+  structured refusal.
+- `exports_set` asserts one named local or Sheets destination's target state.
+  It creates, updates, or removes MoneyBin configuration; removal does not
+  delete existing files, workbooks, or tabs.
+
+Call `system_status(sections=["exports"])` to inspect destination readiness
+without adding a third export tool. Sheets destinations are output-only and
+cannot be the same workbook as an inbound `gsheet` connection. MoneyBin stages
+and validates its managed tabs before promotion, preserves the latest good
+visible tabs on failure, and never touches user-owned tabs.
 
 ## Data handling
 
