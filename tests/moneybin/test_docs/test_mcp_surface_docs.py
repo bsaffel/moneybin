@@ -26,6 +26,8 @@ PROMPTS = ROOT / "src/moneybin/mcp/prompts.py"
 CHANGELOG = ROOT / "CHANGELOG.md"
 CLIENT_GUIDE = ROOT / "docs/guides/mcp-clients.md"
 MCP_SERVER_GUIDE = ROOT / "docs/guides/mcp-server.md"
+WHAT_AI_SEES_GUIDE = ROOT / "docs/guides/what-the-ai-sees.md"
+AI_CLIENT_SPEC = ROOT / "docs/specs/ai-client-compatibility.md"
 STANDARD_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/standard-47.json"
 BASELINE_SNAPSHOT = ROOT / "tests/fixtures/mcp_surface/baseline-2026-07-17.json"
 PUBLIC_MCP_GUIDES = (*sorted((ROOT / "docs/guides").rglob("*.md")),)
@@ -134,6 +136,64 @@ def test_spec_index_describes_the_current_mcp_contract() -> None:
         assert current_fact in row
     assert "`reports_*`" not in row
     assert "sync + transform" not in row
+
+
+def test_current_surface_narratives_use_the_live_bounded_registry() -> None:
+    current_paths = (WHAT_AI_SEES_GUIDE, INDEX, AI_CLIENT_SPEC)
+    stale_claims = (
+        "~105 tools",
+        "our 105 registered",
+        "MoneyBin's 105-tool surface",
+        "all **105** tools",
+        "pinned, test-enforced `VISIBLE_TOOL_COUNT`",
+    )
+
+    for path in current_paths:
+        text = " ".join(path.read_text().split())
+        assert f"{STANDARD_TOOL_COUNT}-tool standard registry" in text, path
+        for claim in stale_claims:
+            assert claim not in text, f"{path}: {claim}"
+
+    changelog = " ".join(CHANGELOG.read_text().split())
+    assert "then-105-tool registry" in changelog
+    assert "current 47-tool standard registry" in changelog
+
+    ai_client = " ".join(AI_CLIENT_SPEC.read_text().split())
+    assert "Historical measurement (2026-07-10)" in ai_client
+    assert "former 105-tool registry" in ai_client
+    assert "current 47-tool standard registry" in ai_client
+
+
+def test_active_105_tool_mentions_are_explicitly_historical() -> None:
+    active_docs = (
+        *sorted(
+            path
+            for path in (ROOT / "docs").rglob("*.md")
+            if "archived" not in path.parts
+        ),
+        CHANGELOG,
+    )
+    historical_markers = (
+        "former",
+        "historical",
+        "frozen",
+        "pre-cutover",
+        "then-105",
+        "replaced",
+        "before the cutover",
+    )
+    legacy_measurement = re.compile(r"105(?:-tool| tools| registered| visible)")
+
+    for path in active_docs:
+        lines = path.read_text().splitlines()
+        for line_number, line in enumerate(lines):
+            if not legacy_measurement.search(line):
+                continue
+            context = " ".join(lines[max(0, line_number - 3) : line_number + 4]).lower()
+            assert any(marker in context for marker in historical_markers), (
+                f"{path}:{line_number + 1}: 105-tool measurement lacks "
+                "explicit historical context"
+            )
 
 
 def test_active_governance_does_not_teach_legacy_registry_names() -> None:

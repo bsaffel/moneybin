@@ -71,7 +71,7 @@ the end of this spec.
 
 The July 2026 frozen registry contained:
 
-| Measure | Current value |
+| Measure | Frozen value |
 |---|---:|
 | Visible tools | 105 |
 | Serialized tool metadata | 90,734 bytes |
@@ -97,15 +97,15 @@ Three entries are deprecated aliases rather than capabilities:
 - `sync_connect`
 - `sync_connect_status`
 
-Removing them after the existing pre-launch compatibility window reduces the
-registry to 102 but does not solve the disclosure problem.
+Removing them after the existing pre-launch compatibility window would have
+reduced the former registry to 102 without solving the disclosure problem.
 
-### The failure is no longer theoretical
+### Why the former surface failed
 
 Windsurf's Cascade accepts at most 100 active tools across all connected MCP
-servers. MoneyBin alone advertises 105. The current design cannot work
-completely in a documented client and leaves no budget for a second server in
-clients with a similar ceiling.
+servers. Before the cutover, MoneyBin alone advertised 105. That design could
+not work completely in a documented client and left no budget for a second
+server in clients with a similar ceiling.
 
 Count is only a proxy. Similar or overlapping tools create more selection
 ambiguity than an equal number of distinct tools, while a large discriminated
@@ -738,7 +738,7 @@ global coercion layer without evidence from supported clients.
 
 ## Alternatives
 
-### Keep all 105 tools visible
+### Keep all former 105 tools visible
 
 Rejected. It already exceeds a documented client ceiling and has no credible
 growth path.

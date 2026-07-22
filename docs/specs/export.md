@@ -106,10 +106,16 @@ privacy path.
 
 ### R3 — Redaction is an explicit per-run decision
 
-Every export interaction defaults to redacted output and asks for confirmation
-at run time. `--unredacted` is an explicit per-run override. No destination
-stores a remembered redaction preference, and `--yes` must never silently
-select unredacted output.
+The surfaces make the per-run choice differently. Interactive CLI omission
+prompts on every run; `--yes` and non-TTY execution select the safe redacted
+default. `--unredacted` selects unredacted output affirmatively. No destination
+stores a remembered redaction preference.
+
+MCP callers supply `redaction_mode="redacted"` or
+`redaction_mode="unredacted"`. An explicit `redaction_mode` does not prompt.
+Omission elicits the choice when the client supports elicitation; otherwise the
+tool returns a structured `redaction_choice_required` refusal. It never infers
+unredacted output.
 
 The redaction choice is an output policy after canonical selection or report
 execution. It does not alter the underlying report query path. The manifest,
@@ -252,9 +258,8 @@ into a large union and violate the surface-design contract. The registry remains
 at 47 tools under the 50-tool hard limit; reports extend the catalog behind the
 existing `reports` tool and consume no additional slots.
 
-The MCP tool and CLI both require a per-run redaction decision. A client that
-cannot elicit a human decision receives a structured refusal rather than an
-implicit unredacted export.
+The CLI applies the R3 safe default rules. MCP requires an explicit mode or the
+R3 elicitation/refusal path; no MCP prompt occurs when the mode is supplied.
 
 ### R9 — Observability and recoverability
 

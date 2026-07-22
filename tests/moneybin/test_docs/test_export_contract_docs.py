@@ -70,6 +70,20 @@ def test_export_docs_lock_per_run_redaction_and_sheets_separation() -> None:
     assert "preserve the last known-good visible state" in spec
 
 
+def test_export_docs_match_runtime_redaction_selection() -> None:
+    spec = _flat(EXPORT_SPEC).lower()
+    cli = _flat(CLI_GUIDE).lower()
+    mcp = _flat(MCP_GUIDE).lower()
+
+    for text in (spec, cli):
+        assert "interactive cli omission prompts on every run" in text
+        assert "`--yes` and non-tty execution select the safe redacted default" in text
+        assert "`--unredacted` selects unredacted output affirmatively" in text
+    for text in (spec, mcp):
+        assert "explicit `redaction_mode` does not prompt" in text
+        assert "`redaction_choice_required`" in text
+
+
 def test_cli_docs_publish_the_exact_export_command_grammar() -> None:
     commands = (
         "moneybin export bundle",

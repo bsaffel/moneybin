@@ -462,8 +462,10 @@ Publish a closed 13-table canonical bundle or one registered report. Local
 delivery defaults to redacted CSV under
 `~/Documents/MoneyBin/<profile>/exports/`; every completed local run is a new
 immutable artifact with a manifest, checksums, and data dictionary. Pass
-`--unredacted` affirmatively as an explicit per-run choice. Destination configuration never
-remembers a redaction choice, and `--yes` accepts only the redacted default.
+`--unredacted` affirmatively as an explicit per-run choice. Interactive CLI
+omission prompts on every run; `--yes` and non-TTY execution select the safe
+redacted default. `--unredacted` selects unredacted output affirmatively.
+Destination configuration never remembers a redaction choice.
 
 | Command | Purpose | Key flags |
 |---|---|---|

@@ -17,7 +17,8 @@ have changed:
 
 1. The former registry contained 105 visible tools and serialized to 90,734
    bytes before host wrapping.
-2. MoneyBin alone exceeds Windsurf Cascade's 100-tool global ceiling.
+2. The former MoneyBin registry exceeded Windsurf Cascade's 100-tool global
+   ceiling.
 3. Planned domains and extensions would continue growing the surface.
 4. Modern hosts increasingly support tool search or deferred schema loading
    without requiring server-side list mutation.
@@ -121,7 +122,7 @@ not operation of the selected registry.
 
 ## Alternatives considered
 
-### Keep the 105-tool surface
+### Keep the former 105-tool surface
 
 Rejected. It already fails a documented client ceiling and cannot absorb
 planned growth.
@@ -158,12 +159,12 @@ runner, not an arbitrary tool proxy.
 
 ### Universal detailed output schemas
 
-Rejected without a consumer. Full schemas for the existing 105 tools increased
-serialized metadata from 90,734 to 861,301 bytes; output schemas alone accounted
-for 768,887 bytes. MCP defines `outputSchema` as optional, and MoneyBin retains
-canonical `structuredContent`, internal typed payloads, and transport tests
-without advertising it. Selective future adoption remains available through
-the explicit admission record.
+Rejected without a consumer. Full schemas for the former 105-tool registry
+increased serialized metadata from 90,734 to 861,301 bytes; output schemas alone
+accounted for 768,887 bytes. MCP defines `outputSchema` as optional, and
+MoneyBin retains canonical `structuredContent`, internal typed payloads, and
+transport tests without advertising it. Selective future adoption remains
+available through the explicit admission record.
 
 ## Acceptance trigger
 

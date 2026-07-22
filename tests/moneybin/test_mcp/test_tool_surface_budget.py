@@ -217,7 +217,7 @@ _DEREGISTERED_CALLBACK_MODULES = (
 # in its Windsurf warning and cannot afford to boot the server to compute them. This
 # module is what keeps that declaration honest against the live registry — bump it
 # deliberately, not reflexively: read `docs/guides/mcp-clients.md` → Windsurf first,
-# and if the change pushes us further past the cap, say so in the PR.
+# and account for the client's combined-server cap in the PR.
 
 
 def _visible_tool_names() -> set[str]:
@@ -396,13 +396,12 @@ def test_standard_surface_is_smaller_than_baseline() -> None:
     } == ADMITTED_OUTPUT_SCHEMA_NAMES
 
 
-def test_current_and_planned_registry_exactly_fill_hard_limit() -> None:
-    """Task 8 uses two slots; three separately planned report tools use the rest."""
-    planned_dynamic_report_tools = 3
-
+def test_current_registry_respects_hard_limit_without_report_reservations() -> None:
+    """Reports extend the catalog runner and never reserve MCP tool slots."""
     assert STANDARD_TOOL_COUNT == 47
     assert {"export_run", "exports_set"} <= STANDARD_TOOL_NAMES
-    assert STANDARD_TOOL_COUNT + planned_dynamic_report_tools == HARD_TOOL_LIMIT
+    assert STANDARD_TOOL_COUNT < HARD_TOOL_LIMIT
+    assert HARD_TOOL_LIMIT - STANDARD_TOOL_COUNT == 3
 
 
 @pytest.mark.integration
