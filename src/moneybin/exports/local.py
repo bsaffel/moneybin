@@ -35,6 +35,11 @@ from moneybin.exports.renderers import (
     workbook_worksheet_names,
 )
 from moneybin.exports.snapshot import PreparedExport
+from moneybin.services.request_lifetime import (
+    RequestLifetime,
+    current_request_lifetime,
+    publication_barrier,
+)
 
 _BUNDLE_SIDECARS = {
     "manifest.json",
@@ -69,6 +74,7 @@ class LocalExportPublisher:
         *,
         format: LocalExportFormat,
         compress_zip: bool,
+        publication_lifetime: RequestLifetime | None = None,
     ) -> ExportReceipt:
         """Publish a new artifact without replacing any completed run."""
         if format not in {"csv", "parquet", "xlsx"}:
@@ -76,12 +82,17 @@ class LocalExportPublisher:
         if format == "xlsx" and compress_zip:
             raise ValueError("XLSX is already compressed and rejects ZIP compression")
 
+        lifetime = publication_lifetime or current_request_lifetime()
+        if lifetime is not None:
+            lifetime.raise_if_cancelled()
         self._create_exports_root()
         staging_root = self._exports_root / f".staging-{uuid4()}"
         staging_root.mkdir(mode=0o700)
         staging_root.chmod(0o700)
         try:
             artifact_path = self._render(snapshot, format, staging_root)
+            if lifetime is not None:
+                lifetime.raise_if_cancelled()
             if format == "xlsx":
                 validated = validate_xlsx(artifact_path, snapshot)
             else:
@@ -99,30 +110,32 @@ class LocalExportPublisher:
                 zip_path.chmod(0o600)
 
             with _publication_lock(self._exports_root):
-                stem = self._available_stem(
-                    snapshot,
-                    workbook=format == "xlsx",
-                    compressed=compress_zip,
-                )
-                if format == "xlsx":
-                    final_path = self._exports_root / f"{stem}.xlsx"
-                else:
-                    final_path = self._exports_root / stem
-                final_zip = None
-                published_primary = False
-                try:
-                    artifact_path.rename(final_path)
-                    published_primary = True
-                    if zip_path is not None:
-                        final_zip = self._exports_root / f"{stem}.zip"
-                        zip_path.rename(final_zip)
-                except Exception:
-                    if published_primary:
-                        _remove_owned_artifact(final_path)
-                    raise
+                with publication_barrier(lifetime):
+                    stem = self._available_stem(
+                        snapshot,
+                        workbook=format == "xlsx",
+                        compressed=compress_zip,
+                    )
+                    if format == "xlsx":
+                        final_path = self._exports_root / f"{stem}.xlsx"
+                    else:
+                        final_path = self._exports_root / stem
+                    final_zip = None
+                    published_primary = False
+                    try:
+                        artifact_path.rename(final_path)
+                        published_primary = True
+                        if zip_path is not None:
+                            final_zip = self._exports_root / f"{stem}.zip"
+                            zip_path.rename(final_zip)
+                    except Exception:
+                        if published_primary:
+                            _remove_owned_artifact(final_path)
+                        raise
 
             return ExportReceipt(
                 subject=snapshot.subject.as_manifest(),
+                format=format,
                 redaction_mode=snapshot.redaction_mode,
                 destination=ExportDestination(
                     destination_id=None,

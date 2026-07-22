@@ -89,7 +89,8 @@ For a report, the snapshot additionally carries its provenance receipt: report
 identifier, resolved parameters, SQL, lineage, output classes, freshness, and
 graduation eligibility. This is the same information exposed by the report
 verification surface, rendered as artifact metadata rather than a new query
-path.
+path. Durable report artifacts are complete-or-fail: interactive MCP response
+row caps do not truncate the prepared snapshot.
 
 The report framework exposes the executed records and class map internally
 before its terminal response renderer masks them. `ExportService` uses that
@@ -174,6 +175,11 @@ other local roots and Google Sheets destinations by name. Names are unique
 across destination kinds and resolve through the standard explicit-id → exact
 name → unambiguous-normalized-name contract.
 
+Saved names must contain non-whitespace text and cannot contain `:` because
+every target must remain addressable as `kind:name`. Normalization uses NFKC,
+case folding, and whitespace folding. The normalized bare local name `exports`
+is reserved for the derived `local:exports` target.
+
 ```text
 moneybin export destination list
 moneybin export destination add local <name> <path>
@@ -192,11 +198,13 @@ its stable spreadsheet ID, not its mutable URL. It is rejected if that ID is
 already an inbound `gsheet` connection.
 
 MoneyBin owns a named prefix of tabs in the destination workbook. A bundle
-exports one canonical table per managed tab plus manifest and data-dictionary
-tabs. A report export owns one report-result tab plus its metadata. MoneyBin
+exports one canonical table per managed tab plus bundle manifest and
+data-dictionary tabs. A report export owns one report-result tab plus separate
+report manifest and data-dictionary tabs. MoneyBin
 does not append to, modify, or read as source-of-truth any user-owned tab.
-The prefix separates `Bundle`, `Report`, `Manifest`, `Dictionary`, and
-temporary staging tabs, so a report cannot replace a bundle tab by name.
+The prefix separates `Bundle Manifest`/`Bundle Dictionary`, `Report
+Manifest`/`Report Dictionary`, result tabs, and temporary staging tabs, so a
+report cannot replace any part of a bundle receipt by name or vice versa.
 
 Sheets destinations are latest-state presentations, not archives. Each
 successful run replaces only the matching managed tabs. Local artifacts retain
@@ -211,6 +219,21 @@ Google Sheets has no workbook-wide transaction. The renderer must therefore:
 
 Failed staging tabs remain clearly marked for recovery or cleanup. User-owned
 tabs remain untouched in every failure mode.
+
+Snapshot and destination reads use a short-lived read-only DuckDB connection.
+The connection closes before local rendering, OAuth, or Sheets network I/O.
+For a Sheets run, a hashed per-workbook role lease is acquired before that
+connection closes; while holding it MoneyBin rechecks both the saved destination
+and the absence of an inbound connection. Inbound connection insertion and
+destination mutation use the same lease, preventing a workbook from changing
+roles during publication without holding the global database writer lock over
+network I/O.
+
+MCP request cancellation is shared with renderer worker threads. Local atomic
+rename and Sheets promotion are final publication barriers: after a timeout has
+been reported, a surviving `to_thread` worker cannot publish an artifact or
+promote managed tabs. If final promotion already entered, timeout cleanup waits
+for that atomic boundary to leave before returning.
 
 ### R7 — CLI surface
 
@@ -268,8 +291,9 @@ and outcome. It never logs financial values, full local paths, spreadsheet URLs,
 or generated table contents. Destination configuration mutations use a
 repository and paired `app.audit_log` record under Invariant 10.
 
-The completed local manifest and the Sheets manifest tab are the user-visible
-receipts. Export runs do not add mutable application history merely to duplicate
+The completed local manifest and the subject-specific Sheets manifest tab are
+the user-visible receipts. CLI and MCP receipts also identify the selected
+format. Export runs do not add mutable application history merely to duplicate
 those immutable receipts.
 
 ## Data model
@@ -355,8 +379,9 @@ general plugin system.
    permissions, timestamped non-overwrite behavior, ZIP output, and staging
    recovery.
 6. **Sheets:** use the fake client to prove inbound-destination collision
-   refusal, write-scope setup, managed-tab isolation, staging promotion, and
-   preservation of the last successful snapshot on failure.
+   refusal, write-scope setup, bundle/report metadata isolation, role-lease
+   serialization, cancellable staging promotion, and preservation of the last
+   successful snapshot on failure.
 7. **Surfaces:** exercise CLI and MCP capability parity, actual rendered MCP
    schemas, confirmations, error envelopes, the 47-tool current registry, and
    the 50-tool hard limit.

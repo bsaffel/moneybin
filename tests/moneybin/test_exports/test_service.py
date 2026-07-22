@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.exports.models import (
+    ExportCommand,
     ExportDestination,
     ExportReceipt,
     ExportRequest,
 )
 from moneybin.exports.service import ExportService
+from moneybin.exports.workbook_roles import WorkbookRolePermit
 from moneybin.metrics import registry as metrics_registry
 
 
@@ -65,6 +69,7 @@ def _request(
 def _receipt(destination: ExportDestination) -> ExportReceipt:
     return ExportReceipt(
         subject={"kind": "bundle"},
+        format="csv" if destination.kind == "local" else "sheets",
         redaction_mode="redacted",
         destination=destination,
         artifact_path=None,
@@ -75,6 +80,37 @@ def _receipt(destination: ExportDestination) -> ExportReceipt:
         checksums={"accounts": "abc"},
         recovery_actions=(),
     )
+
+
+def _command(*, destination_kind: str = "local") -> ExportCommand:
+    return ExportCommand(
+        subject_kind="bundle",
+        report_id=None,
+        report_parameters={},
+        destination_reference=(
+            "sheets:dashboard" if destination_kind == "sheets" else "local:archive"
+        ),
+        format="sheets" if destination_kind == "sheets" else "csv",
+        redaction_mode="redacted",
+        compress_zip=False,
+    )
+
+
+def _command_from_request(request: ExportRequest) -> ExportCommand:
+    return ExportCommand(
+        subject_kind=request.subject_kind,
+        report_id=request.report_id,
+        report_parameters=request.report_parameters,
+        destination_reference=f"{request.destination.kind}:{request.destination.name}",
+        format=request.format,
+        redaction_mode=request.redaction_mode,
+        compress_zip=request.compress_zip,
+    )
+
+
+@contextmanager
+def _database_context(db: Database):
+    yield db
 
 
 def _histogram_count(metric: Any) -> float:
@@ -110,6 +146,104 @@ def test_export_metrics_are_registered_with_bounded_labels() -> None:
     )
 
 
+@patch("moneybin.exports.local.LocalExportPublisher")
+@patch("moneybin.database.get_database")
+def test_run_releases_read_only_snapshot_before_local_publication(
+    get_database: MagicMock,
+    publisher_type: MagicMock,
+    db: Database,
+) -> None:
+    """Rendering and filesystem publication happen after DuckDB is closed."""
+    active = False
+    context = get_database.return_value
+
+    def enter() -> Database:
+        nonlocal active
+        active = True
+        return db
+
+    def exit(*_args: object) -> None:
+        nonlocal active
+        active = False
+
+    context.__enter__.side_effect = enter
+    context.__exit__.side_effect = exit
+    destination = _destination("local")
+    snapshot = MagicMock()
+    receipt = _receipt(destination)
+
+    def publish(*_args: object, **_kwargs: object) -> ExportReceipt:
+        assert active is False
+        return receipt
+
+    publisher_type.return_value.publish.side_effect = publish
+    with (
+        patch.object(ExportService, "resolve_destination", return_value=destination),
+        patch.object(ExportService, "prepare_bundle", return_value=snapshot),
+    ):
+        result = ExportService.run(_command(), actor="test")
+
+    get_database.assert_called_once_with(read_only=True)
+    assert result == receipt
+
+
+@patch("moneybin.config.get_settings")
+@patch("moneybin.database.get_database")
+def test_run_rechecks_sheets_role_then_closes_database_before_network(
+    get_database: MagicMock,
+    get_settings: MagicMock,
+    db: Database,
+) -> None:
+    """The active role permit outlives the snapshot DB but not publication."""
+    from moneybin.repositories.export_destinations_repo import ExportDestinationsRepo
+
+    ExportDestinationsRepo(db).set_sheets(
+        name="dashboard",
+        spreadsheet_id="spreadsheet-1",
+        managed_tab_prefix="MB",
+        actor="test",
+    )
+    destination = ExportService(db).resolve_destination("sheets:dashboard")
+    active = False
+    context = get_database.return_value
+
+    def enter() -> Database:
+        nonlocal active
+        active = True
+        return db
+
+    def exit(*_args: object) -> None:
+        nonlocal active
+        active = False
+
+    context.__enter__.side_effect = enter
+    context.__exit__.side_effect = exit
+    get_settings.return_value.profile = "personal"
+    publisher = MagicMock()
+    publisher.publish.return_value = _receipt(destination)
+    permit: WorkbookRolePermit | None = None
+
+    def publish(*_args: object, **kwargs: object) -> ExportReceipt:
+        nonlocal permit
+        assert active is False
+        permit = cast(WorkbookRolePermit, kwargs["role_permit"])
+        permit.assert_for("spreadsheet-1")
+        return _receipt(destination)
+
+    publisher.publish.side_effect = publish
+    with patch.object(ExportService, "prepare_bundle", return_value=MagicMock()):
+        result = ExportService.run(
+            _command(destination_kind="sheets"),
+            actor="test",
+            sheets_publisher=publisher,
+        )
+
+    assert result.destination == destination
+    assert permit is not None
+    with pytest.raises(RuntimeError, match="no longer active"):
+        permit.assert_for("spreadsheet-1")
+
+
 def test_run_records_failed_duration_with_fixed_invalid_label_values(
     db: Database,
 ) -> None:
@@ -126,10 +260,20 @@ def test_run_records_failed_duration_with_fixed_invalid_label_values(
     duration_metric = metrics_registry.EXPORT_DURATION_SECONDS.labels(**labels)
     runs_before = run_metric._value.get()  # type: ignore[reportPrivateUsage]
     duration_count_before = _histogram_count(duration_metric)
-    service = ExportService(db)
-
-    with pytest.raises(ValueError):
-        service.run(_request(format="user-chosen-private-format"), actor="test")
+    request = _request(format="user-chosen-private-format")
+    with (
+        patch(
+            "moneybin.database.get_database",
+            return_value=_database_context(db),
+        ),
+        patch.object(
+            ExportService,
+            "resolve_destination",
+            return_value=request.destination,
+        ),
+        pytest.raises(ValueError),
+    ):
+        ExportService.run(_command_from_request(request), actor="test")
 
     assert run_metric._value.get() == runs_before + 1  # type: ignore[reportPrivateUsage]
     duration_count_after = _histogram_count(duration_metric)
@@ -154,10 +298,20 @@ def test_run_records_success_outcome(
     get_settings.return_value.profile = "personal"
     destination = _destination("local")
     publisher_type.return_value.publish.return_value = _receipt(destination)
-    service = ExportService(db)
-
-    with patch.object(service, "prepare_bundle", return_value=MagicMock()):
-        service.run(_request(), actor="test")
+    request = _request()
+    with (
+        patch(
+            "moneybin.database.get_database",
+            return_value=_database_context(db),
+        ),
+        patch.object(
+            ExportService,
+            "resolve_destination",
+            return_value=destination,
+        ),
+        patch.object(ExportService, "prepare_bundle", return_value=MagicMock()),
+    ):
+        ExportService.run(_command_from_request(request), actor="test")
 
     assert metric._value.get() == before + 1  # type: ignore[reportPrivateUsage]
 
@@ -173,11 +327,26 @@ def test_run_prepares_and_publishes_one_local_bundle(
     destination = _destination("local")
     publisher = publisher_type.return_value
     publisher.publish.return_value = _receipt(destination)
-    service = ExportService(db)
     snapshot = MagicMock()
 
-    with patch.object(service, "prepare_bundle", return_value=snapshot) as prepare:
-        receipt = service.run(_request(), actor="cli")
+    request = _request()
+    with (
+        patch(
+            "moneybin.database.get_database",
+            return_value=_database_context(db),
+        ),
+        patch.object(
+            ExportService,
+            "resolve_destination",
+            return_value=destination,
+        ),
+        patch.object(
+            ExportService,
+            "prepare_bundle",
+            return_value=snapshot,
+        ) as prepare,
+    ):
+        receipt = ExportService.run(_command_from_request(request), actor="cli")
 
     prepare.assert_called_once_with(profile="personal", redaction_mode="redacted")
     publisher_type.assert_called_once_with(
@@ -188,6 +357,7 @@ def test_run_prepares_and_publishes_one_local_bundle(
         snapshot,
         format="csv",
         compress_zip=False,
+        publication_lifetime=None,
     )
     assert receipt.destination == destination
     assert receipt.redaction_mode == "redacted"
@@ -199,32 +369,55 @@ def test_run_prepares_and_publishes_one_sheets_report(
     db: Database,
 ) -> None:
     get_settings.return_value.profile = "personal"
-    get_settings.return_value.mcp.max_rows = 321
     destination = _destination("sheets")
     publisher = MagicMock()
     publisher.publish.return_value = _receipt(destination)
-    service = ExportService(db, sheets_publisher=publisher)
     snapshot = MagicMock()
+    request = _request(
+        subject_kind="report",
+        destination_kind="sheets",
+        report_id="core:spending",
+        report_parameters={"months": 3},
+    )
 
-    with patch.object(service, "prepare_report", return_value=snapshot) as prepare:
-        receipt = service.run(
-            _request(
-                subject_kind="report",
-                destination_kind="sheets",
-                report_id="core:spending",
-                report_parameters={"months": 3},
-            ),
+    with (
+        patch(
+            "moneybin.database.get_database",
+            return_value=_database_context(db),
+        ),
+        patch.object(
+            ExportService,
+            "resolve_destination",
+            return_value=destination,
+        ),
+        patch(
+            "moneybin.repositories.export_destinations_repo."
+            "ExportDestinationsRepo.assert_current_for_publication"
+        ),
+        patch.object(
+            ExportService,
+            "prepare_report",
+            return_value=snapshot,
+        ) as prepare,
+    ):
+        receipt = ExportService.run(
+            _command_from_request(request),
             actor="mcp",
+            sheets_publisher=publisher,
         )
 
     prepare.assert_called_once_with(
         profile="personal",
         report_id="core:spending",
         report_parameters={"months": 3},
-        max_rows=321,
         redaction_mode="redacted",
     )
-    publisher.publish.assert_called_once_with(snapshot, destination)
+    publisher.publish.assert_called_once_with(
+        snapshot,
+        destination,
+        role_permit=ANY,
+        publication_lifetime=None,
+    )
     assert receipt.destination == destination
     assert receipt.redaction_mode == "redacted"
 
@@ -269,14 +462,25 @@ def test_run_rejects_impossible_combinations_before_preparing_or_writing(
 ) -> None:
     get_settings.return_value.profile = "personal"
     sheets_publisher = MagicMock()
-    service = ExportService(db, sheets_publisher=sheets_publisher)
-
     with (
-        patch.object(service, "prepare_bundle") as prepare_bundle,
-        patch.object(service, "prepare_report") as prepare_report,
+        patch(
+            "moneybin.database.get_database",
+            return_value=_database_context(db),
+        ),
+        patch.object(
+            ExportService,
+            "resolve_destination",
+            return_value=export_request.destination,
+        ),
+        patch.object(ExportService, "prepare_bundle") as prepare_bundle,
+        patch.object(ExportService, "prepare_report") as prepare_report,
         pytest.raises(ValueError),
     ):
-        service.run(export_request, actor="test")
+        ExportService.run(
+            _command_from_request(export_request),
+            actor="test",
+            sheets_publisher=sheets_publisher,
+        )
 
     prepare_bundle.assert_not_called()
     prepare_report.assert_not_called()
@@ -352,3 +556,31 @@ def test_status_projects_destination_readiness_without_target_identifiers(
     assert "private-sheet-id" not in str(serialized)
     assert "other-private-sheet-id" not in str(serialized)
     assert "/private/export/path" not in str(serialized)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["local:exports", "local: EXPORTS ", "local:ｅｘｐｏｒｔｓ"],
+)
+def test_resolve_destination_normalizes_the_builtin_exports_name(
+    db: Database,
+    reference: str,
+) -> None:
+    destination = ExportService(db).resolve_destination(reference)
+
+    assert destination.name == "local:exports"
+    assert destination.kind == "local"
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["local:", "local:   ", "local:archive:monthly", "sheets:   "],
+)
+def test_resolve_destination_rejects_unaddressable_names(
+    db: Database,
+    reference: str,
+) -> None:
+    with pytest.raises(UserError) as exc_info:
+        ExportService(db).resolve_destination(reference)
+
+    assert exc_info.value.code == "mutation_invalid_input"

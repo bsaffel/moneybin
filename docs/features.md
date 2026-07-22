@@ -91,10 +91,11 @@ Each report is backed by a curated view and exposed identically on the CLI and M
   a manifest, checksums, and generated data dictionary; XLSX carries the same
   contract in one workbook. Each local run is immutable, ZIP is limited to CSV
   and Parquet, and `--unredacted` is an explicit per-run choice. `moneybin export
-  report <report-id>` executes one catalog report once and retains its parameters
-  and SQL provenance. Named local and output-only Sheets destinations are managed
+  report <report-id>` executes one complete catalog report once and retains its
+  parameters and SQL provenance. Named local and output-only Sheets destinations are managed
   under `moneybin export destination`; Sheets replaces only MoneyBin-managed
-  tabs and preserves the latest good state on failure. MCP exposes the same
+  tabs, keeps bundle/report metadata separate, and preserves the latest good
+  state on failure. MCP exposes the same
   outcomes through `export_run`, `exports_set`, and
   `system_status(sections=["exports"])`. -> [CLI reference](guides/cli-reference.md)
   · [MCP server guide](guides/mcp-server.md)

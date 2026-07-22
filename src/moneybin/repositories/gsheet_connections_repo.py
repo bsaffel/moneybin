@@ -21,7 +21,9 @@ from typing import Any, Literal
 
 from moneybin import error_codes
 from moneybin.errors import UserError
+from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.base import BaseRepo, quote_ident
+from moneybin.services.request_lifetime import current_request_lifetime
 from moneybin.tables import EXPORT_DESTINATIONS, GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
@@ -170,48 +172,53 @@ class GSheetConnectionsRepo(BaseRepo):
     ) -> str:
         """Insert a new connection row + audit. Returns the generated id."""
         connection_id = uuid.uuid4().hex[:12]
-        with self._transaction(in_outer_txn=in_outer_txn):
-            self.assert_not_export_destination(spreadsheet_id)
-            self._db.execute(
-                f"""
-                INSERT INTO {GSHEET_CONNECTIONS.full_name} (
-                    connection_id, spreadsheet_id, sheet_gid, sheet_name,
-                    workbook_name, adapter, account_id, account_name,
-                    column_mapping, header_signature,
-                    date_format, sign_convention, number_format,
-                    skip_rows, skip_trailing_patterns, alias
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,  # noqa: S608  # TableRef + parameterized values
-                [
-                    connection_id,
-                    spreadsheet_id,
-                    sheet_gid,
-                    sheet_name,
-                    workbook_name,
-                    adapter,
-                    account_id,
-                    account_name,
-                    json.dumps(column_mapping),
-                    json.dumps(header_signature),
-                    date_format,
-                    sign_convention,
-                    number_format,
-                    skip_rows,
-                    json.dumps(skip_trailing_patterns)
-                    if skip_trailing_patterns is not None
-                    else None,
-                    alias,
-                ],
-            )
-            after = self._fetch_full_row(connection_id)
-            self._emit_audit(
-                action="gsheet_connection.insert",
-                target=(*self._audit_target, connection_id),
-                before=None,
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+        with workbook_role_lease(
+            self._db.path,
+            spreadsheet_id,
+            lifetime=current_request_lifetime(),
+        ):
+            with self._transaction(in_outer_txn=in_outer_txn):
+                self.assert_not_export_destination(spreadsheet_id)
+                self._db.execute(
+                    f"""
+                    INSERT INTO {GSHEET_CONNECTIONS.full_name} (
+                        connection_id, spreadsheet_id, sheet_gid, sheet_name,
+                        workbook_name, adapter, account_id, account_name,
+                        column_mapping, header_signature,
+                        date_format, sign_convention, number_format,
+                        skip_rows, skip_trailing_patterns, alias
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,  # noqa: S608  # TableRef + parameterized values
+                    [
+                        connection_id,
+                        spreadsheet_id,
+                        sheet_gid,
+                        sheet_name,
+                        workbook_name,
+                        adapter,
+                        account_id,
+                        account_name,
+                        json.dumps(column_mapping),
+                        json.dumps(header_signature),
+                        date_format,
+                        sign_convention,
+                        number_format,
+                        skip_rows,
+                        json.dumps(skip_trailing_patterns)
+                        if skip_trailing_patterns is not None
+                        else None,
+                        alias,
+                    ],
+                )
+                after = self._fetch_full_row(connection_id)
+                self._emit_audit(
+                    action="gsheet_connection.insert",
+                    target=(*self._audit_target, connection_id),
+                    before=None,
+                    after=self._serialize_for_audit(after),
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                )
         logger.info(
             f"gsheet_connection.insert connection_id={connection_id} actor={actor}"
         )

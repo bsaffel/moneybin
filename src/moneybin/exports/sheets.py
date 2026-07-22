@@ -19,10 +19,15 @@ from moneybin.connectors.gsheet.sheets_api import (
     SheetsAPI,
     SheetValueWrite,
 )
-from moneybin.database import Database
 from moneybin.exports.models import ExportDestination, ExportReceipt
 from moneybin.exports.renderers import normalize_tabular_cell
 from moneybin.exports.snapshot import PreparedExport, PreparedTable
+from moneybin.exports.workbook_roles import WorkbookRolePermit
+from moneybin.services.request_lifetime import (
+    RequestLifetime,
+    current_request_lifetime,
+    publication_barrier,
+)
 
 _MAX_SHEET_TITLE_LENGTH = 100
 _MAX_MANAGED_PREFIX_LENGTH = 40
@@ -62,17 +67,24 @@ class SheetsPublishError(GSheetAPIError):
 class SheetsExportPublisher:
     """Publish immutable snapshots through a managed, staged tab namespace."""
 
-    def __init__(self, *, db: Database, sheets_client: SheetsAPI) -> None:
-        """Bind collision state and the typed Sheets API boundary."""
-        self._db = db
+    def __init__(self, *, sheets_client: SheetsAPI) -> None:
+        """Bind the typed Sheets API boundary."""
         self._sheets = sheets_client
 
     def publish(
-        self, snapshot: PreparedExport, destination: ExportDestination
+        self,
+        snapshot: PreparedExport,
+        destination: ExportDestination,
+        *,
+        role_permit: WorkbookRolePermit,
+        publication_lifetime: RequestLifetime | None = None,
     ) -> ExportReceipt:
         """Stage, validate, and atomically promote one latest-state snapshot."""
         spreadsheet_id, prefix = _validate_destination(destination)
-        self._reject_inbound_collision(spreadsheet_id)
+        role_permit.assert_for(spreadsheet_id)
+        lifetime = publication_lifetime or current_request_lifetime()
+        if lifetime is not None:
+            lifetime.raise_if_cancelled()
         metadata = self._sheets.get_workbook_metadata(
             spreadsheet_id, require_write=True
         )
@@ -103,6 +115,8 @@ class SheetsExportPublisher:
                 )
             )
         try:
+            if lifetime is not None:
+                lifetime.raise_if_cancelled()
             staged = self._sheets.create_sheets(spreadsheet_id, tuple(creates))
         except GSheetError as exc:
             recovered = self._recover_created_sheets(
@@ -119,12 +133,16 @@ class SheetsExportPublisher:
             )
 
         try:
+            if lifetime is not None:
+                lifetime.raise_if_cancelled()
             writes = tuple(
                 SheetValueWrite(sheet=identity, values=item.values)
                 for identity, item in zip(staged, planned, strict=True)
             )
             self._sheets.write_sheet_values(spreadsheet_id, writes)
             for identity, item in zip(staged, planned, strict=True):
+                if lifetime is not None:
+                    lifetime.raise_if_cancelled()
                 actual = self._sheets.read_sheet_values(
                     spreadsheet_id, identity.name, require_write=True
                 )
@@ -134,12 +152,13 @@ class SheetsExportPublisher:
                 SheetRename(sheet=identity, new_name=item.visible_name)
                 for identity, item in zip(staged, planned, strict=True)
             )
-            self._sheets.promote_sheets(
-                spreadsheet_id,
-                managed_prefix=prefix,
-                renames=renames,
-                deletes=replacements,
-            )
+            with publication_barrier(lifetime):
+                self._sheets.promote_sheets(
+                    spreadsheet_id,
+                    managed_prefix=prefix,
+                    renames=renames,
+                    deletes=replacements,
+                )
         except GSheetError as exc:
             raise SheetsPublishError(
                 staging_sheet_ids=tuple(sheet.gid for sheet in staged),
@@ -147,6 +166,7 @@ class SheetsExportPublisher:
 
         return ExportReceipt(
             subject=snapshot.subject.as_manifest(),
+            format="sheets",
             redaction_mode=snapshot.redaction_mode,
             destination=destination,
             artifact_path=None,
@@ -178,14 +198,6 @@ class SheetsExportPublisher:
             for sheet in metadata.sheets
             if sheet.name in staging_names and sheet.managed_prefix == prefix
         )
-
-    def _reject_inbound_collision(self, spreadsheet_id: str) -> None:
-        """Reject every inbound/output workbook overlap before API access."""
-        from moneybin.repositories.export_destinations_repo import (
-            ExportDestinationsRepo,
-        )
-
-        ExportDestinationsRepo(self._db).assert_not_inbound_connection(spreadsheet_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,15 +277,19 @@ def _planned_sheets(
     dictionary_values = (("JSON",), (_json_text(snapshot.data_dictionary),))
     result.append(
         _PlannedSheet(
-            _unique_managed_title(used_names, prefix, "Staging", run_id, "Manifest"),
-            _unique_managed_title(used_names, prefix, "Manifest"),
+            _unique_managed_title(
+                used_names, prefix, "Staging", run_id, kind, "Manifest"
+            ),
+            _unique_managed_title(used_names, prefix, kind, "Manifest"),
             manifest_values,
         )
     )
     result.append(
         _PlannedSheet(
-            _unique_managed_title(used_names, prefix, "Staging", run_id, "Dictionary"),
-            _unique_managed_title(used_names, prefix, "Dictionary"),
+            _unique_managed_title(
+                used_names, prefix, "Staging", run_id, kind, "Dictionary"
+            ),
+            _unique_managed_title(used_names, prefix, kind, "Dictionary"),
             dictionary_values,
         )
     )
@@ -331,7 +347,11 @@ def _managed_replacements(
     subject_namespace = (
         f"{prefix} Bundle " if subject_kind == "bundle" else f"{prefix} Report "
     )
-    metadata_namespaces = (f"{prefix} Manifest", f"{prefix} Dictionary")
+    kind = "Bundle" if subject_kind == "bundle" else "Report"
+    metadata_namespaces = (
+        f"{prefix} {kind} Manifest",
+        f"{prefix} {kind} Dictionary",
+    )
     return tuple(
         SheetIdentity(
             name=sheet.name,

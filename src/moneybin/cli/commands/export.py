@@ -26,9 +26,9 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.exports.models import (
+    ExportCommand,
     ExportDestination,
     ExportFormat,
-    ExportRequest,
     RedactionMode,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
@@ -76,14 +76,6 @@ def _destination_reference(value: str) -> tuple[str, str]:
             param_hint="--to",
         )
     return kind, name
-
-
-def _resolve_destination(reference: str, db: Any) -> ExportDestination:
-    """Resolve one explicit destination reference without accepting paths."""
-    from moneybin.exports.service import ExportService  # noqa: PLC0415
-
-    _destination_reference(reference)
-    return ExportService(db).resolve_destination(reference)
 
 
 def _is_interactive_terminal() -> bool:
@@ -237,47 +229,49 @@ def _run_export(
     )
     redaction_mode = _redaction_mode(unredacted=unredacted, yes=yes)
 
-    from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.exports.service import ExportService  # noqa: PLC0415
 
     cli_actor = f"export_{subject_kind}"
-    with handle_cli_errors(cli_actor=cli_actor, payload_type=ExportReceiptOutput):
-        with get_database(read_only=False) as db:
-            destination = _resolve_destination(destination_reference, db)
-            if destination.kind == "local":
-                typer.echo(
-                    f"Exporting to {cast(Path, destination.local_path).resolve()}",
-                    err=True,
-                )
-            else:
-                typer.echo(
-                    f"Exporting to sheets:{destination.name} "
-                    f"(destination_id={destination.destination_id})",
-                    err=True,
-                )
-            try:
-                receipt = ExportService(db).run(
-                    ExportRequest(
-                        subject_kind=subject_kind,
-                        report_id=report_id,
-                        report_parameters=report_parameters,
-                        destination=destination,
-                        format=selected_format,
-                        redaction_mode=redaction_mode,
-                        compress_zip=compress_zip,
-                    ),
-                    actor=_ACTOR,
-                )
-            except OSError as exc:
-                if destination.kind != "local":
-                    raise
-                from moneybin import error_codes  # noqa: PLC0415
-                from moneybin.errors import UserError  # noqa: PLC0415
 
-                raise UserError(
-                    "Local export could not be published.",
-                    code=error_codes.INFRA_IO_ERROR,
-                ) from exc
+    def disclose_destination(destination: ExportDestination) -> None:
+        if destination.kind == "local":
+            typer.echo(
+                f"Exporting to {cast(Path, destination.local_path).resolve()}",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"Exporting to sheets:{destination.name} "
+                f"(destination_id={destination.destination_id})",
+                err=True,
+            )
+
+    with handle_cli_errors(cli_actor=cli_actor, payload_type=ExportReceiptOutput):
+        try:
+            receipt = ExportService.run(
+                ExportCommand(
+                    subject_kind=subject_kind,
+                    report_id=report_id,
+                    report_parameters=report_parameters,
+                    destination_reference=destination_reference,
+                    format=selected_format,
+                    redaction_mode=redaction_mode,
+                    compress_zip=compress_zip,
+                ),
+                actor=_ACTOR,
+                on_destination_resolved=disclose_destination,
+            )
+        except OSError as exc:
+            destination_kind, _ = _destination_reference(destination_reference)
+            if destination_kind != "local":
+                raise
+            from moneybin import error_codes  # noqa: PLC0415
+            from moneybin.errors import UserError  # noqa: PLC0415
+
+            raise UserError(
+                "Local export could not be published.",
+                code=error_codes.INFRA_IO_ERROR,
+            ) from exc
     render_export_receipt(receipt, output, cli_actor=cli_actor)
 
 
@@ -483,19 +477,17 @@ def destination_add_sheets(
     from moneybin.connectors.gsheet.service_factory import (  # noqa: PLC0415
         build_oauth_client,
     )
-    from moneybin.database import get_database  # noqa: PLC0415
     from moneybin.exports.service import ExportService  # noqa: PLC0415
 
     with handle_cli_errors(cli_actor="export_destination_add_sheets"):
         spreadsheet_id = _parse_sheets_workbook_id(url)
-        with get_database(read_only=False) as db:
-            ExportService(db).set_sheets_destination(
-                name=name,
-                spreadsheet_id=spreadsheet_id,
-                managed_tab_prefix=_SHEETS_TAB_PREFIX,
-                actor=_ACTOR,
-                oauth_client=build_oauth_client(),
-            )
+        ExportService.set_sheets_destination(
+            name=name,
+            spreadsheet_id=spreadsheet_id,
+            managed_tab_prefix=_SHEETS_TAB_PREFIX,
+            actor=_ACTOR,
+            oauth_client=build_oauth_client(),
+        )
     typer.echo(f"Saved Sheets destination {name}.")
 
 

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import logging
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
 
 from moneybin import error_codes
 from moneybin.errors import UserError
-from moneybin.exports.models import DestinationKind, ExportDestination
+from moneybin.exports.models import (
+    DestinationKind,
+    ExportDestination,
+    validate_export_destination_name,
+)
+from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.services.audit_service import AuditEvent
 from moneybin.services.entity_reference import (
@@ -19,6 +25,7 @@ from moneybin.services.entity_reference import (
     ResolvedEntity,
     resolve_entity_reference,
 )
+from moneybin.services.request_lifetime import current_request_lifetime
 from moneybin.tables import EXPORT_DESTINATIONS, GSHEET_CONNECTIONS
 
 logger = logging.getLogger(__name__)
@@ -36,10 +43,6 @@ _FULL_ROW_COLUMNS = (
 
 type ExportDestinationResolution = ExportDestination | AmbiguousEntity | MissingEntity
 
-_DERIVED_LOCAL_EXPORTS_CANDIDATE = EntityCandidate(
-    entity_id="local:exports", display_name="local:exports"
-)
-
 
 class ExportDestinationSpreadsheetConflictError(UserError):
     """Raised when a workbook is already configured for inbound Sheets pulls."""
@@ -53,14 +56,14 @@ class ExportDestinationSpreadsheetConflictError(UserError):
         )
 
 
-class ReservedExportDestinationError(UserError):
-    """Raised when callers try to persist the derived local:exports target."""
+class ExportDestinationChangedError(UserError):
+    """Raised when saved output configuration changes before publication."""
 
     def __init__(self) -> None:
-        """Build a user-safe reserved-destination error."""
+        """Build a retryable, identity-safe conflict error."""
         super().__init__(
-            "local:exports is a built-in derived destination and cannot be saved.",
-            code=error_codes.MUTATION_INVALID_INPUT,
+            "Export destination changed before publication; retry the export.",
+            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
         )
 
 
@@ -111,6 +114,22 @@ class ExportDestinationsRepo(BaseRepo):
         ).fetchone()
         if conflict is not None:
             raise ExportDestinationSpreadsheetConflictError()
+
+    def assert_current_for_publication(
+        self,
+        destination: ExportDestination,
+    ) -> None:
+        """Recheck saved output identity and role while its workbook lease is held."""
+        if (
+            destination.kind != "sheets"
+            or destination.destination_id is None
+            or destination.spreadsheet_id is None
+        ):
+            raise ValueError("A saved Sheets destination is required")
+        current = self._fetch_full_row(destination.destination_id)
+        if current is None or _decode_destination(current) != destination:
+            raise ExportDestinationChangedError()
+        self.assert_not_inbound_connection(destination.spreadsheet_id)
 
     def list(self) -> list[ExportDestination]:
         """Return saved destinations in stable user-facing name order."""
@@ -191,47 +210,68 @@ class ExportDestinationsRepo(BaseRepo):
         in_outer_txn: bool,
     ) -> AuditEvent:
         """Persist one complete kind-specific destination shape and audit it."""
-        with self._transaction(in_outer_txn=in_outer_txn):
-            self._validate_destination(
-                name=name, kind=kind, spreadsheet_id=spreadsheet_id
+        validate_export_destination_name(name, kind=kind)
+        before_lease = self._fetch_by_name(name)
+        workbook_ids = {
+            value
+            for value in (
+                cast(str | None, before_lease.get("spreadsheet_id"))
+                if before_lease is not None
+                else None,
+                spreadsheet_id,
             )
-            before = self._fetch_by_name(name)
-            destination_id = (
-                cast(str, before["destination_id"])
-                if before is not None
-                else uuid.uuid4().hex[:12]
-            )
-            self._db.execute(
-                f"""
-                INSERT INTO {EXPORT_DESTINATIONS.full_name} (
-                    destination_id, name, kind, local_path, spreadsheet_id,
-                    managed_tab_prefix, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT (name) DO UPDATE SET
-                    kind = EXCLUDED.kind,
-                    local_path = EXCLUDED.local_path,
-                    spreadsheet_id = EXCLUDED.spreadsheet_id,
-                    managed_tab_prefix = EXCLUDED.managed_tab_prefix,
-                    updated_at = EXCLUDED.updated_at
-                """,  # noqa: S608  # TableRef + parameterized values; created_at is immutable
-                [
-                    destination_id,
-                    name,
-                    kind,
-                    str(local_path) if local_path is not None else None,
-                    spreadsheet_id,
-                    managed_tab_prefix,
-                ],
-            )
-            after = self._fetch_full_row(destination_id)
-            event = self._emit_audit(
-                action=f"export_destination.set_{kind}",
-                target=(*self._audit_target, destination_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after),
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+            if value is not None
+        }
+        with ExitStack() as stack:
+            for workbook_id in sorted(workbook_ids):
+                stack.enter_context(
+                    workbook_role_lease(
+                        self._db.path,
+                        workbook_id,
+                        lifetime=current_request_lifetime(),
+                    )
+                )
+            with self._transaction(in_outer_txn=in_outer_txn):
+                self._validate_destination(
+                    name=name, kind=kind, spreadsheet_id=spreadsheet_id
+                )
+                before = self._fetch_by_name(name)
+                destination_id = (
+                    cast(str, before["destination_id"])
+                    if before is not None
+                    else uuid.uuid4().hex[:12]
+                )
+                self._db.execute(
+                    f"""
+                    INSERT INTO {EXPORT_DESTINATIONS.full_name} (
+                        destination_id, name, kind, local_path, spreadsheet_id,
+                        managed_tab_prefix, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (name) DO UPDATE SET
+                        kind = EXCLUDED.kind,
+                        local_path = EXCLUDED.local_path,
+                        spreadsheet_id = EXCLUDED.spreadsheet_id,
+                        managed_tab_prefix = EXCLUDED.managed_tab_prefix,
+                        updated_at = EXCLUDED.updated_at
+                    """,  # noqa: S608  # TableRef + parameterized values; created_at is immutable
+                    [
+                        destination_id,
+                        name,
+                        kind,
+                        str(local_path) if local_path is not None else None,
+                        spreadsheet_id,
+                        managed_tab_prefix,
+                    ],
+                )
+                after = self._fetch_full_row(destination_id)
+                event = self._emit_audit(
+                    action=f"export_destination.set_{kind}",
+                    target=(*self._audit_target, destination_id),
+                    before=self._serialize_for_audit(before),
+                    after=self._serialize_for_audit(after),
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                )
         logger.info(
             f"export_destination.set destination_id={destination_id} kind={kind} outcome=saved"
         )
@@ -245,11 +285,6 @@ class ExportDestinationsRepo(BaseRepo):
         spreadsheet_id: str | None,
     ) -> None:
         """Reject reserved targets and workbook role conflicts before mutation."""
-        reservation = resolve_entity_reference(
-            name, (_DERIVED_LOCAL_EXPORTS_CANDIDATE,)
-        )
-        if isinstance(reservation, ResolvedEntity):
-            raise ReservedExportDestinationError()
         if kind != "sheets":
             return
         if spreadsheet_id is None:
@@ -275,22 +310,33 @@ class ExportDestinationsRepo(BaseRepo):
         if destination_id is None:
             raise ValueError("Saved destination is missing destination_id")
 
-        with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
-                self._fetch_full_row(destination_id), "destination_id", destination_id
-            )
-            self._db.execute(
-                f"DELETE FROM {EXPORT_DESTINATIONS.full_name} WHERE destination_id = ?",  # noqa: S608  # TableRef + parameterized value
-                [destination_id],
-            )
-            event = self._emit_audit(
-                action="export_destination.remove",
-                target=(*self._audit_target, destination_id),
-                before=self._serialize_for_audit(before),
-                after=None,
-                actor=actor,
-                parent_audit_id=parent_audit_id,
-            )
+        with ExitStack() as stack:
+            if destination.spreadsheet_id is not None:
+                stack.enter_context(
+                    workbook_role_lease(
+                        self._db.path,
+                        destination.spreadsheet_id,
+                        lifetime=current_request_lifetime(),
+                    )
+                )
+            with self._transaction(in_outer_txn=in_outer_txn):
+                before = self._require(
+                    self._fetch_full_row(destination_id),
+                    "destination_id",
+                    destination_id,
+                )
+                self._db.execute(
+                    f"DELETE FROM {EXPORT_DESTINATIONS.full_name} WHERE destination_id = ?",  # noqa: S608  # TableRef + parameterized value
+                    [destination_id],
+                )
+                event = self._emit_audit(
+                    action="export_destination.remove",
+                    target=(*self._audit_target, destination_id),
+                    before=self._serialize_for_audit(before),
+                    after=None,
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                )
         logger.info(
             f"export_destination.remove destination_id={destination_id} outcome=removed"
         )

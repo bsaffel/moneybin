@@ -110,6 +110,7 @@ class ExportReceiptOutput:
     """Typed transport projection of a completed export receipt."""
 
     subject: Annotated[dict[str, object], DataClass.USER_NOTE]
+    format: Annotated[Literal["csv", "parquet", "xlsx", "sheets"], DataClass.TXN_TYPE]
     redaction_mode: Annotated[Literal["redacted", "unredacted"], DataClass.TXN_TYPE]
     destination: ExportDestinationOutput
     artifact_path: Annotated[str | None, DataClass.USER_NOTE]
@@ -262,6 +263,7 @@ def render_export_receipt(
     """Render one export receipt through the standard typed envelope path."""
     payload = ExportReceiptOutput(
         subject=dict(receipt.subject),
+        format=receipt.format,
         redaction_mode=receipt.redaction_mode,
         destination=ExportDestinationOutput(
             destination_id=receipt.destination.destination_id,

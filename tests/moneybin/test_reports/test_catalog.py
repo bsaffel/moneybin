@@ -468,7 +468,7 @@ def test_sensitive_mapping_parameter_metadata_is_summarized_without_keys(
     def executor(
         db: Database,  # noqa: ARG001  # contract handle
         parameters: Mapping[str, JsonValue],
-        limit: int,
+        limit: int | None,
     ) -> CatalogReportExecution:
         dispatched.update(parameters)
         return build_catalog_execution(

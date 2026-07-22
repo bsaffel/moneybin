@@ -198,13 +198,13 @@ def build_catalog_execution(
     records: list[dict[str, Any]],
     columns: list[str],
     column_types: list[str],
-    max_rows: int,
+    max_rows: int | None,
     actions: list[str] | None = None,
     period: str | None = None,
 ) -> CatalogReportExecution:
     """Build one raw, classified execution from already-fetched rows."""
-    truncated = len(records) > max_rows
-    limited = records[:max_rows]
+    truncated = max_rows is not None and len(records) > max_rows
+    limited = records if max_rows is None else records[:max_rows]
 
     # ServiceReportSpec intentionally matches the classification-facing subset
     # of ReportSpec. The cast keeps classify_columns' existing public signature
@@ -219,7 +219,9 @@ def build_catalog_execution(
         column_types=column_types,
         output_classes=col_classes,
         tier=derive_query_tier(col_classes),
-        total_count=max_rows + 1 if truncated else len(limited),
+        total_count=(max_rows + 1)
+        if truncated and max_rows is not None
+        else len(limited),
         truncated=truncated,
         actions=actions or [],
         period=period,
@@ -256,7 +258,7 @@ def redact_catalog_execution(
 
 
 def execute_catalog_report(
-    spec: ReportSpec, db: Database, *, max_rows: int, **params: Any
+    spec: ReportSpec, db: Database, *, max_rows: int | None, **params: Any
 ) -> CatalogReportExecution:
     """Execute a catalog runner once; do not apply terminal redaction."""
     rq = spec.runner(db, **params)
@@ -267,7 +269,7 @@ def execute_catalog_report(
         str(description[1]) if len(description) > 1 else "UNKNOWN"
         for description in descriptions
     ]
-    rows = cursor.fetchmany(max_rows + 1)
+    rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows + 1)
     records = [dict(zip(columns, row, strict=False)) for row in rows]
     return build_catalog_execution(
         spec,

@@ -51,7 +51,9 @@ class ServiceReportSpec:
     semantics: ReportSemantics
     classes: Mapping[str, DataClass]
     examples: tuple[str, ...]
-    executor: Callable[[Database, Mapping[str, JsonValue], int], CatalogReportExecution]
+    executor: Callable[
+        [Database, Mapping[str, JsonValue], int | None], CatalogReportExecution
+    ]
     validator: Callable[[Mapping[str, JsonValue]], None] | None = None
 
     def __post_init__(self) -> None:
@@ -134,7 +136,7 @@ class ReportCatalog:
         *,
         report_id: str,
         parameters: Mapping[str, JsonValue],
-        limit: int,
+        limit: int | None,
     ) -> tuple[RegisteredReport, CatalogReportExecution]:
         """Validate and execute one report without terminal redaction."""
         spec, validated = self.resolve_request(
@@ -158,10 +160,10 @@ class ReportCatalog:
         *,
         report_id: str,
         parameters: Mapping[str, JsonValue],
-        limit: int,
+        limit: int | None,
     ) -> tuple[RegisteredReport, dict[str, JsonValue]]:
         """Resolve and validate one request without executing its report."""
-        if limit < 0:
+        if limit is not None and limit < 0:
             raise UserError(
                 "Report limit must be non-negative.",
                 code="REPORT_LIMIT_INVALID",

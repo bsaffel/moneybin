@@ -10,11 +10,11 @@ import duckdb
 import pytest
 
 from moneybin.database import Database
-from moneybin.exports.models import ExportDestination
+from moneybin.errors import UserError
+from moneybin.exports.models import ExportDestination, ReservedExportDestinationError
 from moneybin.repositories.export_destinations_repo import (
     ExportDestinationSpreadsheetConflictError,
     ExportDestinationsRepo,
-    ReservedExportDestinationError,
 )
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
 from moneybin.services.entity_reference import AmbiguousEntity, MissingEntity
@@ -192,20 +192,35 @@ def test_set_sheets_rejects_an_inbound_connection_workbook(
     assert repo.list() == []
 
 
-@pytest.mark.parametrize("kind", ["local", "sheets"])
 @pytest.mark.parametrize(
     "name",
-    ["local:exports", " local:exports ", " LOCAL:EXPORTS ", "local\uff1aexports"],
+    ["exports", " exports ", " EXPORTS ", "\uff45\uff58\uff50\uff4f\uff52\uff54\uff53"],
 )
-def test_set_rejects_the_reserved_derived_local_exports_destination(
-    repo: ExportDestinationsRepo, kind: str, name: str
+def test_set_local_rejects_normalized_bare_exports_name(
+    repo: ExportDestinationsRepo, name: str
 ) -> None:
-    """Normalized variants of local:exports cannot impersonate the derived target."""
+    """Saved local names cannot shadow the derived local:exports target."""
     with pytest.raises(ReservedExportDestinationError):
+        repo.set_local(
+            name=name,
+            local_path=Path("visible/exports"),
+            actor="cli",
+        )
+
+
+@pytest.mark.parametrize("name", ["", "   ", "archive:monthly"])
+@pytest.mark.parametrize("kind", ["local", "sheets"])
+def test_set_rejects_unaddressable_destination_names(
+    repo: ExportDestinationsRepo,
+    name: str,
+    kind: str,
+) -> None:
+    """Every accepted configured target can be represented as kind:name."""
+    with pytest.raises(UserError) as exc_info:
         if kind == "local":
             repo.set_local(
                 name=name,
-                local_path=Path("visible/exports"),
+                local_path=Path("visible/archive"),
                 actor="cli",
             )
         else:
@@ -215,6 +230,8 @@ def test_set_rejects_the_reserved_derived_local_exports_destination(
                 managed_tab_prefix="MoneyBin",
                 actor="cli",
             )
+
+    assert exc_info.value.code == "mutation_invalid_input"
 
 
 def test_resolve_prefers_id_then_exact_name_then_normalized_name(

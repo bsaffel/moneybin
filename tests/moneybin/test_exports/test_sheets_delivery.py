@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import unicodedata
+from contextlib import contextmanager
 from typing import Any, Never
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,11 +22,17 @@ from moneybin.database import Database
 from moneybin.exports.models import ExportDestination
 from moneybin.exports.service import ExportService
 from moneybin.exports.sheets import SheetsExportPublisher, SheetsPublishError
+from moneybin.exports.snapshot import PreparedExport
+from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.export_destinations_repo import (
     ExportDestinationSpreadsheetConflictError,
     ExportDestinationsRepo,
 )
 from moneybin.repositories.gsheet_connections_repo import GSheetConnectionsRepo
+from moneybin.services.request_lifetime import (
+    PublicationCancelledError,
+    RequestLifetime,
+)
 from tests.moneybin.test_exports.test_renderers import make_snapshot, make_text_snapshot
 
 
@@ -48,7 +56,45 @@ def _publisher(
     client.register_workbook(
         "output-sheet", workbook or FakeWorkbook(title="Output workbook")
     )
-    return SheetsExportPublisher(db=db, sheets_client=client), client
+    return SheetsExportPublisher(sheets_client=client), client
+
+
+def _publish(
+    db: Database,
+    publisher: SheetsExportPublisher,
+    snapshot: PreparedExport,
+    destination: ExportDestination | None = None,
+    *,
+    lifetime: RequestLifetime | None = None,
+):
+    selected = destination or _destination()
+    spreadsheet_id = selected.spreadsheet_id
+    assert spreadsheet_id is not None
+    with workbook_role_lease(db.path, spreadsheet_id, lifetime=lifetime) as permit:
+        ExportDestinationsRepo(db).assert_not_inbound_connection(spreadsheet_id)
+        return publisher.publish(
+            snapshot,
+            selected,
+            role_permit=permit,
+            publication_lifetime=lifetime,
+        )
+
+
+@contextmanager
+def _bound_database(db: Database):
+    yield db
+
+
+def _set_sheets_destination(db: Database, **kwargs: Any):
+    def database_provider(*, read_only: bool):
+        _ = read_only
+        return _bound_database(db)
+
+    with patch(
+        "moneybin.database.get_database",
+        side_effect=database_provider,
+    ):
+        return ExportService.set_sheets_destination(**kwargs)
 
 
 def _insert_inbound_connection(db: Database, spreadsheet_id: str) -> None:
@@ -78,7 +124,7 @@ def test_publish_rejects_inbound_spreadsheet_before_any_api_call(
     publisher, client = _publisher(db)
 
     with pytest.raises(ExportDestinationSpreadsheetConflictError, match="inbound"):
-        publisher.publish(make_snapshot(), _destination())
+        _publish(db, publisher, make_snapshot())
 
     assert client.requests == []
 
@@ -89,14 +135,14 @@ def test_successful_publish_stages_validates_and_atomically_promotes(
     user_tab = FakeSheetTab("User Notes", 7, ["Note"], [["keep me"]])
     publisher, client = _publisher(db, workbook=FakeWorkbook("Output", [user_tab]))
 
-    receipt = publisher.publish(make_snapshot(), _destination())
+    receipt = _publish(db, publisher, make_snapshot())
 
     metadata = client.get_workbook_metadata("output-sheet")
     names = {sheet.name for sheet in metadata.sheets}
     assert "User Notes" in names
     assert "MB Bundle 20260721T184233Z activity" in names
-    assert "MB Manifest" in names
-    assert "MB Dictionary" in names
+    assert "MB Bundle Manifest" in names
+    assert "MB Bundle Dictionary" in names
     assert not any(" Staging " in name for name in names)
     assert client.read_sheet_values("output-sheet", "User Notes") == [
         ["Note"],
@@ -109,6 +155,45 @@ def test_successful_publish_stages_validates_and_atomically_promotes(
     ]
     assert receipt.sheets_identity == "MB:20260721T184233Z"
     assert receipt.row_counts == {"activity": 2}
+
+
+def test_cancelled_request_cannot_promote_staged_sheets(db: Database) -> None:
+    """Timeout cancellation leaves staging tabs but no new visible snapshot."""
+    lifetime = RequestLifetime()
+
+    class CancelBeforePromotion(TestSheetsClient):
+        cancelled = False
+
+        def read_sheet_values(
+            self,
+            spreadsheet_id: str,
+            sheet_name: str,
+            *,
+            require_write: bool = False,
+        ) -> list[list[str]]:
+            values = super().read_sheet_values(
+                spreadsheet_id,
+                sheet_name,
+                require_write=require_write,
+            )
+            if not self.cancelled:
+                self.cancelled = True
+                lifetime.cancel_and_wait()
+            return values
+
+    client = CancelBeforePromotion()
+    client.register_workbook("output-sheet", FakeWorkbook("Output"))
+    publisher = SheetsExportPublisher(sheets_client=client)
+
+    with pytest.raises(PublicationCancelledError):
+        _publish(db, publisher, make_snapshot(), lifetime=lifetime)
+
+    names = {
+        sheet.name for sheet in client.get_workbook_metadata("output-sheet").sheets
+    }
+    assert any(" Staging " in name for name in names)
+    assert not any(name.startswith("MB Bundle ") for name in names)
+    assert [operation for operation, _ in client.requests] == ["create", "write"]
 
 
 def test_publish_uses_write_capability_for_output_metadata_and_validation(
@@ -136,7 +221,8 @@ def test_publish_uses_write_capability_for_output_metadata_and_validation(
     client = WriteOnlyOutputSheets()
     client.register_workbook("output-sheet", FakeWorkbook("Output"))
     oauth = TestOAuthClient(authorized=False)
-    ExportService(db).set_sheets_destination(
+    _set_sheets_destination(
+        db,
         name="dashboard",
         spreadsheet_id="output-sheet",
         managed_tab_prefix="MB",
@@ -145,9 +231,9 @@ def test_publish_uses_write_capability_for_output_metadata_and_validation(
     )
     destination = ExportDestinationsRepo(db).resolve("dashboard")
     assert isinstance(destination, ExportDestination)
-    publisher = SheetsExportPublisher(db=db, sheets_client=client)
+    publisher = SheetsExportPublisher(sheets_client=client)
 
-    receipt = publisher.publish(make_snapshot(), destination)
+    receipt = _publish(db, publisher, make_snapshot(), destination)
 
     assert oauth.authorize_require_write == [True]
     assert receipt.sheets_identity == "MB:20260721T184233Z"
@@ -157,14 +243,14 @@ def test_report_publication_cannot_select_or_replace_bundle_tabs(
     db: Database,
 ) -> None:
     publisher, client = _publisher(db)
-    publisher.publish(make_snapshot(), _destination())
+    _publish(db, publisher, make_snapshot())
     bundle_before = {
         sheet.gid: sheet.name
         for sheet in client.get_workbook_metadata("output-sheet").sheets
         if sheet.name.startswith("MB Bundle ")
     }
 
-    publisher.publish(make_snapshot(report=True), _destination())
+    _publish(db, publisher, make_snapshot(report=True))
 
     metadata = client.get_workbook_metadata("output-sheet")
     assert {
@@ -175,11 +261,42 @@ def test_report_publication_cannot_select_or_replace_bundle_tabs(
     assert any(sheet.name.startswith("MB Report ") for sheet in metadata.sheets)
 
 
+@pytest.mark.parametrize("first_report", [False, True])
+def test_alternating_subjects_preserve_each_subjects_verifiable_metadata(
+    db: Database,
+    first_report: bool,
+) -> None:
+    """Bundle and report latest-state tabs retain independent receipts."""
+    publisher, client = _publisher(db)
+    first = make_snapshot(report=first_report)
+    second = make_snapshot(report=not first_report)
+
+    _publish(db, publisher, first)
+    _publish(db, publisher, second)
+
+    metadata = client.get_workbook_metadata("output-sheet")
+    names = {sheet.name for sheet in metadata.sheets}
+    assert {
+        "MB Bundle Manifest",
+        "MB Bundle Dictionary",
+        "MB Report Manifest",
+        "MB Report Dictionary",
+    }.issubset(names)
+    bundle_manifest = client.read_sheet_values("output-sheet", "MB Bundle Manifest")[1][
+        0
+    ]
+    report_manifest = client.read_sheet_values("output-sheet", "MB Report Manifest")[1][
+        0
+    ]
+    assert json.loads(bundle_manifest)["subject"]["kind"] == "bundle"
+    assert json.loads(report_manifest)["subject"]["kind"] == "report"
+
+
 def test_failed_promotion_preserves_last_good_tabs_and_reports_staging_ids(
     db: Database,
 ) -> None:
     publisher, client = _publisher(db)
-    publisher.publish(make_snapshot(), _destination())
+    _publish(db, publisher, make_snapshot())
     before = {
         sheet.gid: sheet.name
         for sheet in client.get_workbook_metadata("output-sheet").sheets
@@ -188,7 +305,7 @@ def test_failed_promotion_preserves_last_good_tabs_and_reports_staging_ids(
     client.inject_error_for("promote", GSheetAPIError("promotion failed"))
 
     with pytest.raises(SheetsPublishError) as exc_info:
-        publisher.publish(make_snapshot(), _destination())
+        _publish(db, publisher, make_snapshot())
 
     metadata = client.get_workbook_metadata("output-sheet")
     after_visible = {
@@ -214,7 +331,7 @@ def test_validation_failure_leaves_only_new_staging_tabs(
     client.inject_error_for("read", GSheetAPIError("validation failed"))
 
     with pytest.raises(SheetsPublishError) as exc_info:
-        publisher.publish(make_snapshot(), _destination())
+        _publish(db, publisher, make_snapshot())
 
     metadata = client.get_workbook_metadata("output-sheet")
     staging = [sheet for sheet in metadata.sheets if " Staging " in sheet.name]
@@ -234,7 +351,7 @@ def test_ambiguous_create_recovers_only_exact_owned_staging_ids(
     client.inject_error_for("create_after", GSheetAPIError("malformed response"))
 
     with pytest.raises(SheetsPublishError) as exc_info:
-        publisher.publish(make_snapshot(), _destination())
+        _publish(db, publisher, make_snapshot())
 
     metadata = client.get_workbook_metadata("output-sheet")
     recovered = {
@@ -296,8 +413,10 @@ def test_mismatched_create_response_reconciles_without_touching_user_tab(
     monkeypatch.setattr(client, "_build_service", MagicMock(return_value=service))
 
     with pytest.raises(SheetsPublishError) as exc_info:
-        SheetsExportPublisher(db=db, sheets_client=client).publish(
-            make_snapshot(), _destination()
+        _publish(
+            db,
+            SheetsExportPublisher(sheets_client=client),
+            make_snapshot(),
         )
 
     recovered = {int(tab["properties"]["sheetId"]) for tab in created_tabs}
@@ -312,7 +431,7 @@ def test_write_failure_preserves_old_visible_tabs_and_reports_new_staging(
     db: Database,
 ) -> None:
     publisher, client = _publisher(db)
-    publisher.publish(make_snapshot(), _destination())
+    _publish(db, publisher, make_snapshot())
     before = {
         sheet.gid: sheet.name
         for sheet in client.get_workbook_metadata("output-sheet").sheets
@@ -321,7 +440,7 @@ def test_write_failure_preserves_old_visible_tabs_and_reports_new_staging(
     client.inject_error_for("write", GSheetAPIError("write failed"))
 
     with pytest.raises(SheetsPublishError) as exc_info:
-        publisher.publish(make_snapshot(), _destination())
+        _publish(db, publisher, make_snapshot())
 
     metadata = client.get_workbook_metadata("output-sheet")
     after = {
@@ -349,7 +468,7 @@ def test_user_lookalikes_and_stale_staging_are_never_replaced(
     ]
     publisher, client = _publisher(db, workbook=FakeWorkbook("Output", tabs))
 
-    publisher.publish(make_snapshot(), _destination())
+    _publish(db, publisher, make_snapshot())
 
     by_gid = {
         sheet.gid: sheet.name
@@ -369,7 +488,7 @@ def test_generated_titles_are_bounded_sanitized_and_unicode_case_unique(
     )
     publisher, client = _publisher(db)
 
-    publisher.publish(snapshot, _destination())
+    _publish(db, publisher, snapshot)
 
     names = [
         sheet.name for sheet in client.get_workbook_metadata("output-sheet").sheets
@@ -385,7 +504,8 @@ def test_set_sheets_destination_explicitly_upgrades_write_scope(
 ) -> None:
     oauth = TestOAuthClient(write_authorized=False)
 
-    ExportService(db).set_sheets_destination(
+    _set_sheets_destination(
+        db,
         name="dashboard",
         spreadsheet_id="output-sheet",
         managed_tab_prefix="MB",
@@ -399,6 +519,42 @@ def test_set_sheets_destination_explicitly_upgrades_write_scope(
     assert isinstance(destination, ExportDestination)
 
 
+def test_set_sheets_destination_releases_database_before_oauth(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configuration reads close before the interactive external authorization."""
+    active = False
+    modes: list[bool] = []
+
+    @contextmanager
+    def database_context(*, read_only: bool):
+        nonlocal active
+        modes.append(read_only)
+        active = True
+        try:
+            yield db
+        finally:
+            active = False
+
+    class ObservedOAuth(TestOAuthClient):
+        def authorize(self, *, require_write: bool = False):
+            assert active is False
+            return super().authorize(require_write=require_write)
+
+    monkeypatch.setattr("moneybin.database.get_database", database_context)
+
+    ExportService.set_sheets_destination(
+        name="dashboard",
+        spreadsheet_id="output-sheet",
+        managed_tab_prefix="MB",
+        actor="cli",
+        oauth_client=ObservedOAuth(write_authorized=False),
+    )
+
+    assert modes == [True, False]
+
+
 def test_set_sheets_destination_rejects_inbound_overlap_before_oauth(
     db: Database,
 ) -> None:
@@ -408,7 +564,8 @@ def test_set_sheets_destination_rejects_inbound_overlap_before_oauth(
     with pytest.raises(
         ExportDestinationSpreadsheetConflictError, match="inbound connection"
     ):
-        ExportService(db).set_sheets_destination(
+        _set_sheets_destination(
+            db,
             name="dashboard",
             spreadsheet_id="output-sheet",
             managed_tab_prefix="MB",
@@ -427,7 +584,8 @@ def test_set_sheets_destination_does_not_persist_when_write_grant_fails(
             raise GSheetAuthError("write authorization declined")
 
     with pytest.raises(GSheetAuthError, match="declined"):
-        ExportService(db).set_sheets_destination(
+        _set_sheets_destination(
+            db,
             name="dashboard",
             spreadsheet_id="output-sheet",
             managed_tab_prefix="MB",
@@ -445,7 +603,8 @@ def test_set_sheets_destination_validates_managed_prefix_before_oauth(
     oauth = TestOAuthClient(write_authorized=False)
 
     with pytest.raises(ValueError, match="managed tab prefix"):
-        ExportService(db).set_sheets_destination(
+        _set_sheets_destination(
+            db,
             name="dashboard",
             spreadsheet_id="output-sheet",
             managed_tab_prefix=prefix,

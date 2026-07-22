@@ -48,6 +48,7 @@ def _sheets_destination(*, name: str = "dashboard") -> ExportDestination:
 def _receipt(destination: ExportDestination, artifact: Path) -> ExportReceipt:
     return ExportReceipt(
         subject={"kind": "bundle"},
+        format="csv",
         redaction_mode="redacted",
         destination=destination,
         artifact_path=artifact.resolve(),
@@ -66,6 +67,7 @@ def _receipt(destination: ExportDestination, artifact: Path) -> ExportReceipt:
 def _sheets_report_receipt(destination: ExportDestination) -> ExportReceipt:
     return ExportReceipt(
         subject={"kind": "report", "report_id": "core:networth", "parameters": {}},
+        format="sheets",
         redaction_mode="redacted",
         destination=destination,
         artifact_path=None,
@@ -96,7 +98,7 @@ def _observable_delivery(data: dict[str, Any], request: Any) -> dict[str, Any]:
             "name": data["destination"]["name"],
         },
         "redaction_mode": data["redaction_mode"],
-        "format": request.format,
+        "format": data["format"],
         "row_counts": data["row_counts"],
         "checksums": data["checksums"],
         "receipt_identity": data["sheets_identity"],
@@ -202,6 +204,7 @@ async def test_export_run_builds_one_typed_service_request(
     if destination.kind == "sheets":
         receipt = ExportReceipt(
             subject={"kind": "report", "report_id": "core:networth"},
+            format="sheets",
             redaction_mode="unredacted",
             destination=destination,
             artifact_path=None,
@@ -213,10 +216,7 @@ async def test_export_run_builds_one_typed_service_request(
             recovery_actions=(),
         )
 
-    with (
-        patch.object(ExportService, "resolve_destination", return_value=destination),
-        patch.object(ExportService, "run", return_value=receipt) as run,
-    ):
+    with patch.object(ExportService, "run", return_value=receipt) as run:
         response = await call_tool_raw(
             isolated_server(register_export_tools),
             "export_run",
@@ -228,7 +228,9 @@ async def test_export_run_builds_one_typed_service_request(
     assert request.subject_kind == arguments["subject"]["kind"]
     assert request.report_id == arguments["subject"].get("report_id")
     assert request.report_parameters == arguments["subject"].get("parameters", {})
-    assert request.destination == destination
+    assert request.destination_reference == (
+        f"{arguments['destination']['kind']}:{arguments['destination']['name']}"
+    )
     assert request.format == (arguments["destination"].get("format", "sheets"))
     assert request.redaction_mode == arguments["redaction_mode"]
     assert request.compress_zip is (
@@ -237,6 +239,7 @@ async def test_export_run_builds_one_typed_service_request(
     assert run.call_args.kwargs == {"actor": "mcp"}
     assert structured["data"]["row_counts"] == dict(receipt.row_counts)
     assert structured["data"]["checksums"] == dict(receipt.checksums)
+    assert structured["data"]["format"] == receipt.format
     assert structured["summary"]["sensitivity"] == "medium"
 
 
@@ -415,17 +418,14 @@ async def test_export_run_returns_sanitized_service_error(mcp_db: object) -> Non
     from moneybin.exports.service import ExportService
     from moneybin.mcp.tools.exports import register_export_tools
 
-    with (
-        patch.object(
-            ExportService,
-            "resolve_destination",
-            side_effect=UserError(
-                "Export destination not found.",
-                code="MUTATION_NOT_FOUND",
-            ),
+    with patch.object(
+        ExportService,
+        "run",
+        side_effect=UserError(
+            "Export destination not found.",
+            code="MUTATION_NOT_FOUND",
         ),
-        patch.object(ExportService, "run") as run,
-    ):
+    ) as run:
         response = await call_tool_raw(
             isolated_server(register_export_tools),
             "export_run",
@@ -439,7 +439,7 @@ async def test_export_run_returns_sanitized_service_error(mcp_db: object) -> Non
     structured = _structured(response)
     assert structured["error"]["code"] == "MUTATION_NOT_FOUND"
     assert "private-drive" not in structured["error"]["message"]
-    run.assert_not_called()
+    run.assert_called_once()
 
 
 @pytest.mark.parametrize("subject_kind", ["bundle", "report"])
@@ -495,23 +495,22 @@ async def test_cli_and_mcp_export_receipts_have_same_observable_outcome(
         }
     requests: list[tuple[Any, str]] = []
 
-    def run(request: Any, *, actor: str) -> ExportReceipt:
+    def run(
+        request: Any,
+        *,
+        actor: str,
+        on_destination_resolved: Any = None,
+    ) -> ExportReceipt:
+        if on_destination_resolved is not None:
+            on_destination_resolved(destination)
         requests.append((request, actor))
         return receipt
 
-    with (
-        patch("moneybin.database.get_database") as cli_db,
-        patch.object(ExportService, "resolve_destination", return_value=destination),
-        patch.object(ExportService, "run", side_effect=run),
-    ):
-        cli_db.return_value.__enter__.return_value = MagicMock()
+    with patch.object(ExportService, "run", side_effect=run):
         cli_result = CliRunner().invoke(app, cli_arguments)
     assert cli_result.exit_code == 0, cli_result.output
 
-    with (
-        patch.object(ExportService, "resolve_destination", return_value=destination),
-        patch.object(ExportService, "run", side_effect=run),
-    ):
+    with patch.object(ExportService, "run", side_effect=run):
         mcp_result = await call_tool_raw(
             isolated_server(register_export_tools),
             "export_run",
@@ -544,7 +543,6 @@ async def test_cli_and_mcp_export_failures_are_equally_safe(
 
     mcp_arguments: dict[str, Any]
     if subject_kind == "bundle":
-        destination = _local_destination(tmp_path / "exports")
         cli_arguments = ["export", "bundle", "--yes", "--output", "json"]
         mcp_arguments = {
             "subject": {"kind": "bundle"},
@@ -552,7 +550,6 @@ async def test_cli_and_mcp_export_failures_are_equally_safe(
             "redaction_mode": "redacted",
         }
     else:
-        destination = _sheets_destination()
         cli_arguments = [
             "export",
             "report",
@@ -571,18 +568,10 @@ async def test_cli_and_mcp_export_failures_are_equally_safe(
     unsafe_detail = str(tmp_path / "private-ledger.csv")
     failure = UserError("Export could not be published.", code="EXPORT_FAILED")
 
-    with (
-        patch("moneybin.database.get_database") as cli_db,
-        patch.object(ExportService, "resolve_destination", return_value=destination),
-        patch.object(ExportService, "run", side_effect=failure),
-    ):
-        cli_db.return_value.__enter__.return_value = MagicMock()
+    with patch.object(ExportService, "run", side_effect=failure):
         cli_result = CliRunner().invoke(app, cli_arguments)
 
-    with (
-        patch.object(ExportService, "resolve_destination", return_value=destination),
-        patch.object(ExportService, "run", side_effect=failure),
-    ):
+    with patch.object(ExportService, "run", side_effect=failure):
         mcp_result = await call_tool_raw(
             isolated_server(register_export_tools),
             "export_run",
@@ -609,7 +598,7 @@ async def test_report_export_reuses_the_registered_reports_catalog_result(
     from moneybin.reports._framework.contract import OutputColumn, ReportSemantics
     from moneybin.reports._framework.execute import build_catalog_execution
 
-    calls: list[tuple[dict[str, Any], int]] = []
+    calls: list[tuple[dict[str, Any], int | None]] = []
     semantics = ReportSemantics(
         unit="count",
         currency=None,
@@ -624,7 +613,7 @@ async def test_report_export_reuses_the_registered_reports_catalog_result(
         provenance=("reports.parity_export",),
     )
 
-    def execute(_: Any, parameters: Any, limit: int) -> Any:
+    def execute(_: Any, parameters: Any, limit: int | None) -> Any:
         calls.append((dict(parameters), limit))
         return build_catalog_execution(
             spec,
@@ -663,13 +652,12 @@ async def test_report_export_reuses_the_registered_reports_catalog_result(
                 profile="test",
                 report_id="test:parity_export",
                 report_parameters={},
-                max_rows=10,
                 redaction_mode="redacted",
             )
 
     report_data = _structured(report_response)["data"]
     assert report_data["rows"] == [{"count": 7}]
     assert snapshot.tables[0].rows == ((7,),)
-    assert calls == [({}, 10), ({}, 10)]
+    assert calls == [({}, 10), ({}, None)]
     assert snapshot.provenance is not None
     assert snapshot.provenance.report_id == report_data["report_id"]

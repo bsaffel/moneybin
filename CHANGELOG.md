@@ -17,7 +17,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   local destinations, and output-only Google Sheets targets also supported.
   `export_run`, `exports_set`, and `system_status(sections=["exports"])` expose
   the same service outcomes to MCP; unredacted output is an explicit per-run
-  choice.
+  choice. Report artifacts always contain the complete registered-report result,
+  receipts identify the selected format, bundle/report Sheets metadata remain
+  independently verifiable, and cancellable publication runs without holding
+  the global DuckDB writer lock over filesystem or Google API I/O.
 - **An AI assistant can now resolve a credit-card PDF's sign inversion
   without you leaving the chat.** `import_preview(file_path=...)` followed by
   `import_confirm(preview_id=...)` shows you the statement's evidence and

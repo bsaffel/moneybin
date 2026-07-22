@@ -16,8 +16,8 @@ from moneybin import error_codes
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.exports.models import (
+    ExportCommand,
     ExportReceipt,
-    ExportRequest,
     RedactionMode,
 )
 from moneybin.exports.service import ExportService
@@ -182,6 +182,7 @@ class ExportReceiptOutput:
     """Transport projection of a completed export receipt."""
 
     subject: Annotated[dict[str, object], DataClass.USER_NOTE]
+    format: Annotated[Literal["csv", "parquet", "xlsx", "sheets"], DataClass.TXN_TYPE]
     redaction_mode: Annotated[RedactionChoice, DataClass.TXN_TYPE]
     destination: ExportDestinationOutput
     artifact_path: Annotated[str | None, DataClass.USER_NOTE]
@@ -252,6 +253,7 @@ async def _select_redaction_mode(explicit: RedactionMode | None) -> RedactionMod
 def _receipt_output(receipt: ExportReceipt) -> ExportReceiptOutput:
     return ExportReceiptOutput(
         subject=dict(receipt.subject),
+        format=receipt.format,
         redaction_mode=receipt.redaction_mode,
         destination=ExportDestinationOutput(
             destination_id=receipt.destination.destination_id,
@@ -286,47 +288,44 @@ def _run_export(
     redaction_mode: RedactionMode,
 ) -> ExportReceipt:
     reference = f"{destination_request.kind}:{destination_request.name}"
-    with get_database(read_only=False) as db:
-        service = ExportService(db)
-        destination = service.resolve_destination(reference)
-        format_ = (
-            destination_request.format
-            if isinstance(destination_request, LocalExportDestination)
-            else "sheets"
-        )
-        compress_zip = (
-            destination_request.compression == "zip"
-            if isinstance(destination_request, LocalExportDestination)
-            else False
-        )
-        try:
-            return service.run(
-                ExportRequest(
-                    subject_kind=subject.kind,
-                    report_id=(
-                        subject.report_id
-                        if isinstance(subject, ReportExportSubject)
-                        else None
-                    ),
-                    report_parameters=(
-                        subject.parameters
-                        if isinstance(subject, ReportExportSubject)
-                        else {}
-                    ),
-                    destination=destination,
-                    format=format_,
-                    redaction_mode=redaction_mode,
-                    compress_zip=compress_zip,
+    format_ = (
+        destination_request.format
+        if isinstance(destination_request, LocalExportDestination)
+        else "sheets"
+    )
+    compress_zip = (
+        destination_request.compression == "zip"
+        if isinstance(destination_request, LocalExportDestination)
+        else False
+    )
+    try:
+        return ExportService.run(
+            ExportCommand(
+                subject_kind=subject.kind,
+                report_id=(
+                    subject.report_id
+                    if isinstance(subject, ReportExportSubject)
+                    else None
                 ),
-                actor=_ACTOR,
-            )
-        except OSError as exc:
-            if destination.kind != "local":
-                raise
-            raise UserError(
-                "Local export could not be published.",
-                code=error_codes.INFRA_IO_ERROR,
-            ) from exc
+                report_parameters=(
+                    subject.parameters
+                    if isinstance(subject, ReportExportSubject)
+                    else {}
+                ),
+                destination_reference=reference,
+                format=format_,
+                redaction_mode=redaction_mode,
+                compress_zip=compress_zip,
+            ),
+            actor=_ACTOR,
+        )
+    except OSError as exc:
+        if destination_request.kind != "local":
+            raise
+        raise UserError(
+            "Local export could not be published.",
+            code=error_codes.INFRA_IO_ERROR,
+        ) from exc
 
 
 @mcp_tool(
@@ -389,6 +388,13 @@ def _remove_destination(
 def _set_destination(
     target: LocalDestinationTarget | SheetsDestinationTarget,
 ) -> AuditEvent:
+    if target.state == "present" and isinstance(target, SheetsDestinationTarget):
+        return ExportService.set_sheets_destination(
+            name=target.name,
+            spreadsheet_id=cast(str, target.spreadsheet_id),
+            managed_tab_prefix=target.managed_tab_prefix or _SHEETS_TAB_PREFIX,
+            actor=_ACTOR,
+        )
     with get_database(read_only=False) as db:
         repo = ExportDestinationsRepo(db)
         if target.state == "absent":
@@ -399,12 +405,7 @@ def _set_destination(
                 local_path=Path(cast(str, target.local_path)),
                 actor=_ACTOR,
             )
-        return ExportService(db).set_sheets_destination(
-            name=target.name,
-            spreadsheet_id=cast(str, target.spreadsheet_id),
-            managed_tab_prefix=target.managed_tab_prefix or _SHEETS_TAB_PREFIX,
-            actor=_ACTOR,
-        )
+        raise RuntimeError("Unsupported export destination target")
 
 
 @mcp_tool(

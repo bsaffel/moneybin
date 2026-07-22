@@ -60,7 +60,7 @@ def _transport_report() -> ServiceReportSpec:
     def execute(
         db: Database,  # noqa: ARG001  # contract handle
         parameters: Mapping[str, JsonValue],
-        limit: int,
+        limit: int | None,
     ) -> CatalogReportExecution:
         return build_catalog_execution(
             spec,

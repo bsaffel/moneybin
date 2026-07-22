@@ -7,16 +7,11 @@ a fresh one, releasing any held write lock. Classified domain exceptions
 become error envelopes here; anything else propagates to the server's
 ``mask_error_details`` boundary.
 
-Known limitation — sync tool body continues after timeout: ``asyncio.timeout()``
-cancels the awaited task, but the OS thread running the sync body keeps
-going until it naturally returns. A tool that mutates filesystem or DB state
-(e.g., ``import_inbox_sync``) may finish that work in the background after
-the client has already received a ``timed_out`` envelope. Clients that
-retry can produce duplicate or conflicting writes. The contract here is
-"release the lock and respond within the cap," not "guarantee the
-underlying work was undone." Tools doing non-idempotent writes that risk
-exceeding the cap must be redesigned (e.g., decomposed into smaller per-
-unit calls) — see ``docs/specs/mcp-tool-timeouts.md`` Out of Scope.
+Sync tool bodies still run in their OS thread after ``asyncio.timeout()``
+cancels the await. The decorator therefore binds a shared request lifetime:
+publication-aware adapters refuse to cross their final side-effect boundary
+after timeout or client cancellation. Existing non-publication mutations retain
+the timeout contract documented in ``docs/specs/mcp-tool-timeouts.md``.
 """
 
 from __future__ import annotations
@@ -49,6 +44,7 @@ from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 from moneybin.services.mutation_context import operation
+from moneybin.services.request_lifetime import RequestLifetime, request_lifetime_scope
 
 logger = logging.getLogger(__name__)
 
@@ -517,6 +513,7 @@ def mcp_tool(
             else:
                 timeout_s = timeout_attr
             started = time.monotonic()
+            request_lifetime = RequestLifetime()
             # Per-call holder: the tool's thread stores the write connection
             # here via _write_conn_thread_local so the timeout handler can
             # interrupt *this* call's connection specifically rather than
@@ -547,7 +544,7 @@ def mcp_tool(
                 # after the caller already received a timed_out envelope.
                 holder_token = _write_conn_holder.set(_conn_for_this_call)
                 try:
-                    with operation():
+                    with operation(), request_lifetime_scope(request_lifetime):
                         async with cm:
                             if is_coro:
                                 result = await fn(*args, **kwargs)
@@ -569,6 +566,7 @@ def mcp_tool(
                     await _emit_privacy_event(err_env)
                     return err_env
                 elapsed = time.monotonic() - started
+                await asyncio.to_thread(request_lifetime.cancel_and_wait)
                 # Only reset THIS call's own connection. If the call timed out
                 # before acquiring one (e.g. queued behind another writer when
                 # tool_timeout < the write-lock wait), _conn_for_this_call[0] is
@@ -657,6 +655,7 @@ def mcp_tool(
                 # where a bare await inside the handler would be re-cancelled
                 # before the write lands. Then re-raise — cancellation must never
                 # be swallowed.
+                await asyncio.to_thread(request_lifetime.cancel_and_wait)
                 try:
                     await asyncio.shield(
                         _emit_privacy_event(

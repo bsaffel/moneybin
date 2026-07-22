@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from time import perf_counter
@@ -13,11 +14,14 @@ from pydantic import JsonValue
 from moneybin.database import Database
 from moneybin.exports.models import (
     DestinationKind,
+    ExportCommand,
     ExportDestination,
     ExportReceipt,
     ExportRequest,
     RedactionMode,
     ReportExportReceipt,
+    normalize_export_destination_name,
+    validate_export_destination_name,
 )
 from moneybin.exports.redaction import apply_export_redaction
 from moneybin.exports.snapshot import (
@@ -38,6 +42,10 @@ from moneybin.reports._framework.catalog import (
 )
 from moneybin.reports._framework.contract import ReportSpec
 from moneybin.reports._framework.execute import redact_report_parameters
+from moneybin.services.request_lifetime import (
+    RequestLifetime,
+    current_request_lifetime,
+)
 from moneybin.tables import TableRef
 
 if TYPE_CHECKING:
@@ -45,6 +53,7 @@ if TYPE_CHECKING:
 
     from moneybin.exports.manifest import LocalExportFormat
     from moneybin.exports.sheets import SheetsAuthorization
+    from moneybin.exports.workbook_roles import WorkbookRolePermit
     from moneybin.services.audit_service import AuditEvent
 
 
@@ -55,6 +64,9 @@ class _SheetsPublisher(Protocol):
         self,
         snapshot: PreparedExport,
         destination: ExportDestination,
+        *,
+        role_permit: WorkbookRolePermit,
+        publication_lifetime: RequestLifetime | None,
     ) -> ExportReceipt:
         """Publish one prepared snapshot."""
         ...
@@ -100,65 +112,112 @@ class ExportService:
         db: Database,
         *,
         report_catalog: ReportCatalog | None = None,
-        sheets_publisher: _SheetsPublisher | None = None,
     ) -> None:
         """Bind the database used for canonical snapshot reads."""
         self._db = db
         self._report_catalog = report_catalog
-        self._sheets_publisher_override = sheets_publisher
 
-    def run(self, request: ExportRequest, *, actor: str) -> ExportReceipt:
-        """Validate, prepare, and publish exactly one export snapshot."""
+    @classmethod
+    def run(
+        cls,
+        command: ExportCommand,
+        *,
+        actor: str,
+        report_catalog: ReportCatalog | None = None,
+        sheets_publisher: _SheetsPublisher | None = None,
+        publication_lifetime: RequestLifetime | None = None,
+        on_destination_resolved: Callable[[ExportDestination], None] | None = None,
+    ) -> ExportReceipt:
+        """Snapshot under a read lease, then publish after releasing DuckDB."""
         _ = actor
+        requested_destination_kind = command.destination_reference.partition(":")[0]
         labels = {
-            "subject_kind": _bounded_label(request.subject_kind, _SUBJECT_KINDS),
-            "format": _bounded_label(request.format, _FORMATS),
+            "subject_kind": _bounded_label(command.subject_kind, _SUBJECT_KINDS),
+            "format": _bounded_label(command.format, _FORMATS),
             "destination_kind": _bounded_label(
-                request.destination.kind, _DESTINATION_KINDS
+                requested_destination_kind, _DESTINATION_KINDS
             ),
-            "redaction_mode": _bounded_label(request.redaction_mode, _REDACTION_MODES),
+            "redaction_mode": _bounded_label(command.redaction_mode, _REDACTION_MODES),
         }
         started_at = perf_counter()
         try:
-            self._validate_request(request)
             from moneybin.config import get_settings  # noqa: PLC0415
+            from moneybin.database import get_database  # noqa: PLC0415
+            from moneybin.exports.workbook_roles import (  # noqa: PLC0415
+                workbook_role_lease,
+            )
+            from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
+                ExportDestinationsRepo,
+            )
 
             settings = get_settings()
-            if request.subject_kind == "bundle":
-                snapshot = self.prepare_bundle(
-                    profile=settings.profile,
-                    redaction_mode=request.redaction_mode,
-                )
-            else:
-                report_id = cast(str, request.report_id)
-                snapshot = self.prepare_report(
-                    profile=settings.profile,
-                    report_id=report_id,
-                    report_parameters=request.report_parameters,
-                    max_rows=settings.mcp.max_rows,
-                    redaction_mode=request.redaction_mode,
-                )
+            lifetime = publication_lifetime or current_request_lifetime()
+            with ExitStack() as role_stack:
+                role_permit: WorkbookRolePermit | None = None
+                with get_database(read_only=True) as db:
+                    service = cls(db, report_catalog=report_catalog)
+                    destination = service.resolve_destination(
+                        command.destination_reference
+                    )
+                    request = command.resolve(destination)
+                    service._validate_request(request)
+                    if on_destination_resolved is not None:
+                        on_destination_resolved(destination)
+                    if request.subject_kind == "bundle":
+                        snapshot = service.prepare_bundle(
+                            profile=settings.profile,
+                            redaction_mode=request.redaction_mode,
+                        )
+                    else:
+                        report_id = cast(str, request.report_id)
+                        snapshot = service.prepare_report(
+                            profile=settings.profile,
+                            report_id=report_id,
+                            report_parameters=request.report_parameters,
+                            redaction_mode=request.redaction_mode,
+                        )
 
-            if request.destination.kind == "local":
-                from moneybin.exports.local import (  # noqa: PLC0415
-                    LocalExportPublisher,
-                )
+                    if destination.kind == "sheets":
+                        spreadsheet_id = cast(str, destination.spreadsheet_id)
+                        role_permit = role_stack.enter_context(
+                            workbook_role_lease(
+                                db.path,
+                                spreadsheet_id,
+                                lifetime=lifetime,
+                            )
+                        )
+                        ExportDestinationsRepo(db).assert_current_for_publication(
+                            destination
+                        )
 
-                publisher = LocalExportPublisher(
-                    cast("Path", request.destination.local_path),
-                    destination_name=request.destination.name,
-                )
-                receipt = publisher.publish(
-                    snapshot,
-                    format=cast("LocalExportFormat", request.format),
-                    compress_zip=request.compress_zip,
-                )
-                receipt = replace(receipt, destination=request.destination)
-            else:
-                receipt = self._sheets_publisher().publish(
-                    snapshot,
-                    request.destination,
-                )
+                if lifetime is not None:
+                    lifetime.raise_if_cancelled()
+                if destination.kind == "local":
+                    from moneybin.exports.local import (  # noqa: PLC0415
+                        LocalExportPublisher,
+                    )
+
+                    publisher = LocalExportPublisher(
+                        cast("Path", destination.local_path),
+                        destination_name=destination.name,
+                    )
+                    receipt = publisher.publish(
+                        snapshot,
+                        format=cast("LocalExportFormat", request.format),
+                        compress_zip=request.compress_zip,
+                        publication_lifetime=lifetime,
+                    )
+                    receipt = replace(receipt, destination=destination)
+                else:
+                    if role_permit is None:
+                        raise RuntimeError("Sheets publication requires a role permit")
+                    selected_publisher = sheets_publisher or cls._sheets_publisher()
+                    receipt = selected_publisher.publish(
+                        snapshot,
+                        destination,
+                        role_permit=role_permit,
+                        publication_lifetime=lifetime,
+                    )
         except Exception:
             EXPORT_RUNS_TOTAL.labels(**labels, outcome="failed").inc()
             raise
@@ -184,17 +243,21 @@ class ExportService:
         )
 
         kind, separator, name = reference.partition(":")
-        if (
-            separator != ":"
-            or kind not in _DESTINATION_KINDS
-            or not name
-            or ":" in name
-        ):
+        if separator != ":" or kind not in _DESTINATION_KINDS:
             raise UserError(
                 "Destination must be local:<name> or sheets:<name>.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
-        if kind == "local" and name == "exports":
+        destination_kind = cast(DestinationKind, kind)
+        validate_export_destination_name(
+            name,
+            kind=destination_kind,
+            allow_builtin_local=True,
+        )
+        if (
+            destination_kind == "local"
+            and normalize_export_destination_name(name) == "exports"
+        ):
             return ExportDestination(
                 destination_id=None,
                 name="local:exports",
@@ -216,9 +279,10 @@ class ExportService:
                 code=error_codes.MUTATION_AMBIGUOUS,
                 details={"candidate_ids": list(resolved.candidate_ids)},
             )
-        if resolved.kind != kind:
+        if resolved.kind != destination_kind:
             raise UserError(
-                f"Export destination is configured as {resolved.kind}, not {kind}.",
+                f"Export destination is configured as {resolved.kind}, "
+                f"not {destination_kind}.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
         if resolved.kind == "local" and resolved.local_path is not None:
@@ -264,9 +328,8 @@ class ExportService:
         if request.format == "xlsx" and request.compress_zip:
             raise ValueError("XLSX is already compressed and rejects ZIP compression")
 
-    def _sheets_publisher(self) -> _SheetsPublisher:
-        if self._sheets_publisher_override is not None:
-            return self._sheets_publisher_override
+    @staticmethod
+    def _sheets_publisher() -> _SheetsPublisher:
         from moneybin.connectors.gsheet.service_factory import (  # noqa: PLC0415
             build_oauth_client,
         )
@@ -274,7 +337,6 @@ class ExportService:
         from moneybin.exports.sheets import SheetsExportPublisher  # noqa: PLC0415
 
         return SheetsExportPublisher(
-            db=self._db,
             sheets_client=SheetsClient(oauth=build_oauth_client()),
         )
 
@@ -339,8 +401,8 @@ class ExportService:
             )
         return ExportReadinessStatus(destinations=tuple(results))
 
+    @staticmethod
     def set_sheets_destination(
-        self,
         *,
         name: str,
         spreadsheet_id: str,
@@ -348,8 +410,9 @@ class ExportService:
         actor: str,
         oauth_client: SheetsAuthorization | None = None,
     ) -> AuditEvent:
-        """Validate, authorize, and persist one Sheets output destination."""
+        """Validate, authorize without DuckDB, then persist one Sheets target."""
         from moneybin.connectors.gsheet.errors import GSheetAuthError  # noqa: PLC0415
+        from moneybin.database import get_database  # noqa: PLC0415
         from moneybin.exports.sheets import validate_managed_tab_prefix  # noqa: PLC0415
         from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
             ExportDestinationsRepo,
@@ -364,18 +427,20 @@ class ExportService:
             client = build_oauth_client()
         else:
             client = oauth_client
+        validate_export_destination_name(name, kind="sheets")
         prefix = validate_managed_tab_prefix(managed_tab_prefix)
-        repo = ExportDestinationsRepo(self._db)
-        repo.assert_not_inbound_connection(spreadsheet_id)
+        with get_database(read_only=True) as db:
+            ExportDestinationsRepo(db).assert_not_inbound_connection(spreadsheet_id)
         grant = client.authorize(require_write=True)
         if not grant.can_write:
             raise GSheetAuthError("Google Sheets write authorization was not granted")
-        return repo.set_sheets(
-            name=name,
-            spreadsheet_id=spreadsheet_id,
-            managed_tab_prefix=prefix,
-            actor=actor,
-        )
+        with get_database(read_only=False) as db:
+            return ExportDestinationsRepo(db).set_sheets(
+                name=name,
+                spreadsheet_id=spreadsheet_id,
+                managed_tab_prefix=prefix,
+                actor=actor,
+            )
 
     def prepare_bundle(
         self,
@@ -403,7 +468,6 @@ class ExportService:
         profile: str,
         report_id: str,
         report_parameters: Mapping[str, JsonValue] | None = None,
-        max_rows: int,
         redaction_mode: RedactionMode = "redacted",
     ) -> PreparedExport:
         """Prepare exactly one catalog report under one output policy."""
@@ -412,7 +476,9 @@ class ExportService:
             self._db,
             report_id=report_id,
             parameters=report_parameters or {},
-            limit=max_rows,
+            # Artifact exports are complete-or-fail. Interactive MCP response
+            # caps never limit durable export contents.
+            limit=None,
         )
         columns = tuple(
             PreparedColumn(

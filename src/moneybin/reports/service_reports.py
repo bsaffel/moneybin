@@ -202,7 +202,7 @@ def _validate_networth_history_parameters(
 def _execute_networth(
     db: Database,
     parameters: Mapping[str, JsonValue],
-    limit: int,
+    limit: int | None,
 ) -> CatalogReportExecution:
     params = dict(parameters)
     as_of = params["as_of"]
@@ -279,7 +279,7 @@ def _execute_networth(
 def _execute_networth_history(
     db: Database,
     parameters: Mapping[str, JsonValue],
-    limit: int,
+    limit: int | None,
 ) -> CatalogReportExecution:
     params = dict(parameters)
     from_date = date.fromisoformat(str(params["from_date"]))

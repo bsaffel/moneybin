@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess  # noqa: S404  # shell-level artifact inspection is the contract
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -51,6 +52,7 @@ def _receipt(
 ) -> ExportReceipt:
     return ExportReceipt(
         subject={"kind": "bundle"},
+        format="csv" if artifact is not None else "sheets",
         redaction_mode="redacted",
         destination=destination,
         artifact_path=artifact.resolve() if artifact is not None else None,
@@ -72,6 +74,24 @@ def _settings(exports_dir: Path) -> SimpleNamespace:
         profile_exports_dir=exports_dir.resolve(),
         mcp=SimpleNamespace(max_rows=1_000),
     )
+
+
+def _completed_run(
+    receipt: ExportReceipt,
+    destination: ExportDestination,
+):
+    def run(
+        _command: object,
+        *,
+        actor: str,
+        on_destination_resolved: object,
+    ) -> ExportReceipt:
+        assert actor == "cli"
+        assert callable(on_destination_resolved)
+        on_destination_resolved(destination)
+        return receipt
+
+    return run
 
 
 def test_export_help_exposes_the_public_command_grammar() -> None:
@@ -96,7 +116,8 @@ def test_export_bundle_defaults_to_redacted_csv_and_local_exports(
             "moneybin.config.get_settings", return_value=_settings(tmp_path / "exports")
         ),
         patch(
-            "moneybin.exports.service.ExportService.run", return_value=receipt
+            "moneybin.exports.service.ExportService.run",
+            side_effect=_completed_run(receipt, destination),
         ) as run,
     ):
         get_database.return_value.__enter__.return_value = mock_db
@@ -107,11 +128,12 @@ def test_export_bundle_defaults_to_redacted_csv_and_local_exports(
     assert request.subject_kind == "bundle"
     assert request.report_id is None
     assert request.report_parameters == {}
-    assert request.destination == destination
+    assert request.destination_reference == "local:exports"
     assert request.format == "csv"
     assert request.redaction_mode == "redacted"
     assert request.compress_zip is False
-    assert run.call_args.kwargs == {"actor": "cli"}
+    assert run.call_args.kwargs["actor"] == "cli"
+    assert callable(run.call_args.kwargs["on_destination_resolved"])
     assert str(destination.local_path) in result.stderr
     assert str(receipt.artifact_path) in result.stdout
 
@@ -197,6 +219,7 @@ def test_export_resolves_custom_local_path_before_service_call(tmp_path: Path) -
         managed_tab_prefix=None,
     )
     receipt = _receipt(_local_destination(tmp_path / "published", name="archive"))
+    resolved = replace(configured, local_path=Path("relative-exports").resolve())
 
     with (
         patch("moneybin.database.get_database") as get_database,
@@ -205,7 +228,8 @@ def test_export_resolves_custom_local_path_before_service_call(tmp_path: Path) -
             return_value=configured,
         ),
         patch(
-            "moneybin.exports.service.ExportService.run", return_value=receipt
+            "moneybin.exports.service.ExportService.run",
+            side_effect=_completed_run(receipt, resolved),
         ) as run,
     ):
         get_database.return_value.__enter__.return_value = MagicMock()
@@ -215,9 +239,8 @@ def test_export_resolves_custom_local_path_before_service_call(tmp_path: Path) -
         )
 
     assert result.exit_code == 0, result.output
-    resolved_path = run.call_args.args[0].destination.local_path
-    assert resolved_path == Path("relative-exports").resolve()
-    assert str(resolved_path) in result.stderr
+    assert run.call_args.args[0].destination_reference == "local:archive"
+    assert str(resolved.local_path) in result.stderr
 
 
 def test_export_report_parser_errors_are_safe_stderr() -> None:
@@ -364,6 +387,7 @@ def test_export_json_is_a_typed_standard_envelope(tmp_path: Path) -> None:
     assert set(envelope) >= {"status", "summary", "data", "actions"}
     assert envelope["summary"]["sensitivity"] == "medium"
     assert envelope["data"]["redaction_mode"] == "redacted"
+    assert envelope["data"]["format"] == receipt.format
     assert envelope["data"]["destination"]["name"] == "local:exports"
     assert envelope["data"]["artifact_path"] == str(artifact.resolve())
     assert envelope["data"]["output_classes"] == {
@@ -563,6 +587,17 @@ def test_export_service_errors_are_safe_stderr_with_nonzero_exit(
 ) -> None:
     destination = _local_destination(tmp_path / "exports")
 
+    def fail(
+        _command: object,
+        *,
+        actor: str,
+        on_destination_resolved: object,
+    ) -> None:
+        assert actor == "cli"
+        assert callable(on_destination_resolved)
+        on_destination_resolved(destination)
+        raise UserError("Export could not be published.", code="EXPORT_FAILED")
+
     with (
         patch("moneybin.database.get_database") as get_database,
         patch(
@@ -570,9 +605,7 @@ def test_export_service_errors_are_safe_stderr_with_nonzero_exit(
         ),
         patch(
             "moneybin.exports.service.ExportService.run",
-            side_effect=UserError(
-                "Export could not be published.", code="EXPORT_FAILED"
-            ),
+            side_effect=fail,
         ),
     ):
         get_database.return_value.__enter__.return_value = MagicMock()
@@ -590,9 +623,21 @@ def test_local_export_oserror_discloses_destination_without_logging_filename(
 ) -> None:
     destination_path = (tmp_path / "custom-destination").resolve()
     failed_filename = destination_path / ".publish.lock"
+    destination = _local_destination(destination_path)
 
     def echo_log(message: str) -> None:
         typer.echo(message, err=True)
+
+    def fail(
+        _command: object,
+        *,
+        actor: str,
+        on_destination_resolved: object,
+    ) -> None:
+        assert actor == "cli"
+        assert callable(on_destination_resolved)
+        on_destination_resolved(destination)
+        raise OSError(13, "Permission denied", failed_filename)
 
     with (
         patch("moneybin.database.get_database") as get_database,
@@ -602,7 +647,7 @@ def test_local_export_oserror_discloses_destination_without_logging_filename(
         ),
         patch(
             "moneybin.exports.service.ExportService.run",
-            side_effect=OSError(13, "Permission denied", failed_filename),
+            side_effect=fail,
         ),
         patch(
             "moneybin.cli.utils.logger.error",

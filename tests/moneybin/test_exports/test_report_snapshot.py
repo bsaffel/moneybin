@@ -124,7 +124,6 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
         profile="test",
         report_id="test:export",
         report_parameters={},
-        max_rows=10,
         redaction_mode="unredacted",
     )
 
@@ -199,7 +198,6 @@ def test_prepare_report_applies_redaction_after_raw_execution(db: Database) -> N
         profile="test",
         report_id="test:export",
         report_parameters={},
-        max_rows=10,
     )
 
     assert snapshot.redaction_mode == "redacted"
@@ -212,6 +210,54 @@ def test_prepare_report_applies_redaction_after_raw_execution(db: Database) -> N
         "top": 2,
         "account_number": "****2222",
     }
+
+
+def test_prepare_report_exports_every_row_without_the_mcp_response_cap(
+    db: Database,
+) -> None:
+    """Artifact completeness is independent from interactive response limits."""
+    rows = [{"value": value} for value in range(5)]
+
+    def executor(
+        database: Database,  # noqa: ARG001  # service contract handle
+        parameters: Mapping[str, JsonValue],
+        limit: int | None,
+    ) -> CatalogReportExecution:
+        assert limit is None
+        return build_catalog_execution(
+            spec,
+            parameters=parameters,
+            records=rows,
+            columns=["value"],
+            column_types=["BIGINT"],
+            max_rows=limit,
+            sql=None,
+        )
+
+    spec = ServiceReportSpec(
+        report_id="test:complete_export",
+        name="complete_export",
+        description="Synthetic complete report export.",
+        parameters=(),
+        columns=(OutputColumn("value", "Value.", DataClass.AGGREGATE),),
+        semantics=TEST_SEMANTICS,
+        classes={"value": DataClass.AGGREGATE},
+        examples=(),
+        executor=executor,
+    )
+
+    snapshot = ExportService(
+        db,
+        report_catalog=ReportCatalog((spec,)),
+    ).prepare_report(
+        profile="test",
+        report_id="test:complete_export",
+        report_parameters={},
+        redaction_mode="redacted",
+    )
+
+    assert snapshot.tables[0].rows == tuple((value,) for value in range(5))
+    assert snapshot.manifest["tables"][0]["row_count"] == 5  # type: ignore[index]
 
 
 @pytest.mark.parametrize(
@@ -237,24 +283,9 @@ def test_prepare_report_uses_catalog_errors_for_invalid_subjects_and_parameters(
             profile="test",
             report_id=report_id,
             report_parameters=parameters,  # type: ignore[arg-type]  # invalid runtime input under test
-            max_rows=10,
         )
 
     assert exc_info.value.code == code
-
-
-def test_prepare_report_uses_catalog_error_for_invalid_limit(db: Database) -> None:
-    service = _service(db)
-
-    with pytest.raises(UserError) as exc_info:
-        service.prepare_report(
-            profile="test",
-            report_id="test:export",
-            report_parameters={},
-            max_rows=-1,
-        )
-
-    assert exc_info.value.code == "REPORT_LIMIT_INVALID"
 
 
 def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
@@ -265,7 +296,7 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
     def executor(
         database: Database,  # noqa: ARG001  # service contract handle
         parameters: Mapping[str, JsonValue],
-        limit: int,
+        limit: int | None,
     ) -> CatalogReportExecution:
         nonlocal calls
         calls += 1
@@ -313,7 +344,6 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
         profile="test",
         report_id="test:service_export",
         report_parameters={},
-        max_rows=10,
     )
     assert calls == 1
     assert _first_row(redacted)["account_number"] == "****2222"
@@ -323,7 +353,6 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
         profile="test",
         report_id="test:service_export",
         report_parameters={},
-        max_rows=10,
         redaction_mode="unredacted",
     )
     assert calls == 2
@@ -334,7 +363,6 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
             profile="test",
             report_id="test:service_export",
             report_parameters={"unknown": 1},
-            max_rows=10,
         )
     assert exc_info.value.code == "REPORT_PARAMETER_UNKNOWN"
     assert calls == 2
@@ -368,7 +396,6 @@ def test_networth_history_export_retains_native_values_with_truthful_types(
             "from_date": "2026-07-01",
             "to_date": "2026-07-31",
         },
-        max_rows=10,
         redaction_mode="unredacted",
     )
 
