@@ -173,7 +173,8 @@ The headline capability. `app.user_reports`; create/run/list/edit/delete across
 MCP **and** CLI with the same envelope and privacy path as built-ins; classes
 resolved by construction via `resolve_output_classes`; and the verification
 surface — "show me the SQL", lineage to source rows, freshness. Roadmap item
-**M2I** ("Show me the SQL" report lineage) lands here.
+**M2I** ("Show me the SQL" report lineage) lands here. Specified in
+[`reports-dynamic.md`](reports-dynamic.md).
 
 ### C — Materialization & distribution (M2P.3)
 
@@ -216,19 +217,26 @@ enumerate the *exposed* set.
 
 ## Open questions
 
-- **Is a bespoke-tool report a permanent sanctioned category, or a migration
-  state?** `net_worth` is user-facing, so under D3 it stays in `reports.*` and
-  must be classified — but D4's derivation classifies it like any other view, so
-  this stopped being a privacy question. What remains is tool ergonomics: its
-  `NetworthService`-backed tools are hand-written because `@report` *couples*
-  declaring a contract with generating a tool, and a generated `reports_networth`
-  would collide with the shipped one. The question has consequences because M2P.2
-  and M2P.3 create reports at runtime, and those cannot have hand-written tools —
-  so generation-required is the dominant future population and bespoke tools are
-  a legacy of one. **Resolve in C**, alongside the `extension-contracts.md` M3I
-  addressing reconciliation.
+- ~~**Is a bespoke-tool report a permanent sanctioned category, or a migration
+  state?**~~ — **migration state; the migration landed in the MCP surface
+  consolidation.** The decorator no longer couples declaring a contract with
+  generating a tool: every report is reached by `report_id` through the single
+  `reports` catalog/runner and consumes no tool slot. `net_worth` is a
+  `ServiceReportSpec` — an `executor` over `NetworthService`, not a `ReportSpec`
+  with a SQL `runner` (`reports-dynamic.md` R6 keeps the two kinds distinct, and
+  `reports_explain` returns declared provenance for the service-backed one since
+  it has no query). That backing survives; what disappeared is its hand-written
+  tool identity, and with it the collision that made the category look
+  permanent. Generation-required was indeed the dominant population — M2P.2 and
+  M2P.3 now inherit the same access path as the built-in rather than a second
+  one.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
-- **Dynamic reports over floored columns** — see the section above. Resolve in B.
+- ~~**Dynamic reports over floored columns**~~ — **scoped out in B, decided in
+  M2O.2.** Report creation is restricted to fully-classified schemas (`core`,
+  `app`, `reports`). `raw`/`prep` are not reachable through `sql_query` today,
+  so the question is not yet live; when M2O.2 opens them behind a content-net
+  floor, whether a *durable* artifact may be built over floored columns is
+  decided there. See [`reports-dynamic.md`](reports-dynamic.md) R2.
 - **Milestone reconciliation.** This umbrella claims **M2P**; `extension-contracts.md`
   milestones contributor UX at M3I. Reconcile at `draft → ready`.
