@@ -1,5 +1,5 @@
 {
-  "sha256": "0146b0bd2ff044b989181f628c4c6547f3674eed688fc00fb4ef9112a7d2025d",
+  "sha256": "6d1a1f33bfc005bfc7d38136679ff487b857f74610c877cacc748de31a6ed763",
   "tool_count": 45,
   "tools": [
     {
@@ -1592,7 +1592,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Return investment events, holdings, open or full tax-lot history, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention and the currency in summary.display_currency.",
+        "description": "Return investment events, holdings, open or full tax-lot history, realized gains, or securities through one typed view. Amounts use the investment ledger sign convention; currency is summary.display_currency for every view except holdings, whose market_value stays in each row's currency_code. For holdings, valuation_status marks each row valued, carried_forward, unpriced, or withheld; unpriced and withheld report market_value/unrealized_gain null (never zero) and data.warnings counts them, and withheld means the share count is known wrong. Do not sum market_value across rows: read data.total_market_value (null when priced rows span currencies, with data.market_value_by_currency giving the split) and data.max_days_since_observed for the stalest close behind any published figure.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1690,12 +1690,12 @@
         },
         "name": "investments"
       },
-      "description_bytes": 215,
+      "description_bytes": 788,
       "input_schema_bytes": 672,
       "name": "investments",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1076
+      "total_bytes": 1649
     },
     {
       "annotation_bytes": 90,
@@ -4554,5 +4554,5 @@
       "total_bytes": 564
     }
   ],
-  "total_bytes": 47111
+  "total_bytes": 47684
 }
