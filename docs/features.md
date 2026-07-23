@@ -85,7 +85,7 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 
 ## MCP server
 
-- **Bounded tool registry** — One 45-tool standard registry spans 11 domains. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots. Full per-domain inventory: [MCP server guide](guides/mcp-server.md).
+- **Bounded tool registry** — One 45-tool standard registry spans 11 user-facing domain groups across 14 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.

@@ -80,13 +80,15 @@ The CLI and MCP server are thin formatters around the service layer. The SQL lay
 
 ### MCP registry
 
-The MCP server exposes one 45-tool standard registry across 11 domains over
-stdio. The generic `reports` catalog and runner lists and executes registered
-reports; reports do not consume additional tool slots. Capable hosts may
-optionally defer schemas from that same registry without changing its tool
-names, approvals, allowlists, annotations, or audit identity. The registry
-advertises zero output schemas. Full enumeration is in
-[`docs/guides/mcp-server.md`](guides/mcp-server.md).
+The MCP server exposes one 45-tool standard registry across 11 user-facing
+domain groups over stdio. Those groups organize 14 literal tool-name prefixes;
+for example, `identity_*` belongs to Reviews and `gsheet_*` belongs to Sync.
+The generic `reports` catalog and runner lists and executes registered reports;
+reports do not consume additional tool slots. Capable hosts may optionally defer
+schemas from that same registry without changing its tool names, approvals,
+allowlists, annotations, or audit identity. The registry advertises zero output
+schemas. Full enumeration is in
+[`docs/specs/moneybin-mcp.md`](specs/moneybin-mcp.md).
 
 Surface symmetry (same nouns, different verb position):
 

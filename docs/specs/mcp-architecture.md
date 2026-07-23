@@ -139,14 +139,18 @@ check consent or substitute a degraded response.
 
 ### Namespace structure
 
-Tools use a hybrid namespace that reflects the most natural way an AI or user would think about the action. The first segment is the **domain**, the second is the **action or view**.
+Tools use a hybrid namespace that reflects the most natural way an AI or user
+would think about the action. The first segment is the **prefix** and the
+second is the **action or view**. The standard registry groups related prefixes
+into user-facing domains: 14 prefixes compose 11 domain groups.
 
 | Namespace | Domain | Purpose |
 |---|---|---|
 | `system_*` | Orientation and audit | Data inventory, audit, and operation reversal |
 | `reports` | Read-only analytics | Registered catalog and report execution |
 | `accounts_*`, `investments_*` | Financial entities | Account state, balances, investment ledger, and lots |
-| `transactions_*`, `reviews*` | Transaction workflows | Query, curation, categorization, and user decisions |
+| `transactions_*` | Transaction workflows | Query, curation, and categorization |
+| `reviews_*`, `identity_*` | Reviews | User decisions, including identity-link decisions |
 | `taxonomy_*` | Reference data | Categories and related taxonomy target state |
 | `import_*` | File ingestion | Import, preview, confirmation, status, and reversal |
 | `sync_*`, `gsheet_*` | External connections | Mediated financial sync and user-controlled sheets |
