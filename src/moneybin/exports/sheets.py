@@ -40,7 +40,7 @@ _MAX_MANAGED_PREFIX_LENGTH = 40
 _SAFE_PREFIX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]*[A-Za-z0-9]$|^[A-Za-z0-9]$")
 _INVALID_TITLE_CHARACTERS = re.compile(r"[\[\]:*?/\\]")
 _RETRY_MAX = 3
-_RETRY_BACKOFF_BASE_SECONDS = 1.0
+_RETRY_BACKOFF_BASE_SECONDS = 1.5
 _T = TypeVar("_T")
 
 

@@ -228,27 +228,29 @@ def test_publish_retries_a_transient_sheets_rate_limit(
 ) -> None:
     """One temporary 429 during validation does not abandon a staged export."""
 
-    class RateLimitedReadOnce(TestSheetsClient):
+    class RateLimitedReadTwice(TestSheetsClient):
         attempts = 0
 
         def read_sheet_values(self, *args: Any, **kwargs: Any) -> list[list[str]]:
             self.attempts += 1
-            if self.attempts == 1:
+            if self.attempts <= 2:
                 raise GSheetRateLimitError("temporary")
             return super().read_sheet_values(*args, **kwargs)
 
-    client = RateLimitedReadOnce()
+    client = RateLimitedReadTwice()
     client.register_workbook("output-sheet", FakeWorkbook("Output"))
+    delays: list[float] = []
 
-    def skip_sleep(_seconds: float) -> None:
-        return None
+    def capture_sleep(seconds: float) -> None:
+        delays.append(seconds)
 
-    monkeypatch.setattr("moneybin.exports.sheets.time.sleep", skip_sleep)
+    monkeypatch.setattr("moneybin.exports.sheets.time.sleep", capture_sleep)
 
     receipt = _publish(db, SheetsExportPublisher(sheets_client=client), make_snapshot())
 
     assert receipt.sheets_identity == "MB:20260721T184233Z"
-    assert client.attempts >= 2
+    assert client.attempts == 5
+    assert delays == [1.0, 1.5]
 
 
 def test_publish_uses_write_capability_for_output_metadata_and_validation(
